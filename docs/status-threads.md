@@ -1,8 +1,109 @@
 # Status of the parallel-threads plan
 
 2026-11-18. The plan is docs/threads.md. Nothing is built. The plan was written, checked by an independent
-agent four times, and corrected after each check (the four lists are below, newest first). It stops
-here until the owner has ruled on its section 16.
+agent five times, and corrected after each check (the five lists are below, newest first). The fifth
+correction is the last round: it has had no check of its own, and the plan says so at its top, under
+"Known faults". It stops here until the owner has ruled on its section 16.
+
+## The fifth check's findings, and how each was settled
+
+Two blocking, six smaller, and one that reports an experiment and no fault. None is argued against:
+all eight faults were right. Each was checked against the code before it was settled. Two small
+experiments were run for this correction (items 15 and 16 under "What was measured"), and the fifth
+checker's own is recorded as item 17. The full text of the findings is in
+wcontainers-scratch/orchestrator/threads-plan-open-findings.json.
+
+1. **A ready thread of a `Serial` group could wait for ever behind its own running sibling**
+   (blocking). Right, and with one processor too. The code was read for it: a fair slice is given
+   only when the run queue is not empty at the hand-out (kernel/task.rs:43-53); the kernel's deadline
+   is folded into every slice today (task.rs:55-60), which the plan takes out; and `preempts` says
+   no for a batch thread and inside the granularity (kernel/schedule.rs:224-238). Settled in section
+   5 as the check suggested, as one condition for every ready thread and not a case for siblings:
+   every ready thread that could be chosen has a running thread in its way that is due in. In its
+   way: its `Serial` group's running thread, or else the running threads on the processors its mask
+   holds. Due in: it has a fair slice, or the kernel has asked it in. When nobody in the way is due
+   in, the one with the most weighted time is asked in, and the tick decides. Section 11 aims the
+   wake-up comparison at a thread in the woken one's way, as the check also asked, and says that
+   the comparison is not what bounds the wait.
+   - Found with it: **the same thread could still starve when it is pinned.** A `Serial` group's
+     thread that gives way for a sibling pinned to another processor is the only thread of the group
+     its own processor may take, so it was handed out again at once. 4.3 now has a `Serial` group
+     put forward one thread, its ready thread with the least weighted time. With no thread pinned,
+     and with one processor, that chooses as before. Its cost is known fault 4.
+   - Found with it: how the condition is kept cheap had to change. The two counts of the fourth
+     correction cannot see this half. Section 5 now has one mark, set where the data the condition
+     reads is written, and three counts behind it. A system call answered in place tests the mark
+     and nothing else. A build for tests ignores both and walks at every lock release.
+   - Found with it, and not settled: with fewer workers than processors, nobody asks for the
+     processors left over, so a thread pinned to one of them never runs. It is known fault 2.
+2. **Two `Serial` groups that merge could leave one `Serial` group with two running threads**
+   (blocking). Right. Nothing called anybody in when no config changed, and 4.5 said "nobody" for a
+   new mapping in the caller's own `Serial` memory. Settled as the check's first suggestion: a join
+   calls in every running thread it binds, and the call that caused it parks before it has any
+   effect (section 3, 4.5). The calls that can join groups were looked up: `mmap`
+   (kernel/syscall/memory.rs:109), `shmat` (ipc.rs:356), and exec through its program files
+   (kernel/loader.rs:901-905, kernel/shared.rs:478-487). `mremap` and `mprotect` work inside one
+   memory. 4.4 items 3 and 7 and the lock rules of 7.2 now name the rule they stand on. Section 12
+   has the test, and a count in the test build, "two threads of a Serial group running".
+   - Found with it: **4.5 contradicted 4.3 on who may run while a group is called in.** 4.5 said the
+     mark never keeps a woken call from running. 4.3 runs a woken call only when its thread is
+     chosen, and a called-in group's threads are not chosen. A group that calls itself in (a
+     (`Parallel`, `Exact`) group does, and so does a join) would have waited for ever. Both now say
+     that the thread whose call wanted the group is chosen as any ready thread is.
+3. **7.2's rule on `block_write` would have left memories stale.** Right: `block_write` writes into
+   every memory that shows the block (wt/lib.rs:1409-1433), and the rule's reason only explained
+   not reading a memory. The rule is rewritten by its two callers. The copies made when a `Serial`
+   thread leaves reach memories of its own group, whose locks are free. A write of the kernel's
+   reaches memories of the caller's group, memories called in first, and `Parallel` memories. No
+   memory is left out as a destination. What is left of the old rule is that nobody reads another
+   `Serial` group's memory as a source.
+4. **A guarantee could become `Exact` through a merge with no starting point and nothing announced.**
+   Right, and the plan's own argument in section 6 was the one that showed it. Settled by the
+   check's first suggestion: a hook, suggested `on_execution_config_in_force_changing`, fired before
+   the change when the process is whole and stopped, which finding 2's cure provides. Decision 1
+   says what an embedder that does nothing in it gets. The test in section 12 is now one a T1 test
+   system can pass: it saves the container at a stop it asks for in the hook, and replays from the
+   save. The test also needed a way to give two processes different configs before `resume` exists;
+   it says a build for tests does.
+5. **`kernel.process(id)` from inside a hook would wait for ever.** Right: `lock_api::RawMutex` has
+   no way to ask who holds it. Settled by the check's first suggestion, kept as small as it can be:
+   the kernel writes its holder's name in a word (`lock_api::GetThreadId`) and reads it only when
+   it finds the lock held. The check's concern was wider than the one call, and the plan says so:
+   any entry point called from inside a hook, a `Host` call or `arrived` is in the same place, and
+   panics naming the call. Measured (item 15): the word cannot be told from the noise.
+6. **`Serial` threaded programs were measured nowhere, though T2 changes how they run.** Right.
+   Section 12's "`Serial` must not get slower" now has four measurements of threaded programs run
+   `Serial`, in T2's bar, and 7.2 says what is done if they fail: the Serial form keeps one store
+   for each process.
+7. **Aligned plain accesses seen whole are a fourth thing relied on and not promised.** Right, and
+   the premise it asked to have confirmed was read: ECMAScript's `IsNoTearConfiguration` (25.1.3.13)
+   answers false for an unordered 64 bit integer access, and the WebAssembly threads proposal's
+   overview says nothing of it. 7.6 has it as the fourth, section 12 has its test, and it was run
+   now in both compilers on both hosts (item 16): no mix in 1,000,000,000 loads each.
+8. **`next` did work for a thread before it knew it would hand it out.** Right
+   (kernel/task.rs:343-375). Settled as suggested: `next` makes one entry for each thread it
+   chooses, asked about when the thread is chosen and before its woken call runs, and the entry
+   counts whether or not a thread is handed out in the end (4.3, 4.6). Section 12 has a test.
+9. **The host-supplied shared memory works** (the checker's experiment, no fault). Recorded as item
+   17; 7.2 and section 15 no longer say "read, not run".
+
+**The brief's last section, added for this round.**
+- *`&self` on `System`, and `System: Sync`.* Section 5 says what it means here: the plan asks for
+  `&self` already and needs it from T1, because several workers call `turn`, `ran` and `idle` at
+  once; `Sync` is asked by the compiler of any system given to a second worker, and the plan
+  recommends that the trait says so from T1. In decision 9.
+- *State kept per process.* Section 5: it fits the plan's locking as it is, takes off an embedder
+  the locks around what it keeps about one process, takes off nothing else, and would ask one bound
+  (`Send`). The plan builds on neither proposal.
+- *`Process::replace_execution_config`.* Taken out of the plan's interface. The interface track
+  measured the return of `run` it was meant to save as nothing at a program start
+  (orchestrator/interface-measurements.json), and the plan was read again for another need of it
+  and has none (section 6).
+- *Known faults at the top.* Six, of which the first is that this correction was not checked.
+
+Section 16 still has ten decisions. Decision 1 gained the hook, decision 7 the holder's word,
+decision 8 what a call into the kernel from inside a hook gets, and decision 9 lost
+`Process::replace_execution_config` and gained the hook, `System: Sync` and the two proposals.
 
 ## The fourth check's findings, and how each was settled
 
@@ -417,6 +518,26 @@ check suggested, and two more problems turned up while settling them; both are s
   lines 994-1035 and 2966-3082, and deleted again); the fourth checker's files in
   wcontainers-scratch/threads/check4/independent.
 
+- For the fifth check's findings: the brief to its end again (its last section, "For the plan's last
+  round", is new) and the interface notes to their end (nothing newer); the findings' file; the
+  interface track's measurement of what a return of `run` costs (orchestrator/
+  interface-measurements.json, the two "run-return" parts, with their method and what they did not
+  measure); the hand-out, its slice, the tick and how a thread is put in line and compared with the
+  running one (kernel/task.rs:17-105, :326-340, :343-407, :438-475, :519-584;
+  kernel/schedule.rs:198-238); the entry points and what each does about timers
+  (kernel/lib.rs:300-415); where the kernel shows a block in a memory (kernel/shared.rs:465-495) and
+  the calls that map (kernel/syscall/memory.rs:109, :949, ipc.rs:356); the executor's copies at a
+  thread's leaving and `block_write` (wt/lib.rs:1338-1435); the `System` trait as it is
+  (rt/lib.rs:145-166); `lock_api`'s `RawMutex` and `GetThreadId`, as item 15's program uses them;
+  ECMAScript's `IsNoTearConfiguration` (25.1.3.13, fetched from tc39.es and deleted again) and its
+  rule "Tear Free Reads" (29.7.3); the WebAssembly threads proposal's overview (its repository,
+  proposals/threads/Overview.md), which has no statement on a plain access being seen half done; the
+  fifth checker's log (wcontainers-scratch/threads/check5/hostmem/run-mac.log).
+  - Two of these were read through a tool that summarises a fetched page (the proposal's overview
+    and the "Tear Free Reads" rule). `IsNoTearConfiguration`'s own text was read directly. The Arm
+    and Intel manuals are cited in 7.6 for what a single aligned access promises; they were not
+    opened for this correction.
+
 ## What the first agent left
 
 No docs/threads.md was in the checkout, committed or not. In wcontainers-scratch/threads it left a clone of
@@ -682,19 +803,94 @@ Nothing was built or run. Every finding was a matter of the plan's own rules aga
 each was settled by reading (the list is under "What was read"). No scratch files were added and
 there was no build output to delete.
 
+### Fifth run, for the fifth check's findings
+
+Everything is in wcontainers-scratch/threads/run6, and on the laptop in ~/threads-plan/run6. Build
+output was deleted on both machines; sources, the assembled module, the listings and the logs are
+kept. Builds used three jobs at most. On the laptop no system package was installed, and cores 2 and
+8 were not used.
+
+**15. The holder's word on an uncontended lock** (for finding 5). run6/owner/src/main.rs: a
+`parking_lot` 0.12.5 raw lock through `lock_api` 0.4.14, around a small piece of work, in one thread.
+Four forms of a round: no lock; the lock; the lock with the holder's name read
+(`parking_lot::RawThreadId` through `lock_api::GetThreadId`) and stored in an atomic word after the
+lock is taken, and the word cleared before it is let go; the same with the name read once outside the
+loop. Two kinds of work, as the second checker's item 8: one that stays in registers, one that walks
+a chain of eight loads in a 64 KiB table and stores once. 200,000,000 rounds, best of seven, the
+forms taken in turn inside each repeat. Built with `cargo build --release --offline -j 3`, on this
+Mac under `nix develop` of this checkout.
+- This Mac (owner/owner-mac.log, load 133 before and 137 after), nanoseconds a round for the four
+  forms: register work 2.022, 5.515, 5.012, 5.917; memory work 8.742, 9.138, 9.171, 9.107.
+- The laptop, `taskset -c 4` (owner/owner-x86.log, load 4.7 before and 6.1 after): register work
+  1.808, 11.809, 11.569, 12.067; memory work 13.889, 14.521, 14.764, 14.374.
+- So the lock itself costs 0.4 to 3.5 ns on this Mac and 0.6 to 10.0 ns on the laptop here, inside
+  the ranges of items 7 and 8. The word changes a round by -0.50 to +0.40 ns on this Mac and by
+  -0.24 to +0.26 ns on the laptop, with both signs in each kind of work. No cost is shown.
+- What it does not cover: the lock inside a real kernel entry, the name of a virtual CPU inside the
+  native executor's machine, or the kernel built as a WebAssembly module. Run once on each machine.
+
+**16. Whether an aligned plain 64 bit access is seen half done** (for finding 7). run6/tear/tear.wat,
+assembled with `wasm-tools parse` from the checkout's `nix develop`: a module importing a shared 32
+bit memory. `writer(n, at)` stores 0 and -1 in turn to the 64 bit word at `at` with plain stores, one
+store each time round. `reader(n, at)` loads the word with a plain load n times and counts the values
+that are neither; it also counts the loads that saw -1, so a run that never saw both values can be
+told. Two forms: `at` aligned to 8 (4096), and `at` four bytes before a 64 byte boundary (4156), a
+control that shows the test can see a mix. 200,000,000 rounds a run, five runs a form, so
+1,000,000,000 loads.
+- Node, two workers on one `WebAssembly.Memory` (tear.mjs). This Mac, Node 24.14.1
+  (tear-node-mac.log, load 112 to 113): aligned 0 mixed; across a line 73,917,899. The laptop, Node
+  24.22.3, `taskset -c 5,10` (tear-node-x86.log, load 5.2 to 6.3): 0; 232,854.
+- wasmtime 50.0.1 as the repository pins it, two host threads each with its own `Store` and
+  `Instance` on one `SharedMemory` (tear/host, built in release with three jobs). This Mac
+  (tear-wasmtime-mac.log, load 113 to 114): 0; 57,220,868. The laptop, `taskset -c 5,10`
+  (tear-wasmtime-x86.log, load 3.3 to 3.8): 0; 37,550,933.
+- In all eight runs the reader saw both values: between 617 and 937 million of its loads saw -1.
+- wasmtime 49.0.2's output for the module, from `wasmtime compile` and `wasmtime objdump` on each
+  host (tear-mac-wasmtime49.dis, tear-x86-wasmtime49.dis): the store is the one instruction `str x13,
+  [x10, w5, uxtw]` and the load `ldr x1, [x0, w5, uxtw]` on this Mac; `movq %rdi, (%rax, %rcx)` and
+  `movq (%rdi, %rcx), %r9` on the laptop.
+- What it does not cover: V8's machine code, which was not read; a 64 bit guest memory, where the
+  address is made differently and the access is the same instruction; an access the translator
+  emits, since the module is hand-written; any other version of either compiler. The plan makes it
+  a test of each version (docs/threads.md section 12).
+
+### By the plan's fifth checker
+
+**17. A host-supplied mapping as a wasmtime shared memory.** check5/hostmem (its source and
+run-mac.log; wasmtime 50.0.1 as the repository pins it, upstream Cranelift, a debug build with three
+jobs, this Mac at load 113 to 127 by the checker's note). The engine was set up as the executor's:
+`wasm_threads`, `memory64`, `shared_memory(true)`, `memory_may_move(false)`, and `with_host_memory`
+with a creator that records its calls. The log, read again for this correction:
+- the creator was called once after the defining module was instantiated, for a shared 64 bit memory
+  with a minimum of 0x10000 bytes and a maximum of 0xff000000 (64 KiB and 4080 MiB);
+- `SharedMemory::data()` has the creator's own base, 0x7000000000;
+- a store by a second thread's instance in its own store was seen through the host's mapping, and a
+  host write was seen by a guest load in a third store;
+- growing by three pages went through the creator's `grow_to`, once.
+So the path the plan's 7.2 read in wasmtime's source works. It was not run in the executor, where
+today's state memory is made by `SharedMemory::new` (wt/lib.rs:1242).
+
 ## What was not measured
 
 Listed in docs/threads.md section 15. The ones that matter most to the plan's decisions:
 - how long processors would wait for the kernel's one lock in a real build: it needs T1 built;
 - what T1 adds to a system call end to end; only the lock by itself was measured (items 7 and 8), and
-  it costs between nothing and 11.4 ns by the work around it;
+  it costs between nothing and 11.4 ns by the work around it, and its holder's word by itself (item
+  15), which could not be told from the noise;
+- what the scheduler's condition costs when it is walked, how often that is, and how many turns end
+  for nobody because a slice is still worked out from the whole run queue: all three need T1 built;
+- threaded programs run `Serial` once each thread has its own store: T2's bar measures them;
 - how often real programs run barriers and 128 bit atomics: the cost of each is measured, their number
   is not;
 - what switching the compiler's alias analysis off costs on an x86 host and on large programs, and
   whether V8 does what that pass does;
 - what the digest of `External` costs, and what calling a group in for every change of the kernel's
   costs a (`Parallel`, `Exact`) group;
-- the runtime's host-supplied mapping as a wasmtime shared memory: read in wasmtime's source, not run;
+- the runtime's host-supplied mapping as a wasmtime shared memory inside the executor: it was run
+  outside it by the fifth checker and worked (item 17);
+- V8's machine code for a plain 64 bit access: not read. Node showed no mixed value (item 16);
+- a real `suspend` and `resume`, and anything of them on the native executor: the interface track
+  measured only the return of `run` at a program start, on a prototype;
 - the ordering tests as guest programs through the translator: only hand-written tests were run (items
   4, 6 and 9);
 - what the stop lock costs the kernel's accesses to a `Parallel` memory, and how often a translation is
@@ -738,15 +934,17 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   request to stop kept until the thread's next entry; a stop lock per memory and the count of drops;
   call-ins, not group stops, for a change of the kernel's in a group in force `Exact` (section 10);
   one timer inside for the container's deadline, armed from `on_deadline_changed`, beside its timer
-  for slices (section 5). Nothing before its own thread milestone.
+  for slices (section 5); the virtual CPU's number as the name of the kernel's lock's holder (4.2).
+  Nothing before its own thread milestone.
 - The kernel track's K7: the kernel as a WebAssembly module built for a shared memory, for more than one
-  caller (4.2).
+  caller, each instance with a name for the lock's holder (4.2).
 - The embedder interface: `ExecutionConfig` with both fields at the container's start; `suspend` and
-  `resume`; the config in force beside the config given; memory watches before T4, with a thread's
-  position readable while it is held; who shares memory with whom, and shared pages marked watched when
-  one process of a group leaves; the hook's thread made optional and
-  `Process::replace_execution_config` (decision 9); `Kernel::process_call_in` and its hook, and
+  `resume`; the config in force beside the config given, and the hook that announces its change
+  (section 3, decision 1); memory watches before T4, with a thread's position readable while it is
+  held; who shares memory with whom, and shared pages marked watched when one process of a group
+  leaves; the hook's thread made optional (decision 9); `Kernel::process_call_in` and its hook, and
   `kernel.process(id)` at any time with the rule for which operations answer an error (decision 8).
+  No longer asked: `Process::replace_execution_config` (section 6).
 - The runtime track: the renames to `RuntimeConfig`, `TranslatorConfig`, `run` and `run_until_finished`
   in the code, which this plan already uses; two wasmtime engines in the executor, and the cache key's
   two new fields (7.2).

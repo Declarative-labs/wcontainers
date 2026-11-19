@@ -1,7 +1,32 @@
 # wcontainers: guest threads in parallel
 
-Status: plan, 2026-11-18, corrected after its fourth independent check (docs/status-threads.md says what
-changed each time). Nothing here is built. The owner rules on section 16 first.
+Status: plan, 2026-11-18, corrected after its fifth independent check (docs/status-threads.md says what
+changed each time). That was the last round. Nothing here is built. The owner rules on section 16 first.
+
+## Known faults, to settle when T1 is built
+
+These are open. None is hidden further down.
+
+1. **The last corrections were not checked.** The fifth check found two faults that would have hung
+   real programs. Their cures are new in this form and no independent agent has read them: a ready
+   thread always has a running thread due in for it (section 5), and groups are joined only with their
+   other threads called in (section 3, 4.5). So are the hook that announces a change of the config in
+   force (section 3) and the lock that knows its holder (4.2). Section 12 names a test for each. They
+   are the first tests to write.
+2. **With fewer workers than processors, a thread pinned to a processor that no worker serves never
+   runs.** The plan gives each worker one processor (section 5) and never says who asks for the rest.
+   The cure is expected to be small: a worker told `Idle` asks for each unserved processor in turn
+   before it waits. It is not designed here.
+3. **The length of a fair slice is still worked out as for one processor**, from the whole run queue
+   (kernel/task.rs:43-53). With several processors that gives shorter slices than needed. It is never
+   unfair. T1 counts the turns that ended for nobody.
+4. **In a `Serial` group whose next thread is pinned to a busy processor, a sibling that could run on an
+   idle one waits** (4.3). Linux would run it. It is the price of a simple rule that keeps a pinned
+   thread from starving, and it is counted.
+5. **A call that waited and runs again reads its arguments from guest memory again** (4.4). That is
+   wrong only in a `Parallel` group. T2 closes it by reading every call.
+6. **What T1 adds to a system call is known only in parts**: the lock and its holder's word, each
+   measured alone (section 14). T1's three builds measure the whole (section 12, decision 7).
 
 Words used here:
 - **executor**: what runs the guest's instructions behind the kernel's `Cpu` side (`Executor`,
@@ -47,8 +72,12 @@ Words used here:
   `Stepper::step` (rt/lib.rs:197). `run_until_finished` is today's `drive` and `Container::run`
   (rt/lib.rs:230, rt/container.rs:172). The executor's own call that runs one guest thread is always
   written `Execution::run` here (rt/lib.rs:128-143).
-- **kernel entry**: one call into the kernel that changes it: a thread handed out (`Kernel::next`), a
-  thread coming back (`Kernel::exit`), an event, a signal from outside.
+- **kernel entry**: one call into the kernel that changes it: a thread chosen for a processor (inside
+  `Kernel::next`, 4.3), a thread coming back (`Kernel::exit`), an event, a signal from outside.
+- **in the way**: a running thread stands in the way of a ready thread when the ready one could run if
+  it left its processor (section 5).
+- **due in**: a running thread is due in when it has a fair slice or the kernel has asked it in. It then
+  makes a kernel entry of its own after a bounded time (section 5).
 - **barrier**: a guest instruction that orders its thread's memory accesses as other threads see them:
   ARM64's `dmb` and `dsb`, x86's `mfence`.
 - **position**: where a thread is, as (progress count, pc) (docs/runtime.md section 9).
@@ -105,9 +134,10 @@ disagree, the last one is followed (brief-threads.md lines 134-160, interface no
   when it is resumed. Taking a process out of its kernel is `suspend`, putting it back is `resume`, and
   the value between is `SuspendedProcess<E>`. Neither converts anything. `export` and `import` only make
   and read the form that crosses a wire (interface notes lines 110-123, 131-137). The getter is
-  `Process::execution_config()`. A call that changes the config inside a hook without `run` returning is
-  proposed and not ruled (`Process::suspend_and_resume(self, config)`, interface notes lines 165-166; the
-  brief calls it `Process::replace_execution_config`). Section 6 weighs it.
+  `Process::execution_config()`. A call that changes the config inside a hook without `run` returning was
+  proposed (`Process::suspend_and_resume(self, config)`, interface notes lines 165-166; the brief calls
+  it `Process::replace_execution_config`). It has since been measured as not needed for speed, and this
+  plan needs it for nothing else, so it is not in the plan's interface (section 6).
 - Hooks receive `Process<'_, E>` by value, and `suspend(self)` consumes it. Suspending a process inside a
   hook makes `run` return at once.
 - The call that runs a container is `run`. It returns `StopReason { Interrupted, Suspended, Idle {
@@ -176,8 +206,10 @@ question about pages, to save a case that hardly occurs.
 **Who keeps it.** The kernel. It already knows every mapping, which are shared and what each may be given
 (`Backing` and `Mapping`, kernel/memory.rs:34, :69). It keeps, for each memory, the group it is in, and
 for each block the memories that show it. Memories join inside the kernel entry that makes the mapping,
-or the fork that inherits it. A group is split again when the mapping that joined it has gone, worked
-out at a later entry of the group.
+or the fork that inherits it. Where the group that results is in force `Serial`, that entry makes the
+join only once no other thread of the groups it joins is running ("How a change takes effect", below).
+A group is split again when the mapping that joined it has gone, worked out at a later entry of the
+group.
 
 **A new group has one thread.** A group is born at the container's start, at a fork whose child shows no
 block that is writable through a mapping, and at exec, which makes a new memory (kernel/loader.rs:292)
@@ -211,15 +243,49 @@ process. It is the owner's to confirm (decision 1), with the alternatives there.
 kernel needs "the config in force of a group can change while it runs", because groups merge.
 
 How a change takes effect:
-- **Stricter in either field**: the group's other running threads are called in (4.5). The entry that
-  brings the last one in makes the change. Until then the `mmap` that caused it is parked, or the
-  threads of the process that was resumed are not handed out. A thread whose guarantee in force became
-  `Exact` is handed out next from code with the count. Its count starts at zero there: its positions are
-  counted from the change.
+- **Groups joined, or stricter in either field**: every running thread the change binds is called in
+  first (4.5), and the change is made in the first entry in which none of them runs.
+  - Whom it binds. When the group that results is in force `Serial`: every running thread of the groups
+    involved, other than the caller. When it is in force `Parallel`: only the running threads whose
+    guarantee in force changes.
+  - **Two `Serial` groups that join are the plain case, and no config changes in it.** Each may have a
+    thread running, and a `Serial` group has one. The plan's earlier form called threads in only when
+    a config became stricter. Its fifth check showed what that left: process P1 runs on one processor
+    with a file mapped privately; P2, on another, maps the same file shared and writable; the two
+    groups become one, both threads carry on, and a `Serial` group has two threads in guest code. That
+    breaks 4.4 items 3 and 7, exact replay, and the executor's lock rule (7.2).
+  - Until the threads are in, the call that caused the change is parked before it has had any effect:
+    the `mmap` or `shmat` that makes the mapping (kernel/syscall/memory.rs:109, ipc.rs:356), or the
+    exec whose program files are mapped so (kernel/loader.rs:901-905). For a `resume`, the resumed
+    process's threads are not handed out. `mremap` and `mprotect` change a mapping inside one memory
+    and join nothing. A fork's child joins its parent's group, and it is new: it has no running
+    thread.
+  - A thread whose guarantee in force became `Exact` is handed out next from code with the count. Its
+    count starts at zero there: its positions are counted from the change.
 - **Looser**: at the group's next entry. Nobody is stopped. A process already runs the form of code for
   the ordering it was given (7.2), so a looser ordering needs no new code. A thread whose guarantee in
   force is no longer `Exact` is handed out next from code without the count, so that no process carries
   the count longer than somebody asks for it.
+
+**A change of the config in force is announced.** A hook, suggested
+`on_execution_config_in_force_changing(process, config)`, fires once for each process whose config in
+force is about to change, inside the entry that makes the change and before it.
+- Why. A guarantee that becomes `Exact` starts a promise, and a replay needs the process's whole state
+  where the promise starts. Section 6 says the same of `resume`, which hands that state over. A join
+  hands over nothing: a process given `None` has no record before it, and a hook about one process
+  cannot read another (interface notes lines 76-77). The plan's earlier form started the count at
+  zero and told nobody. Its fifth check showed that such a process could then not be replayed at all,
+  and neither could the neighbour whose promise the stricter config was meant to keep.
+- For a join or a stricter change, every thread of the process's group is at a kernel entry of its own
+  when the hook fires: the caller in its call, the others called in. The process is whole and stopped,
+  and every operation on it is legal (4.4 item 7). The embedder takes its starting point there: it
+  reads the memory, or suspends the process and resumes it on the same kernel, or asks for a container
+  stop and saves the container.
+- An embedder that does nothing in the hook gets that process's entries with positions from the join
+  on, and no state to replay them from. The neighbour that was promised `Exact` then replays exactly up
+  to the join and not beyond it. This is the embedder's choice, and decision 1 says so.
+- For a looser change the same hook fires in the entry that makes it, so that an embedder knows where a
+  process's record ends. Nobody is stopped for it.
 
 **What a guarantee covers, between groups.** A guarantee is about one process. `None` means the kernel
 neither orders nor logs that process's entries. So a replay cannot repeat what a `None` process did to
@@ -272,6 +338,27 @@ because the kernel is `no_std` (kernel/lib.rs:9) and is entered from three place
   Asked of the kernel track's K7: a build for a shared memory. Until it exists that form has one caller
   and one processor.
 
+**The lock knows its holder.** Today a call into the kernel from inside a hook cannot be written: every
+entry point takes `&mut self`. With `&self` it can, by an embedder that keeps a reference to the kernel,
+and the lock is held there. `lock_api::RawMutex` has `lock`, `try_lock`, `unlock` and `is_locked`, and
+nothing that says who holds it; other workers hold it rightly all the time. So without more, such a
+call waits for ever on its own host thread (the fifth check's finding). So:
+- the build gives, beside the lock's kind, a way to name the calling host thread: `lock_api`'s
+  `GetThreadId`. In a host program that is `parking_lot`'s `RawThreadId`; inside the virtual machine,
+  the virtual CPU's number; in the kernel built as a WebAssembly module, a value each instance holds;
+- the kernel writes the holder's name into one word after it has taken the lock, and clears it before
+  it lets go. Only a caller that finds the lock held reads the word;
+- a caller that finds itself the holder is inside a hook, a `Host` call or `arrived`.
+  `kernel.process(id)` then answers an error (section 5). Every other entry point panics and names
+  the call: it is the embedder's error, the one the compiler refused until now.
+- What it costs: a name read and two plain stores at each lock. Measured alone (section 14): nothing
+  that could be told from the noise on either machine, around a lock that costs 0.4 to 3.5 ns on this
+  Mac and 0.6 to 10.0 ns on the x86 laptop in the same runs. It is counted with the lock in T1's bar
+  (section 12).
+Rejected: a lock that lets its holder in again (`lock_api`'s `ReentrantMutex`). A hook would then
+change the kernel in the middle of an entry. Rejected: the word only in builds for tests, and a wait
+for ever otherwise. It is cheaper by nothing that was measurable.
+
 **One lock a system call.** A system call answered in place is two entries today: `exit`, then `next`,
 with `System::arrived` between (rt/lib.rs:264-270). The loop takes the lock once for both. It asks the
 kernel for a short-lived handle (suggested `Kernel::enter() -> KernelEntered<'_>`), calls the entry
@@ -304,8 +391,11 @@ the only cost, so each of these is designed away, and T1's bar checks that it is
 - *The stop word* (4.5): one plain load and a branch at each kernel entry, after the lock is taken.
 - *The marks of a group stop* (4.5) are kept only for a memory in force `Parallel`: one flag tested in
   each hook that is a stop point.
-- *Waking idle processors* (section 5): two counts tested when the lock is let go. The kernel walks its
-  processors only when one is idle and a ready thread could run.
+- *The holder's word* (above): written and cleared with the lock, and read by nobody on this path.
+- *The scheduler's condition* (section 5): one mark tested when the lock is let go. A call answered in
+  place for a thread that carries on writes nothing the condition reads, so the mark is clear. The
+  kernel walks its processors and its ready threads only when the mark is set and a count says a
+  breach is possible.
 - *The kernel's deadline* (section 5): one value compared when the lock is let go, and a call to the
   system only when the earliest deadline has moved. Today's hand-out folds that deadline into every
   slice (kernel/task.rs:55-60); that goes.
@@ -333,14 +423,37 @@ at the split, each measured.
   with fewer or more workers than it was recorded with, and the guest sees the same processor numbers.
 - One run queue, as today. `next(processor)` gives the processor its current thread if that need not give
   way (as `pick` does today, kernel/task.rs:18-41), else the waiting thread with the least weighted time
-  whose group may run one more thread: any thread of a group in force `Parallel`, and a thread of a
-  `Serial` group only when none of that group runs. Which thread it gives depends only on the kernel's
-  state and the processor asked for.
-- **`next` is a kernel entry when it hands a thread out.** It changes the run queue, the processor's
-  thread and the thread's processor, and the guest sees the last through `getcpu` and `rseq`. It takes
-  its place in the order of entries like any other (4.6). When nothing can be handed out it answers
-  `Idle` and marks the processor idle (section 5). That changes nothing the guest can see and nothing a
-  replay must repeat, so it is not an entry.
+  that its group puts forward and whose mask holds the processor. Which thread it gives depends only on
+  the kernel's state and the processor asked for.
+  - A group in force `Parallel` puts forward every one of its ready threads.
+  - A group in force `Serial` puts forward one thread, and only when none of its threads runs: its
+    ready thread with the least weighted time (below, "the group's next thread"). So inside a `Serial`
+    group the order is the one-processor fair scheduler's, as it is today.
+  - A group that is called in puts forward none, except the thread whose call wanted it when that
+    thread is of the group itself (4.5).
+  - Why one thread and not any. With any, a `Serial` group's thread that gives way for a sibling pinned
+    to another processor is the only thread of the group its own processor may take, and is handed
+    out again at once. The sibling never runs, although Linux would run both. With one, the thread
+    that gave way is not put forward while a sibling has less weighted time.
+  - What that costs: when the group's next thread is pinned to a busy processor, a sibling that could
+    run on an idle one waits for it. Counted "Serial group's next thread waits for its processor
+    beside an idle one". With no thread pinned, and with one processor, the two rules choose the same
+    thread: the least of all is the least of its group.
+- **`next` makes one kernel entry for each thread it chooses.** Choosing a thread changes the run queue,
+  the processor's thread and the thread's processor, and the guest sees the last through `getcpu` and
+  `rseq`. The entry is "this processor chose this thread". It takes its place in the order of entries
+  like any other, and the system is asked about it when the thread is chosen, before anything is done
+  for the thread (4.6).
+  - What the kernel then does for the thread (the next item) is that entry's effect. A woken call that
+    runs again can park once more, or end its thread. Then the entry hands nobody out, although it may
+    have read or written bytes or written a frame. It still took effect, and it keeps its place in
+    the order. The plan's earlier form called `next` an entry "when it hands a thread out". Its fifth
+    check showed that those effects then had no place a replay could put them.
+  - `next` then chooses again. That is the next entry, asked about by itself. It goes on until a thread
+    is handed out or none is put forward.
+  - When none is put forward it answers `Idle` and marks the processor idle (section 5). An answer of
+    `Idle` with nothing chosen changes nothing the guest can see and nothing a replay must repeat, so
+    it is not an entry.
 - **What the kernel does for a thread that is not running, it does when the thread is chosen for a
   processor, and not before.** Today the end of every entry runs woken threads' calls again and puts a
   signal's frame on the stack of a thread that waits its turn (`settle`, kernel/task.rs:343-404). With
@@ -377,7 +490,8 @@ after its system call must get its own processor's answer, or it leaves `Executi
 1. No other kernel entry is in progress (the first form). After the split (4.7): no other entry that
    touches the same things.
 2. Its own thread is stopped, with its registers saved (tr/contract.rs:13-15).
-3. In a group in force `Serial`, no other thread of its group is running guest code.
+3. In a group in force `Serial`, no other thread of its group is running guest code. A call that joins
+   its group to another is run only once that holds for the group that results (section 3).
 4. In a group in force `Parallel`, the group's other threads may be running guest code this instant. So:
    - a value read from guest memory may change the next moment. The kernel reads each value once and
      acts on what it read. The futex wait reads its word once, as one aligned 32 bit load;
@@ -405,8 +519,10 @@ after its system call must get its own processor's answer, or it leaves `Executi
    lock while it runs. A slow hook stalls every processor's kernel entries until the split.
 7. **When a hook about a process fires, no thread of that process's group runs guest code, if the group
    is in force `Serial`.** This follows from item 5: a hook fires inside an entry, and an entry that acts
-   on a `Serial` group from outside it has called the group in first. In a group in force `Parallel` the
-   process's other threads may be running. Section 6 relies on this for `suspend`.
+   on a `Serial` group from outside it has called the group in first. It holds across a join too: two
+   groups become one `Serial` group only once the other running threads of both are in (section 3). In
+   a group in force `Parallel` the process's other threads may be running. Section 6 relies on this
+   for `suspend`.
    - The owner's guarantee is that "a hook fires only when every operation on that process is legal"
      (interface notes lines 57-58). With the other threads running, that still holds for every
      operation in a group that is not in force `Exact`: where one needs them stopped, the executor
@@ -485,7 +601,10 @@ marks the group wanted, so that `next` hands none of its threads out. The call t
 is woken by the entry that brings the group's last running thread in, runs again, and the mark is taken
 off. Each thread that came in did so through an ordinary entry, at a position when its code has the
 count. Nothing can wait in a circle: the mark keeps threads from being handed out, never a woken call
-from running. And it cannot wait for ever, because no request to stop is lost.
+from running. The thread whose call wanted the group is chosen as any ready thread is (4.3), also when
+it is of that group itself: a group in force `Parallel` and `Exact` that calls itself in, or two groups
+being joined, where the caller's group is one of them (section 3). Its call runs again when it is
+chosen, and takes the mark off. And it cannot wait for ever, because no request to stop is lost.
 
 While the mark is on, each of the group's threads that came in found nothing to run on its processor,
 and those processors may have gone idle. Taking the mark off makes no thread ready: the threads were
@@ -572,7 +691,9 @@ process's lock. 7.2 makes that a rule the code checks.
   `Parallel` and `Exact`. Every thread then stops at an entry of its own (4.4 item 5), and the caller
   parks until they are in.
 
-Below, "M's other threads are stopped" means by this rule.
+Below, "M's other threads are stopped" means by this rule. One change is never "nobody", although its
+caller may be in a `Serial` group: a mapping that joins the caller's group to another (below, and
+section 3).
 
 A group in force `Parallel` and `Exact` keeps five uses of holding a thread in place. Four only order
 memory accesses, and that order is the embedder's part there (section 2): the 128 bit atomic (7.3), a
@@ -633,7 +754,13 @@ What is stopped before what, where M is the memory changed:
   group stop. A thread that still acts on the old table faults to the executor, which looks at the
   table again and carries the thread on. Counted "fault settled by the table as it is now". Where the
   rule says a call-in, the group is called in, as for a loss: whether an access faults would otherwise
-  depend on the host's timing. A file that grows under another process's mapping is such a case.
+  depend on the host's timing. A file that grows under another process's mapping is such a case. A new
+  mapping that joins groups is the next case, not this one.
+- **Groups are joined, or the config in force becomes stricter** (section 3): the running threads the
+  change binds are called in, and the call that caused it parks before it has any effect. For two
+  `Serial` groups that is the other group's one running thread. Counted "group called in to be joined"
+  and "group called in for a stricter config". The hook of section 3 fires in the call when it runs
+  again, before the mapping is made.
 - **The kernel reads or writes M's bytes from outside M's group** (a `write` to a file reaching pages M
   shows, `process_vm_readv` and `process_vm_writev`, a tracer, `/proc/<pid>/mem`, `environ`, `cmdline`).
   - M's group is `Serial`: it is called in. The read or write then has one place in the order. Counted
@@ -710,7 +837,6 @@ What is stopped before what, where M is the memory changed:
     in with `thread_stop` and restarts its sequence in the entry that brings it in, and the caller parks
     until all have. Linux's call also returns only after every such CPU has been interrupted. In a
     `Serial` group the other threads are not running, and each was taken off through an entry.
-- **The config in force becomes stricter** (section 3): the group is called in.
 - **The container's first process ends**: every other process is ended as by a fatal signal, as Linux
   ends a container. Each worker's `next` then answers `Finished`.
 
@@ -720,8 +846,10 @@ What is recorded about a process follows from its guarantee in force and from no
 
 **One recording point.** Before a kernel entry takes effect, the kernel asks the system whether it may,
 with the lock held (suggested: a `Host` service `kernel_entry_admit(entry) -> EntryAdmission`, with
-`Now` and `Later`). The entry says what it is: a thread handed out (the processor and the thread chosen),
-a thread come back (the thread and why), an event, a signal from outside.
+`Now` and `Later`). The entry says what it is: a thread chosen for a processor (the processor and the
+thread), a thread come back (the thread and why), an event, a signal from outside. For a choice it is
+asked when the thread is chosen, before the thread's woken call runs again or its signal's frame is
+written, so that what those do is the effect of an entry that has its place (4.3).
 - It is asked about an entry of a thread whose guarantee in force is `Exact` or `External`, and about
   every event and every signal from outside. It is not asked about a thread in force `None`: "with
   `None` nothing is recorded".
@@ -739,7 +867,8 @@ a thread come back (the thread and why), an event, a signal from outside.
 - `External`: no position, because the code has no count. The entry's place is its place in the order,
   and among its own thread's entries. When the entry is over, the kernel hands the system a digest of
   everything it took from the thread for it: what the exit says (a system call's number and arguments,
-  a fault's address and access, nothing for a stop), and each byte it read from the thread's memory
+  a fault's address and access, nothing for a stop), what a woken call read again when the entry is a
+  choice, and each byte it read from the thread's memory
   (suggested: a hook `on_kernel_entry_ended(thread, digest)`, made only for a thread in force
   `External` and only when the system orders entries; BLAKE3, which the cache key already uses,
   tr/contract.rs:163-166). The registers at a stop are not in it, since a replay stops elsewhere. The
@@ -769,19 +898,22 @@ It changes nothing in the kernel and needs no place in the order.
 - A thread come back too early: the kernel keeps the thread and its exit aside and returns. The thread
   leaves `Execution::run`, and its worker is free. After each entry that takes effect, the kernel offers
   the kept ones again.
-- A thread to be handed out too early: `next` answers `Idle`. It does not mark the processor idle
-  (section 5): whoever was told `Later` comes back by its log and is owed no wake.
+- A thread chosen too early: nothing is done for it, and `next` answers `Idle`. It does not mark the
+  processor idle (section 5): whoever was told `Later` comes back by its log and is owed no wake. A
+  choice that the same call of `next` made before it, and that took effect, stands.
 - An event too early: the replaying system delivers its events itself, from its log, in their place.
   The kernel's timer is such an event (section 5).
 
 **How a replay proceeds.** It is not `run_until_finished`. It is the same `run`, called in the log's
-order: the replayer takes the log's next "thread handed out" entry and calls `run` for its processor,
+order: the replayer takes the log's next "thread chosen" entry and calls `run` for its processor,
 from any free worker. With one worker it walks the log. With more, several threads run their turns at
-once and only their entries are put in order. It cannot get stuck: the entry that is due is a hand-out,
+once and only their entries are put in order. It cannot get stuck: the entry that is due is a choice,
 which a free worker makes; or the return of a thread some worker is running, which will arrive; or an
-event, which the system delivers. A return that is kept aside is never the due one, since it is offered
-again the moment it becomes due. A worker whose thread came back early is free again at once, so even one
-worker always has something to do.
+event, which the system delivers. A choice that handed nobody out in the recording hands nobody out in
+the replay, because the kernel is a pure function of what it is handed. `next` then chooses again, and
+is told `Now` or `Later` for that choice like any other. A return that is kept aside is never the due
+one, since it is offered again the moment it becomes due. A worker whose thread came back early is free
+again at once, so even one worker always has something to do.
 
 The log need not exist beforehand. A system that makes its order up as the run goes answers the same
 way: `Now` for the entry it wants next and `Later` for any other. The tests' repeatable order with one
@@ -906,27 +1038,73 @@ What changes with it:
     place once. Each processor that would get a thread has its mark taken off and is announced
     (suggested: a hook `on_processor_needed(processor)`). This is after the entry's own hand-out,
     so a thread the entering worker took for itself wakes nobody.
-  - What it costs. The kernel keeps two counts: the idle processors, and the ready threads that
-    their groups would let run now (a group that is called in lets none; a `Serial` group with a
-    thread running lets none). The walk is made only when both are above zero. With no thread
-    pinned that is exactly when a wake is due. A system call on a busy container tests two numbers.
   - The system's `idle(processor, until)` returns at the time, at an event from outside, or at that
     announcement. The announcement must be kept if it comes before the worker has reached `idle`:
     `idle` then returns at once. This is the rule of `std::thread::park` and `unpark`, and the local
     system uses exactly those. The mark is made under the lock and the condition is checked before
     the lock is let go, so no wake is lost. A worker woken for nothing asks `next` again and is told
     `Idle` again.
-  - A build for tests makes the walk at every lock release, whatever the counts say, and counts "a
-    processor left idle with a thread it could run", which must stay at zero.
-- **No ready thread is left behind threads that have no slice.** This is the other half of the same
-  condition. A thread gets a fair slice only when somebody waits at its hand-out
-  (kernel/task.rs:43-53), so a thread alone on its processor has none. If an entry leaves a thread
-  ready that its group lets run, no processor in its mask is idle, and every one of them runs a thread
-  with no fair slice, the kernel asks in the one whose thread has the most weighted time, with
-  `thread_stop`. That thread's entry runs the scheduler's tick (kernel/task.rs:88-104): it gives way
-  if it has had its share, and otherwise goes on with a slice, now that somebody waits. Today this
-  cannot arise: a thread becomes ready only in the running thread's own entry, whose hand-out sets the
-  slice.
+- **No ready thread waits with nobody due in.** This is the other half of the same condition, checked
+  at the same place: **every ready thread that could be chosen has a running thread in its way that is
+  due in, unless an idle processor is being woken that it could run on.**
+  - *Which ready threads.* Those `next` could choose if a processor came free: every ready thread of a
+    group in force `Parallel`, and a `Serial` group's next thread (4.3), whether or not one of that
+    group's threads runs now. A `Serial` group's other ready threads wait behind its next thread,
+    inside the group. The threads of a group that is called in wait for the mark, which comes off
+    after a bounded time (4.5).
+  - *In its way.* A running thread stands in the way of such a thread when the ready one could run if
+    the running one left its processor.
+    - The ready thread is its `Serial` group's next thread, and a thread of that group runs: that
+      running sibling is in its way, and only it, whatever processor it is on and whatever the masks
+      say. The ready thread cannot run while the sibling does.
+    - Otherwise: every running thread on a processor that the ready thread's mask holds.
+  - *Due in.* A running thread is due in when it was handed out with a fair slice, or the kernel has
+    asked it in with `thread_stop` and it has not come in since. The kernel keeps both facts itself,
+    for each processor's thread; it does not read the stop word. Either way the thread makes a kernel
+    entry of its own after a bounded time (4.5: no request to stop is lost). That entry runs the
+    scheduler's tick (kernel/task.rs:88-104): the thread gives way if it has had its share, and
+    otherwise goes on, now with a slice.
+  - *Why some thread is not due in.* A thread gets a fair slice at its hand-out only when the run
+    queue is not empty then (kernel/task.rs:43-53). That test is kept as it is. So a thread handed out
+    to an empty queue has no slice, and one that only computes never comes back by itself. Today two
+    things always bring it back. A thread becomes ready in the running thread's own entry, whose
+    hand-out then sets a slice. And a thread due to wake at a time has its deadline in the running
+    thread's slice (kernel/task.rs:55-60). With several processors a thread also becomes ready
+    through another processor's entry or through an event, and the deadline leaves the slices
+    (below). So the kernel must ask.
+  - *What the kernel does.* When such a ready thread has nobody due in in its way, the kernel asks in
+    the one in its way with the most weighted time, with `thread_stop`. For a `Serial` group's next
+    thread behind a running sibling, that is the sibling.
+  - **The plan's earlier form left a thread waiting for ever behind its own sibling, with one
+    processor too.** It asked somebody in only for "a thread ready that its group lets run", and a
+    `Serial` group with a thread running lets none run. The fifth check's example: thread A of a
+    `Serial` process computes alone, with no slice. Its sibling B sleeps, or waits in `read` on a
+    pipe another group writes. `Event::Timer`, or the other group's entry, wakes B. B was counted
+    nowhere, nobody was asked in, and A ran on. Go's background thread is exactly such a B (Go's
+    runtime, proc.go, `sysmon`), so every Go program in a `Serial` group would have lost its
+    preemption or hung. Now A stands in B's way and is not due in, so A is asked in.
+- **What the two halves cost, and how they are checked.**
+  - The kernel keeps one mark, "the scheduler's state was written", set by every write to what the
+    condition reads: the run queue, a processor's thread and its idle mark, whether that thread is due
+    in, a mask, and a group's members, its config in force and its call-in mark. Each is written in a
+    few functions, and those set the mark. When the lock is let go, the kernel tests
+    the mark. Clear: nothing more. A system call answered in place for a thread that carries on
+    writes none of these, so it tests one value (4.2).
+  - Set: the mark is cleared, and three counts say whether a breach is possible at all. They are the
+    idle processors, the ready threads that could run now (a group that is called in has none; a
+    `Serial` group with a thread running has none; any other `Serial` group has one), and the running
+    threads that are not due in. The first half is walked only with an idle processor and a thread
+    that could run now. The second only with a ready thread and a running thread that is not due in.
+    On a busy container every thread was handed out with others waiting, so all are due in. With
+    fewer threads than processors the queue is empty.
+  - This is not the list of events the fourth check faulted. The mark is set where the data the
+    condition reads is written, not by a guess at which changes matter. And a build for tests ignores
+    the mark and the counts: it makes both walks at every lock release, and counts "a processor left
+    idle with a thread it could run" and "a ready thread with nobody due in", which must both stay
+    at zero.
+  - The same build checks the rule the scheduler exists to keep: at every hand-out, no other thread of
+    a `Serial` group is running. Counted "two threads of a Serial group running", which must stay at
+    zero.
 - **One timer for the container, in nobody's slice.** Today each turn's slice is cut at the kernel's
   next deadline (kernel/task.rs:55-60). With one thread running, ending its turn is the only way the
   kernel gets to look at its timers. Kept with several processors, every running thread's slice would
@@ -942,9 +1120,11 @@ What changes with it:
   - the system hands the kernel `Event::Timer` at that time, from any host thread. That is an entry
     like any other. It wakes the threads that were due and fires the timers that were due
     (`wake_due` and `fire_due`, as kernel/lib.rs:354-355 does today), and by itself it stops nobody.
-    A thread it wakes takes an idle processor by the condition above, or one running thread is asked
-    in by its other half. A signal it sends reaches its thread by 4.5. So an expiry with every
-    processor busy stops one thread at most, where a deadline in every slice stops them all;
+    A thread it wakes takes an idle processor by the condition above, or, when nobody in its way is
+    due in, one thread in its way is asked in by the other half. That holds for a thread woken behind
+    its own running sibling in a `Serial` group too. A signal it sends reaches its thread by 4.5. So
+    an expiry with every processor busy stops one thread at most for each thread it wakes, where a
+    deadline in every slice stops them all;
   - the local system sends the event from an idle worker when there is one, which wakes at the time
     as today, and from its timer thread otherwise (rt/system.rs:41-55; it exists already, for the
     slices). One atomic word holds the deadline and whoever takes it sends the event, so it is sent
@@ -991,9 +1171,12 @@ What changes with it:
     kernel's own records. They touch no guest memory and no thread, and the lock keeps them whole.
     An embedder that decides where a process should run needs exactly these while the process runs
     (interface notes lines 11-14). The plan's earlier form answered an error outside a container
-    stop, which closed that off for no reason. Asked from inside a hook it still answers an error:
-    the lock is held there, and the notes rule that a hook acts only on the process it is handed
-    (lines 76-77).
+    stop, which closed that off for no reason.
+    - Asked from the host thread that is inside a kernel entry, it answers an error: the notes rule
+      that a hook acts only on the process it is handed (lines 76-77). That covers a hook,
+      `on_processor_needed`, `on_deadline_changed`, a `Host` service and `arrived`. The kernel can
+      tell because its lock knows its holder (4.2). A lock that did not would leave the call waiting
+      for ever for a lock its own thread has.
     - It is not a kernel entry. It changes nothing, so it has no place in the order of entries and a
       replay does not repeat it. What the embedder then does about what it read is an entry of its own.
     - Compute used is as of each thread's last entry. A running thread's time since its hand-out is
@@ -1021,11 +1204,57 @@ What changes with it:
 - `Host` and `System` methods take `&self`, so a system keeps what it changes in atomics or behind its
   own locks. The shipped system needs no lock on a system call (4.2).
 
+**Two proposals of the embedding project, and what each would mean here.** The owner has ruled on
+neither (the brief's last section). The plan builds on neither.
+
+- **Hooks and services on `System` take `&self`, so that two hooks can run at once.** This plan asks for
+  the same (decision 9), and needs it earlier than two hooks at once. From T1 on, several workers call
+  `turn`, `ran`, `idle` and the clock's answer at the same moment, outside the kernel's lock. Hooks and
+  `Host` services run under the kernel's one lock until it is split (4.7), so no two run at once in
+  T1. After the split, two hooks about processes of different groups can, with nothing in the
+  interface changed.
+  - Does it need `System: Sync` from the start? Wherever more than one host thread is in the loop, yes,
+    and the compiler asks for it whatever the trait says: Rust lets two threads share `&S` only when
+    `S` is `Sync` (the standard library's rule for `Send` and `Sync`). The open question is only a
+    system driven by one host thread. Recommended: the trait says `Sync` from T1 (through `Host`,
+    4.2). An embedder's system is then written once, for any number of workers. Without it, a system
+    for one worker may keep `Cell` and `RefCell`, and must be rewritten the day a second worker is
+    added.
+  - What that costs a system driven by one thread: it keeps what it changes in atomics, or in a lock
+    nobody else ever holds (0 to 11.4 ns each time, section 14). The shipped system changes one
+    word a system call and pays nothing (4.2).
+- **Per-process state**: an associated type on `System`, kept by the kernel in each process's record,
+  lent through the `Process` handle and mutable in a hook with no lock; cloned at fork, kept in
+  `SuspendedProcess`, not in `ExportedProcess`, and free when it is `()`.
+  - It fits this plan's locking as it is. A `Process` handle exists only while the kernel's lock is
+    held: a hook's, and one from `kernel.process(id)` (above). After the split it exists while the
+    process's group's lock is held (4.7). So whoever has the handle has the state alone. That holds
+    in a `Parallel` group too: the process's other threads may be in guest code, but none is in a
+    hook.
+  - What locking it takes off an embedder: whatever it keeps about one process and touches only
+    through that process's handle. Examples are where it decided to place the process, its record of
+    the process's watches and page hand-overs (section 8), and the starting point it takes in
+    `on_execution_config_in_force_changing` (section 3). With the state these need no lock, and no
+    table from id to record.
+  - What it does not take off: everything that is not about one process. That is the words `turn`,
+    `ran` and `idle` keep per processor, the container's deadline, the one order of entries a
+    recording system keeps across processes (4.6), its picture of other processes, which a hook
+    cannot look up (interface notes lines 76-77), and its counters.
+  - Five of this plan's calls are not handed a `Process`: `kernel_entry_admit`, `thread_stop`,
+    `on_processor_needed`, `on_deadline_changed` and `on_kernel_entry_ended`. If the state is ruled
+    in, the two that are about one thread's entry, `kernel_entry_admit` and `on_kernel_entry_ended`,
+    could be handed it, and a recording system's log of one process would need no lock either. That
+    is a change to make then.
+  - What it would ask of this plan: one bound. The kernel's state moves between host threads under
+    the lock (4.2), so the type must be `Send`. It need not be `Sync`: one host thread has it at a
+    time.
+
 ## 6. Changing the config of a running process
 
-The brief asked for two forms to be weighed, a setter and no setter. Its last section has since settled
-it: there is no setter. The weighing is kept short, because it is what the rest of this section stands
-on, and because one piece is still open: a call that changes the config inside a hook.
+The brief asked for two forms to be weighed, a setter and no setter. A later section of it has since
+settled it: there is no setter. The weighing is kept, because it is what the rest of this section
+stands on. One piece was open, a call that changes the config inside a hook. It has been measured
+since, and it is settled at the end of this section.
 
 **Form A, a setter** (not ruled in). `Process::set_thread_ordering(ordering)`, taking effect at the
 group's next stop.
@@ -1035,7 +1264,9 @@ container starts and when a process is resumed, and changed by `suspend` and `re
 kernel: `process.suspend()` gives a `SuspendedProcess<E>`, and `kernel.resume(suspended, config)` puts
 it back with the new config. Nothing is converted and no memory is copied: the process's records and its
 memory move out and back by ownership (interface notes lines 110-114). `export` and `import` are not
-part of it.
+part of it. That meets the orchestrator's condition for agreeing (the brief, lines 91-94): the memory
+moves and is not copied, and no ends are made for what the process has open, so there are none to
+turn back into local objects.
 
 What each costs and makes simpler:
 - **Work in the kernel.** A: the setter, on top of what section 3 needs anyway. B: nothing beyond
@@ -1048,9 +1279,17 @@ What each costs and makes simpler:
   the process's kernel records taken out of the kernel's tables and put back (its threads out of the
   run queue and the waits, its timers, its place in its parent's children). Their count is the
   process's threads and waits, not its memory. From inside a hook the embedder can suspend but must
-  resume after `run` has returned (interface notes lines 134-135, 149-150), so a change made there also
-  costs that worker one leave of `Execution::run` (300 ns, docs/runtime.md section 10). Not measured:
-  nothing exists to measure.
+  resume after `run` has returned (interface notes lines 134-135, 149-150).
+  - What that return costs was measured since, by the interface track, on a prototype
+    (orchestrator/interface-measurements.json, part "run-return"; this Mac, load 56 to 184). At a
+    program start on the WebAssembly executor it costs nothing that could be measured: `run` already
+    returns there at every exec, because exec gives the program a new store (20,001 returns for
+    20,000 execs with and without the suspend). Returning and resuming, against changing the process
+    inside the hook, differed by under 100 instructions of the 6.3 million a program start takes.
+  - Elsewhere it costs that worker one leave of `Execution::run` (300 ns, docs/runtime.md section 10).
+  - Not measured: a real `suspend` and `resume` with the records moved out and back, and anything on
+    the native executor. The prototype only took the process's threads out of line and put them back,
+    which cost 1,100 to 1,400 instructions.
 - **A consistent starting point for a replica.** A change towards `Exact` starts a promise, and a
   replica needs the process's whole state at that moment. B hands it over: the `SuspendedProcess` is
   that state, whole and stopped. With A the embedder must suspend at the same moment anyway.
@@ -1060,7 +1299,8 @@ What each costs and makes simpler:
 Weighed so, the plan recommends B, which is what was ruled: the kernel gets no second path, a change of
 what replay promises comes with its starting point, and nothing has to be built for it here. What B
 costs is that each change moves the process's records out and back, and that a change made inside a hook
-waits for `run` to return. The call below takes that second cost away without bringing A's back.
+waits for `run` to return. The second was measured as nothing at a program start, which is where a
+config is chosen.
 
 **What "the next stop" is, and how `suspend` stops a process.** `suspend(self)` must hand back the whole
 process at once. It is called with the kernel's lock held, in a hook or on a handle from
@@ -1104,14 +1344,20 @@ So `suspend` never stops a thread of a group in force `Serial` or `Exact` in pla
 holds. Two things it does to the rules, and only in the group-stop case: a thread of a suspended process
 leaves `Execution::run` without an exit of its own, and is taken, not ended, outside its own entry.
 
-**A call that changes the config inside a hook** (proposed in the interface notes, not ruled). It is
-the same operation the kernel already needs when groups merge (section 3): change a group's config in
-force at an entry, with its threads stopped as `suspend` stops them. Offered on `Process`, it saves the
-embedder the return of `run` and the records' way out and back. In a hook of a process with one thread,
-which `on_program_starting` always is, it stops nobody and costs only the next hand-out from the other
-form of code. It adds no mechanism to the kernel, and it keeps form B's property: the change is one
-visible call with the config written on it, at a moment when the process is whole and stopped. Put to
-the owner (decision 9); recommended, under the brief's name `Process::replace_execution_config`.
+**A call that changes the config inside a hook is not in this plan.** The interface notes proposed one
+(`Process::replace_execution_config` in the brief), and the plan's earlier form recommended it, to
+save the return of `run`. That return has been measured as nothing on the WebAssembly executor
+(above), so it is not needed for speed there. On the native executor it was not measured; at worst
+it is one return of `run` in the life of a process. The plan was read again for any other need of
+the call, and has none:
+- the kernel changes a group's config in force itself when groups are joined (section 3). That is
+  inside the kernel and needs no call on `Process`;
+- the two moments an embedder chooses a config are a program's start and a process's first new
+  thread, where the ordering begins to matter (section 3). Both have a hook, and in both a `suspend`
+  followed by a `resume` does it, for one return of `run` in the life of the process;
+- where `suspend` answers an error in a hook (a group in force `Parallel` and `Exact` with other
+  threads running, above), the call would answer the same error for the same reason.
+So there stays one way to give a process a config, `resume`, and it is off decision 9's list.
 
 **A group of several processes.** `suspend` takes one process, and the config in force is the group's
 (section 3). With the strictest winning:
@@ -1131,9 +1377,8 @@ watched for those that stay (section 2); that is the embedder interface's to bui
   seems: a group is born with one thread (section 3), where the ordering makes no difference, so "this
   container's threaded programs run in parallel" or "everything in this container replays exactly" is
   one value at the start.
-- Choosing per program arrives with `suspend` or with the call above, at `on_program_starting`, which
-  the owner already named as the cheap moment to move a process: one thread, a fresh memory, few
-  records.
+- Choosing per program arrives with `suspend` and `resume`, at `on_program_starting`, which the owner
+  already named as the cheap moment to move a process: one thread, a fresh memory, few records.
 
 ## 7. The WebAssembly output for a group whose threads run at once
 
@@ -1230,13 +1475,25 @@ What follows from a shared import:
   wasmtime 50.0.1 `SharedMemory::new` makes its own mapping (shared_memory.rs:34-50), but a shared memory
   that a module defines goes through the host's creator and is then wrapped
   (src/runtime/vm/memory.rs:251-256), and is reached with `Instance::get_shared_memory`
-  (src/runtime/instance.rs:554). So each process's memory is defined by a one-memory module. Read in the
-  source, not run: it is T2's first task, with `Config::shared_memory` on as it is today. If it fails,
-  wasmtime's own mapping serves: the kernel's access by pointer and the fork copy work on any mapping.
+  (src/runtime/instance.rs:554). So each process's memory is defined by a one-memory module.
+  - Run by the plan's fifth checker (section 14): the engine set up as the executor's, a one-memory
+    module defining a shared 64 bit memory, and the host's creator called exactly once. The memory
+    that `Instance::get_shared_memory` gave was the creator's own mapping. An instance in a second
+    store on another host thread imported it, and stores went both ways between guest and host
+    pointer. `memory.grow` went through the creator. So it works as read, and it is still T2's first
+    task to do it in the executor, where today's state memory is made by `SharedMemory::new` and not
+    through the creator (wt/lib.rs:1242).
 - **One store per guest thread**, always, in place of one per process. The compiled modules and the
   engine of the process's form stay shared. A dropped thread's store is kept for the process's next
-  thread, as its instances are today (wt/lib.rs:478-483). What a store costs in memory is not measured
-  (section 15).
+  thread, as its instances are today (wt/lib.rs:478-483).
+  - This changes how a `Serial` process with several threads runs, although its code is the same: a
+    store for each thread, new code instantiated in each store at first use (7.5), another lock
+    scheme (below). None of the single-threaded measurements sees that. So T2's bar measures threaded
+    programs run `Serial` against the commit before: a switch between two threads, a thread's start,
+    the runtimes' programs, and the memory a thread costs (section 12).
+  - If that bar fails, the Serial form keeps one store for each process, as today, and only the
+    Parallel form has one for each thread. That is a second path through the executor, taken only
+    if the measurement asks for it.
 - **The executor becomes shareable, with no lock on a `Serial` system call.**
   - Its tables of processes, threads and blocks go behind a lock that is taken only to add or remove
     one. A hook reaches its own thread's and its own process's records through its store's data, as it
@@ -1248,8 +1505,11 @@ What follows from a shared import:
       (wt/lib.rs:2245-2251). Its hooks use what it already has. It asks for the kernel's lock under it
       at every system call. That is the one exception to the lock order (4.5), and it is safe because
       nobody who has the kernel's lock ever waits for this lock: a worker that does not have it only
-      ever tries it. Five rules make every try succeed, and the try checks them:
+      ever tries it. Six rules make every try succeed, and the try checks them:
       - the kernel reaches a `Serial` group from outside only after calling it in (4.4 item 5);
+      - two groups become one `Serial` group only once every other running thread of both has come in
+        (section 3). So a `Serial` group never has two workers that each hold a process's lock of
+        it for a running thread;
       - **a worker lets its process's lock go before it lets the kernel's lock go, whenever its
         thread is not told to carry on.** A thread is told to carry on only when it is handed out
         again in the same entry, and a thread of a group that is called in is not handed out. So
@@ -1267,10 +1527,25 @@ What follows from a shared import:
       - the kernel does a thread's work only when the thread is chosen for a processor (4.3). So a
         woken call of a `Serial` group's thread never runs again, and no signal frame is written to
         its stack, while a sibling runs and its worker has the lock;
-      - a `Cpu` call takes a memory's lock only when the memory is the caller's own, or the kernel named
-        it after calling its group in, or it is in force `Parallel`. A walk over the memories that show
-        a block (`block_write`; the copies `shared_read` asks for, 7.4) skips every other memory in
-        force `Serial`: it was not written, or all it wrote is in the block already (7.4);
+      - **a write to a block reaches every memory that shows it, and each of their locks is free or
+        the worker's own.** `block_write` puts the bytes in the block and in every memory that shows
+        them (wt/lib.rs:1409-1433). It has two callers, and neither leaves a memory out:
+        - the copies a `Serial` thread's written shared pages get when it leaves (`flush`,
+          wt/lib.rs:1341-1388, :1376). The block is writable through a mapping, so every memory that
+          shows it is of the writer's own group (section 3). That group is `Serial` and its one
+          running thread is the writer, so the other memories' locks are free. This is the ordinary
+          case of a parent and its forked child sharing a mapping, and it stays as today (7.4);
+        - a write of the kernel's, for a `write` to a file that memories map. A memory of the
+          caller's group has its lock free or held by this worker. A memory of another `Serial`
+          group has been called in first (4.5), so its lock is free. A memory in force `Parallel`
+          takes the bytes with its stop lock shared (4.5).
+        The plan's earlier form said such a walk "skips every other memory in force `Serial`". As a
+        rule about where bytes are written that was wrong, and it contradicted 7.4 and 4.5: the
+        fifth check showed that a child would stop seeing its parent's stores, and that a file's
+        new bytes would not reach a group called in to receive them. The reason given there holds
+        for a memory as a **source** only, and that is all that is left of it: nobody reads a
+        `Serial` memory of another group to bring a block up to date. A `read` of the file takes the
+        block's bytes as they are, which hold all that group wrote before its last entry (7.4);
       - so on a worker that does not have it, taking a `Serial` process's lock is a try-lock. A
         failure is a bug, and it panics, naming both threads. The stress schedule of section 12 runs
         with it, and one test there asks a thread in while it waits for the kernel's lock.
@@ -1484,7 +1759,7 @@ code already run. How many, and what they cost, is T3's measurement.
 
 WebAssembly's rules promise little for plain accesses that race with another thread's. Its compilers may
 merge, move and drop them, as a C compiler may for a program with a data race. A guest's plain accesses
-mean more: its processor's own ordering. So three things are relied on that the rules do not promise.
+mean more: its processor's own ordering. So four things are relied on that the rules do not promise.
 All are tested in the suite on every version of each WebAssembly compiler (section 12).
 
 - **A plain load in a loop is done again each time round.** Guest programs wait on words another thread
@@ -1553,8 +1828,30 @@ All are tested in the suite on every version of each WebAssembly compiler (secti
   host threads on one `SharedMemory`, it never saw it with `atomic.fence`, with the byte tested and set,
   with a compare and exchange, or with atomic stores and loads. With the byte tested and zero it saw
   it as often as with no barrier at all, which is what a process with one thread is given.
+- **An aligned plain load or store is one access: no other thread sees half of it.** Guest code
+  compiles relaxed atomics, and many reads made without a lock, to one plain aligned `ldr`, `str` or
+  `mov`, and relies on an aligned 8 byte access never being seen half done. Both guest architectures
+  promise that (the Arm manual's "single-copy atomicity"; Intel's manual, volume 3, "Guaranteed
+  Atomic Operations", for a quadword aligned on a 64 bit boundary). The fifth check named this as a
+  fourth thing relied on and not promised, and asked for its premise to be confirmed.
+  - Read for this correction. JavaScript's rules promise it for integers up to 32 bits only. For a
+    64 bit integer they promise it only when the access is atomic: `IsNoTearConfiguration` answers
+    false for a `BigInt64` element read or written unordered (ECMAScript, 25.1.3.13 and the rule
+    "Tear Free Reads", 29.7.3). The WebAssembly threads proposal's overview says nothing about a
+    plain access being seen half done (proposals/threads/Overview.md in its repository). So the
+    premise holds as far as these two were read: nothing promises it.
+  - What the compilers do today (section 14). wasmtime 49.0.2 compiles a plain 64 bit store and load
+    to one `str` and one `ldr` of a 64 bit register on ARM64, and to one `movq` each on x86-64, read
+    in its output on both hosts. Run with two threads, one storing 0 and -1 in turn with plain
+    stores and one loading with plain loads: no load saw anything else in 1,000,000,000 loads, in
+    wasmtime 50.0.1 and in Node, on both hosts. The same test with the word laid across a cache
+    line saw mixed halves in 232,854 to 73,917,899 of 1,000,000,000 loads, so the test can see one.
+  - So nothing is wrong today, and nothing in the translation changes. It is the suite's test from
+    T2 on (section 12), on every version of each WebAssembly compiler. A compiler that split an
+    aligned access would leave only atomic loads and stores for the Parallel form, at section 9's
+    cost.
 
-With these three, a guest gets the host's own ordering for its plain accesses. That is its own when host
+With these four, a guest gets the host's own ordering for its plain accesses. That is its own when host
 and guest are the same architecture, and stronger for an ARM64 guest on an x86 host. Section 9 is the
 case where it is weaker.
 
@@ -1781,11 +2078,26 @@ milestone. Nothing before that. What it must not close off is already written in
   processor asks. Keeping a thread on the processor it last ran on is added only if measured to matter.
 - **Fairness.** Linux's fair scheduler as built (kernel/schedule.rs), with one run queue for all
   processors: each takes the thread with the least weighted time that may run there (4.3: its group
-  allows one more thread, and its mask holds the processor). One queue is fair by
-  construction and costs nothing extra under one lock. A woken thread that should run before a running
-  one (kernel/task.rs:561) ends the turn of the running thread with the most weighted time, with
-  `thread_stop`. A ready thread that finds every processor it may use running a thread with no slice
-  has one of them asked in the same way (section 5), so none waits behind threads that never come in.
+  puts it forward, and its mask holds the processor). One queue is fair by construction and costs
+  nothing extra under one lock. Inside a `Serial` group the order is the one-processor scheduler's:
+  the group puts forward its ready thread with the least weighted time, and no other (4.3).
+  - **A woken thread that should run before a running one takes the place of a thread in its way.**
+    Today the comparison is with the one running thread (`check_preempt`, kernel/task.rs:577-584,
+    called at :561 and :574; `preempts`, kernel/schedule.rs:224-238). With several processors, and
+    when no idle processor can take the woken thread, it is compared with the thread in its way that
+    has the most weighted time (section 5). If it should run first, that thread's processor is
+    marked to give way and the thread is asked in with `thread_stop`. The plan's earlier form
+    compared it with the running thread with the most weighted time in the whole container. That
+    may be a thread of another group while the woken thread waits behind its own sibling, or a
+    thread on a processor outside the woken thread's mask, and stopping it gains nothing.
+  - **The comparison is not what keeps a thread from waiting for ever.** It says no for a batch or
+    idle thread, and inside the wake-up granularity (kernel/schedule.rs:233-237). What keeps it is
+    section 5's condition: somebody in the ready thread's way is due in, by a slice or by being
+    asked. That thread's entry runs the tick, which gives way or sets a slice.
+  - The length of a slice is worked out as today, from the whole queue (kernel/task.rs:43-53). With
+    several processors that is shorter than it need be, and a thread may come in at its slice's end
+    with nobody that could take its place. It is then handed out again. Counted "turn ended for
+    nobody", and listed at the top as a known fault to settle with T1's measurements.
 - **Timers.** The kernel's deadline is in nobody's slice. The system hands the kernel one
   `Event::Timer` for the container at the deadline the kernel last announced, and that entry stops
   nobody by itself (section 5). A thread's slice holds its fair share and its own CPU timers only.
@@ -1803,7 +2115,7 @@ milestone. Nothing before that. What it must not close off is already written in
     `run`. `run(processor)` returns only for one of the owner's four reasons (section 5), and none of
     them is "this turn is over, serve another processor". So the test system makes its order the way a
     replay follows one (4.6). It says at the start that it orders entries, and it draws from the seed
-    which processor is served next. A hand-out for any other processor it answers `Later`; `next` then
+    which processor is served next. A choice for any other processor it answers `Later`; `next` then
     answers `Idle`, `run` returns, and the driver calls `run` for the processor drawn. It is a log
     made up as the run goes. Every turn is counted, so the order of entries, and of clock reads, is
     the same each time. Rejected: a second driver loop for tests that steps one turn at a time. It
@@ -1844,10 +2156,57 @@ kernel test crate's runs are today: one thread at a time, counted turns.
   - a process given `None` beside them: the recording system is never asked about it (its count of asks
     is zero), and the others replay as above when it does nothing to them.
 - **The config in force.** Two processes given different configs come to share a file mapping, and
-  later stop sharing it. `Process::execution_config()` answers what each was given throughout; the
-  config in force and both counters change at the `mmap` and back; a process given `None` that joins
-  an `Exact` neighbour is recorded with positions from that entry on (from code with the count, once
-  the translator has it; in counted turns until then), and the two replay exactly from there.
+  later stop sharing it. Until `resume` exists, a build for tests gives a forked child its own config.
+  - `Process::execution_config()` answers what each was given throughout. The config in force and both
+    counters change at the `mmap` and back.
+  - The hook `on_execution_config_in_force_changing` fires once for each process whose config in force
+    changes, before the mapping is made. At a join the test build finds every thread of both groups
+    at a kernel entry of its own.
+  - A process given `None` that joins an `Exact` neighbour while both run: the test system asks for a
+    container stop in the hook and saves the container at it (`System::stopped`, rt/lib.rs:156-158).
+    From the join on, that process's entries are recorded with positions (from code with the count,
+    once the translator has it; in counted turns until then). Restored from the save, the two replay
+    exactly.
+  - The same run with a test system that does nothing in the hook: the neighbour replays exactly up
+    to the join's entry, and the test says so. It claims nothing beyond it.
+- **Groups joined while both run.** Two processes of two `Serial` groups each compute on a processor of
+  their own. One has a file mapped privately and reads it in a loop. The other maps the same file
+  shared and writable, and writes it. Then the other way round: the running one has the file mapped
+  shared and has written pages it has not yet left with, and the other maps it privately. Over seeds,
+  with the test build's pause points on both sides of the `mmap`:
+  - "two threads of a Serial group running" (section 5) stays at zero, and the try-lock of 7.2 never
+    fires;
+  - the `mmap` returns only after the other process's thread has made an entry, and the mapper then
+    sees every store the other made before that;
+  - "group called in to be joined" counts each join once;
+  - the run replays exactly (with both given `Exact`), the call-in's entry among its entries;
+  - the same with `shmat`, and with an exec of a file that another process has mapped shared and
+    writable. Each matches the reference.
+- **No thread waits behind its own sibling.** In free turns, with no slice timer running for a thread
+  alone on its processor, with one processor and with four:
+  - a `Serial` process whose thread A only computes and never makes a system call, while its sibling
+    B sleeps a millisecond a hundred times and then ends the process with `exit_group`. The process
+    ends, in no more than ten times the reference's time (the margin is for this machine's load and
+    is the orchestrator's to set, as for T1's scaling test);
+  - the same with B waiting in `read` on a pipe that a process of another group writes a byte to a
+    hundred times;
+  - the same with A pinned to processor 0 and B to processor 1;
+  - the same with B a batch thread (`SCHED_BATCH`), for which the wake-up comparison always says no;
+  - the kernel test crate's Go programs with one goroutine that only computes (go.rs): they finish,
+    as they do today.
+  In every run of the stress schedule the test build's count "a ready thread with nobody due in"
+  (section 5) is zero.
+- **A choice that hands nobody out.** Two processes wait in `read` on one pipe and a third writes one
+  byte: both are woken, the first chosen takes the byte, and the second's call runs again when it is
+  chosen and parks again. And a thread is chosen with a fatal signal waiting for it, which ends it.
+  Recorded with several processors and replayed with one worker and with more: each such choice is
+  in the log at the same place, and every thread's registers and memory are the same at every entry
+  after it.
+- **The kernel called from inside a hook.** A test system keeps a reference to the kernel and calls
+  `kernel.process(id)` from a hook, from `on_processor_needed`, from `on_deadline_changed` and from
+  `arrived`: each answers the error, and none waits. It calls another entry point from a hook: the
+  panic names the call. The same calls from another host thread while a hook runs wait for the lock
+  and then succeed.
 - **Reaching across groups.** Guest programs for each case of 4.5 where one group reaches another: a
   writer through a shared mapping beside a reader through a private mapping of the same file; a `write`
   to a file another process maps; a file made shorter, and a file made longer, while another process
@@ -1950,7 +2309,10 @@ kernel test crate's runs are today: one thread at a time, counted turns.
     thread decides; a store read back across a load of another address; and a store overwritten by a
     later store to the same address, with a store or a load of another address between, where the
     other thread must never see the second address new and the first still old;
-  - for ARM64, a load ordered after a conditional branch by `isb`.
+  - for ARM64, a load ordered after a conditional branch by `isb`;
+  - an aligned 64 bit word that one thread stores two values to in turn with plain stores, while the
+    other loads it with plain loads: no load sees a mix of the two (7.6). Its hand-written form
+    exists (scratch, run6/tear) and passes today in wasmtime and in Node on both hosts.
   No outcome the guest's architecture forbids is ever seen. This is the test of what 7.6 relies on, run
   on each version of each WebAssembly compiler and each host. The hand-written forms of the second
   group's first three exist (scratch, check4) and fail today as section 14 says. The fourth exists as
@@ -1975,8 +2337,22 @@ kernel test crate's runs are today: one thread at a time, counted turns.
     three builds at the same load: the commit before; the milestone; and the milestone with the kernel's
     lock replaced by one that does nothing (the lock's kind is a type parameter, 4.2). The no-lock build
     is within the spread between identical runs of the commit before: this checks that nothing but the
-    lock was added (4.2). The milestone less the no-lock build is the lock, reported against decision
-    7's figures. It is the one cost the owner is asked to accept.
+    lock was added (4.2). The milestone less the no-lock build is the lock with its holder's word
+    (4.2), reported against decision 7's figures. It is the one cost the owner is asked to accept;
+  - **threaded programs run `Serial`, from T2 on.** T2 changes how a `Serial` process with several
+    threads runs in the executor (a store for each thread, code instantiated in each store at first
+    use, another lock scheme: 7.2, 7.5), and nothing above has two threads in it. So, on this Mac and
+    on the x86 laptop, at the same load, the milestone against the commit before:
+    - two threads of one process that wake each other through a futex in turn: the time of one
+      hand-over;
+    - a loop that starts a thread which calls into the C library and is joined: the time of one
+      round, which holds the new thread's store and its first use of each piece of code;
+    - the kernel test crate's Go, Java, Node and Python programs with threads, run `Serial`: the
+      instructions retired and the time of each;
+    - a process that starts 64 threads which then wait: its resident memory, less the same process
+      with one thread, divided by the threads.
+    Each is within the spread between identical runs of the commit before. If one is not, the Serial
+    form keeps one store for each process (7.2), and the bar is run again.
 - **What the Parallel form costs a process with one thread**, measured and reported, not a bar: the
   benchmark set in the Parallel form against the Serial form (expected 0.0% to 1.8% more instructions),
   and a loop of barriers and a loop of 128 bit atomics with the byte zero (expected 0.1 to 0.8 ns a
@@ -1996,17 +2372,22 @@ Each bar is checkable by the named tests. The cheapest large win is first.
   - abi: `Cpu` and `Host` by `&self` and `Sync`; the processor in `Kernel::next`; the thread in
     `Kernel::exit`; the `Host` services `thread_stop` and `kernel_entry_admit`, asked only of a system
     that orders entries and only about a thread not in force `None` (4.6); the hooks
-    `on_processor_needed` and `on_deadline_changed` (5); the stop word as a set of reasons, with
-    `raise_stop` as an atomic or (4.5).
-  - kernel: the lock, the handle that holds it and the `Send` reason (4.2); processors, masks and the
-    scheduler, with a thread's woken call and its signals acted on only when it is chosen for a
-    processor (4.3); groups with the joining rule, and the config in force (3); the two rules of 4.4
-    item 5, with calling a group in and threads ending in their own entry (4.5); a process's signal
-    picked again when its thread blocks it or ends, through one function that sets a mask (4.5);
-    entries kept aside when told `Later` (4.6); the idle condition with its two counts, its other
-    half for threads with no slice, and the deadline out of the slices (5); charging per thread (11);
-    the told count; `ExecutionConfig` at the start, inherited at fork; `kernel.process(id)` at any
-    time for reading (5, if decision 8 is ruled so).
+    `on_processor_needed` and `on_deadline_changed` (5) and
+    `on_execution_config_in_force_changing` (3); the stop word as a set of reasons, with `raise_stop`
+    as an atomic or (4.5).
+  - kernel: the lock with its holder's word, the handle that holds it and the `Send` reason (4.2);
+    processors, masks and the scheduler, with one entry for each thread `next` chooses, a `Serial`
+    group putting forward its next thread only, and a thread's woken call and its signals acted on
+    only when it is chosen for a processor (4.3); groups with the joining rule, joined only with
+    their other running threads called in, and the config in force with its hook (3); the two rules
+    of 4.4 item 5, with calling a group in and threads ending in their own entry (4.5); a process's
+    signal picked again when its thread blocks it or ends, through one function that sets a mask
+    (4.5); entries kept aside when told `Later` (4.6); the scheduler's condition in both halves (no
+    processor idle with a thread it could run, no ready thread with nobody due in), with its mark and
+    its counts, the wake-up comparison aimed at a thread in the woken one's way, and the deadline
+    out of the slices (5, 11); charging per thread (11); the told count; `ExecutionConfig` at the
+    start, inherited at fork; `kernel.process(id)` at any time for reading (5, if decision 8 is
+    ruled so).
   - runtime: `run` and `run_until_finished` with a processor and `StopReason` per worker, the system
     told who, idle without a lost wake, the container stop, the executor's stopping handle and its
     promise in place of `StopFlag`, the local system by `&self` with a slice's end per processor and
@@ -2020,16 +2401,20 @@ Each bar is checkable by the named tests. The cheapest large win is first.
     order for one worker made the same way (4.6, 11).
   - the stand-in stays at one processor.
   - Bar: section 12's "nothing changes with one processor", "groups in parallel", "exact replay", "the
-    config in force" for the guarantee, "reaching across groups", "no request to stop is lost", "no
-    processor idles with a thread it could run" (its first three programs), "timers and slices", "a
-    process's signal finds a thread" (the `Serial` run), "the executor's lock rule", "one worker,
-    several processors, no log" and "processors and masks"; its `Serial` measurements, of which only
-    the system call cost can move here; and a scaling test: four processes that only compute, on four
-    processors, finish in under half the time they take on one (a quarter is the ideal; the margin is
-    for this machine's load and is the orchestrator's to set).
+    config in force" for the guarantee, "groups joined while both run", "reaching across groups", "no
+    request to stop is lost", "no processor idles with a thread it could run" (its first three
+    programs), "no thread waits behind its own sibling", "timers and slices", "a process's signal
+    finds a thread" (the `Serial` run), "a choice that hands nobody out", "the kernel called from
+    inside a hook", "the executor's lock rule", "one worker, several processors, no log" and
+    "processors and masks"; its `Serial` measurements, of which only the system call cost can move
+    here; and a scaling test: four processes that only compute, on four processors, finish in under
+    half the time they take on one (a quarter is the ideal; the margin is for this machine's load and
+    is the orchestrator's to set).
   - Measured: a real build with parallel jobs at 1 to 16 processors; the share of time waiting for the
     kernel's lock; groups called in, by reason; stops asked for nothing; threads asked in for a timer
-    or for a waiting thread; the lock's own cost in a system call, by the build without it.
+    or for a waiting thread; turns that ended for nobody; how often the scheduler's condition was
+    walked and how long a walk took; the cost of the lock and its holder's word in a system call, by
+    the build without them.
 - **T2, a group's threads in parallel on the WebAssembly executor, ARM64 guests.** After decision 4.
   - translator: the Parallel form (7.2): barriers and the 128 bit hook behind the byte (7.3), the mark
     for hooks that are stop points (4.5); the shared import and its declared maximum in both forms.
@@ -2045,7 +2430,8 @@ Each bar is checkable by the named tests. The cheapest large win is first.
   - Bar: the threaded suite, "the races this plan names", "a process's signal finds a thread" (the
     `Parallel` run), the ordering tests and "the compiler setting" match the reference in `Parallel`
     under the stress schedule at full, none and bounded look-ahead; T1's bars hold; the `Serial`
-    measurements of section 12 hold, the byte-for-byte one among them.
+    measurements of section 12 hold, the byte-for-byte one and the four of threaded programs run
+    `Serial` among them.
   - Measured: group stops by reason and their length; threads that gave up their frames, by reason;
     translations thrown away; a store's memory; what the Parallel form costs a process with one
     thread.
@@ -2095,15 +2481,15 @@ Each bar is checkable by the named tests. The cheapest large win is first.
 
 Not milestones here: the form that orders atomic instructions for (`Parallel`, `External`) (decision 3),
 the ordered x86 form (decision 5), a browser, `suspend` and `resume`, which are the embedder
-interface's, and the two calls of sections 5 and 6 (decisions 8 and 9), which come with them. The group
-stop that `suspend` needs in a `Parallel` process is T2's.
+interface's, and section 5's call and hook for acting on a process from outside a hook (decision 8),
+which come with them. The group stop that `suspend` needs in a `Parallel` process is T2's.
 
 ## 14. Measurements behind the decisions
 
 On this Mac (Apple M5 Max, 18 cores, macOS 27.2), release builds, 2026-11-18, with other tracks running:
 the load (`sysctl vm.loadavg`, 1 minute) was 49 to 142 throughout. On the x86 laptop (Intel Core i7-8750H,
-12 threads, Linux 7.3.4) the load was 0.2 to 1.7 for the first runs and 5 to 11 for the checkers' and
-this correction's, when other tracks were using it too; its cores 2 and 8 were not used. Scratch code and
+12 threads, Linux 7.3.4) the load was 0.2 to 1.7 for the first runs and 3 to 11 for the checkers' and
+the corrections', when other tracks were using it too; its cores 2 and 8 were not used. Scratch code and
 logs are under pyro-parked/wcontainers-scratch/threads. Details and every command are in
 docs/status-threads.md.
 
@@ -2223,6 +2609,50 @@ docs/status-threads.md.
   (0.97), 2.526 (1.13); calls with a frame in memory 1.225, 1.217 (0.99), 1.533 (1.25); fill and copy
   0.428, 0.438 (1.02), 0.477 (1.11); the copy one byte off alignment 0.435 plain and 0.449 tested
   (1.03). Checksums agreed in every form.
+- **The holder's word on an uncontended lock** (run6/owner/src/main.rs and its two logs). A
+  `parking_lot` raw lock around a small piece of work, one thread, best of seven, 200,000,000 rounds.
+  Four forms: no lock; the lock; the lock with the holder's name read (`parking_lot`'s `RawThreadId`
+  through `lock_api::GetThreadId`) and stored after the lock is taken, and cleared before it is let
+  go; the same with the name read once, outside the loop. Two kinds of work, as the second checker's:
+  one that stays in registers, one that walks a chain of loads and stores once. Nanoseconds a round:
+  - this Mac (load 133 to 137): register work 2.02, 5.52, 5.01, 5.92; memory work 8.74, 9.14, 9.17,
+    9.11;
+  - the laptop, core 4 (load 4.7 to 6.1): register work 1.81, 11.81, 11.57, 12.07; memory work 13.89,
+    14.52, 14.76, 14.37.
+  So the lock costs 0.4 to 3.5 ns on this Mac and 0.6 to 10.0 ns on the laptop in these runs, as
+  before. The word moves a round by -0.5 to +0.4 ns on this Mac and by -0.2 to +0.3 ns on the
+  laptop, with both signs in both kinds of work. No cost can be told from the noise.
+- **Whether an aligned plain 64 bit access is seen half done** (run6/tear: tear.wat, tear.mjs, host/,
+  and the logs and listings beside them). On a shared memory, one thread stores 0 and -1 in turn to
+  one word with plain stores, 200,000,000 times, and another loads it with plain loads as often and
+  counts the values that are neither. Five runs of each form, so 1,000,000,000 loads. Loads that saw
+  a mix, with the word aligned and then laid across a cache line as a control:
+  - this Mac, Node 24.14.1 (load 112 to 113): 0; 73,917,899;
+  - this Mac, wasmtime 50.0.1 as the repository pins it, two host threads each with its own `Store`
+    on one `SharedMemory` (load 113 to 114): 0; 57,220,868;
+  - the laptop, Node 24.22.3, cores 5 and 10 (load 5.2 to 6.3): 0; 232,854;
+  - the laptop, wasmtime 50.0.1, cores 5 and 10 (load 3.3 to 3.8): 0; 37,550,933.
+  In every run the reader saw both values. wasmtime 49.0.2's output for the two loops was read on
+  both hosts: the store is one `str x13, [x10, w5, uxtw]` and the load one `ldr x1, [x0, w5, uxtw]`
+  on this Mac, and one `movq %rdi, (%rax, %rcx)` and one `movq (%rdi, %rcx), %r9` on the laptop.
+  V8's machine code was not read.
+- **A host-supplied mapping as a wasmtime shared memory, by the plan's fifth checker**
+  (check5/hostmem and its run-mac.log; wasmtime 50.0.1 as the repository pins it, a debug build, this
+  Mac at load 113 to 127). The engine was set up as the executor's is, with a creator that records
+  its calls. A one-memory module defining a shared 64 bit memory of at least 64 KiB and at most
+  4080 MiB called the creator exactly once. `Instance::get_shared_memory` gave a memory whose bytes
+  are the creator's own mapping. An instance in a second store on another host thread imported it,
+  and its atomic store was seen through the host's pointer. A host write was seen by a guest load in
+  a third store. `memory.grow` went through the creator's own call. The log was read again for this
+  correction and says what the checker said.
+- **What it costs for `run` to return at a program start and be called again**, by the interface
+  track's measurement and its independent re-run, not this plan's (orchestrator/
+  interface-measurements.json, part "run-return"; this Mac, load 56 to 184, a prototype on 77e50ddc).
+  `run` already returns at every exec: 20,001 returns for 20,000 execs, with and without a suspend in
+  the hook. Suspending in the hook and resuming after the return, against changing the process
+  inside the hook, differed by +4 with a spread of 27 instructions in the re-run and +23 with a
+  spread of 34 in the first run, of about 6.3 million instructions a program start. A real `suspend`
+  and `resume` and the native executor were not measured.
 - **The progress count**, by the translator track's measurement, not this plan's
   (orchestrator/progress-count-cost.json): its best form costs the seven quoted benchmarks 16.3% more
   instructions on this Mac and 11.9% on the x86 laptop, and 4.4% more time on the laptop.
@@ -2238,15 +2668,24 @@ docs/status-threads.md.
 - How long processors wait for the kernel's one lock in a real build (T1). This decides whether and where
   the lock is split.
 - What T1 adds to a system call end to end. Only the lock alone was measured, and it costs between
-  nothing and 11.4 ns by the work around it (section 14). T1's three builds settle it (section 12).
+  nothing and 11.4 ns by the work around it; its holder's word could not be told from the noise
+  (section 14). T1's three builds settle it (section 12).
+- What the scheduler's condition costs when it is walked, and how often that is, in a real build and
+  in a threaded program run `Serial` (T1). A call answered in place tests one mark (section 5).
+- How many turns end for nobody because a slice is worked out from the whole queue (T1, section 11).
 - What switching the compiler's alias analysis off costs on an x86 host, and on programs larger than
   the benchmark set (T2). On this Mac it cost the set 0.0% to 1.8%.
 - Whether V8 merges or drops plain accesses as wasmtime's compiler does. Not looked at: no browser is
   built (7.6).
 - How often real programs run barriers and 128 bit atomics (T3). The cost of each is measured; their
   number is not.
-- A host-supplied mapping as a wasmtime shared memory: read in the source, not run (T2).
-- What one store per thread costs in memory, and a second wasmtime engine (T2).
+- A host-supplied mapping as a wasmtime shared memory, in the executor and with translated code on it.
+  It was run once outside the executor, by the fifth checker, and worked (section 14). T2's first
+  task.
+- What one store per thread costs in memory, what it costs a threaded program run `Serial`, and a
+  second wasmtime engine (T2; the first two are in its bar, section 12).
+- Whether V8 can show half of an aligned plain 64 bit access: its machine code was not read. In Node
+  on both hosts no load saw one in 1,000,000,000 (section 14).
 - How long a group stop takes with several threads running, now that a thread is held only at a stop
   point, and how often real programs cause one (T2, T3). How often a group is called in from outside
   (T1).
@@ -2259,7 +2698,9 @@ docs/status-threads.md.
   the kernel's costs a (`Parallel`, `Exact`) group (T4).
 - An interrupt from one virtual CPU to another inside the native executor's machine (T5).
 - An x86 guest's Parallel form on an x86 host through the translator (the x86 track, T6).
-- `suspend` and `resume` on one kernel, and the two calls of sections 5 and 6: nothing exists to measure.
+- A real `suspend` and `resume` on one kernel, with the records moved out and back, and section 5's
+  call for acting on a process from outside a hook: nothing exists to measure. Only the return of
+  `run` at a program start was measured, on a prototype (section 14).
 - How often a `Parallel` group takes a permission from a data page or unmaps one, which makes each of
   its other running threads give up its frames (300.8 ns each, 4.5), and what the returns through the
   bottom loop cost afterwards (T2, T3).
@@ -2289,6 +2730,13 @@ kernels (section 2).
    - With it, to confirm: a guarantee is about one process. Nothing follows which bytes a `None`
      process gave to others through the kernel, so an embedder that wants a process repeated gives at
      least `External` to every process that can reach it.
+   - With it, one hook: `on_execution_config_in_force_changing(process, config)`, fired before the
+     change, when the process is whole and stopped. A process that becomes `Exact` through a
+     neighbour has no record before that moment, so the embedder takes its starting point there.
+     If it does not, the neighbour that was promised `Exact` replays exactly up to the join and no
+     further. Cost: one more hook, which an embedder with one config for all its processes never
+     sees fire. Without the hook the strictest rule cannot keep the promise it is there to keep,
+     and the answer would have to be to refuse a `resume` or an `mmap` that mixes guarantees.
 2. **What is a container given when nobody says?** Recommended: `GuestMachine::processors` 1, fixed for
    the container's life, and (`Serial`, `None`) for its first process; the command line program passes
    the host's count of processors unless told otherwise. Cost: a library user who sets nothing gets no
@@ -2326,7 +2774,9 @@ kernels (section 2).
 7. **One cost to a `Serial` run that this plan cannot bring to zero: accept it?** A system call takes
    one uncontended lock. Alone it measured between nothing and 3.6 ns on this Mac and between 0.6 and
    11.4 ns on the x86 laptop, by the work around it, against a kernel share of about 120 ns on this Mac
-   (4.2). What it is inside a real system call is not known until T1 is built. Removing it costs the
+   (4.2). The lock also writes down who holds it, so that a call into the kernel from inside a hook
+   is answered and does not wait for ever; that word could not be told from the noise on either
+   machine. What both are inside a real system call is not known until T1 is built. Removing it costs the
    kernel compiled twice into every program, with and without the lock. Everything else is kept off a
    `Serial` run: its translated code is the same code (7.2), and T1's bar checks the rest with a build
    that has no lock (section 12). Recommended: accept it. If you would rather see its real size first,
@@ -2338,7 +2788,8 @@ kernels (section 2).
    parts (sections 5 and 6):
    - **Reading, at any time.** `kernel.process(id)` answers a handle whenever it is asked, and `id`,
      `info` and every `ProcessInfo` accessor work on it, with nobody stopped. Cost: the handle holds
-     the kernel's lock while it lives, as a hook does.
+     the kernel's lock while it lives, as a hook does. Asked from inside a hook it answers an error,
+     as you ruled; any other call into the kernel from inside a hook panics and names the call.
    - **Acting from outside a hook, through one call.** Any other operation on that handle works when
      nobody needs calling in for it, and answers an error otherwise. For those cases any host thread
      may call `Kernel::process_call_in(id)`; the kernel stops that process's group and announces
@@ -2363,14 +2814,23 @@ kernels (section 2).
 9. **The interface changes: accept them, so that splitting the kernel's lock later changes none?**
    Recommended: yes. Cost: every `System` (the shipped one, the tests', your own) keeps what it changes
    in atomics or behind its own locks, and gains the arguments below.
+   - The embedding project asked for the first of these itself: hooks and services by `&self`. With
+     it comes `System: Sync` from T1, also for a system driven by one host thread; the other answer
+     lets such a system keep `Cell` and `RefCell` until its second worker (section 5). Its other
+     proposal, state kept per process, is not needed by this plan and not built on. If you rule it
+     in, it takes off an embedder the locks around what it keeps about one process, and this plan
+     asks one thing of it: the type is `Send` (section 5).
    - In T1. `Kernel`: entry points take `&self`; `next` takes a processor; `exit` takes the thread and
      says whether it took effect; the handle that holds the lock across a thread's `exit` and `next`,
      which `arrived` is handed in the kernel's place. `Start` carries the processors, the first
      process's `ExecutionConfig`, and whether the system orders entries. `Cpu` and `Host`: methods take
      `&self`; both are `Sync`. `Host` gains two services, `thread_stop(thread)` and
-     `kernel_entry_admit(entry)`, and two hooks, `on_processor_needed(processor)` and
-     `on_deadline_changed(deadline)`. The kernel's deadline is no longer in a thread's slice: the
+     `kernel_entry_admit(entry)`, and three hooks, `on_processor_needed(processor)`,
+     `on_deadline_changed(deadline)` and `on_execution_config_in_force_changing(process, config)`
+     (decision 1). The kernel's deadline is no longer in a thread's slice: the
      system hands in `Event::Timer` at the deadline it was last told, whether or not a thread runs.
+     The build that makes the kernel gives it a lock and a way to name the calling host thread
+     (`lock_api`'s `RawMutex` and `GetThreadId`).
      `System`: methods take `&self`; `turn` is told the processor, the thread and its guarantee in
      force, `ran` the thread, `arrived` and `idle` the processor; `idle` also returns when its
      processor is needed; `stopped` runs once, with every worker out of `Execution::run`.
@@ -2383,23 +2843,25 @@ kernels (section 2).
      several_threads)`, `parallel_limits()`, `compare_exchange(memory, address, expected, new)` and a
      call for `membarrier`'s group stop.
    - In T8. The hook `on_kernel_entry_ended(thread, digest)`.
-   - With the embedder interface's own work, two things this plan asks of it. The thread of
+   - With the embedder interface's own work, one thing this plan asks of it. The thread of
      `on_memory_accessing` becomes optional, none meaning "the kernel, for another process", so that a
      `write` to a file a watched process maps is seen; without it an embedder that composes exact
-     replay from watches misses those writes (section 8). And `Process::replace_execution_config(self,
-     config)` is offered in hooks: it is the operation the kernel has anyway for groups that merge, and
-     saves a change of config the return of `run` (section 6).
+     replay from watches misses those writes (section 8).
+   - Taken off this list: `Process::replace_execution_config`. It was there to save a change of
+     config the return of `run`. That return was measured as nothing at a program start, and the
+     plan needs the call for nothing else (section 6).
 10. **Names.** Suggested, all yours: "group" for threads that share memory; "config in force", with
     `ProcessInfo::execution_config_in_force()`; "called in", "group stop", "held", "stop point" and
     "stop lock"; "the Serial form" and "the Parallel form" of code; `processors` and `ProcessorId`; the
     services `thread_stop` and `kernel_entry_admit`, with `KernelEntry` and `EntryAdmission { Now,
     Later }`; `Start`'s field `kernel_entry_admission` with `Unasked` and `Asked`; the hooks
-    `on_processor_needed`, `on_deadline_changed`, `on_kernel_entry_ended` and `on_process_called_in`;
-    "gives up its frames" for a thread that starts again from the bottom loop; `Kernel::enter` and
-    `KernelEntered`; `Kernel::process_call_in`; `Executor::thread_stopper`; the stop word's bits
-    `STOP_ASKED`, `STOP_HELD` and `STOP_OWN`; `HookType::stop_point`; `runs_in_parallel` for the byte;
-    `Cpu::set_execution_config`, `Cpu::compare_exchange` and `Cpu::parallel_limits`;
-    `RuntimeConfig::host_threads`; the counters' names in sections 3 to 9; the milestones' letter T. One
-    more: the container's call is now `run`, and the executor's own call that runs one guest thread is
-    `Execution::run` (rt/lib.rs:131). Two calls named `run` one layer apart will be misread; suggested
-    `Execution::run_thread`.
+    `on_processor_needed`, `on_deadline_changed`, `on_kernel_entry_ended`, `on_process_called_in` and
+    `on_execution_config_in_force_changing`; "in the way" and "due in" for the scheduler's condition,
+    and a `Serial` group's "next thread"; "gives up its frames" for a thread that starts again from
+    the bottom loop; `Kernel::enter` and `KernelEntered`; `Kernel::process_call_in`;
+    `Executor::thread_stopper`; the stop word's bits `STOP_ASKED`, `STOP_HELD` and `STOP_OWN`;
+    `HookType::stop_point`; `runs_in_parallel` for the byte; `Cpu::set_execution_config`,
+    `Cpu::compare_exchange` and `Cpu::parallel_limits`; `RuntimeConfig::host_threads`; the counters'
+    names in sections 3 to 12; the milestones' letter T. One more: the container's call is now `run`,
+    and the executor's own call that runs one guest thread is `Execution::run` (rt/lib.rs:131). Two
+    calls named `run` one layer apart will be misread; suggested `Execution::run_thread`.
