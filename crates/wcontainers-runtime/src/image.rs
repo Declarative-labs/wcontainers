@@ -308,7 +308,7 @@ impl Image {
             Ok(uid) => uid,
             Err(_) => account
                 .and_then(|fields| fields.get(field::UID)?.parse().ok())
-                .ok_or_else(|| refused(format!("no user {name} in /etc/passwd")))?,
+                .ok_or_else(|| refused(format!("no user {name} in the image's {PASSWD}")))?,
         };
         let gid = match group_name {
             Some(group_name) => match group_name.parse::<u32>() {
@@ -317,7 +317,9 @@ impl Image {
                     .iter()
                     .find(|fields| fields.get(field::NAME) == Some(&group_name))
                     .and_then(|fields| fields.get(field::GROUP_GID)?.parse().ok())
-                    .ok_or_else(|| refused(format!("no group {group_name} in /etc/group")))?,
+                    .ok_or_else(|| {
+                        refused(format!("no group {group_name} in the image's {GROUP}"))
+                    })?,
             },
             None => account
                 .and_then(|fields| fields.get(field::GID)?.parse().ok())
@@ -464,9 +466,10 @@ impl Image {
                 ..
             }) => None,
             Some(_) => {
-                return Err(Error::Image(
-                    "/etc is not a directory, where the host name and name server files go".into(),
-                ));
+                return Err(Error::Image(format!(
+                    "the image's {} is not a directory, where the host name and name server files go",
+                    ETC.escape_ascii()
+                )));
             }
         };
         let hard_links = self

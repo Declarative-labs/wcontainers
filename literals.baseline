@@ -5813,13 +5813,10 @@ code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
-code	crates/wcontainers-runtime/src/image.rs	str	Image::add_to	"/etc is not a directory, where the host name and name server files go"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::home	"/"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	"/"
-code	crates/wcontainers-runtime/src/image.rs	str	Image::user	"no group {group_name} in /etc/group"
-code	crates/wcontainers-runtime/src/image.rs	str	Image::user	"no user {name} in /etc/passwd"
 code	crates/wcontainers-runtime/src/image.rs	str	read_layer	"a link out of the root"
 code	crates/wcontainers-runtime/src/image.rs	str	read_layer	"a link without a target"
 code	crates/wcontainers-runtime/src/spec.rs	char	accept	'/'
