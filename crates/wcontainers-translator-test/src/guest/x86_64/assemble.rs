@@ -24,7 +24,7 @@ const EXIT_GROUP: u64 = <X86_64 as GuestTest>::STAND_IN.exit_group;
 const STANDARD_OUTPUT: u32 = 1;
 
 /// Bytes of a general register, of an area slot and of a stack push.
-const WORD: i32 = (u64::BITS / u8::BITS) as i32;
+pub(super) const WORD: i32 = (u64::BITS / u8::BITS) as i32;
 /// Bytes of the model's double-word accesses, and of a pair of general registers.
 const DOUBLE: u8 = size_of::<u32>() as u8;
 const PAIR: u8 = 2 * WORD as u8;

@@ -2,6 +2,7 @@
 //! sides compare, and what a reference signal means.
 
 mod assemble;
+mod loops;
 
 use super::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
@@ -349,7 +350,9 @@ impl GuestTest for X86_64 {
     }
 
     fn checks() -> Vec<Check> {
-        assemble::checks()
+        let mut checks = assemble::checks();
+        checks.extend(loops::checks());
+        checks
     }
 
     fn changes() -> Vec<Change> {
