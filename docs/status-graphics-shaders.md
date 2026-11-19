@@ -1728,7 +1728,16 @@ Run 40 (the Direct3D 12 track's Godot refusal and wave item; the literal check a
   the refusal to `ok-wgsl glsl-write`.
 - Literal sweep, one step: the draw bases' helper block, built twice before (lower.rs, dxil.rs), is
   one function `build::draw_bases_block` with its offsets and span from `#[repr(C)]` mirrors
-  (`DrawBases`, `DrawArguments`, `offset_of!`); the block's and members' names are constants.
+  (`DrawBases`, `DrawArguments`, `offset_of!`); the block's and members' names are constants. Found
+  on the way (check rule 8): naming the members `draw`, `indexed` and `first_instance` made the
+  Direct3D 12 front's tests (`"draw"`), two of this crate's tests and the carried naga's HLSL
+  writer (`SPECIAL_FIRST_INSTANCE`) restate them, so the members are now `draw_number`,
+  `arguments_indexed` and `start_instance` (names only; the layout is unchanged), and
+  `ARGUMENTS_OFFSET` is public for the test that looks for it. This crate's baseline lines (src,
+  build.rs, tests): 1121 after the merges (the Direct3D 12 side brought back lines this branch had
+  removed), 1077 at the end. The check passes but for the two other tracks' lines above; changes
+  that could add lines: 18 (run 39's 16, and 55435e40 the start, ca2eb3e8 the init after the
+  baseline arrived by a merge, both the Direct3D 12 track's, merged in).
 
 Next (in order):
 - The other tracks, from run 40's merge: the Direct3D 12 front deletes its own
@@ -2120,6 +2129,19 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
+Run 40, 2026-11-19, counts only (laptop i7-8750H, load 3 to 14 with another track building, 2 to
+4 cargo jobs; desktop shared through the queue's hazard group, 3 cargo jobs, load not taken), logs in
+scratch `graphics-shaders` (run40-*):
+- Desktop, RTX 3080: `depth_views_with_component_mappings_read_as_mapped` (run40-gpu4.log, seeds 1
+  to 4): 48 comparisons, all 0 texels apart, and the refusal of the mapping moving red checked on
+  both programs and routes; `textures_compared_and_read_plainly_draw_as_direct3d_does` 32
+  comparisons, all pass; `wave_operations_draw_as_direct3d_12_does` (run40-gpu2.log): `ps_wave` 0
+  of 4096 texels apart (2074 drawn), `ps_wave_signed` 0 of 4096 (2591 drawn).
+- Laptop, the whole suite but the fuzz with every corpus and glslang (run40-suite1.log): 20 test
+  binaries pass, the corpus binary fails only on the runner corpus's known `distance-4`.
+- Desktop, at 3f73914a: Windows lint clean, then the whole suite as one GPU job
+  (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
+  run40-suite-gpu.log): 21 test binaries, all pass.
 Run 39, 2026-11-19, counts only (laptop i7-8750H, load 3 to 11 with another track building, 4 or 5
 cargo jobs; it was unreachable twice for some minutes; desktop shared through the queue, 3 cargo
 jobs, load not taken), logs in scratch `graphics-shaders/run39`:
