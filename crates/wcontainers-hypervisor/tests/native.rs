@@ -6,8 +6,10 @@
 //! the words layer 1 leaves out because they are compared with the real CPU and these are not: each drawn
 //! word with two of its register fields made one where `excluded` then names it (the register collisions),
 //! and, for forms swept whole, every value of their other fields that `excluded` names (registers answered by
-//! design, hints of features not presented, features not offered), each on a drawn case's registers. It runs
-//! itself as a copy signed with the hypervisor entitlement.
+//! design, hints of features not presented, features not offered), each on a drawn case's registers. Each drawn
+//! load or store exclusive also runs with its partner (the store after the load, the load before the store, same
+//! size and base), so the monitor one leaves is compared through the other's status and stores. It runs itself
+//! as a copy signed with the hypervisor entitlement.
 //!
 //! Knobs: `WCONTAINERS_NATIVE_CASES` cases per form, `WCONTAINERS_NATIVE_SEED`, `WCONTAINERS_NATIVE_FORMS` (a
 //! comma-separated list of form names to run alone), `WCONTAINERS_NATIVE_JOBS` threads for the WebAssembly
@@ -46,12 +48,14 @@ mod macos {
     use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
     use wcontainers_arm64::encode::{self, field};
     use wcontainers_arm64::forms::{self, Form};
-    use wcontainers_arm64::{Instruction as I, Reg, SystemRegister, decode};
-    use wcontainers_translator_test::layer1::{
-        Case, Outcome, cases, covered, excluded, translated,
-    };
+    use wcontainers_arm64::{Arm64, Instruction as I, Reg, SystemRegister, decode};
+    use wcontainers_guest_cpu::Guest;
+    use wcontainers_translator::LookAhead;
+    use wcontainers_translator_test::layer1::{Case, Stop, cases, covered, excluded, translated};
+    use wcontainers_translator_test::layout::CODE;
 
     use crate::common::{be_signed, load_average, setting};
+    use crate::runner::function::{same_end, webassembly};
     use crate::runner::{Runner, edge};
     use crate::words::{SWEPT_BITS, words_of};
 
@@ -163,6 +167,50 @@ mod macos {
             .collect()
     }
 
+    /// A drawn exclusive case's word with its partner, in the order they run: a load exclusive followed by the
+    /// store exclusive of its size, acquire bit and base, or a store exclusive preceded by such a load. The
+    /// partner's other registers are ones the word does not name, so the store writes the case's values. With
+    /// them, the store's status register.
+    fn paired(form: &Form, case: &Case) -> Option<([u32; 2], usize)> {
+        let (load, pair) = match decode(case.word) {
+            I::LoadExclusive { pair, .. } => (true, pair),
+            I::StoreExclusive { pair, .. } => (false, pair),
+            _ => return None,
+        };
+        let named: Vec<u32> = register_fields(form)
+            .iter()
+            .filter_map(|f| form.field(case.word, f))
+            .collect();
+        let mut free = (0..u32::from(encode::ZERO)).filter(|r| !named.contains(r));
+        let mut next = || free.next().expect("a register the word does not name");
+        let zero = u32::from(encode::ZERO);
+        let status = if load { next() } else { zero };
+        let first = next();
+        let second = if pair { next() } else { zero };
+        let partner = [
+            (field::LOAD, u32::from(!load)),
+            (field::RS, status),
+            (field::RT, first),
+            (field::RT2, second),
+        ]
+        .into_iter()
+        .try_fold(case.word, |word, (name, value)| {
+            encode::replace(word, name, value)
+        })
+        .ok()
+        .filter(|&word| forms::presented(word))?;
+        let store = if load { partner } else { case.word };
+        let status = form.field(store, field::RS)? as usize;
+        Some((
+            if load {
+                [case.word, partner]
+            } else {
+                [partner, case.word]
+            },
+            status,
+        ))
+    }
+
     /// A counter read's destination: its value is the clock's when read, on either side.
     fn clock_destination(word: u32) -> Option<usize> {
         match decode(word) {
@@ -174,13 +222,18 @@ mod macos {
         }
     }
 
-    /// The WebAssembly output's outcomes of `cases`, on `jobs` threads.
-    fn translated_all(cases: &[Case], jobs: usize) -> Vec<Outcome> {
-        let chunk = cases.len().div_ceil(jobs).max(1);
+    /// `run` of each of `items`, on `jobs` threads.
+    fn on_threads<T: Sync, R: Send>(
+        items: &[T],
+        jobs: usize,
+        run: impl Fn(&T) -> R + Sync,
+    ) -> Vec<R> {
+        let chunk = items.len().div_ceil(jobs).max(1);
+        let run = &run;
         std::thread::scope(|scope| {
-            let handles: Vec<_> = cases
+            let handles: Vec<_> = items
                 .chunks(chunk)
-                .map(|part| scope.spawn(move || part.iter().map(translated).collect::<Vec<_>>()))
+                .map(|part| scope.spawn(move || part.iter().map(run).collect::<Vec<_>>()))
                 .collect();
             handles
                 .into_iter()
@@ -208,6 +261,8 @@ mod macos {
         let mut total = 0u64;
         let mut edge_cases = 0u64;
         let mut left_out_cases = 0u64;
+        let mut pair_cases = 0u64;
+        let mut stored = 0u64;
         let mut reasons: std::collections::BTreeMap<&str, u64> = Default::default();
         for form in &chosen {
             let mut generator = generator(seed, &form.name);
@@ -229,7 +284,7 @@ mod macos {
             drawn.extend(collided);
             let cases = drawn.len();
             let (wasm, native) = std::thread::scope(|scope| {
-                let wasm = scope.spawn(|| translated_all(&drawn, jobs));
+                let wasm = scope.spawn(|| on_threads(&drawn, jobs, translated));
                 let native: Vec<_> = drawn.iter().map(|case| runner.case(case)).collect();
                 (wasm.join().expect("the WebAssembly side"), native)
             });
@@ -248,6 +303,50 @@ mod macos {
                     });
                 }
             }
+            let pairs: Vec<(Case, ([u32; 2], usize))> = drawn
+                .iter()
+                .take(count as usize)
+                .filter_map(|c| Some((c.clone(), paired(form, c)?)))
+                .collect();
+            pair_cases += pairs.len() as u64;
+            let (wasm, native) = std::thread::scope(|scope| {
+                let wasm = scope.spawn(|| {
+                    on_threads(&pairs, jobs, |(case, (words, _))| {
+                        webassembly(words, case, LookAhead::None)
+                    })
+                });
+                let native: Vec<_> = pairs
+                    .iter()
+                    .map(|(case, (words, _))| {
+                        let function = runner.load_function(words, LookAhead::None);
+                        let end = CODE + words.len() as u64 * Arm64::MAX_LENGTH;
+                        let run = runner.run_function(&function, case, end, None);
+                        runner.unload();
+                        run
+                    })
+                    .collect();
+                (wasm.join().expect("the WebAssembly side"), native)
+            });
+            for (((case, (words, status)), (stop, after, data)), got) in
+                pairs.iter().zip(&wasm).zip(&native)
+            {
+                total += 1;
+                let last = got.trace.last().expect("a state");
+                if got.stop == Stop::Landed(CODE + words.len() as u64 * Arm64::MAX_LENGTH)
+                    && last.x.get(*status) == Some(&0)
+                {
+                    stored += 1;
+                }
+                if !same_end(*stop, after, got.stop, last) || *data != got.data {
+                    failed += 1;
+                    first.get_or_insert_with(|| {
+                        format!(
+                            "words {words:#010x?} run as a pair: the WebAssembly output ends {stop:?} {after:x?}, natively {:?} {last:x?}\n  case {case:?}",
+                            got.stop
+                        )
+                    });
+                }
+            }
             if let Some(first) = first {
                 println!("FAIL {}: {failed} of {cases}: {first}", form.name);
                 failing.push(form.name.clone());
@@ -255,7 +354,7 @@ mod macos {
         }
         runner.finish();
         println!(
-            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own and {left_out_cases} words layer 1 leaves out beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
+            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own, {left_out_cases} words layer 1 leaves out and {pair_cases} exclusive pairs ({stored} storing) beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
             chosen.len(),
             failing.len(),
             started.elapsed(),
