@@ -92,8 +92,11 @@ struct Timer {
     thread: Option<JoinHandle<()>>,
 }
 
+/// A deadline that never comes.
+const NEVER: u64 = u64::MAX;
+
 struct Deadline {
-    /// Nanoseconds after `started` at which the running turn ends; `u64::MAX` for never.
+    /// Nanoseconds after `started` at which the running turn ends; `NEVER` for no end.
     at: AtomicU64,
     /// The deadline the thread sleeps towards: a turn with an earlier one wakes it.
     sleeping: AtomicU64,
@@ -263,7 +266,7 @@ impl LocalSystem {
     /// Drops the deadline of the turn that ended.
     fn turn_over(&self) {
         if let Some(timer) = &self.timer {
-            timer.shared.at.store(u64::MAX, Ordering::SeqCst);
+            timer.shared.at.store(NEVER, Ordering::SeqCst);
         }
     }
 
@@ -329,14 +332,14 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
             // A deadline a turn ended before, or moved, is not raised.
             if shared
                 .at
-                .compare_exchange(at, u64::MAX, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(at, NEVER, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
                 flag.raise();
             }
             continue;
         }
-        gone = if at == u64::MAX {
+        gone = if at == NEVER {
             shared
                 .wake
                 .wait(gone)
@@ -543,8 +546,8 @@ impl System for LocalSystem {
     fn stop_flag(&mut self, flag: StopFlag) {
         self.arrivals.set_flag(flag.clone());
         let shared = Arc::new(Deadline {
-            at: AtomicU64::new(u64::MAX),
-            sleeping: AtomicU64::new(u64::MAX),
+            at: AtomicU64::new(NEVER),
+            sleeping: AtomicU64::new(NEVER),
             gone: Mutex::new(false),
             wake: Condvar::new(),
         });
@@ -564,7 +567,7 @@ impl System for LocalSystem {
 
     /// A free turn, ended by the timer thread when the kernel's slice has passed.
     fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
-        let at = slice_nanoseconds.map_or(u64::MAX, |slice| self.now().saturating_add(slice));
+        let at = slice_nanoseconds.map_or(NEVER, |slice| self.now().saturating_add(slice));
         if let Some(timer) = &self.timer {
             let shared = &timer.shared;
             shared.at.store(at, Ordering::SeqCst);
@@ -653,7 +656,7 @@ impl System for LocalSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalSystem, Ordering};
+    use super::{LocalSystem, NEVER, Ordering};
     use crate::{StopFlag, System};
     use std::time::Duration;
 
@@ -685,6 +688,6 @@ mod tests {
         std::thread::sleep(PAST_IT);
         assert!(!flag.take());
         let timer = system.timer.as_ref().expect("a timer");
-        assert_eq!(timer.shared.at.load(Ordering::SeqCst), u64::MAX);
+        assert_eq!(timer.shared.at.load(Ordering::SeqCst), NEVER);
     }
 }
