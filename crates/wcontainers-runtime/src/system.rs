@@ -1,10 +1,11 @@
 //! The local system for an operating system: its clocks and randomness, the container's output
-//! streams, free turns ended by a timer thread at the kernel's slice, and waiting in real time.
-//! Everything else the kernel may ask of a host (the file backend, the network, terminal input) it
-//! answers as not supported, which the kernel turns into the errors Linux gives without them.
+//! streams, a directory of the host as the file backend, the host's network, free turns ended by a
+//! timer thread at the kernel's slice or by an arrival from outside, and waiting in real time.
 
 use core::ops::ControlFlow;
 use std::io::Write;
+use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -15,6 +16,8 @@ use wcontainers_abi::{
 };
 use wcontainers_kernel::Kernel;
 
+use crate::files::Files;
+use crate::net::{Arrivals, Network};
 use crate::{Execution, StopFlag, System, Turn};
 
 /// A warning as the system keeps it: the kernel's or the back end's, by reason.
@@ -36,6 +39,13 @@ pub struct LocalSystem {
     error: Box<dyn Write + Send>,
     warnings: Vec<Warned>,
     timer: Option<Timer>,
+    files: Option<Files>,
+    /// The file backend's replies not yet handed to the kernel.
+    replies: Vec<(BackendRequestId, Vec<u8>)>,
+    arrivals: Arc<Arrivals>,
+    /// Made at the container's first use of the network.
+    network: Option<Network>,
+    published: Vec<(u16, SocketAddr)>,
 }
 
 /// Raises the stop flag at the deadline the last turn set, on its own thread.
@@ -63,7 +73,70 @@ impl LocalSystem {
             error,
             warnings: Vec::new(),
             timer: None,
+            files: None,
+            replies: Vec::new(),
+            arrivals: Arc::default(),
+            network: None,
+            published: Vec::new(),
         }
+    }
+
+    /// Lets connections from the host at `at` reach the container's TCP port `port`, as `docker run
+    /// --publish` does. Nothing outside reaches a port not published.
+    pub fn publish(&mut self, port: u16, at: SocketAddr) {
+        self.published.push((port, at));
+        if let Some(network) = &mut self.network {
+            network.publish(port, at);
+        }
+    }
+
+    fn network(&mut self) -> &mut Network {
+        self.network.get_or_insert_with(|| {
+            let mut network = Network::new(self.arrivals.clone());
+            for &(port, at) in &self.published {
+                network.publish(port, at);
+            }
+            network
+        })
+    }
+
+    /// Hands the kernel what arrived: the file backend's replies and the network's events.
+    /// Whether anything did.
+    fn deliver(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let replies = std::mem::take(&mut self.replies);
+        let arrivals = self.arrivals.take();
+        let any = !replies.is_empty() || !arrivals.is_empty();
+        for (request, reply) in replies {
+            kernel.event(
+                cpu,
+                self,
+                Event::BackendReply {
+                    request,
+                    reply: &reply,
+                },
+            );
+        }
+        for arrival in &arrivals {
+            let Some(network) = &mut self.network else {
+                break;
+            };
+            if let Some(event) = network.event(arrival) {
+                kernel.event(cpu, self, event);
+            }
+        }
+        if let Some(files) = &mut self.files {
+            for (reason, detail, count) in files.warnings() {
+                self.keep(
+                    Warning {
+                        reason,
+                        detail,
+                        count,
+                    },
+                    false,
+                );
+            }
+        }
+        any
     }
 
     /// Every warning so far, the kernel's and the back end's.
@@ -182,8 +255,13 @@ impl Host for LocalSystem {
         self.keep(warning, false);
     }
 
-    fn backend_send(&mut self, _: BackendRequestId, _: &[u8]) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    /// Served at once: the reply is handed over at the next exit or idle.
+    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        let files = self.files.as_mut().ok_or(HostError::NotSupported)?;
+        if let Some(reply) = files.serve(message) {
+            self.replies.push((request, reply));
+        }
+        Ok(())
     }
 
     fn output(&mut self, stream: Stream, bytes: &[u8]) {
@@ -209,32 +287,47 @@ impl Host for LocalSystem {
         }
     }
 
-    fn connect(&mut self, _: ConnectionId, _: &[u8], _: u16, _: bool) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn connect(
+        &mut self,
+        connection: ConnectionId,
+        address: &[u8],
+        port: u16,
+        stream: bool,
+    ) -> Result<(), HostError> {
+        self.network().connect(connection.0, address, port, stream)
     }
 
-    fn send(&mut self, _: ConnectionId, _: &[u8]) -> Result<usize, HostError> {
-        Err(HostError::NotSupported)
+    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        self.network().send(connection.0, bytes)
     }
 
-    fn receive(&mut self, _: ConnectionId, _: &mut [u8]) -> Result<usize, HostError> {
-        Err(HostError::NotSupported)
+    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        self.network().receive(connection.0, into)
     }
 
-    fn finish(&mut self, _: ConnectionId) {}
-
-    fn close(&mut self, _: ConnectionId) {}
-
-    fn look_up(&mut self, _: u64, _: &str) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn finish(&mut self, connection: ConnectionId) {
+        self.network().finish(connection.0);
     }
 
-    fn listen(&mut self, _: ConnectionId, _: u16) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn close(&mut self, connection: ConnectionId) {
+        self.network().close(connection.0);
     }
 
-    fn accept(&mut self, _: ConnectionId, _: ConnectionId) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
+        self.network().look_up(request, name);
+        Ok(())
+    }
+
+    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        self.network().listen(listener.0, port)
+    }
+
+    fn accept(
+        &mut self,
+        listener: ConnectionId,
+        connection: ConnectionId,
+    ) -> Result<(), HostError> {
+        self.network().accept(listener.0, connection.0)
     }
 }
 
@@ -243,6 +336,7 @@ impl System for LocalSystem {
     type End = core::convert::Infallible;
 
     fn stop_flag(&mut self, flag: StopFlag) {
+        self.arrivals.set_flag(flag.clone());
         let shared = Arc::new(Deadline {
             at: AtomicU64::new(u64::MAX),
             sleeping: AtomicU64::new(u64::MAX),
@@ -281,8 +375,8 @@ impl System for LocalSystem {
     /// Time is the host's clock, not progress.
     fn ran(&mut self, _: u64) {}
 
-    /// Nothing arrives from outside: this system has no file backend, network or terminal input.
-    fn arrived(&mut self, _: &mut Kernel, _: &mut dyn Cpu) -> bool {
+    fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        self.deliver(kernel, cpu);
         false
     }
 
@@ -292,21 +386,26 @@ impl System for LocalSystem {
         ControlFlow::Continue(())
     }
 
-    /// Sleeps until the kernel's next timer. With none, nothing can wake the container: it waits for
-    /// ever, as it would on Linux.
+    /// Hands over what arrived, or else waits until the kernel's next timer or an arrival. With
+    /// neither to come, the container waits for ever, as it would on Linux.
     fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
-        match until_nanoseconds {
-            Some(until) => {
-                let now = self.now();
-                if until > now {
-                    std::thread::sleep(Duration::from_nanos(until - now));
-                }
-                kernel.event(cpu, self, Event::Timer);
-            }
-            None => loop {
-                std::thread::park();
-            },
+        if self.deliver(kernel, cpu) {
+            return;
         }
+        let left =
+            until_nanoseconds.map(|until| Duration::from_nanos(until.saturating_sub(self.now())));
+        if left != Some(Duration::ZERO) {
+            self.arrivals.wait(left);
+            self.deliver(kernel, cpu);
+        }
+        if until_nanoseconds.is_some_and(|until| self.now() >= until) {
+            kernel.event(cpu, self, Event::Timer);
+        }
+    }
+
+    fn serve_directory(&mut self, source: &Path) -> std::io::Result<()> {
+        self.files = Some(Files::new(source)?);
+        Ok(())
     }
 
     fn cpu_warning(&mut self, warning: Warning<'_>) {

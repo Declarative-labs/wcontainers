@@ -171,8 +171,18 @@ fn container(
     stdout: &Captured,
     stderr: &Captured,
 ) -> Container<CpuSide<Arm64>, LocalSystem> {
-    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache });
     let system = LocalSystem::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
+    container_on(spec, image, cache, system)
+}
+
+/// As [`container`], with a system the caller made.
+fn container_on(
+    spec: &Spec,
+    image: &Image,
+    cache: Option<PathBuf>,
+    system: LocalSystem,
+) -> Container<CpuSide<Arm64>, LocalSystem> {
+    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache });
     let translator_settings = TranslatorSettings {
         look_ahead: look_ahead(),
         optimise: Optimise::Speed,
@@ -683,6 +693,176 @@ fn a_container_is_stepped_from_the_callers_loop() {
     println!("stepped: {steps} steps, {idles} idle");
     assert!(idles > 0, "the sleep waits at an idle step");
     assert_eq!(outcome(status, &stdout, &stderr), reference(command));
+}
+
+/// Where the container mounts a host directory in the tests of the file backend.
+const VOLUME: &str = "/data";
+
+/// The commands of the bind mount test, run in [`VOLUME`]: reading what the host put there, then
+/// making, writing, renaming, linking and removing files and directories, and listing what is left.
+const VOLUME_COMMAND: &str = "cat given.txt && wc -c < sub/inner.txt && \
+    echo written > made.txt && mkdir -p new/deeper && echo deep > new/deeper/f && \
+    mv made.txt moved.txt && ln -s moved.txt link && ln moved.txt hard && readlink link && \
+    cat link hard && chmod 640 moved.txt && rm sub/inner.txt && rmdir sub && \
+    dd if=/dev/zero of=big bs=4096 count=300 2>/dev/null && truncate -s 1000 big && \
+    printf 'x%.0s' $(seq 1 70000) > long && \
+    ls -a . new new/deeper; stat -c '%n %s %a %F %h' given.txt moved.txt link hard big long new; \
+    cat missing; ls -d nothing/; echo end";
+
+/// A host directory for the bind mount test, with the files it starts with.
+fn volume_directory(name: &str) -> PathBuf {
+    let directory = scratch().join(format!("volume-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(directory.join("sub")).unwrap();
+    std::fs::write(directory.join("given.txt"), "given by the host\n").unwrap();
+    std::fs::write(directory.join("sub/inner.txt"), "inner\n").unwrap();
+    directory
+}
+
+/// A directory's files as the host sees them: path, kind, size, permissions, contents and link
+/// target, sorted.
+fn tree(directory: &Path) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut found = Vec::new();
+    let mut walk = vec![directory.to_path_buf()];
+    while let Some(at) = walk.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            let name = path.strip_prefix(directory).unwrap().display().to_string();
+            let mode = meta.permissions().mode() & 0o7777;
+            if meta.file_type().is_symlink() {
+                found.push(format!(
+                    "{name} link {:?}",
+                    std::fs::read_link(&path).unwrap()
+                ));
+            } else if meta.is_dir() {
+                found.push(format!("{name} directory {mode:o}"));
+                walk.push(path);
+            } else {
+                let contents = blake3::hash(&std::fs::read(&path).unwrap());
+                found.push(format!("{name} file {} {mode:o} {contents}", meta.len()));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A host directory bind-mounted through the configuration is read and written through the local
+/// system's file backend as Docker's bind mount is: the same output, and the same files left.
+#[test]
+fn a_host_directory_is_served_through_a_bind_mount() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let ours_directory = volume_directory("ours");
+    let reference_directory = volume_directory("reference");
+    let command = format!("cd {VOLUME} && {VOLUME_COMMAND}");
+    let mut spec = with_args(image.spec().unwrap(), &["sh", "-c", &command]);
+    let mut mounts = spec.mounts().clone().unwrap();
+    mounts.push(
+        serde_json::from_value(json!({
+            "destination": VOLUME,
+            "type": "bind",
+            "source": ours_directory,
+            "options": ["rbind", "rw"],
+        }))
+        .unwrap(),
+    );
+    spec.set_mounts(Some(mounts));
+    let (ours, _) = ours(&spec, &image, None);
+    let output = Command::new("docker")
+        .args(["run", "--rm", "--platform", "linux/arm64", "--volume"])
+        .arg(format!("{}:{VOLUME}", reference_directory.display()))
+        .args([IMAGE, "sh", "-c", &command])
+        .output()
+        .unwrap();
+    let reference = Outcome {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code().unwrap(),
+    };
+    println!("ours:\n{}{}", ours.stdout, ours.stderr);
+    assert_eq!(ours, reference);
+    assert_eq!(tree(&ours_directory), tree(&reference_directory));
+    let _ = std::fs::remove_dir_all(&ours_directory);
+    let _ = std::fs::remove_dir_all(&reference_directory);
+}
+
+/// The container's port as the TCP connection tests publish it.
+const SERVED_PORT: u16 = 8080;
+
+/// The command that serves one TCP connection in the container: it answers and prints what came.
+fn serve_command() -> String {
+    format!("echo pong | nc -l -p {SERVED_PORT}; echo served")
+}
+
+/// Connects to `at` until the server listens, sends "ping" and reads to the end.
+fn client(at: std::net::SocketAddr) -> String {
+    use std::io::Read;
+    let started = Instant::now();
+    let mut stream = loop {
+        match std::net::TcpStream::connect(at) {
+            Ok(stream) => break stream,
+            Err(error) => {
+                assert!(started.elapsed().as_secs() < 120, "never listened: {error}");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    };
+    stream.write_all(b"ping\n").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    answer
+}
+
+/// A free port of the host's loopback.
+fn free_port() -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    listener.local_addr().unwrap()
+}
+
+/// A program in the container serves a TCP connection from the host on a published port, as with
+/// `docker run --publish`.
+#[test]
+fn a_tcp_connection_from_the_host_reaches_a_published_port() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let spec = with_args(image.spec().unwrap(), &["sh", "-c", &serve_command()]);
+    let at = free_port();
+    let (stdout, stderr) = (Captured::default(), Captured::default());
+    let mut system = LocalSystem::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
+    system.publish(SERVED_PORT, at);
+    let client_thread = std::thread::spawn(move || client(at));
+    let mut container = container_on(&spec, &image, None, system);
+    let Ok(Ending::Finished { status }) = container.run();
+    let ours = (
+        outcome(status, &stdout, &stderr),
+        client_thread.join().unwrap(),
+    );
+    let reference_at = free_port();
+    let reference_client = std::thread::spawn(move || client(reference_at));
+    let output = Command::new("docker")
+        .args(["run", "--rm", "--platform", "linux/arm64", "--publish"])
+        .arg(format!(
+            "{}:{}:{SERVED_PORT}",
+            reference_at.ip(),
+            reference_at.port()
+        ))
+        .args([IMAGE, "sh", "-c", &serve_command()])
+        .output()
+        .unwrap();
+    let reference = (
+        Outcome {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code().unwrap(),
+        },
+        reference_client.join().unwrap(),
+    );
+    assert_eq!(ours, reference);
 }
 
 /// The threaded program tests/programs/threaded.c, built for linux/arm64 with zig's C compiler.

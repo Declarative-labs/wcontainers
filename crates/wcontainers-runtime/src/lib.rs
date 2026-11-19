@@ -10,7 +10,10 @@ use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel::Kernel;
 
 mod container;
+mod errno;
+pub mod files;
 mod image;
+mod net;
 mod spec;
 mod system;
 
@@ -164,6 +167,11 @@ pub trait System: Host {
     /// The back end's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
     fn stop_flag(&mut self, _flag: StopFlag) {}
+    /// Serves a directory of the host as the kernel's file backend, for a bind mount of the
+    /// configuration, before the first turn. A system that cannot answers `Unsupported`.
+    fn serve_directory(&mut self, _source: &std::path::Path) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// What one step did.

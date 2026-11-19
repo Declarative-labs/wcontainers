@@ -133,7 +133,25 @@ pub(crate) struct Accepted {
     pub hostname: String,
     pub groups: Vec<u32>,
     pub uid: u32,
+    /// The bind mount of a host directory, if one is given.
+    pub volume: Option<Volume>,
 }
+
+/// A directory of the host bind-mounted into the container, served by the system's file backend.
+pub(crate) struct Volume {
+    /// Its place among the configuration's mounts, to name it in a refusal.
+    pub index: usize,
+    pub source: std::path::PathBuf,
+    pub destination: String,
+}
+
+/// The mount type of a bind mount, and the options that make one.
+const BIND: &str = "bind";
+const BIND_OPTIONS: &[&str] = &[BIND, "rbind"];
+
+/// The other options of a bind mount that the kernel's mount of the file backend has: read and
+/// write, and no propagation to or from the host.
+const HONOURED_OPTIONS: &[&str] = &["rw", "private", "rprivate"];
 
 fn refused(field: impl Into<String>, reason: impl Into<String>) -> Error {
     Error::Refused {
@@ -202,7 +220,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
     }
     // The kernel makes its mounts and namespaces whatever the configuration says, so leaving the lists
     // out is refused as leaving one of them out is.
-    check_mounts(fields.get("mounts").unwrap_or(&Value::Null))?;
+    let volume = check_mounts(fields.get("mounts").unwrap_or(&Value::Null))?;
     if !fields.contains_key("linux") {
         namespaces(&Value::Null)?;
     }
@@ -249,6 +267,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
             .unwrap_or_else(|| "localhost".to_string()),
         groups: process.user().additional_gids().clone().unwrap_or_default(),
         uid: process.user().uid(),
+        volume,
     })
 }
 
@@ -274,11 +293,24 @@ fn root(value: &Value) -> Result<(), Error> {
 }
 
 /// The mounts must be the kernel's own, each as it makes it and in its order: it makes all of them,
-/// once each, and no others, and the standard makes them in the listed order.
-fn check_mounts(value: &Value) -> Result<(), Error> {
+/// once each, and the standard makes them in the listed order. After them may come one bind mount of
+/// a host directory, which the kernel mounts last, as its file backend.
+fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
     let kernel = mounts();
     let kernel = kernel.as_array().expect("a list");
-    let given = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut given = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut volume = None;
+    if given.len() > kernel.len() {
+        let index = kernel.len();
+        volume = Some(bind_mount(index, &given[index])?);
+        if given.len() > index + 1 {
+            return Err(refused(
+                format!("mounts[{}]", index + 1),
+                "one directory of the host per container: the kernel takes one file backend",
+            ));
+        }
+        given = &given[..index];
+    }
     let options = |mount: &Value| -> Vec<String> {
         let mut options: Vec<String> = mount["options"]
             .as_array()
@@ -354,7 +386,58 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
             ),
         ));
     }
-    Ok(())
+    Ok(volume)
+}
+
+/// A bind mount of a host directory, read and write, at an absolute path other than the root.
+fn bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
+    let field = format!("mounts[{index}]");
+    let options: Vec<&str> = mount["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let bind = mount["type"].as_str() == Some(BIND)
+        || options.iter().any(|option| BIND_OPTIONS.contains(option));
+    if !bind {
+        return Err(refused(
+            &field,
+            format!(
+                "{mount}: of the kernel's own mounts and bind mounts of host directories only these                  are made; other file systems need the kernel"
+            ),
+        ));
+    }
+    if let Some(option) = options
+        .iter()
+        .find(|option| !BIND_OPTIONS.contains(option) && !HONOURED_OPTIONS.contains(option))
+    {
+        return Err(refused(
+            format!("{field}.options"),
+            format!(
+                "{option}: a host directory is mounted read and write with no propagation; other                  options need the kernel's mounts to take them"
+            ),
+        ));
+    }
+    let destination = mount["destination"].as_str().unwrap_or_default();
+    if !destination.starts_with('/') || destination.trim_end_matches('/').is_empty() {
+        return Err(refused(
+            format!("{field}.destination"),
+            format!("{destination:?}: a bind mount needs an absolute path other than the root"),
+        ));
+    }
+    let source = mount["source"].as_str().unwrap_or_default();
+    if !source.starts_with('/') {
+        return Err(refused(
+            format!("{field}.source"),
+            format!("{source:?}: a host directory is named by its absolute path"),
+        ));
+    }
+    Ok(Volume {
+        index,
+        source: source.into(),
+        destination: destination.to_string(),
+    })
 }
 
 fn process(value: &Value) -> Result<(), Error> {

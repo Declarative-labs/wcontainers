@@ -120,6 +120,20 @@ impl<E: Executor> Runtime<E> {
             .ok_or_else(|| Error::NotFound(accepted.args[0].clone()))?;
         let mut kernel = Kernel::new();
         image.add_to(&mut kernel, &accepted.hostname)?;
+        if let Some(volume) = &accepted.volume {
+            system
+                .serve_directory(&volume.source)
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::Unsupported => Error::Refused {
+                        field: format!("mounts[{}]", volume.index),
+                        reason: "this system serves no directory of the host".to_string(),
+                    },
+                    _ => Error::Io {
+                        path: volume.source.clone(),
+                        error,
+                    },
+                })?;
+        }
         let mut cpu = E::new(&self.shared, translator_settings, &machine.offer);
         system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
@@ -134,7 +148,7 @@ impl<E: Executor> Runtime<E> {
                 working_directory: accepted.cwd.as_bytes(),
                 hostname: accepted.hostname.as_bytes(),
                 groups: &accepted.groups,
-                backend: None,
+                backend: accepted.volume.as_ref().map(|v| v.destination.as_bytes()),
             },
         );
         Ok(Container {
