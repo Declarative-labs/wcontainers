@@ -78,6 +78,7 @@ pub const CASES: &[&str] = &[
     "filter-depth",
     "vertex-views",
     "no-scissors",
+    "early-per-primitive",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -113,6 +114,7 @@ pub fn run(name: &str) -> Result<String> {
             "filter-depth" => filter_depth(&c),
             "vertex-views" => vertex_views(&c),
             "no-scissors" => no_scissors(&c),
+            "early-per-primitive" => early_per_primitive(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -2894,6 +2896,138 @@ unsafe fn filter_depth(c: &Ctx) -> Result<String> {
             largest <= 2,
             shades.len() > 16
         ))
+    }
+}
+
+/// A pixel shader forcing early depth tests counts its fragments, and those facing front, in a
+/// root unordered access view, with no render target, while the draw writes depth: a triangle
+/// list of the same triangle twice under `LESS` (the second fails against the first's depth),
+/// then a strip of two triangles under `ALWAYS`, the second of the strip's other winding.
+unsafe fn early_per_primitive(c: &Ctx) -> Result<String> {
+    unsafe {
+        const SIDE: u32 = 4;
+        const DEPTH_CLEAR: f32 = 0.5;
+        let vs = compile(
+            "static const float2 corners[10] = { float2(-1, -1), float2(-1, 3), float2(3, -1),
+                 float2(-1, -1), float2(-1, 3), float2(3, -1),
+                 float2(-1, -1), float2(-1, 3), float2(3, -1), float2(-1, -1) };
+             float4 main(uint id : SV_VertexID) : SV_Position
+             { return float4(corners[id], 0.25, 1); }",
+            s!("vs_5_0"),
+        )?;
+        let ps = compile(
+            "RWByteAddressBuffer counts : register(u0);
+             [earlydepthstencil]
+             void main(float4 p : SV_Position, bool front : SV_IsFrontFace)
+             {
+                 uint was;
+                 counts.InterlockedAdd(0, 1, was);
+                 if (front) counts.InterlockedAdd(4, 1, was);
+             }",
+            s!("ps_5_0"),
+        )?;
+        let param = D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Descriptor: D3D12_ROOT_DESCRIPTOR::default(),
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        };
+        let root = c.root(&[param], D3D12_ROOT_SIGNATURE_FLAG_NONE)?;
+        let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: b.as_ptr().cast(),
+            BytecodeLength: b.len(),
+        };
+        let pso = |func| {
+            c.device.CreateGraphicsPipelineState::<ID3D12PipelineState>(
+                &D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+                    pRootSignature: transmute_copy(&root),
+                    VS: code(&vs),
+                    PS: code(&ps),
+                    SampleMask: u32::MAX,
+                    RasterizerState: D3D12_RASTERIZER_DESC {
+                        FillMode: D3D12_FILL_MODE_SOLID,
+                        CullMode: D3D12_CULL_MODE_NONE,
+                        DepthClipEnable: true.into(),
+                        ..Default::default()
+                    },
+                    DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
+                        DepthEnable: true.into(),
+                        DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+                        DepthFunc: func,
+                        ..Default::default()
+                    },
+                    DSVFormat: DXGI_FORMAT_D32_FLOAT,
+                    PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    ..Default::default()
+                },
+            )
+        };
+        let less = pso(D3D12_COMPARISON_FUNC_LESS)?;
+        let always = pso(D3D12_COMPARISON_FUNC_ALWAYS)?;
+        let depth = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Width: u64::from(SIDE),
+                Height: SIDE,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                Format: DXGI_FORMAT_D32_FLOAT,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+                ..Default::default()
+            },
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        )?;
+        let dsv_heap: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                NumDescriptors: 1,
+                ..Default::default()
+            })?;
+        let dsv = dsv_heap.GetCPUDescriptorHandleForHeapStart();
+        c.device.CreateDepthStencilView(&depth, None, dsv);
+        // Two counters of two words each, one per draw.
+        let counts = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(16, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_COMMON,
+        )?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.OMSetRenderTargets(0, None, false, Some(&dsv));
+        list.SetGraphicsRootSignature(&root);
+        list.RSSetViewports(&[D3D12_VIEWPORT {
+            Width: SIDE as f32,
+            Height: SIDE as f32,
+            MaxDepth: 1.0,
+            ..Default::default()
+        }]);
+        list.RSSetScissorRects(&[RECT {
+            right: SIDE as i32,
+            bottom: SIDE as i32,
+            ..Default::default()
+        }]);
+        let at = counts.GetGPUVirtualAddress();
+        list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, DEPTH_CLEAR, 0, None);
+        list.SetPipelineState(&less);
+        list.SetGraphicsRootUnorderedAccessView(0, at);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list.DrawInstanced(6, 1, 0, 0);
+        list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, DEPTH_CLEAR, 0, None);
+        list.SetPipelineState(&always);
+        list.SetGraphicsRootUnorderedAccessView(0, at + 8);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        list.DrawInstanced(4, 1, 6, 0);
+        c.run(&list)?;
+        Ok(format!("counts {}", words(&c.read(&counts, 0, 16)?)))
     }
 }
 

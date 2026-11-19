@@ -19,14 +19,16 @@ bgfx's 01-cubes, 26-occlusion, 35-dynamic, 37-gpudrivenrendering and 38-bloom, a
 platformer ("Real program"). Godot's 3D platformer: "Real program".
 
 Latest results (run 33, 2026-11-18, desktop shared with other tracks, load not taken; scratch
-run33/, libraries at b436401c): test files 182 of 198 (run33/full1.log; early_depth_stencil_tests
-and layered_rendering newly; buffer_srv now stops at a named refusal); own cases 27 of 27 equal
-real Direct3D 12 (run33/check1.log; the feature answers as in run 31); shader runner 212 of 302
-(run33/runner1.log, below); the crates' 46 tests and the interface's 2 slow path tests pass;
-lint clean (run33/lint1.log, test1.log). Programs (run33/p1-*.log): Microsoft's two samples (0
+run33/, libraries at 0c33f3b4, the run's last code; the same at b436401c in full1.log and
+runner1.log): test files 182 of 198 (run33/full2.log; early_depth_stencil_tests and
+layered_rendering newly; buffer_srv now stops at a named refusal); own cases 28 of 28 equal real
+Direct3D 12 (run33/check2.log, with the new early-per-primitive; the feature answers as in run
+31); shader runner 212 of 302 (run33/runner2.log, below); the crates' 46 tests and the
+interface's 2 slow path tests pass; lint clean (run33/lint2.log, test2.log). Programs
+(run33/p1-*.log at b436401c, p2-*.log at 0c33f3b4): Microsoft's two samples (0
 pixels beyond 8; 3.0 and 2.6 s), Godot's 2D platformer (0 of 518,400 pixels beyond 8; 4.6 s) and
 bgfx 37 (735 to 848 pixels beyond 8 of 20,480 allowed, the overlay's text) draw every compared
-frame as real Direct3D 12 does; Godot's 3D platformer still draws white (its 22 fragment shaders
+frame as real Direct3D 12 does, and again at 0c33f3b4 (2.8 and 2.5 s, 5.1 s, 772 to 880 pixels); Godot's 3D platformer still draws white (its 22 fragment shaders
 refused at naga's validation, G6).
 
 Earlier results (run 31, 2026-11-18; scratch run31/): test files 180 of 198 (run31/full1.log;
@@ -95,10 +97,18 @@ milestone "G5 to the pass bar"):
   `STORAGE_OFFSET` covers unordered access slots only), now refused by name and asked of the
   shaders track. Pixel outputs of another type than their target are written as the target's
   type (`retyped_targets`, `VariantKey::targets_in_shader`, the shaders track's
-  `TargetInShader`) instead of refused. More literals named (below). An orphan of run 32's
+  `TargetInShader`) instead of refused. Draws writing depth or stencil whose pixel shader forces
+  early tests draw each primitive twice (`EarlyTestsPerPrimitive`, below; new own case
+  early-per-primitive, equal to real Direct3D 12). Programs converted with `STORAGE_OFFSET` were
+  refused at conversion since run 31 ("shaders reading helper constants the front does not
+  write": the front's list of the helper constants it writes lacked `StorageOffset`), so no
+  view at an unaligned offset was ever read through it; the list now has it, and refusals of
+  that kind name the constant. More literals named (below). An orphan of run 32's
   last `remote` (a `cargo clippy` blocked for 17 minutes at 1 s of CPU) held the desktop's GPU
   slot shared, so every track's queued jobs and remote commands waited; it was this branch's
-  own, and was ended (`taskkill` of its process tree).
+  own, and was ended (`taskkill` of its process tree). At the end the desktop's build folder of
+  this branch, C:\wc\target\phase-2-graphics-direct3d-12, and run 32's scratch worktree dev32
+  (31 MB, no build output) were deleted; no build output was made in scratch or on the Mac.
 - Run 31 (the third run of the milestone's current form): merged the shared line, shaders and
   webgpu (webgl and direct3d-11 had nothing new); the shaders branch's run 29 to 32 items had
   landed. Settled the independent check of run 30: stages after a domain shader (geometry
@@ -144,9 +154,19 @@ What the front does, by subject:
   texture of the view's sample count), `HelperValue::EarlyTests` written (compares as
   `CompareFn` codes, zero for a test that is off or an aspect the view lacks, reference, read
   mask) and the pixel stage converted with `VariantFlags::EARLY_TESTS` through the formats
-  record (`Bound::early`); counted `EarlyTestsInShader`. Refused by name: such a draw writing
-  depth or stencil (`EarlyTestsPerPrimitive`, not built), behind a geometry or tessellation
-  stage, or on a depth buffer denying shader resources.
+  record (`Bound::early`); counted `EarlyTestsInShader`. A draw that also writes depth or
+  stencil (not read-only in the view, writes on, stencil operations other than keep) draws each
+  primitive alone twice (`early::draw_per_primitive`, counted `EarlyTestsPerPrimitive`): first
+  tested in the program as above with a twin of the pipeline's depth-stencil block whose writes
+  are off, then the pipeline's vertex program alone, with its own depth-stencil block, in a pass
+  with no colour targets, which makes Direct3D's depth and stencil writes. A strip's odd
+  triangles are drawn alone with a twin raster block of the other front face, so culling and
+  `SV_IsFrontFace` are as in the strip (the own case early-per-primitive shows real Direct3D 12
+  counting the second triangle of its strip as back-facing, and ours the same). Refused by name:
+  such a draw behind a geometry or tessellation stage, on a depth buffer denying shader
+  resources, and per primitive: a pixel shader reading its primitive index, instanced,
+  indirect or predicated draws, draws while a query runs, indexed strips, and vertex programs
+  converted for the draw.
 - Layered geometry shaders (run 33, `geometry.rs`, `draw_runs`): where the geometry stage
   writes `SV_RenderTargetArrayIndex` or `SV_ViewportArrayIndex`, the draw after the stage
   helper is drawn once per layer of the bound target views (`LayerSplit`) and per viewport
@@ -650,9 +670,9 @@ it reads each file's "Missing capabilities/tags" skips against the file's `[requ
 real Direct3D 12's capability line (the rig's real logs, copied to run30/real-logs), the
 sections needing shader models above 6.0, and the front's refusals. Each file, by cause:
 
-Run fewer checks than real, nothing failing (53):
+Run fewer checks than real, nothing failing (54, as of run 33):
 - Shader models above 6.0 (section 9 answers 6.0; real's runner says "Compiling SM6.0-SM6.5",
-  ours "SM6.0-SM6.0"), an absent feature, 43: barriers, barycentrics (6.1, and barycentrics
+  ours "SM6.0-SM6.0"), an absent feature, 44: barriers, barycentrics (6.1, and barycentrics
   absent), cast-to-half, cast-to-int, cast-to-uint, cbuffer, compute, descriptors (6.6),
   discard, gather, gather-offset, getdimensions, half (6.2 and 16-bit types), initializer-objects,
   load-level, matrix-semantics, max-min, mesh (6.5 and mesh shaders absent), multiple-rt,
@@ -660,7 +680,8 @@ Run fewer checks than real, nothing failing (53):
   register-reservations-numeric, -profile, -resources and -space, rt-get-sample-info,
   sample-bias, sample-cmp, sample-grad, sample-level, sampler-offset, srv-byteaddressbuffer,
   srv-structuredbuffer, static-initializer, stencil, swizzle-constant-prop, texture-load-offset,
-  texture-load-typed, uav-counter, uav-load, uav-out-param.
+  texture-load-typed, uav-counter, uav-load, uav-out-param; and since run 33 early-depth-stencil
+  (357 checks of real's 390, its "SM6.0-SM6.0" against real's "SM6.0-SM6.5").
   This cause is read from the runner's own lines (its model range and the files' `[require]`
   blocks), not checked check by check: run30/every.cmd, which runs a file on both with every
   check reported, stopped after the Direct3D 11 part on both when run outside the rig's launcher
@@ -672,13 +693,11 @@ Run fewer checks than real, nothing failing (53):
   wave-reconvergence. `WaveOps` follows the back end's `SUBGROUPS`, which the WebGPU back end
   does not declare (a webgpu-track item, "Asked of other tracks"); float64 and int64 are absent.
 
-Fail some checks (37, as of run 33):
+Fail some checks (36, as of run 33):
 - An absent feature: sample-minmax (minimum and maximum filters, refused by name).
 - Not to be matched: uav-atomics and length-property bind views of another kind than their
   shaders declare (a buffer for a `RWTexture2D`, which vkd3d's file itself notes; a structured
   view for a `RWBuffer`); Direct3D 12 leaves that undefined; ours removes the device, real draws.
-- Refused by the front by name, the front's own: early-depth-stencil (a forced early test of a
-  draw writing depth, `EarlyTestsPerPrimitive`, not built; its draw quad is a strip).
 - Refused by the front by name, waiting on G6: texture-load (lines 235 to 267: a texture read as
   another type than its view; and line 145, below).
 - G6, a converter feature refused by name: arithmetic-int-uniform, arithmetic-uint and
@@ -716,7 +735,8 @@ Run 33 (run33/runner1.log, libraries at b436401c): 212 of 302, 90 failing. The 7
 since run 31 (color-clamping, entry-point-semantics, instance-id, interface-packing, loop-sm3,
 many-semantics, return-semantics) came with run 32's shaders merge (run32/base1-runner.log, before
 run 33's changes, has the same 90 failing; run33/fail32base.txt and fail33.txt). early-depth-stencil
-now stops at `EarlyTestsPerPrimitive`, rt-format-mismatch at line 53 (above).
+runs every check through ours but those of shader models above 6.0 (357 of 390, nothing failing;
+with `EarlyTestsPerPrimitive`, run33/runner2.log), rt-format-mismatch stops at line 53 (above).
 
 Run 31 (run31/runner1.log, libraries at 12966001): 205 of 302, the same 97 failing files as run
 30 (the sets compared file by file). The wave operation files still run fewer checks: the
@@ -903,8 +923,9 @@ the program's elements; textures read as another type than their view's format (
 returns the view format's values and the shader takes their bits; needs a variant reading the
 slot in the view's type, such as `decoded`); early tests in the program of a draw writing depth
 or stencil (`EarlyTestsPerPrimitive`), behind a geometry or tessellation stage, or on a depth
-buffer denying shader resources; draws split per layer or viewport while a query runs, into
-target views of different layer counts or into a 3D texture's view.
+buffer denying shader resources, and per primitive those listed under "Early tests in the
+program"; draws split per layer or viewport while a query runs, into target views of different
+layer counts or into a 3D texture's view.
 
 ## Asked of other tracks
 
@@ -947,8 +968,6 @@ a texture slot read in its view's
    resource slots: drop the refusal in `own_storage` (bind.rs) once the converter gives those
    bindings a stride. A texture of another type than its view: replace the refusal in
    `bind.rs` (`read_as`) by the variant reading the slot in the view's type.
-   `EarlyTestsPerPrimitive` (early tests of a draw writing depth or stencil: each primitive
-   drawn again without the shader) is the front's to build when a program needs it.
 3. Godot's 3D platformer: rerun when "inconsistent comparison sampling" lands; if still wrong,
    find the first failing pipeline or draw (refusals print at pipeline creation; E_INVALIDARG
    answers print no reason, a temporary `eprintln!` in `objects.rs`'s `hr` finds them).
@@ -1068,6 +1087,11 @@ A working example of all of it is this track's Windows library: `examples/direct
   <name>`). Do not change the working tree while a rig job of it waits: the job refuses a tree
   other than the one sent. Cases compile their HLSL with the system's `D3DCompile`
   (d3dcompiler_47.dll, part of Windows) where no compiled shader fits.
+- Run 33's scripts (scratch bin/, logs in run33/): `full33.sh <n>` everything at once as
+  `full30.sh` below; `real33.sh <n>` the real programs (Microsoft's samples, Godot's two
+  platformers, bgfx 37); `lt33.sh <n>` lint and the crates' tests; `files33.sh <n> <files>` builds
+  and runs named test files; `runfiles33.sh <n> <files>` named shader runner files
+  (`vkd3d-shader_runner:hlsl+early-depth-stencil.shader_test/...`).
 - Everything at once (run 30): scratch `bin/full30.sh <n>` lints (with the interface crate),
   runs the crates' tests and the interface's slow path tests, every test file, the own program
   and the shader runner into run30/*<n>.log; `bin/programs30.sh <n>` the real programs;
