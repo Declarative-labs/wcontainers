@@ -63,6 +63,14 @@ pub fn ask<M: Message>(message: &M, bytes: &[u8]) -> M::Answer {
     link.get()
 }
 
+/// Asks the host with `message` and `bytes` as data, and reads the answer from the link with `read`.
+pub fn ask_link<M: Message, T>(message: &M, bytes: &[u8], read: impl FnOnce(&Link) -> T) -> T {
+    let link = link_page();
+    link.ask(message, bytes);
+    doorbell();
+    read(link)
+}
+
 /// Rings the doorbell: the virtual CPU leaves to the monitor and comes back answered.
 fn doorbell() {
     barrier::dsb(SY);
@@ -281,6 +289,11 @@ pub fn guest_read_write() -> El1Attributes {
         | El1Attributes::NON_GLOBAL
         | El1Attributes::UXN
         | El1Attributes::PXN
+}
+
+/// Guest memory the guest's level may not touch.
+pub fn guest_no_access() -> El1Attributes {
+    normal() | El1Attributes::NON_GLOBAL | El1Attributes::UXN | El1Attributes::PXN
 }
 
 /// Guest memory the guest's level may only read.

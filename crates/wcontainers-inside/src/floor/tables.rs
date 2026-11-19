@@ -249,6 +249,42 @@ impl Table {
         Ok(())
     }
 
+    /// Points the mapped page at `va` to another frame with `attributes`, and invalidates it as `protect` does.
+    pub fn replace(
+        &self,
+        frames: &mut Frames,
+        va: u64,
+        frame: u64,
+        attributes: El1Attributes,
+    ) -> Result<(), Full> {
+        let (entry, level) = self.find(va).expect("replacing an unmapped page");
+        if level == BLOCK_LEVEL {
+            self.split(frames, va, entry)?;
+        }
+        let slot = self.slot(frames, va, LEAF_LEVEL)?;
+        // SAFETY: the entry is ours, reached through the linear map: made invalid, invalidated, then written.
+        unsafe { ptr::write_volatile(slot, 0) };
+        invalidate(va);
+        // SAFETY: as above.
+        unsafe { ptr::write_volatile(slot, frame | attributes.bits() as u64 | table_or_page()) };
+        barrier();
+        Ok(())
+    }
+
+    /// Unmaps the page at `va`, mapped by a page entry, and invalidates it as `protect` does.
+    pub fn unmap(&self, va: u64) {
+        let (_, level) = self.find(va).expect("unmapping an unmapped page");
+        assert_eq!(level, LEAF_LEVEL, "unmapping a page of a block");
+        let mut table = self.root;
+        for above in 0..LEAF_LEVEL {
+            // SAFETY: table entries are reached through the linear map; `find` saw each level valid.
+            table = unsafe { ptr::read_volatile(entry_at(table, va, above)) } & OUTPUT_ADDRESS;
+        }
+        // SAFETY: as above.
+        unsafe { ptr::write_volatile(entry_at(table, va, LEAF_LEVEL), 0) };
+        invalidate(va);
+    }
+
     /// Breaks the block holding `va` into pages over the same frames with the same attributes.
     fn split(&self, frames: &mut Frames, va: u64, block: u64) -> Result<(), Full> {
         let base = va & !(BLOCK_SIZE - 1);

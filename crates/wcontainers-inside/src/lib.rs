@@ -8,9 +8,12 @@ pub mod boot;
 pub mod build_environment;
 pub mod layout;
 pub mod link;
+pub mod routines;
 pub mod stop;
 pub mod syndrome;
 pub mod translation;
 
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod floor;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub mod native;
