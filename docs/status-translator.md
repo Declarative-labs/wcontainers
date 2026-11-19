@@ -2,6 +2,15 @@
 
 Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
+## For the orchestrator
+
+- Docker's VM stopping (brief, 2026-11-19 05:10): no test of this track can power off, reboot or kill the
+  first process of Docker's VM. Every container it starts (`programs::run_container`, `reference.rs`,
+  `layer3.rs`, `binaries.rs`) is a plain `docker run` with Docker's default capabilities, no
+  `--privileged`, no `--cap-add`, no host namespaces, and (except `binaries`' image set-up) `--network
+  none`; the programs run are Csmith programs (libc's output and exit), generated instruction blocks (whose
+  only system calls are the harness's own write and exit) and the binaries test's ordinary commands.
+
 ## Where things stand
 
 M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2 (the long runs to the plan's
@@ -175,6 +184,14 @@ Progress (from the ledger):
 - Layer 3 at 2026-11-19 04:15: 155 chunks passed, 67,820 compared, 0 mismatches of the translator: chunks
   1 to 152 on the Mac as above, and 198 to 200 on the rented machine. Docker on the Mac down since 02:52,
   the rented machine gone since 04:08, so nothing runs.
+- Layer 3 at 2026-11-19 12:10: 214 chunks passed, 93,686 compared, 0 mismatches of the translator, no new
+  non-pass line since failure 9. Not yet passed: 174 to 181 (the Mac's driver is in 174, on 398df57) and
+  223 upward (`arm-up/up.sh` is in 223). Mac load 32 to 45.
+- From 12:08 the scratch script `arm-up/after-up.sh` (log `after-up.log`) waits for `up.sh` to stop at the
+  expected bar, then runs `arm-up/gap.sh 181`: chunks 181 downward on the rented machine until the next one
+  is one the Mac's driver has started or finished (one translator job there at a time, as the manual asks).
+  Its ledger lines are marked "run downward from chunk 181 by the translator track after its upward run"
+  (script `run-chunk-gap.sh`, `run-chunk.sh` with only that mark changed); log `gap.log`.
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
