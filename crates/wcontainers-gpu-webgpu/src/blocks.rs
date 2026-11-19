@@ -10,6 +10,15 @@ use wcontainers_gpu::{
 
 use crate::{Readback, WebGpu};
 
+/// Texels along each side of a BC block, as `Format::block` gives every BC format.
+const SIDE: usize = 4;
+/// Texels of a BC block.
+const BLOCK_TEXELS: usize = SIDE * SIDE;
+/// Channels of BC6H's texels as the decoder gives them (red, green, blue).
+const RGB: usize = 3;
+/// The widest decoded texel (`Rgba16Float`).
+const WIDEST_DECODED: usize = size_of::<[half::f16; 4]>();
+
 /// The format a BC format is stored in when decoded: 8-bit RGBA (sRGB kept) for BC1 to BC3 and
 /// BC7, 16-bit floats for BC4 and BC5 (their interpolated values) and BC6H (what it decodes to).
 pub(crate) fn decoded(format: Format) -> Option<Format> {
@@ -149,9 +158,11 @@ fn take(desc: &TextureDesc, blocks: &[Vec<u8>], area: &Area) -> Vec<u8> {
     out
 }
 
-/// Decodes one block into 4 by 4 texels of `decoded(format)`, rows packed.
+/// Decodes one block into `SIDE` by `SIDE` texels of `decoded(format)`, rows packed.
 fn decode_block(format: Format, block: &[u8], out: &mut [u8]) {
     use Format::*;
+    // The decoder's pitches are a row's elements: bytes, floats or halves.
+    let row_bytes = SIDE * decoded(format).map_or(0, |d| d.block().2 as usize);
     let signed = matches!(format, Bc4RSnorm | Bc5RgSnorm | Bc6hRgbFloat);
     let halves = |values: &[f32], out: &mut [u8]| {
         for (v, o) in values.iter().zip(out.as_chunks_mut::<2>().0) {
@@ -159,26 +170,27 @@ fn decode_block(format: Format, block: &[u8], out: &mut [u8]) {
         }
     };
     match format {
-        Bc1RgbaUnorm | Bc1RgbaUnormSrgb => bcdec_rs::bc1(block, out, 16),
-        Bc2RgbaUnorm | Bc2RgbaUnormSrgb => bcdec_rs::bc2(block, out, 16),
-        Bc3RgbaUnorm | Bc3RgbaUnormSrgb => bcdec_rs::bc3(block, out, 16),
-        Bc7RgbaUnorm | Bc7RgbaUnormSrgb => bcdec_rs::bc7(block, out, 16),
+        Bc1RgbaUnorm | Bc1RgbaUnormSrgb => bcdec_rs::bc1(block, out, row_bytes),
+        Bc2RgbaUnorm | Bc2RgbaUnormSrgb => bcdec_rs::bc2(block, out, row_bytes),
+        Bc3RgbaUnorm | Bc3RgbaUnormSrgb => bcdec_rs::bc3(block, out, row_bytes),
+        Bc7RgbaUnorm | Bc7RgbaUnormSrgb => bcdec_rs::bc7(block, out, row_bytes),
         Bc4RUnorm | Bc4RSnorm => {
-            let mut v = [0f32; 16];
-            bcdec_rs::bc4_float(block, &mut v, 4, signed);
+            let mut v = [0f32; BLOCK_TEXELS];
+            bcdec_rs::bc4_float(block, &mut v, SIDE, signed);
             halves(&v, out);
         }
         Bc5RgUnorm | Bc5RgSnorm => {
-            let mut v = [0f32; 32];
-            bcdec_rs::bc5_float(block, &mut v, 8, signed);
-            halves(&v, out);
+            let mut v = [[0f32; 2]; BLOCK_TEXELS];
+            bcdec_rs::bc5_float(block, v.as_flattened_mut(), SIDE * 2, signed);
+            halves(v.as_flattened(), out);
         }
         Bc6hRgbUfloat | Bc6hRgbFloat => {
-            let mut rgb = [0u16; 48];
-            bcdec_rs::bc6h_half(block, &mut rgb, 12, signed);
+            let mut rgb = [[0u16; RGB]; BLOCK_TEXELS];
+            bcdec_rs::bc6h_half(block, rgb.as_flattened_mut(), SIDE * RGB, signed);
             let one = half::f16::ONE.to_bits();
-            let texels = out.as_chunks_mut::<2>().0.as_chunks_mut::<4>().0;
-            for (t, o) in rgb.as_chunks::<3>().0.iter().zip(texels) {
+            let halves = out.as_chunks_mut::<{ size_of::<half::f16>() }>().0;
+            let texels = halves.as_chunks_mut::<{ RGB + 1 }>().0;
+            for (t, o) in rgb.iter().zip(texels) {
                 *o = [t[0], t[1], t[2], one].map(u16::to_le_bytes);
             }
         }
@@ -198,16 +210,17 @@ fn decode(format: Format, packed: &[u8], cols: u32, rows: u32, width: u32, heigh
     );
     let layers = packed.len() / (cols * rows * bytes).max(1);
     let mut out = vec![0u8; width * height * layers * texel];
-    let mut tmp = [0u8; 16 * 8];
+    let mut tmp = [0u8; BLOCK_TEXELS * WIDEST_DECODED];
     for l in 0..layers {
         for by in 0..rows {
             for bx in 0..cols {
                 let at = ((l * rows + by) * cols + bx) * bytes;
                 decode_block(format, &packed[at..at + bytes], &mut tmp);
-                for y in 0..4.min(height.saturating_sub(by * 4)) {
-                    let n = 4.min(width.saturating_sub(bx * 4)) * texel;
-                    let to = ((l * height + by * 4 + y) * width + bx * 4) * texel;
-                    out[to..to + n].copy_from_slice(&tmp[y * 4 * texel..y * 4 * texel + n]);
+                for y in 0..SIDE.min(height.saturating_sub(by * SIDE)) {
+                    let n = SIDE.min(width.saturating_sub(bx * SIDE)) * texel;
+                    let to = ((l * height + by * SIDE + y) * width + bx * SIDE) * texel;
+                    let from = y * SIDE * texel;
+                    out[to..to + n].copy_from_slice(&tmp[from..from + n]);
                 }
             }
         }
@@ -244,8 +257,9 @@ impl WebGpu {
         self.slow.hit(SlowPath::BlockDecoded);
         // The texels the area covers inside the level, which may end inside a block.
         let size = |n: u32| (n >> region.mip).max(1);
-        let width = (area.cols * 4).min(size(t.desc.width) - region.origin.x);
-        let height = (area.rows * 4).min(size(t.desc.height) - region.origin.y);
+        let (block_width, block_height, _) = t.desc.format.block();
+        let width = (area.cols * block_width).min(size(t.desc.width) - region.origin.x);
+        let height = (area.rows * block_height).min(size(t.desc.height) - region.origin.y);
         let texels = decode(t.desc.format, &packed, area.cols, area.rows, width, height);
         let texel = t.held.block().2;
         let extent = Extent {
@@ -379,6 +393,23 @@ impl WebGpu {
             let (l, r) = (i as u64 / rows, i as u64 % rows);
             let at = buffer.offset + (l * per_layer + r) * pitch;
             self.write_buffer_impl(buffer.buffer, at, chunk, WriteMode::Ordered);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The decoder's block and texel sizes agree with the interface's for every BC format.
+    #[test]
+    fn block_sizes_match_the_formats() {
+        for format in (0..Format::COUNT).map(crate::format_at) {
+            if let Some(d) = decoded(format) {
+                let (w, h, _) = format.block();
+                assert_eq!((w as usize, h as usize), (SIDE, SIDE), "{format:?}");
+                assert!(d.block().2 as usize <= WIDEST_DECODED, "{format:?}");
+            }
         }
     }
 }
