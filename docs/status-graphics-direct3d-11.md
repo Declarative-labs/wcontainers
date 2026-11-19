@@ -34,6 +34,8 @@ tests before any change (logs/g4s13a-*), and was pushed.
   same failing tests as at run 24; scenes through the library 135 pass, 0 fail, 4 absent; the
   WebGL 2 build's scenes 92 match, 21 fail (all from four scenes refused by name), 30 absent;
   real programs as at run 24.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (16.6 GB) was deleted; no
+  build folder was made on the Mac or in scratch this run. Nothing was installed on the desktop.
 
 G4 run 24 (2026-11-18, from about 18:15 Pacific). Run 23 had committed its code (728773d0) but
 not its status or a push; both are done first. Merged origin/phase-2-graphics-webgpu, -webgl and
