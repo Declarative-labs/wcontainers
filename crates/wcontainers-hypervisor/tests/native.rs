@@ -1,7 +1,8 @@
 //! N2's differential test: every presented ARM64 form's seeded cases (layer 1's) run as the native output's
 //! piece at the guest's level inside Hypervisor.framework, each stop resolved through the position map, and
 //! compared whole with the WebAssembly output under wasmtime; the count at each stop is compared with
-//! definition E. It runs itself as a copy signed with the hypervisor entitlement.
+//! definition E. Beside each drawn case of a load or store runs one of the bar's own made from it: across a
+//! page that refuses, tagged, with bit 55 set, or misaligned where the form checks alignment. It runs itself as a copy signed with the hypervisor entitlement.
 //!
 //! Knobs: `WCONTAINERS_NATIVE_CASES` cases per form, `WCONTAINERS_NATIVE_SEED`, `WCONTAINERS_NATIVE_FORMS` (a
 //! comma-separated list of form names to run alone), `WCONTAINERS_NATIVE_JOBS` threads for the WebAssembly
@@ -37,7 +38,7 @@ mod macos {
     use wcontainers_translator_test::layer1::{Case, Outcome, cases, covered, translated};
 
     use crate::common::{be_signed, load_average, setting};
-    use crate::runner::Runner;
+    use crate::runner::{Runner, edge};
 
     const CASES_VARIABLE: &str = "WCONTAINERS_NATIVE_CASES";
     const SEED_VARIABLE: &str = "WCONTAINERS_NATIVE_SEED";
@@ -98,12 +99,17 @@ mod macos {
             .collect();
         let mut failing = Vec::new();
         let mut total = 0u64;
+        let mut edge_cases = 0u64;
         for form in &chosen {
             let mut generator = generator(seed, &form.name);
             let strategy = cases((*form).clone());
-            let drawn: Vec<Case> = (0..count)
+            let mut drawn: Vec<Case> = (0..count)
                 .map(|_| strategy.new_tree(&mut generator).expect("a case").current())
                 .collect();
+            let edges: Vec<Case> = drawn.iter().filter_map(edge).collect();
+            edge_cases += edges.len() as u64;
+            drawn.extend(edges);
+            let cases = drawn.len();
             let (wasm, native) = std::thread::scope(|scope| {
                 let wasm = scope.spawn(|| translated_all(&drawn, jobs));
                 let native: Vec<_> = drawn.iter().map(|case| runner.case(case)).collect();
@@ -121,13 +127,13 @@ mod macos {
                 }
             }
             if let Some(first) = first {
-                println!("FAIL {}: {failed} of {count}: {first}", form.name);
+                println!("FAIL {}: {failed} of {cases}: {first}", form.name);
                 failing.push(form.name.clone());
             }
         }
         runner.finish();
         println!(
-            "native against WebAssembly: {} forms, {count} cases each ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
+            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
             chosen.len(),
             failing.len(),
             started.elapsed(),

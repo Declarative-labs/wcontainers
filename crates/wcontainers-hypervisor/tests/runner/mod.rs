@@ -12,14 +12,16 @@ pub mod function;
 
 use aarch64_cpu::registers::{ESR_EL1, MDSCR_EL1, SPSR_EL1};
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
-use wcontainers_arm64::carry::{COUNT, LINK, PAGE, RegisterPage, WITHHELD};
+use wcontainers_arm64::carry::{
+    COUNT, LINK, PAGE, RegisterPage, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
+};
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::mirror::{MIRROR, SLOT_SHIFT};
 use wcontainers_arm64::{
     Address, Arm64, FPCR_BITS, FPSR_BITS, Instruction as I, Reg, SystemRegister, decode,
 };
 use wcontainers_guest_cpu::{
-    Fixup, Guest, Held, HostCode, InsideCall, Resume, Side, Span, counted,
+    Fixup, Guest, Held, HostCode, InsideCall, Native, Resume, Route, Side, Span, counted,
 };
 use wcontainers_hypervisor::{
     Exit, Host, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot, link as link_page,
@@ -597,10 +599,9 @@ pub enum Resolved {
 
 /// A guest address as the guest's branches and accesses use it: the top byte cleared unless bit 55 is set.
 pub fn untag(address: u64) -> u64 {
-    let tag_low = u64::BITS - u8::BITS;
-    let select = tag_low - 1;
+    let select = TAG_LOW - 1;
     if address >> select & 1 == 0 {
-        address & ((1 << tag_low) - 1)
+        address & ((1 << TAG_LOW) - 1)
     } else {
         address
     }
@@ -671,13 +672,18 @@ fn slot_target(slot: u64) -> u64 {
 
 /// The first byte of a guest access with the guest's registers `x` and stack pointer `sp`, untagged.
 fn access_address(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> u64 {
+    untag(access_first(i, at, x, sp))
+}
+
+/// The first byte of a guest access as its registers give it, tag and all.
+fn access_first(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> u64 {
     let reg = |r: Reg| match r {
         Reg::X(n) => x[usize::from(n)],
         Reg::Sp => sp,
         Reg::Zero => 0,
     };
     let m = i.memory_access().expect("an access");
-    let address = match m.address {
+    match m.address {
         Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
             reg(base).wrapping_add_signed(offset)
         }
@@ -700,18 +706,94 @@ fn access_address(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> u64 {
             reg(base).wrapping_add(extended << shift)
         }
         Address::Literal { offset } => at.wrapping_add_signed(offset),
+    }
+}
+
+/// The page boundaries of the data area where a page refuses: below it nothing is mapped, then the writable
+/// pages, the read-only page, and nothing again.
+const REFUSING: [u64; 3] = [DATA, DATA + DATA_WRITABLE, DATA + DATA_BYTES];
+
+/// The kinds of the bar's own cases made from a drawn load or store.
+const EDGE_KINDS: u64 = 4;
+
+/// The bar's own case made from a drawn case of a load or store (docs/native.md section 9, N2), chosen by the
+/// case's seed: its access placed across one of the data area's boundaries where a page refuses, at an offset
+/// within it; the same with a tag in the base's top byte; the base with bit 55 set; or, for a form that checks
+/// alignment, the base moved off it. `None` for a form with no base register to move.
+pub fn edge(case: &Case) -> Option<Case> {
+    let i = decode(case.word);
+    let m = i.memory_access()?;
+    let (base, index) = match m.address {
+        Address::Offset { base, .. }
+        | Address::PreIndex { base, .. }
+        | Address::PostIndex { base, .. } => (base, None),
+        Address::Indexed { base, index, .. } => (base, Some(index)),
+        Address::Literal { .. } => return None,
     };
-    untag(address)
+    if index == Some(base) {
+        return None;
+    }
+    let slot = match base {
+        Reg::X(n) => usize::from(n),
+        Reg::Sp => CASE_SP,
+        Reg::Zero => return None,
+    };
+    let mut x = [0u64; GENERAL];
+    x.copy_from_slice(&case.registers[..GENERAL]);
+    let mut sp = case.registers[CASE_SP];
+    match base {
+        Reg::Sp => sp = 0,
+        _ => x[slot] = 0,
+    }
+    // The base that puts the access's first byte at a given address.
+    let delta = access_first(&i, CODE, &x, sp);
+    let seed = case.seed;
+    let bytes = u64::from(m.bytes);
+    let within = (seed >> u8::BITS) % bytes.max(2);
+    let boundary = REFUSING[(seed >> u16::BITS) as usize % REFUSING.len()];
+    let crossing = boundary.wrapping_sub(within).wrapping_sub(delta);
+    let tag = (seed >> u32::BITS) << TAG_LOW;
+    let mut edge = case.clone();
+    edge.registers[slot] = match seed % EDGE_KINDS {
+        0 => crossing,
+        1 => crossing | tag & !(1 << (TAG_LOW - 1)),
+        2 => case.registers[slot] | tag | 1 << (TAG_LOW - 1),
+        _ if matches!(Arm64::route(&i), Route::Aligned | Route::Exclusive) => {
+            case.registers[slot] + within.max(1)
+        }
+        _ => crossing,
+    };
+    Some(edge)
 }
 
 /// Where a fault's address is reported: the access's first byte when it is in the page that refused, else
-/// the first byte of the page that refused.
+/// the first byte of the next page. The pages are told apart by the address bits below the tag, which the
+/// hardware's fault address shares with the guest's whatever the host code untagged.
 fn fault_address(first: u64, fault: u64) -> u64 {
-    let page = untag(fault) & !(PAGE_SIZE - 1);
-    if first & !(PAGE_SIZE - 1) == page {
+    let below_tag = (1 << TAG_LOW) - 1;
+    if (first ^ fault) & below_tag & !(PAGE_SIZE - 1) == 0 {
         first
     } else {
-        page
+        (first | (PAGE_SIZE - 1)).wrapping_add(1)
+    }
+}
+
+/// The alignment fault of an access: the stack pointer's own, as Linux has the CPU check it first, when it is
+/// the base and not a multiple of 16, else at the access's first byte.
+fn misaligned(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> Stop {
+    let sp_base = matches!(
+        i.memory_access().map(|m| m.address),
+        Some(
+            Address::Offset { base: Reg::Sp, .. }
+                | Address::PreIndex { base: Reg::Sp, .. }
+                | Address::PostIndex { base: Reg::Sp, .. }
+                | Address::Indexed { base: Reg::Sp, .. }
+        )
+    );
+    if sp_base && !sp.is_multiple_of(STACK_ALIGNMENT) {
+        Stop::Alignment(sp)
+    } else {
+        Stop::Alignment(access_address(i, at, x, sp))
     }
 }
 
@@ -813,9 +895,7 @@ fn resolve(
                 I::Breakpoint { .. } => Stop::Breakpoint,
                 _ => Stop::Illegal,
             },
-            InsideCall::Misaligned => {
-                Stop::Alignment(access_address(i, span.guest, &state.x, state.sp))
-            }
+            InsideCall::Misaligned => misaligned(i, span.guest, &state.x, state.sp),
             InsideCall::Unreachable => {
                 for fixup in &span.fixups {
                     if let Fixup::Constant { register, value } = *fixup {
@@ -840,7 +920,7 @@ fn resolve(
     let status = ESR_EL1::ISS.read(trapped.syndrome) & FAULT_STATUS;
     let data_abort = class == ESR_EL1::EC::Value::DataAbortLowerEL as u64;
     let stop = if class == ESR_EL1::EC::Value::SPAlignmentFault as u64 {
-        Stop::Alignment(untag(state.sp))
+        Stop::Alignment(state.sp)
     } else if data_abort && status == ALIGNMENT_FAULT {
         Stop::Alignment(access_address(i, span.guest, &state.x, state.sp))
     } else if data_abort {
