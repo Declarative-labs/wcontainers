@@ -53,7 +53,8 @@ values, arrays, matrices) and built DXBC's `InterpolateAt` and the per-sample po
 widened DXIL's 16-bit integers, read constant components picked at run time, refused 64-bit types
 and other unbuilt features by name and added the shader runner's corpus; run 36 verified and
 committed run 35's work, dumped Godot's 3D platformer's refused shaders and swept the typed
-buffers' literals; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
+buffers' literals; run 37 gave shader resource views storage offsets and DXIL targets four
+components; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1538,7 +1539,46 @@ literal sweep step):
   reasons would be the clean form, but the fronts match on the strings, so it is an interface
   change to agree first).
 
+Run 37 (the Direct3D 12 track's converter items: storage offsets of shader resource views, narrower
+DXIL targets; a literal sweep step):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 without conflicts; the shared line,
+  -webgpu, -webgl and -rig had nothing new. origin/phase-1-literals is still not on the shared line
+  (Departures).
+- `VariantFlags::STORAGE_OFFSET` and `ReflectedBinding::stride` now cover raw and structured shader
+  resource views too (storage buffers at texture slots), not only unordered access ones: the
+  Direct3D 12 track's buffer_srv test 13 (a structured view at byte 240, bound from 224) read
+  zeros. Typed views (`TexelBufferView`, `TexelLayout`) and added bindings take no stride and no
+  offset, as the interface says (before, storage-slot typed views got a stride they could not use).
+  New own `cs_readonly` (readonly.hlsl, fxc and dxc): a structured and a raw shader resource view
+  read by index and by `GetDimensions`, drawn in `compute_draw` against real Direct3D 11 at the
+  views' start and at seeded first elements (both routes, 4 seeds each, 0 words apart). New test
+  `shader_resource_buffers_give_their_stride_and_offsets` (variants.rs). The Direct3D 12 front can
+  drop its refusal "StorageOffset of shader resource slots" (`own_storage`, bind.rs).
+- DXIL pixel targets narrower than four components (runner rt-format-mismatch line 53: a shader
+  model 6.0 `float2` into `R32G32B32A32_FLOAT` read the previous draw's (0, 22 as bits), so the
+  draw never happened): WebGPU refuses an output with fewer components than its target's format.
+  DXIL targets now take four components of their own scalar, zero past the value's, as the DXBC
+  route's registers always did (`dxil/registers.rs`). New own `ps_two` (targets.hlsl, a `uint2`
+  into `R32G32B32A32_UINT`), drawn in the new `narrower_targets_draw_as_direct3d_12_does`
+  against real Direct3D 12, comparing the two components written.
+- Literal sweep, one step: the DXIL boundary's resource classes (constant buffers, shader
+  resource views, unordered access views, samplers, counters), numbered by hand on both sides of
+  the C boundary, are one enum `wcs::ResourceClass` in `cpp/boundary.h`, written into Rust by
+  build.rs's header reader (`ir::class`) as dxbc-spirv's IR numbers are; the triples' width is
+  `dxil::TRIPLE`, from the type. `src/stage.rs`: the four-word slot's bytes (`SLOT_BYTES`, from
+  `build::WORD` and `build::VEC4`), words per record, the values block's offsets and span, the
+  pass-through's helper offsets and scalar width now come from those; left there: the program
+  builder's component counts (lines 430 to 490) and the tessellation layout's word numbers. Left
+  elsewhere: as listed in run 36.
+
 Next (in order):
+- First, on the laptop (down at the end of run 37): the whole suite with every corpus and glslang
+  (`ps_two`'s records were taken without glslang; the stage.rs and resource class steps have not
+  met the corpora), then Chrome's compile of the corpora and the WebAssembly comparison.
+- The Direct3D 12 front (theirs, now possible since run 37): drop the refusal "a raw or structured
+  shader resource view at an offset the back end cannot bind (StorageOffset of shader resource
+  slots)" in `own_storage` (bind.rs) and set `STORAGE_OFFSET` for such programs (buffer_srv test
+  13); rerun the runner's rt-format-mismatch (line 53, DXIL targets now four components).
 - The fronts (theirs, now possible): the Direct3D 12 runner's PackedStageValues and array files,
   eval-attrib and shader_eval_attribute (DXBC) rerun after merging; Direct3D 12's front can drop
   the refusals naming `PackedStageValues` and `InterpolateAt` for DXBC. Both fronts' statuses
@@ -1676,10 +1716,10 @@ Next (in order):
 - The cache in a front: G4 and G5 call `convert_cached` and `record_combination`; the browser host
   keeps the bytes in the origin private file system. Building ahead from `combinations` at start.
 - Older items, still open:
-- DXIL values alone in a register keep their own width (run 34; making them four components broke
-  the Direct3D 12 pipeline of `ps_primid`, cause not found), so a Direct3D 12 vertex shader writing
-  a float4 that a pixel shader reads as float2 still fails WebGPU's pipeline check; packed values
-  are done (run 34).
+- DXIL values alone in a register between stages keep their own width (run 34; making them four
+  components broke the Direct3D 12 pipeline of `ps_primid`, cause not found), so a Direct3D 12
+  vertex shader writing a float4 that a pixel shader reads as float2 still fails WebGPU's pipeline
+  check; packed values are done (run 34) and pixel targets take four components (run 37).
 - Send the carried naga changes upstream (below).
 - naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
   images without a format, `OpIsHelperInvocationEXT` (`IsHelperLane()`, wave operations), the sample mask kept as
@@ -1887,6 +1927,33 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 37, 2026-11-18, counts only (laptop i7-8750H, load 1.0 to 5.4 with another track building, 5
+cargo jobs, until it went down at about 20:25 and stayed down to the end of the run; desktop shared
+through the queue, 3 cargo jobs), logs in scratch `graphics-shaders/run37`:
+- Laptop, the whole suite with every corpus and glslang, before `ps_two` existed (suite-1.log):
+  every test passes but the own corpus (the new `cs_readonly`, then unrecorded; both builds
+  `ok-wgsl glsl-write`, now recorded) and the runner corpus's known `distance-4`. Every other
+  corpus verdict as recorded, so the narrower DXIL targets changed none (runner rt-format-mismatch
+  1 to 16 stay `ok`).
+- Desktop, RTX 3080: `compute_draw` (run37-compute.log, default seed 1, 4 seeds): 32 comparisons
+  of each test, 0 failed, `cs_readonly` 0 words apart on both routes at the views' start and at
+  seeded first elements. `draw` (draw.log): 7 tests pass; `ps_two` 0 of 4096 texels apart from
+  real Direct3D 12 on WebGPU and WebGL 2 (its two written components). Not checked: that the
+  WebGPU pipeline fails without the change (the runner's line 53 is that evidence).
+- `ps_two`'s records (`ok`, both builds) were taken on the desktop, without glslang (the laptop
+  was down); its GLSL compile by glslang has not run.
+- Desktop, the whole suite as one GPU job after every change of this run (`cargo test -p
+  wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`, default seeds and case
+  counts, 21:00 to 21:05, suite-gpu3.log): 21 test binaries, all pass. Windows lint (`cargo clippy
+  -p wcontainers-shaders --all-targets -- -D warnings`, suite-gpu2.log): clean.
+- Not rerun this run: the corpora on the laptop after `ps_two` and the stage.rs and boundary
+  literal steps (the laptop was down; the desktop has no corpus but own and rig), Chrome's compile
+  and the WebAssembly comparison.
+- Clean-up at the end: deleted the desktop's `C:\wc\target\phase-2-graphics-shaders` and
+  `C:\wc\out\shaders37`. The laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (built in this run) is still there: the laptop was down at the end; the next run deletes it
+  after its own use. No build output was made in scratch.
 
 Run 36, 2026-11-18, counts only (laptop i7-8750H, load 0.2 to 1.8, 5 cargo jobs; desktop shared
 through the queue, whose hazard group held each job for 10 to 30 minutes), logs in scratch
@@ -2858,8 +2925,8 @@ were already there.
 
 ## Departures from the plan
 
-- The literal check (run 36): the brief asks every track to merge origin/phase-1-literals and adopt
-  `wcontainers-literals`. Not done here: this run's merge permission names only the
+- The literal check (runs 36 and 37): the brief asks every track to merge origin/phase-1-literals and adopt
+  `wcontainers-literals`. Not done here (run 37: still not on the shared line, tip 629694af): this run's merge permission names only the
   phase-2-graphics branches, and that branch brings 348 commits of the phase 1 crates and a
   `rust-toolchain.toml` change into a branch the other five graphics tracks merge. It is better
   merged once on the shared line (G1), which every graphics branch then takes; until then the
