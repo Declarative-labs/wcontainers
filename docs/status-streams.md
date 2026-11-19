@@ -11,8 +11,10 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   (see "S2 check findings"); every item of its bar met, the whole suite at 565881d2 and the speed
   over five test binaries finished in the fourth run (see "Measurements"); its second independent
   check's twelve findings settled in the fifth run (see "S2 second check findings"); its third
-  check's eight findings settled in the sixth run (see "S2 third check findings").
-- What comes next: S2's fourth independent check. Not built and left open on purpose: export of a
+  check's eight findings settled in the sixth run (see "S2 third check findings"); its fourth
+  check's seven findings and the owner's two rulings of 2026-11-19 (`&self` with `Sync`, and
+  `memory_take_dirty`) settled in the seventh run (see "S2 fourth check findings").
+- What comes next: S2's fifth independent check. Not built and left open on purpose: export of a
   process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), the report of which processes share memory and the watch put on
   shared pages when one leaves (it comes with `suspend`), `set_thread_ordering`, the inspection
@@ -32,10 +34,10 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 ## S2
 
 What exists (signatures and firing points in docs/embedder-interface.md):
-- kernel: `System: Host` (system.rs) with `task_id_allocate`, `task_id_free` and the six hooks,
-  all with provided defaults; `TaskId`; `Process` with `id`, `info`, `execution_config`,
-  `memory_read`, `memory_write`, `memory_watch`, `memory_watch_thread` (refused by name),
-  `memory_changed`; `ProcessInfo` with `memory_mapped`, `ceiling_distance`, `compute_used`,
+- kernel: `System: Host + Sync` (system.rs) with `task_id_allocate`, `task_id_free` and the six
+  hooks, all taking `&self` with provided defaults (the abi's `Host` takes `&self` too); `TaskId`;
+  `Process` with `id`, `info`, `execution_config`, `memory_read`, `memory_write`, `memory_watch`,
+  `memory_watch_thread` (refused by name), `memory_take_dirty`; `ProcessInfo` with `memory_mapped`, `ceiling_distance`, `compute_used`,
   `parent`; `Kernel::process(cpu, id)`; `Watch`, `Access`, `MemoryError`, `ThreadOrdering`,
   `ReplayDeterminism`, `ExecutionConfig`, `Unsupported`. `Start` has `ceiling` and `execution`;
   `Kernel::start` returns `Result<(), Unsupported>`.
@@ -47,8 +49,8 @@ What exists (signatures and firing points in docs/embedder-interface.md):
   touches and what thread ends touch; task.rs walks it before a call, signal.rs before a signal or
   an rseq check; `Guest::accessible` checks each copy against the description and treats a watched
   page as not there; a program's fault on a watched page announces the hook.
-- test host: `driver::TestHost<H>`: with `hooks::NoHooks` (every test but the embedder's) it
-  overrides nothing of `System`, so the kernel's own provided defaults answer; with
+- test host: `driver::TestHost<H>`, its state and the test's hooks each behind a `Mutex`: with
+  `hooks::NoHooks` (every test but the embedder's) it overrides nothing of `System`, so the kernel's own provided defaults answer; with
   `Box<dyn hooks::Hooks>` (the test's side of every hook and task id call, plus a call between
   steps) it forwards them. `driver::Prepared::{hooks, ceiling}`, `busybox::run_ours_hooked`.
 
@@ -87,7 +89,7 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   when the process started; the output is the same as with no watch; nothing counted outside a
   description, met at a copy or cut short. Passes both ways.
 - A fault's span: `an_access_that_ends_before_a_watched_page_does_not_announce_it`. Passes.
-- `memory_changed` exact: `the_pages_written_are_exactly_those_a_program_wrote`: a child writes
+- `memory_take_dirty` (was `memory_changed`) exact: `the_pages_written_are_exactly_those_a_program_wrote`: a child writes
   pages 0, 2 and 5 of a buffer itself and page 7 by read(); the record over the buffer is exactly
   [0, 2, 5, 7]. Passes.
 - Lazy memory from the two primitives: `lazy_memory_runs_the_shell_scripts_as_the_reference_does`:
@@ -241,6 +243,44 @@ Found on the way, fixed:
 - [minor] `getrusage`'s `ru_maxrss` in a forked child (ours above 0, the reference 0): the kernel
   track's; listed for it under "For the orchestrator".
 
+## S2 fourth check findings, settled in the seventh run
+
+- The owner's ruling (`&self`, `System: Sync`), first and as its own commit (2cc763e8): every
+  method of `System` and of the abi's `Host` takes `&self`; kernel calls take `&dyn System`; the
+  test host keeps its state behind a `Mutex` (`HostState`) and the test's hooks behind another
+  (`hooks::Hooks: Send`; the embedder tests' records are `Arc<Mutex<..>>`). Kernel unit tests,
+  embedder (15) and streams (20) passed after it (scratch streams/s2e/selfref.log).
+- [blocking] A watch set inside `on_process_exiting` was skipped by the thread-end stores that
+  came after the hook. `end_process` now does each thread's robust list and `CLONE_CHILD_CLEARTID`
+  store first (as Linux's `mm_release` comes before the exit is told), then announces the hook, so
+  a watch set then has nothing of the kernel's left to meet. The first process's stores now come
+  before the others are killed, as in Linux, and agree with what its walk computed. Test
+  `a_watch_set_as_a_process_exits_changes_nothing_the_program_sees` (the 41 calls with a host that
+  watches the buffer only from `on_process_exiting`): output the same as with no hooks (`child
+  cleartid 1`), nothing counted. With the old order it printed `child cleartid 0` (checked once).
+- [blocking] The walk before a call did not start over when a hook raised a watch behind it. Each
+  memory's `Watches` counts raised watches (set, or widened to `All`); `Kernel::walk_watched` runs
+  a call's walk, a signal's and the rseq check again from the start until a pass meets no raised
+  watch. Test `a_watch_raised_behind_a_calls_walk_is_met_before_the_call_acts` (embedder.c
+  `scatter`: recvfrom into page 1, its address into page 2, the length from page 3; the host
+  watches page 1 and at each hook ends that page's watch and puts `All` on the next): ours with no
+  hooks prints what the reference prints (`recvfrom 3 one len 0 next two`), the hooked run the
+  same both inside the hook and between steps, hooks exactly [page 1, page 2, page 3, all writes],
+  nothing counted. Without the restart it printed `recvfrom 3 two len 0 next ` (checked once).
+- [minor] The `&self` ruling: done first (above).
+- [minor] Clippy on Linux: `openpty`'s size is passed as `&raw mut size` (Linux takes a constant
+  pointer, macOS a mutable one). Clippy with warnings denied passes on the ARM machine and here.
+- [minor] `memory_read` of a range that ends before it starts, and `memory_write` past the last
+  address, are refused with the new `MemoryError::InvalidRange`; `memory_watch` acts on no page
+  for them. Checked inside every hook of the order tests.
+- [minor] The walk is a second description of what each call touches, checked only while
+  something is watched: kept, and put to the owner (see "For the orchestrator"). What guards it
+  today: the 41 calls, the 17 shell scripts under lazy memory and the attribute and move tests
+  assert no copy outside a description.
+- [minor] Speed: the check's ARM measurement backs the earlier claim; nothing to settle.
+- The owner's rename of 2026-11-19: `memory_changed` is `memory_take_dirty` (bf36978b, its own
+  commit; the address map's `take_changed` is `take_dirty`).
+
 ## Measurements
 
 - Third run's fixes, stream tests (20 tests, seeds 1 to 3): passed, 27.2 s, load 73 to 82 (21:15).
@@ -364,6 +404,9 @@ Found on the way, fixed:
   takes three test inputs of 1000 elsewhere in the crate for restatements of it, and as a mark it
   says 1000 has a name (`AUDIT_GET`).
 - After the sixth run: unchanged, 7589 lines; the check passes (exit 0).
+- After the seventh run: unchanged, 7589 lines; the check passes (exit 0). The test host's clock
+  step stays `TestHost::ran` (an associated function taking the locked state) so its `1000` keeps
+  its key.
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -381,7 +424,10 @@ anything shipped.
   the same files; the baseline will conflict, and docs/literals.md step 4 says how to settle it
   (leave it, `init`, commit).
 - Hooks and task ids are on `wcontainers_kernel::System`, which extends the abi's `Host`, not on
-  one trait in the abi: the hooks take `Process`, which holds the kernel. The rename of `Host`
+  one trait in the abi: the hooks take `Process`, which holds the kernel. The `&self` ruling names
+  `System`; the abi's `Host` methods (the clocks, randomness, warnings, the backend, connections
+  and the stream ends) take `&self` too, since the naming rule counts them as the `System`'s
+  services and a `Sync` trait whose half takes `&mut self` could not be called from two threads. The rename of `Host`
   into `System` and of `Cpu` into `Executor` is left to the runtime track's merge.
 - `Process` has no executor parameter (`Process<'_, E>` in the rulings) and `ExecutionConfig` no
   `translator` field: the kernel reaches the executor as `dyn Cpu`. `Kernel::process` takes the
@@ -399,7 +445,7 @@ anything shipped.
   the ceiling so placed memory stays below it. The width (the highest address a fixed request may
   name) stays the executor's address space. Stack growth is downward and never reaches the
   ceiling.
-- `memory_changed`'s first answer is every page mapped writable (nothing was recorded before);
+- `memory_take_dirty`'s first answer is every page mapped writable (nothing was recorded before);
   writes by other processes to shared pages are not in a process's record.
 - Watches act on whole pages of `PAGE_SIZE`. Left to the copy check (listed with why in
   docs/embedder-interface.md): `semctl` GETALL/SETALL and the IPC `*_INFO` commands,
@@ -427,6 +473,15 @@ anything shipped.
 
 ## For the orchestrator
 
+- For the owner (design, found by S2's fourth check): the walk in syscall/touch.rs is a second,
+  hand-kept description of what each call touches, beside the call's own copies; a difference is
+  seen only while something is watched (counted as `copy outside the call's description`), so a
+  new call needs a description and nothing checks it while nothing is watched. It is what makes a
+  watch fire before a call has any effect. The other way, Linux's, is to fault inside the copy and
+  run the call again, which loses what the call did before the copy (a datagram). Kept until he
+  rules.
+- For the runtime track: the abi's `Host` methods now take `&self` and `System` requires `Sync`.
+
 - For the kernel track (found by S2's third check): in a forked child `getrusage(RUSAGE_SELF)`
   reports `ru_maxrss` above 0; the reference reports 0.
 - For the owner: a watch resolved between steps through `Kernel::process` wakes its thread only
@@ -437,7 +492,8 @@ anything shipped.
 - For the owner: `task_id_allocate` takes `previous` (the id handed out last), which the
   owner's names do not have; the provided default counter needs it, since a trait's default
   method keeps no state.
-- Names for the owner (suggested): `Process::memory_write(address, bytes)`; `ProcessInfo::parent`;
+- Names for the owner (suggested): `MemoryError::InvalidRange`; `Process::memory_write(address,
+  bytes)`; `ProcessInfo::parent`;
   `ProcessInfo::ceiling_distance` (defined as what new mappings can still take below the ceiling);
   `MemoryError::{NotMapped, NotRead, Executor}`; `Unsupported`; `ExecutionConfig::supported`;
   `Start::ceiling`, `Start::execution`; `task_id_after` (the default counter);
