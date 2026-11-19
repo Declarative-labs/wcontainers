@@ -1430,7 +1430,6 @@ code	crates/wcontainers-guest-cpu/src/translate.rs	int	SyscallRegisters	6
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"address above the host's cap"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"continued after stack loss"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"engine stack nearly full"
-code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"exact floating point requested"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"fault without exact registers"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"jump through a register not recognised"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"left to an address"

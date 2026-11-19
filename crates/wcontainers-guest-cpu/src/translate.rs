@@ -725,7 +725,7 @@ impl Reason {
             Reason::SoftwareFusedMultiplyAdd => "software fused multiply-add",
             Reason::UnsupportedInstructionReached => "unsupported instruction reached",
             Reason::SystemCallNotImplemented => "system call not implemented",
-            Reason::ExactFloatingPointRequested => "exact floating point requested",
+            Reason::ExactFloatingPointRequested => crate::reason::EXACT_FLOATING_POINT_REQUESTED,
             Reason::AddressAboveHostCap => "address above the host's cap",
             Reason::StoppedByFlag => "stopped by the flag",
             Reason::MemoryFault => "memory fault",
