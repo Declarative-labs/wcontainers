@@ -68,6 +68,10 @@ const LINK_ARG: &str = "cargo::rustc-link-arg=";
 const MADE_FROM: &str = "wcontainers-made-from";
 const MESA_BUILD_VARIABLE: &str = "WCONTAINERS_MESA_MADE_FROM";
 const RUSTC_ENV: &str = "cargo::rustc-env=";
+/// Lavapipe, the corpus run's Vulkan reference, by its Meson target, and the variable naming its file.
+const LAVAPIPE_TARGET: &str = "vulkan_lvp";
+const LAVAPIPE_VARIABLE: &str = "WCONTAINERS_LAVAPIPE";
+const INTROSPECTED_TARGETS: &str = "meson-info/intro-targets.json";
 /// Between a variable and its value in `RUSTC_ENV`, and between the parts of the version.
 const ASSIGN: &str = "=";
 const VERSION_PARTS: &str = "+";
@@ -120,7 +124,29 @@ fn main() {
         .expect("the record starts with the commit");
     let options = blake3::hash(recorded.as_bytes()).to_hex();
     println!("{RUSTC_ENV}{MESA_BUILD_VARIABLE}{ASSIGN}{commit}{VERSION_PARTS}{options}");
+    println!(
+        "{RUSTC_ENV}{LAVAPIPE_VARIABLE}{ASSIGN}{}",
+        target_file(build, LAVAPIPE_TARGET).display()
+    );
     println!("{CFG}");
+}
+
+/// The file Meson builds for a target, from its introspection of the build.
+fn target_file(build: &Path, name: &str) -> PathBuf {
+    #[derive(serde::Deserialize)]
+    struct Target {
+        name: String,
+        filename: Vec<PathBuf>,
+    }
+    let path = build.join(INTROSPECTED_TARGETS);
+    println!("{RERUN_IF_CHANGED}{}", path.display());
+    let text = std::fs::read_to_string(&path).expect("Mesa's build has Meson's introspection");
+    let targets: Vec<Target> = serde_json::from_str(&text).expect("introspection is JSON");
+    targets
+        .into_iter()
+        .find(|t| t.name == name)
+        .and_then(|t| t.filename.into_iter().next())
+        .unwrap_or_else(|| panic!("Mesa's build has no target {name}"))
 }
 
 /// The source folder Meson made the build from.

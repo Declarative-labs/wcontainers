@@ -50,7 +50,7 @@ fn main(@location(0) at: vec2<f32>) -> @location(0) vec4<f32> {
 #[test]
 fn resources_are_numbered_by_kind_in_the_stage_set() {
     let mut nir = Nir::from_spirv(&spirv(SAMPLED), Stage::Fragment, ENTRY_POINT).unwrap();
-    let mut bindings = nir.bind(Stage::Fragment).unwrap();
+    let mut bindings = nir.to_common_form(Stage::Fragment).unwrap();
     bindings.sort_by_key(|b| b.binding);
     let set = stage_set(ShaderStage::Fragment);
     let found: Vec<_> = bindings

@@ -83,7 +83,7 @@ unsafe extern "C" {
         stage: Stage,
         entry_point: *const c_char,
     ) -> *mut NirShader;
-    fn wc_nir_bind(
+    fn wc_nir_to_common_form(
         nir: *mut NirShader,
         set: u32,
         ranges: *const SlotRange,
@@ -120,9 +120,10 @@ impl Nir {
         Ok(Nir(nir))
     }
 
-    /// Applies the common form's binding rule ([`crate::bind`]) to the program of `stage`, splitting
-    /// combined image samplers, and gives each resource's reflection.
-    pub fn bind(&mut self, stage: Stage) -> Result<Vec<ReflectedBinding>, ConvertError> {
+    /// Gives the program of `stage` the common form's meaning (sampled array layers rounded to
+    /// integers) and its binding rule ([`crate::bind`]), splitting combined image samplers, and gives
+    /// each resource's reflection.
+    pub fn to_common_form(&mut self, stage: Stage) -> Result<Vec<ReflectedBinding>, ConvertError> {
         let ranges = KINDS.map(|k| SlotRange {
             first: k.first_binding(),
             slots: k.slots(),
@@ -133,7 +134,7 @@ impl Nir {
             count: 0,
         };
         // SAFETY: self.0 is a live shader, ranges holds one range a kind, and the bridge fills `out`.
-        let result = unsafe { wc_nir_bind(self.0, set, ranges.as_ptr(), &mut out) };
+        let result = unsafe { wc_nir_to_common_form(self.0, set, ranges.as_ptr(), &mut out) };
         let made: Vec<ReflectedBinding> = if out.data.is_null() {
             Vec::new()
         } else {
@@ -224,6 +225,10 @@ pub const CONVERTER_VERSION: &str = concat!(
     "+mesa.",
     env!("WCONTAINERS_MESA_MADE_FROM")
 );
+
+/// Lavapipe, Mesa's Vulkan driver on the processor, built with the Mesa this crate links: the
+/// reference the corpus run holds the routes to (plan 15.3).
+pub const LAVAPIPE: &str = env!("WCONTAINERS_LAVAPIPE");
 
 /// The steps named in `ConvertError::Mesa`.
 pub const SPIRV_TO_NIR: &str = "spirv_to_nir";

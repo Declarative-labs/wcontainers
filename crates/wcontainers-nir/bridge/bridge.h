@@ -75,10 +75,12 @@ void wc_finish(void);
 struct nir_shader *wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage,
                                    const char *entry_point);
 
-/* The binding rewrite of every route: each combined image sampler split into a texture and a sampler
- * of the same shape, then every resource renumbered into `set`, each kind from its range's first
- * binding in the order of the program's (set, binding); `out` receives one entry a resource. */
-enum wc_bind_result wc_nir_bind(struct nir_shader *nir, uint32_t set,
+/* What every route does to the NIR to give it the common form's meaning and bindings: array layers of
+ * sampling rounded to the nearest integer (Vulkan's rule; the common form's layer is an integer);
+ * each combined image sampler split into a texture and a sampler of the same shape; then every
+ * resource renumbered into `set`, each kind from its range's first binding in the order of the
+ * program's (set, binding). `out` receives one entry a resource. */
+enum wc_bind_result wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
                                 const struct wc_slot_range ranges[WC_SLOT_KINDS],
                                 struct wc_bindings *out);
 

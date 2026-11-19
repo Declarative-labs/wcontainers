@@ -3806,8 +3806,10 @@ dependencies = [
 name = "wcontainers-nir"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "blake3",
  "cc",
+ "libloading",
  "naga",
  "rand 0.9.5",
  "rand_chacha",

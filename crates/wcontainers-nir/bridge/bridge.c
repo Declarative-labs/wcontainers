@@ -243,10 +243,31 @@ renumber_resource_index(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return false;
 }
 
-enum wc_bind_result
-wc_nir_bind(struct nir_shader *nir, uint32_t set, const struct wc_slot_range ranges[WC_SLOT_KINDS],
-            struct wc_bindings *bindings)
+/* A sampled array layer is the float coordinate rounded to the nearest even integer (Vulkan's rule);
+ * the common form takes an integer layer, so the rounding is made explicit before any conversion. */
+static bool
+round_array_layer(nir_builder *b, nir_instr *instr, void *data)
 {
+   if (instr->type != nir_instr_type_tex)
+      return false;
+   nir_tex_instr *tex = nir_instr_as_tex(instr);
+   int at = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   if (!tex->is_array || at < 0 || nir_tex_instr_src_type(tex, at) != nir_type_float)
+      return false;
+   nir_def *coord = tex->src[at].src.ssa;
+   unsigned layer = coord->num_components - 1;
+   b->cursor = nir_before_instr(instr);
+   nir_def *rounded =
+      nir_vector_insert_imm(b, coord, nir_fround_even(b, nir_channel(b, coord, layer)), layer);
+   nir_src_rewrite(&tex->src[at].src, rounded);
+   return true;
+}
+
+enum wc_bind_result
+wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
+                      const struct wc_slot_range ranges[WC_SLOT_KINDS], struct wc_bindings *bindings)
+{
+   nir_shader_instructions_pass(nir, round_array_layer, nir_metadata_control_flow, NULL);
    split_combined_samplers(nir);
    const nir_variable_mode modes = nir_var_uniform | nir_var_image | nir_var_mem_ubo | nir_var_mem_ssbo;
    size_t found = 0;

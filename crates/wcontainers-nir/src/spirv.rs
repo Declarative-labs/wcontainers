@@ -6,7 +6,7 @@ use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 /// Words before a SPIR-V module's first instruction: magic, version, generator, bound, schema.
 pub const HEADER_WORDS: usize = 5;
 /// An instruction's first word holds its word count in the high half and its opcode in the low half.
-const WORD_COUNT_SHIFT: u32 = u16::BITS;
+pub const WORD_COUNT_SHIFT: u32 = u16::BITS;
 /// Between the errors of a chain.
 const CHAIN_SEPARATOR: &str = ": ";
 
