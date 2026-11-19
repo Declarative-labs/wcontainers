@@ -12,11 +12,12 @@ use wcontainers_gpu::{
     VertexFormat, WriteMode,
 };
 use wcontainers_shaders::stage::{
-    FinalDraw, StageDraw, StageError, StageIndex, Stages, StreamOutput, StreamTargets,
+    DomainSets, FinalDraw, StageDraw, StageError, StageIndex, Stages, StreamOutput, StreamTargets,
 };
 
 use super::*;
 use pull::Bases;
+use wcontainers_directx_graphics_infrastructure::dxgi;
 
 /// What a pipeline with a geometry shader, stream output or hull and domain shaders adds.
 pub(super) struct Geometry<B: Backend> {
@@ -36,6 +37,9 @@ pub(super) struct Geometry<B: Backend> {
     pub middle: (u32, Helpers),
     /// After a hull stage, the domain program's helper block.
     pub domain: Option<Helpers>,
+    /// Where a geometry shader or stream output follows the domain stage, which then runs as
+    /// compute work too: the geometry shader's helper block when there is one.
+    pub after_domain: Option<Option<Helpers>>,
 }
 
 /// A pipeline's stages as made: what draws need, the converted stages whose bindings the
@@ -46,6 +50,8 @@ pub(super) struct Made<B: Backend> {
     /// The geometry or hull stage.
     pub shader: Option<Converted>,
     pub domain: Option<Converted>,
+    /// A geometry shader after the domain stage.
+    pub late: Option<Converted>,
     pub output: Option<Topology>,
 }
 
@@ -78,11 +84,6 @@ impl<B: Backend> Device<B> {
             ));
         }
         let tessellated = !hs.is_empty();
-        if tessellated && (!gs.is_empty() || so.is_some()) {
-            return Err(Error::NotImplemented(
-                "a geometry shader or stream output after a domain shader",
-            ));
-        }
         let rasterized = match so.map(|s| s.1) {
             None | Some(0) => true,
             Some(NO_RASTERIZED_STREAM) => false,
@@ -105,29 +106,38 @@ impl<B: Backend> Device<B> {
             output_interpolation: interpolation.to_vec(),
             ..VariantKey::default()
         };
-        let (shader, domain) = match (gs.is_empty(), tessellated) {
-            (false, _) => (
+        let (shader, domain, late) = match (gs.is_empty(), tessellated) {
+            (false, false) => (
                 Some(self.convert_staged(gs, SourceStage::Geometry, interpolated)?),
                 None,
+                None,
             ),
-            (true, true) => (
-                Some(self.convert_staged(
+            (_, true) => {
+                let hull = self.convert_staged(
                     hs,
                     SourceStage::Hull,
                     formats::typed_key(hs, self.texel_route()),
-                )?),
-                Some(self.convert_staged(
-                    ds,
-                    SourceStage::Domain,
-                    VariantKey {
+                )?;
+                // A domain stage the rasteriser follows writes its outputs as the pixel stage
+                // interpolates them.
+                let domain_key = match gs.is_empty() {
+                    true => VariantKey {
                         output_interpolation: interpolation.to_vec(),
                         ..formats::typed_key(ds, self.texel_route())
                     },
-                )?),
-            ),
-            (true, false) => (None, None),
+                    false => formats::typed_key(ds, self.texel_route()),
+                };
+                let domain = self.convert_staged(ds, SourceStage::Domain, domain_key)?;
+                let late = match gs.is_empty() {
+                    true => None,
+                    false => Some(self.convert_staged(gs, SourceStage::Geometry, interpolated)?),
+                };
+                (Some(hull), Some(domain), late)
+            }
+            (true, false) => (None, None, None),
         };
-        let output = match shader.as_ref().map(|s| &s.reflection.extras) {
+        let last = late.as_ref().or(shader.as_ref());
+        let output = match last.map(|s| &s.reflection.extras) {
             None => None,
             Some(StageExtras::Geometry {
                 output_vertices, ..
@@ -146,9 +156,14 @@ impl<B: Backend> Device<B> {
             Some(_) => return Err(Error::Invalid("a shader stage without its declarations")),
         };
         let stages = match (&shader, &domain) {
-            (Some(hull), Some(domain)) => {
-                Stages::tessellated(&mut self.backend, &vertex, hull, domain)
-            }
+            (Some(hull), Some(domain)) => Stages::tessellated_with(
+                &mut self.backend,
+                &vertex,
+                hull,
+                domain,
+                late.as_ref(),
+                so.map(|s| &s.0),
+            ),
             _ => Stages::new(
                 &mut self.backend,
                 &vertex,
@@ -162,14 +177,20 @@ impl<B: Backend> Device<B> {
             ));
             stage_error(e)
         })?;
-        let layout = match (tessellated, stages.vertex_layout()) {
+        if stages.selects() {
+            stages.destroy(&mut self.backend);
+            return Err(Error::NotImplemented(
+                "a geometry shader choosing a layer or viewport",
+            ));
+        }
+        let layout = match (stages.vertex_layout(), tessellated) {
+            (Some(l), _) => Some(self.layout(l)?),
             // The domain program reads its points from the helper's buffers.
-            (true, _) => Some(self.layout(VertexLayoutDesc {
+            (None, true) => Some(self.layout(VertexLayoutDesc {
                 streams: [None; MAX_VERTEX_STREAMS],
                 attributes: [None; MAX_VERTEX_STREAMS],
             })?),
-            (false, Some(l)) => Some(self.layout(l)?),
-            (false, None) => None,
+            (None, false) => None,
         };
         let streams = vertex
             .reflection
@@ -198,10 +219,13 @@ impl<B: Backend> Device<B> {
                     shader.as_ref().map(Helpers::of).unwrap_or_default(),
                 ),
                 domain: domain.as_ref().map(Helpers::of),
+                after_domain: (tessellated && (late.is_some() || so.is_some()))
+                    .then(|| late.as_ref().map(Helpers::of)),
             },
             vertex,
             shader,
             domain,
+            late,
             output,
         })
     }
@@ -296,6 +320,7 @@ impl<B: Backend> Replay<B> {
         );
         let (middle, middle_helpers) = g.middle.clone();
         let domain = g.domain.clone();
+        let after_domain = g.after_domain.clone();
         let mut extra = Vec::with_capacity(g.streams.len());
         for &(binding, location) in &g.streams {
             let slot = r
@@ -348,12 +373,58 @@ impl<B: Backend> Replay<B> {
             geometry_sets[HELPER_SET as usize] =
                 Some(d.helper_blocks(&[(compute, StageSet::COMPUTE, block)], &[], &[], None)?);
         }
+        // The sets of the domain stage run as compute and of a geometry stage after it.
+        let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
+        let later_sets = match &after_domain {
+            Some(late) => {
+                let mut domain_sets = d
+                    .binding_sets(&self.graphics, pid, &[DOMAIN], &[], StageSet::COMPUTE, None)?
+                    .0;
+                if let Some(helpers) = domain.as_ref().filter(|h| h.size != 0) {
+                    // The compute form keeps the drawn program's helper binding.
+                    let block = d.stage_block(helpers, DOMAIN)?;
+                    let vertex = wcontainers_gpu::helper_binding(ShaderStage::Vertex);
+                    domain_sets[HELPER_SET as usize] = Some(d.helper_blocks(
+                        &[(vertex, StageSet::COMPUTE, block)],
+                        &[],
+                        &[],
+                        None,
+                    )?);
+                }
+                let mut late_sets = Default::default();
+                if let Some(helpers) = late {
+                    late_sets = d
+                        .binding_sets(
+                            &self.graphics,
+                            pid,
+                            &[bind::GEOMETRY],
+                            &[],
+                            StageSet::COMPUTE,
+                            None,
+                        )?
+                        .0;
+                    if helpers.size != 0 {
+                        let block = d.stage_block(helpers, bind::GEOMETRY)?;
+                        late_sets[HELPER_SET as usize] = Some(d.helper_blocks(
+                            &[(compute, StageSet::COMPUTE, block)],
+                            &[],
+                            &[],
+                            None,
+                        )?);
+                    }
+                }
+                Some((domain_sets, late_sets))
+            }
+            None => None,
+        };
+        // The domain program draws unless a geometry stage follows it.
+        let drawn_domain = domain.filter(|_| !matches!(after_domain, Some(Some(_))));
         // The draw's sets but its helper set, and the helper blocks that set holds: after a
         // hull stage the domain stage's too, and the stage helper's patches and points beside
         // them once it ran.
         let pixel_sets = match has_geometry && rasterized {
             true => {
-                let only: &[u32] = match domain {
+                let only: &[u32] = match drawn_domain {
                     Some(_) => &[DOMAIN, bind::PIXEL],
                     None => &[bind::PIXEL],
                 };
@@ -373,7 +444,7 @@ impl<B: Backend> Replay<B> {
                     ));
                 }
                 let mut blocks = Vec::new();
-                if let Some(helpers) = domain.as_ref().filter(|h| h.size != 0) {
+                if let Some(helpers) = drawn_domain.as_ref().filter(|h| h.size != 0) {
                     let block = d.stage_block(helpers, DOMAIN)?;
                     let vertex = wcontainers_gpu::helper_binding(ShaderStage::Vertex);
                     blocks.push((vertex, StageSet::VERTEX, block));
@@ -408,8 +479,8 @@ impl<B: Backend> Replay<B> {
                     .find(v.address)
                     .ok_or(Error::Invalid("an index buffer view of no buffer"))?;
                 let format = match v.format {
-                    57 => IndexFormat::U16,
-                    42 => IndexFormat::U32,
+                    dxgi::R16_UINT => IndexFormat::U16,
+                    dxgi::R32_UINT => IndexFormat::U32,
                     _ => return Err(Error::Invalid("index format")),
                 };
                 let size = d.resources[id.0 as usize].desc.width.next_multiple_of(4);
@@ -430,37 +501,45 @@ impl<B: Backend> Replay<B> {
             .as_mut()
             .and_then(|g| g.stages.take())
             .ok_or(Error::Invalid("a geometry stage in use"))?;
-        let ran = stages.run(
-            &mut d.backend,
-            &StageDraw {
-                vertex_sets: vertex_sets.each_ref().map(Option::as_ref),
-                geometry_sets: geometry_sets.each_ref().map(Option::as_ref),
-                index: index
-                    .as_ref()
-                    .map(|(buffer, size, offset, format)| StageIndex {
-                        buffer,
-                        size: *size,
-                        offset: *offset,
-                        format: *format,
-                    }),
-                topology,
-                range: same_range(&range),
-                stream_output: targets.as_ref().map(|t| StreamTargets {
-                    buffers: t.buffers.each_ref().map(|b| {
-                        b.as_ref().map(|(buffer, offset, size)| BufferRange {
-                            buffer,
-                            offset: *offset,
-                            size: *size,
-                        })
-                    }),
-                    filled: BufferRange {
-                        buffer: &t.filled,
-                        offset: 0,
-                        size: FILLED_BYTES,
-                    },
+        let draw = StageDraw {
+            vertex_sets: vertex_sets.each_ref().map(Option::as_ref),
+            geometry_sets: geometry_sets.each_ref().map(Option::as_ref),
+            index: index
+                .as_ref()
+                .map(|(buffer, size, offset, format)| StageIndex {
+                    buffer,
+                    size: *size,
+                    offset: *offset,
+                    format: *format,
                 }),
-            },
-        );
+            topology,
+            range: same_range(&range),
+            stream_output: targets.as_ref().map(|t| StreamTargets {
+                buffers: t.buffers.each_ref().map(|b| {
+                    b.as_ref().map(|(buffer, offset, size)| BufferRange {
+                        buffer,
+                        offset: *offset,
+                        size: *size,
+                    })
+                }),
+                filled: BufferRange {
+                    buffer: &t.filled,
+                    offset: 0,
+                    size: FILLED_BYTES,
+                },
+            }),
+        };
+        let ran = match &later_sets {
+            Some((domain_sets, late_sets)) => stages.run_after_domain(
+                &mut d.backend,
+                &draw,
+                &DomainSets {
+                    domain_sets: domain_sets.each_ref().map(Option::as_ref),
+                    geometry_sets: late_sets.each_ref().map(Option::as_ref),
+                },
+            ),
+            None => stages.run(&mut d.backend, &draw),
+        };
         let tessellated = match d.render_mut(pid).geometry.as_mut() {
             Some(g) => {
                 g.stages = Some(stages);

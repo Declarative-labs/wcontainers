@@ -11,7 +11,8 @@ mod swapchain;
 
 pub use adapter::{ADAPTER_LUID, AdapterDesc};
 pub use format::{
-    BACK_BUFFER_FORMATS, dxgi_format, dxgi_vertex_format, present_format, present_formats,
+    BACK_BUFFER_FORMATS, dxgi, dxgi_format, dxgi_vertex_format, present_format, present_formats,
+    typeless_group,
 };
 pub use output::{COLOR_SPACE_LINEAR, COLOR_SPACE_SRGB, DisplayMode, OutputDesc, presents_in, sdr};
 pub use support::{FormatSupport, format_support, plane_count, support1, support2, takes_samples};
