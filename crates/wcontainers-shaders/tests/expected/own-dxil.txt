@@ -61,6 +61,7 @@ ps_wave.dxil	ok-wgsl glsl-write
 vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile
 vs_clip_six.dxil	ok-wgsl glsl-compile
+vs_cull.dxil	ok-wgsl glsl-compile
 vs_deep.dxil	ok
 vs_early.dxil	ok
 vs_evaluate.dxil	ok

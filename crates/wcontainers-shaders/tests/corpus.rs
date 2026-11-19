@@ -15,8 +15,11 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use wcontainers_gpu::{DrawBaseSource, Format, SlotKind, TexelBufferRoute, VariantKey};
-use wcontainers_shaders::{ConvertError, Source, cache, capabilities, convert};
+use wcontainers_gpu::{
+    DrawBaseSource, Format, ShaderModule, SlotKind, SystemValue, TexelBufferRoute, VariantKey,
+    VertexFormat,
+};
+use wcontainers_shaders::{ConvertError, Converted, Source, cache, capabilities, convert, stage};
 
 fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -164,10 +167,28 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     };
     let m = &converted.modules[0];
     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-
+    // A vertex shader writing cull distances reaches WebGPU through the stage helper: the WGSL
+    // written is its compute form's, converted with every input pulled.
+    let drawn = |converted: &Converted| -> Result<ShaderModule, String> {
+        if !writes_cull_distances(converted) {
+            return Ok(converted.modules[0].clone());
+        }
+        let k = VariantKey {
+            pulled: pulled_inputs(converted),
+            ..key.clone()
+        };
+        let pulled = convert(source(&bytes), &k, None).map_err(|e| named(e) + " (cull route)")?;
+        stage::cull_programs(&pulled)
+            .map(|p| p.compute)
+            .map_err(|e| named(e) + " (cull route)")
+    };
+    let w = match drawn(&converted) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
     let wgsl = match naga::back::wgsl::write_string(
-        &m.module,
-        &m.info,
+        &w.module,
+        &w.info,
         naga::back::wgsl::WriterFlags::empty(),
     ) {
         Ok(s) => s,
@@ -178,14 +199,14 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     }
     // The converted module is a function of the source and the variant alone.
     let again = convert(source(&bytes), &key, None).unwrap();
-    let m2 = &again.modules[0];
+    let w2 = drawn(&again).unwrap();
     let wgsl2 = naga::back::wgsl::write_string(
-        &m2.module,
-        &m2.info,
+        &w2.module,
+        &w2.info,
         naga::back::wgsl::WriterFlags::empty(),
     )
     .unwrap();
-    if wgsl2 != wgsl || m2.key != m.key {
+    if wgsl2 != wgsl || w2.key != w.key || again.modules[0].key != m.key {
         return "convert nondeterministic".into();
     }
     let reparsed = match naga::front::wgsl::parse_str(&wgsl) {
@@ -193,7 +214,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         Err(e) => return format!("wgsl-parse {}", e.message()),
     };
     if let Err(e) =
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities(&m.module))
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities(&w.module))
             .validate(&reparsed)
     {
         return format!("wgsl-validate {}", e.as_inner());
@@ -253,6 +274,49 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         }
     }
     ok
+}
+
+fn writes_cull_distances(converted: &Converted) -> bool {
+    converted
+        .reflection
+        .outputs
+        .iter()
+        .any(|v| v.system == Some(SystemValue::CullDistance))
+}
+
+/// Every vertex input pulled, in the format its reflection gives.
+fn pulled_inputs(converted: &Converted) -> Vec<(u32, VertexFormat)> {
+    use wcontainers_gpu::ScalarKind as K;
+    converted
+        .reflection
+        .inputs
+        .iter()
+        .filter(|v| v.system.is_none())
+        .map(|v| {
+            let formats = match v.scalar {
+                K::Float => [
+                    VertexFormat::Float32x1,
+                    VertexFormat::Float32x2,
+                    VertexFormat::Float32x3,
+                    VertexFormat::Float32x4,
+                ],
+                K::Uint => [
+                    VertexFormat::Uint32x1,
+                    VertexFormat::Uint32x2,
+                    VertexFormat::Uint32x3,
+                    VertexFormat::Uint32x4,
+                ],
+                K::Sint => [
+                    VertexFormat::Sint32x1,
+                    VertexFormat::Sint32x2,
+                    VertexFormat::Sint32x3,
+                    VertexFormat::Sint32x4,
+                ],
+            };
+            let components = v.mask.checked_ilog2().map_or(1, |high| high + 1) as usize;
+            (v.location, formats[components - 1])
+        })
+        .collect()
 }
 
 fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {

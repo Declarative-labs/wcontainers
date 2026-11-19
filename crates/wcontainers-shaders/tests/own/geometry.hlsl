@@ -178,6 +178,28 @@ void gs_clip(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
 }
 
 
+struct CullOut {
+    float4 position : SV_Position;
+    float4 colour : COLOR0;
+    nointerpolation uint4 ids : TEXCOORD0;
+    float3 cull : SV_CullDistance0;
+    float clip : SV_ClipDistance0;
+};
+
+// vs_geometry's values as ps_geometry reads them, drawn without a geometry shader, with three cull
+// distances (primitives wholly left of a line, wholly above another, or of even vertex numbers only)
+// and a clip distance (a diagonal).
+CullOut vs_cull(float3 position : POSITION, float4 colour : COLOR0, uint vertex : SV_VertexID,
+                uint instance : SV_InstanceID) {
+    CullOut o;
+    o.position = float4(position.x + instance * 0.25, position.y, position.z, 1.0);
+    o.colour = colour;
+    o.ids = uint4(vertex, instance, 0, 0);
+    o.cull = float3(position.x + 0.3, 0.2 - position.y, (vertex & 1) ? 1.0 : -1.0);
+    o.clip = position.x - position.y + 0.9;
+    return o;
+}
+
 float4 ps_geometry(GsOut i) : SV_Target0 {
     return float4(i.colour.rgb, 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
 }

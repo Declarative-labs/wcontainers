@@ -55,8 +55,9 @@ and other unbuilt features by name and added the shader runner's corpus; run 36 
 committed run 35's work, dumped Godot's 3D platformer's refused shaders and swept the typed
 buffers' literals; run 37 gave shader resource views storage offsets and DXIL targets four
 components; run 38 adopted the literal check, reflected system values from the signature (two
-clip distances were counted as one) and passed geometry shaders' clip distances on; what remains
-is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
+clip distances were counted as one) and passed geometry shaders' clip distances on; run 39 built
+cull distances from vertex shaders through the stage helper (`CullDistanceAsGeometry`); what
+remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1634,16 +1635,67 @@ clip distances from geometry shaders; a literal sweep step):
   `hlsl+distance-4-ps.dxil` stays the known failure ("convert rejected: Unknown type!", a reader
   rejection, not a named refusal).
 
+Run 39 (what both fronts wait on: cull distances):
+- Merged origin/phase-2-graphics-direct3d-11 (which held -webgl, -direct3d-12 and the literal
+  check's newer rules) and then origin/phase-2-graphics-webgpu; one conflict, in
+  `literals.baseline` (neighbouring lines the Direct3D 11 track had removed: took its side). The
+  shared line, -rig and phase-1-literals had nothing new.
+- Cull distances (plan 4.12, `SlowPath::CullDistanceAsGeometry`), for vertex shaders by both
+  routes: the conversion writes them as naga's `CullDistance` array (reflected per signature
+  element as `SystemValue::CullDistance`, validated with naga's `CULL_DISTANCE` capability), and
+  the stage helper draws them: `Stages::culled(backend, &vertex, stream_output)` runs the vertex
+  shader's compute form, whose records hold the position, every output location of the converted
+  module (so values the key links, such as clip distances under `CLIP_DISTANCE`, ride along), the
+  clip distances and the cull distances; then a cull program (one invocation per API primitive,
+  `CULL_PROGRAM` in `stage.rs`) writes an index list after the records, each primitive's record
+  numbers in the API's order (odd strip triangles as (n, n + 2, n + 1): first vertex leading,
+  winding kept), or for a dropped primitive the numbers of an empty record whose position is
+  outside every clip volume. The front then draws `FinalDraw` as after a geometry stage (list
+  topology, indexed, `stages.passthrough()` and `stages.vertex_layout()`). New
+  `stage::cull_programs` (the compute form and pass-through, taken from the converted module) and
+  `stage::cull_program`. Adjacency with cull distances is refused by name
+  (`CullDistanceAdjacency`); cull distances from geometry, hull and domain shaders, and read by a
+  pixel shader, are still refused (`CullDistance`).
+- New own `vs_cull` (fxc and dxc): three cull distances (two planes and the vertex number's
+  parity) sharing a register with a clip distance. Unit test
+  `cull_distances_take_the_stage_helpers_route` (both routes) and `the_cull_program_validates`.
+  Drawn against real Direct3D 11 on the RTX 3080 (`geometry_draw`, six new cases: lists, a strip,
+  an indexed list, lines, a line strip with instances, indexed points), the clip distance clipped
+  in the pixel program on wgpu's Direct3D 12 path: 4 seeds, every case passes; triangles 0 to 15
+  texels apart per case by at most 1. Each case's planes drop primitives over the seeds (counted on
+  the CPU so a case dropping none fails).
+- Found on the way: the geometry test's index buffers held an odd number of 16-bit indices for
+  some cases (54 bytes), past what `StageIndex` allows (a multiple of 4): the last index read as 0.
+  The test now writes an even number. Line lists clipped in the pixel program differ from
+  Direct3D at one clipped line end in seeds 2 and 4 (one texel each; Known gaps): the test lists
+  texels within a pixel of the clip plane apart for line cases and fails on any other.
+- The corpus test writes the WGSL of a cull-distance vertex shader's compute form (every input
+  pulled in its reflected format), the program WebGPU runs. Records: own, own-dxil (`vs_cull`),
+  runner (3 DXBC, 4 DXIL `clip-cull-distance` vertex shaders from `unsupported CullDistance` to
+  `ok-wgsl glsl-compile`: glslang does not know ANGLE's cull distance extension, and WebGL 2 has no
+  cull route).
+- Literal sweep: the pass-through's names, the stage helper's adjacency bound and refusals named;
+  the cull program kept as one named constant instead of an included file (an `include_str!` path
+  is a literal the check cannot accept as a new line). The laptop loop's job count stays 5 in the
+  script (changing a script line with a number adds a baseline line); this run passed `-j 4` and
+  ran under `choom` by hand where it mattered.
+
 Next (in order):
+- The fronts (theirs, now possible since run 39): cull distances. Where the back end lacks
+  `Features::CULL_DISTANCE` (every back end today) and a vertex shader's reflection lists
+  `SystemValue::CullDistance`, convert it with every input pulled and `draw_base: Helpers` (and its
+  usual key, `CLIP_DISTANCE` and `linked` included), make `Stages::culled(backend, &vertex, None)`
+  and draw as after a geometry stage. Direct3D 12's combined_clip_and_cull_distances, Direct3D 11's
+  test_clip_distance's cull part, the runner's `clip-cull-distance` files.
 - The fronts (theirs, now possible since run 38): rerun test_clip_distance (both fronts' files)
   and Direct3D 12's clip_distance after merging: the vertex shader's two distances are now
   counted 2 from the reflection, and geometry shaders writing distances convert; a front drawing
   a geometry shader with distances where the back end has none sets `CLIP_DISTANCE` and `linked`
   on the geometry shader's key (its pass-through) and the pixel shader's, as for a vertex shader.
-- Cull distances (both fronts; the runner's 14 files): the stage helper's route of plan 4.12
-  (`CullDistanceAsGeometry`): a vertex shader's cull distances into the vertex records, a pass
-  dropping each primitive whose vertices are all negative on one plane, the pass-through drawing
-  the rest. Not started.
+- Cull distances, the rest: from a geometry shader (the geometry stage's records and its
+  pass-through, as clip distances since run 38), from a domain shader, with stream output from the
+  same vertex shader drawn in the same run (built, not drawn in a test), DXIL on the drawn test
+  (converted and validated only), and on WebGL 2 (transform feedback replay, not built).
 - The Direct3D 11 track's layered item: a primitive naming a layer at or past the view's layer
   count drawn in layer 0's run, and the named layer passed to the pixel program as a flat value
   (needs the view's layer count as a helper value and a flag for the layer from the stage: an
@@ -1823,6 +1875,13 @@ Next (in order):
   the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
   `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
   `tests/geometry_draw.rs` does exactly this.
+- Cull distances from a vertex shader without a geometry or hull stage (WebGPU, `Features::COMPUTE`,
+  the back end without `Features::CULL_DISTANCE`; since run 39): the vertex shader converted as for
+  a geometry shader (every input pulled, `draw_base: Helpers`, its other flags as for a plain draw,
+  `CLIP_DISTANCE` with `linked` where clip distances are not native), then
+  `Stages::culled(backend, &vertex, stream_output)` once per vertex shader and stream output
+  declaration, and per draw `stages.run` with no geometry sets; draw the returned `FinalDraw` as
+  after a geometry stage (indexed, list topology). `tests/geometry_draw.rs` (`CULLED`) does this.
 - Hull and domain shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, the domain
   shader with `output_interpolation` from the pixel shader's inputs, the hull shader plain, the
   vertex shader with every input pulled. `Stages::tessellated(backend, &vertex, &hull, &domain)`
@@ -3162,6 +3221,10 @@ were already there.
 
 ## Known gaps found so far
 
+- Clip distances applied in the pixel program on lines (run 39): Direct3D clips a line and
+  rasterises the rest by its diamond rule, so a clipped end can light a pixel whose centre the
+  distance rejects; the program keeps exactly the pixels whose centres it accepts. Seen once in each
+  of two seeds of `vs_cull`'s line list (one texel each). Triangles are unaffected beyond rounding.
 - Clip distances in the program (run 38): where a pixel centre lies exactly on a clip plane,
   Direct3D's clipped edge passes through it and its fill rule decides; the program keeps a
   distance of exactly zero (and its interpolated value may round either side). Seen only with a

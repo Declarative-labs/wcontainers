@@ -267,13 +267,13 @@ hlsl+clamp-1-ps.dxil	ok
 hlsl+clamp-2-ps.dxil	ok
 hlsl+clip-1-ps.dxil	ok
 hlsl+clip-2-ps.dxil	ok
-hlsl+clip-cull-distance-1-1-vs.dxil	unsupported CullDistance
+hlsl+clip-cull-distance-1-1-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-10-ps.dxil	ok
 hlsl+clip-cull-distance-1-11-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-12-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-13-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-14-vs.dxil	ok-wgsl glsl-compile
-hlsl+clip-cull-distance-1-15-vs.dxil	unsupported CullDistance
+hlsl+clip-cull-distance-1-15-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-16-gs.dxil	unsupported DxilGeometryShader
 hlsl+clip-cull-distance-1-17-vs.dxil	ok
 hlsl+clip-cull-distance-1-18-gs.dxil	unsupported DxilGeometryShader
@@ -281,9 +281,9 @@ hlsl+clip-cull-distance-1-19-gs.dxil	unsupported DxilGeometryShader
 hlsl+clip-cull-distance-1-2-ps.dxil	ok
 hlsl+clip-cull-distance-1-20-gs.dxil	unsupported DxilGeometryShader
 hlsl+clip-cull-distance-1-21-gs.dxil	unsupported DxilGeometryShader
-hlsl+clip-cull-distance-1-5-vs.dxil	unsupported CullDistance
+hlsl+clip-cull-distance-1-5-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-6-ps.dxil	unsupported CullDistance
-hlsl+clip-cull-distance-1-7-vs.dxil	unsupported CullDistance
+hlsl+clip-cull-distance-1-7-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-8-ps.dxil	unsupported CullDistance
 hlsl+clip-cull-distance-1-9-vs.dxil	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-2-1-vs.dxil	ok-wgsl glsl-compile

@@ -523,8 +523,11 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     {
         return Err(ConvertError::Unsupported("PrimitiveId"));
     }
-    // WebGPU has no cull distances, and no clip distances read by a pixel program.
-    if builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance) {
+    // Cull distances are drawn through the stage helper from a vertex program only, and no stage
+    // reads clip distances.
+    if ep.stage != naga::ShaderStage::Vertex
+        && builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance)
+    {
         return Err(ConvertError::Unsupported("CullDistance"));
     }
     if ep.stage == naga::ShaderStage::Fragment
@@ -1411,6 +1414,7 @@ fn stage_values(
         BuiltIn::SampleMask => SystemValue::Coverage,
         BuiltIn::FragDepth => SystemValue::Depth,
         BuiltIn::ClipDistances => SystemValue::ClipDistance,
+        BuiltIn::CullDistance => SystemValue::CullDistance,
         _ => return,
     };
     let scalar = value_kind(kind);

@@ -1079,6 +1079,8 @@ impl<'a> Lowering<'a> {
                 builtin::CLIP_DISTANCE,
             ) => true,
             (SourceStage::Geometry, false, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX) => true,
+            // Drawn through the stage helper ([`crate::stage::Stages::culled`]).
+            (SourceStage::Vertex, false, builtin::CULL_DISTANCE) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
@@ -1317,14 +1319,18 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let b = io.builtin.unwrap();
-            if b == builtin::CLIP_DISTANCE {
-                // The common form's clip distances are one array of f32, however the IR groups
-                // them: every declaration's, in order, made one array where the first is met.
+            let distances = match b {
+                builtin::CLIP_DISTANCE => Some(naga::BuiltIn::ClipDistances),
+                builtin::CULL_DISTANCE => Some(naga::BuiltIn::CullDistance),
+                _ => None,
+            };
+            if let Some(distances) = distances {
+                // The common form's clip (or cull) distances are one array of f32, however the IR
+                // groups them: every declaration's, in order, made one array where the first is met.
                 let clips: Vec<usize> = (0..io_count)
                     .filter(|&j| {
                         let (other, ref io) = self.io[j];
-                        io.builtin == Some(builtin::CLIP_DISTANCE)
-                            && self.ir.op(other).is_ok_and(|o| !input(o.code))
+                        io.builtin == Some(b) && self.ir.op(other).is_ok_and(|o| !input(o.code))
                     })
                     .collect();
                 if clips[0] != i {
@@ -1376,11 +1382,7 @@ impl<'a> Lowering<'a> {
                         components: parts,
                     },
                 );
-                members.push((
-                    format!("b{b}"),
-                    array,
-                    naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances),
-                ));
+                members.push((format!("b{b}"), array, naga::Binding::BuiltIn(distances)));
                 values.push(v);
                 continue;
             }
@@ -1755,6 +1757,7 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
         builtin::CLIP_DISTANCE => SystemValue::ClipDistance,
+        builtin::CULL_DISTANCE => SystemValue::CullDistance,
         builtin::LAYER_INDEX => SystemValue::RenderTargetArrayIndex,
         builtin::VIEWPORT_INDEX => SystemValue::ViewportArrayIndex,
         _ => return None,

@@ -204,6 +204,48 @@ struct Domain<B: Backend> {
     records: Option<Owned<B>>,
 }
 
+/// The cull program and where the records hold what it reads.
+struct Cull<B: Backend> {
+    program: B::Program,
+    passthrough: ShaderModule,
+    /// Slots the pass-through reads after the position: the locations and the clip distances.
+    drawn_slots: u32,
+    /// The word of a record where the cull distances start, and their count.
+    cull_word: u32,
+    distances: u32,
+}
+
+/// The cull program's values (`cull.wgsl`'s `Values`), read through its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct CullValues {
+    units: u32,
+    primitives: u32,
+    count: u32,
+    vertices: u32,
+    strip: u32,
+    record_words: u32,
+    cull_word: u32,
+    cull_count: u32,
+    index_base: u32,
+    empty: u32,
+    pad: [u32; 2],
+}
+
+/// The cull program's bindings: its values, and the records followed by the index list.
+const CULL_VALUES_BINDING: u32 = 0;
+const CULL_DATA_BINDING: u32 = 1;
+/// The most vertices a primitive without adjacency has.
+const TRIANGLE_VERTICES: u32 = 3;
+/// Stream output of a vertex stage drawn with adjacency.
+const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
+/// A vertex stage writing cull distances, drawn with adjacency, which Direct3D draws without the
+/// adjacent vertices.
+const CULL_DISTANCE_ADJACENCY: &str = "CullDistanceAdjacency";
+/// Stream output from a vertex stage writing cull distances whose records do not hold its reflected
+/// locations first.
+const CULL_DISTANCE_STREAM_LOCATIONS: &str = "CullDistanceStreamLocations";
+
 /// The stream output program and its declaration's elements.
 struct Stream<B: Backend> {
     program: B::Program,
@@ -279,6 +321,7 @@ pub struct Stages<B: Backend> {
     hull: Option<Hull<B>>,
     domain: Option<Domain<B>>,
     stream: Option<Stream<B>>,
+    cull: Option<Cull<B>>,
     /// Words per vertex record.
     in_words: u32,
     records: Option<Owned<B>>,
@@ -338,7 +381,64 @@ impl<B: Backend> Stages<B> {
             hull: None,
             domain: None,
             stream,
+            cull: None,
             in_words: super::record_words(read.len()),
+            records: None,
+            out: None,
+            unused,
+            unused_stride,
+        })
+    }
+
+    /// Makes the compute programs of `vertex` (converted with every input pulled), which writes cull
+    /// distances, and of stream output from it if declared: each draw runs it, drops the primitives
+    /// its cull distances drop, and the final draw draws the rest through [`Self::passthrough`]
+    /// ([`SlowPath::CullDistanceAsGeometry`]).
+    pub fn culled(
+        backend: &mut B,
+        vertex: &Converted,
+        stream_output: Option<&StreamOutput>,
+    ) -> Result<Self, StageError> {
+        let programs = super::cull_programs(vertex)?;
+        let shader = backend.create_shader(&programs.compute)?;
+        let vertex_program = backend.create_program(&Program::Compute(&shader))?;
+        let stream = match stream_output {
+            Some(so) => {
+                let reflected = super::locations(&vertex.reflection.outputs);
+                if !programs.locations.starts_with(&reflected) {
+                    return Err(StageError::Unsupported(CULL_DISTANCE_STREAM_LOCATIONS));
+                }
+                Some(stream_parts(backend, so, &vertex.reflection.outputs)?)
+            }
+            None => None,
+        };
+        let shader = backend.create_shader(&super::cull_program()?)?;
+        let program = backend.create_program(&Program::Compute(&shader))?;
+        let drawn_slots =
+            programs.locations.len() as u32 + super::distance_slots(programs.clip_distances);
+        let unused_stride =
+            u64::from(backend.caps().limits.min_storage_offset_alignment).max(UNUSED_RANGE_BYTES);
+        let unused = backend.create_buffer(&BufferDesc {
+            size: UNUSED_RANGES * unused_stride,
+            usage: BufferUsage::STORAGE,
+            intent: MapIntent::Rarely,
+        })?;
+        Ok(Stages {
+            vertex: vertex_program,
+            geometry: None,
+            hull: None,
+            domain: None,
+            stream,
+            cull: Some(Cull {
+                program,
+                passthrough: programs.passthrough,
+                drawn_slots,
+                cull_word: (1 + drawn_slots) * crate::build::VEC4,
+                distances: programs.cull_distances,
+            }),
+            in_words: super::record_words(
+                (drawn_slots + super::distance_slots(programs.cull_distances)) as usize,
+            ),
             records: None,
             out: None,
             unused,
@@ -478,6 +578,7 @@ impl<B: Backend> Stages<B> {
             }),
             domain: domain_stage,
             stream,
+            cull: None,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
@@ -509,16 +610,23 @@ impl<B: Backend> Stages<B> {
         if let Some(s) = self.stream {
             backend.destroy(Object::Program(s.program));
         }
+        if let Some(c) = self.cull {
+            backend.destroy(Object::Program(c.program));
+        }
         for owned in [self.records, self.out].into_iter().flatten() {
             backend.destroy(Object::Buffer(owned.buffer));
         }
         backend.destroy(Object::Buffer(self.unused));
     }
 
-    /// The vertex program of the draw after a geometry stage, for the front's program with its pixel
-    /// program.
+    /// The vertex program of the draw after a geometry stage or the cull program, for the front's
+    /// program with its pixel program.
     pub fn passthrough(&self) -> Option<&ShaderModule> {
-        self.geometry.as_ref().map(|g| &g.passthrough)
+        match (&self.geometry, &self.cull) {
+            (Some(g), _) => Some(&g.passthrough),
+            (None, Some(c)) => Some(&c.passthrough),
+            (None, None) => None,
+        }
     }
 
     /// Whether the geometry stage writes a layer or viewport ([`SlowPath::LayerSplit`],
@@ -533,16 +641,20 @@ impl<B: Backend> Stages<B> {
 
     /// The vertex layout of that draw.
     pub fn vertex_layout(&self) -> Option<VertexLayoutDesc> {
-        let g = self.geometry.as_ref()?;
+        let (words, slots) = match (&self.geometry, &self.cull) {
+            (Some(g), _) => (g.out_words, g.out_locations),
+            (None, Some(c)) => (self.in_words, c.drawn_slots),
+            (None, None) => return None,
+        };
         let mut desc = VertexLayoutDesc {
             streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
             attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
         };
         desc.streams[0] = Some(VertexStream {
-            stride: g.out_words * WORD,
+            stride: words * WORD,
             step: StepMode::Vertex,
         });
-        for slot in 0..=g.out_locations {
+        for slot in 0..=slots {
             desc.attributes[slot as usize] = Some(VertexAttribute {
                 location: slot,
                 stream: 0,
@@ -625,7 +737,12 @@ impl<B: Backend> Stages<B> {
             }
             (_, None) if patches => return Err(StageError::TopologyMismatch),
             (Some(g), None) if n != g.input_vertices => return Err(StageError::TopologyMismatch),
-            (None, None) if n > 3 => return Err(StageError::Unsupported("StreamOutputAdjacency")),
+            (None, None) if n > TRIANGLE_VERTICES && self.cull.is_some() => {
+                return Err(StageError::Unsupported(CULL_DISTANCE_ADJACENCY));
+            }
+            (None, None) if n > TRIANGLE_VERTICES => {
+                return Err(StageError::Unsupported(STREAM_OUTPUT_ADJACENCY));
+            }
             _ => {}
         }
         if strip && draw.index.is_some() {
@@ -638,19 +755,28 @@ impl<B: Backend> Stages<B> {
             true => (count + 1).saturating_sub(n),
         };
         let streamed = self.stream.is_some() && draw.stream_output.is_some();
-        let drawn = self.geometry.is_some() || self.hull.is_some();
+        let drawn = self.geometry.is_some() || self.hull.is_some() || self.cull.is_some();
         if primitives == 0 || instances == 0 || (!drawn && !streamed) {
             return Ok(None);
         }
         let limits = backend.caps().limits;
-        let record_bytes =
-            u64::from(count) * u64::from(instances) * u64::from(self.in_words) * u64::from(WORD);
-        grow(
-            backend,
-            &mut self.records,
-            record_bytes,
-            BufferUsage::STORAGE,
-        )?;
+        let record_count = u64::from(count) * u64::from(instances);
+        let record_bytes = record_count * u64::from(self.in_words) * u64::from(WORD);
+        // On the cull route the records end with the empty record, then the index list the final draw
+        // draws.
+        let (empty, list_base, records_size, records_usage) = match &self.cull {
+            Some(_) => {
+                let empty = u32::try_from(record_count).map_err(|_| GpuError::OutOfMemory)?;
+                let base = (record_count + 1) * u64::from(self.in_words);
+                let base = u32::try_from(base).map_err(|_| GpuError::OutOfMemory)?;
+                let listed = u64::from(primitives) * u64::from(instances) * u64::from(n);
+                let bytes = (u64::from(base) + listed) * u64::from(WORD);
+                let usage = BufferUsage::STORAGE | BufferUsage::VERTEX | BufferUsage::INDEX;
+                (empty, base, bytes, usage)
+            }
+            None => (0, 0, record_bytes, BufferUsage::STORAGE),
+        };
+        grow(backend, &mut self.records, records_size, records_usage)?;
         // After a domain stage: the most points and primitives the tessellator can make for the
         // draw's patches, and the primitives' vertices. The domain stage's compute form runs for every
         // point there can be; the geometry stage for every primitive there can be, those past the
@@ -787,6 +913,60 @@ impl<B: Backend> Stages<B> {
         })?;
 
         let mut last = None;
+        if let Some(c) = &self.cull {
+            backend.slow_paths().hit(SlowPath::CullDistanceAsGeometry);
+            let mut cv = [0u32; word_at(size_of::<CullValues>())];
+            let at = |offset| word_at(offset);
+            cv[at(offset_of!(CullValues, units))] = primitives * instances;
+            cv[at(offset_of!(CullValues, primitives))] = primitives;
+            cv[at(offset_of!(CullValues, count))] = count;
+            cv[at(offset_of!(CullValues, vertices))] = n;
+            cv[at(offset_of!(CullValues, strip))] = strip.into();
+            cv[at(offset_of!(CullValues, record_words))] = self.in_words;
+            cv[at(offset_of!(CullValues, cull_word))] = c.cull_word;
+            cv[at(offset_of!(CullValues, cull_count))] = c.distances;
+            cv[at(offset_of!(CullValues, index_base))] = list_base;
+            cv[at(offset_of!(CullValues, empty))] = empty;
+            let bytes = words_as_bytes(&cv);
+            let mut offsets = [0u64];
+            let ring = backend.write_buffer_ring(
+                RingKind::Data,
+                &[&bytes],
+                limits.min_uniform_offset_alignment,
+                &mut offsets,
+            )?;
+            let set = backend.create_binding_set(&[
+                BindingEntry {
+                    binding: CULL_VALUES_BINDING,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &ring,
+                        offset: offsets[0],
+                        size: bytes.len() as u64,
+                    }),
+                },
+                storage(CULL_DATA_BINDING, records, records_size, true),
+            ])?;
+            let mut sets = [None; MAX_BINDING_SETS];
+            sets[super::STAGE_SET as usize] = Some(&set);
+            backend.dispatch(&DispatchCall {
+                program: &c.program,
+                bindings: sets,
+                immediates: &[],
+                groups: groups(primitives * instances, 1),
+            })?;
+            last = Some(FinalDraw {
+                buffer: records.clone(),
+                index_offset: Some(u64::from(list_base) * u64::from(WORD)),
+                topology: match n {
+                    1 => Topology::PointList,
+                    2 => Topology::LineList,
+                    _ => Topology::TriangleList,
+                },
+                count: primitives * instances * n,
+                tessellated: None,
+            });
+        }
         if let Some(h) = &mut self.hull {
             backend.slow_paths().hit(SlowPath::TessellationAsCompute);
             let patch_bytes = (u64::from(tess::HEADER_WORDS)
@@ -1102,7 +1282,7 @@ fn geometry_parts<B: Backend>(
     let distances = super::clip_distances(&geometry.reflection);
     let slots = super::locations(&geometry.reflection.outputs).len()
         + usize::from(selects)
-        + super::clip_slots(distances) as usize;
+        + super::distance_slots(distances) as usize;
     let shader = backend.create_shader(&geometry.modules[0])?;
     Ok(Geometry {
         program: backend.create_program(&Program::Compute(&shader))?,

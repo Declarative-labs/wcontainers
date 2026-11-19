@@ -31,6 +31,7 @@ const VERTICES: usize = 64;
 const STRIDE: u32 = 28;
 
 struct Case {
+    vs: &'static str,
     gs: &'static str,
     topology: InputTopology,
     count: u32,
@@ -43,6 +44,7 @@ struct Case {
 
 const CASES: [Case; 15] = [
     Case {
+        vs: "vs_geometry",
         gs: "gs_quads",
         topology: InputTopology::PointList,
         count: 24,
@@ -52,6 +54,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_quads",
         topology: InputTopology::PointList,
         count: 20,
@@ -61,6 +64,7 @@ const CASES: [Case; 15] = [
         indexed: Some(5),
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_cut",
         topology: InputTopology::TriangleList,
         count: 18,
@@ -70,6 +74,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_cut",
         topology: InputTopology::TriangleStrip,
         count: 9,
@@ -79,6 +84,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_cut",
         topology: InputTopology::TriangleList,
         count: 12,
@@ -88,6 +94,7 @@ const CASES: [Case; 15] = [
         indexed: Some(-2),
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_instances",
         topology: InputTopology::TriangleList,
         count: 6,
@@ -97,6 +104,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_lines",
         topology: InputTopology::LineList,
         count: 10,
@@ -106,6 +114,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_lines",
         topology: InputTopology::LineStrip,
         count: 7,
@@ -115,6 +124,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_points",
         topology: InputTopology::PointList,
         count: 30,
@@ -124,6 +134,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_adjacent",
         topology: InputTopology::TriangleListAdjacency,
         count: 18,
@@ -133,6 +144,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_adjacent",
         topology: InputTopology::TriangleListAdjacency,
         count: 12,
@@ -142,6 +154,7 @@ const CASES: [Case; 15] = [
         indexed: Some(4),
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_line_adjacent",
         topology: InputTopology::LineListAdjacency,
         count: 12,
@@ -151,6 +164,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_line_adjacent",
         topology: InputTopology::LineStripAdjacency,
         count: 9,
@@ -160,6 +174,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_clip",
         topology: InputTopology::TriangleList,
         count: 30,
@@ -169,6 +184,7 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_clip",
         topology: InputTopology::TriangleStrip,
         count: 14,
@@ -178,6 +194,132 @@ const CASES: [Case; 15] = [
         indexed: None,
     },
 ];
+
+/// Vertex shaders writing cull distances, drawn without a geometry shader: the stage helper's cull
+/// route.
+const CULLED: [Case; 6] = [
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::TriangleStrip,
+        count: 15,
+        first: 2,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::TriangleList,
+        count: 24,
+        first: 3,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(4),
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::LineList,
+        count: 20,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::LineStrip,
+        count: 9,
+        first: 1,
+        instances: 2,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::PointList,
+        count: 30,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(-1),
+    },
+];
+
+/// The primitives of a `vs_cull` draw that its first two cull distances drop (all vertices left of
+/// x = -0.3, or all above y = 0.2), counted on the CPU so that a case dropping none is seen.
+fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
+    let n = match case.topology {
+        InputTopology::PointList => 1,
+        InputTopology::LineList | InputTopology::LineStrip => 2,
+        _ => 3,
+    };
+    let strip = matches!(
+        case.topology,
+        InputTopology::LineStrip | InputTopology::TriangleStrip
+    );
+    let primitives = if strip {
+        (case.count + 1).saturating_sub(n)
+    } else {
+        case.count / n
+    };
+    let vertex = |i: u32| -> usize {
+        let place = case.first + i;
+        match case.indexed {
+            Some(base) => {
+                let at = std::mem::size_of::<u16>() * place as usize;
+                let index = u16::from_le_bytes([indices[at], indices[at + 1]]);
+                (i32::from(index) + base) as usize
+            }
+            None => place as usize,
+        }
+    };
+    let floats = STRIDE as usize / std::mem::size_of::<f32>();
+    let below = |first: u32, plane: fn(f32, f32) -> f32| {
+        (0..n).all(|k| {
+            let v = vertex(first + k) * floats;
+            plane(vertices[v], vertices[v + 1]) < 0.0
+        })
+    };
+    (0..primitives)
+        .filter(|&p| {
+            let first = if strip { p } else { p * n };
+            below(first, |x, _| x + 0.3) || below(first, |_, y| 0.2 - y)
+        })
+        .count() as u32
+}
+
+fn lines(t: InputTopology) -> bool {
+    matches!(t, InputTopology::LineList | InputTopology::LineStrip)
+}
+
+/// Whether texel (x, y)'s centre is within a pixel of `vs_cull`'s clip plane (x - y + 0.9 = 0 in clip
+/// space, each instance moved right by its offset), measured across the plane.
+fn near_clip_plane(case: &Case, x: u32, y: u32) -> bool {
+    let pixel = 2.0 / SIZE as f32;
+    let (cx, cy) = (
+        (x as f32 + 0.5) * pixel - 1.0,
+        1.0 - (y as f32 + 0.5) * pixel,
+    );
+    (0..case.instances).any(|i| {
+        let distance = (cx - i as f32 * 0.25 - cy + 0.9) / std::f32::consts::SQRT_2;
+        distance.abs() <= pixel * std::f32::consts::SQRT_2
+    })
+}
 
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
     match t {
@@ -205,13 +347,14 @@ fn vertices(seed: u64) -> Vec<f32> {
     v
 }
 
-/// Seeded 16-bit indices, kept inside the vertices with the case's base vertex.
+/// Seeded 16-bit indices, kept inside the vertices with the case's base vertex, an even number of
+/// them: the stage helper reads the buffer as whole words, as fronts hold it.
 fn indices(seed: u64, case: &Case) -> Vec<u8> {
     let mut rng = fastrand::Rng::with_seed(seed ^ 0x5eed);
     let base = case.indexed.unwrap_or(0);
     let low = (-base).max(0) as u16;
     let high = (VERTICES as i32 - base.max(0)) as u16;
-    (0..case.first + case.count)
+    (0..(case.first + case.count).next_multiple_of(2))
         .flat_map(|_| rng.u16(low..high).to_le_bytes())
         .collect()
 }
@@ -225,17 +368,17 @@ fn constants() -> Vec<u8> {
 }
 
 fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8> {
-    let (vs, ps, gs) = (
-        bytecode("vs_geometry.dxbc"),
+    let (vs, ps) = (
+        bytecode(&format!("{}.dxbc", case.vs)),
         bytecode("ps_geometry.dxbc"),
-        bytecode(&format!("{}.dxbc", case.gs)),
     );
     let elements = [
         d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
         d3d11::element(s!("COLOR"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, 0),
     ];
     gpu.program(&vs, &ps, &elements).unwrap();
-    let geometry = gpu.gs(&gs).unwrap();
+    let geometry =
+        (!case.gs.is_empty()).then(|| gpu.gs(&bytecode(&format!("{}.dxbc", case.gs))).unwrap());
     let _buffer = gpu.vertices(0, bytes_of(vertices), STRIDE).unwrap();
     let constants = gpu
         .immutable(&constants(), D3D11_BIND_CONSTANT_BUFFER)
@@ -247,7 +390,7 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8>
         .map(|_| gpu.immutable(indices, D3D11_BIND_INDEX_BUFFER).unwrap());
     unsafe {
         let c = &gpu.context;
-        c.GSSetShader(&geometry, None);
+        c.GSSetShader(geometry.as_ref(), None);
         c.GSSetConstantBuffers(0, Some(&[Some(constants)]));
         c.RSSetState(&raster);
         c.IASetPrimitiveTopology(d3d_topology(case.topology));
@@ -344,21 +487,31 @@ fn ours<B: Backend>(
         )
         .unwrap()
     });
-    // Clip distances from the geometry stage, clipped in the pixel program as on a back end without
-    // them (wgpu's Direct3D 12 path), linked past every value either program passes; counted from
-    // the reflection as a front counts them.
-    let clips: u32 = gs
+    let vs_key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        draw_base: DrawBaseSource::Helpers,
+        ..Default::default()
+    };
+    let vs_code = bytecode(&format!("{}.dxbc", case.vs));
+    let vs = convert(Source::Dxbc(&vs_code), &vs_key, None).unwrap();
+    // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
+    // without them (wgpu's Direct3D 12 path), linked past every value either program passes;
+    // counted from the reflection as a front counts them.
+    let last_stage = gs.as_ref().unwrap_or(&vs);
+    let clips: u32 = last_stage
+        .reflection
+        .outputs
         .iter()
-        .flat_map(|g| &g.reflection.outputs)
         .filter(|v| v.system == Some(SystemValue::ClipDistance))
         .map(|v| v.mask.count_ones())
         .sum();
-    let (gs, ps) = if clips == 0 {
-        (gs, ps)
+    let (vs, gs, ps) = if clips == 0 {
+        (vs, gs, ps)
     } else {
-        let location = gs
+        let location = last_stage
+            .reflection
+            .outputs
             .iter()
-            .flat_map(|g| &g.reflection.outputs)
             .chain(&ps.reflection.inputs)
             .filter(|v| v.system.is_none())
             .map(|v| v.location + 1)
@@ -374,25 +527,30 @@ fn ours<B: Backend>(
             samples,
             ..base.clone()
         };
-        let gs_code = bytecode(&format!("{}.dxbc", case.gs));
         let ps_code = bytecode("ps_geometry.dxbc");
-        (
-            Some(convert(Source::Dxbc(&gs_code), &key(&gs_key, 0), None).unwrap()),
-            convert(
-                Source::Dxbc(&ps_code),
-                &key(&VariantKey::default(), 1),
-                None,
-            )
-            .unwrap(),
+        let ps = convert(
+            Source::Dxbc(&ps_code),
+            &key(&VariantKey::default(), 1),
+            None,
         )
+        .unwrap();
+        match gs {
+            Some(_) => {
+                let gs_code = bytecode(&format!("{}.dxbc", case.gs));
+                let gs = convert(Source::Dxbc(&gs_code), &key(&gs_key, 0), None).unwrap();
+                (vs, Some(gs), ps)
+            }
+            None => {
+                let vs = convert(Source::Dxbc(&vs_code), &key(&vs_key, 0), None).unwrap();
+                (vs, None, ps)
+            }
+        }
     };
-    let vs_key = VariantKey {
-        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
-        draw_base: DrawBaseSource::Helpers,
-        ..Default::default()
+    // Without a geometry stage or stream output, the vertex stage writes cull distances.
+    let mut stages = match (&gs, stream) {
+        (None, None) => Stages::culled(b, &vs, None).unwrap(),
+        _ => Stages::new(b, &vs, gs.as_ref(), stream).unwrap(),
     };
-    let vs = convert(Source::Dxbc(&bytecode("vs_geometry.dxbc")), &vs_key, None).unwrap();
-    let mut stages = Stages::new(b, &vs, gs.as_ref(), stream).unwrap();
 
     // The vertex stage's sets: the pulled streams in set 0, their layout in its helper block.
     let vertex_buffer = buffer(
@@ -838,6 +996,7 @@ fn direct3d_streamed(
 /// vertex shader alone (`gs` empty), some filling the first buffer.
 const STREAMED: [Case; 9] = [
     Case {
+        vs: "vs_geometry",
         gs: "gs_unplaced",
         topology: InputTopology::PointList,
         count: 30,
@@ -847,6 +1006,7 @@ const STREAMED: [Case; 9] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_cut",
         topology: InputTopology::TriangleList,
         count: 18,
@@ -856,6 +1016,7 @@ const STREAMED: [Case; 9] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_cut",
         topology: InputTopology::TriangleStrip,
         count: 9,
@@ -865,6 +1026,7 @@ const STREAMED: [Case; 9] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_lines",
         topology: InputTopology::LineStrip,
         count: 7,
@@ -874,6 +1036,7 @@ const STREAMED: [Case; 9] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "gs_points",
         topology: InputTopology::PointList,
         count: 30,
@@ -883,6 +1046,7 @@ const STREAMED: [Case; 9] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "",
         topology: InputTopology::TriangleStrip,
         count: 10,
@@ -892,6 +1056,7 @@ const STREAMED: [Case; 9] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "",
         topology: InputTopology::TriangleList,
         count: 12,
@@ -901,6 +1066,7 @@ const STREAMED: [Case; 9] = [
         indexed: Some(3),
     },
     Case {
+        vs: "vs_geometry",
         gs: "",
         topology: InputTopology::LineList,
         count: 8,
@@ -910,6 +1076,7 @@ const STREAMED: [Case; 9] = [
         indexed: None,
     },
     Case {
+        vs: "vs_geometry",
         gs: "",
         topology: InputTopology::PointList,
         count: 20,
@@ -1015,15 +1182,17 @@ fn geometry_shaders_draw_as_direct3d_does() {
     let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
         .map(|s| s.parse().unwrap())
         .unwrap_or(4);
+    // Primitives each cull case's planes drop over the seeds: none would leave culling unshown.
+    let mut dropped = [0u32; CULLED.len()];
     let mut failures = Vec::new();
     let mut compared = 0;
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for case in &CASES {
+        for (i, case) in CASES.iter().chain(&CULLED).enumerate() {
             let indices = indices(seed, case);
+            let shader = if case.gs.is_empty() { case.vs } else { case.gs };
             let name = format!(
-                "seed {seed} {} {:?} {} from {} x{}{}",
-                case.gs,
+                "seed {seed} {shader} {:?} {} from {} x{}{}",
                 case.topology,
                 case.count,
                 case.first,
@@ -1032,6 +1201,11 @@ fn geometry_shaders_draw_as_direct3d_does() {
                     .map(|b| format!(" indexed, base {b}"))
                     .unwrap_or_default()
             );
+            if let Some(total) = i.checked_sub(CASES.len()).map(|c| &mut dropped[c]) {
+                let planes = dropped_by_planes(case, &vertices, &indices);
+                eprintln!("{name}: the planes drop {planes} primitives");
+                *total += planes;
+            }
             let reference = direct3d(&gpu, case, &vertices, &indices);
             // Texels drawn: those unlike the corner, which no case draws.
             let drawn = reference
@@ -1042,23 +1216,54 @@ fn geometry_shaders_draw_as_direct3d_does() {
                 unreachable!()
             };
             let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
+            // A line clipped in the pixel program keeps the pixels whose centres the distance
+            // keeps, where Direct3D clips the line and rasterises what is left by its diamond
+            // rule: a line's clipped end may differ by a pixel (Known gaps). Those texels are
+            // listed apart; any other difference counts.
+            let (ends, largest) = if case.vs == "vs_cull" && lines(case.topology) {
+                let mut ends = 0;
+                let mut largest = 0;
+                for (i, (a, b)) in reference.chunks(4).zip(picture.chunks(4)).enumerate() {
+                    let apart = a
+                        .iter()
+                        .zip(b)
+                        .map(|(x, y)| u64::from(x.abs_diff(*y)))
+                        .max()
+                        .unwrap();
+                    if apart == 0 {
+                        continue;
+                    }
+                    if near_clip_plane(case, i as u32 % SIZE, i as u32 / SIZE) {
+                        ends += 1;
+                    } else {
+                        largest = largest.max(apart);
+                    }
+                }
+                (ends, largest)
+            } else {
+                (0, largest)
+            };
             // Clipped in the pixel program, attributes are interpolated over the whole triangle,
             // which rounds apart from Direct3D's over the clipped one by a step or two; a pixel
             // drawn on one side only differs by far more.
-            let allowed = if case.gs == "gs_clip" { 2 } else { 0 };
+            let allowed = if case.gs == "gs_clip" || case.vs == "vs_cull" {
+                2
+            } else {
+                0
+            };
             compared += 1;
             eprintln!(
-                "{name}: {drawn} texels drawn by direct3d, {count} differ (largest {largest}, \
-                 allowed {allowed})"
+                "{name}: {drawn} texels drawn by direct3d, {count} differ ({ends} at a clipped \
+                 line end; largest of the others {largest}, allowed {allowed})"
             );
             if std::env::var_os("WCONTAINERS_SHADERS_OUT").is_some() {
                 keep(
-                    &format!("geometry-{seed}-{}-d3d", case.gs),
+                    &format!("geometry-{seed}-{i}-{shader}-d3d"),
                     &reference,
                     Format::Rgba8Unorm,
                 );
                 keep(
-                    &format!("geometry-{seed}-{}-ours", case.gs),
+                    &format!("geometry-{seed}-{i}-{shader}-ours"),
                     &picture,
                     Format::Rgba8Unorm,
                 );
@@ -1077,6 +1282,14 @@ fn geometry_shaders_draw_as_direct3d_does() {
                 }
                 failures.push(name);
             }
+        }
+    }
+    for (case, total) in CULLED.iter().zip(dropped) {
+        if total == 0 {
+            failures.push(format!(
+                "{} {:?}: no primitive dropped",
+                case.vs, case.topology
+            ));
         }
     }
     eprintln!("{compared} comparisons, {} failed", failures.len());

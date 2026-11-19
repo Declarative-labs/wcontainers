@@ -246,13 +246,13 @@ hlsl+clamp-1-ps.dxbc	ok
 hlsl+clamp-2-ps.dxbc	ok
 hlsl+clip-1-ps.dxbc	ok
 hlsl+clip-2-ps.dxbc	ok
-hlsl+clip-cull-distance-1-1-vs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-1-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-10-ps.dxbc	ok
 hlsl+clip-cull-distance-1-11-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-12-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-13-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-14-vs.dxbc	ok-wgsl glsl-compile
-hlsl+clip-cull-distance-1-15-vs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-15-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-16-gs.dxbc	unsupported ClipDistance
 hlsl+clip-cull-distance-1-17-vs.dxbc	ok
 hlsl+clip-cull-distance-1-18-gs.dxbc	unsupported CullDistance
@@ -261,7 +261,7 @@ hlsl+clip-cull-distance-1-2-ps.dxbc	ok
 hlsl+clip-cull-distance-1-20-gs.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-21-gs.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-4-ps.dxbc	ok
-hlsl+clip-cull-distance-1-5-vs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-5-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-6-ps.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-9-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-2-1-vs.dxbc	ok-wgsl glsl-compile

@@ -14050,12 +14050,10 @@ code	crates/wcontainers-shaders/src/stage.rs	bytestr	domain_program_for	b"domain
 code	crates/wcontainers-shaders/src/stage.rs	bytestr	vertex_program_for	b"vertex records"
 code	crates/wcontainers-shaders/src/stage.rs	float	tess::patch_bounds	64.0
 code	crates/wcontainers-shaders/src/stage.rs	float	tess::patch_bounds	64.0
-code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	3
 code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	3
 code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	6
 code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	66
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	0xffff
-code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
@@ -14065,20 +14063,12 @@ code	crates/wcontainers-shaders/src/stage.rs	str	clip_unpositioned	"PositionedOu
 code	crates/wcontainers-shaders/src/stage.rs	str	clip_unpositioned	"an unbound output"
 code	crates/wcontainers-shaders/src/stage.rs	str	clip_unpositioned	"vertex outputs"
 code	crates/wcontainers-shaders/src/stage.rs	str	clip_unpositioned	"vertex_shader"
-code	crates/wcontainers-shaders/src/stage.rs	str	passthrough	"Outputs"
-code	crates/wcontainers-shaders/src/stage.rs	str	passthrough	"Run"
-code	crates/wcontainers-shaders/src/stage.rs	str	passthrough	"layer"
-code	crates/wcontainers-shaders/src/stage.rs	str	passthrough	"run"
-code	crates/wcontainers-shaders/src/stage.rs	str	passthrough	"selection"
-code	crates/wcontainers-shaders/src/stage.rs	str	passthrough	"viewport"
 code	crates/wcontainers-shaders/src/stage.rs	str	stream_program	"stage/stream_out.wgsl"
 code	crates/wcontainers-shaders/src/stage.rs	str	tessellator_program	"stage/tessellator.wgsl"
 code	crates/wcontainers-shaders/src/stage.rs	str	values	"StageValues"
 code	crates/wcontainers-shaders/src/stage.rs	str	values	"stage_values"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"VertexInputForGeometry"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"VertexInputNotPulled"
-code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"VertexOutputForGeometry"
-code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"VertexOutputShape"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"VertexWithoutPosition"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"a vertex program without outputs"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"an unbound output"
@@ -14088,7 +14078,6 @@ code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"stage_indice
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"stage_vertices"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"vertex outputs"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"vertex_shader"
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
@@ -14104,7 +14093,6 @@ code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"Geo
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"StageIndexU8"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"StageIndexedStrip"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"StageIndirect"
-code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"StreamOutputAdjacency"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"the sets of the stages after a domain stage"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::tessellated_with	"GeometryPrimitiveIdAfterDomain"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::tessellated_with	"not a domain shader"

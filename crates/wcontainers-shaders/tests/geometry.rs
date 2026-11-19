@@ -229,6 +229,65 @@ fn the_stream_output_program_validates() {
     wgsl(&m);
 }
 
+/// A vertex shader writing cull distances (`vs_cull`: three over one register, sharing it with a clip
+/// distance) converts by both routes, lists both from its signature, and gives the stage helper's
+/// cull route its programs: records of the position, both locations and a slot each of clip and cull
+/// distances, and a pass-through passing the clip distance on. Drawn in `tests/geometry_draw.rs`.
+#[test]
+fn cull_distances_take_the_stage_helpers_route() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    let distances = |c: &Converted, system| -> u32 {
+        c.reflection
+            .outputs
+            .iter()
+            .filter(|v| v.system == Some(system))
+            .map(|v| v.mask.count_ones())
+            .sum()
+    };
+    fn source<'a>(route: &str, code: &'a [u8]) -> Source<'a> {
+        match route {
+            "dxbc" => Source::Dxbc(code),
+            _ => Source::Dxil(code),
+        }
+    }
+    for route in ["dxbc", "dxil"] {
+        let code = own(&format!("vs_cull.{route}"));
+        let source = |code| source(route, code);
+        let plain = convert(source(&code), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert_eq!(distances(&plain, SystemValue::CullDistance), 3, "{route}");
+        assert_eq!(distances(&plain, SystemValue::ClipDistance), 1, "{route}");
+        let c = convert(source(&code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let programs = stage::cull_programs(&c).unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert_eq!(programs.locations, stage::locations(&c.reflection.outputs));
+        assert_eq!(programs.locations.len(), 2, "{route}");
+        assert_eq!(
+            (programs.clip_distances, programs.cull_distances),
+            (1, 3),
+            "{route}"
+        );
+        assert_eq!(
+            programs.compute.stage,
+            wcontainers_gpu::ShaderStage::Compute
+        );
+        assert!(wgsl(&programs.compute).contains("fn main"), "{route}");
+        let passthrough = wgsl(&programs.passthrough);
+        assert!(passthrough.contains("clip_distances"), "{route}");
+        assert!(!passthrough.contains("cull"), "{route}");
+    }
+    // Without cull distances the route is refused.
+    assert!(stage::cull_programs(&vertex()).is_err());
+}
+
+#[test]
+fn the_cull_program_validates() {
+    let program = stage::cull_program().unwrap();
+    assert!(wgsl(&program).contains("fn main"));
+}
+
 #[test]
 fn hull_and_domain_shaders_declare_what_they_are() {
     for (domain, name) in [(0u8, "tri"), (1, "quad"), (2, "line")] {

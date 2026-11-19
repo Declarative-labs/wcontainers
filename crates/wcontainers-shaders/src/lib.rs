@@ -308,6 +308,9 @@ pub fn capabilities(module: &naga::Module) -> Capabilities {
                 naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances) => {
                     capabilities |= Capabilities::CLIP_DISTANCES
                 }
+                naga::Binding::BuiltIn(naga::BuiltIn::CullDistance) => {
+                    capabilities |= Capabilities::CULL_DISTANCE
+                }
                 _ => {}
             }
         }

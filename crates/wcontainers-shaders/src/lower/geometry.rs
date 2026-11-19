@@ -115,7 +115,7 @@ impl Lowering<'_> {
     }
 
     /// The clip distance outputs' variables and how many distances each holds, in declaration order:
-    /// each vertex record ends with their slots, four distances a slot ([`stage::clip_slots`]).
+    /// each vertex record ends with their slots, four distances a slot ([`stage::distance_slots`]).
     fn clip_outputs(&self) -> Result<Vec<(Handle<naga::GlobalVariable>, u32)>> {
         let mut found = Vec::new();
         for (id, io) in &self.io {
@@ -140,7 +140,7 @@ impl Lowering<'_> {
     /// The slots after the output locations: the layer and viewport slot, then the clip distances'.
     fn extra_slots(&self) -> Result<usize> {
         let distances: u32 = self.clip_outputs()?.iter().map(|c| c.1).sum();
-        Ok(usize::from(self.selection()?.is_some()) + stage::clip_slots(distances) as usize)
+        Ok(usize::from(self.selection()?.is_some()) + stage::distance_slots(distances) as usize)
     }
 
     fn strips(&self) -> bool {
