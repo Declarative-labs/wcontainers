@@ -204,6 +204,14 @@ pub fn level_texture_limits(level: u32) -> [u32; 4] {
 /// The color targets of 9_3 (`D3D_FL9_3_SIMULTANEOUS_RENDER_TARGET_COUNT`).
 const L9_3_TARGETS: u32 = 4;
 
+/// Refused: cull distances where the back end has none.
+const CULL_DISTANCES_UNSERVED: &str =
+    "cull distances without the back end's (CullDistanceAsGeometry)";
+
+/// Refused: clip distances written by a geometry shader where the back end has none.
+const GEOMETRY_CLIP_DISTANCES_UNSERVED: &str =
+    "clip distances from a geometry shader without the back end's (ClipDistanceInShader)";
+
 /// Refused: sharing below 10_0, or of more or fewer than one kind.
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
 
@@ -1924,6 +1932,13 @@ impl<B: Backend> Device<B> {
             module = c.modules.pop().expect("one module");
             clip = Some(at);
         }
+        // The stage helper's route for cull distances (`CullDistanceAsGeometry`) is not built here.
+        if wcontainers_shaders::capabilities(&module.module)
+            .contains(naga::valid::Capabilities::CULL_DISTANCE)
+            && !self.backend.caps().has(Features::CULL_DISTANCE)
+        {
+            return not_implemented(CULL_DISTANCES_UNSERVED);
+        }
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
             && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
@@ -2020,6 +2035,14 @@ impl<B: Backend> Device<B> {
         layered: u128,
     ) -> Result<Rc<Shader<B>>> {
         let compute = &converted.modules[0];
+        // The pass-through passing a geometry shader's clip distances on where the back end has
+        // none (`ClipDistanceInShader` behind a geometry stage) is not built here.
+        if wcontainers_shaders::capabilities(&converted.modules[1].module)
+            .contains(naga::valid::Capabilities::CLIP_DISTANCES)
+            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+        {
+            return not_implemented(GEOMETRY_CLIP_DISTANCES_UNSERVED);
+        }
         self.live()?;
         self.bury();
         let gpu = self.backend.create_shader(&converted.modules[1]);
