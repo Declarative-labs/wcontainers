@@ -63,7 +63,9 @@ maximums of the other signedness; run 41 split DXIL arrays of storage textures (
 refusal once; run 42 numbered DXIL resources over every register the resource list declares
 (Godot's two `StorageFormatKind` compute shaders), read sizes past the helper's level count as zero
 under `TEXTURE_INFO` and made DXIL 1D textures 2D textures one texel high; run 43 drew primitives naming
-a layer past the views into the first (`LAYER_FROM_STAGE`); what remains is under
+a layer past the views into the first (`LAYER_FROM_STAGE`); run 45 drew alpha-antialiased
+lines (`LINE_COVERAGE`) and primitive numbers from the stage helper (`PRIMITIVE_ID_FROM_STAGE`)
+against real Direct3D 11; what remains is under
 Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
@@ -1910,7 +1912,130 @@ Run 43 (the Direct3D 11 track's layered item, the literal sweep):
   (`ps_primid`) and cull distances (`vs_cull`, which the fronts draw through the stage helper)
   (run43/chrome1.log).
 
+Run 44 (what the fronts asked in their latest runs, Godot on Direct3D 12, the escape loop, the
+literal sweep):
+- Merged origin/phase-2-graphics-direct3d-11 (one conflict in `literals.baseline`, lines of our
+  `dxil.rs` this branch had removed: kept neither) and -direct3d-12; the others had nothing new.
+- Godot's 3D platformer through the Direct3D 12 front at this branch's merged tree (with a
+  temporary dump of refused shaders in the front, not committed; scratch run44/godot.sh): no
+  shader is refused any more (the dump stayed empty), so the three `StorageFormatKind` compute
+  shaders of the Direct3D 12 track's run 37 convert since run 42's numbering. What still stops
+  it: one pipeline of alpha-antialiased lines (`AntialiasedLinesAsQuads`, ours, Next), the WebGPU
+  back end's sRGB view of a texture allowing storage (theirs), and samplers filtering textures the
+  device cannot filter, which the front would route to `filter_in_shader` (theirs). Frames differ
+  in every pixel (run44/godot-run.log, godot-output.log).
+- Both fronts' new asks about clip distances behind the stage helper are built (runs 38 and
+  39): the pass-through takes the key of the conversion it comes from, so the fronts must convert
+  the geometry shader (or, on the cull route, the vertex shader) with `CLIP_DISTANCE` and the
+  pixel shader's `linked`. Written into "How the Direct3D fronts call `convert`".
+  `stage::STREAM_BUFFERS` is now exported, as the Direct3D 11 track asked.
+- The Direct3D 11 track's atg-simplecomputepc question, further: new own `cs_escape`
+  (divide.hlsl; fxc and dxc), the program's Mandelbrot loop as written (`do .. while (count <
+  most && sq.x + sq.y < 4.0)`, count over the scale, its fraction) on seeded points inside the
+  main cardioid (full count) and right of the set, against real Direct3D 11 on the RTX 3080 in
+  both compute_draw tests. With the first version's points anywhere in the set's square the
+  DXBC build was 0 words apart on seeds 1 to 4 and the DXIL build one point near the set's edge
+  4 steps apart on seed 3 (231 for 235; such counts follow every rounding, which Direct3D leaves
+  free), so the points were moved off the edge (run44/gpu1.log). So the loop's count and the
+  quotient are Direct3D's on the DXBC route the front uses; what is left for that program is the
+  colour map's sampling at u = 0 (the front's sampler and the texture's addressing).
+- Literal sweep: the float layout facts (f32's fraction, exponent bias and masks; the small
+  floats' exponent bits, mask and bias; the half's width) are named once in `build` and used by
+  the vertex fetch's decoding (`variant/pull.rs`), the typed-texel encoder (`variant/texel.rs`),
+  the clear values (`builtin.rs`) and the lowering's NaN test; vertex format widths come from
+  `u8::BITS`, `u16::BITS` and `u32::BITS`, packed formats' fields are named widths with their
+  shifts summed, the clear block's size comes from a `repr(C)` struct (`CLEAR_PARAMS_BYTES`,
+  `CLEAR_AXES`), vector alignments from their size, and the resource variables' register
+  prefixes are named. This crate's baseline lines (src, build.rs, tests, examples): 665 (804 at
+  run 43's end); the check prints nothing to add (run44/check2.txt).
+- Tests at the run's last code (laptop i7-8750H, load 5 to 6 with another track building, 4
+  cargo jobs; desktop shared through the queue, 3 jobs): clippy with warnings denied clean; the
+  whole suite (`--include-ignored`, corpora dxbc, games, runner, glslang) passes but for the
+  runner corpus's long-known distance-4 entry (run44/suite4.log). Drawn on the RTX 3080:
+  compute_draw 7 of 7 with seeds 1 to 8 (`cs_escape` 0 words apart in all 32 comparisons) and
+  variant_draw 5 of 5 (run44/gpu2.log); before the last sweep step, pull_draw (4 seeds),
+  clear_draw (256 cases) and variant_draw passed (run44/gpu1.log). Chrome's compile of the own
+  corpora (`web/check`): every WGSL file compiles (own 121, own DXIL 63, `cs_escape` among
+  them); WebGL 2 refuses the same 12 and 5 GLSL files as in run 43, for what GLSL ES 3.00 lacks
+  (run44/chrome1.log).
+- Clean-up: the build folders of this run on the Mac's checkout, the laptop and the desktop
+  deleted at the end.
+
+Run 45 (the fronts' line and primitive items, the literal sweep):
+- No branch had anything new to merge.
+- Alpha-antialiased lines (plan 4.12, `AntialiasedLinesAsQuads`; Godot's last refusal of ours on
+  Direct3D 12 and the Direct3D 11 track's item): `VariantFlags::LINE_COVERAGE` is built. A new
+  stage helper route, `Stages::antialiased_lines` and `run_antialiased_lines` (the viewport's size
+  per draw): the vertex shader's compute form writes records, the line program
+  (`stage/lines.wgsl`) writes a rectangle per API line reaching past its axis and ends by the
+  filter's reach, with the distances across, along and the length at a slot the pass-through
+  passes on without perspective; the pixel program multiplies target 0's alpha by the area of a
+  pixel-sized box the one-pixel-wide line covers. Lines crossing the near plane are cut there
+  first; interpolated values are taken along the line at each corner (perspective-correct or
+  not, as the pixel shader reads them), flat ones from the line's first vertex.
+- Measured first (run45/measure1.log, gpu3.log, `WCONTAINERS_LINE_COVERAGE=1` prints the alpha of
+  twelve chosen lines): the RTX 3080 filters over the pixel (a line on pixel centres covers one row
+  at 255, a line between rows two rows at 115 and 140, an end on a pixel centre 164) and draws
+  nothing past the ends; WARP filters over about five rows (peak 172) and does not antialias the
+  ends; the two differ by up to 128 in the seeded test. Ours is the box filter (row values 255,
+  127/127, ends 127).
+- Drawn test `antialiased_lines_draw_as_direct3d_does` (`tests/stage_draw.rs`, seeded lines, lists
+  and strips with a flat value from the first vertex, blended over the target, fxc and dxc builds):
+  against the RTX 3080 the largest channel difference over 8 seeds is 52 (allowance 64, a quarter
+  of the range, below the 128 the two references differ by, which the test asserts); WARP's
+  differences are printed only (run45/gpu4.log: 64 comparisons).
+- The primitive number from the stage helper (`PRIMITIVE_ID_FROM_STAGE`, `PrimitiveIdAsGeometry`;
+  the Direct3D 11 track's item, for adapters without the native index): `Stages::primitive_numbered`;
+  the primitive program (`stage/primitives.wgsl`) copies each API primitive's vertex records with
+  its number in its instance, and the final draw draws the copies as a list without indices. The
+  pixel program reads the number from four flat words at `stage::primitive_id_location`. Drawn
+  test `primitive_numbers_from_the_stage_helper_draw_as_direct3d_does` (triangle lists, strips
+  instanced twice, line lists and strips, points; fxc and dxc builds): every texel equal to real
+  Direct3D 11's, 40 of 40 comparisons over 4 seeds (run45/gpu7.log).
+- Found on the way: a DXIL pixel shader's narrower input beside a vertex output of four
+  components fails wgpu's Direct3D 12 pipeline ("The parameter is incorrect"): Direct3D 12 links
+  stage values register by register and the HLSL compiler packs a narrow input beside the next one.
+  The same program drew exactly on wgpu's Vulkan path. So the primitive number passes as four
+  words on both sides. This is very likely the unexplained `ps_primid` failure of run 34 (values
+  alone in a register keep their width on the DXIL route): not re-tested.
+- Wrapping a pixel program whose result is a struct of the same outputs (a rewrite changing only
+  values) made its result type lose its bindings ("Struct member 0 is missing a binding"); the
+  wrapper now keeps a result type equal to the original bound.
+- Unit tests: `antialiased_lines_take_the_stage_helpers_route`,
+  `primitive_numbers_take_the_stage_helpers_route`, `the_line_program_validates`,
+  `the_primitive_program_validates` (tests/geometry.rs). `unbuilt_variants_are_refused_by_name`
+  no longer lists `LINE_COVERAGE` (built).
+- Literal sweep: the tessellator imports the stage helper's workgroup size, two tests use the
+  common target size, the alpha component and the coloured vertex's sizes are named once
+  (`build::ALPHA`, `tests/common`). This crate's baseline lines (src, build.rs, tests, examples):
+  659 (665 at run 44's end); the check passes with nothing to add (run45/check4.txt).
+- Tests at the run's last code (laptop i7-8750H, load 1 to 4, 4 cargo jobs; desktop shared through
+  the queue, 3 jobs): clippy with warnings denied clean on Linux and Windows; the laptop's whole
+  suite (`--include-ignored --no-fail-fast`, corpora dxbc, games, runner, glslang) passes but for
+  the runner corpus's long-known distance-4 entry (run45/suite2.log); the own corpora's records
+  gained `vs_line`, `ps_line` and `ps_primitive` (both builds; `ps_primitive`'s GLSL refused for
+  `gl_PrimitiveID`, as `ps_primid`'s). Drawn on the RTX 3080 in one GPU job (run45/gpu8.log):
+  draw 7 of 7, geometry_draw 4 of 4 (84, 36 and 48 comparisons), stage_draw 2 of 2 (32 and 40),
+  variant_draw 5 of 5. Chrome's compile of the own corpora (`web/check`, run45/chrome1.log): every
+  WGSL file compiles (own 124, own DXIL 66, the three new shaders among them); WebGL 2 refuses 13
+  and 6 GLSL files, run 44's plus `ps_primitive` (`gl_PrimitiveID`, as `ps_primid`). The line and
+  primitive programs and the variants' modules are not in the corpora; naga validates them in the
+  unit tests and wgpu's Direct3D 12 path compiled them in the drawn tests.
+- The laptop's loop script still gives cargo 5 jobs: its numbers are in the literal baseline, and
+  every way of writing 4 there adds a line. Runs pass `CARGO_BUILD_JOBS=4` and `choom -n 600 --`
+  inside the command instead (How to run).
+
 Next (in order):
+- The primitive number behind a geometry shader (the rig's geometry scene's `ps_id`, the Direct3D
+  11 track's item): the geometry stage's records carry the primitive's number its shader writes,
+  and its pass-through passes it as the primitive route's does.
+- Alpha-antialiased lines, the rest: on WebGL 2 (the vertex stage captured by transform feedback,
+  as `GeometryAsReplay` will), after a geometry shader writing lines, with cull distances, and
+  indexed strips (as every route).
+- The fronts (theirs): clip distances behind the stage helper need `CLIP_DISTANCE` and `linked`
+  in the key of the conversion the pass-through comes from (the geometry shader's, or the vertex
+  shader's on the cull route); built since runs 38 and 39 ("How the Direct3D fronts call
+  `convert`"). `stage::STREAM_BUFFERS` is public since run 44.
 - The Direct3D 11 front (theirs, now possible since run 43): test_layered_rendering's nine checks:
   set `LAYER_FROM_STAGE` and `linked` in the geometry and pixel shaders' keys and write the views'
   layer count at `stage::PASSTHROUGH_LAYER_COUNT` in the pass-through's block. The same for the
@@ -2137,6 +2262,29 @@ Next (in order):
   the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
   `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
   `tests/geometry_draw.rs` does exactly this.
+- Alpha-antialiased lines (Direct3D 10 and 11's `AntialiasedLineEnable` with `MultisampleEnable`
+  off, on a line list or strip without a geometry or hull stage; WebGPU, `Features::COMPUTE`; since
+  run 45): convert the pixel shader with `VariantFlags::LINE_COVERAGE` and `linked` (its location
+  one past every location either program lists, as for clip distances), and the vertex shader with
+  every input pulled, `draw_base: Helpers` and the same `linked`. `Stages::antialiased_lines(backend,
+  &vertex, &pixel_key)` once per pair; per draw `stages.run_antialiased_lines(backend, &draw,
+  [viewport width, viewport height])`, then draw the `FinalDraw` as after a geometry stage, with
+  culling off (a triangle list, u32 indices). The pixel program multiplies target 0's alpha by the
+  coverage; a target 0 that is not four floats is refused (`LineCoverageTarget`). Refused by name:
+  cull distances on the same vertex shader (`AntialiasedLinesCullDistance`), other topologies
+  (`AntialiasedLinesTopology`), indexed strips (`StageIndexedStrip`, as on every route).
+  `tests/stage_draw.rs` does exactly this.
+- A pixel shader reading `SV_PrimitiveID` without a geometry or hull stage where the back end lacks
+  `Features::PRIMITIVE_INDEX` (WebGPU, `Features::COMPUTE`; since run 45): convert the pixel shader
+  with `VariantFlags::PRIMITIVE_ID_FROM_STAGE` and `linked` (as for clip distances), the vertex
+  shader with every input pulled, `draw_base: Helpers` and the same `linked`.
+  `Stages::primitive_numbered(backend, &vertex, &pixel_key)` once per pair; per draw `stages.run`,
+  then draw the `FinalDraw` as after a geometry stage (a list, no indices: `index_offset` is
+  `None`). Each primitive's vertices are copied with its number, so the front's own provoking
+  vertex rule holds. Refused by name: adjacency (`PrimitiveIdAdjacency`), cull distances on the same
+  vertex shader (`PrimitiveIdCullDistance`), the built-in inside a struct of inputs
+  (`PrimitiveIdInStruct`), indexed strips (`StageIndexedStrip`). `tests/stage_draw.rs` does exactly
+  this. Behind a geometry shader the pixel shader's number is still not passed (next).
 - Cull distances from a vertex shader without a geometry or hull stage (WebGPU, `Features::COMPUTE`,
   the back end without `Features::CULL_DISTANCE`; since run 39): the vertex shader converted as for
   a geometry shader (every input pulled, `draw_base: Helpers`, its other flags as for a plain draw,
@@ -2230,6 +2378,17 @@ let reflection = &converted.reflection;
   the raster block keeps depth clipping on (the program keeps z inside), and those draws lose early
   depth tests (the program writes depth). Check the vertex program's locations plus the added ones
   against the back end's inter-stage limit.
+- `CLIP_DISTANCE` behind the stage helper (built since runs 38 and 39; both fronts asked for it
+  in their latest runs, from creation-time conversions): the stage helper's pass-throughs take
+  the key of the conversion they come from, so the key must carry `CLIP_DISTANCE` and the pixel
+  shader's `linked`. Geometry stage: convert the geometry shader per pixel shader with
+  `CLIP_DISTANCE` and `linked` (as the vertex shader is converted); its `modules[1]`, the
+  pass-through `Stages::new` takes, then passes the distances at `linked.location` and writes no
+  `ClipDistances` built-in. Cull route (`Stages::culled`): convert the vertex shader with every
+  input pulled, `draw_base: Helpers`, `CLIP_DISTANCE` and `linked`; `cull_programs` passes its
+  linked values on as any output location. `tests/geometry_draw.rs` draws both (`vs_cull` writes
+  a clip distance beside its cull distances; the `gs_clip` cases) on wgpu's Direct3D 12 path,
+  which has no clip distances, against real Direct3D 11.
 - `mirror_once_in_shader` (without `Features::MIRROR_ONCE`): bind the sampler with each mirror-once
   axis made `Clamp`, and write `SamplerState { sampler }` (nine words: min, mag, mip filter, the three
   address modes of the API's sampler as `AddressMode as u32`, anisotropy, then the level range as
@@ -2332,6 +2491,12 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 45, 2026-11-19, counts only (laptop i7-8750H, load 0.3 to 2.7, 4 cargo jobs; desktop shared
+through the queue, load not taken): the stage helper's drawn tests (`stage_draw`, both tests, 4
+seeds) 1.25 s of tests in one GPU job, 8 seeds of the line test 0.8 s; geometry_draw's 4 seeds
+3.8 s (run45/gpu4.log, gpu5.log). Neither route was timed against another: the counts are
+correctness only.
 
 Run 43, 2026-11-19, counts only (laptop i7-8750H, load 0.5 to 5 with another track building, 4
 cargo jobs; desktop shared through the queue, load not taken): the laptop's whole suite with every
@@ -3348,6 +3513,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test filter_draw --no-run" -- "set WCONTAINERS_FILTER_SEED=1&& set WCONTAINERS_FILTER_CASES=8&& cargo test -j 3 -p wcontainers-shaders --test filter_draw -- --nocapture --test-threads 1"`.
   Each comparison prints texels apart from both references, from each, and before moving the level
   of detail; with `WCONTAINERS_SHADERS_OUT` the pictures are kept.
+- The stage helper's routes of a vertex shader alone, antialiased lines and primitive numbers
+  (Windows, one GPU job, about 2 s for 4 seeds): `tools/graphics-rig/gpu-job --build "$S && cargo
+  test -j 3 -p wcontainers-shaders --test stage_draw --no-run" -- "set WCONTAINERS_LINE_SEED=1&&
+  set WCONTAINERS_LINE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test stage_draw --
+  --nocapture --test-threads 1"`. `WCONTAINERS_LINE_COVERAGE=1` also prints the alpha the RTX
+  3080, WARP and ours give twelve chosen lines.
+- The laptop takes at most 4 build jobs per track and long jobs under `choom` (owner's rule of
+  2026-11-18): `tools/graphics-rig/linux sh -c 'CARGO_BUILD_JOBS=4 choom -n 600 -- cargo test ...'`.
 - The variant tests (Windows, one GPU job, about 1.5 s):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test variant_draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test variant_draw -- --nocapture --test-threads 1"`.
   Each comparison prints its counts and allowance. The WebGL 2 back end leaves its GL context current
@@ -3429,6 +3602,12 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- Alpha-antialiased lines (run 45): plan 4.12 says the rectangle is widened by "the reference's 3
+  by 3 pixels"; the kernel is the implementation's own (functional specification 3.4.4), so ours
+  is the pixel box filter (the rectangle reaches one pixel past the axis and half a pixel past each
+  end), which the RTX 3080's nearly is; WARP's is wider. The test holds ours to the RTX 3080 with
+  an allowance of 64 of 255 and prints WARP's differences.
 
 - The literal check (run 38): adopted as the brief of 2026-11-18 (late) says, by merging
   origin/phase-2-graphics-direct3d-11 (which had merged origin/phase-1-literals and adopted it)
@@ -3539,6 +3718,13 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- Alpha-antialiased lines (run 45): the coverage is the box filter's, within 52 of the RTX 3080's
+  in the drawn test; the RTX 3080 draws a line's end at about 0.64 where ours gives 0.5 and draws
+  nothing past it where ours fades over half a pixel. Lines are cut at the near plane (clip z = 0)
+  whatever the draw's depth clipping, so with depth clipping off a line crossing that plane loses
+  the part Direct3D would draw clamped. Two triangles of a strip's joints overlap as Direct3D's
+  rectangles do; the blend there follows draw order on both.
 
 - Clip distances applied in the pixel program on lines (run 39): Direct3D clips a line and
   rasterises the rest by its diamond rule, so a clipped end can light a pixel whose centre the
@@ -3778,3 +3964,10 @@ were already there.
   values (doc of `LinkedValues`), and the views' layer count a value of the pass-through's block;
   plan 4.12's layered drawing says so. Fronts that do not set the flag see no change
   (`PASSTHROUGH_HELPERS` keeps its two values).
+
+- Where `LINE_COVERAGE` and `PRIMITIVE_ID_FROM_STAGE` read their values (run 45, commits
+  "interface: the line coverage values pass after the linked values" and "interface: the
+  primitive's number passes after the linked values"): documentation of `LinkedValues` and of the
+  two flags only, no new field. The line coverage (four f32 without perspective) and then the
+  primitive's number (a flat u32) follow `linked`'s other values; `stage::line_coverage_location`
+  and `stage::primitive_id_location` compute them from the pixel program's key.

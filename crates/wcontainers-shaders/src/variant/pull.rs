@@ -11,6 +11,7 @@ use naga::{ArraySize, ScalarKind, SwizzleComponent};
 use wcontainers_gpu::{ReflectedBinding, VertexFormat};
 
 use super::*;
+use crate::build;
 
 /// How a format's components are read and what they become.
 #[derive(Clone, Copy, PartialEq)]
@@ -25,36 +26,60 @@ pub(crate) enum Kind {
 /// One component: byte offset in the element, bit offset in the word read there, and width in bits.
 pub(crate) type Component = (u32, u32, u32);
 
+/// Bits of the words the program reads.
+const WORD_BITS: u32 = u32::BITS;
+/// Field widths of the packed formats: red, green and blue of 10-10-10-2 and its alpha; red and
+/// green of 11-11-10 and its blue.
+const RGB10_BITS: u32 = 10;
+const A2_BITS: u32 = 2;
+const RG11_BITS: u32 = 11;
+const B10_BITS: u32 = 10;
+/// The bytes of red, green, blue and alpha in a BGRA element.
+const BGRA_BYTES: [u32; 4] = [2, 1, 0, 3];
+/// The generated fetch function's name before its location, and its arguments.
+const FETCH_FUNCTION: &str = "pull_";
+const FETCH_ARGUMENTS: [&str; 2] = ["vertex", "instance"];
+/// The name of a pulled input's buffer before its location.
+const PULLED_BUFFER: &str = "pulled_";
+
 /// A format's kind, components in RGBA order and element size in bytes.
 pub(crate) fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
     use Kind::*;
     use VertexFormat as V;
-    let packed = |kind, fields: &[(u32, u32)]| {
-        let c = fields
+    // A format packed into one word, its fields from bit 0 up.
+    let packed = |kind, widths: &[u32]| {
+        let mut shift = 0;
+        let c = widths
             .iter()
-            .map(|&(shift, bits)| (0, shift, bits))
+            .map(|&bits| {
+                shift += bits;
+                (0, shift - bits, bits)
+            })
             .collect();
-        (kind, c, 4)
+        (kind, c, build::WORD)
     };
     let (kind, bits) = match format {
         V::Bgra8Unorm => {
-            return (Unorm, vec![(2, 0, 8), (1, 0, 8), (0, 0, 8), (3, 0, 8)], 4);
+            let c = BGRA_BYTES.iter().map(|&b| (b, 0, u8::BITS)).collect();
+            return (Unorm, c, build::WORD);
         }
-        V::Unorm10_10_10_2 => return packed(Unorm, &[(0, 10), (10, 10), (20, 10), (30, 2)]),
-        V::Uint10_10_10_2 => return packed(Uint, &[(0, 10), (10, 10), (20, 10), (30, 2)]),
-        V::Float11_11_10 => return packed(Float, &[(0, 11), (11, 11), (22, 10)]),
-        V::Uint8x1 | V::Uint8x2 | V::Uint8x3 | V::Uint8x4 => (Uint, 8),
-        V::Sint8x1 | V::Sint8x2 | V::Sint8x3 | V::Sint8x4 => (Sint, 8),
-        V::Unorm8x1 | V::Unorm8x2 | V::Unorm8x3 | V::Unorm8x4 => (Unorm, 8),
-        V::Snorm8x1 | V::Snorm8x2 | V::Snorm8x3 | V::Snorm8x4 => (Snorm, 8),
-        V::Uint16x1 | V::Uint16x2 | V::Uint16x3 | V::Uint16x4 => (Uint, 16),
-        V::Sint16x1 | V::Sint16x2 | V::Sint16x3 | V::Sint16x4 => (Sint, 16),
-        V::Unorm16x1 | V::Unorm16x2 | V::Unorm16x3 | V::Unorm16x4 => (Unorm, 16),
-        V::Snorm16x1 | V::Snorm16x2 | V::Snorm16x3 | V::Snorm16x4 => (Snorm, 16),
-        V::Float16x1 | V::Float16x2 | V::Float16x3 | V::Float16x4 => (Float, 16),
-        V::Float32x1 | V::Float32x2 | V::Float32x3 | V::Float32x4 => (Float, 32),
-        V::Uint32x1 | V::Uint32x2 | V::Uint32x3 | V::Uint32x4 => (Uint, 32),
-        V::Sint32x1 | V::Sint32x2 | V::Sint32x3 | V::Sint32x4 => (Sint, 32),
+        V::Unorm10_10_10_2 => {
+            return packed(Unorm, &[RGB10_BITS, RGB10_BITS, RGB10_BITS, A2_BITS]);
+        }
+        V::Uint10_10_10_2 => return packed(Uint, &[RGB10_BITS, RGB10_BITS, RGB10_BITS, A2_BITS]),
+        V::Float11_11_10 => return packed(Float, &[RG11_BITS, RG11_BITS, B10_BITS]),
+        V::Uint8x1 | V::Uint8x2 | V::Uint8x3 | V::Uint8x4 => (Uint, u8::BITS),
+        V::Sint8x1 | V::Sint8x2 | V::Sint8x3 | V::Sint8x4 => (Sint, u8::BITS),
+        V::Unorm8x1 | V::Unorm8x2 | V::Unorm8x3 | V::Unorm8x4 => (Unorm, u8::BITS),
+        V::Snorm8x1 | V::Snorm8x2 | V::Snorm8x3 | V::Snorm8x4 => (Snorm, u8::BITS),
+        V::Uint16x1 | V::Uint16x2 | V::Uint16x3 | V::Uint16x4 => (Uint, u16::BITS),
+        V::Sint16x1 | V::Sint16x2 | V::Sint16x3 | V::Sint16x4 => (Sint, u16::BITS),
+        V::Unorm16x1 | V::Unorm16x2 | V::Unorm16x3 | V::Unorm16x4 => (Unorm, u16::BITS),
+        V::Snorm16x1 | V::Snorm16x2 | V::Snorm16x3 | V::Snorm16x4 => (Snorm, u16::BITS),
+        V::Float16x1 | V::Float16x2 | V::Float16x3 | V::Float16x4 => (Float, u16::BITS),
+        V::Float32x1 | V::Float32x2 | V::Float32x3 | V::Float32x4 => (Float, u32::BITS),
+        V::Uint32x1 | V::Uint32x2 | V::Uint32x3 | V::Uint32x4 => (Uint, u32::BITS),
+        V::Sint32x1 | V::Sint32x2 | V::Sint32x3 | V::Sint32x4 => (Sint, u32::BITS),
     };
     let count = match format {
         V::Uint8x1 | V::Sint8x1 | V::Unorm8x1 | V::Snorm8x1 | V::Uint16x1 | V::Sint16x1 => 1,
@@ -63,9 +88,9 @@ pub(crate) fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
         V::Unorm16x2 | V::Snorm16x2 | V::Float16x2 | V::Float32x2 | V::Uint32x2 | V::Sint32x2 => 2,
         V::Uint8x3 | V::Sint8x3 | V::Unorm8x3 | V::Snorm8x3 | V::Uint16x3 | V::Sint16x3 => 3,
         V::Unorm16x3 | V::Snorm16x3 | V::Float16x3 | V::Float32x3 | V::Uint32x3 | V::Sint32x3 => 3,
-        _ => 4,
+        _ => VectorSize::Quad as u32,
     };
-    let bytes = bits / 8;
+    let bytes = bits / u8::BITS;
     let c = (0..count).map(|i| (i * bytes, 0, bits)).collect();
     (kind, c, count * bytes)
 }
@@ -100,12 +125,12 @@ pub(super) fn pulled(
             inner: TypeInner::Array {
                 base: u32_ty,
                 size: ArraySize::Dynamic,
-                stride: 4,
+                stride: build::WORD,
             },
         },
         Span::UNDEFINED,
     );
-    let vec4u = vector(module, 4, Scalar::U32);
+    let vec4u = vector(module, VectorSize::Quad as u8, Scalar::U32);
     let mut next = reflection
         .bindings
         .iter()
@@ -124,7 +149,7 @@ pub(super) fn pulled(
         }
         let buffer = module.global_variables.append(
             GlobalVariable {
-                name: Some(format!("pulled_{location}")),
+                name: Some(format!("{PULLED_BUFFER}{location}")),
                 space: AddressSpace::Storage {
                     access: StorageAccess::LOAD,
                 },
@@ -184,11 +209,11 @@ fn fetch(
     stream: HelperMember,
 ) -> Result<Function> {
     let (out, n) = match module.types[ty].inner {
-        TypeInner::Scalar(s) => (s, 1),
-        TypeInner::Vector { size, scalar } => (scalar, size as u32),
+        TypeInner::Scalar(s) => (s, None),
+        TypeInner::Vector { size, scalar } => (scalar, Some(size)),
         _ => return Err(ConvertError::Unsupported(crate::refusal::PULLED_INPUT_TYPE)),
     };
-    if out.width != 4 {
+    if u32::from(out.width) != build::WORD {
         return Err(ConvertError::Unsupported(
             crate::refusal::PULLED_INPUT_WIDTH,
         ));
@@ -199,11 +224,11 @@ fn fetch(
         Kind::Sint => Scalar::I32,
         _ => Scalar::F32,
     };
-    let natural_vec = vector(module, 4, natural);
+    let natural_vec = vector(module, VectorSize::Quad as u8, natural);
     let u32_ty = scalar(module, Scalar::U32);
     let mut f = Function {
-        name: Some(format!("pull_{location}")),
-        arguments: ["vertex", "instance"]
+        name: Some(format!("{FETCH_FUNCTION}{location}")),
+        arguments: FETCH_ARGUMENTS
             .map(|name| FunctionArgument {
                 name: Some(name.into()),
                 ty: u32_ty,
@@ -218,7 +243,8 @@ fn fetch(
     let vertex = push(f_, b_, Expression::FunctionArgument(0));
     let instance = push(f_, b_, Expression::FunctionArgument(1));
     let s = load_helper(f_, b_, stream);
-    let [offset, stride, divisor, bias] = [0, 1, 2, 3].map(|i| index(f_, b_, s, i));
+    let [offset, stride, divisor, bias]: [_; VectorSize::Quad as usize] =
+        core::array::from_fn(|i| index(f_, b_, s, i as u32));
 
     // The element: the vertex index, or the instance index stepped by the divisor.
     let one = u(f_, 1);
@@ -242,8 +268,8 @@ fn fetch(
     // Inside the bound range when all `size` bytes are.
     let base = push(f_, b_, Expression::GlobalVariable(buffer));
     let count = push(f_, b_, Expression::ArrayLength(base));
-    let four = u(f_, 4);
-    let length = binary(f_, b_, Multiply, count, four);
+    let word = u(f_, build::WORD);
+    let length = binary(f_, b_, Multiply, count, word);
     let size = u(f_, size);
     let fits = binary(f_, b_, GreaterEqual, length, size);
     let last = binary(f_, b_, Subtract, length, size);
@@ -254,8 +280,8 @@ fn fetch(
     for &(byte, shift, bits) in &components {
         let at = u(f_, byte);
         let a = binary(f_, b_, Add, address, at);
-        let two = u(f_, 2);
-        let word_index = binary(f_, b_, ShiftRight, a, two);
+        let word_shift = u(f_, build::WORD_SHIFT);
+        let word_index = binary(f_, b_, ShiftRight, a, word_shift);
         let pointer = push(
             f_,
             b_,
@@ -266,10 +292,11 @@ fn fetch(
         );
         let word = push(f_, b_, Expression::Load { pointer });
         let mut raw = word;
-        if bits < 32 {
-            let three = u(f_, 3);
-            let byte_in_word = binary(f_, b_, And, a, three);
-            let bit_in_word = binary(f_, b_, ShiftLeft, byte_in_word, three);
+        if bits < WORD_BITS {
+            let in_word = u(f_, build::WORD - 1);
+            let byte_in_word = binary(f_, b_, And, a, in_word);
+            let byte_shift = u(f_, build::BYTE_SHIFT);
+            let bit_in_word = binary(f_, b_, ShiftLeft, byte_in_word, byte_shift);
             let field = u(f_, shift);
             let from = binary(f_, b_, Add, bit_in_word, field);
             let shifted = binary(f_, b_, ShiftRight, word, from);
@@ -285,10 +312,12 @@ fn fetch(
         _ => Literal::U32(v),
     };
     let mut zeroed = Vec::new();
-    for i in 0..4 {
-        let default = f_
-            .expressions
-            .append(Expression::Literal(lit((i == 3) as u32)), Span::UNDEFINED);
+    let quad = VectorSize::Quad as usize;
+    for i in 0..quad {
+        let default = f_.expressions.append(
+            Expression::Literal(lit((i == quad - 1) as u32)),
+            Span::UNDEFINED,
+        );
         if i >= values.len() {
             values.push(default);
             zeroed.push(default);
@@ -338,16 +367,12 @@ fn fetch(
         );
     }
     value = match n {
-        1 => index(f_, b_, value, 0),
-        2 | 3 => push(
+        None => index(f_, b_, value, 0),
+        Some(size @ (VectorSize::Bi | VectorSize::Tri)) => push(
             f_,
             b_,
             Expression::Swizzle {
-                size: if n == 2 {
-                    VectorSize::Bi
-                } else {
-                    VectorSize::Tri
-                },
+                size,
                 vector: value,
                 pattern: [
                     SwizzleComponent::X,
@@ -357,7 +382,7 @@ fn fetch(
                 ],
             },
         ),
-        _ => value,
+        Some(VectorSize::Quad) => value,
     };
     b.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
     f.body = b;
@@ -374,10 +399,10 @@ pub(super) fn decode(
     bits: u32,
 ) -> Handle<Expression> {
     let signed = |f: &mut Function, body: &mut Block| {
-        if bits == 32 {
+        if bits == WORD_BITS {
             return cast(f, body, raw, ScalarKind::Sint, None);
         }
-        let by = u(f, 32 - bits);
+        let by = u(f, WORD_BITS - bits);
         let up = binary(f, body, ShiftLeft, raw, by);
         let up = cast(f, body, up, ScalarKind::Sint, None);
         binary(f, body, ShiftRight, up, by)
@@ -406,7 +431,7 @@ pub(super) fn decode(
             let negative = binary(f, body, naga::BinaryOperator::Less, s, zero);
             select(f, body, negative, negated, v)
         }
-        Kind::Float if bits == 32 => cast(f, body, raw, ScalarKind::Float, None),
+        Kind::Float if bits == WORD_BITS => cast(f, body, raw, ScalarKind::Float, None),
         Kind::Float => {
             let float = small_float(f, body, raw, bits);
             cast(f, body, float, ScalarKind::Float, None)
@@ -468,7 +493,7 @@ fn unorm(
     let max = (1u32 << bits) - 1;
     // Leading zeros within the code's bits.
     let clz = math(f, body, MathFunction::CountLeadingZeros, [c, c]);
-    let above = u(f, 32 - bits);
+    let above = u(f, WORD_BITS - bits);
     let lz = binary(f, body, Subtract, clz, above);
     // The pattern from the leading one: the code rotated left by `lz` within its bits.
     let up = binary(f, body, ShiftLeft, c, lz);
@@ -480,7 +505,7 @@ fn unorm(
     let rotated = binary(f, body, And, rotated, mask);
     // Repeated from bit 31 down.
     let mut window = None;
-    let mut top = 32i32 - bits as i32;
+    let mut top = WORD_BITS as i32 - bits as i32;
     while top > -(bits as i32) {
         let part = if top >= 0 {
             let by = u(f, top as u32);
@@ -496,16 +521,18 @@ fn unorm(
         top -= bits as i32;
     }
     let window = window.unwrap();
-    let exponent_top = u(f, 126);
+    // The leading one at bit 31 is 2^-1 before the leading zeros.
+    let exponent_top = u(f, build::F32_EXPONENT_BIAS - 1);
     let exponent = binary(f, body, Subtract, exponent_top, lz);
-    let at = u(f, 23);
+    let at = u(f, build::F32_FRACTION_BITS);
     let exponent = binary(f, body, ShiftLeft, exponent, at);
-    let eight = u(f, 8);
-    let mantissa = binary(f, body, ShiftRight, window, eight);
-    let fraction_mask = u(f, 0x7f_ffff);
+    let below = WORD_BITS - build::F32_SIGNIFICAND_BITS;
+    let past = u(f, below);
+    let mantissa = binary(f, body, ShiftRight, window, past);
+    let fraction_mask = u(f, build::F32_FRACTION_MASK);
     let mantissa = binary(f, body, And, mantissa, fraction_mask);
-    let seven = u(f, 7);
-    let round = binary(f, body, ShiftRight, window, seven);
+    let next = u(f, below - 1);
+    let round = binary(f, body, ShiftRight, window, next);
     let one = u(f, 1);
     let round = binary(f, body, And, round, one);
     let value = binary(f, body, Add, exponent, mantissa);
@@ -533,46 +560,52 @@ fn small_float(
     bits: u32,
 ) -> Handle<Expression> {
     use naga::BinaryOperator::InclusiveOr;
-    let m = if bits == 16 { 10 } else { bits - 5 };
+    let signed = bits == build::HALF_BITS;
+    let m = bits - build::SMALL_FLOAT_EXPONENT_BITS - u32::from(signed);
     let by = u(f, m);
     let exponent = binary(f, body, ShiftRight, raw, by);
-    let five = u(f, 0x1f);
-    let exponent = binary(f, body, And, exponent, five);
+    let exponent_mask = u(f, build::SMALL_FLOAT_EXPONENT_MASK);
+    let exponent = binary(f, body, And, exponent, exponent_mask);
     let mask = u(f, (1 << m) - 1);
     let mantissa = binary(f, body, And, raw, mask);
-    let to_f32 = u(f, 23 - m);
+    let to_f32 = u(f, build::F32_FRACTION_BITS - m);
     let fraction = binary(f, body, ShiftLeft, mantissa, to_f32);
-    // Normal: the exponent rebiased from 15 to 127.
-    let rebias = u(f, 112);
+    // Normal: the exponent rebiased to f32's.
+    let rebias = u(
+        f,
+        build::F32_EXPONENT_BIAS - build::SMALL_FLOAT_EXPONENT_BIAS,
+    );
     let e = binary(f, body, Add, exponent, rebias);
-    let twenty_three = u(f, 23);
-    let e = binary(f, body, ShiftLeft, e, twenty_three);
+    let fraction_bits = u(f, build::F32_FRACTION_BITS);
+    let e = binary(f, body, ShiftLeft, e, fraction_bits);
     let normal = binary(f, body, InclusiveOr, e, fraction);
     // Infinity or NaN.
-    let all = u(f, 0x7f80_0000);
+    let all = u(f, build::F32_EXPONENT_MASK);
     let special = binary(f, body, InclusiveOr, all, fraction);
-    // Denormal: the mantissa times 2^-(14 + m), exact in f32.
-    let as_float = cast(f, body, mantissa, ScalarKind::Float, Some(4));
+    // Denormal: the mantissa times 2^-(bias - 1 + m), exact in f32.
+    let as_float = cast(f, body, mantissa, ScalarKind::Float, Some(build::F32_WIDTH));
     let scale = f.expressions.append(
-        Expression::Literal(Literal::F32(1.0 / (1u64 << (14 + m)) as f32)),
+        Expression::Literal(Literal::F32(
+            1.0 / (1u64 << (build::SMALL_FLOAT_EXPONENT_BIAS - 1 + m)) as f32,
+        )),
         Span::UNDEFINED,
     );
     let denormal = binary(f, body, Multiply, as_float, scale);
     let denormal = cast(f, body, denormal, ScalarKind::Uint, None);
-    let top = u(f, 31);
+    let top = u(f, build::SMALL_FLOAT_EXPONENT_MASK);
     let is_special = binary(f, body, Equal, exponent, top);
     let zero = u(f, 0);
     let is_denormal = binary(f, body, Equal, exponent, zero);
     let big = select(f, body, is_special, special, normal);
     let value = select(f, body, is_denormal, denormal, big);
-    if bits != 16 {
+    if !signed {
         return value;
     }
-    let fifteen = u(f, 15);
-    let sign = binary(f, body, ShiftRight, raw, fifteen);
+    let sign_at = u(f, build::HALF_BITS - 1);
+    let sign = binary(f, body, ShiftRight, raw, sign_at);
     let one = u(f, 1);
     let sign = binary(f, body, And, sign, one);
-    let thirty_one = u(f, 31);
-    let sign = binary(f, body, ShiftLeft, sign, thirty_one);
+    let f32_sign_at = u(f, WORD_BITS - 1);
+    let sign = binary(f, body, ShiftLeft, sign, f32_sign_at);
     binary(f, body, InclusiveOr, value, sign)
 }

@@ -50,6 +50,17 @@ const VEC4_SIZE: u8 = naga::VectorSize::Quad as u8;
 /// The refusal of clip distances of a type the common form's array cannot hold.
 pub(super) const CLIP_DISTANCE_TYPE: &str = "ClipDistanceType";
 
+/// The names of resource variables before their register, as HLSL writes registers (`cb0`, `t3`,
+/// `u1`; counters `c`), and before a register space other than the first.
+mod register_prefix {
+    pub const UNIFORM: &str = "cb";
+    pub const SAMPLER: &str = "s";
+    pub const TEXTURE: &str = "t";
+    pub const STORAGE: &str = "u";
+    pub const COUNTER: &str = "c";
+    pub const SPACE: &str = "_space";
+}
+
 fn unsupported(what: &'static str) -> ConvertError {
     ConvertError::Unsupported(what)
 }
@@ -978,15 +989,15 @@ impl<'a> Lowering<'a> {
             .binding(self.slot(slot, space_index, register)?)
             .ok_or(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT))?;
         let prefix = match slot {
-            SlotKind::Uniform => "cb",
-            SlotKind::Sampler => "s",
-            SlotKind::Texture => "t",
-            SlotKind::Storage => "u",
-            SlotKind::Counter => "c",
+            SlotKind::Uniform => register_prefix::UNIFORM,
+            SlotKind::Sampler => register_prefix::SAMPLER,
+            SlotKind::Texture => register_prefix::TEXTURE,
+            SlotKind::Storage => register_prefix::STORAGE,
+            SlotKind::Counter => register_prefix::COUNTER,
         };
         let name = match space_index {
             0 => format!("{prefix}{register}"),
-            _ => format!("{prefix}{register}_space{space_index}"),
+            _ => format!("{prefix}{register}{}{space_index}", register_prefix::SPACE),
         };
         let var = self.global(
             name,
@@ -1828,15 +1839,12 @@ fn scalar_code(s: Scalar) -> u8 {
 }
 
 fn basic_size(b: Basic) -> u32 {
-    4 * b.size as u32
+    crate::build::WORD * u32::from(b.size)
 }
 
+/// A vector's alignment in WGSL's layout: its size, a three-component one's rounded up to four.
 fn basic_align(b: Basic) -> u32 {
-    match b.size {
-        1 => 4,
-        2 => 8,
-        _ => 16,
-    }
+    crate::build::WORD * u32::from(b.size).next_power_of_two()
 }
 
 fn zero(s: Scalar) -> Literal {
@@ -4432,9 +4440,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::F_IS_NAN => {
                 // A bit test: WGSL has no isnan, and the result never depends on fast-math rules.
                 let x = self.get_as(b, r[0], Scalar::U32)?;
-                let m = self.lit(b, Literal::U32(0x7fff_ffff));
+                let m = self.lit(b, Literal::U32(!crate::build::F32_SIGN_MASK));
                 let x = self.bin(b, B::And, x, m);
-                let inf = self.lit(b, Literal::U32(0x7f80_0000));
+                let inf = self.lit(b, Literal::U32(crate::build::F32_EXPONENT_MASK));
                 self.bin(b, B::Greater, x, inf)
             }
             c::I_EQ => bin(self, b, B::Equal, operand(self)?)?,

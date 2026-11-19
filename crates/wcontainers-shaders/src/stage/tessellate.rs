@@ -3,7 +3,7 @@
 //! the tessellator owns.
 
 use super::helper::{Owned, StageError, grow};
-use super::{SLOT_BYTES, tess};
+use super::{SLOT_BYTES, WORKGROUP, tess};
 use crate::build::WORD;
 use core::mem::size_of;
 use wcontainers_gpu::{
@@ -32,9 +32,6 @@ pub struct Tessellator<B: Backend> {
     points: Option<Owned<B>>,
     indices: Option<Owned<B>>,
 }
-
-/// Invocations per workgroup of the tessellator program.
-const WORKGROUP: u32 = 64;
 
 /// The tessellator program's values (`tessellator.wgsl`'s `Values`), for its layout.
 #[repr(C)]

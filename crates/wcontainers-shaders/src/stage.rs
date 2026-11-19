@@ -29,8 +29,8 @@ use wcontainers_gpu::{
 mod helper;
 mod tessellate;
 pub use helper::{
-    DomainSets, FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamOutput,
-    StreamOutputEntry, StreamTargets, TessellatedDraw,
+    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, StageDraw, StageError, StageIndex,
+    Stages, StreamOutput, StreamOutputEntry, StreamTargets, TessellatedDraw,
 };
 pub use tessellate::{Tessellation, Tessellator};
 
@@ -371,6 +371,18 @@ const RUN_MEMBERS: [&str; 3] = ["layer", "viewport", "layer_count"];
 const LAYER_MEMBER: u32 = 0;
 const LAYER_COUNT_MEMBER: u32 = 2;
 const NAMED_LAYER_ARGUMENT: &str = "named_layer";
+const COVERAGE_ARGUMENT: &str = "line_coverage";
+const PRIMITIVE_ARGUMENT: &str = "primitive_id";
+
+/// A last slot of the records a pass-through draws, and the location it passes it on at.
+#[derive(Clone, Copy)]
+enum ExtraSlot {
+    /// Line coverage values, four f32 without perspective.
+    LineCoverage(u32),
+    /// The primitive's number in the first word of four flat u32: whole registers on both sides, as
+    /// Direct3D 12 links stage values register by register.
+    PrimitiveId(u32),
+}
 const RUN_VARIABLE: &str = "draw_run";
 const OUTPUTS_TYPE: &str = "Outputs";
 /// What the vertex and domain stages' compute forms are, in their keys.
@@ -407,16 +419,64 @@ const NO_CULL_DISTANCES: &str = "a vertex program without cull distances";
 /// among them) reaches the pixel program as it would from the vertex program.
 pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
     let source = &vertex.modules[0];
+    let drawn = drawn_outputs(source)?;
+    if drawn.cull == 0 {
+        return Err(ConvertError::Malformed(NO_CULL_DISTANCES.into()));
+    }
+    let compute = compute_module(
+        source,
+        vertex_as_compute(&source.module, &drawn.locations, true)?,
+        &drawn.locations,
+        CULL_RECORDS,
+    )?;
+    let slots: Vec<(ScalarKind, Binding)> = drawn
+        .passed
+        .iter()
+        .map(|(_, k, b)| (*k, b.clone()))
+        .collect();
+    let passthrough = passthrough_of(&slots, false, drawn.clip, None, None)?;
+    let mut key = blake3::Hasher::new();
+    key.update(&source.key).update(CULL_PASSTHROUGH);
+    Ok(CullPrograms {
+        compute,
+        passthrough: vertex_module(passthrough, key)?,
+        locations: drawn.locations,
+        clip_distances: drawn.clip,
+        cull_distances: drawn.cull,
+    })
+}
+
+/// A vertex program of the pass-through kind, keyed by `key`.
+fn vertex_module(module: Module, key: blake3::Hasher) -> Result<wcontainers_gpu::ShaderModule> {
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: crate::ENTRY_POINT.into(),
+        stage: wcontainers_gpu::ShaderStage::Vertex,
+        key: *key.finalize().as_bytes(),
+    })
+}
+
+/// A vertex program's outputs as the stage helper's records hold them when it draws them itself: the
+/// located values (location, kind, binding) in location order, and its clip and cull distances.
+struct DrawnOutputs {
+    passed: Vec<(u32, ScalarKind, Binding)>,
+    locations: Vec<u32>,
+    clip: u32,
+    cull: u32,
+}
+
+fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs> {
     let module = &source.module;
     let ep = module
         .entry_points
         .first()
-        .ok_or(ConvertError::Malformed(NO_CULL_DISTANCES.into()))?;
+        .ok_or(ConvertError::Malformed(NOT_A_VERTEX_PROGRAM.into()))?;
     let result = ep
         .function
         .result
         .as_ref()
-        .ok_or(ConvertError::Malformed(NO_CULL_DISTANCES.into()))?;
+        .ok_or(ConvertError::Malformed(VERTEX_WITHOUT_OUTPUTS.into()))?;
     let outputs: Vec<(Handle<Type>, Binding)> =
         match (&result.binding, &module.types[result.ty].inner) {
             (Some(b), _) => alloc::vec![(result.ty, b.clone())],
@@ -450,33 +510,223 @@ pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
             _ => return Err(ConvertError::Unsupported(VERTEX_OUTPUT_FOR_GEOMETRY)),
         }
     }
-    if cull == 0 {
-        return Err(ConvertError::Malformed(NO_CULL_DISTANCES.into()));
-    }
     passed.sort_unstable_by_key(|(l, _, _)| *l);
     let locations: Vec<u32> = passed.iter().map(|(l, _, _)| *l).collect();
+    Ok(DrawnOutputs {
+        passed,
+        locations,
+        clip,
+        cull,
+    })
+}
+
+/// A vertex program's lines drawn antialiased through the stage helper
+/// ([`wcontainers_gpu::SlowPath::AntialiasedLinesAsQuads`]).
+pub struct LinePrograms {
+    /// Its compute form, writing records of its position, each output location (`locations`) and its
+    /// clip distances' slots.
+    pub compute: wcontainers_gpu::ShaderModule,
+    /// The vertex program drawing the rectangles' corners: a record as the compute form writes it,
+    /// then the coverage slot, passed on at the pixel program's [`line_coverage_location`].
+    pub passthrough: wcontainers_gpu::ShaderModule,
+    pub locations: Vec<u32>,
+    pub clip_distances: u32,
+    /// The record slots after the position taken along the line at a corner (bit i: slot 1 + i), the
+    /// others the line's first vertex's; and those of them interpolated without perspective.
+    pub interpolated: u32,
+    pub linear: u32,
+}
+
+/// The members of the line coverage values the stage helper's rectangle passes on: the distance from
+/// the line's axis, the distance along it from its first end, and its length, in pixels.
+pub(crate) mod coverage {
+    pub const ACROSS: u32 = 0;
+    pub const ALONG: u32 = 1;
+    pub const LENGTH: u32 = 2;
+}
+
+/// What [`LinePrograms`] are, in their keys.
+const LINE_RECORDS: &[u8] = b"line records";
+const LINE_PASSTHROUGH: &[u8] = b"line pass-through";
+/// The refusals of the line route by name: cull distances, and more record slots than its masks hold.
+const LINE_CULL_DISTANCE: &str = "AntialiasedLinesCullDistance";
+const LINE_SLOTS: &str = "AntialiasedLinesSlots";
+
+/// Where a pixel program made with `VariantFlags::LINE_COVERAGE` reads the coverage values, and the
+/// pass-through of [`line_programs`] writes them: the location after the values `linked` holds.
+pub fn line_coverage_location(pixel: &VariantKey) -> u32 {
+    named_layer_location(pixel) + u32::from(pixel.flags.contains(VariantFlags::LAYER_FROM_STAGE))
+}
+
+/// The programs of `vertex` (converted with every input pulled) drawing its lines antialiased for a
+/// pixel program converted with `pixel`'s key. They take its outputs from its module, so every
+/// rewrite its key made reaches the pixel program as it would from the vertex program.
+pub fn line_programs(vertex: &crate::Converted, pixel: &VariantKey) -> Result<LinePrograms> {
+    let source = &vertex.modules[0];
+    let drawn = drawn_outputs(source)?;
+    if drawn.cull != 0 {
+        return Err(ConvertError::Unsupported(LINE_CULL_DISTANCE));
+    }
+    let slots = drawn.passed.len() as u32 + distance_slots(drawn.clip);
+    if slots > u32::BITS {
+        return Err(ConvertError::Unsupported(LINE_SLOTS));
+    }
+    let (mut interpolated, mut linear) = (0u32, 0u32);
+    for (i, (_, kind, binding)) in drawn.passed.iter().enumerate() {
+        let Binding::Location { interpolation, .. } = binding else {
+            continue;
+        };
+        let bit = 1 << i;
+        match (kind, interpolation) {
+            (ScalarKind::Float, Some(naga::Interpolation::Linear)) => {
+                interpolated |= bit;
+                linear |= bit;
+            }
+            (ScalarKind::Float, Some(naga::Interpolation::Perspective) | None) => {
+                interpolated |= bit
+            }
+            _ => {}
+        }
+    }
+    for k in drawn.passed.len() as u32..slots {
+        interpolated |= 1 << k;
+    }
     let compute = compute_module(
         source,
-        vertex_as_compute(module, &locations, true)?,
-        &locations,
-        CULL_RECORDS,
+        vertex_as_compute(&source.module, &drawn.locations, true)?,
+        &drawn.locations,
+        LINE_RECORDS,
     )?;
-    let slots: Vec<(ScalarKind, Binding)> = passed.into_iter().map(|(_, k, b)| (k, b)).collect();
-    let passthrough = passthrough_of(&slots, false, clip, None)?;
+    let coverage = line_coverage_location(pixel);
+    let passed: Vec<(ScalarKind, Binding)> = drawn
+        .passed
+        .iter()
+        .map(|(_, k, b)| (*k, b.clone()))
+        .collect();
+    let passthrough = passthrough_of(
+        &passed,
+        false,
+        drawn.clip,
+        None,
+        Some(ExtraSlot::LineCoverage(coverage)),
+    )?;
     let mut key = blake3::Hasher::new();
-    key.update(&source.key).update(CULL_PASSTHROUGH);
-    Ok(CullPrograms {
+    key.update(&source.key)
+        .update(LINE_PASSTHROUGH)
+        .update(&coverage.to_le_bytes());
+    Ok(LinePrograms {
         compute,
-        passthrough: wcontainers_gpu::ShaderModule {
-            info: crate::validate(&passthrough)?,
-            module: passthrough,
-            entry_point: crate::ENTRY_POINT.into(),
-            stage: wcontainers_gpu::ShaderStage::Vertex,
-            key: *key.finalize().as_bytes(),
-        },
-        locations,
-        clip_distances: clip,
-        cull_distances: cull,
+        passthrough: vertex_module(passthrough, key)?,
+        locations: drawn.locations,
+        clip_distances: drawn.clip,
+        interpolated,
+        linear,
+    })
+}
+
+/// Where a pixel program made with `VariantFlags::PRIMITIVE_ID_FROM_STAGE` reads its primitive's
+/// number, and the pass-through of [`primitive_programs`] writes it: after the line coverage values.
+pub fn primitive_id_location(pixel: &VariantKey) -> u32 {
+    line_coverage_location(pixel) + u32::from(pixel.flags.contains(VariantFlags::LINE_COVERAGE))
+}
+
+/// A vertex program drawn through the stage helper so that its pixel program reads its primitive's
+/// number from it ([`wcontainers_gpu::SlowPath::PrimitiveIdAsGeometry`]).
+pub struct PrimitivePrograms {
+    /// Its compute form, writing records of its position, each output location (`locations`) and its
+    /// clip distances' slots.
+    pub compute: wcontainers_gpu::ShaderModule,
+    /// The vertex program drawing each primitive's copies of those records, then the number's slot,
+    /// passed on at the pixel program's [`primitive_id_location`].
+    pub passthrough: wcontainers_gpu::ShaderModule,
+    pub locations: Vec<u32>,
+    pub clip_distances: u32,
+}
+
+/// What [`PrimitivePrograms`] are, in their keys.
+const PRIMITIVE_RECORDS: &[u8] = b"primitive records";
+const PRIMITIVE_PASSTHROUGH: &[u8] = b"primitive pass-through";
+/// The refusal of the primitive route for a vertex program writing cull distances.
+const PRIMITIVE_CULL_DISTANCE: &str = "PrimitiveIdCullDistance";
+
+/// The programs of `vertex` (converted with every input pulled) passing the primitive's number to a
+/// pixel program converted with `pixel`'s key. They take its outputs from its module, so every
+/// rewrite its key made reaches the pixel program as it would from the vertex program.
+pub fn primitive_programs(
+    vertex: &crate::Converted,
+    pixel: &VariantKey,
+) -> Result<PrimitivePrograms> {
+    let source = &vertex.modules[0];
+    let drawn = drawn_outputs(source)?;
+    if drawn.cull != 0 {
+        return Err(ConvertError::Unsupported(PRIMITIVE_CULL_DISTANCE));
+    }
+    let compute = compute_module(
+        source,
+        vertex_as_compute(&source.module, &drawn.locations, true)?,
+        &drawn.locations,
+        PRIMITIVE_RECORDS,
+    )?;
+    let at = primitive_id_location(pixel);
+    let passed: Vec<(ScalarKind, Binding)> = drawn
+        .passed
+        .iter()
+        .map(|(_, k, b)| (*k, b.clone()))
+        .collect();
+    let passthrough = passthrough_of(
+        &passed,
+        false,
+        drawn.clip,
+        None,
+        Some(ExtraSlot::PrimitiveId(at)),
+    )?;
+    let mut key = blake3::Hasher::new();
+    key.update(&source.key)
+        .update(PRIMITIVE_PASSTHROUGH)
+        .update(&at.to_le_bytes());
+    Ok(PrimitivePrograms {
+        compute,
+        passthrough: vertex_module(passthrough, key)?,
+        locations: drawn.locations,
+        clip_distances: drawn.clip,
+    })
+}
+
+/// The primitive program's source: one invocation per API primitive copies its vertices' records with
+/// its number.
+const PRIMITIVE_PROGRAM: &str = include_str!("stage/primitives.wgsl");
+
+/// The primitive program ([`PRIMITIVE_PROGRAM`]), which [`Stages`] runs after the vertex stage on the
+/// primitive route.
+pub fn primitive_program() -> Result<wcontainers_gpu::ShaderModule> {
+    let text = PRIMITIVE_PROGRAM;
+    let module = naga::front::wgsl::parse_str(text)
+        .map_err(|e| ConvertError::Malformed(format!("the primitive program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: crate::ENTRY_POINT.into(),
+        stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(text.as_bytes()).as_bytes(),
+    })
+}
+
+/// The line program's source: one invocation per API line writes the four corners of a rectangle
+/// around it and its two triangles' indices.
+const LINE_PROGRAM: &str = include_str!("stage/lines.wgsl");
+
+/// The line program ([`LINE_PROGRAM`]), which [`Stages`] runs after the vertex stage on the line
+/// route.
+pub fn line_program() -> Result<wcontainers_gpu::ShaderModule> {
+    let text = LINE_PROGRAM;
+    let module = naga::front::wgsl::parse_str(text)
+        .map_err(|e| ConvertError::Malformed(format!("the line program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: crate::ENTRY_POINT.into(),
+        stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
 
@@ -1049,17 +1299,20 @@ pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> 
         selects,
         clip_distances(reflection),
         named_layer.filter(|_| selects),
+        None,
     )
 }
 
 /// The pass-through vertex program reading records of a position slot, a slot for each of `passed`
 /// (written with its kind and binding), the layer and viewport slot when `selects`, then the slots of
-/// `distances` clip distances, and the named layer as a flat value at `named_layer`.
+/// `distances` clip distances, and the named layer as a flat value at `named_layer`; then the `extra`
+/// slot, passed on at its location.
 fn passthrough_of(
     passed: &[(ScalarKind, Binding)],
     selects: bool,
     distances: u32,
     named_layer: Option<u32>,
+    extra: Option<ExtraSlot>,
 ) -> Result<Module> {
     let mut module = Module::default();
     let uvec4 = build::vec4(&mut module, Scalar::U32);
@@ -1213,6 +1466,41 @@ fn passthrough_of(
         });
         components.push(b.compose(array, parts));
         span += distance_slots(distances) * SLOT_BYTES;
+    }
+    if let Some(extra) = extra {
+        let slot = 1 + passed.len() as u32 + distance_slots(distances);
+        let name = match extra {
+            ExtraSlot::LineCoverage(_) => COVERAGE_ARGUMENT,
+            ExtraSlot::PrimitiveId(_) => PRIMITIVE_ARGUMENT,
+        };
+        b.f.arguments.push(FunctionArgument {
+            name: Some(name.into()),
+            ty: uvec4,
+            binding: Some(location(slot, None)),
+        });
+        let raw = b.argument(b.f.arguments.len() as u32 - 1);
+        let (ty, binding, value, bytes) = match extra {
+            ExtraSlot::LineCoverage(at) => (
+                build::vec4(&mut module, Scalar::F32),
+                location(at, Some(Interpolation::Linear)),
+                b.bitcast(raw, ScalarKind::Float),
+                SLOT_BYTES,
+            ),
+            ExtraSlot::PrimitiveId(at) => (
+                uvec4,
+                location(at, Some(Interpolation::Flat)),
+                raw,
+                SLOT_BYTES,
+            ),
+        };
+        members.push(StructMember {
+            name: Some(name.into()),
+            ty,
+            binding: Some(binding),
+            offset: span,
+        });
+        components.push(value);
+        span += bytes;
     }
     if let Some((at, named)) = named_layer_value {
         members.push(StructMember {

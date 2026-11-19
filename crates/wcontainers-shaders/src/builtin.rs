@@ -10,12 +10,29 @@ use crate::ConvertError;
 use crate::variant::pull::{Kind, layout};
 use crate::variant::texel::vertex_format;
 
-/// The clear program's parameters in set 0: a uniform buffer of [`clear_params`]' 48 bytes.
+/// The clear program's parameters in set 0: a uniform buffer of [`CLEAR_PARAMS_BYTES`], which
+/// [`clear_params`] gives.
 pub const CLEAR_PARAMS_BINDING: u32 = 0;
 /// The storage view the clear program writes, in set 0, write-only, of the program's format.
 pub const CLEAR_VIEW_BINDING: u32 = 1;
 /// Invocations of a clear's workgroup along x and y; each workgroup covers one layer or slice.
 pub const CLEAR_GROUP: [u32; 2] = [8, 8];
+/// The axes a clear's texels span: x, y, and layer or slice.
+pub const CLEAR_AXES: usize = 3;
+/// The components of a clear value.
+const CLEAR_COMPONENTS: usize = crate::build::VEC4 as usize;
+
+/// The clear program's parameters as its `Clear` block lays them out: the value, then the first
+/// texel and the end, each padded to four words.
+#[repr(C)]
+struct ClearBlock {
+    value: [u32; CLEAR_COMPONENTS],
+    origin: [u32; CLEAR_COMPONENTS],
+    end: [u32; CLEAR_COMPONENTS],
+}
+
+/// Bytes of the clear program's parameters.
+pub const CLEAR_PARAMS_BYTES: usize = core::mem::size_of::<ClearBlock>();
 
 /// The program clearing storage views of `format` and `dimension` (`D2`, `D2Array` or `D3`; one
 /// dimensional views are 2D views of one row). Refused by name: formats with no storage form
@@ -67,22 +84,27 @@ pub fn storage_clear(
 
 /// The clear program's parameters: the value as [`storage_clear_value`] gives it, and the texels from
 /// `origin` to `end` (x, y, and layer or slice; `end` exclusive and inside the view).
-pub fn clear_params(value: [u32; 4], origin: [u32; 3], end: [u32; 3]) -> [u8; 48] {
-    let mut out = [0; 48];
-    let words = value
-        .into_iter()
-        .chain(origin)
-        .chain([0])
-        .chain(end)
-        .chain([0]);
-    for (o, w) in out.chunks_mut(4).zip(words) {
+pub fn clear_params(
+    value: [u32; CLEAR_COMPONENTS],
+    origin: [u32; CLEAR_AXES],
+    end: [u32; CLEAR_AXES],
+) -> [u8; CLEAR_PARAMS_BYTES] {
+    let mut out = [0; CLEAR_PARAMS_BYTES];
+    let padded = |p: [u32; CLEAR_AXES]| core::array::from_fn(|i| p.get(i).copied().unwrap_or(0));
+    let block = ClearBlock {
+        value,
+        origin: padded(origin),
+        end: padded(end),
+    };
+    let words = block.value.into_iter().chain(block.origin).chain(block.end);
+    for (o, w) in out.chunks_mut(crate::build::WORD as usize).zip(words) {
         o.copy_from_slice(&w.to_le_bytes());
     }
     out
 }
 
 /// The workgroups a clear from `origin` to `end` dispatches.
-pub fn clear_groups(origin: [u32; 3], end: [u32; 3]) -> [u32; 3] {
+pub fn clear_groups(origin: [u32; CLEAR_AXES], end: [u32; CLEAR_AXES]) -> [u32; CLEAR_AXES] {
     let [gx, gy] = CLEAR_GROUP;
     [
         end[0].saturating_sub(origin[0]).div_ceil(gx),
@@ -102,9 +124,9 @@ pub fn clear_groups(origin: [u32; 3], end: [u32; 3]) -> [u32; 3] {
 /// code one above it), and formats with no storage form (`StorageFormatAbsent`).
 pub fn storage_clear_value(
     format: Format,
-    values: [u32; 4],
+    values: [u32; CLEAR_COMPONENTS],
     float: bool,
-) -> Result<[u32; 4], ConvertError> {
+) -> Result<[u32; CLEAR_COMPONENTS], ConvertError> {
     let absent = ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT_ABSENT);
     if crate::lower::storage_format(format).is_none() {
         return Err(absent);
@@ -117,18 +139,22 @@ pub fn storage_clear_value(
             )),
             // Denormal floats as zeros of their sign, as Direct3D's float arithmetic takes them.
             _ => Ok(values.map(|v| {
-                if v & 0x7f80_0000 == 0 {
-                    v & 0x8000_0000
+                if v & crate::build::F32_EXPONENT_MASK == 0 {
+                    v & crate::build::F32_SIGN_MASK
                 } else {
                     v
                 }
             })),
         };
     }
-    let mut out = [0; 4];
+    let mut out = [0; CLEAR_COMPONENTS];
     for (o, (&v, &(_, _, bits))) in out.iter_mut().zip(values.iter().zip(&components)) {
-        let low = if bits == 32 { v } else { v & ((1 << bits) - 1) };
-        let signed = ((low << (32 - bits)) as i32) >> (32 - bits);
+        let low = if bits == u32::BITS {
+            v
+        } else {
+            v & ((1 << bits) - 1)
+        };
+        let signed = ((low << (u32::BITS - bits)) as i32) >> (u32::BITS - bits);
         *o = match kind {
             Kind::Uint => low,
             Kind::Sint => signed as u32,
@@ -143,7 +169,7 @@ pub fn storage_clear_value(
                 }
                 ((f64::from(signed) / f64::from(max)) as f32).to_bits()
             }
-            Kind::Float if bits == 32 => low,
+            Kind::Float if bits == u32::BITS => low,
             Kind::Float => small_float(low, bits).to_bits(),
         };
     }
@@ -153,15 +179,23 @@ pub fn storage_clear_value(
 /// The value of a float of five exponent bits and `bits - 5` mantissa bits (11- and 10-bit floats,
 /// unsigned), or of a half float (`bits` 16, signed); infinities and NaN payloads kept.
 fn small_float(raw: u32, bits: u32) -> f32 {
-    let m = if bits == 16 { 10 } else { bits - 5 };
-    let exponent = (raw >> m) & 0x1f;
-    let mantissa = raw & ((1 << m) - 1);
-    let magnitude = match exponent {
-        0 => mantissa as f32 / (1u64 << (14 + m)) as f32,
-        31 => f32::from_bits(0x7f80_0000 | (mantissa << (23 - m))),
-        e => f32::from_bits(((e + 112) << 23) | (mantissa << (23 - m))),
+    use crate::build::{
+        F32_EXPONENT_BIAS, F32_EXPONENT_MASK, F32_FRACTION_BITS, HALF_BITS,
+        SMALL_FLOAT_EXPONENT_BIAS, SMALL_FLOAT_EXPONENT_BITS, SMALL_FLOAT_EXPONENT_MASK,
     };
-    if bits == 16 && raw & 0x8000 != 0 {
+    let signed = bits == HALF_BITS;
+    let m = bits - SMALL_FLOAT_EXPONENT_BITS - u32::from(signed);
+    let exponent = (raw >> m) & SMALL_FLOAT_EXPONENT_MASK;
+    let mantissa = raw & ((1 << m) - 1);
+    let fraction = mantissa << (F32_FRACTION_BITS - m);
+    let magnitude = match exponent {
+        0 => mantissa as f32 / (1u64 << (SMALL_FLOAT_EXPONENT_BIAS - 1 + m)) as f32,
+        SMALL_FLOAT_EXPONENT_MASK => f32::from_bits(F32_EXPONENT_MASK | fraction),
+        e => f32::from_bits(
+            ((e + F32_EXPONENT_BIAS - SMALL_FLOAT_EXPONENT_BIAS) << F32_FRACTION_BITS) | fraction,
+        ),
+    };
+    if signed && raw & (1 << (HALF_BITS - 1)) != 0 {
         -magnitude
     } else {
         magnitude
