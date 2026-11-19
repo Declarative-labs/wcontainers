@@ -141,6 +141,22 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
     declared
 }
 
+/// Declares the elements an array split into (`arrays::split`), at `elements`, as the array at
+/// `array` was declared.
+pub(super) fn declare_elements(
+    declared: &mut Vec<Declared>,
+    array: naga::ResourceBinding,
+    elements: core::ops::Range<u32>,
+) {
+    let Some(&d) = declared
+        .iter()
+        .find(|d| (d.set, d.binding) == (array.group, array.binding))
+    else {
+        return;
+    };
+    declared.extend(elements.map(|binding| Declared { binding, ..d }));
+}
+
 /// Each declared image's global variable, matched by set, binding and kind while the bindings are
 /// still dxil-spirv's.
 pub(super) fn globals(

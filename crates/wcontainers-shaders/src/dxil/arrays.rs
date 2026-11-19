@@ -1,7 +1,8 @@
-//! Arrays of textures (`Texture2D t[8] : register(t0)`): WebGPU has no binding arrays, so each
-//! element becomes a texture of its own at its own register, as Direct3D 12 numbers a range. An
-//! element picked by a constant is that texture; one picked at run time is a call of a function
-//! that switches on the index and uses the element it names.
+//! Arrays of textures and storage textures (`Texture2D t[8] : register(t0)`): WebGPU has no binding
+//! arrays, so each element becomes a texture of its own at its own register, as Direct3D 12 numbers
+//! a range. An element picked by a constant is that texture; one read after a pick at run time is a
+//! call of a function that switches on the index and uses the element it names, and a store to one
+//! is a switch in place.
 
 use super::{Placed, Resources, functions_first, place_calls};
 use crate::ConvertError;
@@ -136,10 +137,14 @@ fn constant_index(module: &Module, f: &Function, e: Handle<Expression>) -> Optio
     }
 }
 
-/// Splits every array of textures into its elements, numbered after the resources `resources`
-/// lists, and rewrites the uses. Runs right after reading: it moves the module's functions and
-/// compacts it. Arrays of anything else stay refused.
-pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()> {
+/// Splits every array of textures and storage textures into its elements, numbered after the
+/// resources `resources` lists, and rewrites the uses. Runs right after reading: it moves the
+/// module's functions and compacts it. Arrays of anything else stay refused.
+pub(super) fn split(
+    module: &mut Module,
+    resources: &mut Resources,
+    declared: &mut Vec<super::images::Declared>,
+) -> Result<()> {
     let mut arrays: Vec<(Handle<GlobalVariable>, Vec<Handle<GlobalVariable>>)> = Vec::new();
     let found: Vec<_> = module
         .global_variables
@@ -156,12 +161,12 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
         let ArraySize::Constant(n) = size else {
             return Err(refused());
         };
-        // Typed buffers were read as 1D images (`images::prepare`); they and storage views stay
-        // refused.
+        // Typed buffers were read as 1D images (`images::prepare`); they stay refused.
         match module.types[base].inner {
             TypeInner::Image {
                 dim,
-                class: ImageClass::Sampled { .. } | ImageClass::Depth { .. },
+                class:
+                    ImageClass::Sampled { .. } | ImageClass::Depth { .. } | ImageClass::Storage { .. },
                 ..
             } if dim != ImageDimension::D1 => {}
             _ => return Err(refused()),
@@ -174,6 +179,8 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
                     "a binding past the resource list".into(),
                 ))?;
         let mut elements = Vec::new();
+        let first = resources.len() as u32;
+        super::images::declare_elements(declared, binding, first..first + n.get());
         for i in 0..n.get() {
             resources.push([class, space, register + i]);
             elements.push(module.global_variables.append(
@@ -201,6 +208,8 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
     let n = module.functions.len();
     let mut fixed = Vec::new();
     let mut dynamic = Vec::new();
+    // Run-time picks per function, for stores.
+    let mut stored = Vec::new();
     // Every access to an array, to make dead once its users are rewritten.
     let mut accesses = Vec::new();
     let functions = module.functions.iter().map(|(_, f)| f);
@@ -243,11 +252,39 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
                 }
             }
         }
-        if passes(&f.body, &|o| {
-            picked.iter().any(|p| p.0 == o) || array_of(&f.expressions[o]).is_some()
-        }) {
+        let is_pick = |o| {
+            picked
+                .iter()
+                .any(|p: &(Handle<Expression>, usize, _)| p.0 == o)
+        };
+        // An atomic operation on a texel of an element picked at run time stays refused.
+        let atomic_on_pick = |s: &Statement| match *s {
+            Statement::Atomic { pointer, .. } => matches!(
+                f.expressions[pointer],
+                Expression::Access { base, .. } | Expression::AccessIndex { base, .. } if is_pick(base)
+            ),
+            Statement::ImageAtomic { image, .. } => is_pick(image),
+            _ => false,
+        };
+        let passes_pick = |s: &Statement| match s {
+            Statement::Call { arguments, .. } => arguments
+                .iter()
+                .any(|&a| is_pick(a) || array_of(&f.expressions[a]).is_some()),
+            _ => false,
+        };
+        if any_statement(&f.body, &|s| passes_pick(s) || atomic_on_pick(s)) {
             return Err(refused());
         }
+        stored.push(
+            picked
+                .into_iter()
+                .map(|(access, elements, index)| Pick {
+                    access,
+                    elements,
+                    index,
+                })
+                .collect::<Vec<_>>(),
+        );
     }
     // The types of what the helpers take and give, with plain reads of depth textures typed as
     // the four components `depth::widen` makes them give.
@@ -259,7 +296,29 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
     let mut plans = Vec::new();
     for &(i, h, a, index) in &dynamic {
         let vec4 = vec4.expect("a run-time pick");
-        let f = &super::depth::as_widened(module, all[i], vec4)?;
+        let mut f = super::depth::as_widened(module, all[i], vec4)?;
+        // Texel pointers (an access into an image, which atomic operations use) have no type;
+        // for typing, each stands for its image.
+        let handles: Vec<_> = f.expressions.iter().map(|(h, _)| h).collect();
+        for h in handles {
+            let Expression::Access { base, .. } = f.expressions[h] else {
+                continue;
+            };
+            let image = match f.expressions[base] {
+                Expression::GlobalVariable(g) => matches!(
+                    module.types[module.global_variables[g].ty].inner,
+                    TypeInner::Image { .. }
+                ),
+                Expression::Access { base, .. } | Expression::AccessIndex { base, .. } => {
+                    array_of(&f.expressions[base]).is_some()
+                }
+                _ => false,
+            };
+            if image {
+                *f.expressions.get_mut(h) = f.expressions[base].clone();
+            }
+        }
+        let f = &f;
         let mut typifier = naga::front::Typifier::new();
         let ctx = naga::proc::ResolveContext::with_locals(module, &f.local_variables, &f.arguments);
         let mut e = f.expressions[h].clone();
@@ -295,13 +354,7 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
             .map(|(e, inner)| (e, ty(inner)))
             .collect();
         let result = ty(result);
-        let signed = matches!(
-            module.types[passed[0].1].inner,
-            TypeInner::Scalar(naga::Scalar {
-                kind: naga::ScalarKind::Sint,
-                ..
-            })
-        );
+        let signed = is_signed(&module.types[passed[0].1].inner);
         made.push(Dynamic {
             function: i,
             user: h,
@@ -349,6 +402,14 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
             })
             .collect();
         place_calls(f, &calls);
+        let picks = &stored[i];
+        if !picks.is_empty() {
+            let mut expressions = core::mem::take(&mut f.expressions);
+            super::each_block(&mut f.body, &mut |block| {
+                switch_stores(block, &mut expressions, picks, &arrays)
+            });
+            f.expressions = expressions;
+        }
         let mut dead = Vec::new();
         for &(j, h, element) in &fixed {
             if j == i {
@@ -367,6 +428,88 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
     // Drops the arrays, now unused.
     naga::compact::compact(module, naga::compact::KeepUnused::No);
     Ok(())
+}
+
+/// An element of an array picked at run time: the access, the array and the index.
+struct Pick {
+    access: Handle<Expression>,
+    elements: usize,
+    index: Handle<Expression>,
+}
+
+fn is_signed(inner: &TypeInner) -> bool {
+    matches!(
+        *inner,
+        TypeInner::Scalar(naga::Scalar {
+            kind: naga::ScalarKind::Sint,
+            ..
+        })
+    )
+}
+
+/// The case of a switch on an index that runs for element `k` of `count` (the last for any index
+/// past the array, which Direct3D leaves undefined).
+fn case_value(k: usize, count: usize, signed: bool) -> SwitchValue {
+    match k + 1 == count {
+        true => SwitchValue::Default,
+        false if signed => SwitchValue::I32(k as i32),
+        false => SwitchValue::U32(k as u32),
+    }
+}
+
+/// Replaces each store in `block` to an element picked at run time with a switch on the index,
+/// read as unsigned, storing to the element named.
+fn switch_stores(
+    block: &mut Block,
+    expressions: &mut naga::Arena<Expression>,
+    picks: &[Pick],
+    arrays: &[(Handle<GlobalVariable>, Vec<Handle<GlobalVariable>>)],
+) {
+    for (s, span) in core::mem::take(block).span_into_iter() {
+        let image = match s {
+            Statement::ImageStore { image, .. } => image,
+            s => {
+                block.push(s, span);
+                continue;
+            }
+        };
+        let Some(pick) = picks.iter().find(|p| p.access == image) else {
+            block.push(s, span);
+            continue;
+        };
+        let elements = &arrays[pick.elements].1;
+        let selector = expressions.append(
+            Expression::As {
+                expr: pick.index,
+                kind: naga::ScalarKind::Uint,
+                convert: None,
+            },
+            span,
+        );
+        block.push(
+            Statement::Emit(Range::new_from_bounds(selector, selector)),
+            span,
+        );
+        let cases = elements
+            .iter()
+            .enumerate()
+            .map(|(k, &element)| {
+                let mut s = s.clone();
+                let Statement::ImageStore { ref mut image, .. } = s else {
+                    unreachable!("matched above");
+                };
+                *image = expressions.append(Expression::GlobalVariable(element), span);
+                let mut body = Block::new();
+                body.push(s, span);
+                SwitchCase {
+                    value: case_value(k, elements.len(), false),
+                    body,
+                    fall_through: false,
+                }
+            })
+            .collect();
+        block.push(Statement::Switch { selector, cases }, span);
+    }
 }
 
 /// The helper for one run-time pick: its arguments are the index and the passed operands; a
@@ -427,13 +570,8 @@ fn helper(f: &Function, d: &Dynamic, elements: &[Handle<GlobalVariable>]) -> Res
             Span::UNDEFINED,
         );
         body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
-        let value = match k + 1 == elements.len() {
-            true => SwitchValue::Default,
-            false if d.signed => SwitchValue::I32(k as i32),
-            false => SwitchValue::U32(k as u32),
-        };
         cases.push(SwitchCase {
-            value,
+            value: case_value(k, elements.len(), d.signed),
             body,
             fall_through: false,
         });
@@ -485,16 +623,20 @@ fn unemit(block: &mut Block, dead: &[Handle<Expression>]) {
     });
 }
 
-/// Whether a call in `block` passes an expression `is` picks.
-fn passes(block: &Block, is: &impl Fn(Handle<Expression>) -> bool) -> bool {
-    block.iter().any(|s| match s {
-        Statement::Call { arguments, .. } => arguments.iter().any(|&a| is(a)),
-        Statement::Block(b) => passes(b, is),
-        Statement::If { accept, reject, .. } => passes(accept, is) || passes(reject, is),
-        Statement::Loop {
-            body, continuing, ..
-        } => passes(body, is) || passes(continuing, is),
-        Statement::Switch { cases, .. } => cases.iter().any(|c| passes(&c.body, is)),
-        _ => false,
+/// Whether a statement in `block` or the blocks in it is one `is` picks.
+fn any_statement(block: &Block, is: &impl Fn(&Statement) -> bool) -> bool {
+    block.iter().any(|s| {
+        is(s)
+            || match s {
+                Statement::Block(b) => any_statement(b, is),
+                Statement::If { accept, reject, .. } => {
+                    any_statement(accept, is) || any_statement(reject, is)
+                }
+                Statement::Loop {
+                    body, continuing, ..
+                } => any_statement(body, is) || any_statement(continuing, is),
+                Statement::Switch { cases, .. } => cases.iter().any(|c| any_statement(&c.body, is)),
+                _ => false,
+            }
     })
 }

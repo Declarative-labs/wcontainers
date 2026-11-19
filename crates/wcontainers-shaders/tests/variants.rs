@@ -1061,6 +1061,40 @@ fn texture_arrays_are_a_texture_per_element() {
     assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
 }
 
+/// An array of storage textures is one storage texture per element, each of its view's format; a
+/// read after a pick at run time is a switch in a function and a store to one is a switch in place.
+#[test]
+fn storage_texture_arrays_are_a_storage_texture_per_element() {
+    const ELEMENTS: u32 = 4;
+    let code = read("tests/own/cs_image_array.dxil");
+    let key = VariantKey {
+        storage_formats: (0..ELEMENTS).map(|s| (s, Format::R32Uint)).collect(),
+        ..Default::default()
+    };
+    let c = convert(Source::Dxil(&code), &key, None).unwrap();
+    let mut storage: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Storage)
+        .map(|b| (b.register, b.slot()))
+        .collect();
+    storage.sort_unstable();
+    assert_eq!(storage, (0..ELEMENTS).map(|r| (r, r)).collect::<Vec<_>>());
+    let text = wgsl(&c);
+    assert_eq!(
+        text.matches("texture_storage_2d<r32uint,read_write>;")
+            .count(),
+        ELEMENTS as usize,
+        "{text}"
+    );
+    assert!(text.matches("switch").count() >= 3, "{text}");
+    assert_eq!(
+        convert(Source::Dxil(&code), &VariantKey::default(), None).err(),
+        Some(ConvertError::Unsupported("StorageFormat"))
+    );
+}
+
 /// A texture both compared against and read plainly (`ps_shadow`: compared samples, a sample, a
 /// sample at level 0, a load and a gather) is one depth texture by both routes, its plain reads
 /// widened to (depth, 0, 0, 1), with no other texture declared.

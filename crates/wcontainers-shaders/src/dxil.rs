@@ -242,7 +242,7 @@ pub(crate) fn lower(
     }
     widths::widen(&mut spirv)?;
     registers::encode(&mut spirv);
-    let declared = images::prepare(&mut spirv);
+    let mut declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
         strict_capabilities: false,
@@ -250,7 +250,7 @@ pub(crate) fn lower(
     };
     let mut module = widths::read(&spirv, &options)?;
     nonfinite::calls(&mut module)?;
-    arrays::split(&mut module, &mut resources)?;
+    arrays::split(&mut module, &mut resources, &mut declared)?;
     depth::widen(&mut module)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
