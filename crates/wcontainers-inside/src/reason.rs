@@ -10,6 +10,9 @@ pub const MEMORY_COPIED_AT_FORK: &str = "memory copied at once when duplicated";
 /// A piece asked of the host because none is loaded for that address.
 pub const NOT_YET_TRANSLATED: &str = "code not yet translated here";
 
+/// A turn that ends at a count, run one host instruction at a time so that it ends exactly there.
+pub const TURN_LIMIT_STEPPED: &str = "turn with a count limit run in steps";
+
 /// Every exit through the link; the detail is the last one's request word.
 pub const ASKED_THE_HOST: &str = "asked the host";
 

@@ -9,6 +9,7 @@ use std::process::Command;
 use wcontainers_hypervisor::{Host, Hypervisor, Loaded, Memory, VirtualMachine, load};
 use wcontainers_inside::layout::MEMORY_BASE;
 use wcontainers_inside::link::Start;
+use wcontainers_translator::{BOUND, LookAhead};
 
 /// Bytes of guest-physical memory a test running one program reserves.
 pub const MEMORY: u64 = 1 << 30;
@@ -56,6 +57,19 @@ pub fn setting(name: &str, default: u64) -> u64 {
         None => text.parse(),
     };
     parsed.unwrap_or_else(|e| panic!("{name}={text}: {e}"))
+}
+
+/// Sets the most instructions of a native piece; 1 is look-ahead none.
+pub const BOUND_VARIABLE: &str = "WCONTAINERS_NATIVE_BOUND";
+
+/// The look-ahead the monitor translates at: [`BOUND_VARIABLE`]'s instructions per piece at most, the
+/// translator's run-time bound when it is unset.
+pub fn look_ahead() -> LookAhead {
+    match setting(BOUND_VARIABLE, BOUND.into()) {
+        0 => panic!("{BOUND_VARIABLE} is at least 1"),
+        1 => LookAhead::None,
+        n => LookAhead::Bounded(u32::try_from(n).expect("a bound fits u32")),
+    }
 }
 
 /// Hypervisor.framework refuses a binary without the hypervisor entitlement, which cargo's test binaries

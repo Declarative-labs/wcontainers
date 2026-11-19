@@ -51,7 +51,7 @@ mod macos {
 
     use crate::common::{
         CLibrary, KERNEL_TEST_GUEST, MEMORY, ONE_CPU, OWN_GUEST, be_signed, build, compile,
-        load_average, machine, setting,
+        load_average, look_ahead, machine, setting,
     };
     use crate::protocol::{self, ExitWords, Order, OrderKind, ResumeWords, Warned};
 
@@ -125,8 +125,9 @@ mod macos {
             "{IDENTIFIERS_RAN_OUT} after {IDENTIFIERS} memories"
         );
         println!(
-            "exits, exact {exact}: {} programs, {failed} failed; {} native pieces; native slow paths {:?}; in \
-             {:?}, load {}",
+            "exits, exact {exact}, {:?}: {} programs, {failed} failed; {} native pieces; native slow paths {:?}; \
+             in {:?}, load {}",
+            native.look_ahead,
             PROGRAMS.len() + 1,
             native.translations,
             native.warnings,
@@ -155,6 +156,8 @@ mod macos {
         warnings: BTreeMap<String, u64>,
         /// Pieces translated.
         translations: u64,
+        /// What the monitor translates at.
+        look_ahead: LookAhead,
     }
 
     impl NativeSide {
@@ -171,6 +174,7 @@ mod macos {
                 loaded,
                 warnings: BTreeMap::new(),
                 translations: 0,
+                look_ahead: look_ahead(),
             };
             side.serve();
             side.begin(exact);
@@ -228,9 +232,9 @@ mod macos {
                             panic!("no bytes longer than a link here")
                         }
                     }
-                } else if translation::Request::from_word(word).is_some() {
-                    translate::translate(link).expect("a piece fits the link");
-                    self.translations += 1;
+                } else if let Some(request) = translation::Request::from_word(word) {
+                    translate::answer(link, self.look_ahead);
+                    self.translations += u64::from(request == translation::Request::Translate);
                 } else if inside_routines::Request::from_word(word).is_some() {
                     routines::answer(link, &self.memory);
                 } else {

@@ -19,7 +19,7 @@ use wcontainers_runtime::{Ending, Kernel, drive};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use zerocopy::FromZeros;
 
-use crate::common::{MEMORY, ONE_CPU, build, machine, setting};
+use crate::common::{MEMORY, ONE_CPU, build, look_ahead, machine, setting};
 use crate::protocol::{self, Ended, PolicySeeds};
 
 /// The test program inside.
@@ -180,6 +180,7 @@ pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -
     };
     let mut warnings = Vec::new();
     let mut exits = 0;
+    let look_ahead = look_ahead();
     loop {
         exits += 1;
         match cpu.run().expect("running") {
@@ -206,7 +207,7 @@ pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -
                 request => panic!("no {request:?} here"),
             }
         } else if translation::Request::from_word(word).is_some() {
-            translate::translate(link).expect("a piece fits the link");
+            translate::answer(link, look_ahead);
         } else if inside_routines::Request::from_word(word).is_some() {
             routines::answer(link, &memory);
         } else if let Some(request) = host::Request::from_word(word) {

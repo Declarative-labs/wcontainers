@@ -9,7 +9,7 @@ use core::ops::Range;
 use core::ptr;
 
 use aarch64_cpu::asm::barrier::{self, ISH, ISHST, SY};
-use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Read, TPIDR_EL0, Write as _};
+use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TPIDR_EL0, Write as _};
 use aarch64_paging::descriptor::El1Attributes;
 use arm_sysregs::el0::registers::CtrEl0;
 use rangemap::RangeMap;
@@ -18,7 +18,7 @@ use wcontainers_abi::{
     RegisterBlock, Resume, SharedId, Syscall, ThreadId, Warning,
 };
 use wcontainers_arm64::CACHE_TYPE;
-use wcontainers_arm64::mirror::REACH_BITS;
+use wcontainers_arm64::mirror::{self, MIRROR, REACH_BITS, SLOT_MOVE_BITS, SLOT_MOVES};
 use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage};
 use wcontainers_guest_cpu::position::{NativeReason, Span};
 use wcontainers_runtime::{Answer, Carry, Execution, Turn};
@@ -26,23 +26,29 @@ use wcontainers_runtime::{Answer, Carry, Execution, Turn};
 use crate::floor::{
     self, AddressSpace, Frames, Full, Table, Taken, UserRegisters, code, enter_user,
     guest_no_access, guest_read_only, guest_read_write, inside_code, make_code_visible,
-    with_frames,
+    process_code, with_frames,
 };
 use crate::layout::{Region, linear};
+use crate::link::LINK_BYTES;
 use crate::reason::{
     ASKED_THE_HOST, CODE_AREA_EMPTIED, CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED,
     GUEST_PHYSICAL_SPACE_FULL, IDENTIFIERS_RAN_OUT, LARGE_ENTRY_SPLIT, MEMORY_COPIED_AT_FORK,
-    MEMORY_FAULT, NOT_YET_TRANSLATED,
+    MEMORY_FAULT, NOT_YET_TRANSLATED, TURN_LIMIT_STEPPED,
 };
 use crate::routines::{FloatControl, Placed, Routines, Vectors};
 use crate::stop::{self, Exception, FloatStatus, GENERAL, GuestState, Interrupted, Resolved, Stop};
-use crate::translation::{self, Translate};
+use crate::translation::{self, LinkWords, Linking, Translate};
 
 /// The general register a system call's number is in (Linux's ARM64 calling convention).
 const SYSCALL_NUMBER: usize = 8;
 
 /// The identifier of no process: the idle address space's.
 const IDLE_IDENTIFIER: u16 = 0;
+
+const _: () = assert!(
+    MIRROR >> mirror::SLOT_MOVED_BITS == Region::Code.base() >> mirror::SLOT_MOVED_BITS,
+    "a slot's moves leave the bits a piece's address shares with the slot's"
+);
 
 /// The bytes one announcement of changed code covers: the instruction cache line of the CTR_EL0 we present.
 const CODE_LINE: u64 = (size_of::<u32>() as u64) << CtrEl0::from_bits_retain(CACHE_TYPE).iminline();
@@ -87,6 +93,15 @@ struct Loaded {
     spans: Vec<Span>,
     /// The guest code it was translated from.
     source: Vec<u8>,
+    /// Its direct exits: each one's guest target and host address.
+    exits: Vec<(u64, u64)>,
+}
+
+/// A direct exit: its first word's host address and that word as translated, which a link writes over.
+#[derive(Clone, Copy)]
+struct Site {
+    at: u64,
+    word: u32,
 }
 
 struct Memory {
@@ -99,6 +114,12 @@ struct Memory {
     pages: BTreeMap<u64, Page>,
     /// Loaded pieces by the guest address they start at.
     pieces: BTreeMap<u64, Loaded>,
+    /// The guest address of each loaded piece, by its host address.
+    hosts: BTreeMap<u64, u64>,
+    /// The frames of the entry mirror's pages, by their address.
+    slots: BTreeMap<u64, u64>,
+    /// The direct exits of loaded pieces, by the guest address they go to: linked while a piece is loaded there.
+    exits_to: BTreeMap<u64, Vec<Site>>,
 }
 
 impl Memory {
@@ -109,6 +130,9 @@ impl Memory {
             shown: RangeMap::new(),
             pages: BTreeMap::new(),
             pieces: BTreeMap::new(),
+            hosts: BTreeMap::new(),
+            slots: BTreeMap::new(),
+            exits_to: BTreeMap::new(),
         }
     }
 
@@ -137,6 +161,40 @@ impl Memory {
     fn read(&self, blocks: &BTreeMap<SharedId, Block>, address: u64, into: &mut [u8]) {
         read_pages(|page| self.frame(blocks, page), address, into);
     }
+
+    /// The loaded piece whose host code holds `pc`; a pc in the entry mirror is in none, a piece of no length.
+    fn piece_at(&self, pc: u64) -> stop::Piece<'_> {
+        let found = self
+            .hosts
+            .range(..=pc)
+            .next_back()
+            .and_then(|(&base, guest)| {
+                let loaded = &self.pieces[guest];
+                (pc - base < loaded.length as u64).then_some(stop::Piece {
+                    base,
+                    length: loaded.length,
+                    spans: &loaded.spans,
+                })
+            });
+        found.unwrap_or_else(|| {
+            assert!(
+                pc >= MIRROR,
+                "translated code ran outside every piece, at {pc:#x}"
+            );
+            stop::Piece {
+                base: pc,
+                length: 0,
+                spans: &[],
+            }
+        })
+    }
+}
+
+/// Writes host words at `at` in the code area or the running process's entry mirror, and makes them visible.
+fn write_code(at: u64, words: &[u32]) {
+    // SAFETY: both are mapped writable at this level, and no virtual CPU runs these words while they change.
+    unsafe { ptr::copy_nonoverlapping(words.as_ptr(), at as *mut u32, words.len()) };
+    make_code_visible(at, size_of_val(words) as u64);
 }
 
 impl Loaded {
@@ -180,6 +238,8 @@ pub struct NativeCpu {
     code_mapped: u64,
     /// Whether pieces carry the progress count (the process asks for exact replay).
     exact_replay: bool,
+    /// The words written to fill entry slots and link exits.
+    words: LinkWords,
     /// The thread whose vector registers the hardware holds.
     live: Option<ThreadId>,
     /// The float state routines.
@@ -248,6 +308,7 @@ impl NativeCpu {
         let at = Region::Code.base();
         with_frames(|frames| global.map(frames, at, frame, inside_code()))?;
         make_code_visible(at, PAGE_SIZE);
+        let words: LinkWords = floor::ask(&Linking {}, &[]);
         let idle = AddressSpace {
             user: with_frames(Table::new)?,
             inside: global,
@@ -290,6 +351,7 @@ impl NativeCpu {
             code_next: Region::Code.base() + PAGE_SIZE,
             code_mapped: Region::Code.base() + PAGE_SIZE,
             exact_replay,
+            words,
             live: None,
             read_float_control,
             write_float_control,
@@ -503,23 +565,27 @@ impl NativeCpu {
     /// Drops the pieces translated from a range.
     fn forget_code(&mut self, memory: MemoryId, address: u64, length: u64) -> Forgotten {
         let mut forgotten = Forgotten::default();
-        let blocks = &self.shared;
-        let Some(m) = self.memories.get_mut(&memory) else {
+        let Some(m) = self.memories.get(&memory) else {
             return forgotten;
         };
         let range = address..address + length;
-        let mut pieces = core::mem::take(&mut m.pieces);
-        pieces.retain(|&at, loaded| {
-            if !loaded.overlaps(at, &range) {
-                return true;
-            }
-            forgotten.dropped = true;
+        let overlapping: Vec<u64> = m
+            .pieces
+            .iter()
+            .filter(|(at, loaded)| loaded.overlaps(**at, &range))
+            .map(|(&at, _)| at)
+            .collect();
+        for &at in &overlapping {
+            let loaded = &m.pieces[&at];
             let mut now = vec![0; loaded.source.len()];
-            m.read(blocks, at, &mut now);
+            m.read(&self.shared, at, &mut now);
+            forgotten.dropped = true;
             forgotten.changed |= now != loaded.source;
-            false
-        });
-        m.pieces = pieces;
+        }
+        let m = self.memories.get_mut(&memory).expect("the memory is there");
+        for at in overlapping {
+            drop_piece(m, at, self.words.empty);
+        }
         forgotten
     }
 
@@ -572,7 +638,10 @@ impl NativeCpu {
         let mut dropped = 0;
         for m in self.memories.values_mut() {
             dropped += m.pieces.len() as u64;
-            m.pieces.clear();
+            let all: Vec<u64> = m.pieces.keys().copied().collect();
+            for at in all {
+                drop_piece(m, at, self.words.empty);
+            }
         }
         self.code_next = Region::Code.base() + PAGE_SIZE;
         self.slow(CODE_AREA_EMPTIED, 1, dropped);
@@ -652,14 +721,17 @@ impl NativeCpu {
         if !m.allows(page_of(pc)).contains(Permissions::EXECUTE) {
             return Err(refused);
         }
-        let mut word = [0; size_of::<u32>()];
-        m.read(&self.shared, pc, &mut word);
+        // The rest of the page, as far as one link carries: a piece never runs on into another page, whose
+        // permissions may differ.
+        let rest = (page_of(pc) + PAGE_SIZE - pc) as usize;
+        let mut code = vec![0; rest.min(LINK_BYTES)];
+        m.read(&self.shared, pc, &mut code);
         let piece = floor::ask_link(
             &Translate {
                 address: pc,
                 exact: u64::from(self.exact_replay),
             },
-            &word,
+            &code,
             translation::piece,
         )
         .ok_or(Exit::IllegalInstruction)?;
@@ -679,19 +751,89 @@ impl NativeCpu {
                 self.slow(reason.name(), sites, pc);
             }
         }
-        self.memories
-            .get_mut(&memory)
-            .expect("the memory is there")
-            .pieces
-            .insert(
-                pc,
-                Loaded {
-                    base,
-                    length: piece.code.len(),
-                    spans: piece.spans,
-                    source: word.to_vec(),
-                },
-            );
+        let covered = piece
+            .spans
+            .last()
+            .map_or(0, |span| span.guest + size_of::<u32>() as u64 - pc);
+        code.truncate(covered as usize);
+        let sites: Vec<(u64, Site)> = piece
+            .exits
+            .iter()
+            .map(|exit| {
+                let start = exit.start as usize;
+                let word = &piece.code[start..start + size_of::<u32>()];
+                let at = base + u64::from(exit.start);
+                let word = u32::from_le_bytes(word.try_into().expect("a word"));
+                (exit.target, Site { at, word })
+            })
+            .collect();
+        let m = self.memories.get_mut(&memory).expect("the memory is there");
+        m.pieces.insert(
+            pc,
+            Loaded {
+                base,
+                length: piece.code.len(),
+                spans: piece.spans,
+                source: code,
+                exits: sites
+                    .iter()
+                    .map(|(target, site)| (*target, site.at))
+                    .collect(),
+            },
+        );
+        m.hosts.insert(base, pc);
+        for &(target, site) in &sites {
+            m.exits_to.entry(target).or_default().push(site);
+        }
+        // No frame for a page of the mirror: the process can only be killed.
+        self.fill_slot(memory, pc, base)
+            .map_err(|Full| Exit::MemoryFaultWithoutRegisters)?;
+        let m = &self.memories[&memory];
+        let into = m
+            .exits_to
+            .get(&pc)
+            .into_iter()
+            .flatten()
+            .map(|site| (site.at, base));
+        let out = sites
+            .iter()
+            .filter(|(target, _)| *target != pc)
+            .filter_map(|(target, site)| Some((site.at, m.pieces.get(target)?.base)));
+        for (at, to) in into.chain(out).collect::<Vec<_>>() {
+            if let Some(word) = self.link_word(at, to) {
+                write_code(at, &[word]);
+            }
+        }
+        Ok(())
+    }
+
+    /// A direct branch at `at` to `to`, when it reaches.
+    fn link_word(&self, at: u64, to: u64) -> Option<u32> {
+        let offset = (to.wrapping_sub(at) as i64) / size_of::<u32>() as i64;
+        let branch = self.words.branch;
+        branch.fits(offset).then(|| branch.with(offset as u64))
+    }
+
+    /// Fills the entry slot of guest address `guest` in `memory`, the running process's, with a jump to the piece at
+    /// `base`, mapping the slot's page at its first use.
+    fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) -> Result<(), Full> {
+        let at = mirror::slot(guest);
+        let page = page_of(at);
+        let m = self.memories.get_mut(&memory).expect("the memory is there");
+        if !m.slots.contains_key(&page) {
+            let inside = m.space.inside;
+            let frame = with_frames(|frames| {
+                let frame = frames.take()?;
+                inside.map(frames, page, frame, process_code())?;
+                Ok(frame)
+            })?;
+            m.slots.insert(page, frame);
+        }
+        let mut words = [self.words.jump; SLOT_MOVES + 1];
+        for (k, (word, field)) in words.iter_mut().zip(&self.words.moves).enumerate() {
+            *word = field.with(base >> (k as u32 * SLOT_MOVE_BITS));
+        }
+        write_code(at, &words);
         Ok(())
     }
 
@@ -761,8 +903,8 @@ impl NativeCpu {
     }
 
     /// Runs `t` to its next exit or to `until`, adding to `not_kept` each read of the float status while its
-    /// flags are not kept. Each piece is one instruction and comes back here (look-ahead none, nothing linked),
-    /// so every instruction boundary is seen.
+    /// flags are not kept. A turn that ends at a count runs one host instruction at a time, so that it ends at
+    /// the first instruction boundary where the count has reached it, however pieces are linked.
     fn run_taken(
         &mut self,
         t: &mut Thread,
@@ -773,6 +915,29 @@ impl NativeCpu {
         let memory = t.memory;
         self.memories[&memory].space.switch();
         TPIDR_EL0.set(t.tpidr);
+        if until.is_some() {
+            self.slow(TURN_LIMIT_STEPPED, 1, t.state.pc);
+            MDSCR_EL1.modify(MDSCR_EL1::SS::SoftwareStepEnabled);
+        }
+        let exit = self.run_pieces(t, clock, until, not_kept);
+        MDSCR_EL1.modify(MDSCR_EL1::SS::SoftwareStepDisabled);
+        exit
+    }
+
+    fn run_pieces(
+        &mut self,
+        t: &mut Thread,
+        clock: &mut dyn FnMut() -> u64,
+        until: Option<u64>,
+        not_kept: &mut u64,
+    ) -> Exit {
+        let memory = t.memory;
+        let step = if until.is_some() {
+            SPSR_EL1::SS::SET.value
+        } else {
+            SPSR_EL1::SS::CLEAR.value
+        };
+        let reached = |state: &GuestState| until.is_some_and(|until| state.count >= until);
         loop {
             let pc = t.state.pc;
             if let Err(exit) = self.load(memory, pc) {
@@ -780,24 +945,16 @@ impl NativeCpu {
             }
             let m = &self.memories[&memory];
             let blocks = &self.shared;
-            let loaded = &m.pieces[&pc];
-            let piece = stop::Piece {
-                base: loaded.base,
-                length: loaded.length,
-                spans: &loaded.spans,
-            };
             let (mut hardware, mut page) =
                 stop::rejoin(&t.state, t.page.clone(), &t.float, t.register_page);
-            hardware.pc = piece.base;
-            // Lines the guest said changed while this piece ran, dropped once it ends.
-            let mut changed = Vec::new();
+            hardware.pc = m.pieces[&pc].base;
             let ended = loop {
                 write_page(t.page_frame, &page);
                 let mut user = UserRegisters {
                     x: hardware.x,
                     sp: hardware.sp,
                     pc: hardware.pc,
-                    pstate: hardware.state,
+                    pstate: hardware.state | step,
                 };
                 (self.write_float_control)(u64::from(hardware.fpsr), u64::from(hardware.fpcr));
                 let taken = enter_user(&mut user);
@@ -812,10 +969,28 @@ impl NativeCpu {
                 };
                 let held = read_page(t.page_frame);
                 let mut memory_of = |at: u64, into: &mut [u8]| m.read(blocks, at, into);
+                let piece = m.piece_at(h.pc);
+                let syndrome = ESR_EL1.get();
+                let stepped =
+                    ESR_EL1::EC.read(syndrome) == ESR_EL1::EC::Value::SoftwareStepLowerEL as u64;
                 match taken {
+                    Taken::Synchronous if stepped => {
+                        let mut float = t.float;
+                        let state =
+                            stop::interrupted(&piece, &h, &held, &mut float, &mut memory_of)
+                                .expect("a step lands in a span");
+                        if reached(&state) {
+                            t.state = state;
+                            t.float = float;
+                            t.page = held;
+                            break Ended::TurnOver;
+                        }
+                        hardware = h;
+                        page = held;
+                    }
                     Taken::Synchronous => {
                         let exception = Exception {
-                            syndrome: ESR_EL1.get(),
+                            syndrome,
                             fault: FAR_EL1.get(),
                             hardware: &h,
                             page: &held,
@@ -850,19 +1025,27 @@ impl NativeCpu {
                                 if !self.readable(memory, address) {
                                     t.state = *at;
                                     t.page = held;
-                                    break Some(Stop::MemoryFault {
+                                    break Ended::Stopped(Stop::MemoryFault {
                                         address,
                                         write: false,
                                     });
                                 }
-                                changed.push(address);
-                                hardware = then;
-                                page = then_page;
+                                // The guest goes on after the announcement, in a piece translated again.
+                                t.state = stop::interrupted(
+                                    &m.piece_at(then.pc),
+                                    &then,
+                                    &then_page,
+                                    &mut t.float,
+                                    &mut memory_of,
+                                )
+                                .expect("an announcement is followed by a span");
+                                t.page = then_page;
+                                break Ended::CodeChanged(address);
                             }
                             Ok(Resolved::Stop(stop, state)) => {
                                 t.state = state;
                                 t.page = held;
-                                break Some(stop);
+                                break Ended::Stopped(stop);
                             }
                             Err(unexpected) => {
                                 panic!("an exception translated code never raises: {unexpected:?}")
@@ -874,23 +1057,26 @@ impl NativeCpu {
                             stop::interrupted(&piece, &h, &held, &mut t.float, &mut memory_of)
                                 .expect("an interrupt lands in a span");
                         t.page = held;
-                        break None;
+                        break Ended::TurnOver;
                     }
                     Taken::Other => {
                         panic!("a fast interrupt or a system error from the guest's level")
                     }
                 }
             };
-            for address in changed {
-                self.code_line_changed(memory, address);
-            }
-            let Some(stop) = ended else {
-                return Exit::Stop;
+            let stop = match ended {
+                Ended::TurnOver => return Exit::Stop,
+                Ended::CodeChanged(address) => {
+                    self.code_line_changed(memory, address);
+                    if reached(&t.state) {
+                        return Exit::Stop;
+                    }
+                    continue;
+                }
+                Ended::Stopped(stop) => stop,
             };
             match stop {
-                Stop::Landed(_) if until.is_some_and(|until| t.state.count >= until) => {
-                    return Exit::Stop;
-                }
+                Stop::Landed(_) if reached(&t.state) => return Exit::Stop,
                 Stop::Landed(_) => {}
                 Stop::Syscall => {
                     let mut call = Syscall {
@@ -919,6 +1105,42 @@ impl NativeCpu {
                         Err(_) => return Exit::MemoryFaultWithoutRegisters,
                     }
                 }
+            }
+        }
+    }
+}
+
+/// How a run of translated code came back to the inside.
+enum Ended {
+    /// An interrupt, or a step that reached the turn's count: the turn ends here.
+    TurnOver,
+    /// The guest announced that the code at this address changed.
+    CodeChanged(u64),
+    Stopped(Stop),
+}
+
+/// Drops the piece at guest `at` of `m`: its entry slot emptied (its first word made `empty`), the exits linked to it unlinked, its own exits
+/// forgotten. Only between runs of translated code.
+fn drop_piece(m: &mut Memory, at: u64, empty: u32) {
+    let Some(loaded) = m.pieces.remove(&at) else {
+        return;
+    };
+    m.hosts.remove(&loaded.base);
+    let slot = mirror::slot(at);
+    if m.slots.contains_key(&page_of(slot)) {
+        // The slot is written where the guest runs it, in its process's address space; every run switches to
+        // its own.
+        m.space.switch();
+        write_code(slot, &[empty]);
+    }
+    for site in m.exits_to.get(&at).into_iter().flatten() {
+        write_code(site.at, &[site.word]);
+    }
+    for (target, site) in loaded.exits {
+        if let Some(sites) = m.exits_to.get_mut(&target) {
+            sites.retain(|s| s.at != site);
+            if sites.is_empty() {
+                m.exits_to.remove(&target);
             }
         }
     }
@@ -980,6 +1202,9 @@ impl Cpu for NativeCpu {
         with_frames(|frames| {
             for page in m.pages.values().filter(|p| p.shared.is_none()) {
                 frames.give(page.frame);
+            }
+            for &frame in m.slots.values() {
+                frames.give(frame);
             }
             m.space.user.free(frames, |_| true);
             m.space.inside.free(frames, |top| {

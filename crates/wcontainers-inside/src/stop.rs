@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 
 use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
-use wcontainers_arm64::mirror::{MIRROR, SLOT_SHIFT};
+use wcontainers_arm64::mirror::{MIRROR, SLOT_BYTES, SLOT_SHIFT};
 use wcontainers_arm64::thread_state::{
     COUNT, Exclusive, FPCR_BITS, FPSR_BITS, PAGE, RegisterPage, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
     untag_address,
@@ -491,8 +491,14 @@ pub fn interrupted(
     float.enter(h.fpsr);
     let offset = h.pc.wrapping_sub(piece.base);
     if offset >= piece.length as u64 {
-        // The jump is done and the guest is at its target's entry slot.
-        return Some(state_of(&[], 0, slot_target(h.pc), h, page));
+        // The jump is done and the guest is at its target's entry slot, or in it: an aligned target's slot is
+        // run from its start, a misaligned one's address keeps the target's low bits.
+        let slot = if h.pc.is_multiple_of(size_of::<u32>() as u64) {
+            h.pc & !(SLOT_BYTES - 1)
+        } else {
+            h.pc
+        };
+        return Some(state_of(&[], 0, slot_target(slot), h, page));
     }
     let span = span_at(piece.spans, piece.length, offset as u32)?;
     if span.side == Side::Before {

@@ -1,26 +1,61 @@
-//! The monitor's answer to the inside's translate requests: the native output's piece of the guest code the
-//! link carries.
+//! The monitor's answer to the inside's translation requests: the native output's piece of the guest code the
+//! link carries, and the words the inside fills to link pieces.
 
 use wcontainers_arm64::Arm64;
+use wcontainers_arm64::carry::link_words;
 use wcontainers_inside::link::Link;
-use wcontainers_inside::translation::{self, Piece, TooLarge, Translate};
+use wcontainers_inside::translation::{
+    self, Field, LinkWords, Piece, Request, TooLarge, Translate,
+};
 use wcontainers_translator::{LookAhead, translate_native};
 
-/// Answers the translate request in `link` at look-ahead none.
-pub fn translate(link: &mut Link) -> Result<(), TooLarge> {
+/// Answers the translation request in `link`, translating at `look_ahead`.
+pub fn answer(link: &mut Link, look_ahead: LookAhead) {
+    match Request::from_word(link.head.request).expect("a translation request") {
+        Request::Translate => translate(link, look_ahead),
+        Request::Linking => {
+            let words = link_words();
+            let field = |(clear, mask)| Field { clear, mask };
+            link.put(&LinkWords {
+                moves: words.moves.map(field),
+                jump: words.jump,
+                branch: field(words.branch),
+                empty: words.empty,
+            });
+        }
+    }
+}
+
+/// Answers a translate request with the piece at `look_ahead`, cut shorter where its host code would not fit the
+/// link.
+fn translate(link: &mut Link, look_ahead: LookAhead) {
     let request: Translate = link.get();
-    let piece = translate_native::<Arm64>(
-        link.data(),
-        request.address,
-        LookAhead::None,
-        request.exact != 0,
-    )
-    .map(|code| Piece {
-        code: code.bytes,
-        spans: code.spans,
-        sites: code.sites,
-    });
-    translation::answer(link, piece.as_ref())
+    let code = link.data().to_vec();
+    let mut look_ahead = look_ahead;
+    loop {
+        let piece =
+            translate_native::<Arm64>(&code, request.address, look_ahead, request.exact != 0).map(
+                |made| Piece {
+                    code: made.bytes,
+                    spans: made.spans,
+                    exits: made.exits,
+                    sites: made.sites,
+                },
+            );
+        let instructions = piece.as_ref().map_or(0, |p| {
+            let mut guests: Vec<u64> = p.spans.iter().map(|span| span.guest).collect();
+            guests.dedup();
+            guests.len()
+        });
+        match translation::answer(link, piece.as_ref()) {
+            Ok(()) => return,
+            Err(TooLarge) if instructions > 1 => {
+                let half = u32::try_from(instructions / 2).expect("a piece's instructions fit u32");
+                look_ahead = LookAhead::Bounded(half);
+            }
+            Err(TooLarge) => panic!("one instruction's piece does not fit the link"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -59,7 +94,7 @@ mod tests {
                     },
                     &word.to_le_bytes(),
                 );
-                super::translate(&mut link).expect("a piece fits the link");
+                super::answer(&mut link, LookAhead::None);
                 let got = translation::piece(&link).expect("a piece");
                 let made =
                     translate_native::<Arm64>(&word.to_le_bytes(), at, LookAhead::None, exact)
@@ -67,6 +102,7 @@ mod tests {
                 assert_eq!(got.code, made.bytes, "{word:#010x}");
                 assert_eq!(got.spans, made.spans, "{word:#010x}");
                 assert_eq!(got.sites, made.sites, "{word:#010x}");
+                assert_eq!(got.exits, made.exits, "{word:#010x}");
             }
         }
         let mut link = link();
@@ -77,7 +113,7 @@ mod tests {
             },
             &[0; Arm64::MAX_LENGTH as usize - 1],
         );
-        super::translate(&mut link).expect("an empty answer fits");
+        super::answer(&mut link, LookAhead::None);
         assert_eq!(
             translation::piece(&link),
             None,
@@ -97,7 +133,7 @@ mod tests {
             },
             &0xd400_0001u32.to_le_bytes(),
         );
-        super::translate(&mut link).expect("a piece fits the link");
+        super::answer(&mut link, LookAhead::None);
         let answer: translation::Translated = link.get();
         let code = usize::try_from(answer.code).expect("fits");
         link.bytes[code..].fill(u8::MAX);
