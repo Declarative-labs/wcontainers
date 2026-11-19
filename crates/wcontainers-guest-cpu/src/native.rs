@@ -2,6 +2,8 @@
 //! carried over to host code of the same architecture. It never says what an instruction computes; the
 //! hardware computes it, and the meanings stay the definition the routes are proven against.
 
+use std::collections::BTreeMap;
+
 use crate::position::{
     DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
 };
@@ -90,6 +92,9 @@ pub struct HostCode {
     pub sites: [u64; NativeReason::ALL.len()],
     /// The exits to direct targets, in the order they were written.
     pub exits: Vec<DirectExit>,
+    /// Exits written while the count was ahead, by start: the bytes of their first words, which settle the
+    /// count, or none for a branch only the code's own linking may point elsewhere.
+    settling: BTreeMap<u32, Option<u32>>,
 }
 
 /// Code placed out of line, in the order it was deferred.
@@ -192,8 +197,18 @@ impl HostCode {
         self.push(bytes);
     }
 
+    /// Writes the first bytes of an exit to the direct guest `target` that brings the count, ahead here, back
+    /// to the guest's: a loader links the exit after them, and linking within the code before them.
+    pub fn settling_exit(&mut self, settle: &[u8], target: u64) {
+        let start = u32::try_from(self.offset()).expect("host code fits in u32 offsets");
+        let length = u32::try_from(settle.len()).expect("a word fits u32");
+        self.exit(settle, target);
+        self.state().lead = 0;
+        self.settling.insert(start, Some(length));
+    }
+
     /// Records the branch written at `at` as one more exit to the direct guest `target`, which a loader may point
-    /// at the target's piece through the offset bits `field`.
+    /// at the target's piece through the offset bits `field`, unless the count is ahead here.
     pub fn branch_exit(&mut self, at: usize, target: u64, field: u32) {
         let start = u32::try_from(at).expect("host code fits in u32 offsets");
         self.exits.push(DirectExit {
@@ -201,6 +216,32 @@ impl HostCode {
             target,
             retarget: Some(field),
         });
+        if self.lead() > 0 {
+            self.settling.insert(start, None);
+        }
+    }
+
+    /// The exit as a loader may link it, once linking within the code has left it an exit: none when only
+    /// linking within the code may.
+    pub fn for_loader(&self, exit: DirectExit) -> Option<DirectExit> {
+        match self.settling.get(&exit.start) {
+            None => Some(exit),
+            Some(None) => None,
+            Some(&Some(length)) => Some(DirectExit {
+                start: exit.start + length,
+                ..exit
+            }),
+        }
+    }
+
+    /// How far the count is ahead of the guest's here.
+    pub fn lead(&self) -> u32 {
+        self.now.as_ref().map_or(0, |s| s.lead)
+    }
+
+    /// Enters a straight-line part whose events an add before it already counted, `lead` of them still to come.
+    pub fn enter_ahead(&mut self, lead: u32) {
+        self.state().lead = lead;
     }
 
     /// Writes bytes over earlier ones (a branch whose target is now known).
