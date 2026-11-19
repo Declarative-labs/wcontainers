@@ -115,6 +115,10 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   when the Mac's driver has reached its next chunk. Its zig cache was warmed first (24 cases, seed 9, one
   job, passed, not counted). Running: `pgrep -fl '^bash up.sh$'`. All three runners at once:
   `.../p2/w3.sh` (waits like `watch.sh`).
+- The second machine went away at 08:48 during chunks 181 (top-down) and 212 (upward), both lost with no
+  ledger line. By then chunks 182 to 197 and 201 to 211 had passed there. `arm-up/up-resume.sh` (detached,
+  20 hours from 08:52, log `up-resume.log`) warms the cache and starts `up.sh` again when a machine answers;
+  the top-down loop is the other agent's.
 - Docker on the Mac came back at 04:58 (someone started it); `resume.sh` restarted the driver at 05:01 on
   398df57 (only this file changed since 6a705f8); chunk 153 ran first and passed.
 - Disk: each copy's `trees/<commit>/target/programs` keeps every built program, about 330 MB a chunk
