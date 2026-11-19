@@ -825,22 +825,28 @@ fn aligned_after<G: Guest>(d: &Decoded<G>, aligned: bool) -> bool {
     }
 }
 
-/// Shift a frame to a stack pointer moved by `delta`. What is left below the red zone under the stack
-/// pointer is no frame, so it is dropped.
+/// Shift a frame to a stack pointer moved by `delta`. What a move up leaves below the red zone under the
+/// stack pointer is no frame, so it is dropped; below it after a move down is only what a check covered for
+/// the moves down that follow it (see [`frame_checked`]).
 fn shift<G: Guest>(frame: Frame, delta: i64) -> Frame {
     frame.and_then(|(lo, hi)| {
-        let (lo, hi) = ((lo - delta).max(-(G::RED_ZONE as i64)), hi - delta);
+        let lo = match lo - delta {
+            lo if delta > 0 => lo.max(-(G::RED_ZONE as i64)),
+            lo => lo,
+        };
+        let hi = hi - delta;
         (lo < hi).then_some((lo, hi))
     })
 }
 
-/// The frame after an instruction: moved as the stack pointer moves, and after a call that leaves its
-/// return address on the stack, back up past it, where the callee's return leaves the stack pointer.
+/// The frame after an instruction, from the frame before it with what its frame check covers
+/// ([`frame_checked`]): moved as the stack pointer moves, and after a call that leaves its return address on
+/// the stack, back up past it, where the callee's return leaves the stack pointer.
 fn frame_after<G: Guest>(d: &Decoded<G>, frame: Frame) -> Frame {
     let frame = match stack_move(d) {
         StackMove::None => frame,
         StackMove::Unknown => None,
-        StackMove::By { delta, .. } => shift::<G>(grow::<G>(frame, delta), delta),
+        StackMove::By { delta, .. } => shift::<G>(frame, delta),
     };
     match G::RETURN_ADDRESS {
         ReturnAddress::Stack { bytes } if d.effects.calls => shift::<G>(frame, bytes.into()),
@@ -1048,12 +1054,13 @@ impl<G: Guest> Plan<G> {
                 let mut dirty = dirty_in[b];
                 let mut flags = flags_in[b];
                 let mut aligned = aligned_in[b];
-                for o in instructions(b) {
-                    let d = &decoded[&o];
+                let offsets = function.instructions(b);
+                for (i, o) in offsets.iter().enumerate() {
+                    let d = &decoded[o];
                     aligned = aligned_after(d, aligned);
                     dirty = dirty_after(d, dirty);
                     flags = flag_state(d, flags);
-                    frame = frame_after(d, frame);
+                    frame = frame_after(d, frame_checked(decoded, offsets, i, frame).1);
                 }
                 for &s in &blocks[b].succs {
                     let mut dirty = dirty;
@@ -1332,8 +1339,14 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
         // access, its start, and the bytes covered.
         let mut open: FxHashMap<(Option<u32>, Option<u32>, bool), usize> = FxHashMap::default();
         let mut groups: Vec<(AccessAt, i64, i64, i64, u32)> = Vec::new();
-        for &o in function.instructions(b) {
+        let offsets = function.instructions(b);
+        for (i, &o) in offsets.iter().enumerate() {
             let d = &decoded[&o];
+            let (check, before) = frame_checked(decoded, offsets, i, frame);
+            if let Some(check) = check {
+                frame_checks.insert(o, check);
+            }
+            frame = before;
             if d.effects.calls || d.effects.syscall {
                 moved.clear();
                 open.clear();
@@ -1342,13 +1355,6 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                 frame_across.insert(o);
             }
             let movement = stack_move(d);
-            if let StackMove::By { delta, .. } = movement
-                && delta < 0
-            {
-                // The red zone below the new stack pointer is part of the frame checked.
-                let low = delta - G::RED_ZONE as i64;
-                frame_checks.insert(o, (low, (-low) as u32));
-            }
             // An access that is not plain has no plan: it is checked by itself each time.
             let accesses = G::accesses(&d.instruction);
             let plain = accesses
@@ -1386,7 +1392,7 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                             StackMove::By {
                                 delta,
                                 before_access: true,
-                            } => shift::<G>(grow::<G>(frame, delta), delta),
+                            } => shift::<G>(frame, delta),
                             _ => frame,
                         };
                         if covers(known, at, at + i64::from(bytes)) {
@@ -1459,17 +1465,52 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
     }
 }
 
-/// A frame before the stack pointer moves by `delta`, with the part a move down checks added: down to the
-/// red zone below the new stack pointer.
-fn grow<G: Guest>(frame: Frame, delta: i64) -> Frame {
-    if delta >= 0 {
-        return frame;
+/// Whether an instruction is a call that writes its return address below the stack pointer. That write is
+/// its only use of the stack below, so it checks no frame for the callee, which checks its own.
+fn pushes_return<G: Guest>(d: &Decoded<G>) -> bool {
+    d.effects.calls && matches!(G::RETURN_ADDRESS, ReturnAddress::Stack { .. })
+}
+
+/// The frame check the instruction at `i` of a block makes, as (from, bytes) past the stack pointer before
+/// it, and the frame before it with what the check covers. A move down checks down to the red zone below the
+/// stack pointer unless the frame already covers that; the check reaches as far down as the moves that follow
+/// in the block before anything that calls, makes a system call, or moves the stack pointer up or by an
+/// unknown amount, so those need none; with nothing known it also covers the return address a call left at
+/// the stack pointer, so a return reads it unchecked.
+fn frame_checked<G: Guest>(
+    decoded: &Decodes<G>,
+    instructions: &[u64],
+    i: usize,
+    frame: Frame,
+) -> (Option<(i64, u32)>, Frame) {
+    let d = &decoded[&instructions[i]];
+    let StackMove::By { delta, .. } = stack_move(d) else {
+        return (None, frame);
+    };
+    let red_zone = G::RED_ZONE as i64;
+    if delta >= 0 || pushes_return(d) || covers(frame, delta - red_zone, 0) {
+        return (None, frame);
     }
-    let low = delta - G::RED_ZONE as i64;
-    match frame {
-        Some((lo, hi)) if lo <= 0 && hi >= 0 => Some((low.min(lo), hi)),
-        _ => Some((low, 0)),
+    let mut descent = delta;
+    for o in &instructions[i + 1..] {
+        let next = &decoded[o];
+        match stack_move(next) {
+            _ if next.effects.calls || next.effects.syscall => break,
+            StackMove::None => {}
+            StackMove::By { delta, .. } if delta < 0 => descent += delta,
+            _ => break,
+        }
     }
+    let low = descent - red_zone;
+    let high = match (frame, G::RETURN_ADDRESS) {
+        (None, ReturnAddress::Stack { bytes }) => i64::from(bytes),
+        _ => 0,
+    };
+    let checked = match frame {
+        Some((lo, hi)) if lo <= high && hi >= low => (lo.min(low), hi.max(high)),
+        _ => (low, high),
+    };
+    (Some((low, (high - low) as u32)), Some(checked))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

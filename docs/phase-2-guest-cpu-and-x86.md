@@ -1240,7 +1240,14 @@ is below `sp - RED_ZONE` is no frame. A call whose return address is on the stac
 push and, once the callee has returned, back up by `bytes`, where the emitter checks the stack pointer is.
 From X4 (section 3.2, "Built whole at X1"), with `Stack` return addresses, the first frame check of a function
 also covers the return address slot `[entry sp, entry sp + bytes)`, so the `ret` that reads it needs no
-check of its own when the stack pointer is back at its entry value. `SP_ALIGNMENT_CHECKED` is false on x86
+check of its own when the stack pointer is back at its entry value. (Built at X4 as: a frame check made where
+nothing is known about the frame covers `[sp, sp + bytes)` too.) A move down makes no check when the frame
+already covers its red zone, and the check a move down makes reaches as far down as the moves down that follow
+it in the block before anything that calls, makes a system call, or moves the stack pointer up or by an unknown
+amount, so x86's run of pushes in a prologue makes one check, not one a push; a failing check leaves to exact
+code at the first move, so the later moves fault where the CPU does. A call that pushes its return address
+checks no frame for the callee (the callee checks its own); its push is checked by itself only when the frame
+does not cover it. `SP_ALIGNMENT_CHECKED` is false on x86
 and RISC-V, where the "aligned after" analysis is never run.
 
 Memory accesses (T32, T33). `accesses(i)` replaces "the one memory access": up to two, each with an
