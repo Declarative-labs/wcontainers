@@ -79,6 +79,11 @@ pub struct SamplerView {
     pub max_lod: u32,
 }
 
+/// `D3D12_DSV_FLAG_READ_ONLY_DEPTH`: draws only read the view's depth.
+pub const DSV_READ_ONLY_DEPTH: u32 = 1;
+/// `D3D12_DSV_FLAG_READ_ONLY_STENCIL`: draws only read the view's stencil.
+pub const DSV_READ_ONLY_STENCIL: u32 = 2;
+
 /// What one descriptor slot of a heap holds. At most [`crate::address::DESCRIPTOR_SIZE`] bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C, u32)]
@@ -88,7 +93,7 @@ pub enum Descriptor {
     RenderTarget(TargetView),
     DepthStencil {
         view: TargetView,
-        /// `D3D12_DSV_FLAGS`: 1 depth read only, 2 stencil read only.
+        /// `D3D12_DSV_FLAGS`: [`DSV_READ_ONLY_DEPTH`], [`DSV_READ_ONLY_STENCIL`].
         read_only: u32,
     },
     /// A constant buffer view: a GPU virtual address and a size in bytes.

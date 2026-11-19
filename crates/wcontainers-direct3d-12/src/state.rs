@@ -178,7 +178,7 @@ pub fn compare(value: u32) -> Result<CompareFn, Error> {
     })
 }
 
-fn stencil_op(value: u32) -> Result<StencilOp, Error> {
+pub(crate) fn stencil_op(value: u32) -> Result<StencilOp, Error> {
     use StencilOp::*;
     Ok(match value {
         1 => Keep,
