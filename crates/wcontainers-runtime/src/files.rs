@@ -1120,7 +1120,7 @@ mod tests {
         assert_eq!(error, 0);
         let listing = fuse_read_in {
             fh: fuse_open_out::read_from_prefix(&body).unwrap().0.fh,
-            size: 4096,
+            size: PAGE_SIZE as u32,
             ..Default::default()
         };
         let message = request(

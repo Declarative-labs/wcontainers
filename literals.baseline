@@ -5821,11 +5821,8 @@ code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::program	'/'
-code	crates/wcontainers-runtime/src/image.rs	char	Image::program	':'
-code	crates/wcontainers-runtime/src/image.rs	char	with_defaults	'='
 code	crates/wcontainers-runtime/src/image.rs	str	Image::add_to	"/etc is not a directory, where the host name and name server files go"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::home	"/"
-code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"PATH="
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	"/"
@@ -7670,7 +7667,6 @@ restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	372
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	384
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	387
 restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	400
-restated	crates/wcontainers-runtime/src/files.rs	int	tests::a_file_is_made_written_read_listed_and_removed	4096
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1048576

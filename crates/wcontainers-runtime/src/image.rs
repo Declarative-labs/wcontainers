@@ -113,6 +113,12 @@ const HOSTNAME_FILE: &[u8] = b"etc/hostname";
 const HOSTS_FILE: &[u8] = b"etc/hosts";
 const RESOLV_CONF: &[u8] = b"etc/resolv.conf";
 
+/// An environment variable's assignment of the program search path, what separates its
+/// directories, and what separates a variable's name from its value.
+const PATH_ASSIGNMENT: &str = "PATH=";
+const PATH_LIST_SEPARATOR: char = ':';
+const ASSIGNMENT: char = '=';
+
 /// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
 /// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
 mod field {
@@ -434,9 +440,9 @@ impl Image {
         let path = env
             .iter()
             .rev()
-            .find_map(|variable| variable.strip_prefix("PATH="))
+            .find_map(|variable| variable.strip_prefix(PATH_ASSIGNMENT))
             .unwrap_or("");
-        path.split(':')
+        path.split(PATH_LIST_SEPARATOR)
             .filter(|directory| !directory.is_empty())
             .map(|directory| format!("{}/{name}", directory.trim_end_matches('/')))
             .find(|candidate| {
@@ -776,7 +782,7 @@ fn clean(path: &[u8]) -> Option<Vec<u8>> {
 /// The image's environment with the runtime's defaults (such as `PATH`) for the names it lacks, so
 /// that a default never removes or changes one of the image's variables.
 fn with_defaults(defaults: Vec<String>, image: Vec<String>) -> Vec<String> {
-    let name = |variable: &str| variable.split('=').next().unwrap_or("").to_string();
+    let name = |variable: &str| variable.split(ASSIGNMENT).next().unwrap_or("").to_string();
     let named: Vec<String> = image.iter().map(|v| name(v)).collect();
     defaults
         .into_iter()
