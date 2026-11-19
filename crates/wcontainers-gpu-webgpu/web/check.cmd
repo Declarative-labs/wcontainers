@@ -18,19 +18,14 @@ for %%a in (dx12 vulkan) do "%BIN%\examples\scenes" %%a "%OUT%" || set FAILED=1
 for %%t in (blend-factor depth-function) do (
     for %%a in (dx12 vulkan) do "%BIN%\examples\scenes" %%a "%OUT%\%%t" %%t || set FAILED=1
 )
-rem Chrome's first launch now and then gets no WebGPU adapter; draw.mjs then exits NO_ADAPTER and is
-rem launched again, up to LAUNCHES times in all.
+rem A launch of Chrome now and then gets no WebGPU adapter; the page scripts then exit NO_ADAPTER
+rem and are launched again, up to LAUNCHES times in all (:chrome).
 set NO_ADAPTER=3
 set LAUNCHES=3
-set LAUNCH=0
-:draw
-set /a LAUNCH+=1
-node crates\wcontainers-gpu-webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-factor depth-function
-if errorlevel %NO_ADAPTER% if %LAUNCH% lss %LAUNCHES% goto draw
-if errorlevel 1 set FAILED=1
+call :chrome crates\wcontainers-gpu-webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-factor depth-function
 cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite -- --list --format terse > "%OUT%\suite-list.txt" || set FAILED=1
-node crates\wcontainers-gpu-webgpu\web\suite.mjs "%OUT%\pkg" "%OUT%\suite-chrome.txt" "%OUT%\suite-list.txt" || set FAILED=1
-node crates\wcontainers-gpu-webgpu\web\plain.mjs "%OUT%\pkg" || set FAILED=1
+call :chrome crates\wcontainers-gpu-webgpu\web\suite.mjs "%OUT%\pkg" "%OUT%\suite-chrome.txt" "%OUT%\suite-list.txt"
+call :chrome crates\wcontainers-gpu-webgpu\web\plain.mjs "%OUT%\pkg"
 for %%s in (triangle quads instanced) do (
     for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do call :same %%r-%%s.png %%s.png
 )
@@ -45,6 +40,15 @@ rem Viewports at half pixels in Chrome: equal to Direct3D's, and different once 
 call :same chrome-webgpu-viewports.png raster-viewports.png
 call :differs chrome-webgpu-viewports-rounded.png raster-viewports.png
 exit /b %FAILED%
+
+:chrome
+set LAUNCH=0
+:chrome_again
+set /a LAUNCH+=1
+node %*
+if errorlevel %NO_ADAPTER% if %LAUNCH% lss %LAUNCHES% goto chrome_again
+if errorlevel 1 set FAILED=1
+exit /b
 
 :same
 <nul set /p "=%1 against Direct3D 11's %2: "
