@@ -52,8 +52,8 @@ mod macos {
     use wcontainers_kernel_test::driver::exit_code;
 
     use crate::common::{
-        C_SOURCE, GUEST_TARGET, OBJECT, be_signed, compiled, load_average, look_ahead, page_size,
-        setting, zig,
+        BENCH, CALLS, IMAGE_BASE, be_signed, benchmark, compiled, load_average, look_ahead,
+        page_size, setting,
     };
     use crate::container::{DEFAULT_SEED, REALTIME_NANOSECONDS, native_at, one_program, program};
 
@@ -69,33 +69,11 @@ mod macos {
         "search",
     ];
 
-    /// The program of the workloads.
-    const BENCH: &str = "bench";
-
-    /// The program of calls between two functions, recorded beside the bar.
-    const CALLS: &str = "calls";
-
     /// How many calls calls.c makes, as the cost rounds made it.
     const CALLS_MADE: u64 = 10_u64.pow(8);
 
     /// bench.c's size for timing.
     const TIMING_SCALE: u32 = 1;
-
-    /// Where the programs' sources are, from this package.
-    const PROGRAMS_DIRECTORY: &str = "../wcontainers-translator-test/programs";
-
-    /// Where both sides place a program: under the native ceiling, and above the low addresses macOS keeps for
-    /// itself (it moves a mapping asked for under 0x70_0000_0000 elsewhere).
-    const IMAGE_BASE: u64 = 1 << 40;
-
-    /// The compiler's flags beside the target. x18 is the platform's own on macOS, which may change it at any
-    /// time, so neither side's code uses it (zig's C compiler takes that as a feature of the processor, and drops
-    /// `-ffixed-x18`).
-    const FLAGS: [&str; 3] = ["-O2", "-ffreestanding", "-mcpu=generic+reserve_x18"];
-
-    /// The linker's flags beside the place. Each segment starts a page: the kernel maps a writable segment with no
-    /// bytes in the file only from the first page boundary after its start (see the status file).
-    const LINK_FLAGS: [&str; 3] = ["-static", "-z", "separate-loadable-segments"];
 
     /// Which side a child process runs: [`PLAIN`] or [`NATIVE`].
     const RUN_VARIABLE: &str = "WCONTAINERS_SPEED_RUN";
@@ -400,31 +378,6 @@ mod macos {
         report(exit_code(outcome.status), &outcome.host.stdout)
     }
 
-    /// Builds a program from `source` with `defines`, placed at [`IMAGE_BASE`].
-    fn build(name: &str, source: &str, defines: &[String]) -> PathBuf {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(PROGRAMS_DIRECTORY)
-            .join(source)
-            .with_extension(C_SOURCE);
-        let out = compiled(name);
-        let object = out.with_extension(OBJECT);
-        zig(Command::new("zig")
-            .args(["cc", "-target", GUEST_TARGET, "-c"])
-            .args(FLAGS)
-            .args(defines.iter().map(|define| format!("-D{define}")))
-            .arg("-o")
-            .arg(&object)
-            .arg(&source));
-        zig(Command::new("zig")
-            .arg("ld.lld")
-            .args(LINK_FLAGS)
-            .arg(format!("--image-base={IMAGE_BASE:#x}"))
-            .arg("-o")
-            .arg(&out)
-            .arg(&object));
-        out
-    }
-
     /// One child's run.
     #[derive(Clone, Debug)]
     struct Run {
@@ -698,7 +651,7 @@ mod macos {
             .filter(|(name, ..)| wanted_program(name))
             .map(|(name, source, defines, in_bar)| Program {
                 name: name.to_owned(),
-                image: build(name, source, &defines),
+                image: benchmark(name, source, &defines, Some(IMAGE_BASE)),
                 in_bar,
                 pairs: Vec::new(),
                 expected: None,

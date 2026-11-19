@@ -9,8 +9,8 @@
 //! writes code and announces it, in private memory and in memory a child changes. Another asks for memory as
 //! programs do, more than the machine has in all; asked to write more than the machine has at once, it is killed
 //! natively and the inside goes on, counted and warned. Another zeroes blocks and cleans cache lines on pages
-//! never touched, read-only, allowing nothing and unmapped. hello and these programs also run in the reference,
-//! whose output and exit code the native side must give.
+//! never touched, read-only, allowing nothing and unmapped. The benchmark set's programs run at their small size.
+//! hello and these programs also run in the reference, whose output and exit code the native side must give.
 //!
 //! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes; `WCONTAINERS_KERNEL_SEEDS` runs that
 //! many seeds, it and the ones after it.
@@ -46,7 +46,8 @@ mod macos {
     use wcontainers_kernel_test::reference;
 
     use crate::common::{
-        CLibrary, KERNEL_TEST_GUEST, MEMORY, OWN_GUEST, be_signed, compile, compiled, load_average,
+        BENCH, CALLS, CLibrary, KERNEL_TEST_GUEST, MEMORY, OWN_GUEST, be_signed, benchmark,
+        compile, compiled, load_average,
     };
     use crate::container::{
         Outcome, REALTIME_NANOSECONDS, native, one_program as container, seeds, summary, wasm,
@@ -199,6 +200,13 @@ mod macos {
             exits[1], exits[2],
             "the virtual machine's exits grow with the number of system calls"
         );
+        // The benchmark set at its small size, whose count at every stop must agree across look-aheads.
+        for name in [BENCH, CALLS] {
+            let image = std::fs::read(benchmark(name, name, &[], None)).expect("the built program");
+            let native = alone(seed, name, &image, &[]);
+            print!("{name}: {}", String::from_utf8_lossy(&native.host.stdout));
+            against_reference(name, &native);
+        }
         let forks = compile(OWN_GUEST, FORKS, CLibrary::Musl);
         let (native, _) = both(seed, FORKS, &forks, &[]);
         print!("{FORKS}: {}", String::from_utf8_lossy(&native.host.stdout));
