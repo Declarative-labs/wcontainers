@@ -6,7 +6,10 @@
    parent's translation must be dropped although the parent announced nothing. Last, in private memory again:
    a function that gives 5 is rewritten to give 6 and only then is its page, the first of two mapped together,
    made not executable, so the kernel learns of changed code that ran; it is announced and made executable
-   again before it runs. */
+   again before it runs. Then a function whose load's page test is placed after its last instruction and whose
+   end branches to a ret on the next page has only an instruction on its second cache line rewritten and that
+   line announced: the translation must be dropped although its last host code belongs to its first
+   instruction. */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -16,6 +19,7 @@
 #include <unistd.h>
 
 typedef int (*function)(void);
+typedef int (*loading)(uint64_t *);
 
 /* Makes the code at `at` the one that runs. One line of each cache suffices: the two instructions start a page,
    and no cache line is shorter than four instructions. */
@@ -77,5 +81,25 @@ int main(void) {
     protect(unannounced, PROT_READ | PROT_WRITE | PROT_EXEC);
     int changed = ((function)unannounced)();
     printf("private, changed before it was made not executable: %d %d\n", ran, changed);
+
+    /* ldr x1, [x0]; b to the next cache line, where mov w0, #7 and a b to the next page's ret are. Only that
+       line is announced when the mov is rewritten. */
+    uint32_t *loads = code_memory(MAP_PRIVATE, 2 * 4096);
+    uint32_t words = 4096 / sizeof(uint32_t);
+    uint32_t line = 64 / sizeof(uint32_t);
+    loads[0] = 0xf9400001u;
+    loads[1] = 0x14000000u | (line - 1);
+    loads[line] = 0x52800000u | (7 << 5);
+    loads[line + 1] = 0x14000000u | (words - line - 1);
+    loads[words] = 0xd65f03c0u;
+    announce(loads);
+    announce(loads + line);
+    announce(loads + words);
+    uint64_t loaded = 0;
+    int seven = ((loading)loads)(&loaded);
+    loads[line] = 0x52800000u | (8 << 5);
+    announce(loads + line);
+    int eight = ((loading)loads)(&loaded);
+    printf("private, middle rewritten after a load: %d %d\n", seven, eight);
     return 0;
 }

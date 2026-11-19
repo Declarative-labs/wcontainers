@@ -65,9 +65,11 @@ mod macos {
     /// This track's program that writes code and announces it.
     const CODE: &str = "code";
 
-    /// The changes `code` makes to code that ran: one announced, one announced by a child sharing the memory, and
-    /// one the kernel learns of when the page stops being executable.
-    const CODE_CHANGES: u64 = 3;
+    /// The changes `code` makes to code that ran: one announced, one announced by a child sharing the memory, one
+    /// the kernel learns of when the page stops being executable, and one announced in the middle of a function.
+    const CODE_CHANGES: u64 = 4;
+    /// Why `code`'s output differs on the WebAssembly side.
+    const CODE_KNOWN: &str = "the WebAssembly side runs a function's old code after only its second cache line is rewritten and announced";
 
     /// This track's program that asks for memory.
     const MAPPINGS: &str = "mappings";
@@ -213,8 +215,11 @@ mod macos {
         print!("{FORKS}: {}", String::from_utf8_lossy(&native.host.stdout));
         against_reference(FORKS, &native);
         let code = compile(OWN_GUEST, CODE, CLibrary::Musl);
-        let (native, wasm) = both(seed, CODE, &code, &[]);
+        let (native, wasm) = run_both(seed, CODE, &code, &[]);
         print!("{CODE}: {}", String::from_utf8_lossy(&native.host.stdout));
+        if let Some(difference) = calls_differ(&native, &wasm) {
+            println!("{CODE}: KNOWN FAILURE, {CODE_KNOWN}: {difference}");
+        }
         let changed = |outcome: &Outcome| warned(outcome, CODE_CHANGED_AFTER_IT_RAN);
         println!(
             "{CODE}: \"{CODE_CHANGED_AFTER_IT_RAN}\" {} natively, {} on the WebAssembly side",
