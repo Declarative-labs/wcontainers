@@ -382,6 +382,12 @@ impl<B: Backend> Device<B> {
         if format::depth_only(dxgi) {
             bits &= !(SHADER_LOAD | SHADER_SAMPLE | MULTISAMPLE_LOAD);
         }
+        if self.level < crate::desc::level::L10_1 && format::signed_normalized(f) {
+            bits &= !BLENDABLE;
+        }
+        if format::displayed(dxgi, self.level) {
+            bits |= DISPLAY;
+        }
         bits
     }
 
