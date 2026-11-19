@@ -705,7 +705,8 @@ impl<'a> Lowering<'a> {
 
     /// Declares every element of resource declaration `id`, each a binding of its own at its register.
     fn declare_resource(&mut self, id: u32, op: &Op) -> Result<()> {
-        let kind = declared_kind(op).ok_or_else(|| malformed("not a resource".into()))?;
+        let kind = declared_kind(op)
+            .ok_or_else(|| malformed(format!("declaration {id} is not a resource")))?;
         let length = declared_length(self.variant, kind, op)?;
         self.lengths.insert(id, length);
         for element in 0..length {
@@ -731,7 +732,7 @@ impl<'a> Lowering<'a> {
             }
             code::DCL_SRV | code::DCL_UAV => {
                 let storage = op.code == code::DCL_UAV;
-                let k = op.lits[3];
+                let k = op.lits[ir::resource_literal::KIND];
                 let slot = if storage {
                     SlotKind::Storage
                 } else {
@@ -742,7 +743,11 @@ impl<'a> Lowering<'a> {
                     kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
                         let ty = self.declared_ty(id)?;
                         let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
-                        let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
+                        let read_only = !storage
+                            || op
+                                .lits
+                                .get(ir::resource_literal::UAV_FLAGS)
+                                .is_some_and(|f| f & ir::uav::READ_ONLY != 0);
                         let access = if read_only {
                             naga::StorageAccess::LOAD
                         } else {
@@ -753,7 +758,7 @@ impl<'a> Lowering<'a> {
                     }
                     _ if storage
                         && self.declared_slot(SlotKind::Storage, op).is_ok_and(|r| {
-                            r < 64 && self.variant.texels_through_buffer >> r & 1 != 0
+                            r < u64::BITS && self.variant.texels_through_buffer >> r & 1 != 0
                         }) =>
                     {
                         self.texel_image(id, op, k)?
@@ -769,10 +774,9 @@ impl<'a> Lowering<'a> {
                     _ => {
                         let (dim, arrayed, multi) = image_dim(k)?;
                         let depth = self.compared.contains(&id);
-                        let member = op
-                            .ty
-                            .basic()
-                            .ok_or_else(|| malformed("image type".into()))?;
+                        let member = op.ty.basic().ok_or_else(|| {
+                            malformed(format!("image declaration {id} without its type"))
+                        })?;
                         let class = if depth {
                             ImageClass::Depth { multi }
                         } else {
@@ -850,7 +854,11 @@ impl<'a> Lowering<'a> {
         } else {
             TexelBuffer::words(&mut self.module, atomic)
         };
-        let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
+        let read_only = !storage
+            || op
+                .lits
+                .get(ir::resource_literal::UAV_FLAGS)
+                .is_some_and(|f| f & ir::uav::READ_ONLY != 0);
         let access = if read_only {
             naga::StorageAccess::LOAD
         } else {
@@ -936,7 +944,11 @@ impl<'a> Lowering<'a> {
         });
         let atomic = self.texel_atomic(id, declared, written, layout.2);
         let words = TexelBuffer::words(&mut self.module, atomic);
-        let access = if op.lits.get(4).is_some_and(|f| f & 2 != 0) {
+        let access = if op
+            .lits
+            .get(ir::resource_literal::UAV_FLAGS)
+            .is_some_and(|f| f & ir::uav::READ_ONLY != 0)
+        {
             naga::StorageAccess::LOAD
         } else {
             naga::StorageAccess::LOAD | naga::StorageAccess::STORE
@@ -989,7 +1001,11 @@ impl<'a> Lowering<'a> {
         if Self::scalar(member.scalar)?.kind != storage_kind(format) {
             return Err(unsupported(crate::refusal::STORAGE_FORMAT_KIND));
         }
-        let flags = op.lits.get(4).copied().unwrap_or(0);
+        let flags = op
+            .lits
+            .get(ir::resource_literal::UAV_FLAGS)
+            .copied()
+            .unwrap_or(0);
         let access = if flags & ir::uav::READ_ONLY != 0 {
             naga::StorageAccess::LOAD
         } else if flags & ir::uav::WRITE_ONLY != 0 {
@@ -3765,11 +3781,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         };
         Ok(types
             .into_iter()
-            .enumerate()
-            .map(|(i, ty)| {
+            .map(|ty| {
                 self.f.local_variables.append(
                     LocalVariable {
-                        name: Some(format!("picked{id}_{i}")),
+                        name: None,
                         ty,
                         init: None,
                     },
