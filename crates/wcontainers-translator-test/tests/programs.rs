@@ -412,8 +412,8 @@ fn stops_at_every_check_change_nothing<G: GuestTest>() {
     }
 }
 
-/// Not a check: prints translation speed, output size raw and gzip-compressed, and compile time for every
-/// instruction of each distinct program at look-ahead none, best of five runs.
+/// Not a check: prints translation speed, output size raw and gzip-compressed, and compile time of each
+/// distinct program at look-ahead none (every instruction) and full (from the entry), best of five runs.
 fn measure<G: GuestTest>() {
     use std::io::Write;
     use std::time::{Duration, Instant};
@@ -430,45 +430,49 @@ fn measure<G: GuestTest>() {
         ("tables", "-O0", Library::None),
         ("tables", "-O2", Library::None),
         ("hello", "-O2", Library::C),
+        ("bench", "-O2", Library::None),
     ] {
         let blob = build::<G>(name, optimisation, library);
         let code = &blob.bytes[..blob.code_bytes as usize];
         let starts = boundaries::<G>(code);
-        let mut best = (Duration::MAX, Duration::MAX, Vec::new());
-        for _ in 0..5 {
-            let start = Instant::now();
-            let mut translation = translate::<G>(
-                &blob.bytes,
-                0..blob.code_bytes,
-                &starts,
-                LookAhead::None,
-                wcontainers_translator::Optimise::Speed,
-                wcontainers_translator_test::runner::probe::<G>(),
-                G::Offer::default(),
-            )
-            .unwrap();
-            let translating = start.elapsed();
-            let compiling = compile_time(&translation.modules[0].wasm);
-            best = (
-                best.0.min(translating),
-                best.1.min(compiling),
-                translation.modules.remove(0).wasm,
+        // None from every instruction, full from the entry, as programs are run.
+        for (look_ahead, from) in [(LookAhead::None, &starts[..]), (LookAhead::Full, &[0][..])] {
+            let mut best = (Duration::MAX, Duration::MAX, Vec::new());
+            for _ in 0..5 {
+                let start = Instant::now();
+                let mut translation = translate::<G>(
+                    &blob.bytes,
+                    0..blob.code_bytes,
+                    from,
+                    look_ahead,
+                    wcontainers_translator::Optimise::Speed,
+                    wcontainers_translator_test::runner::probe::<G>(),
+                    G::Offer::default(),
+                )
+                .unwrap();
+                let translating = start.elapsed();
+                let compiling = compile_time(&translation.modules[0].wasm);
+                best = (
+                    best.0.min(translating),
+                    best.1.min(compiling),
+                    translation.modules.remove(0).wasm,
+                );
+            }
+            let wasm = &best.2;
+            eprintln!(
+                "{name} {optimisation} at {look_ahead:?}: {} bytes of code ({} gzipped), {} instructions; translated in {:?} ({:.1} MB/s); {} bytes of WebAssembly ({:.1} per byte of code), {} gzipped ({:.1} per gzipped byte of code); compiled by wasmtime in {:?}",
+                code.len(),
+                gzip(code),
+                starts.len(),
+                best.0,
+                code.len() as f64 / best.0.as_secs_f64() / 1e6,
+                wasm.len(),
+                wasm.len() as f64 / code.len() as f64,
+                gzip(wasm),
+                gzip(wasm) as f64 / gzip(code) as f64,
+                best.1
             );
         }
-        let wasm = &best.2;
-        eprintln!(
-            "{name} {optimisation}: {} bytes of code ({} gzipped), {} instructions; translated in {:?} ({:.1} MB/s); {} bytes of WebAssembly ({:.1} per byte of code), {} gzipped ({:.1} per gzipped byte of code); compiled by wasmtime in {:?}",
-            code.len(),
-            gzip(code),
-            starts.len(),
-            best.0,
-            code.len() as f64 / best.0.as_secs_f64() / 1e6,
-            wasm.len(),
-            wasm.len() as f64 / code.len() as f64,
-            gzip(wasm),
-            gzip(wasm) as f64 / gzip(code) as f64,
-            best.1
-        );
     }
 }
 
@@ -661,6 +665,11 @@ fn switching_speed_arm64() {
 }
 
 #[test]
+fn measure_x86_64() {
+    measure::<X86_64>();
+}
+
+#[test]
 fn hello_matches_linux_x86_64() {
     hello_matches_linux::<X86_64>();
 }
@@ -699,4 +708,10 @@ fn compilers_switches_match_linux_x86_64() {
             );
         }
     }
+}
+
+/// Flags of shifts, rotates and bit tests live across calls, among them a shift by a count of zero.
+#[test]
+fn shift_flags_across_calls_match_linux_x86_64() {
+    match_linux::<X86_64>(&[("shift_flags", Library::None)]);
 }

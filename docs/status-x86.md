@@ -55,17 +55,6 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   callee, the return address covered), found why interpret is slow, and ran layer 2 at 10,000 again at a
   new seed: X4's pass bar holds (see "X4, run 3").
 
-Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
-- Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
-  wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test --no-fail-fast` (scratch
-  `x2/suite2.log`): 95 passed (X1's 93 and the two x86 reference tests), 0 failed, 11 ignored (X1's 10 and
-  `tests/cases.rs`), 26 minutes 40 seconds, Mac load 18.0 at start and 16.1 at end (X1 run 6: 25 minutes at
-  load 13.4 to 22.0). The first run of it (`x2/suite.log`) failed `programs_match_linux_in_chrome` on
-  `buffers`, which found the two blob differences above; fixed before the second.
-- Clippy with `-D warnings` on the test crate (all targets), the interface, the translator, the browser
-  crate and the runner for both CPUs; `cargo fmt --check`: clean.
-- origin/phase-1-translator: fetched at the start and end, nothing new since 8b5e420 (merged).
-
 ## X4, run 3 (2026-11-18)
 
 Machines: the Mac (Apple M5 Max, load 90 to 110) and the i7-8750H (load 2.8 to 10.5 from other tracks'

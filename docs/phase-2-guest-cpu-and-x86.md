@@ -1448,13 +1448,16 @@ Tests (section 7 gives the detail):
 - **Conditions**: the 16 x86 conditions (O, NO, B, AE, E, NE, BE, A, S, NS, P, NP, L, GE, LE, G) as
   `Cond`. `condition_direct` turns cmp + jcc and test + jcc into one comparison of the operands, at every
   width.
-- **As built at X3** (look-ahead none): the shapes are `Add`, `Sub`, `Logic`, `Multiply` and `Packed`
-  (crate `wcontainers-x86`, `flags.rs`); `SHAPES` is empty and `condition_direct` answers false until X4's
-  flags liveness. Shifts and rotates work their flags out at once into a `Packed` word (kept as they were
-  when the masked count is zero, or for `rcl` and `rcr` when the count modulo the width plus one is), so the
-  nine-local `Shift` shape waits for X4 too; so do `bt` and its kin, `clc`, `stc` and `cmc`, which pack the
-  five flags they keep with the new CF into a `Packed` word (working out every flag of the instruction
-  before) until X4 gives them a shape that keeps the earlier one. What the reference CPU leaves where Intel says undefined, found
+- **As built at X4**: the shapes are `Add`, `Sub` (each plain, with a carry or borrow in, and with CF kept),
+  `Logic`, `Multiply` and `Shift` (shl, sal, shr, sar), at each width, all in `SHAPES`; `condition_direct`
+  answers for a plain difference and the logic instructions. `Shift` keeps the result, CF and OF (CF and OF
+  already chosen as they were when the masked count is zero), and, only when the count may be zero (by cl, or
+  an immediate whose masked value is zero), the count and PF, AF, ZF and SF as they were: three locals or
+  eight, not nine, since folding the count into CF and OF at the shift saves two. Rotates, bt and its kin,
+  clc, stc and cmc change only CF (and OF), so they keep no shape: `Flags::Each` holds the six flags in
+  locals of their own (the kept ones read as they were), which the translator copies into its flag locals.
+  `Bits` for bsf, bsr, popcnt, lzcnt and tzcnt comes with those instructions at X5. `Packed` stays for
+  popf, the system call's return and the bottom loop. What the reference CPU leaves where Intel says undefined, found
   by layer 1 and a scratch sweep of every shift and rotate at every width and count 0 to 31 (scratch
   `x3/run1/shifts.txt`): OF after a shift or rotate is what a count of one gives, from the value before it,
   for every count, except `rol` and `ror` of a register by an immediate above one, which keep OF; AF is clear

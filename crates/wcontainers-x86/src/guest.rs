@@ -168,12 +168,12 @@ impl Guest for X86_64 {
 
     type Flag = Flag;
     const FLAGS: &'static [(Flag, u32, u32)] = &[
-        (Flag::C, 0, FIRST_FLAG),
-        (Flag::P, 2, FIRST_FLAG + 1),
-        (Flag::A, 4, FIRST_FLAG + 2),
-        (Flag::Z, 6, FIRST_FLAG + 3),
-        (Flag::S, 7, FIRST_FLAG + 4),
-        (Flag::O, 11, FIRST_FLAG + 5),
+        (Flag::C, Flag::C.bit(), FIRST_FLAG + Flag::C.index() as u32),
+        (Flag::P, Flag::P.bit(), FIRST_FLAG + Flag::P.index() as u32),
+        (Flag::A, Flag::A.bit(), FIRST_FLAG + Flag::A.index() as u32),
+        (Flag::Z, Flag::Z.bit(), FIRST_FLAG + Flag::Z.index() as u32),
+        (Flag::S, Flag::S.bit(), FIRST_FLAG + Flag::S.index() as u32),
+        (Flag::O, Flag::O.bit(), FIRST_FLAG + Flag::O.index() as u32),
     ];
     const FLAGS_WORD_OFFSET: usize = FLAGS_WORD;
     type Flags = Flags;
@@ -219,6 +219,21 @@ impl Guest for X86_64 {
             Flags::Multiply {
                 result, overflow, ..
             } => Locals::new(&[result, overflow]),
+            Flags::Shift {
+                result,
+                carry,
+                overflow,
+                unmoved,
+                ..
+            } => {
+                let mut locals = vec![result, carry, overflow];
+                if let Some(u) = unmoved {
+                    locals.push(u.count);
+                    locals.extend(u.kept);
+                }
+                Locals::new(&locals)
+            }
+            Flags::Each(each) => Locals::new(&each),
             Flags::Packed(word) => Locals::new(&[word]),
         }
     }

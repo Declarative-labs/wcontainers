@@ -8273,17 +8273,12 @@ code	crates/wcontainers-x86/src/decode.rs	int	modrm_length	6
 code	crates/wcontainers-x86/src/decode.rs	int	modrm_length	7
 code	crates/wcontainers-x86/src/decode.rs	int	modrm_length	7
 code	crates/wcontainers-x86/src/decode.rs	str	groups	"/groups.rs"
-code	crates/wcontainers-x86/src/flags.rs	int	Flag::bit	11
-code	crates/wcontainers-x86/src/flags.rs	int	Flag::bit	4
-code	crates/wcontainers-x86/src/flags.rs	int	Flag::bit	6
-code	crates/wcontainers-x86/src/flags.rs	int	Flag::bit	7
 code	crates/wcontainers-x86/src/flags.rs	int	adjust	4
 code	crates/wcontainers-x86/src/flags.rs	int	condition_from_flags	3
 code	crates/wcontainers-x86/src/flags.rs	int	condition_from_flags	4
 code	crates/wcontainers-x86/src/flags.rs	int	condition_from_flags	5
 code	crates/wcontainers-x86/src/flags.rs	int	condition_from_flags	6
 code	crates/wcontainers-x86/src/flags.rs	int	parity	0xff
-code	crates/wcontainers-x86/src/flags.rs	int	with_locals	3
 code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	-8
 code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	32
 code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	64
@@ -8366,14 +8361,8 @@ code	crates/wcontainers-x86/src/meaning.rs	int	multiply	8
 code	crates/wcontainers-x86/src/meaning.rs	int	read	8
 code	crates/wcontainers-x86/src/meaning.rs	int	ret	8
 code	crates/wcontainers-x86/src/meaning.rs	int	ret	8
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	31
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	31
 code	crates/wcontainers-x86/src/meaning.rs	int	shift	32
 code	crates/wcontainers-x86/src/meaning.rs	int	shift	32
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	63
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	63
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
 code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
 code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
 code	crates/wcontainers-x86/src/meaning.rs	int	shift	64

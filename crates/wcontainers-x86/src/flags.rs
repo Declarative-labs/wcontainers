@@ -2,7 +2,7 @@
 //! each flag is worked out from them only when read. Every shape gives all six, so a flag the instruction
 //! leaves alone is kept in a local of its own (`inc` and `dec` keep CF).
 
-use crate::X86_64;
+use crate::{AF, CF, OF, PF, SF, X86_64, ZF};
 use wasm_encoder::InstructionSink;
 use wcontainers_guest_cpu::Emitter;
 
@@ -23,14 +23,31 @@ impl Flag {
     /// Its bit in rflags.
     pub const fn bit(self) -> u32 {
         match self {
-            Flag::C => 0,
-            Flag::P => 2,
-            Flag::A => 4,
-            Flag::Z => 6,
-            Flag::S => 7,
-            Flag::O => 11,
+            Flag::C => CF,
+            Flag::P => PF,
+            Flag::A => AF,
+            Flag::Z => ZF,
+            Flag::S => SF,
+            Flag::O => OF,
         }
+        .trailing_zeros()
     }
+
+    /// Its place in `ALL`.
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The flags a shift leaves as they were when its masked count is zero, besides CF and OF.
+pub const KEPT_BY_SHIFT: [Flag; 4] = [Flag::P, Flag::A, Flag::Z, Flag::S];
+
+/// What a shift needs when its masked count may be zero: the count (i64) and the flags of
+/// `KEPT_BY_SHIFT` as they were (i32).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unmoved {
+    pub count: u32,
+    pub kept: [u32; KEPT_BY_SHIFT.len()],
 }
 
 /// How the flags were last set. Operand and result locals are i64 holding the value zero-extended from
@@ -64,6 +81,19 @@ pub enum Flags {
         result: u32,
         overflow: u32,
     },
+    /// shl, sal, shr and sar: CF and OF from i32 locals (already as they were for a count of zero), PF, ZF
+    /// and SF from the result and AF clear, as the reference CPU leaves it; with `unmoved`, those four as
+    /// they were when the count is zero.
+    Shift {
+        width: u8,
+        result: u32,
+        carry: u32,
+        overflow: u32,
+        unmoved: Option<Unmoved>,
+    },
+    /// Each flag in an i32 local of its own, in `Flag::ALL` order: what rotates, bt and its kin, clc, stc
+    /// and cmc leave, CF (and OF) new and the rest as they were.
+    Each([u32; Flag::ALL.len()]),
     /// An i32 local holding the flags at their rflags positions.
     Packed(u32),
 }
@@ -210,6 +240,39 @@ pub fn flag_value(s: &mut InstructionSink<'_>, flags: Flags, flag: Flag) {
             Flag::P => parity(s, result),
             Flag::S => sign(s, width, result),
         },
+        Flags::Shift {
+            width,
+            result,
+            carry,
+            overflow,
+            unmoved,
+        } => {
+            let new = |s: &mut InstructionSink<'_>| match flag {
+                Flag::C => {
+                    s.local_get(carry);
+                }
+                Flag::O => {
+                    s.local_get(overflow);
+                }
+                Flag::A => {
+                    s.i32_const(0);
+                }
+                Flag::P => parity(s, result),
+                Flag::Z => zero(s, result),
+                Flag::S => sign(s, width, result),
+            };
+            match (unmoved, KEPT_BY_SHIFT.iter().position(|&f| f == flag)) {
+                (Some(Unmoved { count, kept }), Some(k)) => {
+                    s.local_get(kept[k]);
+                    new(s);
+                    s.local_get(count).i64_eqz().select();
+                }
+                _ => new(s),
+            }
+        }
+        Flags::Each(each) => {
+            s.local_get(each[flag.index()]);
+        }
         Flags::Packed(word) => {
             s.local_get(word);
             if flag.bit() > 0 {
@@ -257,6 +320,7 @@ pub enum Shape {
     Sub { width: u8, borrow: bool, kept: bool },
     Logic { width: u8 },
     Multiply { width: u8 },
+    Shift { width: u8, unmoved: bool },
 }
 
 /// The operand widths, smallest first.
@@ -267,56 +331,75 @@ const WIDTHS: [u8; 4] = [
     u64::BITS as u8,
 ];
 
-/// Shapes of each width: the plain sum or difference, with a carry or borrow in (adc, sbb), with CF kept (inc,
-/// dec), the logic instructions and the multiplications.
-const PER_WIDTH: usize = 8;
+/// The shapes of each width, at width 0: the plain sum or difference, with a carry or borrow in (adc, sbb),
+/// with CF kept (inc, dec), the logic instructions, the multiplications and the shifts, with a count known
+/// not zero or not.
+const OF_A_WIDTH: &[Shape] = &[
+    Shape::Add {
+        width: 0,
+        carry: false,
+        kept: false,
+    },
+    Shape::Add {
+        width: 0,
+        carry: true,
+        kept: false,
+    },
+    Shape::Add {
+        width: 0,
+        carry: false,
+        kept: true,
+    },
+    Shape::Sub {
+        width: 0,
+        borrow: false,
+        kept: false,
+    },
+    Shape::Sub {
+        width: 0,
+        borrow: true,
+        kept: false,
+    },
+    Shape::Sub {
+        width: 0,
+        borrow: false,
+        kept: true,
+    },
+    Shape::Logic { width: 0 },
+    Shape::Multiply { width: 0 },
+    Shape::Shift {
+        width: 0,
+        unmoved: false,
+    },
+    Shape::Shift {
+        width: 0,
+        unmoved: true,
+    },
+];
+
+impl Shape {
+    const fn at_width(self, width: u8) -> Shape {
+        match self {
+            Shape::Add { carry, kept, .. } => Shape::Add { width, carry, kept },
+            Shape::Sub { borrow, kept, .. } => Shape::Sub {
+                width,
+                borrow,
+                kept,
+            },
+            Shape::Logic { .. } => Shape::Logic { width },
+            Shape::Multiply { .. } => Shape::Multiply { width },
+            Shape::Shift { unmoved, .. } => Shape::Shift { width, unmoved },
+        }
+    }
+}
 
 /// Every shape, in flags-word function order.
-pub const SHAPES: [Shape; PER_WIDTH * WIDTHS.len()] = {
-    let mut shapes = [Shape::Logic { width: 0 }; PER_WIDTH * WIDTHS.len()];
-    let mut w = 0;
-    while w < WIDTHS.len() {
-        let width = WIDTHS[w];
-        let each = [
-            Shape::Add {
-                width,
-                carry: false,
-                kept: false,
-            },
-            Shape::Add {
-                width,
-                carry: true,
-                kept: false,
-            },
-            Shape::Add {
-                width,
-                carry: false,
-                kept: true,
-            },
-            Shape::Sub {
-                width,
-                borrow: false,
-                kept: false,
-            },
-            Shape::Sub {
-                width,
-                borrow: true,
-                kept: false,
-            },
-            Shape::Sub {
-                width,
-                borrow: false,
-                kept: true,
-            },
-            Shape::Logic { width },
-            Shape::Multiply { width },
-        ];
-        let mut k = 0;
-        while k < PER_WIDTH {
-            shapes[PER_WIDTH * w + k] = each[k];
-            k += 1;
-        }
-        w += 1;
+pub const SHAPES: [Shape; OF_A_WIDTH.len() * WIDTHS.len()] = {
+    let mut shapes = [Shape::Logic { width: 0 }; OF_A_WIDTH.len() * WIDTHS.len()];
+    let mut k = 0;
+    while k < shapes.len() {
+        shapes[k] = OF_A_WIDTH[k % OF_A_WIDTH.len()].at_width(WIDTHS[k / OF_A_WIDTH.len()]);
+        k += 1;
     }
     shapes
 };
@@ -345,13 +428,18 @@ pub fn shape(flags: Flags) -> Option<Shape> {
         }),
         Flags::Logic { width, .. } => Some(Shape::Logic { width }),
         Flags::Multiply { width, .. } => Some(Shape::Multiply { width }),
-        Flags::Packed(_) => None,
+        Flags::Shift { width, unmoved, .. } => Some(Shape::Shift {
+            width,
+            unmoved: unmoved.is_some(),
+        }),
+        Flags::Each(_) | Flags::Packed(_) => None,
     }
 }
 
 use wasm_encoder::ValType;
 
-/// The locals' types: the operands and the result, then a carry or borrow in, then a kept CF.
+/// The locals' types: the operands and the result, then a carry or borrow in, then a kept CF; for a shift the
+/// result, CF and OF, then the count and the kept flags.
 pub fn shape_locals(shape: Shape) -> &'static [ValType] {
     use ValType::{I32, I64};
     match shape {
@@ -368,42 +456,60 @@ pub fn shape_locals(shape: Shape) -> &'static [ValType] {
         Shape::Add { .. } | Shape::Sub { .. } => &[I64, I64, I64, I32],
         Shape::Logic { .. } => &[I64],
         Shape::Multiply { .. } => &[I64, I32],
+        Shape::Shift { unmoved: false, .. } => &[I64, I32, I32],
+        Shape::Shift { unmoved: true, .. } => &[I64, I32, I32, I64, I32, I32, I32, I32],
     }
 }
 
 /// The shape over these locals, in `shape_locals` order.
 pub fn with_locals(shape: Shape, locals: &[u32]) -> Flags {
-    let extra = locals.get(3).copied();
-    match shape {
-        Shape::Add { width, carry, kept } => Flags::Add {
+    let short = || -> ! { panic!("{shape:?} over too few locals: {locals:?}") };
+    match (shape, locals) {
+        (Shape::Add { width, carry, kept }, &[a, b, result, ref extra @ ..]) => Flags::Add {
             width,
-            a: locals[0],
-            b: locals[1],
-            result: locals[2],
-            carry: extra.filter(|_| carry),
-            kept_carry: extra.filter(|_| kept),
+            a,
+            b,
+            result,
+            carry: extra.first().copied().filter(|_| carry),
+            kept_carry: extra.first().copied().filter(|_| kept),
         },
-        Shape::Sub {
+        (
+            Shape::Sub {
+                width,
+                borrow,
+                kept,
+            },
+            &[a, b, result, ref extra @ ..],
+        ) => Flags::Sub {
             width,
-            borrow,
-            kept,
-        } => Flags::Sub {
-            width,
-            a: locals[0],
-            b: locals[1],
-            result: locals[2],
-            borrow: extra.filter(|_| borrow),
-            kept_carry: extra.filter(|_| kept),
+            a,
+            b,
+            result,
+            borrow: extra.first().copied().filter(|_| borrow),
+            kept_carry: extra.first().copied().filter(|_| kept),
         },
-        Shape::Logic { width } => Flags::Logic {
+        (Shape::Logic { width }, &[result, ..]) => Flags::Logic { width, result },
+        (Shape::Multiply { width }, &[result, overflow, ..]) => Flags::Multiply {
             width,
-            result: locals[0],
+            result,
+            overflow,
         },
-        Shape::Multiply { width } => Flags::Multiply {
-            width,
-            result: locals[0],
-            overflow: locals[1],
-        },
+        (Shape::Shift { width, unmoved }, &[result, carry, overflow, ref extra @ ..]) => {
+            Flags::Shift {
+                width,
+                result,
+                carry,
+                overflow,
+                unmoved: match extra {
+                    &[count, ref kept @ ..] if unmoved => Some(Unmoved {
+                        count,
+                        kept: kept.try_into().unwrap_or_else(|_| short()),
+                    }),
+                    _ => None,
+                },
+            }
+        }
+        _ => short(),
     }
 }
 

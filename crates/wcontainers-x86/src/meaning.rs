@@ -2,7 +2,7 @@
 
 use crate::claims::{GROUP_AVX, GROUP_KERNEL, GROUP_NEVER};
 use crate::decode::{Instruction, claim_group};
-use crate::flags::{Flag, Flags};
+use crate::flags::{Flag, Flags, KEPT_BY_SHIFT, Unmoved};
 use crate::guest::{Control, Reason, Trap};
 use crate::operand::*;
 use crate::{ALWAYS, DF, X86_64};
@@ -272,8 +272,8 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
                 }
             }
             e.sink().local_set(carry);
-            let word = word_with(e, &[(Flag::C, carry)]);
-            e.set_flags(Flags::Packed(word));
+            let each = each_with(e, &[(Flag::C, carry)]);
+            e.set_flags(Flags::Each(each));
         }
         Jrcxz | Jecxz => {
             // A jump when rcx (ecx with an address-size prefix) is zero; no flag is read.
@@ -441,6 +441,22 @@ fn word_with<E: Emitter<X86_64> + ?Sized>(e: &mut E, new: &[(Flag, u32)]) -> u32
     }
     e.sink().local_set(word);
     word
+}
+
+/// Each flag in an i32 local: these from their locals, the rest read as they are.
+fn each_with<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    new: &[(Flag, u32)],
+) -> [u32; Flag::ALL.len()] {
+    Flag::ALL.map(|flag| match new.iter().find(|(f, _)| *f == flag) {
+        Some(&(_, local)) => local,
+        None => {
+            let local = e.local(ValType::I32);
+            e.flag(flag);
+            e.sink().local_set(local);
+            local
+        }
+    })
 }
 
 fn arithmetic<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
@@ -870,8 +886,17 @@ fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) 
     }
 }
 
-/// Shifts and rotates. Their flags are worked out at once into a packed word, kept as they were when the
-/// masked count is zero.
+/// The bits of a shift's count the CPU uses at width `w`: six at 64 bits, else five.
+fn count_mask(w: u8) -> u64 {
+    let used = if w == u64::BITS as u8 {
+        u64::BITS
+    } else {
+        u32::BITS
+    };
+    u64::from(used) - 1
+}
+
+/// Shifts and rotates. Their flags stay as they were when the masked count is zero.
 fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     use Mnemonic::*;
     let w = width(i, 0);
@@ -888,7 +913,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
         }
     }
     e.sink()
-        .i64_const(if w == 64 { 63 } else { 31 })
+        .i64_const(count_mask(w) as i64)
         .i64_and()
         .local_set(count);
     let (result, carry, overflow) = (
@@ -899,8 +924,10 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     // The value rotated, for rotates: the count modulo the width (or the width and CF).
     let rotated = e.local(ValType::I64);
     let old_carry = e.local(ValType::I32);
-    e.flag(Flag::C);
-    e.sink().local_set(old_carry);
+    if matches!(m, Rcl | Rcr) {
+        e.flag(Flag::C);
+        e.sink().local_set(old_carry);
+    }
     let m_all = mask(w);
     {
         let mut s = e.sink();
@@ -1178,47 +1205,56 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     }
     write(e, i, 0, mem, result);
     let rotate = matches!(m, Rol | Ror | Rcl | Rcr);
-    let mut new = vec![(Flag::C, carry)];
-    // The reference CPU keeps OF for `rol` and `ror` of a register by an immediate above one, and gives a
-    // count of one's OF otherwise.
     let immediate = match i.iced.op_kind(1) {
         OpKind::Register => None,
-        _ => Some(i.iced.immediate(1) & if w == 64 { 63 } else { 31 }),
+        _ => Some(i.iced.immediate(1) & count_mask(w)),
     };
-    if !(matches!(m, Rol | Ror) && mem.is_none() && immediate.is_some_and(|k| k > 1)) {
-        new.push((Flag::O, overflow));
-    }
-    if !rotate {
-        let (p, a, z, sign) = (
-            e.local(ValType::I32),
-            e.local(ValType::I32),
-            e.local(ValType::I32),
-            e.local(ValType::I32),
-        );
-        let logic = Flags::Logic { width: w, result };
-        for (flag, local) in [(Flag::P, p), (Flag::Z, z), (Flag::S, sign)] {
-            crate::flags::flag_value(&mut e.sink(), logic, flag);
-            e.sink().local_set(local);
-        }
-        e.sink().i32_const(0).local_set(a);
-        new.extend([(Flag::P, p), (Flag::A, a), (Flag::Z, z), (Flag::S, sign)]);
-    }
-    let changed = word_with(e, &new);
-    let kept = word_with(e, &[]);
     // Nothing changes when the masked count is zero, or for rcl and rcr a multiple of the width plus one.
-    let moved = if matches!(m, Rcl | Rcr) {
-        rotated
+    let (moved, cycle) = if matches!(m, Rcl | Rcr) && w < u32::BITS as u8 {
+        (rotated, u64::from(w) + 1)
     } else {
-        count
+        (count, u64::MAX)
     };
-    e.sink()
-        .local_get(kept)
-        .local_get(changed)
-        .local_get(moved)
-        .i64_eqz()
-        .select()
-        .local_set(changed);
-    e.set_flags(Flags::Packed(changed));
+    let stays = immediate.is_none_or(|k| k % cycle == 0);
+    // The reference CPU keeps OF for `rol` and `ror` of a register by an immediate above one, and gives a
+    // count of one's OF otherwise.
+    if matches!(m, Rol | Ror) && mem.is_none() && immediate.is_some_and(|k| k > 1) {
+        e.flag(Flag::O);
+        e.sink().local_set(overflow);
+    }
+    if stays {
+        for (flag, new) in [(Flag::C, carry), (Flag::O, overflow)] {
+            e.flag(flag);
+            e.sink()
+                .local_get(new)
+                .local_get(moved)
+                .i64_eqz()
+                .select()
+                .local_set(new);
+        }
+    }
+    let flags = if rotate {
+        Flags::Each(each_with(e, &[(Flag::C, carry), (Flag::O, overflow)]))
+    } else {
+        let unmoved = if stays {
+            let kept = KEPT_BY_SHIFT.map(|_| e.local(ValType::I32));
+            for (flag, local) in KEPT_BY_SHIFT.into_iter().zip(kept) {
+                e.flag(flag);
+                e.sink().local_set(local);
+            }
+            Some(Unmoved { count, kept })
+        } else {
+            None
+        };
+        Flags::Shift {
+            width: w,
+            result,
+            carry,
+            overflow,
+            unmoved,
+        }
+    };
+    e.set_flags(flags);
 }
 
 /// Push the high 64 bits of the unsigned 128-bit product of the i64 locals `a` and `b`.
@@ -1796,6 +1832,6 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         s.local_set(result);
         write(e, i, 0, mem, result);
     }
-    let word = word_with(e, &[(Flag::C, carry)]);
-    e.set_flags(Flags::Packed(word));
+    let each = each_with(e, &[(Flag::C, carry)]);
+    e.set_flags(Flags::Each(each));
 }

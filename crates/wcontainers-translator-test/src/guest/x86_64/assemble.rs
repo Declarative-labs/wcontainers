@@ -204,6 +204,12 @@ enum Arithmetic {
     /// ror, rol, rcr or rcl, by the first source register.
     Rotate,
     Imul,
+    /// shl, shr, sar or a rotation of the first source by an immediate, 0 to 64.
+    ShiftImmediate,
+    /// bt, bts, btr or btc of the destination by the second source, chosen by the first.
+    BitTest,
+    /// clc, stc or cmc, chosen by the first source; no register changes.
+    Carry,
 }
 
 const ARITHMETIC: &[Arithmetic] = &[
@@ -220,7 +226,32 @@ const ARITHMETIC: &[Arithmetic] = &[
     Arithmetic::Sar,
     Arithmetic::Rotate,
     Arithmetic::Imul,
+    Arithmetic::ShiftImmediate,
+    Arithmetic::BitTest,
+    Arithmetic::Carry,
 ];
+
+/// What a shift by an immediate does: a shift, or the rotation the second source chooses.
+const BY_IMMEDIATE: &[Arithmetic] = &[
+    Arithmetic::Shl,
+    Arithmetic::Shr,
+    Arithmetic::Sar,
+    Arithmetic::Rotate,
+];
+
+#[derive(Clone, Copy)]
+enum BitTest {
+    Bt,
+    Bts,
+    Btr,
+    Btc,
+}
+
+const BIT_TESTS: &[BitTest] = &[BitTest::Bt, BitTest::Bts, BitTest::Btr, BitTest::Btc];
+
+/// clc, stc and cmc.
+const CARRY: &[fn(&mut CodeAssembler) -> Asm] =
+    &[CodeAssembler::clc, CodeAssembler::stc, CodeAssembler::cmc];
 
 #[derive(Clone, Copy)]
 enum Rotation {
@@ -634,6 +665,33 @@ impl Emitter {
         let t = R12;
         match kind {
             Test => return sized!(wide, r => self.a.test(r(rn), r(rm))),
+            Carry => return CARRY[usize::from(rn) % CARRY.len()](&mut self.a),
+            ShiftImmediate => {
+                // Counts of 0, of 1 and above, and of the width, from the two sources.
+                let count = u32::from(rn) * u32::from(rm) % (u64::BITS + 1);
+                if rd != rn {
+                    sized!(wide, r => self.a.mov(r(rd), r(rn)))?;
+                }
+                let kind = BY_IMMEDIATE[usize::from(rn) % BY_IMMEDIATE.len()];
+                let rotate = ROTATES[usize::from(rm) % ROTATES.len()];
+                return sized!(wide, r => match (kind, rotate) {
+                    (Shl, _) => self.a.shl(r(rd), count),
+                    (Shr, _) => self.a.shr(r(rd), count),
+                    (Sar, _) => self.a.sar(r(rd), count),
+                    (_, Rotation::Ror) => self.a.ror(r(rd), count),
+                    (_, Rotation::Rol) => self.a.rol(r(rd), count),
+                    (_, Rotation::Rcr) => self.a.rcr(r(rd), count),
+                    (_, Rotation::Rcl) => self.a.rcl(r(rd), count),
+                });
+            }
+            BitTest => {
+                return sized!(wide, r => match BIT_TESTS[usize::from(rn) % BIT_TESTS.len()] {
+                    self::BitTest::Bt => self.a.bt(r(rd), r(rm)),
+                    self::BitTest::Bts => self.a.bts(r(rd), r(rm)),
+                    self::BitTest::Btr => self.a.btr(r(rd), r(rm)),
+                    self::BitTest::Btc => self.a.btc(r(rd), r(rm)),
+                });
+            }
             Shl | Shr | Sar | Rotate => {
                 // The count goes in cl: rcx is swapped with the count's register around the shift.
                 let rcx_number = wcontainers_x86::RCX;
