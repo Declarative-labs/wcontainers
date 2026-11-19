@@ -133,6 +133,16 @@ Measured:
   are 15 to 32 times native: not looked into yet (calls and returns, and the passed-in-only registers stored
   at every return, are the first suspects). Chrome on the x86 machine is not measured yet (plan 7.5).
 
+Proof at the end of run 2 (the Mac, load 90 to 113; the i7-8750H as reference):
+- Suite of what this track owns, with the literal check (`WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop
+  -c cargo test -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p
+  wcontainers-translator-test -p wcontainers-x86 -p wcontainers-literals --no-fail-fast -- --test-threads 3`,
+  scratch `x4/run2/suite.log`, about 50 minutes): 397 passed, 0 failed, 13 ignored. The two runner panics in
+  the log are the refusal test's own.
+- `cargo run -q -p wcontainers-literals -- check`: exit 0. Clippy with `-D warnings` on the x86, translator
+  and test crates (all targets), `cargo fmt --check`: clean. `cargo check --workspace` fails only in
+  `wcontainers-wasmtime` (see "Departures", X4).
+
 Not done (in order):
 1. The benchmark set in Chrome on the x86 machine (it has Chrome; the browser harness runs Chrome only on
    the machine the tests run on, so it needs the test crate run there, with zig and a reference: it has no
@@ -1745,8 +1755,8 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   2 to 10: nothing.
 - Added in X3 run 2: `~/wcontainers-x86/proof/len.sh` (a length probe over the old `stepper4`, for quick
   looks; the table's sweep uses the harness's runner instead).
-- Added in X4 run 2: `~/wcontainers-x86/tree` (a `git archive` of this branch), `~/wcontainers-x86/target`
-  (its release build of `time-blob`, about the size of wasmtime's build; delete when timings are done),
+- Added in X4 run 2: `~/wcontainers-x86/tree` (a `git archive` of this branch; its build folder
+  `~/wcontainers-x86/target` was deleted at the end of the run),
   `~/wcontainers-x86/blobs` (the eight benchmark blobs), `time-wasmtime.sh` and its `time-wasmtime.out`,
   `proof10/flags_across`. Installed: nothing.
 - Added in X2: `~/wcontainers-x86/reference/<hash>`, the reference runner the harness uploads (one file per
