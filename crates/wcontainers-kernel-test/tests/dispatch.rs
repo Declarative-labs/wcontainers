@@ -44,8 +44,8 @@ fn not_implemented_counts_and_warns() {
     // A call not built that Docker's profile passes to the kernel (it answers ptrace and
     // Landlock's itself).
     let missing = wcontainers_kernel::system_calls()
-        .find(|call| !call.implemented && call.name == "remap_file_pages")
-        .expect("remap_file_pages is not built yet");
+        .find(|call| !call.implemented && call.name == "fanotify_mark")
+        .expect("fanotify_mark is not built yet");
     let program = program();
     let number = missing.number.to_string();
     let run = wcontainers_kernel_test::run_ours(
