@@ -19,7 +19,10 @@ mod translate;
 #[cfg(feature = "translate")]
 pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
-pub use native::{Native, NativeClass, Route, counted};
+pub use native::{
+    Fixup, Held, HostCode, InsideCall, Native, NativeClass, Relocated, Resume, Route, Side, Span,
+    counted,
+};
 #[cfg(feature = "translate")]
 pub use translate::*;
 
