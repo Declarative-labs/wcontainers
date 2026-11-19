@@ -137,6 +137,26 @@ Found:
   a cgroup2 mount); the cgroup tests skip either way (the reference's tst_cgroup stops at
   EROFS making /sys/fs/cgroup/ltp, ours earlier). Left for the owner's answer.
 
+Whole suite at e1d37089 (`cargo test -j 4 -p wcontainers-abi -p wcontainers-kernel -p
+wcontainers-kernel-test --no-fail-fast -- --test-threads=2`, 23:08 on the 18th to 01:36, load
+119 at the start and 40 at the end; scratch k6c8/suite.log): 272 passed, 1 failed, 11 ignored
+(the same eleven as the seventh run). The failure: streams `a_terminal_is_resized` (the streams
+track's test) panicked on the reference's side, "the reference never showed size 100 30": Docker's
+client sent the resize before the container's shell took its terminal, at load about 100. Alone
+it passed three times of three at load about 35 (and in this run's merge tests at load 100). A
+reference race under load, the streams track's to look into. The Python test binary took 7014 s.
+
+The slow tests at 708289f3 (scratch k6c7/slow.tsv, LTP_LIMIT 7200, 1 job, ended about 01:30,
+load 35 to 135): gf01 pass in 6761 s and fsx01 pass in 662 s (the reference's verdicts);
+creat05 broken in 3193 s, EMFILE at creat05_524273: the test server's descriptor limit, the same
+harness cause as fork09 (Questions), where the reference passes in 36 s; rwtest01 ran out 7200 s
+(the reference passes in 64 s): it runs `rwtest -i 60s`, writing and reading back for 60 seconds
+of the guest's clock, which on the repeatable clock moves with the stand-in's instructions, so
+the test runs for 60 s of instructions however slow the stand-in is (a named cause: the test's
+length is guest time; not a verdict). open04, float_bessel, hackbench01, cve-2014-0196 did not
+run (the runner was stopped with the whole comparison at 23:08 and not restarted, to keep the
+test threads within the limit); its command, with those four names, continues it.
+
 LTP, at 22:15 on the 18th (scratch k6c7/whole.tsv, still running at fcbc6807, about 150 tests
 an hour at load 95 to 135): 544 done; differing, all known: controllers:controllers (above),
 af_alg07, cve-2017-2671 (ping), cve-2017-7308 (AF_PACKET), cve-2018-5803 (SCTP), and the
@@ -1831,7 +1851,7 @@ Everything a reviewer should know about what is not compared, in one place.
   shows theirs. One test is `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test
   --bin ltp -- ours <results> <test>` (and `reference` for Docker's). The literals check: `cargo
   run -q -p wcontainers-literals -- check` (exit 0); its baseline had 8592 lines at its start
-  (708289f3) and may only shrink.
+  (708289f3) and may only shrink (8511 at e1d37089, under the seventh rules).
 
 - K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
   summary. The reference ran once, so its own flaky tests (timing tests under load, such as
@@ -3938,9 +3958,24 @@ K6c, after the eighth run (it changes items 3 and 7 below):
   must be read again when the attributes show a change), stable ids where guests see host
   addresses plus the record-and-replay test, mapping placement and the memory ceiling, the
   runtime's start values (masked paths among them: Known issues).
-- Rerun at the newest code what changed after the whole comparison's binary (fcbc6807): the
-  backend CREATE flags (any test creating files on the root), TCP_CORK and MSG_MORE's probe
-  timer (the net groups and sendto, send, splice tests using TCP).
+  For the stable ids, what was found (eighth run, read only): about 45 uses of `Rc::as_ptr`
+  or `as_ptr()` in the kernel. Most are equality tests (`core::ptr::eq`), which no guest sees.
+  The ones a guest can see, or whose order it can see: /proc/net's inode-like address
+  (socket/procnet.rs `socket.as_ptr() as u64`), epoll's watch keys (syscall/epoll.rs: a
+  BTreeMap keyed by the file's address, so the order of ready events follows heap addresses),
+  lib.rs's `maps.sort_by_key(Rc::as_ptr)`, and every `Channel::Object(address)` and
+  `Channel::Held(address)` wait channel (pipe, eventfd, inotify, mqueue, pidfd, timer, io, ipc,
+  futex, sockets), whose map order can order wakes. A kernel-wide counter handing each such
+  object an id when it is made (kept in the object, saved with it) would replace all of them;
+  then the record-and-replay test.
+- The whole LTP comparison (scratch k6c7/whole.tsv) was stopped at 23:08 on the 18th with 628
+  done, to run the whole suite within the test thread limit, and started again at 01:39 on the
+  19th at e1d37089 (runner scratch k6c8/ltp-y, still running at the eighth run's end; if it
+  stopped, the same command continues it): `LTP_TAR=<scratch>/kernel/ltp/ltp-20260930.tar LTP_JOBS=2
+  LTP_LIMIT=900 nix develop -c <scratch>/kernel/k6c8/ltp-y ours <scratch>/kernel/k6c7/whole.tsv`,
+  from the checkout. Then rerun with ltp-y what this run changed among the first 628 (the
+  backend CREATE flags reach every test creating files on the root; TCP_CORK and the probe
+  timer reach TCP tests), and the hugetlb group for fcbc6807.
 - Layer 1 now sets TCP_CORK: seed 9191104 (200 in memory, 32 on the backend, 32 on the caching
   backend) matched at 4841dade (load about 125; scratch k6c8/l1-9191104.log).
 
@@ -4064,6 +4099,7 @@ sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seed
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
 6262601 to 6262624 and 8484001 to 8484003 (K6b), 8484004 (K6c, 300 sequences), 9191001 and
-9191002 (K6c third run, 200 each), 9191003 to 9191005 (300, 32, 32 each), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+9191002 (K6c third run, 200 each), 9191003 to 9191005 (300, 32, 32 each), 9191100 to 9191104
+(K6c runs' own checks), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
