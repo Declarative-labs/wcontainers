@@ -4,9 +4,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6c, fifth run: remap_file_pages, /proc/<pid>/mem, /proc/<pid>/attr, per-user pipe pages and
-the backend's FOPEN_NOFLUSH are built; a whole LTP comparison runs at b37c8a43. K6c is not
-complete. See "K6c, fifth run".
+K6c, fifth run: remap_file_pages, /proc/<pid>/mem, /proc/<pid>/attr, PROCMAP_QUERY, per-user
+pipe pages, TCP's MSG_MORE inside the container and the backend's FOPEN_NOFLUSH are built;
+fork09 hangs on ours (to find); a whole LTP comparison at b37c8a43 was still running at the end.
+K6c is not complete. See "K6c, fifth run".
 
 K6c, fourth run: the stand-in's exclusive monitor is cleared at every turn, a bss-only segment
 is mapped, PI futex deadlocks answer EDEADLK, process_vm_readv and writev reach other
@@ -107,6 +108,31 @@ known whether the server stalls under 500000 releases or the kernel waits for an
 not get. msgstress01 passed in 2328 s with LTP_LIMIT 3600 (reference 18 s; load 60 to 117).
 swapping01 is skipped as the reference's. controllers:controllers still passes where the
 reference skips (below).
+
+LTP table at this run's end (not a whole comparison yet):
+- The whole comparison at b37c8a43 (scratch k6c5/whole.tsv, ltp-w, 3 jobs, LTP_LIMIT 900,
+  started 15:31, load 85 to 117) was still running when this run ended: 623 of 4226 done by
+  16:24, of which 611 checked: 599 matching, 12 differing (af_alg07, cve-2019-8912: one CPU;
+  cve-2017-7308: AF_PACKET; cve-2017-2671: ping; cve-2021-26708: vsock; cve-2018-5803: SCTP;
+  cve-2026-53362: IPV6_RTHDR; cve-2011-0999, cve-2014-0196, cve-2017-10661: slower than 900 s;
+  cve-2016-7042: Docker's masked /proc/keys not built; controllers:controllers: cgroup2 mount
+  not built). It runs detached and continues its file if started again with the same command
+  (`LTP_TAR=<scratch>/ltp/ltp-20260930.tar LTP_JOBS=3 LTP_LIMIT=900 nix develop -c
+  <scratch>/kernel/k6c5/ltp-w ours <scratch>/kernel/k6c5/whole.tsv`).
+- Estimated total from the fourth run's 4062 matching, plus this run's: remap_file_pages01 and
+  02, msgstress01 (pass under LTP_LIMIT 3600, so a slowness, not a difference), swapping01, and
+  expected (not yet rerun) dirtyc0w, cve-2016-5195, cve-2017-1000405, thp04 (/proc/<pid>/mem),
+  shmctl05 twice, cve-2017-2618, pipe15, autogroup01, ioctl10, send02. Not counted until the
+  whole comparison shows them.
+- Excused with a gap: none final (the written gap list below stands as the fourth run left it,
+  with IPV6_RTHDR proposed under "the network is not Linux's network stack").
+
+Whole suite at d0a1fe0f (`cargo test -p wcontainers-kernel -p wcontainers-kernel-test
+--no-fail-fast -- --test-threads=2`, started 15:57, load 85 to 100; scratch k6c5/suite.log): still
+running (the Python modules) when this run ended; so far 155 passed, 1 failed, 6 ignored. The
+failure was dispatch `not_implemented_counts_and_warns`, which used remap_file_pages as its call
+not built; it now uses fanotify_mark (0e272895) and passes. The fourth run's suite at d3df2d6e
+ended with 152 passed, 0 failed, 6 ignored before it was stopped in the Python modules.
 
 Also found: msgstress01 forks 2000 processes that each loop msgsnd or msgrcv with IPC_NOWAIT and
 usleep(10) 100000 times or until the test's 180 s (guest time) run out; on the stand-in a guest
