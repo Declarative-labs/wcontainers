@@ -928,8 +928,9 @@ or a seeded sample whose size is an argument) must have the same registers.
 
 ### 5.2 The inside
 
-One `no_std` Rust program per architecture, built for `aarch64-unknown-none` or `x86_64-unknown-none`. It
-holds:
+One `no_std` Rust program per architecture, built for `aarch64-unknown-none-softfloat` (so its own code never
+touches the guest's vector and float registers, which then stay in the hardware across every exception) or
+`x86_64-unknown-none`. It holds:
 - the floor: entry, exception vectors, a frame allocator over guest-physical memory, the heaps (`talc`, one
   per container), the timer (ARM64 the virtual timer through the GIC; x86-64 the local APIC's TSC-deadline
   timer), the interrupt controller, and the link. What the guest's level is allowed is set as the WebAssembly

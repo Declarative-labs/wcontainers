@@ -16,7 +16,11 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   and this branch's baseline started at e4b998bd. The check fails, on main's code only: see "Literals".
 - main is merged (787f8ceb, N2 run 1): the owner's names are in the plan's text and its runtime citations.
 - N2 (the native ARM64 output): the independent check of run 5 found one blocking problem and four minor
-  ones; run 6 settled every one (below, "N2 run 6"). N3 needs decision 1 (R1, R3). N6 needs K2 (below).
+  ones; run 6 settled every one (below, "N2 run 6"). N6 needs K2 (below).
+- N3 (the first real programs) is started, not done: run 1 settled the last check's five findings and built
+  the inside's own stop resolution, its heap and the soft-float build (below, "N3 run 1"). Blocked for its
+  bar: R1 and R3 (the runtime's loop `no_std`, the `System` split into policy and services) are the runtime
+  and kernel tracks' crates, which this track has not been agreed to change (see "For the orchestrator").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -43,6 +47,69 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 1 (2026-11-19)
+
+Start: origin/main and origin/phase-1-literals had nothing new.
+
+The last check's findings, each settled:
+1. The count's cost: the four runs' 1620 pairs pooled (scratch native/n3-cost: pooled.jsonl, pooled-summary.txt;
+   `python3 -I ../n2-count/summarize.py pooled.jsonl 1 2000`): right before the event +12.1% [+11.6 .. +12.7],
+   before the compare +10.8% [+10.2 .. +11.5], start of the run +11.2% [+10.4 .. +11.7]; one run's figure moves
+   by about 1.5 points (start of the run +10.5 to +12.0 over the four). The plan's section 4 and the speed bar
+   (section 8: +11.2% plus 10 points) now use the pooled figure and say the right-before placement is dearest
+   only by its point (8a15c459).
+2. Stop resolution in test code only: moved into the inside, `wcontainers_inside::stop` (built for the host
+   too), which the runner now calls; no second copy is left in the tests (c2be6eac). For it, what a stop
+   needs of an instruction (an access's operand, system call, code made visible, counter read, breakpoint
+   comment, illegal, FPSR write) is found when translating (`Native::stopping`, kept in each `Span` as
+   `Stopping`), so the inside never decodes (3abae647); the span types moved to guest-cpu's `no_std` core
+   (`position`), and the withheld registers, the register page, the tag and float bits to arm64's (`thread_state`,
+   555c327a). A data abort's access is read from the syndrome's WnR (`syndrome::WRITE_NOT_READ`).
+3. The placement: `count_placement` beside `counted` decides it (one add of all the run's events, at the
+   start of the run), and `Native::count` takes the number of events (503c1650).
+4. Float status words: every word routed for float status comes with every register in each register field,
+   withheld ones included, in the routing, structure and differential tests (d002f571): 96 such words at 64 per
+   form (3 before).
+5. "view": a thread's own table root is `AddressSpace::thread_address_space`; the floor cases are
+   `ThreadTableRoots` and `SharedInsideHalf`; the plan's text says table roots (bce05baf).
+
+Built for N3 (each its own commit):
+- The inside's heap: `talc` 5.1.1 over 2 MiB blocks of frames through the linear map, grown as needed
+  (`floor::heap`); needed now because the position map uses `alloc`.
+- The inside and its test programs build for `aarch64-unknown-none-softfloat` (added to rust-toolchain.toml,
+  which the flake reads, so the Nix shell fetches it; c4153089). The inside's code then never touches the
+  vector registers, FPSR or FPCR, so the guest's stay in the hardware across every exception and system call
+  with no save. The kernel crate builds for it in release.
+
+Results (M5 Max, macOS 27.2):
+- Differential test, 16 drawn cases per form, seed 0x2545f4914f6cdd1d: 1215 forms, 19,440 drawn, 8114 of the
+  bar's own, 4528 left-out words, 96 float status words and 384 exclusive pairs, 32,562 cases, 0 failing (20 s,
+  load 21 to 51; scratch native/n3r1/native16.log). The two system move forms at 64 per form: 506 cases, 96 of
+  them float status words with every register, 0 failing.
+- Forced interrupts: 2500 over 8 functions (18 cases) at 3 look-aheads, 0 failed, through the inside's
+  resolution (0.9 s, load 11 to 44).
+- Routing test 1,100,822 words, structure test 1,100,823 words (FloatStatus 96 in each); floor 21 cases and 1
+  measurement, 0 failed (programs built soft-float); literal check exit 0.
+
+What comes next for N3, in order (everything this track can do without R1 and R3 first):
+1. The guest's vector state for `Cpu::registers` and `set_registers` and thread switches: the inside's code no
+   longer touches it, but reading and writing it needs FP instructions, and new assembly text is a new literal
+   the check refuses. Expected way: the monitor writes two routines made by the encoder (store and load q0 to
+   q31, FPSR, FPCR at a pointer) into a frame it names in `Start`, which the inside maps executable at EL1.
+2. The native `Cpu` side in the inside: a process is a table root and identifier, `memory_new`, `read`,
+   `write`, `zero`, `set_permissions` (4 KiB entries from the kernel's record), `memory_duplicate` (copying at
+   once is a correct slow path until copy-on-write at N5, counted), shared blocks, threads (register block,
+   register page, float status), all over `floor::tables`.
+3. Translation through the link: a `Translate` request (guest address, look-ahead none, exact replay) whose
+   answer the monitor writes with `translate_native` into frames the inside names: host bytes, spans and slow
+   path sites; the inside loads them into the code area, counts and warns each site's reason, and keeps
+   guest address to piece.
+4. A thread run to its next exit (the body the native `Execution::run` will wrap): rejoin, `enter_user`,
+   `stop::resolve`, the next piece for `Landed`, the clock for `Clock`, an `Exit` otherwise; an execute fault
+   when the code's page cannot run.
+5. The `Host` through the link (output, clocks, randomness, warnings), the image's files at start, and the
+   kernel inside, then the loop and the test crate's policy once R1 and R3 exist; then the bar.
 
 ## N2: the native ARM64 output (run 1, 2026-11-18)
 
@@ -462,8 +529,9 @@ From the checkout, in the Nix shell:
   (seed in decimal or after `0x`; the run prints both); the whole suite of both crates is
   `nix develop -c cargo test -j 4 -p wcontainers-inside -p wcontainers-hypervisor`;
 - lint: `nix develop -c cargo clippy -j 4 -p wcontainers-inside -p wcontainers-hypervisor --all-targets --
-  -D warnings` and `nix develop -c cargo clippy -j 4 -p wcontainers-inside --target aarch64-unknown-none
-  --bins --lib -- -D warnings`;
+  -D warnings` and `nix develop -c cargo clippy -j 4 -p wcontainers-inside --target
+  aarch64-unknown-none-softfloat --bins --lib -- -D warnings` (and guest-cpu and arm64 with
+  `--no-default-features` for their `no_std` cores);
 - the literal check: `nix develop -c cargo run -q -p wcontainers-literals -- check` (exit 0 is clean), and
   `nix develop -c cargo test -j 4 -p wcontainers-literals -- --test-threads 3` before a push.
 
@@ -760,6 +828,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N3 run 1, the inside's heap is one `talc` heap in the linear map (global), not one per container in the
+  non-global heap region: N3 runs one container; the per-container heap comes with several containers (N5).
+- N3 run 1, the inside is built for `aarch64-unknown-none-softfloat` (plan 5.2 said `aarch64-unknown-none`):
+  the guest's vector and float state then needs no save at an exception.
+- N3 run 1, the facts a stop needs of an instruction are found when translating and carried in the position
+  map (`Stopping`), so the inside resolves stops without the decoder, which is in arm64's `std` half.
+
 - N2 run 6, the exclusive monitor in the differential test is compared through each drawn exclusive's
   partner (status and memory), not read directly: layer 1's WebAssembly runner, the translator track's,
   offers no way to set or read it.
@@ -843,6 +918,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N3's bar needs R1 (the runtime's `Turn`, `Carry`, `Leaving`, `Answer`, `Execution`, `Step`, `Stepper` and
+  the policy trait buildable without the standard library) and R3 (`System` split into a policy and
+  services, the test crate's `TestHost` likewise), plan 6.2. Both are in the runtime and kernel tracks'
+  crates (wcontainers-runtime's lib.rs, which phase-1-runtime is rewriting; wcontainers-kernel-test's
+  driver.rs). The plan lets this track make them only if those tracks agree. Until one of the two happens,
+  this track builds everything else N3 needs and the bar cannot run. Writing the loop again in the inside
+  would be a second loop, which the brief forbids.
 
 - Run 2's ask (the guest's vector state across the floor's exceptions) is no longer needed for N2: the
   runner sets and reads the guest's level from the monitor at a gate (N2 run 4). The inside proper still
