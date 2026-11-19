@@ -4,7 +4,8 @@
 //! every predicate running during it (`QueriesSegmented` where others run on), and a predicate's
 //! answer is whether any of its stretches saw a sample pass. Counted occlusion queries count
 //! exactly through the interface's occlusion counter, likewise in stretches between the program's
-//! begins and ends. Timestamps, which the back ends do not write, are answered as Direct3D answers
+//! begins and ends, each stretch's count written into a buffer read back once the GPU has it.
+//! Timestamps, which the back ends do not write, are answered as Direct3D answers
 //! a timestamp counter that was not continuous: the disjoint query says so, and programs drop the
 //! stamps it covers. Pipeline statistics are counted by the front from the work it issues (plan
 //! 4.12): input assembler, vertex shader and clipper counts from the draws' arguments, as a GPU
@@ -18,7 +19,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use wcontainers_gpu::{Backend, Object, QueryKind, ReadState, SlowPath};
+use wcontainers_gpu::{
+    Backend, BufferDesc, BufferUsage, MapIntent, Object, QueryKind, ReadSource, ReadState, SlowPath,
+};
 
 use crate::device::Device;
 use crate::error::{Error, Result};
@@ -64,6 +67,9 @@ pub mod statistic {
 
 /// Slots of one occlusion set: WebGPU's most.
 const SET_SLOTS: u32 = 4096;
+
+/// The bytes of a counted stretch's sum: the occlusion counter writes a u64.
+const SUM_BYTES: u64 = size_of::<u64>() as u64;
 
 /// The bytes `GetData` writes for a query of `kind`, or none for a kind Direct3D 11 does not have.
 pub fn data_size(kind: u32) -> Option<u32> {
@@ -130,19 +136,18 @@ fn answered_at_end(kind: u32) -> bool {
 /// An occlusion set, shared by the stretches counted into it.
 type Set<B> = Rc<Kept<B, <B as Backend>::QuerySet>>;
 
-/// A stretch of an occlusion predicate: a slot of a set.
-struct Part<B: Backend> {
-    set: Set<B>,
-    slot: u32,
+/// A stretch of an occlusion query: a slot of a set (predicates), or the buffer the occlusion
+/// counter wrote a counted query's stretch into.
+enum Part<B: Backend> {
+    Slot { set: Set<B>, slot: u32 },
+    Sum(Rc<Kept<B, B::Buffer>>),
 }
 
 enum State<B: Backend> {
     /// Never ended.
     Fresh,
-    /// Begun and not yet ended: the stretches it ran in so far.
+    /// An occlusion query begun and not yet ended: the stretches it ran in so far.
     Running(Vec<Part<B>>),
-    /// A counted occlusion query begun and not yet ended: the samples its stretches counted.
-    Counting(u64),
     /// A pipeline statistics query begun and not yet ended: what it counted so far.
     Statistics(Answer),
     /// Ended after `submits` submits; its stretches and, once asked for, their read backs.
@@ -260,7 +265,7 @@ impl<B: Backend> Device<B> {
                 if !self.queries.counted.iter().any(|r| Rc::ptr_eq(r, q)) {
                     self.queries.counted.push(q.clone());
                 }
-                *q.state.borrow_mut() = State::Counting(0);
+                *q.state.borrow_mut() = State::Running(Vec::new());
                 let r = self.counter.begin(&mut self.backend, &mut self.passes);
                 let _ = self.gpu(r);
                 return;
@@ -298,11 +303,23 @@ impl<B: Backend> Device<B> {
                 self.lose(e);
             }
             self.queries.counted.retain(|r| !Rc::ptr_eq(r, q));
-            let count = match *q.state.borrow() {
-                State::Counting(n) => n,
-                _ => 0,
+            let parts = match std::mem::replace(&mut *q.state.borrow_mut(), State::Fresh) {
+                State::Running(parts) => parts,
+                _ => Vec::new(),
             };
-            *q.state.borrow_mut() = State::Done(short(&[count]));
+            // The count is read back from here, so it goes to the GPU with the next submit.
+            let reads = match self.start_reads(&parts) {
+                Ok(reads) => reads,
+                Err(e) => {
+                    self.lose(e);
+                    Vec::new()
+                }
+            };
+            *q.state.borrow_mut() = State::Ended {
+                submits: self.queries.submits,
+                parts,
+                reads: Some(reads),
+            };
             if was && !self.queries.counted.is_empty() {
                 let r = self.counter.begin(&mut self.backend, &mut self.passes);
                 let _ = self.gpu(r);
@@ -356,7 +373,7 @@ impl<B: Backend> Device<B> {
     pub fn query_data(&mut self, q: &Rc<Query<B>>, flush: bool) -> Result<Option<Answer>> {
         self.live()?;
         let submits = match &*q.state.borrow() {
-            State::Fresh | State::Running(_) | State::Counting(_) | State::Statistics(_) => {
+            State::Fresh | State::Running(_) | State::Statistics(_) => {
                 return Err(Error::InvalidCall("a query not ended"));
             }
             State::Done(v) => return Ok(Some(*v)),
@@ -404,23 +421,21 @@ impl<B: Backend> Device<B> {
                 return Ok(None);
             }
             self.settle();
-            let mut reads = Vec::new();
-            if let State::Ended { parts, .. } = &*q.state.borrow() {
-                for p in parts {
-                    let r = self.backend.read_queries(&p.set.handle, p.slot, 1);
-                    reads.push(self.gpu(r)?);
-                }
-            }
-            if let State::Ended { reads: r, .. } = &mut *q.state.borrow_mut() {
+            let reads = match &*q.state.borrow() {
+                State::Ended { parts, .. } => self.start_reads(parts)?,
+                _ => Vec::new(),
+            };
+            if let State::Ended {
+                reads: r, submits, ..
+            } = &mut *q.state.borrow_mut()
+            {
                 *r = Some(reads);
-            }
-            if flush {
-                self.flush();
+                *submits = self.queries.submits;
             }
         }
-        let reads = match &mut *q.state.borrow_mut() {
-            State::Ended { reads, .. } => reads.take().unwrap_or_default(),
-            _ => Vec::new(),
+        let (reads, read_at) = match &mut *q.state.borrow_mut() {
+            State::Ended { reads, submits, .. } => (reads.take().unwrap_or_default(), *submits),
+            _ => (Vec::new(), self.queries.submits),
         };
         if reads
             .iter()
@@ -429,16 +444,25 @@ impl<B: Backend> Device<B> {
             if let State::Ended { reads: r, .. } = &mut *q.state.borrow_mut() {
                 *r = Some(reads);
             }
+            // Reads started by an earlier call that did not flush are sent now.
+            if flush && read_at == self.queries.submits {
+                self.flush();
+            }
             return Ok(None);
         }
-        let mut any = 0;
+        // A counted query sums its stretches; a predicate is whether any saw a sample pass.
+        let mut answer = 0;
         for r in reads {
             let mut bytes = [0u8; size_of::<u64>()];
             self.backend.finish_read(r, &mut bytes);
-            any |= u64::from(u64::from_le_bytes(bytes) != 0);
+            let n = u64::from_le_bytes(bytes);
+            answer = match q.kind {
+                kind::OCCLUSION => answer + n,
+                _ => answer | u64::from(n != 0),
+            };
         }
-        *q.state.borrow_mut() = State::Done(short(&[any]));
-        Ok(Some(short(&[any])))
+        *q.state.borrow_mut() = State::Done(short(&[answer]));
+        Ok(Some(short(&[answer])))
     }
 
     /// The answer of an ended query, waiting for the GPU where it is not there yet
@@ -473,17 +497,45 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// Ends the occlusion counter's stretch, if counted queries run, adding its count to each.
+    /// Starts reading back each stretch's result, outside a pass.
+    fn start_reads(&mut self, parts: &[Part<B>]) -> Result<Vec<B::Readback>> {
+        let mut reads = Vec::with_capacity(parts.len());
+        for p in parts {
+            let r = match p {
+                Part::Slot { set, slot } => self.backend.read_queries(&set.handle, *slot, 1),
+                Part::Sum(sum) => self.backend.read_back(&ReadSource::Buffer {
+                    buffer: &sum.handle,
+                    offset: 0,
+                    size: SUM_BYTES,
+                }),
+            };
+            reads.push(self.gpu(r)?);
+        }
+        Ok(reads)
+    }
+
+    /// Ends the occlusion counter's stretch, if counted queries run, writing its count into a
+    /// buffer each running query reads back at its end.
     fn count_stretch(&mut self) -> Result<()> {
         if self.queries.counted.is_empty() {
             return Ok(());
         }
         self.end_pass();
-        let n = self.counter.end(&mut self.backend, &mut self.passes);
-        let n = self.gpu(n)?;
+        let sum = self.backend.create_buffer(&BufferDesc {
+            size: SUM_BYTES,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        });
+        let sum = self.gpu(sum)?;
+        let id = self.id();
+        let sum = Rc::new(Kept::new(sum, id, Object::Buffer, &self.graveyard));
+        let r = self
+            .counter
+            .end_into(&mut self.backend, &mut self.passes, &sum.handle, 0);
+        self.gpu(r)?;
         for q in &self.queries.counted {
-            if let State::Counting(sum) = &mut *q.state.borrow_mut() {
-                *sum += n;
+            if let State::Running(parts) = &mut *q.state.borrow_mut() {
+                parts.push(Part::Sum(sum.clone()));
             }
         }
         Ok(())
@@ -571,7 +623,7 @@ impl<B: Backend> Device<B> {
         let set = self.queries.pass_set.clone().expect("the open pass's set");
         for q in &self.queries.running {
             if let State::Running(parts) = &mut *q.state.borrow_mut() {
-                parts.push(Part {
+                parts.push(Part::Slot {
                     set: set.clone(),
                     slot,
                 });
