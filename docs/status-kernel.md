@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, eighth run: origin/phase-1 (the streams track's ends) and the literals check's seventh rules
+are merged, and the literals check passes (baseline 8566 to 8511 lines); a backend CREATE now
+carries O_EXCL and O_TRUNC (the brief's first bug); TCP_CORK holds bytes, and uncorking,
+TCP_NODELAY and the probe timer send what is held. The whole LTP comparison and the slow tests
+still run detached. K6c is not complete. See "K6c, eighth run".
+
 K6c, seventh run: origin/phase-1 and origin/phase-1-literals are merged and the literals check
 is adopted (it passes; the baseline only shrank after its start); huge page memory files with
 none reserved and /sys/kernel/mm/transparent_hugepage (set to never) are built (memfd_create04,
@@ -69,6 +75,73 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, eighth run
+
+Merged:
+- origin/phase-1 at eb515b7a (374d27ea): the streams track's ends (`wcontainers_abi::End`, the
+  `Host` calls `stream_send`, `stream_credit` and `stream_close`, `Start::standard`, the
+  kernel's ends.rs, the test host's streams.rs and tests/streams.rs). phase-1 did not have main's
+  move of the turn loop into `wcontainers_runtime::drive`, so the streams side was carried into
+  it: the test host's `Outside` hands the ends their turn in `arrived` and `idle`, and the
+  runtime crate's `Outside` trait gained `standard` (descriptors 0 to 2 as the outside holds
+  them) and `started` (what it gives once the kernel starts, such as credit). The shipped
+  `System` (runtime crate, not this track's) now gives unlimited credit on two output ends and
+  writes what comes on them, as its `output` did; it names no input end. These two runtime
+  crate changes were needed for the merge to build; the runtime track should review them.
+- origin/phase-1-literals at 7668c010 (61e581eb, the brief's tip): rules versions 5 to 7. `init`
+  ran once before committing it and wrote the same baseline (8512 lines), so nothing was added.
+- Literals named in the first merge, since the streams side named values this track's tests
+  wrote: the docker words in tests/go.rs, java.rs and python.rs now come from
+  `reference::docker`, `/wc` from `GUEST_DIRECTORY`; the kernel exports `NULL_PATH`,
+  `PTMX_PATH`, `DEVPTS_PATH` (as `&str`) and `docker run`'s start failure statuses
+  `EXIT_NOT_FOUND`, `EXIT_NOT_RUNNABLE`, `EXIT_START_FAILED`, which layer1.rs, busybox.rs,
+  proclist.rs and reference.rs use; busybox's `rm` applet is `busybox::RM_APPLET`, as the check
+  reads any test `"rm"` as Docker's `rm` (see Departures); `fs::PATH_SEPARATOR` joins a slave's
+  path; the runtime's two warning reasons are named.
+- Changes that could add lines, as the check lists them at 61e581eb: 708289f32f51 the start,
+  fcbc680781dd the init after the baseline arrived by a merge, 61e581eb8243 new rules (this
+  run's merge; init added nothing), and the literals branch's own: 68214b2eec10 the start,
+  89f882810517, 7119e3f3a527, c3bf56d4ed9f, 31ec396f9a4a, 0f1875633508 new rules. The baseline
+  went 8566, 8512 (the first merge), 8511 (TCP_CORK's commit).
+
+Built, each tested against the reference:
+- A backend CREATE (and TMPFILE) sends every open flag but O_NOCTTY, as `fuse_create_open`
+  does, so the backend makes the file with O_EXCL and O_TRUNC; an OPEN still drops O_CREAT,
+  O_EXCL and O_NOCTTY (and O_TRUNC without FUSE_ATOMIC_O_TRUNC). guest/backendrace.c now has two
+  threads making the same 40 files with O_EXCL: before the fix ours had 20 of 40 made by one
+  thread (both threads' lookups waited on the backend, then both CREATEs opened the file),
+  the reference 40 of 40; after it 40 of 40 (backend `arguments_taken_once_match_reference`;
+  all 19 backend tests, rootbackend, openflags and opencheck pass).
+- TCP_CORK on a connection inside the container holds bytes short of a segment as MSG_MORE
+  does, and keeps holding past the acknowledgement (a corked send of more than a segment sends
+  whole segments and holds the rest: Departures); taking the cork off or setting TCP_NODELAY
+  (even under the cork) sends what is held; a probe timer sends held bytes one retransmission
+  timeout after they were first held (201 ms, the `tcpi_rto` TCP_INFO already gave, now named;
+  measured on the reference 204 to 260 ms for both TCP_CORK and MSG_MORE, which before this run
+  were held for ever here). To the outside TCP_CORK stays counted "socket option not acted on",
+  now at a send, as MSG_MORE is. guest/tcpmore.c's new cases match (inet
+  `held_back_sends_match_reference`); `options_not_acted_on_are_counted` no longer expects
+  TCP_CORK, which is acted on inside. Layer 1 now sets TCP_CORK too.
+
+Found:
+- wcontainers-wasmtime's tests/surface.rs `the_guest_sees_the_honoured_values` (the runtime
+  track's test, from main) fails on this branch since the seventh run's merge: it expects only
+  the configuration's mounts and read-only paths in /proc/mounts, while this kernel applies
+  Docker's masks (/proc/interrupts, kcore, keys, scsi, timer_list, /sys/firmware) itself since
+  the sixth run. Not this merge's doing; settled by the brief's "start values" ask (the kernel
+  taking masked paths from the runtime at start). Known issues.
+- The cgroup2 mount (Next item 3) is not built: Docker's has seven controllers, and the memory
+  controller's files (memory.current, .peak, .stat) are resident page counts, the same question
+  as page residency (Questions). Only controllers:controllers turns on it (it skips when it sees
+  a cgroup2 mount); the cgroup tests skip either way (the reference's tst_cgroup stops at
+  EROFS making /sys/fs/cgroup/ltp, ours earlier). Left for the owner's answer.
+
+LTP, at 22:15 on the 18th (scratch k6c7/whole.tsv, still running at fcbc6807, about 150 tests
+an hour at load 95 to 135): 544 done; differing, all known: controllers:controllers (above),
+af_alg07, cve-2017-2671 (ping), cve-2017-7308 (AF_PACKET), cve-2018-5803 (SCTP), and the
+timeouts cve-2011-0999, 2014-0196, 2017-10661. The slow tests (k6c7/slow.tsv): gf01 and fsx01
+pass as the reference; rwtest01 and the rest still running.
 
 ## K6c, seventh run
 
@@ -3157,6 +3230,21 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, eighth run: the merge of origin/phase-1 changed the runtime crate, which this track does
+  not own (the `Outside` trait's `standard` and `started`, and `System` on the stream ends):
+  without them neither side built, as phase-1 had the streams track's `Host` and main's crate
+  had the old one. The runtime track should review them; main's later rename of `Outside` to
+  `System` will conflict with them at the next merge of main.
+- K6c, eighth run: busybox's `rm` applet in tests/busybox.rs is the constant
+  `busybox::RM_APPLET`: the literals check reads any test `"rm"` as restating Docker's
+  `docker::REMOVE` (which the streams track named in reference.rs), and a test constant of the
+  same value is gated too. They are two facts with one spelling.
+- K6c, eighth run: a send under TCP_CORK of more than a segment sends whole segments of the
+  connection's MSS and holds the rest. Linux's split follows its buffers and the window (on
+  the reference 65482 of 70000, 113098 of 131072, 196446 of 200000 at a connection's start,
+  65536 of 70000 later in one), which this model does not follow; guest/tcpmore.c does not test
+  it.
+
 - K6c, seventh run: the literals branch was merged straight into this branch, as the brief
   orders, though docs/literals.md's adoption steps say a track should wait for main to hold the
   check (main did not yet). When main gets the check and its own init, merging main will bring a
@@ -3693,6 +3781,10 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Known issues
 
+- K6c, eighth run: wcontainers-wasmtime tests/surface.rs `the_guest_sees_the_honoured_values`
+  (the runtime track's) fails here: the kernel's own Docker masks show six mounts the test does
+  not expect. Settled when the kernel takes the masked paths at start (the brief's start values).
+
 - K6b, first run: the whole-suite run at 076dfc4 (`--no-fail-fast`, 4 test threads, load about
   20) did not finish. It found one crash (fixed in 54c7ff8: a thread's own /proc directory
   listed coredump_filter, which Linux's `tid_base_stuff` lacks; proclist passes again), then
@@ -3836,6 +3928,21 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the eighth run (it changes items 3 and 7 below):
+- Item 3: TCP_CORK holding and TCP_NODELAY pushing are built. The cgroup2 mount waits on the
+  page residency answer (K6c, eighth run, Found).
+- Item 7: O_EXCL on a backend CREATE is fixed. Left from the brief: mapped blocks under
+  FUSE_AUTO_INVAL_DATA (plan section 15 lists "a shared file mapping does not see changes made
+  outside" as deliberate; the brief now calls it a bug, so the block's pages that are not dirty
+  must be read again when the attributes show a change), stable ids where guests see host
+  addresses plus the record-and-replay test, mapping placement and the memory ceiling, the
+  runtime's start values (masked paths among them: Known issues).
+- Rerun at the newest code what changed after the whole comparison's binary (fcbc6807): the
+  backend CREATE flags (any test creating files on the root), TCP_CORK and MSG_MORE's probe
+  timer (the net groups and sendto, send, splice tests using TCP).
+- Layer 1 now sets TCP_CORK: seed 9191104 (200 in memory, 32 on the backend, 32 on the caching
+  backend) matched at 4841dade (load about 125; scratch k6c8/l1-9191104.log).
 
 K6c, in this order (after the seventh run):
 1. The whole LTP comparison at 708289f3 (the merge) runs detached: scratch k6c7/whole.tsv, 2
