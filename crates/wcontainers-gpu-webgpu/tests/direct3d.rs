@@ -1451,9 +1451,12 @@ fn bgra_vertices_read_as_direct3d_reads_bgra_and_bgrx() {
 /// Pairs divided by one draw, one a pixel.
 const PAIRS: u32 = 64;
 
-/// The literal divisor both programs also divide by, and the pair atg-simplecomputepc divides.
-const DIVISOR: f32 = 300.0;
-const SAMPLE_PAIR: [f32; 2] = [1200.0, DIVISOR];
+/// atg-simplecomputepc's division: its dividend, and the whole quotient Direct3D gives.
+const SAMPLE_DIVIDEND: f32 = 1200.0;
+const SAMPLE_QUOTIENT: f32 = 4.0;
+/// The sample's divisor, which both programs also divide by as a literal.
+const DIVISOR: f32 = SAMPLE_DIVIDEND / SAMPLE_QUOTIENT;
+const SAMPLE_PAIR: [f32; 2] = [SAMPLE_DIVIDEND, DIVISOR];
 
 /// Each pixel divides its pair: by the pair's run-time divisor and by [`DIVISOR`] written in the
 /// program, each quotient with its fraction, as bits.

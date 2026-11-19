@@ -11,8 +11,18 @@ use wcontainers_gpu_webgpu::WebGpu;
 /// Values whose bits a float clear value changes (each NaN, both denormals), and ones it keeps.
 const VALUES: [[u32; 4]; 3] = [
     [0x0000_0001, 0x807f_ffff, 0x7fc0_0001, 0x7f80_0001],
-    [0xffc1_2345, 0x8000_0000, 0x0040_0000, 0x7fff_ffff],
-    [0x3f80_0000, 0xbf00_0000, 0x0080_0000, 0x0000_0000],
+    [
+        0xffc1_2345,
+        (-0.0f32).to_bits(),
+        (f32::MIN_POSITIVE / 2.0).to_bits(),
+        0x7fff_ffff,
+    ],
+    [
+        1.0f32.to_bits(),
+        (-0.5f32).to_bits(),
+        f32::MIN_POSITIVE.to_bits(),
+        0,
+    ],
 ];
 
 /// Formats of 32-bit float channels that can be drawn into.

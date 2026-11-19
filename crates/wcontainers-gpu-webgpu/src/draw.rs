@@ -409,7 +409,7 @@ struct LastGroup {
 
 /// Whether a clear value would change these bits of a format of 32-bit float channels: a
 /// denormal (flushed) or a NaN (its payload quieted) among the channels it has.
-fn float_bits_changed(format: wcontainers_gpu::Format, bits: [u32; 4]) -> bool {
+fn float_bits_changed(format: wcontainers_gpu::Format, bits: crate::fill::Words) -> bool {
     let (_, _, bytes) = format.block();
     let channels = format.components().count_ones();
     format.kind() == FormatKind::Float

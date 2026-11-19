@@ -25,8 +25,11 @@ const STENCIL_BITS: usize = u8::BITS as usize;
 /// The name of the empty fragment stage.
 pub(crate) const NO_FRAGMENT: &str = "none";
 
+/// The output type and value of a clear drawing a float format's bits, in WGSL.
+const FLOAT_CLEAR_OUTPUT: (&str, &str) = ("vec4<f32>", "bitcast<vec4<f32>>(value)");
+
 /// A uniform of four words, as the programs' `vec4`.
-type Words = [u32; 4];
+pub(crate) type Words = [u32; 4];
 
 /// A triangle covering the viewport.
 const COVER_WGSL: &str = "
@@ -675,7 +678,7 @@ impl WebGpu {
         let format = targets.colors[index].expect("the cleared target");
         let (ty, value) = match format.kind() {
             FormatKind::Sint => ("vec4<i32>", "bitcast<vec4<i32>>(value)"),
-            FormatKind::Float => ("vec4<f32>", "bitcast<vec4<f32>>(value)"),
+            FormatKind::Float => FLOAT_CLEAR_OUTPUT,
             _ => ("vec4<u32>", "value"),
         };
         let source = format!(
