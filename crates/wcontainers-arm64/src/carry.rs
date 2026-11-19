@@ -479,6 +479,47 @@ fn page_offset(address: &Address) -> u32 {
     }
 }
 
+/// The page test in front of an access of `bytes` at `address`, built in t, its last word the branch to the
+/// probes (offset 0) taken when the access may cross a page. An immediate offset of a power-of-two size takes
+/// three words: the access crosses when its first byte's page offset plus `bytes - 1` reaches the page, that is
+/// when the last byte's page offset is below `bytes - 1`, so the branch is taken when it is below `bytes` (a
+/// first byte at a page's start is probed too, harmlessly).
+fn page_test_words(address: &Address, bytes: u32) -> Vec<u32> {
+    let last = i64::from(bytes) - 1;
+    let page = PAGE_SIZE as i64;
+    let offset = match *address {
+        Address::Offset { offset, .. } | Address::PreIndex { offset, .. } => Some(offset),
+        Address::PostIndex { .. } => Some(0),
+        _ => None,
+    };
+    match (offset, base_of(address)) {
+        (Some(offset), Some(base)) if bytes.is_power_of_two() => vec![
+            encode::add_immediate(SCRATCH, number(base), (offset + last).rem_euclid(page))
+                .expect("an offset within a page fits"),
+            encode::and_immediate(SCRATCH, SCRATCH, (PAGE_SIZE - 1) & !(u64::from(bytes) - 1))
+                .expect("the page offset's bits above the access's are contiguous"),
+            encode::compare_branch(false, SCRATCH, 0).expect("fits"),
+        ],
+        _ => vec![
+            page_offset(address),
+            encode::and_immediate(SCRATCH, SCRATCH, PAGE_SIZE - 1).expect("a page mask"),
+            encode::add_immediate(SCRATCH, SCRATCH, last).expect("an access is short"),
+            encode::test_branch_nonzero(SCRATCH, PAGE_SIZE.trailing_zeros(), 0).expect("fits"),
+        ],
+    }
+}
+
+/// The base register of an access with one.
+fn base_of(address: &Address) -> Option<Reg> {
+    match *address {
+        Address::Offset { base, .. }
+        | Address::PreIndex { base, .. }
+        | Address::PostIndex { base, .. }
+        | Address::Indexed { base, .. } => Some(base),
+        Address::Literal { .. } => None,
+    }
+}
+
 /// The slow path a page test in front of an access of `bytes` is.
 fn page_test(bytes: u32) -> NativeReason {
     if bytes > u32::from(Q_BYTES) {
@@ -492,13 +533,7 @@ fn page_test(bytes: u32) -> NativeReason {
 /// (`align` bytes), the page test and probes when it may cross a page, then `prefix` and the copied instruction
 /// `word`, the commit point.
 fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], word: u32) {
-    let base = match m.address {
-        Address::Offset { base, .. }
-        | Address::PreIndex { base, .. }
-        | Address::PostIndex { base, .. }
-        | Address::Indexed { base, .. } => base,
-        Address::Literal { .. } => unreachable!("a literal access is rebased"),
-    };
+    let base = base_of(&m.address).expect("a literal access is rebased");
     // The stack pointer's alignment is the hardware's to check (SA0).
     if let Some(align) = align.filter(|&a| a > 1 && base != Reg::Sp) {
         out.put(
@@ -512,13 +547,8 @@ fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], w
     }
     if align.is_none() && m.bytes > 1 {
         out.code.slow(page_test(m.bytes));
-        let page_bits = PAGE_SIZE.trailing_zeros();
-        out.put(page_offset(&m.address));
-        out.put(encode::and_immediate(SCRATCH, SCRATCH, PAGE_SIZE - 1).expect("a page mask"));
-        out.put(
-            encode::add_immediate(SCRATCH, SCRATCH, i64::from(m.bytes) - 1)
-                .expect("an access is short"),
-        );
+        let test = page_test_words(&m.address, m.bytes);
+        out.put_all(&test[..test.len() - 1]);
         let mut probes = Vec::new();
         // The probes go through t, so the check SA0 makes of a stack pointer base comes before them.
         if base == Reg::Sp {
@@ -545,13 +575,10 @@ fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], w
             );
         }
         let resume_at = out.code.offset() + INSTRUCTION as usize;
-        out.tail(
-            encode::test_branch_nonzero(SCRATCH, page_bits, 0).expect("fits"),
-            |t| {
-                t.words = probes;
-                t.back = Some(resume_at);
-            },
-        );
+        out.tail(*test.last().expect("a test ends in its branch"), |t| {
+            t.words = probes;
+            t.back = Some(resume_at);
+        });
     }
     out.put_all(prefix);
     let next = out.next();

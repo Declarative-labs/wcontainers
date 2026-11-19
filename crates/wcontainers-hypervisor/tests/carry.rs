@@ -49,6 +49,7 @@ fn fault(word: u32) -> Option<String> {
     }
     let mut adds = 0;
     let mut page_tests = 0;
+    let mut previous = 0;
     for (k, chunk) in piece.bytes.chunks(unit).enumerate() {
         let host = u32::from_le_bytes(chunk.try_into().expect("a word"));
         let offset = (k * unit) as u32;
@@ -92,6 +93,24 @@ fn fault(word: u32) -> Option<String> {
         {
             page_tests += 1;
         }
+        // The three-word page test: a `cbz` of t after t's page-offset bits above the access's are kept.
+        if let I::CompareBranch {
+            nonzero: false,
+            rt: Reg::X(SCRATCH),
+            ..
+        } = h
+            && let Some(m) = i.memory_access()
+            && Some(previous)
+                == encode::and_immediate(
+                    SCRATCH,
+                    SCRATCH,
+                    (PAGE_SIZE - 1) & !(u64::from(m.bytes) - 1),
+                )
+                .ok()
+        {
+            page_tests += 1;
+        }
+        previous = host;
         if let I::Breakpoint { comment } = h {
             let call = InsideCall::from_code(comment).expect("our own calls only");
             let side = match call {

@@ -348,8 +348,13 @@ tr/code.rs:124-127), under "withheld register named by the guest" (section 3.7).
   fewer (`str` and `stp` of w, x, d and q, `ldr`, `ldp x`, `st1` of one register or two 8-byte ones) changed
   nothing, and nothing was written when the first page refused. So on ARM64 every form that moves more than
   16 bytes (`ldp`, `ldnp`, `stp`, `stnp` of q registers; `ld1` to `ld4` and `st1` to `st4` of more than 16
-  bytes) takes `access`'s page test: `add t, xN, #offset` (left out when the offset is 0), `and t, t,
-  #(PAGE_SIZE - 1)`, `add t, t, #(size - 1)`, `tbnz t, #log2(PAGE_SIZE), cross`, no flags touched. An
+  bytes) takes `access`'s page test, no flags touched. With an immediate offset (or none) and a size that
+  is a power of two it is three words (N4 run 4): `add t, xN, #((offset + size - 1) mod PAGE_SIZE)`,
+  `and t, t, #((PAGE_SIZE - 1) & !(size - 1))`, `cbz t, cross`: the access crosses when its last byte's
+  page offset is below size - 1, and the branch is taken when it is below size, so a first byte at a
+  page's start is probed too, which is harmless. Otherwise it is four: t = the first byte's page offset
+  (`add t, xN, #offset`, or the register form's `add`), `and t, t, #(PAGE_SIZE - 1)`, `add t, t,
+  #(size - 1)`, `tbnz t, #log2(PAGE_SIZE), cross`. An
   access within one page is copied as it is (one page refuses all of it or none). On `cross` a probe of
   each of the two pages comes first (a load: `ldrb wzr` at the access's first and last byte; a store:
   `staddb wzr` there, which needs write permission and changes nothing, measured in experiments/n0r3/
