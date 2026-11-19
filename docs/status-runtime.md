@@ -136,7 +136,7 @@ The outside tests' assertion (J5 run 4): task.rs:206 `debug_assert!(self.threads
 fails for a stream `read` whose second `outside::pull` (inet.rs:3739, after `receive_stream` parked the reader)
 wakes the reader it just parked; the outcome is right (the woken call runs again). On the ARM machine with the
 back end at full, `outside::outside_connections_read_reset_after_a_restore` failed 6 times in 9 runs (the whole run, five alone, three with the diagnostic) and
-`clients_talk_to_a_server_outside_as_linux` 4 of 9 for it (section "J5 run 4"). The assertion could allow a
+`clients_talk_to_a_server_outside_as_linux` 7 of 14 (five more runs, job 20261119-161107-612749) for it (section "J5 run 4"). The assertion could allow a
 parked call already woken, or the second pull could come before the park.
 
 Device numbers (J5 run 1): the local system's file backend shows a device node of a host directory with no
@@ -265,7 +265,8 @@ j5run3/f-*.txt, `j5run3/compare.sh` diffs them.
   the second pull's `data_ready` wakes the reader it just parked, so the call returns `Parked` with its wait
   already cleared. The woken call runs again, as any woken call does, so the outcome is right; only the
   kernel's `debug_assert` at task.rs:206 does not allow it. It shows on Linux, where the host's loopback
-  answers within the call, and with the back end, which reaches the read sooner than the stand-in. This is
+  answers within the call; it was seen only with the back end (the stand-in passed in its one whole run
+  there, and was not run more). This is
   the kernel's code (asked of the kernel track, below); the two tests are listed as failing there for it.
   The machine went away during the run at none; none and bounded there are lost.
 
