@@ -327,6 +327,14 @@ tr/code.rs:124-127), under "withheld register named by the guest" (section 3.7).
   x26 to x28 are named by 13.7 to 22.4 per 1000, and the Go program names x27 by 58 per 1000
   (experiments/regs.out). N4 counts dynamic uses on the translator's benchmark programs and real programs
   and picks the cheapest three. Re-emitting a use follows the stand-in rule above.
+  As chosen (N4 run 5): x18 (the count), x23 (t) and x28 (the register page). The dynamic count
+  (crates/wcontainers-hypervisor/tests/registers.rs: the speed test's nine programs at bench.c's small size
+  under unicorn-engine, the share of executed instructions naming each register, averaged over the programs)
+  puts x18 at 0 (the programs are built with x18 reserved, as macOS requires of the plain side), x2 0.16%,
+  x23 0.20%, x28 0.69%, x26 2.3%, x27 1.5%, x15 2.6%, x14 13.1%; the low temporaries the static count favours
+  are the benchmark loops' working registers. No tool counts real programs' executed instructions yet, so
+  their static count stands in for it: the sum of the two shares (per 1000) is lowest for x18 (1.3), x28
+  (20.6) and x23 (27.0), then x15 (29.2) and x24 (30.3); x26, x27 and x28 summed 97.6, the chosen three 48.9.
 
 ### 3.4 How each instruction is carried over
 
@@ -354,7 +362,10 @@ tr/code.rs:124-127), under "withheld register named by the guest" (section 3.7).
   page offset is below size - 1, and the branch is taken when it is below size, so a first byte at a
   page's start is probed too, which is harmless. Otherwise it is four: t = the first byte's page offset
   (`add t, xN, #offset`, or the register form's `add`), `and t, t, #(PAGE_SIZE - 1)`, `add t, t,
-  #(size - 1)`, `tbnz t, #log2(PAGE_SIZE), cross`. An
+  #(size - 1)`, `tbnz t, #log2(PAGE_SIZE), cross`. An access through the stack pointer (immediate offset,
+  pre-index or post-index) whose bytes stay in one aligned run of the stack's alignment (16 bytes, the
+  offset taken modulo 16) takes no test at all: the hardware checks SA0 before any byte is touched, so the
+  base is a multiple of 16 and such an access cannot cross a page (N4 run 5). An
   access within one page is copied as it is (one page refuses all of it or none). On `cross` a probe of
   each of the two pages comes first (a load: `ldrb wzr` at the access's first and last byte; a store:
   `staddb wzr` there, which needs write permission and changes nothing, measured in experiments/n0r3/

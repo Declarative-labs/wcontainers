@@ -45,7 +45,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   system-call part of the bar and cut that path from 10,000 to 6,000 instructions a call: both parts of the bar still fail
   (below, "N4 run 3"); run 4 found where a system call's time went (timer probes) and gave the inside Arm's memcpy: the
   system-call part now passes (78.0 ns [71.9 .. 82.7] against 100), and a three-word page test brought the compute part
-  to +59.27% [+57.84 .. +60.45], which still fails against +21.2% (below, "N4 run 4"). T1's look-aheads come next.
+  to +59.27% [+57.84 .. +60.45], which still fails against +21.2% (below, "N4 run 4"); run 5 built the untranslated run,
+  left out the page test for aligned stack accesses, counted dynamic register uses and withheld x18, x23 and x28 (sort
+  -2.2% cycles): the compute part still fails, and the system-call part was undecided at a higher load (below, "N4 run
+  5"). T1's look-aheads come next.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -72,6 +75,61 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 5 (2026-11-19): the untranslated run, the stack's page test, the withheld registers chosen
+
+Start: origin/main and origin/phase-1-literals had nothing new; T1 is still on no branch (origin/phase-1-translator
+4e67cd6d). The session that began this run was cut off after three commits (b278cb82, c19defbe, 6b01c804) and a speed run
+it had started; this section records them too.
+
+Built:
+- The untranslated run (c19defbe): beside every pair of the speed test, each workload also runs in the test program
+  `native-untranslated` (crates/wcontainers-inside/src/bin), which maps the program's segments at their own addresses with
+  2 MiB blocks wherever a whole block of a segment is aligned (`Table::map_range`), its code runnable at the guest's level,
+  and answers write and exit; its cycles and instructions against the plain run are printed beside the native ones, never
+  part of the bar.
+- No page test in front of a stack pointer access that stays in one aligned run of 16 bytes (6b01c804; plan 3.4): the
+  hardware checks SA0 first, so such an access cannot cross a page.
+- The dynamic register count (07d0441e, tests/registers.rs): the speed test's nine programs at bench.c's small size (SCALE 0;
+  calls.c 10^6 calls) under unicorn-engine (GPL-2.0, a dev-dependency of the monitor only, as in wcontainers-kernel-test), the
+  share of executed instructions naming each general register. Mean over the nine, fewest first: x18 0 (the programs are
+  built with x18 reserved), x2 0.16%, x23 0.20%, x28 0.69%, x22 0.95%, x24 0.96%, x21 1.24%, x25 1.24%, x27 1.48%, x26 2.32%,
+  x15 2.63%, x14 13.1% (registers1.log in scratch native/n4r6).
+- The withheld registers are x18 (count), x23 (t) and x28 (register page) (d30f60b5), chosen by the sum of that dynamic
+  share and the static count over eight real Linux files (plan 3.3: x18 1.3, x28 20.6, x23 27.0 per 1000, then x15 29.2;
+  x26 to x28 summed 97.6, the chosen three 48.9). The interrupt test's stand-in cases are now built from the constants.
+- The differential test translates its exclusive pairs at `WCONTAINERS_NATIVE_BOUND`'s look-ahead (default 256), so both
+  words are one piece from 2 on; single-word cases are the same at every look-ahead.
+
+Measured (M5 Max, all on the Mac):
+- The speed test with the stack's page test left out, before the register change (n4r5/speed1.log, 13:07 to 13:30, load 47
+  to 79, 15 pairs, look-ahead 256, bootstrap seed 1 with 2000 resamples; share on performance cores 12 to 46%): compute part
+  +57.21%, 95% interval [+56.36 .. +58.13], FAILS against +21.2% (run 4: +59.27%). Native against plain, cycles: fib +67.4,
+  sieve +40.4, hash +3.7, sort +90.6, interpret +116.1, matrix +90.6, walk +19.8, search +62.7; calls +55.1. Untranslated
+  against plain, cycles: fib -4.3, sieve +22.3, hash -3.1, sort -4.1, interpret -6.3, matrix -13.6, walk +18.6, search -10.1,
+  calls -20.0 (instructions -6 to -32%: the plain run's process also maps, protects and handles breakpoints). The system-call
+  part was UNDECIDED at 60 pairs: back end 94.0 ns, 95% interval [88.4 .. 123.6] against 100 (run 4 at load 31 to 33: 78.0
+  [71.9 .. 82.7]).
+- The contiguous bit against 4 KiB entries, untranslated (n4r5/contig.log, 8 pairs each, load 80, a build of the session
+  that was cut off, not in the repository): medians walk 11.85 against 12.08 G cycles (-1.9%), sieve 2.038 against 2.084
+  (-2.2%). Not built: guest memory still has 4 KiB entries only (below).
+- The register change, as alternating pairs of the two builds' native runs (n4r6/ab-regs.log, 10 pairs each, load 87 to
+  122): cycles new over old sort 0.978 [0.970 .. 0.984] (instructions 0.903), search 1.004, fib 1.005, interpret 1.000, hash
+  1.001.
+- Tests after the change: native 32,191 cases, 0 failing (seed 0x6e34720601, n4r6/native16.log); interrupts 3522 forced
+  interrupts at 3 look-aheads, 0 failed; exits 4 programs both modes; floor 21 cases and 1 measurement; carry passes; kernel
+  alike at none and 256 with the reference, the benchmark set's count agreeing (blocks' KNOWN FAILURE on the WebAssembly
+  side only); arm64's tests pass; the literal check exits 0, no marks.
+
+Looked at and not done:
+- Leaving out the jump's ceiling test (`ubfx`, `cbnz`) needs every target bit below the tag to reach the slot's address so
+  that an out-of-range target faults by itself, and the fault's address to give the target back exactly. `ubfiz` carries
+  at most 62 bits, the slot's address then reaches bits 56 and up, where the top byte's handling of a branch target under
+  TBI decides what the fault reports; not measured, so not built (the two words are a predicted not-taken branch and a
+  bitfield move; the code area would also have to move into the user half above the ceiling).
+- Guest memory with 2 MiB entries: the floor has blocks and their splitting (N1), but the native CPU side gives each guest
+  page its own frame at its first touch (native.rs `back`). Untranslated, blocks already leave walk at +18.6% and sieve at
+  +22.3%, so they would move the bar by about a point; not built yet.
 
 ## N4 run 4 (2026-11-19): the system-call part passes; a shorter page test
 
@@ -1446,6 +1504,11 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
   `WCONTAINERS_SPEED_PROGRAMS` a comma-separated subset, which gives figures but no verdict on the compute part, `syscalls`
   naming the system-call part; `WCONTAINERS_NATIVE_BOUND` the look-ahead; about 20 minutes at 15 pairs; it fails while
   either part fails);
+- the dynamic register count (plan 3.3; no machine needed, but it builds the programs with zig):
+  `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test registers` (knobs `WCONTAINERS_REGISTERS_SCALE`, bench.c's
+  size, default 0, and `WCONTAINERS_REGISTERS_CALLS`, default 10^6; about 10 s);
+- the differential test's exclusive pairs are translated at `WCONTAINERS_NATIVE_BOUND`'s look-ahead (default 256; 1 for
+  none);
 - N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
   wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -1643,6 +1706,8 @@ release's LICENSE file read 2026-11-19), assembled by `cc` 1.11.2 (MIT OR Apache
 monitor's), a new build-dependency of the inside.
 N3 run 9: the inside depends on rangemap 1.8.0 (MIT/Apache-2.0, crates.io licence field read 2026-11-19; already in
 Cargo.lock as the kernel's), for what each range of a process allows and which ranges show a shared block.
+N4 run 5: the monitor has unicorn-engine 2.1.5 (GPL-2.0, crates.io licence field; already in Cargo.lock as
+wcontainers-kernel-test's) as a dev-dependency for the register count, test only, never shipped.
 
 ## Literals
 
