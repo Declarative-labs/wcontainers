@@ -57,7 +57,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     }
     let word = size_of::<u32>() as u32;
     let streamed = match (dxgi_format(value), dxgi_vertex_format(value)) {
-        (Some((format, false)), Some((_, size))) => size == word * format.components(),
+        (Some((format, false)), Some((_, size))) => size == word * format.components().count_ones(),
         _ => false,
     };
     if streamed && caps.has(Features::COMPUTE) {

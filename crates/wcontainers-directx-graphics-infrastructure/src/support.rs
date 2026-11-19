@@ -86,6 +86,10 @@ fn role(value: u32) -> Role {
 /// The sample counts above one Direct3D asks every format about.
 const SAMPLE_COUNTS: [u32; 4] = [2, 4, 8, 16];
 
+/// The formats whose sampling Direct3D's format support tables leave optional at every feature
+/// level: reported only where the back end filters them.
+const OPTIONAL_SAMPLE: [u32; 1] = [dxgi::R32G32B32_FLOAT];
+
 /// Whether a texture of `format` may have some sample count above one.
 fn multisampled(caps: &Caps, format: Format) -> bool {
     SAMPLE_COUNTS
@@ -142,9 +146,11 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     }
     let has = |u: FormatUse| uses.contains(u);
     let sample = has(FormatUse::SAMPLE);
-    // Formats the back end cannot filter are filtered in the program (`FilterInShader`); integer
-    // formats are not sampled.
-    let filter = sample && format.kind() == wcontainers_gpu::FormatKind::Float;
+    // Formats the back end cannot filter are filtered in the program (`FilterInShader`), but for
+    // those whose sampling Direct3D leaves optional; integer formats are not sampled.
+    let filter = sample
+        && format.kind() == wcontainers_gpu::FormatKind::Float
+        && (has(FormatUse::FILTER) || !OPTIONAL_SAMPLE.contains(&value));
     // A multisampled texture exists only as a target, so only formats that are targets load samples.
     let target = has(FormatUse::RENDER) || has(FormatUse::DEPTH_STENCIL);
     let multisample_load =
