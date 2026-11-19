@@ -116,6 +116,9 @@ pub struct ViewObj {
 pub struct SamplerObj {
     id: Id,
     raw: glow::Sampler,
+    /// Its twin whose minimum level of detail is 0, for units that gathers read, where its own
+    /// minimum is above 0.
+    level_zero: Option<(Id, glow::Sampler)>,
 }
 
 /// What one binding of a set holds.
@@ -315,6 +318,11 @@ pub type WebGl = Gl;
 #[cfg(feature = "record")]
 pub type WebGl = trace::Traced<Gl>;
 
+/// The start of the line the back end prints on standard error at each power of two frames
+/// presented: the frames, then every slow path taken as `name=count`, so any program's log gives
+/// what a frame costs between two reports.
+pub const FRAME_REPORT: &str = "webgl: frames=";
+
 /// The WebGL 2 back end. Made on the device thread, which owns the GL context.
 pub struct Gl {
     gl: glow::Context,
@@ -326,8 +334,11 @@ pub struct Gl {
     helpers: Helpers<Gl>,
     lost: Option<LossReason>,
     next_id: Id,
-    /// No EXT_clip_control: programs negate y and the front face is swapped.
-    flip_y: bool,
+    /// Frames presented, for [`FRAME_REPORT`].
+    presented: u64,
+    /// How shaders are written; without EXT_clip_control programs negate y and the front face is
+    /// swapped.
+    glsl: shader::GlslSettings,
     values: GlValues,
     applied: Applied,
     programs: HashMap<(Id, Id), GlProgram>,
@@ -412,6 +423,7 @@ impl Gl {
                 && platform.timestamp_bits(&gl) > 0,
         );
         let flip_y = !extensions.contains("EXT_clip_control");
+        let noperspective = extensions.contains(platform::NOPERSPECTIVE_INTERPOLATION);
         let clip_depth = if flip_y {
             glow::NEGATIVE_ONE_TO_ONE
         } else {
@@ -444,7 +456,11 @@ impl Gl {
             helpers: Helpers::default(),
             lost: None,
             next_id: 1,
-            flip_y,
+            presented: 0,
+            glsl: shader::GlslSettings {
+                flip_y,
+                noperspective,
+            },
             values: GlValues::initial(clip_depth),
             applied: Applied::new(),
             programs: HashMap::new(),
@@ -721,6 +737,18 @@ impl Gl {
         &self.renderer
     }
 
+    /// The line printed at each power of two frames presented ([`FRAME_REPORT`]).
+    pub fn frame_report(&self) -> String {
+        let mut line = format!("{FRAME_REPORT}{}", self.presented);
+        for path in SlowPath::ALL {
+            let count = self.slow.count(path);
+            if count > 0 {
+                line += &format!(" {path:?}={count}");
+            }
+        }
+        line
+    }
+
     /// The WebGL extensions the back end found and uses.
     pub fn extensions(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.extensions.iter().copied()
@@ -764,10 +792,10 @@ impl Gl {
     fn fail(&mut self, reason: LossReason) {
         if self.lost.is_none() {
             // The interface carries only the reason's kind; the host's error output gets the why.
-            eprintln!(
+            platform::report(&format!(
                 "wcontainers webgl: device lost ({reason:?}): {}",
                 self.last_log
-            );
+            ));
         }
         self.lost.get_or_insert(reason);
     }
@@ -1925,13 +1953,13 @@ impl Gl {
 
     /// Draws the back end's full-screen triangle with GL's lower-left window origin.
     fn own_draw(&mut self) {
-        if !self.flip_y {
+        if !self.glsl.flip_y {
             self.platform
                 .clip_control(&self.gl, glow::LOWER_LEFT, self.values.clip_depth);
         }
         // SAFETY: the caller bound the program, the target and the state.
         unsafe { self.gl.draw_arrays(glow::TRIANGLES, 0, 3) };
-        if !self.flip_y {
+        if !self.glsl.flip_y {
             self.platform
                 .clip_control(&self.gl, glow::UPPER_LEFT, self.values.clip_depth);
         }
@@ -2662,7 +2690,7 @@ impl Gl {
         }
         // Textures read only by loads get the nearest sampler: GLES leaves integer and depth textures
         // incomplete under the texture's own default filters, and loads ignore filters.
-        let point = if linked.units.iter().any(|(_, s)| s.is_none()) {
+        let point = if linked.units.iter().any(|(_, s, _)| s.is_none()) {
             match self.point_sampler() {
                 Ok(s) => Some(s),
                 Err(_) => return Err(Unbindable::NoSampler),
@@ -2670,7 +2698,7 @@ impl Gl {
         } else {
             None
         };
-        for (unit, (texture, sampler)) in linked.units.iter().enumerate() {
+        for (unit, (texture, sampler, level_zero)) in linked.units.iter().enumerate() {
             let Some(Bound::Texture(v)) = find(*texture) else {
                 return Err(Unbindable::Missing(*texture));
             };
@@ -2682,7 +2710,12 @@ impl Gl {
                     _ => return Err(Unbindable::Missing(*slot)),
                 },
             };
-            let ids = (v.id, sampler.map_or(POINT_SAMPLER, |s| s.id));
+            // Gathers read level 0 whatever the sampler's minimum level of detail.
+            let sampler = sampler.map(|s| match s.level_zero {
+                Some(twin) if *level_zero => twin,
+                _ => (s.id, s.raw),
+            });
+            let ids = (v.id, sampler.map_or(POINT_SAMPLER, |s| s.0));
             let t = &v.texture;
             let Some(raw) = t.tex() else {
                 return Err(Unbindable::Multisampled(*texture));
@@ -2725,13 +2758,13 @@ impl Gl {
             }
             if self.applied.units[unit].1 != ids.1 {
                 // SAFETY: a plain GL call; the sampler is alive.
-                unsafe { gl.bind_sampler(unit as u32, sampler.map(|s| s.raw).or(point)) };
+                unsafe { gl.bind_sampler(unit as u32, sampler.map(|s| s.1).or(point)) };
             }
             self.applied.units[unit] = ids;
         }
         // The stencil mode and the mip range are the texture's: one draw cannot fetch both aspects of
         // one texture, or read it through two mip ranges.
-        for (texture, _) in &linked.units {
+        for (texture, _, _) in &linked.units {
             if let Some(Bound::Texture(v)) = find(*texture) {
                 if v.texture.desc.format.is_depth_stencil()
                     && v.texture.stencil_mode.get() != v.desc.stencil
@@ -3528,7 +3561,7 @@ impl Backend for Gl {
         };
         let gl = &self.gl;
         // SAFETY: plain GL calls on the current context.
-        let raw = unsafe {
+        let make = |min_lod: f32| unsafe {
             let raw = gl.create_sampler().map_err(|_| GpuError::OutOfMemory)?;
             gl.sampler_parameter_i32(raw, glow::TEXTURE_MIN_FILTER, min as i32);
             gl.sampler_parameter_i32(raw, glow::TEXTURE_MAG_FILTER, mag as i32);
@@ -3542,7 +3575,7 @@ impl Backend for Gl {
             {
                 gl.sampler_parameter_i32(raw, name, mode as i32);
             }
-            gl.sampler_parameter_f32(raw, glow::TEXTURE_MIN_LOD, f(desc.lod_range[0]));
+            gl.sampler_parameter_f32(raw, glow::TEXTURE_MIN_LOD, min_lod);
             gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_LOD, f(desc.lod_range[1]));
             if let Some(c) = desc.compare {
                 gl.sampler_parameter_i32(
@@ -3557,9 +3590,19 @@ impl Backend for Gl {
                 let a = f32::from(desc.anisotropy);
                 gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_ANISOTROPY_EXT, a);
             }
-            raw
+            Ok(raw)
         };
-        Ok(Handle(Rc::new(SamplerObj { id: self.id(), raw })))
+        let raw = make(f(desc.lod_range[0]))?;
+        let twin = match f(desc.lod_range[0]) > 0.0 {
+            true => Some(make(0.0)?),
+            false => None,
+        };
+        let level_zero = twin.map(|t| (self.id(), t));
+        Ok(Handle(Rc::new(SamplerObj {
+            id: self.id(),
+            raw,
+            level_zero,
+        })))
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {
@@ -3578,7 +3621,7 @@ impl Backend for Gl {
             ));
         }
         let id = self.id();
-        let shader = shader::compile(&self.gl, id, module, self.flip_y)?;
+        let shader = shader::compile(&self.gl, id, module, self.glsl)?;
         Ok(Handle(Rc::new(shader)))
     }
 
@@ -3695,7 +3738,7 @@ impl Backend for Gl {
             (f(desc.line_width) != 1.0, Features::WIDE_LINES),
             (desc.sample_mask != u32::MAX, Features::SAMPLE_MASK),
             (
-                !desc.depth_minus_one && self.flip_y,
+                !desc.depth_minus_one && self.glsl.flip_y,
                 Features::CLIP_DEPTH_ZERO_ONE,
             ),
         ];
@@ -3704,7 +3747,7 @@ impl Backend for Gl {
         }
         Ok(Handle(Rc::new((
             self.id(),
-            state::GlRaster::new(desc, self.flip_y),
+            state::GlRaster::new(desc, self.glsl.flip_y),
         ))))
     }
 
@@ -3878,7 +3921,12 @@ impl Backend for Gl {
                         Storage::Samples(rb) => gl.delete_renderbuffer(rb),
                     }
                 }
-                Object::Sampler(s) => gl.delete_sampler(s.raw),
+                Object::Sampler(s) => {
+                    gl.delete_sampler(s.raw);
+                    if let Some((_, twin)) = s.level_zero {
+                        gl.delete_sampler(twin);
+                    }
+                }
                 Object::Shader(s) => gl.delete_shader(s.raw),
                 Object::Program(p) => {
                     p.handles.set(p.handles.get() - 1);
@@ -5193,6 +5241,10 @@ impl Backend for Gl {
             self.last_log = format!("webgl: presenting: {e}");
             self.fail(LossReason::Removed);
             return Err(GpuError::DeviceLost);
+        }
+        self.presented += 1;
+        if self.presented.is_power_of_two() {
+            platform::report(&self.frame_report());
         }
         Ok(())
     }

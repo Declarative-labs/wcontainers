@@ -23,7 +23,7 @@ khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3.84"
 wasm-bindgen = "0.2.130"
-web-sys = { version = "0.3.107", features = ["WebGl2RenderingContext"] }
+web-sys = { version = "0.3.107", features = ["WebGl2RenderingContext", "console"] }
 
 [features]
 # Call streams of the interface (src/trace.rs): saved with their shaders, and replayed on any back end.
