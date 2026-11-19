@@ -1914,6 +1914,10 @@ through the queue, whose hazard group held each job for 10 to 30 minutes), logs 
   suite job's build): clean.
 - Not rerun this run: Chrome's compile of the other corpora (unchanged verdicts) and the
   WebAssembly comparison.
+- Clean-up at the end: deleted the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  and the copied Godot shaders there, the desktop's `C:\wc\target\phase-2-graphics-shaders`,
+  `C:\wc\shaders-dump36` and this branch's `programs` and `chrome` output folders under
+  `C:\wc\out`; no build output was made in scratch (logs, dumps and records kept there).
 - The rig: two jobs of one branch sent at once clobber each other's tree (the second sends its
   tree, the first then fails with 125, "holds tree ..., not the sent ..."); send them one after the
   other.
