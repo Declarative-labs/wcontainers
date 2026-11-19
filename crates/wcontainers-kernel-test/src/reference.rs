@@ -15,6 +15,46 @@ pub const HOSTNAME: &str = "wc-kernel";
 /// What `docker run -t` adds to the environment.
 pub const TERMINAL_VARIABLE: &str = "TERM=xterm";
 
+/// Where the reference and our kernel mount a test's own files.
+pub const GUEST_DIRECTORY: &str = "/wc";
+
+/// Where the image keeps its commands (on its PATH).
+pub const IMAGE_BINARIES: &str = "/bin";
+
+/// The platform the reference runs on.
+pub const PLATFORM: &str = "linux/arm64";
+
+/// Turns off the Docker client's hints, which it adds to a terminal after a failed run.
+const NO_HINTS: (&str, &str) = ("DOCKER_CLI_HINTS", "false");
+
+/// A path under [`GUEST_DIRECTORY`].
+pub fn in_guest_directory(name: impl AsRef<Path>) -> String {
+    Path::new(GUEST_DIRECTORY)
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `--volume`'s value mounting `directory` read-only at [`GUEST_DIRECTORY`].
+fn guest_volume(directory: &Path) -> String {
+    format!("{}:{GUEST_DIRECTORY}:ro", directory.display())
+}
+
+/// Checks Docker ran the container: its own failures are the statuses a shell gives a command it
+/// could not run.
+fn assert_docker_ran(exit_code: i32, stderr: &[u8]) {
+    assert!(
+        !(125..=127).contains(&exit_code),
+        "docker could not run the container (exit {exit_code}): {}",
+        String::from_utf8_lossy(stderr)
+    );
+}
+
+/// Stops and removes a container by name, whatever state it is in.
+fn remove_container(name: &str) {
+    let _ = Command::new("docker").args(["rm", "-f", name]).output();
+}
+
 /// The environment a default Docker container gives its first process.
 pub const ENVIRONMENT: &[&str] = &[
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -73,13 +113,13 @@ fn run_beside(
         .expect("program directory exists");
     let file = program.file_name().expect("program has a name");
     let output = Command::new("docker")
-        .args(["run", "--rm", "--platform", "linux/arm64", "--name", &name])
+        .args(["run", "--rm", "--platform", PLATFORM, "--name", &name])
         .args(["--hostname", HOSTNAME])
         .args(options)
         .arg("--volume")
-        .arg(format!("{}:/wc:ro", directory.display()))
+        .arg(guest_volume(&directory))
         .arg(IMAGE)
-        .arg(Path::new("/wc").join(file))
+        .arg(in_guest_directory(file))
         .args(arguments)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -89,11 +129,7 @@ fn run_beside(
     beside();
     let output = output.wait_with_output().expect("docker ran");
     let exit_code = output.status.code().expect("docker exited normally");
-    assert!(
-        !(125..=127).contains(&exit_code),
-        "docker could not run the program (exit {exit_code}): {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_docker_ran(exit_code, &output.stderr);
     Outcome {
         stdout: output.stdout,
         stderr: output.stderr,
@@ -112,7 +148,7 @@ pub fn run_command(command: &[&str]) -> (Outcome, Vec<crate::image::File>) {
         RUNS.fetch_add(1, Ordering::Relaxed)
     );
     let output = Command::new("docker")
-        .args(["run", "--platform", "linux/arm64", "--name", &name])
+        .args(["run", "--platform", PLATFORM, "--name", &name])
         .args(["--hostname", HOSTNAME])
         .arg(IMAGE)
         .args(command)
@@ -122,13 +158,9 @@ pub fn run_command(command: &[&str]) -> (Outcome, Vec<crate::image::File>) {
         .args(["export", &name])
         .output()
         .expect("running docker export");
-    let _ = Command::new("docker").args(["rm", "-f", &name]).output();
+    remove_container(&name);
     let exit_code = output.status.code().expect("docker exited normally");
-    assert!(
-        !(125..=127).contains(&exit_code),
-        "docker could not run the command (exit {exit_code}): {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_docker_ran(exit_code, &output.stderr);
     assert!(
         exported.status.success(),
         "{}",
@@ -184,10 +216,11 @@ pub fn run_outside(
     let directory = directory.canonicalize().expect("program directory exists");
     let mut docker = Command::new("docker");
     docker
-        .args(["run", "--rm", "--platform", "linux/arm64", "--name", &name])
+        .env(NO_HINTS.0, NO_HINTS.1)
+        .args(["run", "--rm", "--platform", PLATFORM, "--name", &name])
         .args(["--hostname", HOSTNAME])
         .arg("--volume")
-        .arg(format!("{}:/wc:ro", directory.display()));
+        .arg(guest_volume(&directory));
     if outside.input {
         docker.arg("-i");
     }
@@ -315,12 +348,15 @@ pub fn run_outside(
                     if seen {
                         break;
                     }
-                    assert!(
-                        started.elapsed() < EXPECT_PATIENCE,
-                        "the reference never showed {:?}; shown {:?}",
-                        String::from_utf8_lossy(bytes),
-                        shown.lock().expect("shown")
-                    );
+                    if started.elapsed() >= EXPECT_PATIENCE {
+                        remove_container(&name);
+                        let _ = child.kill();
+                        panic!(
+                            "the reference never showed {:?}; shown {:?}",
+                            String::from_utf8_lossy(bytes),
+                            shown.lock().expect("shown")
+                        );
+                    }
                     std::thread::sleep(EXPECT_LOOK);
                 }
             }
@@ -365,11 +401,7 @@ pub fn run_outside(
     }
     let exit_code = status.code().expect("docker exited normally");
     let (stdout, stderr) = std::mem::take(&mut *shown.lock().expect("shown"));
-    assert!(
-        !(125..=127).contains(&exit_code),
-        "docker could not run the program (exit {exit_code}): {}",
-        String::from_utf8_lossy(&stderr)
-    );
+    assert_docker_ran(exit_code, &stderr);
     Outcome {
         stdout,
         stderr,

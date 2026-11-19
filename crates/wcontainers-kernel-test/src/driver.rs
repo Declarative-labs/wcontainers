@@ -54,6 +54,10 @@ pub struct Run {
     pub turns: u64,
     /// The most input credit the kernel had given and not seen used.
     pub most_input_credit: u64,
+    /// Input bytes the outside sent within the credit it held, and how many of its sends went past
+    /// that credit (only when it breaks the rule on purpose).
+    pub sent_within_credit: u64,
+    pub sends_past_credit: u64,
     /// What the kernel did against the credit rules on its ends.
     pub broken: Vec<String>,
     /// Whether the kernel closed every output end once the container ended.
@@ -98,7 +102,7 @@ impl TestHost {
             warnings: Vec::new(),
             virtual_now: None,
             wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
             backend: None,
             network: Default::default(),
         }
@@ -153,7 +157,7 @@ impl TestHost {
             warnings: self.warnings.clone(),
             virtual_now: self.virtual_now.map(|_| 0),
             wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
             // The backend and the answers it owes go on with the copy.
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
@@ -439,7 +443,7 @@ pub fn run_prepared(
         echo,
         outside,
     } = prepared;
-    let mut at = moments_apart(seed ^ 0x5a7e, injections.saves, injections.save_gap);
+    let mut at = moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
     let mut signal_at = moments(seed ^ 0x5197, signals);
     // Notices come close together, so that a short program meets many of them.
@@ -572,7 +576,7 @@ pub fn run_prepared(
                         }
                     }
                     cpu = cpu.restored();
-                    host = host.moved(seed ^ ((saved as u64) << 32), injections.wall_step);
+                    host = host.moved(seed ^ ((saved as u64) << u32::BITS), injections.wall_step);
                     kernel.restore(&mut cpu, &mut host);
                 }
             }
@@ -638,12 +642,19 @@ pub fn run_prepared(
         saved,
         turns,
         most_input_credit: host.streams.most_input_credit,
+        sent_within_credit: host.streams.sent_within_credit,
+        sends_past_credit: host.streams.sends_past_credit,
         broken: host.streams.broken,
         outputs_closed,
         input_closed,
     };
     Ok(finish(run, report))
 }
+
+/// Mixed into a run's seed for the schedule's choices and the moments of saves, so that each
+/// draws apart from the host's own randomness.
+const SCHEDULE_SALT: u64 = 0x5eed;
+const SAVES_SALT: u64 = 0x5a7e;
 
 /// The longest the driver waits for the outside when nothing else can happen.
 const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
@@ -862,6 +873,8 @@ fn encode(run: &Run) -> Vec<u8> {
     number(&mut out, run.saved as u64);
     number(&mut out, run.turns);
     number(&mut out, run.most_input_credit);
+    number(&mut out, run.sent_within_credit);
+    number(&mut out, run.sends_past_credit);
     number(&mut out, run.outputs_closed.into());
     number(&mut out, run.input_closed.into());
     number(&mut out, run.broken.len() as u64);
@@ -919,6 +932,8 @@ fn decode(input: &[u8]) -> Run {
     let saved = reader.number() as usize;
     let turns = reader.number();
     let most_input_credit = reader.number();
+    let sent_within_credit = reader.number();
+    let sends_past_credit = reader.number();
     let outputs_closed = reader.number() != 0;
     let input_closed = reader.number() != 0;
     let broken = (0..reader.number()).map(|_| reader.text()).collect();
@@ -960,6 +975,8 @@ fn decode(input: &[u8]) -> Run {
         saved,
         turns,
         most_input_credit,
+        sent_within_credit,
+        sends_past_credit,
         broken,
         outputs_closed,
         input_closed,
