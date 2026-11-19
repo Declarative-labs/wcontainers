@@ -63,7 +63,14 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   at the repository root (dae93301), the plan corrected (c16d0e00). The stale LTP run of run 2 (on 798f07ff,
   664 of 2,694 stand-in tests done) was stopped, since the merge changed the kernel under it. J5's bar is run
   again from a clean build at c16d0e00 (section "J5 run 3").
-- J5 stands at: see section "J5 run 3" for the bar's state. The literal check still waits for the
+- J5 stands at: everything is built and pushed (ca519a78 is the code; later commits are this file); the owned
+  suite passes; the bar on the merged code has not run to its end, because Docker Desktop stopped twice under
+  it and had not come back at 04:51 (section "J5 run 3"). Scratch `j5run3/all.sh` is left running: it waits
+  for Docker, then runs the whole kernel test crate at the stand-in, full, none and bounded on the scratch
+  tree j5run3/tree (ca519a78), then the whole LTP comparison, and stops (writing j5run3/spoiled.flag) if
+  Docker goes away again. Next: read j5run3/f-*.txt with `j5run3/compare.sh`, set every difference beside
+  run 2's list (section "J5 run 2"), then j5run3/ltp/whole-compare.txt; re-run with `all.sh` if
+  spoiled.flag exists (delete it, and set the spoiled logs aside first). The literal check still waits for the
   orchestrator's answer (under "For the orchestrator"); a scratch trial merge passes after `init`.
 
 ## For the orchestrator
@@ -91,8 +98,12 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   `+` lines (76 code, 56 restated, 3 redefinition, 2 role) and 134 `-` lines; `init` proposed nothing; after
   it `check` exits 0. Its baseline then has 342 lines in wcontainers-runtime, 93 in wcontainers-wasmtime and
   49 in the kernel test crate's driver.rs.
+- J5 run 3: Docker Desktop stopped twice under J5's bar ("Docker Desktop is unable to start", at 02:04 and at
+  02:51 on 2026-11-19; it answered again at 02:39 the first time, and not by 04:51 the second). This track did
+  not restart it, since it is shared. If it is to be restarted, that is the orchestrator's or the owner's
+  call; scratch `j5run3/all.sh` (left running, pid in `ps`) starts the bar by itself once it answers.
 - J5 run 3: run 2's LTP run was stopped (its code is no longer this branch's); the whole LTP comparison is
-  started again by scratch `j5run3/all.sh` after the whole-crate bar, on j5run3/tree at c16d0e00 (results
+  started again by scratch `j5run3/all.sh` after the whole-crate bar, on j5run3/tree at ca519a78 (results
   j5run3/ltp/whole-*.tsv, whole-compare.txt; j5run3/after.done marks its end). If it is stopped,
   `j5run3/ltp.sh whole` continues where its results files left off. Delete the worktree j5run3/tree after
   (`git worktree remove --force`; its target is about 54 GB).
@@ -1437,6 +1448,10 @@ J3 run 1 deleted its 15 GB of old identities' files, and target/debug/incrementa
 edits made while it runs uses a scratch `git worktree` (J3: j3/tree, its own target, deleted at the end of the
 run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` and `j1run2/`, J2's in
 `j2/` to `j2run5/`, J3's in `j3/`.
+- J5 run 3's bar, one command: scratch `j5run3/all.sh` (waits for Docker; `final.sh`, then `ltp.sh whole`;
+  `guard.sh` after each run stops it and writes `spoiled.flag` when Docker went away; logs and verdicts
+  j5run3/f-*.log and f-*.txt, `compare.sh` for the differences; the tree is j5run3/tree, moved with `git -C
+  j5run3/tree checkout --detach <commit>`).
 - J5's bar, all four runs in one command on a scratch worktree (`git worktree add --detach j5/tree <commit>`):
   scratch `j5/final.sh` (stand-in, then full, none and bounded; logs j5/f-*.log, verdicts j5/f-*.txt as
   `binary::test verdict`, made by j5/verdicts.py; `j5/compare.sh` diffs each look-ahead's list against the
