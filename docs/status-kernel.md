@@ -6,8 +6,9 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 K6c, seventh run: origin/phase-1 and origin/phase-1-literals are merged and the literals check
 is adopted (it passes; the baseline only shrank after its start); huge page memory files with
-none reserved and /sys/kernel/mm/transparent_hugepage (set to never) are built. A whole LTP
-comparison at the merge (708289f3) was started and runs on. K6c is not complete. See "K6c,
+none reserved and /sys/kernel/mm/transparent_hugepage (set to never) are built (memfd_create04,
+thp02, thp03, sys_thp01 now match); fork09 gives a verdict; the whole suite passed (254, 0
+failed). A whole LTP comparison and the slow tests run on detached. K6c is not complete. See "K6c,
 seventh run".
 
 K6c, sixth run: fork09's hang was the test host (fixed: it reads the backend's answers while a
@@ -112,6 +113,26 @@ Built, each tested against the reference:
   sysfs `transparent_huge_pages_match_reference` (the copied settings by value; the ones that
   say what a machine does by mode). For thp02, thp03, sys_thp01 (they look for the tree; the
   reference passes them). See Departures.
+
+LTP reruns at fcbc6807 (scratch k6c7/x.tsv, ltp-x, 2 jobs, LTP_LIMIT 900, 21:57 to 22:12, load
+about 110), each now the reference's verdict: memfd_create04, thp02, thp03, sys_thp01 (pass).
+thp01 ran out 900 s one step before its end (its binary search of execve sizes, 8192 arguments a
+time, was at 1533 of 1534; the reference takes 123 s): slower than the limit, not a difference
+seen.
+
+The slow tests (scratch k6c7/slow.tsv, ltp-w at 708289f3, 1 job, LTP_LIMIT 7200, from 19:50,
+load 35 to 117), so far: gf01 passes in 6761 s and fsx01 in 662 s, as the reference. Still
+running: rwtest01, creat05, open04, float_bessel, hackbench01, cve-2014-0196.
+
+Whole suite at fcbc6807 (`cargo test -j 4 -p wcontainers-abi -p wcontainers-kernel -p
+wcontainers-kernel-test --no-fail-fast -- --test-threads=2`, 19:08 to 21:56, load 41 at the
+start and 117 at the end, beside fork09 and the slow tests; scratch k6c7/suite.log): 254
+passed, 0 failed, 11 ignored. The ignored: the five known with their reasons (align's two,
+busybox root_file_system, cachestat mapped_file_pages, inotify on a backend root), sharedviews
+`code_written_through_one_view_runs_through_the_other` (main's, a known stand-in failure), and
+five probes of tests/zprobe.rs, a local file git ignores. The Python test binary took 8778 s
+(1611 to 2394 s in K6b's runs at lower load; go 10.1 s and java 152.3 s here against 5.8 and
+107.8 s then), so the machine's load is the likely cause; not measured apart.
 
 fork09 alone at 708289f3 (scratch k6c7/f.tsv, LTP_LIMIT 3600, 1 job, with Docker's container
 events kept in fork09-events.log; 18:49 to 19:49, load 35 to 65): no crash and no connection
@@ -2860,6 +2881,11 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K6c, seventh run: whole suite at fcbc6807, 2 test threads, 2 h 48 min, 254 passed, 0 failed,
+  11 ignored (load 41 to 117; K6c, seventh run). gf01 on the stand-in with the root on the
+  backend: 6761 s (reference: see the bar's file); fsx01 662 s; fork09 reaches EMFILE after
+  about 1900 s (loads under "K6c, seventh run").
+
 - K6a, first run, end of the milestone's layer 1 bar: at 8a3d41f (every fix of the run in) the
   fresh seeds 5050464, 5050465 and 5050466 passed 20000 sequences each (328.8 s, 328.5 s and
   328.6 s, three side by side beside an LTP run of 3 jobs, load 19.9 at the start and 22.7 at
@@ -3816,8 +3842,11 @@ K6c, in this order (after the seventh run):
    develop -c <scratch>/kernel/k6c7/ltp-w ours <scratch>/kernel/k6c7/whole.tsv`, from the
    checkout). When it ends: `ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv
    <scratch>/kernel/k6c7/whole.tsv`, commit it as ltp/ours-20260930-708289f3.tsv, rerun at the
-   newest code what later commits touch (memfd_create04, thp01 to 03, sys_thp01 and the hugetlb
-   group for fcbc6807), and write the table from it. At 19:20 it had 495 done: 493 matching,
+   newest code what later commits touch (the hugetlb group for fcbc6807; memfd_create04, thp02,
+   thp03 and sys_thp01 were rerun and match), and write the table from it. Its first 498 tests
+   ran at 708289f3 (ltp-w); from 22:08 it goes on at fcbc6807 (ltp-x, the same command with
+   ltp-x in place of ltp-w), all but the controllers, can, capability, commands, containers,
+   cpuhotplug, crypto groups and four cve tests. At 19:20 it had 495 done: 493 matching,
    2 differing (controllers:controllers and af_alg07, both known). It was stopped at 19:10 to
    let the whole suite run within the test thread limit; start it again with the command above.
 2. fork09 gives a verdict now (broken where the reference passes, from the test server's
