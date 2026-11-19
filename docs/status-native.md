@@ -21,8 +21,8 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   the inside's own stop resolution, its heap and the soft-float build (below, "N3 run 1"); run 2 built the
   inside's native `Cpu` side, piece loading and a thread run to its next exit, and the float state routines
   (below, "N3 run 2"); run 3 ran that CPU side on the floor for the first time: the kernel test crate's hello
-  and a program of this track's own give the same exits, registers and output as the WebAssembly output's CPU
-  side, with and without the count (below, "N3 run 3"). Blocked for its
+  and two programs of this track's own (one a static musl program) give the same exits, registers and output as
+  the WebAssembly output's CPU side, with and without the count, and the reference's output (below, "N3 run 3"). Blocked for its
   bar: R1 and R3 (the runtime's loop `no_std`, the `System` split into policy and services) are the runtime
   and kernel tracks' crates, which this track has not been agreed to change (see "For the orchestrator").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
@@ -83,7 +83,7 @@ Results (M5 Max; scratch native/n3r3/exits.log):
 - exits: status 33, seven lines, 8 exits, identical on both sides, both modes; 0.35 s a mode (load 8 to 18).
   Native slow paths warned: "host-model result routed" 40, "access that may cross a page probed" 1.
 - Against the reference (ARM64 Linux in Docker on the rented Graviton machine, as the Mac's Docker Desktop would
-  not start at 03:25): hello gives the same output and status. exits gives the same six result lines and status,
+  not start during this run): hello gives the same output and status. exits gives the same six result lines and status,
   but the FPSR it reads is 0x10 (IXC) on Linux and 0 on both our outputs: the WebAssembly output keeps no float
   flags until a program writes FPSR, and the native output gives what it gives (plan 3.4). Found here: plan 3.4
   says the inside counts such a read ("exact floating point requested"), but it does not: no `Stopping` names an
@@ -92,17 +92,36 @@ Results (M5 Max; scratch native/n3r3/exits.log):
   the exits program now warns it once natively, as the WebAssembly side does. Native test after the change: 32,562
   cases, 0 failing; interrupts 2500, 0 failed; arm64 and guest-cpu suites pass.
 
+Later in the run:
+- 1365064a, the inside: a native thread's thread pointer is read back after every run (the guest's level writes
+  TPIDR_EL0 itself; the register block kept the value from before). Found by the musl program below: musl's start
+  sets it, and the native side's block said 0 where the WebAssembly side's said the new value.
+- 9739944e, the exits test: a third program, `tests/guest/libc.c`, linked with musl (the C library's start,
+  printf of integers, strings, doubles and a long double, snprintf, strtod, strtol, qsort through a pointer,
+  memcpy, memcmp, strchr, strstr). The test lays out the start's stack as Linux does (one argument, no
+  environment, an auxiliary vector with AT_PAGESZ alone; the strings a page below the top) and answers writev.
+- Results (M5 Max, load 4 to 6; scratch native/n3r3/exits2.log): three programs, 0 failed, both modes; 4725 native
+  pieces; native slow paths warned: "host-model result routed" 866, "withheld register named by the guest" 303,
+  "access that may cross a page probed" 37, "exact floating point requested" 1. libc: status 13 after 5 exits,
+  four lines identical on both sides; on the reference (Graviton, Docker) the same four lines and status but for
+  argv[0] (the test passes "libc", Docker "/p/libc").
+
+The whole suite of what this track owns, once before the push (03:20 to 03:23, load 6 to 12, M5 Max; scratch
+native/n3r3/suite-end.log): guest-cpu, arm64, the inside and the monitor (exits 3 programs, 0 failed, both modes;
+floor 21 cases and 1 measurement, 0 failed; carry; native 32,562 cases, 0 failing; interrupts 2500, 0 failed;
+probe 0 forms of 16 bytes or fewer differ), the literal check's tests, the translator with `native`; all passed.
+Literal check exit 0, no baseline line added.
+
 Dev-dependencies the monitor gained (test only): wcontainers-wasmtime and wcontainers-runtime (this workspace,
-MIT OR Apache-2.0), linux-raw-sys 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, the version the
-kernel test crate uses).
+MIT OR Apache-2.0), linux-raw-sys 0.12.1 with general, errno and auxvec (Apache-2.0 WITH LLVM-exception OR
+Apache-2.0 OR MIT, the version the kernel test crate uses).
 
 Literals: the check exits 0; no baseline line added.
 
 What comes next for N3, in order:
-1. A static musl program in the exits test (auxiliary vector on the stack, writev), closer to busybox.
-2. The `Host` through the link, the image's files at start, the kernel inside, then the loop and the test crate's
+1. The `Host` through the link, the image's files at start, the kernel inside, then the loop and the test crate's
    policy once R1 and R3 exist (see "For the orchestrator"); then the bar and the independent check's programs.
-3. At N4 (bounded and full look-ahead, whose pieces are straight runs): `NativeCpu::load` sends the code to the
+2. At N4 (bounded and full look-ahead, whose pieces are straight runs): `NativeCpu::load` sends the code to the
    page's end, the monitor translates what fits the link (halving), and `code_changed` drops every piece whose
    guest extent meets the range (today: pieces starting in it, right while a piece is one instruction). Tried this
    run and taken out again: at look-ahead none the emitter translates one instruction whatever it is given
@@ -1076,6 +1095,10 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   driver.rs). The plan lets this track make them only if those tracks agree. Until one of the two happens,
   this track builds everything else N3 needs and the bar cannot run. Writing the loop again in the inside
   would be a second loop, which the brief forbids.
+- N3 run 3: still no ruling in the brief. The native CPU side now runs three static programs (one with musl) as
+  the WebAssembly output does. Besides R1 and R3, the bar needs the kernel test crate to run its busybox tests
+  through the native back end: its driver.rs makes the WebAssembly `CpuSide` by name (driver.rs:51-57), so a way
+  to choose the back end there is a third change in the kernel track's crate.
 
 - Run 2's ask (the guest's vector state across the floor's exceptions) is no longer needed for N2: the
   runner sets and reads the guest's level from the monitor at a gate (N2 run 4). The inside proper still
