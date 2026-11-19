@@ -111,7 +111,7 @@ const BITS: [Bit; 40] = {
 };
 
 /// Every flag's register bit.
-const ALL_FLAGS: Registers = Registers(0x3f << FIRST_FLAG);
+pub(crate) const ALL_FLAGS: Registers = Registers(0x3f << FIRST_FLAG);
 
 /// An access through the stack segment: base rsp or rbp, no `fs:` or `gs:`.
 fn rsp_based(access: &MemoryAccess<u8>) -> bool {
@@ -535,6 +535,10 @@ impl Guest for X86_64 {
                     None => [Some(push), None],
                 }
             }
+            Leave => [
+                Some(through(RBP, 0, stack_bytes(i), AccessKind::Read)),
+                None,
+            ],
             Pop => {
                 let bytes = stack_bytes(i);
                 let pop = through(RSP, 0, bytes, AccessKind::Read);
@@ -588,6 +592,7 @@ impl Guest for X86_64 {
                 before_access: true,
             },
             Pop if writes_rsp => StackMove::Unknown,
+            Leave => StackMove::Unknown,
             Pop => StackMove::By {
                 delta: stack_bytes(i).into(),
                 before_access: false,
@@ -631,15 +636,17 @@ impl Guest for X86_64 {
             .then(|| at.wrapping_add(ins.memory_displacement64()))
     }
 
-    /// Switch recognition comes with full look-ahead.
+    /// gcc's and clang's position-independent switch: `cmp i, n; ja default` guarding `lea t, [rip + T]`,
+    /// `movsxd x, dword [t + i * 4]` and `add` of the two, then the jump through the sum; the targets are `T`
+    /// plus each entry.
     fn jump_table(
-        _at: u64,
-        _reg: u8,
-        _blob: &[u8],
+        at: u64,
+        reg: u8,
+        blob: &[u8],
         _code: Range<u64>,
-        _before: impl Fn(u64) -> Option<(u64, Instruction)>,
+        before: impl Fn(u64) -> Option<(u64, Instruction)>,
     ) -> Option<Vec<u64>> {
-        None
+        crate::habits::jump_table(at, reg, blob, before)
     }
 
     fn plain(i: &Instruction) -> bool {
@@ -803,16 +810,18 @@ impl Guest for X86_64 {
         })
     }
 
-    /// The loop proofs' comparisons come with full look-ahead.
+    /// A `jcc` after `cmp` or `sub` of a register with a register or an immediate, after `test r, r` (a
+    /// comparison with 0), or `je` and `jne` after `dec`.
     fn branch_comparison(
-        _path: &[(u64, Instruction, Effects<Self>)],
-        _branch: (u64, &Instruction),
+        path: &[(u64, Instruction, Effects<Self>)],
+        (_, branch): (u64, &Instruction),
     ) -> Option<Comparison<u8>> {
-        None
+        crate::habits::branch_comparison(path, branch)
     }
 
-    fn loaded_max(_i: &Instruction) -> Option<(u8, i64)> {
-        None
+    /// `movzx` of a byte or a word, and `mov` of a double word into a 32-bit register.
+    fn loaded_max(i: &Instruction) -> Option<(u8, i64)> {
+        crate::habits::loaded_max(i)
     }
 }
 

@@ -7600,7 +7600,6 @@ code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	with_drawn_prefi
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	xmm	16
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::cases	"no case of this draw"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::changes	"x86-64's changes programs are milestone X6's"
-code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::checks	"x86-64's check programs are milestone X4's"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::excluded	"int 0x80: a 32-bit system call on the reference"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::excluded	"sysenter: a 32-bit system call on the reference"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::no_form	"not in no form"

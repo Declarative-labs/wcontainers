@@ -346,7 +346,7 @@ impl GuestTest for X86_64 {
     }
 
     fn checks() -> Vec<Check> {
-        panic!("x86-64's check programs are milestone X4's")
+        assemble::checks()
     }
 
     fn changes() -> Vec<Change> {

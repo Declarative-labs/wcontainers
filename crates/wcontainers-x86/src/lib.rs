@@ -14,6 +14,8 @@ mod flags;
 #[cfg(feature = "translate")]
 mod guest;
 #[cfg(feature = "translate")]
+mod habits;
+#[cfg(feature = "translate")]
 mod meaning;
 #[cfg(feature = "translate")]
 mod operand;

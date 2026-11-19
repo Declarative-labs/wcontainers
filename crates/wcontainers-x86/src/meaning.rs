@@ -96,7 +96,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Push | Pop | Call | Ret | Jmp | Shl | Sal | Shr | Sar | Rol | Ror | Rcl
                     | Rcr | Mul | Imul | Div | Idiv | Syscall | Nop | Pause | Reservednop | Int3
                     | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std | Bt | Bts
-                    | Btr | Btc | Jrcxz | Jecxz | Pushf | Pushfq
+                    | Btr | Btc | Jrcxz | Jecxz | Pushf | Pushfq | Leave
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != 8)
@@ -205,6 +205,20 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             push_value(e, i, None, value);
         }
         Pop => pop(e, i),
+        Leave => {
+            // rsp = rbp, then pop rbp (bp with 66), the read checked before anything changes.
+            let bytes = stack_bytes(i);
+            let from = e.local(ValType::I64);
+            e.get(RBP);
+            e.sink().local_set(from);
+            e.check(from, bytes, Access::Read, 0);
+            let value = e.local(ValType::I64);
+            load(e, from, bytes);
+            e.sink().local_set(value);
+            e.sink().local_get(from).i64_const(bytes.into()).i64_add();
+            e.set(RSP);
+            set_general(e, register(RBP, (bytes * u8::BITS) as u8), value);
+        }
         Call => call(e, i),
         Ret => {
             ret(e, i);

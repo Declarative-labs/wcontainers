@@ -1376,3 +1376,90 @@ pub(super) fn assemble(program: &Program) -> Blob {
         stack_bytes: STACK_BYTES,
     }
 }
+
+/// The checks test's programs, in the model's terms: a switch of each compiler's form taken through its
+/// table, which full must recognise, and a group of accesses failing across the end of the blob on a
+/// function's first instruction.
+pub(super) fn checks() -> Vec<crate::guest::Check> {
+    use crate::guest::{Check, Counted};
+    use wcontainers_translator::contract::Reason;
+    const SWITCHES: &str = "switches";
+    const GROUP_AT_ENTRY: &str = "group-at-entry";
+    let cases = |k: usize| -> Vec<Vec<Op>> {
+        (0..k)
+            .map(|c| {
+                if c % 2 == 1 {
+                    vec![Op::Syscall]
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect()
+    };
+    let switch_cases = PARTIALS.len();
+    let mut registers = vec![0; REGISTERS.len()];
+    // Each index takes its switch through the table: the last case, then the one before.
+    registers[0] = (switch_cases - 1) as u64;
+    registers[1] = (switch_cases - 2) as u64;
+    let switches = Program {
+        registers: registers.clone(),
+        main: vec![
+            Chunk::Switch {
+                index: REGISTERS[0],
+                cases: cases(switch_cases),
+            },
+            Chunk::Switch {
+                index: REGISTERS[1],
+                cases: cases(switch_cases),
+            },
+        ],
+        functions: Vec::new(),
+    };
+    let access = GroupAccess {
+        load: true,
+        bytes: WORD as u8,
+        vector: false,
+        rt: REGISTERS[0],
+        rt2: REGISTERS[1],
+        indexing: Indexing::Offset,
+        offset: 1,
+    };
+    let group = Program {
+        registers,
+        main: vec![Chunk::Call {
+            callee: Callee::Function(0),
+            through_register: false,
+            around: None,
+        }],
+        functions: vec![Function {
+            frame: FRAME_FLOOR,
+            body: vec![Chunk::Ops(vec![Op::Group {
+                base: REGISTERS[2],
+                start: GroupBase::Edge(WORD as u16),
+                accesses: vec![access],
+                syscall: None,
+            }])],
+            recursion: 0,
+            tail: None,
+        }],
+    };
+    let named = |program: &Program, name: &str| Blob {
+        name: name.into(),
+        ..assemble(program)
+    };
+    vec![
+        Check {
+            blob: named(&switches, SWITCHES),
+            counted: Some((
+                Reason::JumpThroughRegisterNotRecognised,
+                Counted::Exactly(0),
+            )),
+            at_entry: false,
+        },
+        Check {
+            blob: named(&group, GROUP_AT_ENTRY),
+            counted: None,
+            at_entry: true,
+        },
+    ]
+}

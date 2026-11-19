@@ -417,12 +417,12 @@ fn signed(s: &mut InstructionSink<'_>, local: u32, width: u8) {
 }
 
 /// The conditions by the low four bits of `jcc`, in pairs: the even one holds, the odd one is its negation.
-const BELOW: u8 = 2;
-const EQUAL: u8 = 4;
-const BELOW_OR_EQUAL: u8 = 6;
+pub(crate) const BELOW: u8 = 2;
+pub(crate) const EQUAL: u8 = 4;
+pub(crate) const BELOW_OR_EQUAL: u8 = 6;
 const SIGN: u8 = 8;
-const LESS: u8 = 12;
-const LESS_OR_EQUAL: u8 = 14;
+pub(crate) const LESS: u8 = 12;
+pub(crate) const LESS_OR_EQUAL: u8 = 14;
 
 /// Push whether `cond` holds as one comparison of the shape's operands, for a plain difference (cmp, sub)
 /// and the logic instructions (test, and); false where the flags must be worked out.

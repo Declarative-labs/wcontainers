@@ -339,8 +339,10 @@ pub fn setcc(m: Mnemonic) -> Option<u8> {
 pub fn stack_bytes(i: &Instruction) -> u32 {
     let ins = &i.iced;
     let width = match ins.op_kind(0) {
-        // `pushf` with 66 pushes a word; it has no operand.
-        _ if ins.code() == iced_x86::Code::Pushfw => u16::BITS as u8,
+        // `pushf` and `leave` with 66 move a word; they have no operand.
+        _ if matches!(ins.code(), iced_x86::Code::Pushfw | iced_x86::Code::Leavew) => {
+            u16::BITS as u8
+        }
         OpKind::Register => general(ins.op_register(0)).map_or(64, |g| g.width),
         OpKind::Memory => memory_bytes(i) as u8 * 8,
         // An immediate's width is the operand size: `push imm16` has 66.

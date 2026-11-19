@@ -107,3 +107,13 @@ fn checks_match_linux_arm64() {
 fn failing_at_an_entry_in_chrome_arm64() {
     failing_at_an_entry_in_chrome::<Arm64>();
 }
+
+#[test]
+fn checks_match_linux_x86_64() {
+    checks_match_linux::<wcontainers_x86::X86_64>();
+}
+
+#[test]
+fn failing_at_an_entry_in_chrome_x86_64() {
+    failing_at_an_entry_in_chrome::<wcontainers_x86::X86_64>();
+}
