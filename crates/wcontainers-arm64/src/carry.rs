@@ -826,7 +826,14 @@ pub(crate) fn exit(code: &mut HostCode, target: u64) {
         return;
     }
     let moves = encode::move_constant(SCRATCH, mirror::slot(target));
-    code.exit(&moves[0].to_le_bytes(), target);
+    let lead = code.lead();
+    if lead > 0 {
+        let settle = encode::add_immediate(COUNT, COUNT, -i64::from(lead)).expect("a lead fits");
+        code.settling_exit(&settle.to_le_bytes(), target);
+        code.push(&moves[0].to_le_bytes());
+    } else {
+        code.exit(&moves[0].to_le_bytes(), target);
+    }
     for w in &moves[1..] {
         code.push(&w.to_le_bytes());
     }
