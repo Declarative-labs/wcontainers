@@ -542,6 +542,51 @@ fn clip_distances_are_the_built_in_array() {
     }
 }
 
+/// Clip distances are listed as the signature has them, one value per register with its mask, so a
+/// front counting their components gets every distance, also when they span two registers; the
+/// program clips by that many in the program.
+#[test]
+fn clip_distances_are_listed_per_signature_register() {
+    use wcontainers_gpu::SystemValue;
+    for (name, count, registers) in [("vs_clip", 2, 1), ("vs_clip_six", 6, 2)] {
+        let code = own_pair(name);
+        for c in both(&code, &VariantKey::default()) {
+            let clips: Vec<_> = c
+                .reflection
+                .outputs
+                .iter()
+                .filter(|o| o.system == Some(SystemValue::ClipDistance))
+                .collect();
+            let components: u32 = clips.iter().map(|o| o.mask.count_ones()).sum();
+            assert_eq!((components, clips.len()), (count, registers), "{clips:?}");
+            assert!(
+                wgsl(&c).contains(&format!("array<f32, {count}>")),
+                "{}",
+                wgsl(&c)
+            );
+        }
+        let location = both(&code, &VariantKey::default())[0]
+            .reflection
+            .outputs
+            .iter()
+            .filter(|o| o.system.is_none())
+            .map(|o| o.location + 1)
+            .max()
+            .unwrap();
+        let key = VariantKey {
+            flags: VariantFlags::CLIP_DISTANCE,
+            linked: LinkedValues {
+                location,
+                clip_distances: count as u8,
+            },
+            ..Default::default()
+        };
+        for c in both(&code, &key) {
+            assert!(!wgsl(&c).contains("clip_distances"), "{}", wgsl(&c));
+        }
+    }
+}
+
 /// Constant buffers read as storage move to the storage range, named as added.
 #[test]
 fn constants_read_as_storage_are_added_bindings() {

@@ -12,9 +12,9 @@ use wcontainers_gpu::{
     AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
     ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource, DrawCall, DrawRange,
     Extent, FillMode, Format, FrontFace, HelperValue, IndexBinding, IndexFormat, Interpolation,
-    Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend,
-    ShaderStage, SlotKind, StageSet, StoreOp, TextureRegion, TextureUsage, VariantKey,
-    VertexBinding, VertexFormat, Viewport, helper_binding,
+    LinkedValues, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
+    RenderTargetBlend, ShaderStage, SlotKind, StageSet, StoreOp, SystemValue, TextureRegion,
+    TextureUsage, VariantFlags, VariantKey, VertexBinding, VertexFormat, Viewport, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{
@@ -41,7 +41,7 @@ struct Case {
     indexed: Option<i32>,
 }
 
-const CASES: [Case; 13] = [
+const CASES: [Case; 15] = [
     Case {
         gs: "gs_quads",
         topology: InputTopology::PointList,
@@ -155,6 +155,24 @@ const CASES: [Case; 13] = [
         topology: InputTopology::LineStripAdjacency,
         count: 9,
         first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        gs: "gs_clip",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+    },
+    Case {
+        gs: "gs_clip",
+        topology: InputTopology::TriangleStrip,
+        count: 14,
+        first: 2,
         instances: 1,
         first_instance: 0,
         indexed: None,
@@ -326,6 +344,48 @@ fn ours<B: Backend>(
         )
         .unwrap()
     });
+    // Clip distances from the geometry stage, clipped in the pixel program as on a back end without
+    // them (wgpu's Direct3D 12 path), linked past every value either program passes; counted from
+    // the reflection as a front counts them.
+    let clips: u32 = gs
+        .iter()
+        .flat_map(|g| &g.reflection.outputs)
+        .filter(|v| v.system == Some(SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones())
+        .sum();
+    let (gs, ps) = if clips == 0 {
+        (gs, ps)
+    } else {
+        let location = gs
+            .iter()
+            .flat_map(|g| &g.reflection.outputs)
+            .chain(&ps.reflection.inputs)
+            .filter(|v| v.system.is_none())
+            .map(|v| v.location + 1)
+            .max()
+            .unwrap_or(0);
+        let linked = LinkedValues {
+            location,
+            clip_distances: clips as u8,
+        };
+        let key = |base: &VariantKey, samples| VariantKey {
+            flags: VariantFlags::CLIP_DISTANCE,
+            linked,
+            samples,
+            ..base.clone()
+        };
+        let gs_code = bytecode(&format!("{}.dxbc", case.gs));
+        let ps_code = bytecode("ps_geometry.dxbc");
+        (
+            Some(convert(Source::Dxbc(&gs_code), &key(&gs_key, 0), None).unwrap()),
+            convert(
+                Source::Dxbc(&ps_code),
+                &key(&VariantKey::default(), 1),
+                None,
+            )
+            .unwrap(),
+        )
+    };
     let vs_key = VariantKey {
         pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
         draw_base: DrawBaseSource::Helpers,
@@ -982,9 +1042,14 @@ fn geometry_shaders_draw_as_direct3d_does() {
                 unreachable!()
             };
             let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
+            // Clipped in the pixel program, attributes are interpolated over the whole triangle,
+            // which rounds apart from Direct3D's over the clipped one by a step or two; a pixel
+            // drawn on one side only differs by far more.
+            let allowed = if case.gs == "gs_clip" { 2 } else { 0 };
             compared += 1;
             eprintln!(
-                "{name}: {drawn} texels drawn by direct3d, {count} differ (largest {largest})"
+                "{name}: {drawn} texels drawn by direct3d, {count} differ (largest {largest}, \
+                 allowed {allowed})"
             );
             if std::env::var_os("WCONTAINERS_SHADERS_OUT").is_some() {
                 keep(
@@ -998,7 +1063,18 @@ fn geometry_shaders_draw_as_direct3d_does() {
                     Format::Rgba8Unorm,
                 );
             }
-            if drawn == 0 || count > 0 {
+            if drawn == 0 || largest > allowed {
+                // The first texels apart, where and what each drew, to find the cause.
+                let apart = reference
+                    .chunks(4)
+                    .zip(picture.chunks(4))
+                    .enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .take(16);
+                for (i, (a, b)) in apart {
+                    let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
+                    eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
+                }
                 failures.push(name);
             }
         }

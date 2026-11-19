@@ -6,7 +6,7 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, HMODULE};
+use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, HMODULE, MAX_PATH};
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_UNSUPPORTED, IDXGIFactory6};
 use windows::Win32::System::Diagnostics::Debug::RtlCaptureStackBackTrace;
 use windows::Win32::System::LibraryLoader::{
@@ -52,9 +52,12 @@ fn module_of(address: *const c_void) -> Option<HMODULE> {
     Some(module)
 }
 
+/// UTF-16 units read of a module's path, past `MAX_PATH` for long paths.
+const MODULE_PATH_UNITS: usize = 1024;
+
 /// The system directory, lower case, ending in a backslash.
 fn system_directory() -> String {
-    let mut dir = [0u16; 260];
+    let mut dir = [0u16; MAX_PATH as usize];
     // SAFETY: a buffer of the length given.
     let len = unsafe { GetSystemDirectoryW(Some(&mut dir)) } as usize;
     String::from_utf16_lossy(&dir[..len.min(dir.len())]).to_lowercase() + "\\"
@@ -92,7 +95,7 @@ fn caller_is_program(for_program: &[&str]) -> bool {
     if caller == own {
         return false;
     }
-    let mut path = [0u16; 1024];
+    let mut path = [0u16; MODULE_PATH_UNITS];
     // SAFETY: a buffer of the length given.
     let len = unsafe { GetModuleFileNameW(Some(caller), &mut path) } as usize;
     let path = String::from_utf16_lossy(&path[..len.min(path.len())]).to_lowercase();

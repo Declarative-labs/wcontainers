@@ -10,14 +10,14 @@ use std::rc::{Rc, Weak};
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
     DispatchGroups, DrawCall, DrawRange, Features, FormatKind, FormatUse, GpuError, LoadOp,
-    MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, SlowPath, StepMode,
-    TargetLayout, VertexLayoutDesc,
+    MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, ScissorRect, SlowPath,
+    StepMode, TargetLayout, VertexLayoutDesc, Viewport,
 };
 
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
 
 /// How many objects the caches made, which tests read to prove the caching.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Counters {
     /// Render and compute pipelines built.
     pub pipelines: u64,
@@ -393,8 +393,8 @@ struct Last {
     groups: [Option<LastGroup>; MAX_BINDING_SETS],
     vertex: Vec<Option<(u64, u64, u64)>>,
     index: Option<(u64, u64, u64, wgpu::IndexFormat)>,
-    viewport: Option<[u32; 6]>,
-    scissor: Option<[u32; 4]>,
+    viewport: Option<Viewport>,
+    scissor: Option<ScissorRect>,
     blend_constant: Option<[u32; 4]>,
     stencil_reference: Option<u8>,
 }
@@ -408,17 +408,12 @@ struct LastGroup {
 }
 
 fn color_value(bits: [u32; 4], kind: FormatKind) -> wgpu::Color {
-    let v: [f64; 4] = match kind {
+    let [r, g, b, a] = match kind {
         FormatKind::Uint => bits.map(f64::from),
         FormatKind::Sint => bits.map(|b| f64::from(b as i32)),
         _ => bits.map(|b| f64::from(f32::from_bits(b))),
     };
-    wgpu::Color {
-        r: v[0],
-        g: v[1],
-        b: v[2],
-        a: v[3],
-    }
+    wgpu::Color { r, g, b, a }
 }
 
 /// Opens a render pass on `encoder`; `resume` loads every attachment instead of clearing.
@@ -1350,20 +1345,24 @@ impl WebGpu {
                 last.index = now;
             }
         }
-        let viewport = call.viewports.first().map_or(
-            [
-                0,
-                0,
-                (pass.width as f32).to_bits(),
-                (pass.height as f32).to_bits(),
-                0,
-                1.0f32.to_bits(),
-            ],
-            |v| [v.x, v.y, v.width, v.height, v.min_depth, v.max_depth],
-        );
+        let viewport = call.viewports.first().copied().unwrap_or(Viewport {
+            x: 0,
+            y: 0,
+            width: (pass.width as f32).to_bits(),
+            height: (pass.height as f32).to_bits(),
+            min_depth: 0,
+            max_depth: 1.0f32.to_bits(),
+        });
         if last.viewport != Some(viewport) {
-            let [x, y, w, h, near, far] = viewport.map(f32::from_bits);
-            rp.set_viewport(x, y, w, h, near, far);
+            let v = viewport;
+            rp.set_viewport(
+                f32::from_bits(v.x),
+                f32::from_bits(v.y),
+                f32::from_bits(v.width),
+                f32::from_bits(v.height),
+                f32::from_bits(v.min_depth),
+                f32::from_bits(v.max_depth),
+            );
             last.viewport = Some(viewport);
         }
         let (pw, ph) = (pass.width, pass.height);
@@ -1371,12 +1370,23 @@ impl WebGpu {
             Some(s) if call.raster.0.desc.scissor => {
                 let x = s.x.min(pw);
                 let y = s.y.min(ph);
-                [x, y, s.width.min(pw - x), s.height.min(ph - y)]
+                ScissorRect {
+                    x,
+                    y,
+                    width: s.width.min(pw - x),
+                    height: s.height.min(ph - y),
+                }
             }
-            _ => [0, 0, pw, ph],
+            _ => ScissorRect {
+                x: 0,
+                y: 0,
+                width: pw,
+                height: ph,
+            },
         };
         if last.scissor != Some(scissor) {
-            rp.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
+            let s = scissor;
+            rp.set_scissor_rect(s.x, s.y, s.width, s.height);
             last.scissor = Some(scissor);
         }
         if last.blend_constant != Some(call.blend_constant) {

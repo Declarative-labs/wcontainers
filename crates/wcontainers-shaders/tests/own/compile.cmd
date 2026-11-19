@@ -65,6 +65,8 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather ps_mirror
 "%DXC%" -nologo -T vs_6_0 -E vs_ids -Gis -Fo vs_ids.dxil variants.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_clip /Fo vs_clip.dxbc variants.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_clip -Gis -Fo vs_clip.dxil variants.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_clip_six /Fo vs_clip_six.dxbc variants.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_clip_six -Gis -Fo vs_clip_six.dxil variants.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_deep /Fo vs_deep.dxbc variants.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_deep -Gis -Fo vs_deep.dxil variants.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_pull /Fo vs_pull.dxbc pull.hlsl || exit /b 1
@@ -77,7 +79,7 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather ps_mirror
 "%DXC%" -nologo -T ps_6_0 -E ps_filter -Gis -Fo ps_filter.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_geometry /Fo vs_geometry.dxbc geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_geometry /Fo ps_geometry.dxbc geometry.hlsl || exit /b 1
-for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent) do (
+for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent gs_clip) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
 )

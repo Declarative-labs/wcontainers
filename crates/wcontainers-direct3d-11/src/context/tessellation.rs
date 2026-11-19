@@ -282,7 +282,7 @@ impl<B: Backend> Device<B> {
         let vertex_block = self.helper_block(&vertex_helpers, VERTEX, bases, None)?;
         self.update_set(HULL, &[], &[])?;
         self.update_set(DOMAIN, &[], &[])?;
-        self.update_set(PIXEL, &[], &ph.stored)?;
+        self.update_set(PIXEL, &[], &ph.relocated)?;
         if [HULL, DOMAIN, PIXEL]
             .iter()
             .any(|&s| !self.ctx.through[s].is_empty())

@@ -51,17 +51,19 @@ impl Spare for wgpu::Buffer {
 
 impl Spare for wgpu::Texture {
     /// Size, levels, samples, dimension, format and usage; the view formats follow the format.
-    type Key = ([u32; 5], wgpu::TextureDimension, wgpu::TextureFormat, u32);
+    type Key = (
+        wgpu::Extent3d,
+        u32,
+        u32,
+        wgpu::TextureDimension,
+        wgpu::TextureFormat,
+        u32,
+    );
     fn key(&self) -> Self::Key {
-        let s = self.size();
         (
-            [
-                s.width,
-                s.height,
-                s.depth_or_array_layers,
-                self.mip_level_count(),
-                self.sample_count(),
-            ],
+            self.size(),
+            self.mip_level_count(),
+            self.sample_count(),
             self.dimension(),
             self.format(),
             self.usage().bits(),
@@ -144,6 +146,9 @@ impl<T: Spare> Pool<T> {
 
 /// Bytes of the first uniform arena; each one that fills is replaced by one twice as large.
 const FIRST_ARENA: u64 = 1 << 20;
+
+/// Slices of the size asked that an arena made for it holds at least.
+const ARENA_SLICES_AT_LEAST: u64 = 4;
 
 /// The uniform arena (plan sections 4.5 and 4.6): one large GPU buffer holding every uniform-only
 /// buffer written often, each in a slice of its own. A `Discard` of such a buffer while recorded work
@@ -507,7 +512,7 @@ impl WebGpu {
             .arena
             .as_ref()
             .map_or(FIRST_ARENA, |a| a.raw.size() * 2)
-            .max(slice * 4)
+            .max(slice * ARENA_SLICES_AT_LEAST)
             .min(self.caps.limits.max_buffer_size)
             .max(slice);
         let id = self.id();

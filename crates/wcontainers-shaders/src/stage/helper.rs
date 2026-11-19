@@ -7,9 +7,11 @@ use super::{
     GEOMETRY_BINDING, INDICES_BINDING, PATCHES_BINDING, POINTS_BINDING, VALUES_BINDING,
     VERTICES_BINDING, WORKGROUP, tess, word,
 };
+use crate::build::WORD;
 use crate::{ConvertError, Converted};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
     DispatchGroups, DrawRange, GpuError, IndexFormat, MAX_BINDING_SETS, MapIntent, Program,
@@ -60,6 +62,9 @@ impl From<ConvertError> for StageError {
     }
 }
 
+/// Direct3D's stream output buffers (`D3D11_SO_BUFFER_SLOT_COUNT`).
+pub const STREAM_BUFFERS: usize = 4;
+
 /// One element of a stream output declaration (Direct3D's `D3D11_SO_DECLARATION_ENTRY`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamOutputEntry {
@@ -69,7 +74,7 @@ pub struct StreamOutputEntry {
     pub semantic_index: u32,
     pub start_component: u8,
     pub component_count: u8,
-    /// The buffer it is written to, 0 to 3.
+    /// The buffer it is written to, below [`STREAM_BUFFERS`].
     pub slot: u8,
 }
 
@@ -77,7 +82,7 @@ pub struct StreamOutputEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamOutput {
     pub entries: Vec<StreamOutputEntry>,
-    pub strides: [u32; 4],
+    pub strides: [u32; STREAM_BUFFERS],
 }
 
 /// Where one draw's stream output goes.
@@ -85,7 +90,7 @@ pub struct StreamOutput {
 pub struct StreamTargets<'a, B: Backend> {
     /// The bound buffers (made with [`BufferUsage::STORAGE`]), each written from its range's offset
     /// (aligned as storage bindings are) plus its filled size.
-    pub buffers: [Option<BufferRange<&'a B::Buffer>>; 4],
+    pub buffers: [Option<BufferRange<&'a B::Buffer>>; STREAM_BUFFERS],
     /// Eight u32 (storage, writable, made with [`BufferUsage::STORAGE`]): the bytes each buffer is
     /// filled to, where the draw appends and which it advances (the front writes them for
     /// Direct3D's explicit offsets and keeps them for `DrawAuto`), then the primitives the draw wrote
@@ -202,16 +207,67 @@ struct Domain<B: Backend> {
 /// The stream output program and its declaration's elements.
 struct Stream<B: Backend> {
     program: B::Program,
-    /// Each element as the program's table holds it: buffer, first component and count packed,
-    /// offset in the buffer's vertex, record slot.
-    entries: Vec<[u32; 3]>,
-    strides: [u32; 4],
+    /// Each element's first words in the program's table ([`StreamEntry`]).
+    entries: Vec<[u32; ENTRY_WORDS]>,
+    strides: [u32; STREAM_BUFFERS],
 }
 
-/// The program's values before the strides, in words.
-const STREAM_WORDS: usize = 12;
+/// The stream output program's values (`stream_out.wgsl`'s `Values`), read through its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct StreamValues {
+    units: u32,
+    geometry: u32,
+    vertices: u32,
+    strip: u32,
+    slots: u32,
+    index_base: u32,
+    record_words: u32,
+    entries: u32,
+    primitives: u32,
+    count: u32,
+    listed: u32,
+    pad: u32,
+    strides: [u32; STREAM_BUFFERS],
+    sizes: [u32; STREAM_BUFFERS],
+    table: [StreamEntry; STREAM_ENTRIES],
+}
+
+/// An element of its table: buffer, first component and count packed ([`PACKED_FIRST_SHIFT`],
+/// [`PACKED_COUNT_SHIFT`]), offset in the buffer's vertex, record slot.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct StreamEntry {
+    packed: u32,
+    offset: u32,
+    slot: u32,
+    pad: u32,
+}
+
 /// The elements its table holds.
 const STREAM_ENTRIES: usize = 64;
+/// The words of an element the helper writes.
+const ENTRY_WORDS: usize = word_at(offset_of!(StreamEntry, pad));
+const PACKED_FIRST_SHIFT: u32 = u8::BITS;
+const PACKED_COUNT_SHIFT: u32 = 2 * u8::BITS;
+/// The stream output program's bindings: its values, the records it reads, the filled sizes, the
+/// buffers from [`STREAM_OUT_BINDING`] on, and the listed primitives.
+const STREAM_VALUES_BINDING: u32 = 0;
+const STREAM_DATA_BINDING: u32 = 1;
+const STREAM_FILLED_BINDING: u32 = 2;
+const STREAM_OUT_BINDING: u32 = 3;
+const STREAM_LIST_BINDING: u32 = STREAM_OUT_BINDING + STREAM_BUFFERS as u32;
+
+/// The word `offset` bytes into a block of words.
+const fn word_at(offset: usize) -> usize {
+    offset / size_of::<u32>()
+}
+
+/// The stand-in buffer's ranges: the index words, then the stream output buffers, each at a multiple
+/// of the adapter's storage offset alignment.
+const UNUSED_RANGES: u64 = 1 + STREAM_BUFFERS as u64;
+/// The bytes of each.
+const UNUSED_RANGE_BYTES: u64 = super::SLOT_BYTES as u64;
 
 /// A vertex shader, and a geometry shader or stream output or both, or a hull shader and the
 /// tessellator (then the domain shader too, when a geometry shader or stream output follows it), run
@@ -227,9 +283,10 @@ pub struct Stages<B: Backend> {
     in_words: u32,
     records: Option<Owned<B>>,
     out: Option<Owned<B>>,
-    /// Stands in for bindings a draw does not use: five storage ranges 256 bytes apart (the index
-    /// words, the four stream output buffers).
+    /// Stands in for bindings a draw does not use ([`UNUSED_RANGES`] storage ranges).
     unused: B::Buffer,
+    /// Bytes between its ranges.
+    unused_stride: u64,
 }
 
 impl<B: Backend> Stages<B> {
@@ -268,8 +325,10 @@ impl<B: Backend> Stages<B> {
             Some(so) => Some(stream_parts(backend, so, last)?),
             None => None,
         };
+        let unused_stride =
+            u64::from(backend.caps().limits.min_storage_offset_alignment).max(UNUSED_RANGE_BYTES);
         let unused = backend.create_buffer(&BufferDesc {
-            size: 1280,
+            size: UNUSED_RANGES * unused_stride,
             usage: BufferUsage::STORAGE,
             intent: MapIntent::Rarely,
         })?;
@@ -283,6 +342,7 @@ impl<B: Backend> Stages<B> {
             records: None,
             out: None,
             unused,
+            unused_stride,
         })
     }
 
@@ -393,8 +453,10 @@ impl<B: Backend> Stages<B> {
                 (geometry, Some(domain), stream)
             }
         };
+        let unused_stride =
+            u64::from(backend.caps().limits.min_storage_offset_alignment).max(UNUSED_RANGE_BYTES);
         let unused = backend.create_buffer(&BufferDesc {
-            size: 1280,
+            size: UNUSED_RANGES * unused_stride,
             usage: BufferUsage::STORAGE,
             intent: MapIntent::Rarely,
         })?;
@@ -420,6 +482,7 @@ impl<B: Backend> Stages<B> {
             records: None,
             out: None,
             unused,
+            unused_stride,
         })
     }
 
@@ -476,14 +539,14 @@ impl<B: Backend> Stages<B> {
             attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
         };
         desc.streams[0] = Some(VertexStream {
-            stride: g.out_words * 4,
+            stride: g.out_words * WORD,
             step: StepMode::Vertex,
         });
         for slot in 0..=g.out_locations {
             desc.attributes[slot as usize] = Some(VertexAttribute {
                 location: slot,
                 stream: 0,
-                offset: 16 * slot,
+                offset: super::SLOT_BYTES * slot,
                 format: VertexFormat::Uint32x4,
             });
         }
@@ -580,7 +643,8 @@ impl<B: Backend> Stages<B> {
             return Ok(None);
         }
         let limits = backend.caps().limits;
-        let record_bytes = u64::from(count) * u64::from(instances) * u64::from(self.in_words) * 4;
+        let record_bytes =
+            u64::from(count) * u64::from(instances) * u64::from(self.in_words) * u64::from(WORD);
         grow(
             backend,
             &mut self.records,
@@ -629,10 +693,14 @@ impl<B: Backend> Stages<B> {
                 grow(
                     backend,
                     &mut self.out,
-                    (vertex_words + index_words) * 4,
+                    (vertex_words + index_words) * u64::from(WORD),
                     usage,
                 )?;
-                (invocations, (vertex_words + index_words) * 4, index_base)
+                (
+                    invocations,
+                    (vertex_words + index_words) * u64::from(WORD),
+                    index_base,
+                )
             }
             None => (0, 0, 0),
         };
@@ -640,13 +708,13 @@ impl<B: Backend> Stages<B> {
         let (index_bytes, index_offset, indices) = match &draw.index {
             Some(index) => {
                 let bytes = match index.format {
-                    IndexFormat::U16 => 2,
-                    IndexFormat::U32 => 4,
+                    IndexFormat::U16 => size_of::<u16>() as u32,
+                    IndexFormat::U32 => size_of::<u32>() as u32,
                     IndexFormat::U8 => return Err(StageError::Unsupported("StageIndexU8")),
                 };
                 let align = u64::from(limits.min_storage_offset_alignment);
                 let start = index.offset - index.offset % align;
-                let size = (index.size - start) & !3;
+                let size = (index.size - start) & !(u64::from(WORD) - 1);
                 let range = BufferRange {
                     buffer: index.buffer,
                     offset: start,
@@ -723,7 +791,7 @@ impl<B: Backend> Stages<B> {
             backend.slow_paths().hit(SlowPath::TessellationAsCompute);
             let patch_bytes = (u64::from(tess::HEADER_WORDS)
                 + u64::from(patch_total) * u64::from(h.patch_words))
-                * 4;
+                * u64::from(WORD);
             grow(backend, &mut h.patches, patch_bytes, BufferUsage::STORAGE)?;
             let patches = &h.patches.as_ref().unwrap().buffer;
             let hull_set = backend.create_binding_set(&[
@@ -781,13 +849,13 @@ impl<B: Backend> Stages<B> {
         // The domain stage's records, for the stage after it.
         let mut domain_records = None;
         if let (Some(d), Some((points, _, _))) = (&mut self.domain, listed) {
-            let bytes = u64::from(points) * u64::from(d.words) * 4;
+            let bytes = u64::from(points) * u64::from(d.words) * u64::from(WORD);
             grow(backend, &mut d.records, bytes, BufferUsage::STORAGE)?;
         }
         if let (Some(d), Some(later), Some(h), Some((points, _, _))) =
             (&self.domain, later, &self.hull, listed)
         {
-            let bytes = u64::from(points) * u64::from(d.words) * 4;
+            let bytes = u64::from(points) * u64::from(d.words) * u64::from(WORD);
             let out = &d.records.as_ref().unwrap().buffer;
             let (_, tess_points, _) = h.tessellator.owned();
             let patches = &h.patches.as_ref().unwrap();
@@ -861,7 +929,7 @@ impl<B: Backend> Stages<B> {
             let strips = g.output != 1;
             last = Some(FinalDraw {
                 buffer: out.clone(),
-                index_offset: strips.then_some(u64::from(index_base) * 4),
+                index_offset: strips.then_some(u64::from(index_base) * u64::from(WORD)),
                 topology: match g.output {
                     1 => Topology::PointList,
                     2 => Topology::LineStrip,
@@ -874,49 +942,53 @@ impl<B: Backend> Stages<B> {
 
         if let (Some(stream), Some(targets)) = (&self.stream, &draw.stream_output) {
             backend.slow_paths().hit(SlowPath::StreamOutAsCompute);
-            let mut so = [0u32; STREAM_WORDS + 8 + 4 * STREAM_ENTRIES];
+            let mut so = [0u32; word_at(size_of::<StreamValues>())];
+            let at = |offset| word_at(offset);
             let (data, data_bytes) = match (&self.geometry, domain_records, listed) {
                 (Some(g), _, _) => {
-                    so[0] = invocations as u32;
-                    so[1] = 1;
-                    so[2] = g.output;
-                    so[4] = 2 * g.max_vertices;
-                    so[5] = index_base;
-                    so[6] = g.out_words;
+                    so[at(offset_of!(StreamValues, units))] = invocations as u32;
+                    so[at(offset_of!(StreamValues, geometry))] = 1;
+                    so[at(offset_of!(StreamValues, vertices))] = g.output;
+                    so[at(offset_of!(StreamValues, slots))] = 2 * g.max_vertices;
+                    so[at(offset_of!(StreamValues, index_base))] = index_base;
+                    so[at(offset_of!(StreamValues, record_words))] = g.out_words;
                     (&self.out.as_ref().unwrap().buffer, out_bytes)
                 }
                 (None, Some((r, bytes)), Some((_, _, vertices))) => {
-                    so[2] = vertices;
-                    so[6] = self.domain.as_ref().unwrap().words;
-                    so[10] = 1;
+                    so[at(offset_of!(StreamValues, vertices))] = vertices;
+                    so[at(offset_of!(StreamValues, record_words))] =
+                        self.domain.as_ref().unwrap().words;
+                    so[at(offset_of!(StreamValues, listed))] = 1;
                     (r, bytes)
                 }
                 _ => {
-                    so[0] = primitives * instances;
-                    so[2] = n;
-                    so[3] = strip.into();
-                    so[6] = self.in_words;
+                    so[at(offset_of!(StreamValues, units))] = primitives * instances;
+                    so[at(offset_of!(StreamValues, vertices))] = n;
+                    so[at(offset_of!(StreamValues, strip))] = strip.into();
+                    so[at(offset_of!(StreamValues, record_words))] = self.in_words;
                     (records, record_bytes)
                 }
             };
-            so[8] = primitives;
-            so[9] = count;
+            so[at(offset_of!(StreamValues, primitives))] = primitives;
+            so[at(offset_of!(StreamValues, count))] = count;
             // Elements of buffers not bound are left out; such a buffer neither holds nor limits.
             let mut entries = 0;
             for e in &stream.entries {
-                let buffer = (e[0] & 0xff) as usize;
+                let buffer = (e[0] & u32::from(u8::MAX)) as usize;
                 if targets.buffers[buffer].is_none() {
                     continue;
                 }
-                let at = STREAM_WORDS + 8 + 4 * entries;
-                so[at..at + 3].copy_from_slice(e);
+                let first =
+                    at(offset_of!(StreamValues, table) + size_of::<StreamEntry>() * entries);
+                so[first..first + ENTRY_WORDS].copy_from_slice(e);
                 entries += 1;
             }
-            so[7] = entries as u32;
+            so[at(offset_of!(StreamValues, entries))] = entries as u32;
             for (b, target) in targets.buffers.iter().enumerate() {
                 if let Some(t) = target {
-                    so[STREAM_WORDS + b] = stream.strides[b];
-                    so[STREAM_WORDS + 4 + b] = u32::try_from(t.size).unwrap_or(u32::MAX);
+                    so[at(offset_of!(StreamValues, strides)) + b] = stream.strides[b];
+                    so[at(offset_of!(StreamValues, sizes)) + b] =
+                        u32::try_from(t.size).unwrap_or(u32::MAX);
                 }
             }
             let bytes = words_as_bytes(&so);
@@ -929,7 +1001,7 @@ impl<B: Backend> Stages<B> {
             )?;
             let mut entries = alloc::vec![
                 BindingEntry {
-                    binding: 0,
+                    binding: STREAM_VALUES_BINDING,
                     stages: StageSet::COMPUTE,
                     resource: BindingResource::UniformBuffer(BufferRange {
                         buffer: &ring,
@@ -937,9 +1009,9 @@ impl<B: Backend> Stages<B> {
                         size: bytes.len() as u64,
                     }),
                 },
-                storage(1, data, data_bytes, false),
+                storage(STREAM_DATA_BINDING, data, data_bytes, false),
                 BindingEntry {
-                    binding: 2,
+                    binding: STREAM_FILLED_BINDING,
                     stages: StageSet::COMPUTE,
                     resource: BindingResource::StorageBuffer {
                         range: BufferRange {
@@ -961,7 +1033,7 @@ impl<B: Backend> Stages<B> {
                     None => self.unused_range(1 + b as u64),
                 };
                 entries.push(BindingEntry {
-                    binding: 3 + b as u32,
+                    binding: STREAM_OUT_BINDING + b as u32,
                     stages: StageSet::COMPUTE,
                     resource: BindingResource::StorageBuffer {
                         range,
@@ -979,7 +1051,7 @@ impl<B: Backend> Stages<B> {
                 },
             };
             entries.push(BindingEntry {
-                binding: 7,
+                binding: STREAM_LIST_BINDING,
                 stages: StageSet::COMPUTE,
                 resource: BindingResource::StorageBuffer {
                     range: list,
@@ -1003,8 +1075,8 @@ impl<B: Backend> Stages<B> {
     fn unused_range(&self, i: u64) -> BufferRange<&B::Buffer> {
         BufferRange {
             buffer: &self.unused,
-            offset: 256 * i,
-            size: 16,
+            offset: self.unused_stride * i,
+            size: UNUSED_RANGE_BYTES,
         }
     }
 }
@@ -1027,7 +1099,10 @@ fn geometry_parts<B: Backend>(
         )));
     };
     let selects = super::selects(&geometry.reflection);
-    let slots = super::locations(&geometry.reflection.outputs).len() + usize::from(selects);
+    let distances = super::clip_distances(&geometry.reflection);
+    let slots = super::locations(&geometry.reflection.outputs).len()
+        + usize::from(selects)
+        + super::clip_slots(distances) as usize;
     let shader = backend.create_shader(&geometry.modules[0])?;
     Ok(Geometry {
         program: backend.create_program(&Program::Compute(&shader))?,
@@ -1050,7 +1125,7 @@ fn stream_parts<B: Backend>(
     outputs: &[StageValue],
 ) -> Result<Stream<B>, StageError> {
     let locations = super::locations(outputs);
-    let mut ends = [0u32; 4];
+    let mut ends = [0u32; STREAM_BUFFERS];
     let mut entries = Vec::new();
     for e in &so.entries {
         if e.stream != 0 {
@@ -1061,7 +1136,7 @@ fn stream_parts<B: Backend>(
             u32::from(e.component_count),
             u32::from(e.start_component),
         );
-        if buffer > 3 || count == 0 || start + count > 4 {
+        if buffer >= STREAM_BUFFERS || count == 0 || start + count > crate::build::VEC4 {
             return Err(StageError::Declaration);
         }
         if let Some(name) = &e.semantic {
@@ -1079,22 +1154,23 @@ fn stream_parts<B: Backend>(
                 }
                 Some(_) => return Err(StageError::Unsupported("StreamOutputSystemValue")),
             };
-            if first + count > 4 {
+            if first + count > crate::build::VEC4 {
                 return Err(StageError::Declaration);
             }
-            entries.push([buffer as u32 | first << 8 | count << 16, ends[buffer], slot]);
+            let packed = buffer as u32 | first << PACKED_FIRST_SHIFT | count << PACKED_COUNT_SHIFT;
+            entries.push([packed, ends[buffer], slot]);
         }
-        ends[buffer] += 4 * count;
+        ends[buffer] += WORD * count;
     }
     if entries.len() > STREAM_ENTRIES {
         return Err(StageError::Unsupported("StreamOutputEntries"));
     }
     // A buffer's stride holds its elements; a single buffer declared without one is packed.
     let mut strides = so.strides;
-    for b in 0..4 {
+    for b in 0..STREAM_BUFFERS {
         if strides[b] == 0 {
             strides[b] = ends[b];
-        } else if strides[b] < ends[b] || !strides[b].is_multiple_of(4) {
+        } else if strides[b] < ends[b] || !strides[b].is_multiple_of(WORD) {
             return Err(StageError::Declaration);
         }
     }
@@ -1141,7 +1217,7 @@ pub(super) fn grow<B: Backend>(
     if owned.as_ref().is_some_and(|o| o.size >= size) {
         return Ok(());
     }
-    let size = size.max(256).next_power_of_two();
+    let size = size.max(UNUSED_RANGE_BYTES).next_power_of_two();
     let buffer = backend.create_buffer(&BufferDesc {
         size,
         usage,
