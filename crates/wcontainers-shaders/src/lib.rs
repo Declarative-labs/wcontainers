@@ -231,6 +231,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         linked: _,
         samples: _,
         layout,
+        register_ranges: _,
     } = variant;
     let unbuilt_flags = [(
         VariantFlags::PROVOKING_LAST,

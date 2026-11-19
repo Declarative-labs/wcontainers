@@ -1034,9 +1034,9 @@ fn image_array_expected(start: &[Vec<u32>]) -> Vec<Vec<u32>> {
     out
 }
 
-/// An array of storage textures (dxc's `cs_image_array`) through the WebGPU back end: an element
-/// read or stored into after a pick at run time is the one named, against the results
-/// Direct3D's rules give (the DXBC route refuses arrays; shader model 5.1 is not Direct3D 11's).
+/// An array of storage textures (`cs_image_array`, dxc's and fxc's shader model 5.1) through the
+/// WebGPU back end: an element read or stored into after a pick at run time is the one named,
+/// against the results Direct3D's rules give (shader model 5.1 is not Direct3D 11's).
 /// Seeded texels: `WCONTAINERS_COMPUTE_SEED` and `WCONTAINERS_COMPUTE_CASES`.
 #[test]
 fn storage_texture_arrays_use_the_elements_picked() {
@@ -1052,122 +1052,327 @@ fn storage_texture_arrays_use_the_elements_picked() {
         storage_formats: (0..ARRAY_ELEMENTS as u32).map(|s| (s, format)).collect(),
         ..Default::default()
     };
-    let c = convert(Source::Dxil(&bytecode("cs_image_array.dxil")), &key, None).unwrap();
-    let shader = b.create_shader(&c.modules[0]).unwrap();
-    let program = b.create_program(&Program::Compute(&shader)).unwrap();
+    let dxil = bytecode("cs_image_array.dxil");
+    let dxbc = bytecode("cs_image_array.dxbc");
     let (width, height) = (ARRAY_SIDE, ARRAY_SIDE);
     let texel = format.block().2;
     let mut failures = Vec::new();
-    for seed in seed..seed + seeds {
-        let mut next = rng(seed);
-        let start: Vec<Vec<u32>> = (0..ARRAY_ELEMENTS)
-            .map(|_| (0..width * height).map(|_| next() >> 4).collect())
-            .collect();
-        let mut textures = Vec::new();
-        for texels in &start {
-            let texture = b
-                .create_texture(&TextureDesc {
-                    dimension: TextureDimension::D2,
-                    format,
-                    width,
-                    height,
-                    depth_or_layers: 1,
-                    mip_levels: 1,
-                    samples: 1,
-                    usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-                    cube: false,
-                    reinterpret: false,
-                })
-                .unwrap();
-            let view = b
-                .create_view(
-                    &texture,
-                    &TextureViewDesc {
+    for (route, source) in [("dxil", Source::Dxil(&dxil)), ("dxbc", Source::Dxbc(&dxbc))] {
+        let c = convert(source, &key, None).unwrap();
+        let shader = b.create_shader(&c.modules[0]).unwrap();
+        let program = b.create_program(&Program::Compute(&shader)).unwrap();
+        for seed in seed..seed + seeds {
+            let mut next = rng(seed);
+            let start: Vec<Vec<u32>> = (0..ARRAY_ELEMENTS)
+                .map(|_| (0..width * height).map(|_| next() >> 4).collect())
+                .collect();
+            let mut textures = Vec::new();
+            for texels in &start {
+                let texture = b
+                    .create_texture(&TextureDesc {
+                        dimension: TextureDimension::D2,
                         format,
-                        dimension: ViewDimension::D2,
-                        base_mip: 0,
-                        mip_count: 1,
-                        base_layer: 0,
-                        layer_count: 1,
-                        stencil: false,
-                    },
-                )
-                .unwrap();
-            b.write_texture(
-                &TextureRegion {
-                    texture: &texture,
-                    mip: 0,
-                    layer: 0,
-                    origin: Origin::default(),
-                    stencil: false,
-                },
-                Extent {
-                    width,
-                    height,
-                    depth_or_layers: 1,
-                },
-                &words(texels),
-                width * texel,
-                height,
-                WriteMode::Ordered,
-            );
-            textures.push((texture, view));
-        }
-        let entries: Vec<_> = c
-            .reflection
-            .bindings
-            .iter()
-            .map(|r| {
-                assert_eq!(r.kind, SlotKind::Storage, "{r:?}");
-                BindingEntry {
-                    binding: r.binding,
-                    stages: StageSet::COMPUTE,
-                    resource: BindingResource::StorageTexture {
-                        view: &textures[r.register as usize].1,
-                        writable: true,
-                    },
-                }
-            })
-            .collect();
-        assert_eq!(entries.len(), ARRAY_ELEMENTS);
-        let set = b.create_binding_set(&entries).unwrap();
-        b.dispatch(&DispatchCall {
-            program: &program,
-            bindings: [Some(&set), None, None, None],
-            immediates: &[],
-            groups: DispatchGroups::Direct([1, 1, 1]),
-        })
-        .unwrap();
-        let expected = image_array_expected(&start);
-        let mut apart = 0;
-        for (k, (texture, _)) in textures.iter().enumerate() {
-            let mut out = vec![0; (width * height * texel) as usize];
-            b.read_back_now(
-                &ReadSource::Texture {
-                    region: TextureRegion {
-                        texture,
+                        width,
+                        height,
+                        depth_or_layers: 1,
+                        mip_levels: 1,
+                        samples: 1,
+                        usage: TextureUsage::STORAGE
+                            | TextureUsage::COPY_SRC
+                            | TextureUsage::COPY_DST,
+                        cube: false,
+                        reinterpret: false,
+                    })
+                    .unwrap();
+                let view = b
+                    .create_view(
+                        &texture,
+                        &TextureViewDesc {
+                            format,
+                            dimension: ViewDimension::D2,
+                            base_mip: 0,
+                            mip_count: 1,
+                            base_layer: 0,
+                            layer_count: 1,
+                            stencil: false,
+                        },
+                    )
+                    .unwrap();
+                b.write_texture(
+                    &TextureRegion {
+                        texture: &texture,
                         mip: 0,
                         layer: 0,
                         origin: Origin::default(),
                         stencil: false,
                     },
-                    extent: Extent {
+                    Extent {
                         width,
                         height,
                         depth_or_layers: 1,
                     },
+                    &words(texels),
+                    width * texel,
+                    height,
+                    WriteMode::Ordered,
+                );
+                textures.push((texture, view));
+            }
+            let entries: Vec<_> = c
+                .reflection
+                .bindings
+                .iter()
+                .map(|r| {
+                    assert_eq!(r.kind, SlotKind::Storage, "{r:?}");
+                    BindingEntry {
+                        binding: r.binding,
+                        stages: StageSet::COMPUTE,
+                        resource: BindingResource::StorageTexture {
+                            view: &textures[r.register as usize].1,
+                            writable: true,
+                        },
+                    }
+                })
+                .collect();
+            assert_eq!(entries.len(), ARRAY_ELEMENTS);
+            let set = b.create_binding_set(&entries).unwrap();
+            b.dispatch(&DispatchCall {
+                program: &program,
+                bindings: [Some(&set), None, None, None],
+                immediates: &[],
+                groups: DispatchGroups::Direct([1, 1, 1]),
+            })
+            .unwrap();
+            let expected = image_array_expected(&start);
+            let mut apart = 0;
+            for (k, (texture, _)) in textures.iter().enumerate() {
+                let mut out = vec![0; (width * height * texel) as usize];
+                b.read_back_now(
+                    &ReadSource::Texture {
+                        region: TextureRegion {
+                            texture,
+                            mip: 0,
+                            layer: 0,
+                            origin: Origin::default(),
+                            stencil: false,
+                        },
+                        extent: Extent {
+                            width,
+                            height,
+                            depth_or_layers: 1,
+                        },
+                    },
+                    &mut out,
+                )
+                .unwrap();
+                apart += out
+                    .chunks(texel as usize)
+                    .zip(&expected[k])
+                    .filter(|(o, e)| u32::from_le_bytes((*o).try_into().unwrap()) != **e)
+                    .count();
+            }
+            assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+            eprintln!("seed {seed} cs_image_array ({route}): {apart} texels apart");
+            if apart > 0 {
+                failures.push((route, seed));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+/// `cs_buffer_array`'s arrays as declared (kind, first register, elements) and its invocations,
+/// one per element of each view.
+const BUFFER_ARRAYS: [(SlotKind, u32, u32); 5] = [
+    (SlotKind::Uniform, 0, 2),
+    (SlotKind::Texture, 0, 3),
+    (SlotKind::Texture, 3, 2),
+    (SlotKind::Storage, 0, 2),
+    (SlotKind::Storage, 2, 2),
+];
+const BUFFER_ARRAY_INVOCATIONS: u32 = 8;
+
+/// What `cs_buffer_array` leaves in its storage views (u0 to u3), from the seeded constants (four
+/// words per constant buffer), sources (t0 to t4) and storage words, by Direct3D's rules.
+fn buffer_array_expected(
+    picks: &[[u32; 4]],
+    sources: &[Vec<u32>],
+    start: &[Vec<u32>],
+) -> Vec<Vec<u32>> {
+    let mut out = start.to_vec();
+    let (targets, rest, more) = (0, 3, 2);
+    for i in 0..BUFFER_ARRAY_INVOCATIONS {
+        let p = picks[(i % 2) as usize];
+        let at = i as usize;
+        let summed = sources[((p[1] + i) % 3) as usize][at]
+            .wrapping_add(sources[rest + ((p[2] + i) % 2) as usize][at]);
+        out[targets + ((p[0] + i) % 2) as usize][at] = summed;
+        out[more + ((p[3] + i) % 2) as usize][at] =
+            sources[2][at] ^ sources[rest + (i % 2) as usize][at];
+    }
+    out
+}
+
+/// Arrays of constant buffers and typed buffers (fxc's shader model 5.1 `cs_buffer_array`), two
+/// declared without a length and sized by the root signature's ranges, through the WebGPU back end:
+/// every element read or written after a pick at run time is the one named, against the results
+/// Direct3D's rules give. Seeded words: `WCONTAINERS_COMPUTE_SEED` and `WCONTAINERS_COMPUTE_CASES`.
+#[test]
+fn buffer_arrays_use_the_elements_picked() {
+    let mut b = webgpu();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let registers = |kind| -> Vec<u32> {
+        BUFFER_ARRAYS
+            .iter()
+            .filter(|a| a.0 == kind)
+            .flat_map(|a| a.1..a.1 + a.2)
+            .collect()
+    };
+    let formats = |kind| {
+        registers(kind)
+            .into_iter()
+            .map(|r| (r, Format::R32Uint))
+            .collect()
+    };
+    let ranges = [SlotKind::Texture, SlotKind::Storage]
+        .into_iter()
+        .map(|kind| (kind, 0, 0..registers(kind).len() as u32))
+        .collect();
+    let key = VariantKey {
+        texel_buffers: TexelBufferRoute::Storage,
+        texel_formats: formats(SlotKind::Texture),
+        storage_formats: formats(SlotKind::Storage),
+        register_ranges: ranges,
+        ..Default::default()
+    };
+    let c = convert(Source::Dxbc(&bytecode("cs_buffer_array.dxbc")), &key, None).unwrap();
+    let shader = b.create_shader(&c.modules[0]).unwrap();
+    let program = b.create_program(&Program::Compute(&shader)).unwrap();
+    let word = size_of::<u32>();
+    let pick_words = size_of::<[u32; 4]>() / word;
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let mut next = rng(seed);
+        let picks: Vec<[u32; 4]> = registers(SlotKind::Uniform)
+            .iter()
+            .map(|_| [(); 4].map(|_| next() >> 4))
+            .collect();
+        let mut seeded = |kind| -> Vec<Vec<u32>> {
+            registers(kind)
+                .iter()
+                .map(|_| (0..BUFFER_ARRAY_INVOCATIONS).map(|_| next() >> 4).collect())
+                .collect()
+        };
+        let sources = seeded(SlotKind::Texture);
+        let start = seeded(SlotKind::Storage);
+        let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
+        let constants: Vec<_> = picks
+            .iter()
+            .map(|p| buffer(&mut b, &words(p), BufferUsage::UNIFORM))
+            .collect();
+        let read_only: Vec<_> = sources
+            .iter()
+            .map(|w| buffer(&mut b, &words(w), usage))
+            .collect();
+        let written: Vec<_> = start
+            .iter()
+            .map(|w| buffer(&mut b, &words(w), usage))
+            .collect();
+        let bytes = u64::from(BUFFER_ARRAY_INVOCATIONS) * word as u64;
+        let entries: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .map(|r| {
+                let at = r.register as usize;
+                let resource = match r.kind {
+                    SlotKind::Uniform => BindingResource::UniformBuffer(BufferRange {
+                        buffer: &constants[at],
+                        offset: 0,
+                        size: (pick_words * word) as u64,
+                    }),
+                    SlotKind::Texture | SlotKind::Storage => {
+                        let storage = r.kind == SlotKind::Storage;
+                        let buffer = if storage {
+                            &written[at]
+                        } else {
+                            &read_only[at]
+                        };
+                        BindingResource::StorageBuffer {
+                            range: BufferRange {
+                                buffer,
+                                offset: 0,
+                                size: bytes,
+                            },
+                            writable: storage,
+                        }
+                    }
+                    other => panic!("{other:?}"),
+                };
+                BindingEntry {
+                    binding: r.binding,
+                    stages: StageSet::COMPUTE,
+                    resource,
+                }
+            })
+            .collect();
+        let set = b.create_binding_set(&entries).unwrap();
+        let mut helpers = vec![0u8; c.reflection.helper_size as usize];
+        for h in &c.reflection.helpers {
+            let HelperValue::TexelBufferView { .. } = h.value else {
+                panic!("{h:?}");
+            };
+            // Every view starts at its buffer's first word and holds a word per invocation.
+            let at = h.offset as usize + word;
+            helpers[at..at + word].copy_from_slice(&BUFFER_ARRAY_INVOCATIONS.to_le_bytes());
+        }
+        let helper_buffer = buffer(&mut b, &helpers, BufferUsage::UNIFORM);
+        let helper_set = b
+            .create_binding_set(&[BindingEntry {
+                binding: helper_binding(ShaderStage::Compute),
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &helper_buffer,
+                    offset: 0,
+                    size: helpers.len() as u64,
+                }),
+            }])
+            .unwrap();
+        let mut bindings = [Some(&set), None, None, None];
+        bindings[HELPER_SET as usize] = Some(&helper_set);
+        b.dispatch(&DispatchCall {
+            program: &program,
+            bindings,
+            immediates: &[],
+            groups: DispatchGroups::Direct([1, 1, 1]),
+        })
+        .unwrap();
+        let expected = buffer_array_expected(&picks, &sources, &start);
+        let mut apart = 0;
+        for (k, buffer) in written.iter().enumerate() {
+            let mut out = vec![0; bytes as usize];
+            b.read_back_now(
+                &ReadSource::Buffer {
+                    buffer,
+                    offset: 0,
+                    size: bytes,
                 },
                 &mut out,
             )
             .unwrap();
             apart += out
-                .chunks(texel as usize)
+                .chunks(word)
                 .zip(&expected[k])
                 .filter(|(o, e)| u32::from_le_bytes((*o).try_into().unwrap()) != **e)
                 .count();
         }
         assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
-        eprintln!("seed {seed} cs_image_array: {apart} texels apart");
+        eprintln!("seed {seed} cs_buffer_array: {apart} words apart");
         if apart > 0 {
             failures.push(seed);
         }

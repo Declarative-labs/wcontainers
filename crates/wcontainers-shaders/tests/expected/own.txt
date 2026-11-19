@@ -1,7 +1,9 @@
 cs_atomics.dxbc	ok ; glsl absent compute
+cs_buffer_array.dxbc	unsupported UnboundedResourceArray
 cs_decrement.dxbc	ok ; glsl absent compute
 cs_divide.dxbc	ok ; glsl absent compute
 cs_escape.dxbc	ok ; glsl absent compute
+cs_image_array.dxbc	ok views:R32Uint ; glsl absent compute
 cs_images.dxbc	unsupported StorageFormatKind (with views)
 cs_one_d.dxbc	unsupported StorageFormatKind (with views)
 cs_readonly.dxbc	ok ; glsl absent compute
@@ -56,6 +58,7 @@ hs_tri_odd_point.dxbc	ok ; glsl absent compute
 hs_tri_pow2_ccw.dxbc	ok ; glsl absent compute
 hs_tri_pow2_cw.dxbc	ok ; glsl absent compute
 hs_tri_pow2_point.dxbc	ok ; glsl absent compute
+ps_array.dxbc	ok ; glsl compiles
 ps_cases.dxbc	ok ; glsl compiles
 ps_clip.dxbc	ok ; glsl compiles
 ps_coarse.dxbc	ok ; glsl compiles

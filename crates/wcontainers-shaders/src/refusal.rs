@@ -135,6 +135,8 @@ pub const TYPED_BUFFER_STORAGE_AS_TEXTURE: &str = "TypedBufferStorageAsTexture";
 pub const TYPED_BUFFER_USE: &str = "TypedBufferUse";
 pub const TYPE_16_BIT: &str = "Type16Bit";
 pub const TYPE_64_BIT_INTEGER: &str = "Type64BitInteger";
+/// An array declared without a length where `VariantKey::register_ranges` holds no range sizing it.
+pub const UNBOUNDED_RESOURCE_ARRAY: &str = "UnboundedResourceArray";
 pub const VECTOR_LOAD_ACROSS_ELEMENTS: &str = "VectorLoadAcrossElements";
 pub const VECTOR_STORE_ACROSS_ELEMENTS: &str = "VectorStoreAcrossElements";
 pub const VIEWPORT_ARRAY_INDEX: &str = "ViewportArrayIndex";
