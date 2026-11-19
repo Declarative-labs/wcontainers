@@ -1419,9 +1419,19 @@ impl Cpu for NativeCpu {
             let at = offset + done as u64;
             let within = (at % PAGE_SIZE) as usize;
             let take = (PAGE_SIZE as usize - within).min(from.len() - done);
-            let frame = self.block_frame(shared, at)?;
-            frame_bytes(frame)[within..within + take].copy_from_slice(&from[done..done + take]);
+            let part = &from[done..done + take];
             done += take;
+            // A page with no frame reads as zeros already: zeros written to it take no frame.
+            let absent = self
+                .shared
+                .get(&shared)
+                .and_then(|block| block.get((at / PAGE_SIZE) as usize))
+                .is_some_and(Option::is_none);
+            if absent && part.iter().all(|&byte| byte == 0) {
+                continue;
+            }
+            let frame = self.block_frame(shared, at)?;
+            frame_bytes(frame)[within..within + take].copy_from_slice(part);
         }
         Ok(())
     }
