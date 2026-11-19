@@ -582,7 +582,8 @@ from what they are given (6.5).
   from the largest offset below that is a multiple of both the alignment and the program's element
   stride (`ReflectedBinding::stride`) and writes the rest into the helper constants
   (`HelperValue::StorageOffset`), which a program made with `VariantFlags::STORAGE_OFFSET` adds to its
-  storage addresses (one add per access). A front that cannot know ahead of the draw (Direct3D 12's
+  storage addresses (one add per access; the slow path `StorageOffsetInShader`, counted at each binding
+  bound from below its start). A front that cannot know ahead of the draw (Direct3D 12's
   pipelines) asks for the flag on every program with storage buffers, so there is no second program.
 - Direct3D 12 descriptor tables live in heaps the program writes with the CPU at any time, and root
   signature 1.0 (and `DESCRIPTORS_VOLATILE` ranges in 1.1) let it change descriptors after recording a
