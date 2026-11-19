@@ -2009,6 +2009,14 @@ Run 45 (the fronts' line and primitive items, the literal sweep):
   common target size, the alpha component and the coloured vertex's sizes are named once
   (`build::ALPHA`, `tests/common`). This crate's baseline lines (src, build.rs, tests, examples):
   659 (665 at run 44's end); the check passes with nothing to add (run45/check4.txt).
+- Tests at the run's last code (laptop i7-8750H, load 1 to 4, 4 cargo jobs; desktop shared through
+  the queue, 3 jobs): clippy with warnings denied clean on Linux and Windows; the laptop's whole
+  suite (`--include-ignored --no-fail-fast`, corpora dxbc, games, runner, glslang) passes but for
+  the runner corpus's long-known distance-4 entry (run45/suite2.log); the own corpora's records
+  gained `vs_line`, `ps_line` and `ps_primitive` (both builds; `ps_primitive`'s GLSL refused for
+  `gl_PrimitiveID`, as `ps_primid`'s). Drawn on the RTX 3080 in one GPU job (run45/gpu8.log):
+  draw 7 of 7, geometry_draw 4 of 4 (84, 36 and 48 comparisons), stage_draw 2 of 2 (32 and 40),
+  variant_draw 5 of 5. Chrome's compile of the new files was not run this run.
 - The laptop's loop script still gives cargo 5 jobs: its numbers are in the literal baseline, and
   every way of writing 4 there adds a line. Runs pass `CARGO_BUILD_JOBS=4` and `choom -n 600 --`
   inside the command instead (How to run).
