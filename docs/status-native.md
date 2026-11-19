@@ -104,6 +104,12 @@ Results (M5 Max; scratch native/n3r6):
   alike in output, exit code and files, 18.7 s for all, load 3.6. The first try (busybox-dev2.log) differed only in `ls -la`'s
   times, which led to c51b60e4. Each command 9,000 to 15,000 exits of the machine, 0.15 to 0.27 s (md5sum of busybox 2.0 s).
 
+Dependencies: no new crate from outside. The monitor's tests gained wcontainers-kernel (this workspace, MIT OR Apache-2.0) and
+wcontainers-kernel-test (this workspace, GPL-2.0-only for its unicorn-engine; a dev-dependency, test only, never shipped).
+Alpine's minirootfs (scratch only, never in the repository) was used for development alone.
+
+Literals: the check exits 0; two baseline lines left (both in the kernel test crate's busybox files), none added.
+
 What comes next for N3, in order:
 1. The bar against the reference, once Docker runs on the Mac: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test
    busybox` (needs alpine:3.22 for linux/arm64 pulled). Then forks.c against the reference: build it as the kernel test does
