@@ -13581,8 +13581,6 @@ code	crates/wcontainers-shaders/src/container.rs	int	chunks	4
 code	crates/wcontainers-shaders/src/container.rs	int	signature	4
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
-code	crates/wcontainers-shaders/src/dxil.rs	bytestr	lower	b"ISG1"
-code	crates/wcontainers-shaders/src/dxil.rs	bytestr	lower	b"OSG1"
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	-2_147_483_648.0
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	2_147_483_648.0
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	4_294_967_296.0
@@ -13973,8 +13971,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_op	"image
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_op	"temporary left after SSA"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"BuiltInArray"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"BuiltInArray"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"ClipDistanceType"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"ClipDistanceType"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"InputArray"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"OutputArray"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"OutputArray"
@@ -14175,65 +14171,17 @@ code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"stage_indice
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"stage_vertices"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"vertex outputs"
 code	crates/wcontainers-shaders/src/stage.rs	str	vertex_as_compute	"vertex_shader"
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::new	1280
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	0xff
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	10
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	5
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	6
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	6
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	6
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	6
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	7
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	7
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	8
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	8
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	8
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::run_with	9
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::tessellated_with	1280
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::tessellated_with	3
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::tessellated_with	4
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::tessellated_with	4
 code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::tessellated_with	8
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::unused_range	16
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::unused_range	256
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::vertex_layout	16
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stages<B>::vertex_layout	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stream	3
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	Stream	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	StreamOutput	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	StreamTargets	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	grow	256
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	16
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	3
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	4
-code	crates/wcontainers-shaders/src/stage/helper.rs	int	stream_parts	8
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::new	"the stage helper without work"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"GeometryTriangleStripAdjacency"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	Stages<B>::run_with	"StageIndexU8"
@@ -14248,18 +14196,8 @@ code	crates/wcontainers-shaders/src/stage/helper.rs	str	geometry_parts	"not a ge
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	stream_parts	"StreamOutputEntries"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	stream_parts	"StreamOutputStreams"
 code	crates/wcontainers-shaders/src/stage/helper.rs	str	stream_parts	"StreamOutputSystemValue"
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	16
 code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	3
 code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	3
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	3
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	3
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	32
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	32
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	32
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	4
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	4
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	4
-code	crates/wcontainers-shaders/src/stage/tessellate.rs	int	Tessellator<B>::run	4
 code	crates/wcontainers-shaders/src/stage/tessellate.rs	str	Tessellator<B>::owned	"the tessellator ran"
 code	crates/wcontainers-shaders/src/variant.rs	int	apply	4
 code	crates/wcontainers-shaders/src/variant.rs	int	apply	4

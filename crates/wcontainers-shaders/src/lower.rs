@@ -38,6 +38,8 @@ type Result<T> = core::result::Result<T, ConvertError>;
 /// The clip and cull distances a vertex has in Direct3D 11 and 12, together
 /// (`D3D11_CLIP_OR_CULL_DISTANCE_COUNT`).
 const CLIP_OR_CULL_DISTANCES: u32 = 8;
+/// The refusal of clip distances of a type the common form's array cannot hold.
+pub(super) const CLIP_DISTANCE_TYPE: &str = "ClipDistanceType";
 
 fn unsupported(what: &'static str) -> ConvertError {
     ConvertError::Unsupported(what)
@@ -1071,7 +1073,11 @@ impl<'a> Lowering<'a> {
                 | builtin::GS_INSTANCE_ID
                 | builtin::GS_VERTEX_COUNT_IN,
             ) => true,
-            (SourceStage::Vertex | SourceStage::Domain, false, builtin::CLIP_DISTANCE) => true,
+            (
+                SourceStage::Vertex | SourceStage::Domain | SourceStage::Geometry,
+                false,
+                builtin::CLIP_DISTANCE,
+            ) => true,
             (SourceStage::Geometry, false, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
@@ -1334,7 +1340,7 @@ impl<'a> Lowering<'a> {
                             size: 1,
                         }];
                     if !element || io.ty.dims.len() > 1 {
-                        return Err(unsupported("ClipDistanceType"));
+                        return Err(unsupported(CLIP_DISTANCE_TYPE));
                     }
                     let count: u32 = io.ty.dims.iter().product();
                     let (var, ty) = (io.var, io.ty.clone());
@@ -1355,7 +1361,7 @@ impl<'a> Lowering<'a> {
                 }
                 let count = parts.len() as u32;
                 if count > CLIP_OR_CULL_DISTANCES {
-                    return Err(unsupported("ClipDistanceType"));
+                    return Err(unsupported(CLIP_DISTANCE_TYPE));
                 }
                 let array = self.ty(TypeInner::Array {
                     base: f32_ty,

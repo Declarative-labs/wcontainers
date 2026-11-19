@@ -140,6 +140,42 @@ fn geometry_refusals_are_named() {
     );
 }
 
+/// A geometry shader writing three clip distances over two signature elements (`gs_clip`): the
+/// reflection counts all three, the pass-through writes them as the built-in, and under
+/// `CLIP_DISTANCE` it passes them at the linked location for the pixel program instead.
+#[test]
+fn geometry_clip_distances_reach_the_pass_through() {
+    let code = own("gs_clip.dxbc");
+    let plain = convert(Source::Dxbc(&code), &VariantKey::default(), None).unwrap();
+    let components: u32 = plain
+        .reflection
+        .outputs
+        .iter()
+        .filter(|v| v.system == Some(SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones())
+        .sum();
+    assert_eq!(components, 3, "{:?}", plain.reflection.outputs);
+    let text = wgsl(&plain.modules[1]);
+    assert!(text.contains("@builtin(clip_distances)"), "{text}");
+    assert!(text.contains("array<f32, 3>"), "{text}");
+    let location = stage::locations(&plain.reflection.outputs)
+        .last()
+        .map_or(0, |l| l + 1);
+    let key = VariantKey {
+        flags: wcontainers_gpu::VariantFlags::CLIP_DISTANCE,
+        linked: wcontainers_gpu::LinkedValues {
+            location,
+            clip_distances: 3,
+        },
+        ..Default::default()
+    };
+    let linked = convert(Source::Dxbc(&code), &key, None).unwrap();
+    let text = wgsl(&linked.modules[1]);
+    assert!(!text.contains("clip_distances"), "{text}");
+    assert!(text.contains(&format!("@location({location})")), "{text}");
+    assert_ne!(linked.modules[1].key, plain.modules[1].key);
+}
+
 /// A geometry shader writing its layer and viewport (`gs_layers`): both are in its reflection, its
 /// records end with their slot, and the pass-through reads that slot and the run's helper constants.
 #[test]

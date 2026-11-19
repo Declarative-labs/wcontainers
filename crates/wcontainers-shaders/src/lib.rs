@@ -97,7 +97,14 @@ pub fn convert(
     unbuilt(variant, root_signature)?;
     let (module, reflection, stage) = contained(|| {
         let (mut module, mut reflection, stage) = match source {
-            Source::Dxbc(bytes) => lower::lower(&dxbc::to_ir(bytes)?, variant)?,
+            Source::Dxbc(bytes) => {
+                let (module, mut reflection, stage) = lower::lower(&dxbc::to_ir(bytes)?, variant)?;
+                let inputs = container::dxbc_signature(bytes, true);
+                container::place_system_values(&mut reflection.inputs, &inputs);
+                let outputs = container::dxbc_signature(bytes, false);
+                container::place_system_values(&mut reflection.outputs, &outputs);
+                (module, reflection, stage)
+            }
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
             Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
         };
@@ -117,7 +124,17 @@ pub fn convert(
     }];
     if let StageExtras::Geometry { .. } = reflection.extras {
         geometry_variant(variant)?;
-        let module = stage::passthrough(&reflection)?;
+        let mut module = stage::passthrough(&reflection)?;
+        if variant.flags.contains(VariantFlags::CLIP_DISTANCE) {
+            // The pass-through is the last vertex stage: it passes the distances to the pixel program.
+            let key = VariantKey {
+                flags: VariantFlags::CLIP_DISTANCE,
+                linked: variant.linked,
+                ..VariantKey::default()
+            };
+            let mut own = reflection.clone();
+            variant::apply(&mut module, ShaderStage::Vertex, &key, &mut own)?;
+        }
         modules.push(ShaderModule {
             info: validate(&module)?,
             module,
@@ -138,7 +155,6 @@ fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
     let vertex_flags = VariantFlags::VIEWPORT_ADJUST
         | VariantFlags::VIEWPORT_DEPTH_FLIP
         | VariantFlags::CLIP_DEPTH_REWRITE
-        | VariantFlags::CLIP_DISTANCE
         | VariantFlags::DEPTH_CLAMP;
     if variant.flags.intersects(vertex_flags)
         || !variant.pulled.is_empty()

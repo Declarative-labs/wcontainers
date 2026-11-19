@@ -77,6 +77,17 @@ fn linked_location(draw: &Draw<'_>) -> u32 {
         .unwrap_or(0)
 }
 
+/// The clip distances the draw's vertex program writes, counted from its reflection as a front does.
+fn clip_distances(draw: &Draw<'_>) -> u8 {
+    let vs = convert(draw.vs, &VariantKey::default(), None).unwrap();
+    vs.reflection
+        .outputs
+        .iter()
+        .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones())
+        .sum::<u32>() as u8
+}
+
 fn floats(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -717,16 +728,16 @@ fn variants_draw_as_the_native_feature_does() {
 
         // Clip distances natively (WebGPU's clip_distances, on wgpu's Vulkan path: its Direct3D 12
         // path has none), against real Direct3D 11; the planes must change Direct3D's picture.
-        {
+        for vs in ["vs_clip", "vs_clip_six"] {
             let code = [
-                bytecode(&format!("vs_clip.{route}")),
+                bytecode(&format!("{vs}.{route}")),
                 bytecode(&format!("ps_textured.{route}")),
             ];
             let native = grid_draw(&code, dxil, &grid);
             let tint = [1.0, 0.75, 0.5, 1.5];
             let (reference, _) = direct3d_11(
                 &d3d,
-                "vs_clip",
+                vs,
                 "ps_textured",
                 Format::Rgba8Unorm,
                 tint,
@@ -743,11 +754,11 @@ fn variants_draw_as_the_native_feature_does() {
                 &Reference::default(),
             );
             let (changed, _) = differ(&unclipped, &reference, Format::Rgba8Unorm);
-            eprintln!("clip distances {route}: they change {changed} of Direct3D's texels");
+            eprintln!("clip distances {vs} {route}: they change {changed} of Direct3D's texels");
             assert!(changed > 0);
             let texels = ours(&mut vulkan, &native, ProvokingVertex::First);
             results.push(compare(
-                format!("clip distances {route} webgpu-native (vulkan) against direct3d 11"),
+                format!("clip distances {vs} {route} webgpu-native (vulkan) against direct3d 11"),
                 &reference,
                 &texels,
                 Format::Rgba8Unorm,
@@ -759,7 +770,7 @@ fn variants_draw_as_the_native_feature_does() {
             // against Direct3D 11, four against the native distances on Vulkan, resolved.
             let linked = LinkedValues {
                 location: linked_location(&native),
-                clip_distances: 2,
+                clip_distances: clip_distances(&native),
             };
             let mut variant = native.clone();
             for key in [&mut variant.setup.vs_key, &mut variant.setup.ps_key] {
@@ -772,7 +783,7 @@ fn variants_draw_as_the_native_feature_does() {
                 ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
             ] {
                 results.push(compare(
-                    format!("clip_distance {route} {back_end} against direct3d 11"),
+                    format!("clip_distance {vs} {route} {back_end} against direct3d 11"),
                     &reference,
                     &texels,
                     Format::Rgba8Unorm,
@@ -790,7 +801,7 @@ fn variants_draw_as_the_native_feature_does() {
             variant4.setup.ps_key.samples = 4;
             let texels = ours(&mut gpu, &variant4, ProvokingVertex::First);
             results.push(compare(
-                format!("clip_distance {route} webgpu four samples against vulkan's native"),
+                format!("clip_distance {vs} {route} webgpu four samples against vulkan's native"),
                 &reference4,
                 &texels,
                 Format::Rgba8Unorm,
