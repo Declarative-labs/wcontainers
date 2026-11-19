@@ -322,8 +322,7 @@ impl RasterizerDesc {
     }
 }
 
-/// `D3D11_APPEND_ALIGNED_ELEMENT`.
-pub const APPEND_ALIGNED: u32 = u32::MAX;
+pub use wcontainers_directx_graphics_infrastructure::d3d::APPEND_ALIGNED_ELEMENT as APPEND_ALIGNED;
 
 /// `D3D11_INPUT_ELEMENT_DESC`.
 #[derive(Clone, Debug, PartialEq, Eq)]
