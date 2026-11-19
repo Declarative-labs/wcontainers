@@ -80,6 +80,12 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   so its comparison is part of J5's bar. The one command for the long run is scratch `j5/ltp.sh NAME`
   (section "How to run").
 
+- For the kernel track (J5 run 2), two more tests whose verdict can change from run to run with nothing
+  changed: terminal.rs `splice_holds_the_pipe` (its guest ttylock.c waits 300 ms and reads for 2.5 s of real
+  time, so a slow run under load misses a line; it failed once on the stand-in at load about 80, then passed
+  14 times), and sharedviews.rs `code_written_through_one_view_runs_through_the_other`, which compares with one
+  fresh reference run while the reference itself gives "code views: 1 1 3" in place of "1 2 3" about once in
+  30 runs on this Mac (evidence under "J5 run 2").
 - For the kernel track: threads.rs `priority_inheriting_futexes_match_reference` (guest/futexpi.c) compares our
   output line by line with one fresh reference run, but the reference's order of the waiters' "woke" and
   "unlock" lines varies from run to run on one CPU (three orders in 20 runs, J4a run 2; evidence under "J4a
@@ -174,9 +180,32 @@ size the guest is told (plan section 8), which `Machine` holds once the kernel t
   it stands. Those logs are in scratch j5/run1-stale. suite.sh now writes Docker's server version in each
   log's header.
 - J5's bar from a clean build (a new scratch worktree j5/tree at 798f07ff, its own empty target and
-  translation cache): scratch `j5/final.sh`, then the whole LTP comparison by `j5/after.sh`. Results below
-  when they end.
+  translation cache): scratch `j5/final.sh`, then the whole LTP comparison by `j5/after.sh`.
 - No code changed in this run, so that the bar is on the code that is pushed.
+
+The whole kernel test crate at 798f07ff (logs j5/f-standin.log, f-full.log, f-none.log, f-bounded.log; verdict
+lists j5/f-*.txt, 230 lines each but none's 222; `j5/compare.sh` diffs each against the stand-in's):
+- Stand-in: 3,662.7 s with its build, load 27 to 83; 221 ok, 8 ignored, 1 failed (`terminal::splice_holds_the_pipe`, below).
+- Full: 4,081.6 s, load 83 to 112. None: 1,904.4 s, load 113 to 87 (the K6b runtimes' tests left out). Bounded:
+  8,557.6 s, load 87 to about 120 (N 44 for seed 0).
+- At each look-ahead every verdict equals the stand-in's, test by test, but these, each with its reason:
+  - by design, as in J2 to J4a: `align::misaligned_stack_pointer_matches_reference` and
+    `sharedviews::code_written_through_one_view_runs_through_the_other` are ignored on the stand-in (its known
+    failures) and run against the reference with the back end; `counterclock::counter_never_goes_backwards_across_saves`
+    is ignored with the back end (its known failure until the kernel's clock method lands);
+  - waiting (Departures): java `start_up_matches_reference` and `threads_and_collections_match_reference`, node
+    `system_program_matches_reference`, python `system_test_modules_match_reference` fail at full and bounded
+    on the address ceiling, as in run 1 ("Could not reserve enough space", "Could not allocate compressed
+    class space: 1073741824 bytes", "address above the address space" warned); at none the eight tests of the
+    K6b runtimes' files are not run;
+  - `terminal::splice_holds_the_pipe` failed on the stand-in only (ours lacked the second "abc" line). Its
+    guest (ttylock.c) writes a line at 300 ms and reads what comes back for 2.5 s of real time, so a slow
+    run misses it; run again alone 6 times and with its file 8 times at load about 100, it passed every time
+    (stand-in binary of this build). It passed at all three look-aheads;
+  - `sharedviews::code_written_through_one_view_runs_through_the_other` failed at full only: ours "code views:
+    1 2 3", the reference "1 1 3". The reference varies: 30 runs of its guest in Docker here gave "1 2 3" 29
+    times and "1 1 3" once (j5/sharedviews-repeat.log has 8 reruns of the test at full, all passed). It
+    passed at none and bounded.
 
 Built:
 - The local system's file backend (crates/wcontainers-runtime/src/files.rs, 1,157 lines with its unit test): a
@@ -1323,7 +1352,8 @@ run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `
 `j2/` to `j2run5/`, J3's in `j3/`.
 - J5's bar, all four runs in one command on a scratch worktree (`git worktree add --detach j5/tree <commit>`):
   scratch `j5/final.sh` (stand-in, then full, none and bounded; logs j5/f-*.log, verdicts j5/f-*.txt as
-  `binary::test verdict`, made by j5/verdicts.py). One run: `j5/suite.sh NAME full|none|bounded|standin
+  `binary::test verdict`, made by j5/verdicts.py; `j5/compare.sh` diffs each look-ahead's list against the
+  stand-in's). One run: `j5/suite.sh NAME full|none|bounded|standin
   [test arguments]`. By hand: `LOOK_AHEAD=<l> nix develop -c cargo test -j 4 -p wcontainers-kernel-test
   --features runtime --no-fail-fast -- --test-threads 3` (leave the feature out for the stand-in).
 - The Linux Test Project, stand-in against the back end at full, one command: scratch `j5/ltp.sh NAME
@@ -1649,8 +1679,11 @@ array of slots in microseconds.
   CodeRange"), python `system_test_modules_match_reference` (test_mmap's `test_around_2GB` and
   `test_around_4GB`). They are J6's (plan section 16), and need the translator's form with the table and
   slots in 64 bit memory (plan section 20, asked of the translator track). At none look-ahead the K6b
-  runtimes' six tests are not run at all (plan section 15: J6 runs them at full and bounded only; libpython at
-  none measured 16.9 GB to compile). No test of the crate needs standard input or the count comparison, so
+  runtimes' eight tests are not run at all (go `program_matches_reference`, java's two, node
+  `start_up_matches_reference` and `system_program_matches_reference`, python
+  `language_test_modules_match_reference`, `system_program_matches_reference` and
+  `system_test_modules_match_reference`; "six" until J5 run 2 miscounted them), since plan section 15 has
+  J6 run them at full and bounded only (libpython at none measured 16.9 GB to compile). No test of the crate needs standard input or the count comparison, so
   none waits for those.
 - The file backend of the local system is written here, not taken from a crate: fuse-backend-rs (the kernel
   tests' server) has its passthrough file system on Linux only, and on macOS it and fuser speak macFUSE's
