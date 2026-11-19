@@ -4,6 +4,10 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
+- P2 is done and ready for its independent check (2026-11-19 15:05): the long run's three layers reached the
+  plan's bars with 0 mismatches of the translator, every failed chunk explained and passed later; the
+  confirmation run (seed 200, 5 percent) passed; the whole suite passes where each verdict counts. Nothing
+  of this track runs now, on the Mac or on the rented machines. Details under "P2".
 - Docker's VM stopping (brief, 2026-11-19 05:10): no test of this track can power off, reboot or kill the
   first process of Docker's VM. Every container it starts (`programs::run_container`, `reference.rs`,
   `layer3.rs`, `binaries.rs`) is a plain `docker run` with Docker's default capabilities, no
@@ -239,6 +243,20 @@ Progress (from the ledger):
   22, layer 3 chunks 55, 70, 84, 113, 126, 133, 176) each have a later pass of the same chunk and knobs;
   layer 3's passed chunks are 1 to 229 with no gap and no chunk counted twice. Wall clock of the whole run:
   2026-11-16 15:55 to 2026-11-19 13:52, about 70 hours, Docker outages, stopped and hung chunks included.
+- Confirmation run done, 2026-11-19 09:30 to 15:05 (base seed 200, 5 percent of each layer, ledger
+  `p2/confirm/ledger.txt`): layer 1 607,500 cases (1,215 forms x 500, 6,075 in Chrome) and layer 2 50,000
+  programs on the Mac, on 1f9c030; layer 3 12 chunks passed, 6,000 programs made, 5,239 compared with Linux
+  (bar 5,000), 60 also in Chrome, 0 mismatches, on 8c7a4b5 (chunks 4 and 5 on 4e67cd6, where the
+  watcher restarted the driver; all these commits have 6a705f8's crates).
+  Layer 3 chunks 1 to 5 ran on the Mac (3 jobs, 1,446 to 2,359 s, load 10 to 100); its chunk 4 failed once on
+  Docker's outage of 12:45 (failure 10) and passed again. The Mac's confirmation driver was stopped at 13:54
+  in chunk 6 (owner's rule of 13:50; no ledger line, its containers removed), and chunks 6 to 12 ran at once
+  on the rented machine at 8 jobs each (`arm-confirm/par.sh`, whose export was first made a git checkout,
+  which arm-run now asks for): 625 to 896 s each, except chunk 7, 4,354 s, where two workers spent most of
+  an hour each in the "full, stopping everywhere" runs of long programs (sampled with perf: the runner's
+  stop hook under `translated_stopping_everywhere`, the slow setting of failure 3, not a hang); it passed
+  with 457 compared. `ledger-check.sh` on the confirmation ledger: the one non-pass line is followed by a
+  pass of the same chunk.
 - The whole suite of the three crates on the final code (4e67cd6; the crates are the same at d5dcb8a and
   later, only this file changed), debug build, `cargo test -j 24 --no-fail-fast -p wcontainers-arm64 -p
   wcontainers-translator -p wcontainers-translator-test`, on the rented ARM64 machine (arm-run name
