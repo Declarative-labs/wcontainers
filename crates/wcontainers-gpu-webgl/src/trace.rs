@@ -1137,6 +1137,11 @@ mod record {
             Traced::new(crate::Gl::on_angle(dir, off)?)
         }
 
+        /// [`crate::Gl::renderer`].
+        pub fn renderer(&self) -> &str {
+            self.inner.renderer()
+        }
+
         /// [`crate::Gl::add_window`].
         ///
         /// # Safety
