@@ -1567,6 +1567,18 @@ Run 27 (G2d):
   and the drivers divide exactly as Direct3D does; the sample's last texel comes from its
   converted program dividing at run time where its bytecode's arithmetic gives 4.0 (the
   converter's or the front's), not from this back end. Refused here by name: not this back end's.
+- atg-simpleinstancingpc's breakdown repeated after the merges (the G2c check's finding;
+  `frames/run atg-simpleinstancingpc` at bd160c74, Direct3D 11 front, wgpu on Direct3D 12; each
+  job alone in the queue; scratch g2d/frames-instancing.log; the rig's "frames differ" mark as in
+  runs 21 to 26, the frames drawn). Load: short run 20.5 % (4.2 to 74.9, over the 280 s its job
+  waited and ran), long run 4.9 % (2.4 to 9.1, 7 s). Per frame over 300 frames: wall 16.451 ms
+  (the display), CPU 79.527 ms: program 0.137, front 0.047, back end and naga under 0.01 (each
+  -0.003, the long run less the short), wgpu 0.023, driver 0.073, system 79.253. Under the back
+  end's own functions 0.133 ms (driver 0.063, system 0.077: present, submit, `memcpy` in
+  `write_buffer_impl`). Not ours: 65.710 ms in the Direct3D 12 driver's threads spinning, 13.950
+  in the program's. Counts a frame: 5 `MappedUploadWhole`, 935,856 bytes into buffers, 3
+  pipeline binds, the same as run 22. So run 22's picture stands: nothing of ours costs more
+  than 0.05 ms a frame there.
 
 Run 26 (G2c), frame breakdowns at bf7ddf71 (every graphics branch merged; no code of this
 crate changed). Desktop (i9-9900K, 16 threads, RTX 3080, driver 621.01), each job alone in the
@@ -1591,7 +1603,8 @@ chocolate-doom "frames differ", as in runs 21 to 25; both drew their frames.
   frame: MappedUploadWhole 3, bind_groups 1, buffer_bytes 496, pipeline_binds 3, renames 1,
   spares_reused 1, texture_bytes 256,000, the same as runs 21 to 25.
 - What is ours and cheap: nothing new. The back end's own code is 0.01 to 0.04 ms a frame in
-  both; atg-simpleinstancingpc's breakdown (the third program) stands from run 22.
+  both; atg-simpleinstancingpc's breakdown (the third program) stands from run 22 (repeated in
+  run 27, the same).
 
 Run 25 (G2c), chocolate-doom's frame breakdown at 5bdc9a93 (after this run's merges and the
 frame report through serde; Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16
