@@ -1575,7 +1575,7 @@ impl Device {
         p.VisibleNodeMask = p.VisibleNodeMask.max(1);
         let (size, align, flags) = (desc.SizeInBytes, desc.Alignment, desc.Flags.0 as u32);
         if desc.Alignment == 0 {
-            desc.Alignment = 64 << 10;
+            desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT.into();
         }
         let id = gpu::call(move |d| d.create_heap(size, align, kind, flags)).map_err(hr)?;
         give::<ID3D12Heap>(

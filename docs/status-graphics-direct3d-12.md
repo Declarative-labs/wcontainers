@@ -6,8 +6,8 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-Everything on G5's pass bar is done or on the written gap list (runs 35 to 38), ready for the
-independent check; the literal check passes (runs 36 to 38). Test files 186 of 198. Every failing file is on the gap list
+Everything on G5's pass bar is done or on the written gap list (runs 35 to 39), ready for the
+independent check; the literal check passes (runs 36 to 39). Test files 186 of 198. Every failing file is on the gap list
 with its cause: an absent feature reported as Direct3D 12 expects (8), a listed loss naming what
 the back end lacks (1), not to be matched (1), or a named item of the shaders track (2: one
 refused by name, one a value the converted program gives). None is the front's own unfinished
@@ -25,7 +25,20 @@ fail, 3 absent, each failure named (the textures scene passes since run 38, with
 textures). On wgpu's Direct3D 12 path (run 36's experiment, not kept) the three differences the
 Vulkan path makes were measured gone; what that path still lacks is other tracks' ("Next" 3).
 
-Latest results (run 38, 2026-11-19, desktop shared with other tracks; scratch run38/). At
+Latest results (run 39, 2026-11-19, desktop shared with other tracks; scratch run39/). At
+8ffdc980, the run's last code (logs *2.log): the literal check passes (lit2.log); lint clean
+(lint2.log); the crates' 50 tests pass (test2.log); test files 186 of 198, the same 12 failing as
+run 38 (full2.log); own cases 29 of 29 equal (the new `layers` among them), draw 0 of 4096 pixels
+beyond 1 (check2.log); shader runner 214 of 302, the same 88 failing files (runner2.log); scenes
+95 pass, 22 fail, 3 absent, the same outputs (scenes2.log); Wine's five dxgi tests 3 pass, the
+same 2 fail (dxgi2.log); Microsoft's two samples and Godot's 2D platformer equal real (p2-*.log);
+Godot's 3D platformer still stops at the back end's sRGB view; bgfx 37 826 to 980 pixels beyond 8
+of 20,480 allowed, the overlay's text (p2-bgfx37.log); fence round trip `--alone` under
+"Measurements". The same at d0b08b61 (the merge and the layer change; logs *1.log), but for the
+literal check, which failed there on one moved line of the own program's readback pitch, named
+in 8ffdc980.
+
+Results of run 38 (2026-11-19, desktop shared with other tracks; scratch run38/). At
 d5881c24's code (logs *2.log, the run's last code but the literal sweep below): the literal check
 passes (lit2.log); lint clean (lint2.log); the crates' 50 tests pass (test2.log: 48 of the two
 crates, 2 of the interface's slow paths); test files 186 of 198, the same 12 failing as run 37
@@ -161,6 +174,27 @@ milestone "G5 to the pass bar"):
   without unordered access): Godot's textures were refused there, and with them taken its 2D
   platformer draws every compared frame exactly as real Direct3D 12 does.
 
+- Run 39 (the tenth run of the milestone's current form): merged shaders (its runs 43 and 44:
+  the interface change "a layer named past the views drawn into the first", `LAYER_FROM_STAGE`
+  and `HelperValue::LayerCount`; the float layouts named; `stage::STREAM_BUFFERS` public); the
+  shared line, webgpu, webgl, direct3d-11, rig and phase-1-literals had nothing new. No conflicts.
+  Adopted the interface change (d0b08b61): a geometry shader writing `SV_RenderTargetArrayIndex`
+  is converted with `LAYER_FROM_STAGE` and the pixel shader with the same flag and `linked`
+  (`device::Link`, which now carries the flags with the linked values for clip distances too);
+  the pass-through's block gets the target views' layer count (`PASSTHROUGH_LAYER_COUNT`). So a
+  primitive naming a layer at or past the views' layers is drawn into the first layer and its
+  pixel shader reads the layer it named, as Direct3D draws it; before, it was not drawn. New own
+  case `layers` (the shaders crate's `gs_layers` naming four layers through two viewports into a
+  two-layer target, `ps_layer` writing the layer it reads): equal to real Direct3D 12 in both
+  layers (run39/case1.log, check1.log, check2.log). That it differed before the change is
+  expected from the code, not measured. Literal sweep (8ffdc980): the infrastructure crate has a
+  `d3d` module (fix-graphics.md items 3, 8 and 9): `PipelineStatistics` and
+  `StreamOutputStatistics` as `repr(C)` mirrors of Direct3D's query data, `APPEND_ALIGNED_ELEMENT`,
+  `SO_NO_RASTERIZED_STREAM` and the three placement alignments; the front's query values take
+  their sizes and field offsets from the structures (written with `bytemuck::bytes_of`), and the
+  own program's readback pitch is `D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`; 31 baseline lines
+  deleted. At the end the desktop's build folder of this branch (8,976,912,215 bytes) was
+  deleted; no build output was made in scratch or on the Mac.
 - Run 38 (the ninth run of the milestone's current form): merged shaders (its run 42: DXIL slots
   numbered over every register the resource list declares, used or not; DXIL 1D textures and 1D
   arrays made 2D textures one texel high; `TEXTURE_INFO` sizes past the level count zero) and
@@ -748,7 +782,8 @@ gets E_NOTIMPL or a removed device, never a fake success.
 ## The pass bar's cases against real Direct3D 12 (own program)
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
-compares the lines (`examples/check/cases.rs`). Run 34: 28 of 28 equal (run34/check1.log;
+compares the lines (`examples/check/cases.rs`). Run 39: 29 of 29 equal (run39/check2.log, the
+new `layers` among them; features, outputs and answers as run 34). Run 34: 28 of 28 equal (run34/check1.log;
 features 192 of 872 differ, one beyond real (above), outputs 22 of 110 and answers 7 of 40, none
 beyond). Run 29: 26 of 26 equal (run29/check1.log;
 features 253 of 872, answers 7 of 40 differ, none beyond real Direct3D 12). Run 20: 24 of 24 equal; runs 18 and 19: 23 of
@@ -785,6 +820,9 @@ The cases and what each covers:
   colour counts of the three resolved layers.
 - geometry (run 17): five geometry shaders (see "Where things stand"), compared pixel by pixel
   (a hash of the picture) and by colour counts.
+- layers (run 39): a geometry shader naming one of four layers per instance through viewport 0
+  or 1 into a target of two layers; the primitives naming layers 2 and 3 land in layer 0 with
+  the pixel shader reading 2 and 3. Both layers compared pixel by pixel and by colour counts.
 - timestamps (run 18): timestamps around a dispatch on the direct queue and around a copy on a
   copy queue timestamp heap, both queues' frequencies, and two clock calibrations 20 ms apart
   around the work; printed as relations (in order, inside the calibrations, the GPU and CPU
@@ -1142,7 +1180,7 @@ debug builds, whole runs of 120 frames.
   driver's (harmless, absent in a container; `bgfx-run.ps1 <name> <seconds> ours nonvapi`
   keeps it out); a Rust panic in the library shows as 0xc0000409.
 
-## Gap list (the pass bar's written list, as of run 38)
+## Gap list (the pass bar's written list, as of run 39)
 
 Every failing test file, shader runner file and real-program difference is one of: an absent
 feature (reported absent as Direct3D 12 expects, or refused by name where Direct3D 12 has no
@@ -1152,7 +1190,8 @@ the front reports by a named refusal until it lands or that gives another value 
 program, or the front's own unfinished part. Every refusal below prints its name in the test's
 log ("wcontainers: ..."); none passes as success. Run 36's test files (12 failing at the run's
 last code, run36/full3.log and logs-full3/, the same 12 as run 35; and the same 12 at run 37's
-code, run37/full1.log and full9.log, and at run 38's, run38/full1.log and full2.log):
+code, run37/full1.log and full9.log, at run 38's, run38/full1.log and full2.log, and at run 39's,
+run39/full1.log and full2.log):
 
 Absent features, 8 files (final):
 - Tiled resources (`TiledResourcesTier` 0): create_reserved_resource, get_resource_tiling.
@@ -1355,7 +1394,7 @@ run 36).
    to run"); until it does, apply the one-line patch uncommitted for the run and never commit
    that file.
 2. The independent check of G5 (everything on the pass bar is done or on the gap list). Then,
-   after each shaders merge, rerun everything (scratch bin/all38.sh <n>: the literal check,
+   after each shaders merge, rerun everything (scratch bin/all39.sh <n>: the literal check,
    lint, the crates' tests, every test file, the own program, the shader runner, the scenes,
    the five dxgi tests, the real programs and the `--alone` fence timing), reclassify the runner
    (bin/classify30.py) and read the refusals. The front's part as other tracks' items land: a
@@ -1448,6 +1487,9 @@ A working example of all of it is this track's Windows library: `examples/direct
 - On Windows, two things the real driver does (see Where things stand): answer sent messages while a
   swap chain call waits (`gpu::call_windowed`), and send the device thread's own `CreateDXGIFactory*`
   to the system's dxgi.dll. Without them making a swap chain hangs.
+- Direct3D's shared values (`d3d` module, run 39): `PipelineStatistics` and
+  `StreamOutputStatistics` (the query data, `repr(C)`, `bytemuck::Pod`), `APPEND_ALIGNED_ELEMENT`,
+  `SO_NO_RASTERIZED_STREAM`, the placement alignments.
 - Format queries: `format_support(caps, DXGI_FORMAT)` gives `support1` and `support2`; empty means
   the API's E_FAIL. `takes_samples(caps, format, count)`; `dxgi_vertex_format(DXGI_FORMAT)`.
 
@@ -1625,6 +1667,18 @@ Run 11's entries:
 
 ## No magic numbers (the owner's rule of 2026-11-18)
 
+Run 39: the check passes at 8ffdc980 (run39/lit2.log, exit 0). Named this run, from
+fix-graphics.md items 3, 8 and 9 (whose owner is the infrastructure crate's `d3d` module): the
+pipeline and stream output statistics' layouts (`PipelineStatistics`, `StreamOutputStatistics`;
+the front's field positions, value sizes 8, 88 and 16 and the field size are gone),
+`APPEND_ALIGNED_ELEMENT`, `SO_NO_RASTERIZED_STREAM`, `SMALL_`, `DEFAULT_` and
+`DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT` (resource.rs, the device test; the Windows library and
+the own program use the windows crate's `D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT`), and the
+own program's readback pitch (`D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`). 31 lines deleted. The Direct3D
+11 front still defines its own copies of these; they are its to replace by the `d3d` module.
+Baseline lines at the end of run 39: wcontainers-direct3d-12 533, the infrastructure crate 63.
+Changes that could add lines to the baseline: the same 18 as run 35, none this branch's own.
+
 Run 38: the check passes (run38/lit1.log after the merges, lit6.log at deee93a2). The merges'
 two baseline conflicts (neighbouring shaders crate lines both sides removed) were resolved by
 keeping neither. Named this run: the storage clears' component bit widths (`components`, `mask`,
@@ -1762,6 +1816,14 @@ on a branch this one merges.
   section 12 keeps out of interface commits; history is not rewritten, so it stays as made.
 
 ## Measurements
+
+- Run 39, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at 8ffdc980
+  (run39/alone2.log, 11:50; desktop CPU load 1 % before, Win32_Processor LoadPercentage; the
+  load after not printed): real first 7 µs, mean 1 µs, 99th percentile 1 µs, largest 7 µs; ours
+  first 103 µs, mean 17 µs, 99th percentile 19 µs, largest 103 µs. At d0b08b61
+  (run39/alone1.log, 11:17; load 2 % before and after): ours first 65 µs, mean 19 µs, 99th
+  percentile 51 µs, largest 81 µs; real mean 1 µs. Programs (not alone, shared desktop, load not
+  taken): Microsoft's samples 2.6 s each, Godot's 2D platformer 4.1 s (p2-*.log).
 
 - Run 38, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at d5881c24
   (run38/alone2.log, 10:13; desktop CPU load 1 % before and 1 % after, Win32_Processor
@@ -2174,6 +2236,10 @@ Run 16's entries:
   Apache-2.0, as plan section 10 confirms); `blake3` 1 (1.8.7 in the lock; CC0-1.0 OR
   Apache-2.0 OR Apache-2.0 WITH LLVM-exception, read in its Cargo.toml; already in the
   workspace) for the cache file's name (run 26).
+- `bytemuck` 1.25.2 (MIT OR Apache-2.0 OR Zlib, read in its Cargo.toml; already in the workspace
+  through the WebGPU back end and the test crate), with its `derive` feature in the
+  infrastructure crate (`bytemuck_derive` 1.12.1, MIT OR Apache-2.0 OR Zlib, already in the lock),
+  for the query data structures' bytes (run 39).
 - Test only: `wcontainers-gpu-webgpu`, `wgpu` 30.0.2 (MIT OR Apache-2.0), `pollster` (MIT OR
   Apache-2.0), `png` (MIT OR Apache-2.0), as the WebGPU track already uses them.
 
@@ -2192,6 +2258,9 @@ Nothing of this track is installed on the desktop beyond the rig's setup. What s
   deleted at the end of each run (run 27: see below), so each run builds from clean (about 8
   minutes).
 
+Run 39: nothing installed. Deleted at the end of the run: C:\wc\target\phase-2-graphics-direct3d-12
+(8,976,912,215 bytes). A scratch git worktree (dev39, sources only, no build) was
+made and removed again; no build output on the Mac.
 Run 36: for the Direct3D 12 path's experiment the Windows SDK's dxcompiler.dll and dxil.dll
 (14,261,232 and 1,503,656 bytes, copies of the SDK's own) were put in
 C:\wc\out\phase-2-graphics-direct3d-12\dxc and beside the own program and bgfx; all were deleted

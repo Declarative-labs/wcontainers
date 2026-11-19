@@ -16,6 +16,7 @@ use wcontainers_gpu::{
 };
 
 use super::*;
+use wcontainers_directx_graphics_infrastructure::d3d;
 
 /// The bytes of the pixel counter: one u64.
 const COUNTER_BYTES: u64 = size_of::<u64>() as u64;
@@ -35,15 +36,6 @@ pub(super) fn counter_entry<B: Backend>(counter: &B::Buffer) -> BindingEntry<'_,
         },
     }
 }
-
-/// The fields of `D3D12_QUERY_DATA_PIPELINE_STATISTICS`, in order.
-const IA_VERTICES: usize = 0;
-const IA_PRIMITIVES: usize = 1;
-const VS_INVOCATIONS: usize = 2;
-const C_INVOCATIONS: usize = 5;
-const C_PRIMITIVES: usize = 6;
-const PS_INVOCATIONS: usize = 7;
-pub(super) const CS_INVOCATIONS: usize = 10;
 
 /// The counting program: one invocation adds one to the counter, a u64 as two words.
 fn counting_program(per_sample: bool) -> String {
@@ -81,13 +73,7 @@ pub(super) type Counting<B> = (
 pub(super) struct Running {
     heap: QueryHeapId,
     index: u32,
-    values: [u64; 11],
-}
-
-impl Running {
-    pub(super) fn add(&mut self, field: usize, n: u64) {
-        self.values[field] += n;
-    }
+    pub values: d3d::PipelineStatistics,
 }
 
 /// Whether a pixel shader runs once a sample.
@@ -214,7 +200,7 @@ impl<B: Backend> Replay<B> {
         self.statistics = Some(Running {
             heap,
             index,
-            values: [0; 11],
+            values: d3d::PipelineStatistics::default(),
         });
         Ok(())
     }
@@ -233,9 +219,10 @@ impl<B: Backend> Replay<B> {
         }
         self.end_pass(d)?;
         let s = self.statistics.take().expect("a running query");
-        d.write_value(heap, index, &s.values)?;
+        d.write_value(heap, index, bytemuck::bytes_of(&s.values))?;
         let counter = d.pixel_counter()?;
-        d.copy_into_value(heap, index, PS_INVOCATIONS, &counter)
+        let field = std::mem::offset_of!(d3d::PipelineStatistics, ps_invocations);
+        d.copy_into_value(heap, index, field, &counter)
     }
 
     /// `BeginQuery` of stream output statistics.
@@ -254,7 +241,8 @@ impl<B: Backend> Replay<B> {
         if self.streams.iter().any(|q| (q.0, q.1) == (heap, index)) {
             return Err(Error::Invalid("a query begun twice"));
         }
-        self.streams.push((heap, index, stream, [0; 2]));
+        self.streams
+            .push((heap, index, stream, d3d::StreamOutputStatistics::default()));
         Ok(())
     }
 
@@ -272,7 +260,7 @@ impl<B: Backend> Replay<B> {
             .position(|q| (q.0, q.1) == (heap, index))
             .ok_or(Error::Invalid("EndQuery of a query not begun"))?;
         let q = self.streams.swap_remove(at);
-        d.write_value(heap, index, &q.3)
+        d.write_value(heap, index, bytemuck::bytes_of(&q.3))
     }
 
     /// Adds a direct draw of pipeline `pid` to the running statistics query, and gives what its
@@ -321,12 +309,12 @@ impl<B: Backend> Replay<B> {
             vertices * u64::from(instances),
             prims * u64::from(instances),
         );
-        let s = self.statistics.as_mut().expect("a running query");
-        s.add(IA_VERTICES, vertices);
-        s.add(IA_PRIMITIVES, prims);
-        s.add(VS_INVOCATIONS, vertices);
-        s.add(C_INVOCATIONS, prims);
-        s.add(C_PRIMITIVES, prims);
+        let s = &mut self.statistics.as_mut().expect("a running query").values;
+        s.ia_vertices += vertices;
+        s.ia_primitives += prims;
+        s.vs_invocations += vertices;
+        s.c_invocations += prims;
+        s.c_primitives += prims;
         let pixel = d.pipelines[pid.0 as usize]
             .render
             .as_ref()
