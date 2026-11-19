@@ -14,8 +14,9 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   check's eight findings settled in the sixth run (see "S2 third check findings"); its fourth
   check's seven findings and the owner's two rulings of 2026-11-19 (`&self` with `Sync`, and
   `memory_take_dirty`) settled in the seventh run (see "S2 fourth check findings"), and the whole
-  suite's verdicts unchanged after them (see "Measurements").
-- What comes next: S2's fifth independent check. Not built and left open on purpose: export of a
+  suite's verdicts unchanged after them (see "Measurements"); its fifth check's five findings
+  settled in the eighth run (see "S2 fifth check findings").
+- What comes next: S2's sixth independent check. Not built and left open on purpose: export of a
   process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), the report of which processes share memory and the watch put on
   shared pages when one leaves (it comes with `suspend`), `set_thread_ordering`, the inspection
@@ -80,7 +81,7 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   Both pass.
 - Watches met before calls write, inside the hook and left unmet and met later (between steps,
   through `Kernel::process`), the result unchanged:
-  `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 41 children each making one
+  `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 46 children each making one
   call into a watched buffer, inputs put there by the parent before the child starts: read, readv
   (two pages), recvmsg (a datagram, which Linux loses at a fault), a handler's frame on an
   alternate stack in the buffer, pread64, getcwd, uname, fstat, pipe2, wait4, getrandom,
@@ -88,14 +89,23 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   timer_settime, pselect6, getsockopt, ioctl FIONREAD, getgroups, prctl, getresuid,
   sched_getaffinity, rt_sigtimedwait, splice, copy_file_range, times, getitimer, statfs,
   readlinkat, capget, epoll_pwait, waitid, getrlimit, fcntl F_GETLK, and the kernel's stores of
-  `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`. Each call announced the
+  `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`, and (fifth check) raw
+  recvmsg with its header on a page apart from its data (a datagram, and a stream read in part),
+  raw recvmmsg with its header and its length on two pages, sched_setattr refused for its size
+  and capset refused for its version. Each call announced the
   hook in exactly one process, at an address in the buffer, as a write, with the page as it was
   when the process started; the output is the same as with no watch; nothing counted outside a
-  description, met at a copy or cut short. Passes both ways.
+  description, met at a copy or cut short; and at each process's end every page of the buffer
+  whose bytes changed was announced in it or in its vfork child. Passes both ways.
 - A fault's span: `an_access_that_ends_before_a_watched_page_does_not_announce_it`. Passes.
-- `memory_take_dirty` (was `memory_changed`) exact: `the_pages_written_are_exactly_those_a_program_wrote`: a child writes
-  pages 0, 2 and 5 of a buffer itself and page 7 by read(); the record over the buffer is exactly
-  [0, 2, 5, 7]. Passes.
+- `memory_take_dirty` (was `memory_changed`) exact:
+  `the_pages_changed_are_exactly_those_a_program_wrote_or_mapped_anew`: a child writes pages 0, 2
+  and 5 of a buffer itself and page 7 by read(), and maps new memory with `MAP_FIXED` over page 3
+  (writable) and page 4 (read-only); the record over the buffer is exactly [0, 2, 3, 4, 5, 7].
+  Passes.
+- `memory_watch`'s cost: `watching_a_vast_range_costs_its_mapped_pages_not_its_length`: watching
+  and unwatching 0 to 2^48 at a program's start takes under a second (the program's output
+  unchanged). Passes.
 - Lazy memory from the two primitives: `lazy_memory_runs_the_shell_scripts_as_the_reference_does`:
   every new program's writable pages are saved, cleared to zero and watched (All); each is filled
   from the saved copy on first touch; a fork's child fills from its parent's copy (found by
@@ -285,6 +295,40 @@ Found on the way, fixed:
 - The owner's rename of 2026-11-19: `memory_changed` is `memory_take_dirty` (bf36978b, its own
   commit; the address map's `take_changed` is `take_dirty`).
 
+## S2 fifth check findings, settled in the eighth run
+
+- [blocking] recvmsg's header was described as read only, though the call writes its
+  `msg_namelen`, `msg_controllen` and `msg_flags` back after taking the data; the same for
+  recvmmsg's headers, `sched_setattr`'s size on E2BIG and (found by the new check) `capset`'s
+  version on EINVAL. The walk now meets those fields as writes (`message`, `sched_attributes`,
+  `capability_header` in syscall/touch.rs; capget's header now as precisely as capset's), and
+  the copy check takes the access into account: a write must lie in a range described as written
+  (`Watches::check_described`). With the old descriptions and the new check, the calls test
+  counted copies outside the description for recvmsg, recvmmsg, sched_setattr and capset (212,
+  243, 274, 91), and with raw calls the blocking datagram recvmsg lost its datagram and waited
+  for ever (scratch streams/s2f/unfixed-raw.log). With the fix the 46 calls pass at seeds 1 to 3.
+  The C library (musl) copies a msghdr to its stack and back and clears recvmmsg's padding in
+  place, so the program's own stores met the header page first; the test makes these calls
+  directly. The kernel's write-backs in recvmsg and the mmsghdr size and `msg_len` offset now
+  come from the structures (`offset_of!`, `size_of`), three baseline lines fewer.
+- [minor] `memory_take_dirty` left out pages replaced by a new mapping: every new mapping (mmap,
+  `MAP_FIXED` over mapped pages, heap and stack growth, mremap's growth) is now in the record
+  whatever it allows, as Linux marks a new mapping soft-dirty. The record is now a
+  `rangemap::RangeSet` (already a dependency of the kernel), so a large new mapping costs one
+  range. Test above ([0, 2, 3, 4, 5, 7]).
+- [minor] A fork's task id could be left unfreed when the executor failed after it was taken:
+  make_child now copies the memory and makes the thread first and takes the number last, as
+  `copy_process` takes it after `copy_mm`; a failure frees what the executor made
+  (`memory_drop`, `thread_drop`), and make_thread drops its new thread when no number comes. Not
+  tested: the stand-in's failures cannot be forced from a test.
+- [minor] `memory_watch` cost followed the range's length: ending watches now visits only the
+  watched pages of the range, setting them only the mapped ones. Test above.
+- [minor] Speed: measured again (see "Measurements", eighth run): the memory test binary's user
+  CPU time is about 0.3 % higher from the `&self` commit on, and unchanged by everything after
+  it, this run's fixes included. That commit put the test host's state behind a `Mutex` taken on
+  every `Host` call (the owner's ruling requires `Sync`); the kernel's no-hook path changed there
+  only from `&mut dyn` to `&dyn`. Which of the two the 0.3 % is was not measured.
+
 ## Measurements
 
 - Third run's fixes, stream tests (20 tests, seeds 1 to 3): passed, 27.2 s, load 73 to 82 (21:15).
@@ -410,6 +454,25 @@ Found on the way, fixed:
   suite has the same verdict; the two tests added are new and pass. Speed not measured again (the
   fourth check measured it on the ARM machine at 319aeede; the no-hook path is unchanged since).
 
+- Eighth run, speed with no hook implemented, on the ARM machine: the memory test binary
+  (tests/memory.rs) built from three trees, each in its own fresh build directory with only that
+  binary's guest programs: 319aeede (before the `&self` commit, S2 otherwise built), 2cc763e8
+  (the `&self` commit) and 0ea3a743 (this run's fixes), run alternately with 3 test threads
+  (scratch streams/s2f/speed.sh; speed-self.log, 23:11, load 24 to 42, and speed-self-3.log,
+  23:23, load 32 to 46). User CPU, seconds: 319aeede 11.876, 11.852, 11.879, 11.841, 11.875,
+  11.882, 11.874, 11.847, 11.853 (median 11.86); 2cc763e8 11.899, 11.882, 11.907, 11.861, 11.913,
+  11.857, 11.933, 11.893, 11.917 (median 11.90); 0ea3a743 11.965, 11.939, 11.909, 11.886, 11.885
+  (median 11.91). Wall 15.4 to 16.8 s on all three, overlapping. A first try that ran the
+  current tree from the track's shared build directory (speed-self-2.log) showed 13.4 s user and
+  0.8 s system: its guest folder held 151 programs from whole suites against 1, the effect found
+  in the fourth run; not the kernel.
+- Eighth run, tests: the embedder tests (18, seeds 1 to 3) and the kernel's unit tests passed on
+  the ARM machine (scratch streams/s2f/embedder-3.log and the vast watch test, 23:05 to 23:10,
+  load 16 to 35). Clippy with warnings denied over the three crates passed on the x86 machine
+  (s2f/clippy-x86.log, clippy-x86-2.log). The 20 test binaries the manual keeps on the Mac passed
+  here, 94 tests (s2f/mac-only.log, 15:11 to 15:13 Pacific, load 8 to 14), and the literal check's
+  tests and the check passed here (s2f/literals-mac.log).
+
 ## Literals
 
 - Adopted at da21d326 (`init` once on this tree, version 7 of the rules): 7612 baseline lines, of
@@ -424,7 +487,9 @@ Found on the way, fixed:
   takes three test inputs of 1000 elsewhere in the crate for restatements of it, and as a mark it
   says 1000 has a name (`AUDIT_GET`).
 - After the sixth run: unchanged, 7589 lines; the check passes (exit 0).
-- After the seventh run: unchanged, 7589 lines; the check passes (exit 0). The test host's clock
+- After the seventh run: unchanged, 7589 lines; the check passes (exit 0).
+- After the eighth run: 7586 lines (recvmsg's three header offsets now `offset_of!`); the check
+  passes (exit 0). It reads the checkout's git history, so it runs on this Mac. The test host's clock
   step stays `TestHost::ran` (an associated function taking the locked state) so its `1000` keeps
   its key.
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
