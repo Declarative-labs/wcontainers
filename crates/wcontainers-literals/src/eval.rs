@@ -50,8 +50,10 @@ impl Value {
                 .map(Value::Int),
             Lit::Byte(b) if !negative => Some(Value::Byte(b.value())),
             Lit::Str(s) => Some(Value::Str(s.value())),
-            // A byte string of text is the same text (`b"etc/group"` and `"etc/group"`).
+            // A byte string or a C string of text is the same text (`b"etc/group"`, `c"etc/group"`
+            // and `"etc/group"`).
             Lit::ByteStr(s) => String::from_utf8(s.value()).ok().map(Value::Str),
+            Lit::CStr(s) => s.value().into_string().ok().map(Value::Str),
             Lit::Char(c) => Some(Value::Char(c.value())),
             _ => None,
         }

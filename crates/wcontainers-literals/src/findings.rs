@@ -126,7 +126,7 @@ impl List {
 
 const NAME_IT: &str = "derive it, import it from the standard library or a crate that has it, or define it once as a named constant; a number that truly stands alone may carry a mark (docs/literals.md)";
 const USE_THE_NOTE: &str = "use the constant the note names if it is this fact; otherwise ";
-const IMPORT_IT: &str = "delete this copy and import the constant the note names, through a (dev-)dependency on its crate where there is none";
+const IMPORT_IT: &str = "delete this copy and import the constant the note names, made importable first where the note says so, through a (dev-)dependency on its crate where there is none";
 const WRITE_THE_NAME: &str =
     "write it with the constant the note names, made importable first where the note says so";
 const NAME_THE_ROLE: &str =

@@ -10,7 +10,9 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use common::{Row, in_item, list, workspace};
-use wcontainers_literals::{BASELINE_FILE, List, MANIFEST, PolicyKind, policy_line};
+use wcontainers_literals::{
+    BASELINE_FILE, List, MANIFEST, NOT_IMPORTABLE, PolicyKind, policy_line,
+};
 
 const ABI: &str = r#"pub const PAGE_SIZE: u64 = 4096;
 const PRIVATE_LIMIT: u64 = 5555;
@@ -130,9 +132,6 @@ fn note(item: &str) -> String {
         .unwrap_or_else(|| panic!("{item} has no finding: {:#?}", rows()))
 }
 
-/// What a note says when the file cannot import the constant its literal restates.
-const CANNOT_IMPORT: &str = "cannot import";
-
 macro_rules! caught {
     ($($name:ident in $list:ident),* $(,)?) => { $(#[test] #[allow(non_snake_case)] fn $name() { caught_in(stringify!($name), List::$list); })* };
 }
@@ -181,16 +180,16 @@ fn gated_notes_say_what_cannot_be_imported() {
         "l03_separate_note_local",
         "l04_bench_note",
     ] {
-        assert!(note(item).contains(CANNOT_IMPORT), "{}", note(item));
+        assert!(note(item).contains(NOT_IMPORTABLE), "{}", note(item));
     }
     let public = note("l06_separate_note_public");
     assert!(
-        public.contains("PAGE_SIZE") && !public.contains(CANNOT_IMPORT),
+        public.contains("PAGE_SIZE") && !public.contains(NOT_IMPORTABLE),
         "{public}"
     );
     let unit = note("l05_unit_test_note");
     assert!(
-        unit.contains("PRIVATE_LIMIT") && !unit.contains(CANNOT_IMPORT),
+        unit.contains("PRIVATE_LIMIT") && !unit.contains(NOT_IMPORTABLE),
         "{unit}"
     );
 }
