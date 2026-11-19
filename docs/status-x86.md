@@ -52,7 +52,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   register passed into a piece but not out of it across a return (see "X4, run 2"). Run 3 (the same day)
   timed the benchmark set natively, in wasmtime and in Chrome on the x86 machine in alternating rounds,
   built the frame checks plan 3.4 and 5.3 describe for x86 (one check for a run of pushes, none for a call's
-  callee, the return address covered), and found why interpret is slow (see "X4, run 3").
+  callee, the return address covered), found why interpret is slow, and ran layer 2 at 10,000 again at a
+  new seed: X4's pass bar holds (see "X4, run 3").
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -85,6 +86,10 @@ Done:
   1,000 programs, every one also on the CPU: 0 failing (336 faulted, 116 left to an address, 2,386 stacks
   lost and 2,402 pieces forgotten in mixed runs). ARM64's layer 2, changes, checks, programs, look-aheads
   and the test guest pass.
+- X4's layer 2 bar again after the frame change, at a new seed (3542d8e, seed 7777, 10,000 programs, every
+  one at full in both settings, plain and stopping everywhere, bounded, mixed, against none and on the
+  i7-8750H, the first in Chrome; `l2-x86-seed7777-10000.log`, 2,532 s, 3 at once, Mac load 72 to 110): 0
+  failing; 3,481 faulted, 1,257 left to an address at full, 23,662 stacks lost and 23,404 pieces forgotten.
 - Why interpret is slow: its switch is clang's absolute table (`jmp [T + r*8]`, the benchmarks are built
   without PIC at a fixed address), which plan 3.4 sends through the lookup because the translator never sees
   the load address; every dispatch is counted as "jump through a register not recognised" (240,004 at each
@@ -119,7 +124,18 @@ check, best of 5 alternating rounds on the i7-8750H, pinned off cores 2 and 8, t
 - Not measured: the same set in Chrome and wasmtime on the Mac (plan 7.5's second part; the Mac's load of
   about 100 makes any time there meaningless today).
 
-Not done (in order):
+Proof at the end of run 3 (the Mac, load 70 to 110; the i7-8750H as reference):
+- Suite (`WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
+  wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test -p wcontainers-x86 -p
+  wcontainers-literals --no-fail-fast -- --test-threads 3`, scratch `x4/run3/suite.log`): 397 passed, 0
+  failed, 13 ignored.
+- `cargo run -q -p wcontainers-literals -- check`: exit 0. `cargo fmt --check` and clippy with `-D warnings`
+  on the x86, interface, translator and test crates (all targets): clean.
+- X4's pass bar as plan 9 writes it: layer 2 at 10,000 programs with zero mismatches against the CPU and
+  against none (seed 7777, after this run's translator change); the benchmark set the same at none and full
+  (`benchmarks_match_linux_x86_64`) and timed on the x86 machine natively, in wasmtime and in Chrome (above).
+
+Left for later (in order; none is in X4's bar):
 1. interpret's absolute switch table (plan 3.4's decision, for X9) and fib's per-call costs (flags packed
    for the callee, passed-in-only registers) are the two large slow spots; both are design questions, not
    bugs.
@@ -1842,6 +1858,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   timing there.
 
 ## Cases actually run
+
+- X4 run 3: layer 2 x86 at seed 3, 1,000 programs, every one also on the CPU; at seed 7777, 10,000 (see "X4,
+  run 3"); the tests of layer 2 (both guests at their defaults, seed 1), changes, checks, programs,
+  look-aheads and the test guest once after the frame change; the suite at the end; the benchmark set 5
+  rounds natively, in wasmtime and in Chrome on the x86 machine twice (before and after the frame change) and
+  hash once while trying the tool; fib, sort and search 5 rounds old against new.
 
 - X4 run 2: layer 2 x86 at seed 1, 16 programs (four times while fixing), 64 (twice), 1,000 (twice, every
   program also on the CPU); at seed 2026, 10,000 (see "X4, run 2"); layer 1 at seed 4404, 1,000 cases a form,
