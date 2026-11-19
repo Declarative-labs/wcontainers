@@ -34,7 +34,7 @@ check suggested, and two more problems turned up while settling them; both are s
    4.6 and section 5. A processor is the kernel's; a worker names the processor it asks for. `next` is an
    entry when it hands a thread out. The kernel no longer hands out numbers: it asks the system whether
    an entry may take effect now, and an entry told "later" never holds a host thread (a returned thread
-   is kept aside and its worker freed; a hand-out answers `Idle`). A replay calls `step` in the log's
+   is kept aside and its worker freed; a hand-out answers `Idle`). A replay calls `run` in the log's
    order, with one worker or many. 4.6 says why it cannot get stuck.
 4. **Decision 8 reopened a ruled question.** Removed. Section 2 states the ruling (Linux's
    `ptrace_may_access` line; `cmdline` is not inspection, `environ`, `maps`, `auxv` and the address fields
@@ -48,7 +48,7 @@ check suggested, and two more problems turned up while settling them; both are s
    now has the admission service, `thread_stop`, the hook that wakes an idle processor, the processor and
    thread told to `turn`, `ran`, `arrived` and `idle`, and threads made ready by any entry. The idle mark
    is made under the lock and the wake is kept if it comes early. A thread now always ends in its own
-   entry, so none leaves `run` without its exit.
+   entry, so none leaves `Execution::run` without its exit.
 7. **No bar kept `Serial` from getting slower in T1.** Section 12 has three `Serial` measurements and T1's
    bar names them. Measured for it: an uncontended lock is not visible on this Mac and costs 7 to 9 ns on
    the x86 laptop. So the loop takes the lock once a system call, not twice (4.2), and the rest is put to
@@ -74,7 +74,7 @@ check suggested, and two more problems turned up while settling them; both are s
 - This branch at 77e50ddc: docs/runtime.md whole; the kernel's entry points, scheduler, processes and
   signals (kernel lib.rs, task.rs, schedule.rs, process.rs, signal.rs, parts of memory.rs, shared.rs,
   fs/mod.rs, loader.rs, container.rs, syscall/system.rs, syscall/rseq.rs, fs/proc.rs); the abi; the runtime
-  crate whole; the WebAssembly executor's types, `run`, `flush`, `block_write`, `settle` and outline
+  crate whole; the WebAssembly executor's types, `Execution::run`, `flush`, `block_write`, `settle` and outline
   (wasmtime lib.rs); the translator's contract, its memory imports, stop check, permission check and
   lookup; ARM64's atomics, exclusives and how barriers are decoded (arm64/memory.rs, decode.rs,
   instruction.rs).
@@ -146,7 +146,7 @@ flag in a second shared memory and a call when raised); an atomic load.
 - Node 24.14.1 (logs/spin-node.log, load 62 to 64): all three saw it with the default compilers, with
   `--no-liftoff` (the optimising compiler alone) and with `--liftoff-only` (the baseline compiler alone).
 - This shows what these versions do. WebAssembly's rules do not promise it, so the plan makes it a test
-  of every engine version (docs/threads.md section 12).
+  of every version of each WebAssembly compiler (docs/threads.md section 12).
 
 **3. V8 refuses a declared maximum above its limit.** The first Node run of experiment 2 failed to
 compile: "maximum memory size (281474976710656 pages) is larger than implementation limit (262144 pages)".
@@ -180,7 +180,7 @@ the byte is 0, then 1). Nanoseconds a round, best of five.
   fence 20.343, flag0 2.563, flag1 20.121.
 - So the fence costs 0.7 and 6.1 ns a barrier on this Mac and 18.6 and 16.0 ns on the laptop. The byte's
   test costs 0.17 and 0.12 ns on this Mac and 0.80 and 0.18 ns on the laptop.
-- The two engines differ on this Mac for the fence (0.7 against 6.1 ns). wasmtime's loop is slower to
+- wasmtime and Node differ on this Mac for the fence (0.7 against 6.1 ns). wasmtime's loop is slower to
   begin with (it calls a function for the address and checks bounds); why the fence then costs less there
   was not looked into.
 - wasmtime's compiled output on this Mac was disassembled (`wasmtime compile`, then `objdump -d`): the
@@ -224,7 +224,7 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   were run, in Node;
 - a group stop with several threads running, and a page hand-over through per-thread watches, are both
   estimated from parts measured apart (the stop flag's latency in Chrome from docs/phase-1-translator.md,
-  leaving `run` and coming back from docs/runtime.md section 10).
+  leaving `Execution::run` and coming back from docs/runtime.md section 10).
 
 ## What the plan asks of other tracks
 
@@ -238,5 +238,5 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   byte's place in the contract.
 - The kernel track's K7: the kernel as a WebAssembly module built for a shared memory, for more than one
   caller (4.2).
-- The embedder interface: `ExecutionSettings` at the container's start; `suspend` and `resume`; memory
+- The embedder interface: `ExecutionConfig` at the container's start; `suspend` and `resume`; memory
   watches before T4; who shares memory with whom; the hook's thread made optional (decision 10).

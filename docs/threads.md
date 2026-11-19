@@ -7,13 +7,14 @@ Words used here:
 - **executor**: what runs the guest's instructions behind the kernel's `Cpu` side (`Executor`,
   rt/container.rs:19). Three exist or are being built: the WebAssembly executor (wasmtime), the native
   executor (a virtual machine, docs/native.md on origin/phase-2-native) and the kernel tests' stand-in.
-- **engine**: what compiles and runs WebAssembly: wasmtime, or a browser's V8.
+- **WebAssembly compiler**: what compiles WebAssembly to the host's machine code and runs it: wasmtime,
+  or a browser's V8.
 - **embedder**: whoever implements `System` (rt/lib.rs:146) and drives a container.
 - **block**: a block of shared pages (`SharedId`, abi/cpu.rs:14-16). The kernel shows every mapped file
   through one. A memory **shows** a block's page where a mapping of it puts that page.
 - **group**: every guest thread that can reach the same guest memory without the kernel in between
   (section 3). The owner's rulings are per group. A name is suggested in section 16.
-- **stopped**: a guest thread is stopped when it is inside a hook or has left `run`. This is the
+- **stopped**: a guest thread is stopped when it is inside a hook or has left `Execution::run`. This is the
   translator's own word (tr/contract.rs:17-27). A stopped thread runs no guest instruction.
 - **called in**: the kernel asks for a running thread with `thread_stop`, and the thread comes back by
   itself through `Kernel::exit`. A call that needs it back first parks, as any call that waits does.
@@ -22,6 +23,10 @@ Words used here:
 - **processor**: one of the CPUs the container is told it has. It is the kernel's own object. One guest
   thread runs on a processor at a time.
 - **worker**: a host thread inside the loop. A worker is not a processor (4.3).
+- **`run`**: the call that runs a container, as the owner named it (section 2). In today's code it is
+  `Stepper::step` (rt/lib.rs:197). `run_until_finished` is today's `drive` and `Container::run`
+  (rt/lib.rs:230, rt/container.rs:172). The executor's own call that runs one guest thread is always
+  written `Execution::run` here (rt/lib.rs:128-143).
 - **kernel entry**: one call into the kernel that changes it: a thread handed out (`Kernel::next`), a
   thread coming back (`Kernel::exit`), an event, a signal from outside.
 - **barrier**: a guest instruction that orders its thread's memory accesses as other threads see them:
@@ -68,8 +73,14 @@ Ruled by the owner on 2026-11-18 (brief-threads.md, interface notes), and taken 
 - `ParallelOptimistic` is planned for as a third value. Nothing may depend on its being useful.
 - Taking a process out of its kernel is `suspend`, putting it back is `resume`, and the value between is
   `SuspendedProcess<E>`. Neither converts anything. `export` and `import` only make and read the form
-  that crosses a wire (interface notes lines 110-123). `resume` takes `ExecutionSettings<E> {
-  thread_ordering, translator }` (lines 131-133).
+  that crosses a wire (interface notes lines 110-123). `resume` takes `ExecutionConfig<E> {
+  thread_ordering, translator }` (lines 131-133), and the getter is `Process::execution_config()`.
+- Long-lived configuration types end in `Config`: `RuntimeConfig`, `TranslatorConfig` (brief-threads.md
+  lines 124-129). The code still says `RuntimeSettings` and `TranslatorSettings` (rt/container.rs:13,
+  :23); the runtime track renames them.
+- The call that runs a container is `run`. It returns `StopReason { Interrupted, Suspended, Idle {
+  until }, Finished { status } }`. Today's run-to-the-end call becomes `run_until_finished`. Suspending
+  a process inside a hook makes `run` return at once (interface notes lines 148-150, 157).
 - **Inspection follows Linux's own line**, the `ptrace_may_access` check (interface notes lines 104-109,
   118-119). Inspection is: `/proc/<pid>/mem`, `maps`, `smaps`, `environ`, `auxv`, the address fields of
   `stat`, ptrace itself, `process_vm_readv` and `process_vm_writev`, a crash dump. Not inspection:
@@ -229,7 +240,7 @@ at the split, each measured.
 Rejected: a host thread is a processor (this plan's first form). Which host thread asks first is the
 host's timing, and a replay with fewer host threads could not give the same processor numbers.
 Rejected: `next` without a processor, the kernel choosing a free one. A thread that carries on in place
-after its system call must get its own processor's answer, or it leaves `run` at every call (300 ns,
+after its system call must get its own processor's answer, or it leaves `Execution::run` at every call (300 ns,
 docs/runtime.md section 10).
 
 ### 4.4 What a system call may assume
@@ -294,7 +305,7 @@ What is stopped before what, where M is the memory changed:
   `shared_unmap`, a mapping going away, `code_changed`, ARM64's `ic ivau`, a write to translated x86
   code). This is the translated code's rule (tr/contract.rs:17-27).
   - M's group is in force `Parallel`: a group stop of it. After a code drop each of its other threads
-    also leaves `run`, so that none comes back into a piece made from the old bytes (docs/runtime.md
+    also leaves `Execution::run`, so that none comes back into a piece made from the old bytes (docs/runtime.md
     section 6), counted "left run: code changed under it".
   - M's group is `Serial` and the caller is in it: nobody else runs.
   - M's group is `Serial` and the caller is not in it: the group is called in. This happens when a file
@@ -368,14 +379,14 @@ thread's progress (`System::ran`), so it has the position.
 
 **An entry told `Later` never holds a host thread.**
 - A thread come back too early: the kernel keeps the thread and its exit aside and returns. The thread
-  leaves `run`, and its worker is free. After each entry that takes effect, the kernel offers the kept
+  leaves `Execution::run`, and its worker is free. After each entry that takes effect, the kernel offers the kept
   ones again.
 - A thread to be handed out too early: `next` answers `Idle`.
 - An event too early: the replaying system delivers its events itself, from its log, in their place.
 
-**How a replay proceeds.** It is not `drive`. It is the same `step`, called in the log's order: the
-replayer takes the log's next "thread handed out" entry and calls `step` for its processor, from any
-free worker. With one worker it walks the log. With more, several threads run their turns at once and
+**How a replay proceeds.** It is not `run_until_finished`. It is the same `run`, called in the log's
+order: the replayer takes the log's next "thread handed out" entry and calls `run` for its processor,
+from any free worker. With one worker it walks the log. With more, several threads run their turns at once and
 only their entries are put in order. It cannot get stuck: the entry that is due is a hand-out, which a
 free worker makes; or the return of a thread some worker is running, which will arrive; or an event,
 which the system delivers. A return that is kept aside is never the due one, since it is offered again
@@ -422,25 +433,26 @@ single-thread system call cost before it lands. Nothing outside the kernel chang
 
 ## 5. The loop and the system
 
-**Today.** `Stepper::step` runs one thread and returns; `drive` repeats it (rt/lib.rs:197-243). The
-executor is `&mut`, and one `StopFlag` raises "whichever thread is running" (rt/lib.rs:33-57). The local
+**Today.** `Stepper::step` runs one thread and returns; `drive` repeats it (rt/lib.rs:197-243). The owner
+has named the first `run` and the second `run_until_finished` (section 2), and this plan uses his names.
+The executor is `&mut`, and one `StopFlag` raises "whichever thread is running" (rt/lib.rs:33-57). The local
 system has one timer thread with one deadline (rt/system.rs:41-55).
 
-**The change: the same step, called by as many host threads as the embedder gives, each naming a
-processor.** `step` and `drive` take the kernel, the executor and the system by `&`, and a processor.
-`drive` keeps its processor until it returns. One host thread calling it for processor 0 is today's
+**The change: the same `run`, called by as many host threads as the embedder gives, each naming a
+processor.** `run` and `run_until_finished` take the kernel, the executor and the system by `&`, and a
+processor. `run_until_finished` keeps its processor until it returns. One host thread calling it for processor 0 is today's
 behaviour exactly. The embedder's limit on host threads is simply how many of its threads call it.
-`Container::run` spawns them itself, one for each of the first processors, up to a count in
-`RuntimeSettings` (suggested `host_threads`, default the host's
+`Container::run_until_finished` spawns them itself, one for each of the first processors, up to a count in
+`RuntimeConfig` (suggested `host_threads`, default the host's
 `std::thread::available_parallelism`). Two callers naming one processor at once is a caller's error,
 which the kernel answers instead of today's assertion (kernel/lib.rs:306-309).
 
 Rejected: a pool of worker threads hidden in the runtime. An embedder with its own event loop (the owner's
 other project drives many kernels) must decide which of its threads work for which container. Rejected: a
-second loop for the parallel case. One step, entered N times.
+second loop for the parallel case. One `run`, entered N times.
 
 What changes with it:
-- `Execution::run(&self, ...)` (rt/lib.rs:128-143): several host threads are inside `run` at once, each
+- `Execution::run(&self, ...)` (rt/lib.rs:128-143): several host threads are inside it at once, each
   with its own thread. The executor does its own locking (section 7).
 - **The system is told who.** `turn` is told the processor and the thread, `ran` the thread, `arrived`
   and `idle` the processor (today none is, rt/lib.rs:150-164). A replaying system needs the thread to
@@ -463,12 +475,12 @@ What changes with it:
   handed it as it is handed the flag today (rt/lib.rs:164-166). Its `thread_stop` service and its timer
   thread call it. The timer thread keeps one deadline per processor.
 - **A thread never leaves without its exit**, except the thread whose own entry ended it. Today a thread
-  the kernel dropped breaks out of `run` with no `Kernel::exit` (wt/lib.rs:2303-2306). By 4.4 a thread
+  the kernel dropped breaks out of `Execution::run` with no `Kernel::exit` (wt/lib.rs:2303-2306). By 4.4 a thread
   ends only in its own entry, so the processor's running thread is always cleared by that thread's own
   `exit`, and `next` finds it so.
-- **A container stop.** `System::stopped` runs when no thread is in `run` (rt/lib.rs:156-158), which a
+- **A container stop.** `System::stopped` runs when no thread is in `Execution::run` (rt/lib.rs:156-158), which a
   save needs. With several workers the loop first asks every running thread in, waits until every worker
-  is out of `run` and no entry is in progress, then calls it once. This is also how an embedder
+  is out of `Execution::run` and no entry is in progress, then calls it once. This is also how an embedder
   interrupts a running container from another thread, which the interface notes leave open (line 92).
 - `Host` and `System` methods take `&self`, so a system keeps what it changes behind its own locks.
 
@@ -477,9 +489,9 @@ What changes with it:
 **Form A, a setter.** `Process::set_thread_ordering(ordering)`, taking effect at the group's next stop.
 
 **Form B, no setter.** The ordering is fixed while a process is in a kernel. It is part of the
-`ExecutionSettings` given when the container starts and when a process is resumed. It is changed by
+`ExecutionConfig` given when the container starts and when a process is resumed. It is changed by
 `suspend` and `resume` on the same kernel: `process.suspend()` gives a `SuspendedProcess<E>`, and
-`kernel.resume(suspended, settings)` puts it back with the new ordering. Nothing is converted and no
+`kernel.resume(suspended, config)` puts it back with the new ordering. Nothing is converted and no
 memory is copied: the process's records and its memory move out and back by ownership (interface notes
 lines 110-114). `export` and `import` are not part of it. They are only for a process that crosses to
 another kernel.
@@ -500,8 +512,8 @@ makes that happen by calling them in (4.5). `suspend` has to do exactly that any
   process's kernel records taken out of the kernel's tables and put back (its threads out of the run
   queue and the waits, its timers, its place in its parent's children). Their count is the process's
   threads and waits, not its memory. From inside a hook the embedder can suspend but must resume after
-  the step has returned (interface notes lines 134-135), so a change made there also costs one leave of
-  `run` (300 ns, docs/runtime.md section 10). Not measured: nothing exists to measure.
+  `run` has returned (interface notes lines 134-135), so a change made there also costs one leave of
+  `Execution::run` (300 ns, docs/runtime.md section 10). Not measured: nothing exists to measure.
 - **When the change cannot be made.** Never, in either. On the same kernel nothing is converted, so
   nothing a process holds can stand in the way. (Only `export` could meet something it cannot carry,
   and that is not this path.)
@@ -510,8 +522,8 @@ makes that happen by calling them in (4.5). `suspend` has to do exactly that any
   `SuspendedProcess` is that state, whole and stopped, and `export` makes the wire form from it. With A
   the embedder must suspend at the same moment anyway to get one. A change towards `Parallel` needs none.
 - **Ways a process gets an ordering.** A: two, given and changed in place. B: one. A reader of an
-  embedder's code sees every change of what replay promises as a `resume` with the settings written
-  on it.
+  embedder's code sees every change of what replay promises as a `resume` with the configuration
+  written on it.
 - **Interface.** A: one more method. B: none.
 
 **A group of several processes.** `suspend` takes one process, and the ordering in force is the
@@ -525,7 +537,7 @@ group's (section 3). With the strictest winning:
 This is the same in form A: the setter is on one `Process` too.
 
 **Recommendation: B.**
-- The container's first process gets its `ExecutionSettings` at the start (through `Start`,
+- The container's first process gets its `ExecutionConfig` at the start (through `Start`,
   kernel/container.rs:55, read by `Kernel::start`). A child inherits its parent's at fork and keeps them
   across exec.
 - Until `suspend` and `resume` exist, that is the only way to give an ordering. This loses less than it
@@ -552,12 +564,12 @@ to be undone for either answer.
   tr/contract.rs:45), and the stop flag in it is already written by another host thread while the guest
   reads it with a plain load (tr/code.rs:1300).
 - One wasmtime store per process holds all its threads' instances (docs/runtime.md section 8;
-  wt/lib.rs:451-474). `run` takes the store out, so "one thread of a process runs at a time"
+  wt/lib.rs:451-474). `Execution::run` takes the store out, so "one thread of a process runs at a time"
   (wt/lib.rs:2245-2251). The executor is one `&mut` object with one running thread (wt/lib.rs:409-433).
 - ARM64's atomic instructions are already WebAssembly atomic operations: the single-instruction atomics
   (arm64/memory.rs:112-202), compare and swap (:203-216), load-acquire and store-release (:346-356), and
   the exclusives, where the load remembers address, size and value (:405-415) and the store is a compare
-  and exchange against the remembered value (:329-338). Engines accept atomic operations on an unshared
+  and exchange against the remembered value (:329-338). wasmtime, Node and Chrome accept atomic operations on an unshared
   memory (measured, ordering-cost/result.json), which is why this works today.
 - **ARM64's barriers are translated to nothing**: `dmb`, `dsb` and `isb` become `I::Nothing`
   (arm64/decode.rs:704), "nothing happens in a single thread" (arm64/instruction.rs:989).
@@ -611,7 +623,8 @@ What follows from a shared import:
   (src/runtime/instance.rs:554). So each process's memory is defined by a one-memory module. Read in the
   source, not run: it is T2's first task, with `Config::shared_memory` on as it is today. If it fails,
   wasmtime's own mapping serves: the kernel's access by pointer and the fork copy work on any mapping.
-- **One store per guest thread**, always, in place of one per process. Module and engine stay shared. A
+- **One store per guest thread**, always, in place of one per process. The compiled modules and
+  wasmtime's `Engine` stay shared. A
   dropped thread's store is kept for the process's next thread, as its instances are today
   (wt/lib.rs:478-483). What a store costs in memory is not measured (section 15).
 - **The executor becomes shareable.** Its tables of processes, threads and blocks go behind a lock. What it
@@ -640,10 +653,10 @@ its stop flag (tr/code.rs:1300).
     shared WebAssembly memory (section 14): the store-then-load test saw the forbidden outcome in
     371,914 of 2,000,000 rounds with no barrier and in 0 of 2,000,000 with `atomic.fence`; the checker's
     message-passing test saw stale data 148 times in 3,500,000 rounds without and 0 times with.
-  - What the engines do with it: wasmtime compiles `atomic.fence` to `dmb ish` on ARM64 and `mfence` on
+  - What the WebAssembly compilers do with it: wasmtime compiles `atomic.fence` to `dmb ish` on ARM64 and `mfence` on
     x86-64 (cranelift-codegen 0.137.1, src/isa/aarch64/inst/emit.rs:1809-1811 and
     src/isa/x64/lower.isle:3425-3426; seen in wasmtime's output on this Mac). WebAssembly's rules give the
-    instruction no meaning of its own, so this is an engine dependency, tested (7.6).
+    instruction no meaning of its own, so this depends on the WebAssembly compiler, and is tested (7.6).
   - What it costs (measured, section 14, a round of store, barrier, load): the fence itself 0.7 ns in
     wasmtime and 6.1 ns in Node on this Mac, 19 ns and 16 ns on the x86 laptop. The test with the byte
     zero: 0.17 and 0.12 ns on this Mac, 0.8 and 0.18 ns on the laptop.
@@ -717,7 +730,7 @@ is exact only while one thread of everything that shows the page runs at a time.
 
 ### 7.5 Code a program writes while another thread runs it
 
-- **Dropping code** is a group stop, and every other thread leaves `run` before it carries on (4.5). ARM64
+- **Dropping code** is a group stop, and every other thread leaves `Execution::run` before it carries on (4.5). ARM64
   announces a change with `ic ivau`, which is already a hook (arm64/memory.rs:375-383). x86 does not
   announce; its code pages carry a write lock, and the x86 plan already says the other threads are stopped
   first (x86 plan lines 1884-1894, 1941). This plan gives that the group stop.
@@ -735,10 +748,10 @@ is exact only while one thread of everything that shows the page runs at a time.
 A runtime that compiles code while its other threads run (Java, Node) pays a group stop at each change of
 code already run. How many, and what they cost, is T3's measurement.
 
-### 7.6 What the engines must do, and a browser
+### 7.6 What the WebAssembly compilers must do, and a browser
 
 Three things are relied on that WebAssembly's rules do not promise. All are tested in the suite on every
-engine version (section 12).
+version of each WebAssembly compiler (section 12).
 - **A plain load in a loop is done again each time round.** Guest programs wait on words another thread
   writes, with plain loads (optimistic-replay-results.json: "real programs peek at lock words with plain
   reads constantly"). Measured (section 14): wasmtime 50.0.1, and Node 24.14.1's V8 with its optimising
@@ -782,7 +795,7 @@ The owner ruled that exact replay of a parallel group is composed by the embedde
   watches take. One function makes it, as today (`effective`, wt/lib.rs:790).
 - **Setting a watch stops one thread, not the group.** Only the watched thread's table changes, and the
   rule is that the thread whose table loses a permission must be stopped.
-- **A watched access** comes to the memory fault hook, the thread leaves `run`, the executor finds the
+- **A watched access** comes to the memory fault hook, the thread leaves `Execution::run`, the executor finds the
   watch and calls `on_memory_accessing`. If the watch is gone when it returns, the thread carries on.
 - **The kernel's own accesses.** `Cpu::read` and `Cpu::write` ignore page permissions (abi/cpu.rs:30-31),
   so no table byte catches a `read` system call filling a page another thread holds. The kernel checks
@@ -804,11 +817,12 @@ The owner ruled that exact replay of a parallel group is composed by the embedde
   section 8), so the ceiling's formula gains the number of watched threads.
 
 **What it costs** (expected, from parts measured apart): a hand-over of a page from one thread to another
-is one watched access (leaving `run` and coming back, 300 ns, docs/runtime.md section 10), one stop of the
+is one watched access (leaving `Execution::run` and coming back, 300 ns, docs/runtime.md section 10), one stop of the
 thread that held the page (230 ns on average, 30 µs at worst, measured in Chrome), two table bytes, and the
 embedder's own record. So about a microsecond before the embedder's work. The 2008 system the owner saw
 paid over 40,000 cycles a hand-over on one machine (dsm-survey/results.json, SMP-ReVirt), most of it
-hardware page protection and its interrupts, which a byte in a table does not have. The count of
+for changing page permissions in hardware and taking the interrupts that follow, which a byte in a table
+does not have. The count of
 hand-overs is the program's and is not reduced: programs that write the same pages from several threads
 will hand over constantly. T4 measures it on real programs.
 
@@ -827,7 +841,7 @@ that race.
 **Where it matters.** Only for an x86-64 guest, in a group in force `Parallel`, on the WebAssembly
 executor, on a host that is not x86: wasmtime on ARM64, and any browser on ARM. On an x86 host wasmtime
 compiles plain WebAssembly accesses to plain moves, which keep the order (ordering-cost/result.json); that
-is the engine dependency of 7.6, tested with ordering tests (section 12). The native executor runs only
+is what 7.6 relies on, tested with ordering tests (section 12). The native executor runs only
 guests of the host's own architecture (native.md section 11), so the hardware gives the right order.
 
 That it matters on this Mac is now measured, not only read in the manual: the checker's message-passing
@@ -844,7 +858,7 @@ difference).
 **What it costs**, measured before this plan on this Mac, single-threaded (ordering-cost/result.json):
 every access atomic costs from nothing (a pointer chase) through 1.1 to 1.4 times (sums, byte loops,
 calls) to 1.8 to 2.2 times (copying 8 bytes at a time). With the alignment test, 2.0 to 2.7 times on the
-copy. On ARM64 both engines turn an atomic load into a load-acquire and an atomic store into a
+copy. On ARM64 wasmtime and V8 both turn an atomic load into a load-acquire and an atomic store into a
 store-release. On an x86 host the same code costs 12 to 17 times, since each atomic store gets a full
 barrier, so this form must never be used there. It is therefore a second translation, used only for x86
 guests in parallel on weaker hosts, and a field of the cache key.
@@ -965,8 +979,8 @@ milestone. Nothing before that. What it must not close off is already written in
   passing, load buffering, independent reads of independent writes), as guest programs, many rounds each,
   written three ways: with plain accesses only; with the guest's barrier instruction where the pattern
   needs one; and with each atomic form of the guest standing in for the barrier. No outcome the guest's
-  architecture forbids is ever seen. This is the test of the engine dependencies of 7.6, run on each
-  engine version and each host.
+  architecture forbids is ever seen. This is the test of what 7.6 relies on, run on each
+  version of each WebAssembly compiler and each host.
 - **The runtimes.** The kernel test crate's Go, Java, Node and Python programs
   (crates/wcontainers-kernel-test/tests/go.rs, java.rs, node.rs, python.rs) with threads, in `Parallel`
   under the stress schedule.
@@ -996,7 +1010,8 @@ Each bar is checkable by the named tests. The cheapest large win is first.
     (4.3); groups with the joining rule (3); the two rules of 4.4 item 5, with calling a group in and
     threads ending in their own entry (4.5); entries kept aside when told `Later` (4.6); the idle mark
     (5); charging per thread (11); the told count.
-  - runtime: `step` and `drive` with a processor, the system told who, idle without a lost wake, the
+  - runtime: `run` and `run_until_finished` with a processor, the system told who, idle without a lost
+    wake, the
     container stop, the executor's stopping handle in place of `StopFlag`, the local system by `&self`
     with a deadline per processor (5).
   - WebAssembly executor: shareable, with the process's lock (7.2, last item). Stores stay one per process:
@@ -1014,7 +1029,7 @@ Each bar is checkable by the named tests. The cheapest large win is first.
 - **T2, a group's threads in parallel on the WebAssembly executor, ARM64 guests.** The shared import and
   its declared maximum; the host-supplied shared memory, first; one store per thread; group stop; the
   table rules and the shared pages of 7.4; code dropped and added; table growth; the byte, barriers and
-  the 128 bit hook (7.3). In the kernel: `ExecutionSettings` at the start, the ordering in force and its
+  the 128 bit hook (7.3). In the kernel: `ExecutionConfig` at the start, the ordering in force and its
   changes, the executor's limits, telling the executor the byte, `membarrier`, the read of every call
   that runs again (4.4).
   - Bar: the threaded suite and the ordering tests match the reference in `Parallel` under the stress
@@ -1126,7 +1141,7 @@ docs/status-threads.md.
 ## 16. Decisions for the owner
 
 1. **How does a running process's ordering change: only by `suspend` and `resume`, or also by a
-   setter?** Recommended: only by `suspend` and `resume`, with the ordering in the `ExecutionSettings`
+   setter?** Recommended: only by `suspend` and `resume`, with the ordering in the `ExecutionConfig`
    given at the container's start and at `resume` (section 6). Cost of this answer: until `suspend` and
    `resume` are built, a process keeps the ordering its container started with; afterwards each change
    moves the process's kernel records out and back. Cost of the setter: one method and its tests now; a
@@ -1135,7 +1150,7 @@ docs/status-threads.md.
 2. **When processes that share memory were given different orderings, which is in force?** You ruled the
    setting per group; settings arrive per process, and groups merge at any `mmap`. Recommended: the
    strictest of them, for as long as they share. `Process::thread_ordering()` answers the ordering in
-   force, and `Process::execution_settings()` what the process was given. Cost: a process told `Parallel`
+   force, and `Process::execution_config()` what the process was given. Cost: a process told `Parallel`
    can run `Serial` because of a neighbour, and says so only through that getter and a counter. The
    other answers: the last one given wins for the whole group, which weakens a neighbour's promise of
    exact replay without its being asked; or `resume` is refused when it disagrees with the group, which
@@ -1187,11 +1202,11 @@ docs/status-threads.md.
      `on_processor_needed(processor)`.
    - `System`: methods take `&self`; `turn` is told the processor and the thread, `ran` the thread,
      `arrived` and `idle` the processor; `idle` also returns when its processor is needed; `stopped`
-     runs once, with every worker out of `run`.
+     runs once, with every worker out of `Execution::run`.
    - `Execution::run` takes `&self`. `StopFlag` and `Executor::stop_flag` go; the executor gives a handle
-     that stops a named thread. `step` and `drive` take a processor.
+     that stops a named thread. `run` and `run_until_finished` take a processor.
    - In T2, `Cpu` gains `set_runs_in_parallel(memory, value)`, `parallel_limits()` and a call for
-     `membarrier`'s group stop, and `Start` carries the processors and the `ExecutionSettings`.
+     `membarrier`'s group stop, and `Start` carries the processors and the `ExecutionConfig`.
    This also answers the open question of how a running container is interrupted from another thread.
 10. **A kernel write into a watched process from outside it: how is the embedder told?** A `write` to a
     file the process maps, or `process_vm_writev`, has no thread of that process behind it, and
@@ -1203,5 +1218,5 @@ docs/status-threads.md.
     `processors` and `ProcessorId`; the services `thread_stop` and `kernel_entry_admit`, with
     `KernelEntry` and `EntryAdmission { Now, Later }`; the hook `on_processor_needed`;
     `Kernel::enter` and `KernelEntered`; `Executor::thread_stopper`; `runs_in_parallel` for the byte and
-    `Cpu::set_runs_in_parallel`; `Cpu::parallel_limits`; `RuntimeSettings::host_threads`; the counters'
+    `Cpu::set_runs_in_parallel`; `Cpu::parallel_limits`; `RuntimeConfig::host_threads`; the counters'
     names in sections 4, 7 and 9; the milestones' letter T.
