@@ -124,11 +124,11 @@ code	crates/a/src/lib.rs:38:17	byte	Buf::f	b'/'
 code	crates/a/src/lib.rs:40:23	int	Buf::f	8
 code	crates/a/src/lib.rs:40:41	int	Buf::f	9
 code	crates/a/src/lib.rs:55:41	int	foo	77
-redefinition	crates/a/src/lib.rs:1:11	int	PAGE_SIZE	PAGE_SIZE = 4096	# also PAGE_SIZE (crates/a/src/lib.rs:51), PAGE_SIZE (crates/b/src/other.rs:1)
+redefinition	crates/a/src/lib.rs:1:11	int	PAGE_SIZE	PAGE_SIZE = 4096	# also PAGE_SIZE (crates/b/src/other.rs:1)
 redefinition	crates/a/src/lib.rs:8:18	int	Errno::EINVAL	Errno::EINVAL = 22	# also EINVAL (crates/b/src/lib.rs:2), EINVAL (crates/b/src/other.rs:2)
 redefinition	crates/a/src/lib.rs:51:11	int	tests::PAGE_SIZE	PAGE_SIZE = 4096	# also PAGE_SIZE (crates/a/src/lib.rs:1), PAGE_SIZE (crates/b/src/other.rs:1)
 redefinition	crates/b/src/lib.rs:2:11	int	EINVAL	EINVAL = 22	# also Errno::EINVAL (crates/a/src/lib.rs:8), EINVAL (crates/b/src/other.rs:2)
-redefinition	crates/b/src/other.rs:1:11	int	PAGE_SIZE	PAGE_SIZE = 4096	# also PAGE_SIZE (crates/a/src/lib.rs:1), PAGE_SIZE (crates/a/src/lib.rs:51)
+redefinition	crates/b/src/other.rs:1:11	int	PAGE_SIZE	PAGE_SIZE = 4096	# also PAGE_SIZE (crates/a/src/lib.rs:1)
 redefinition	crates/b/src/other.rs:2:11	int	EINVAL	EINVAL = 22	# also Errno::EINVAL (crates/a/src/lib.rs:8), EINVAL (crates/b/src/lib.rs:2)
 restated	crates/a/src/lib.rs:53:43	int	tests::t	4096	# test literal restates PAGE_SIZE (crates/a/src/lib.rs:1), DERIVED (crates/a/src/lib.rs:3)
 restated	crates/a/tests/it.rs:1:46	int	page	4096	# test literal restates PAGE_SIZE (crates/a/src/lib.rs:1), DERIVED (crates/a/src/lib.rs:3)
