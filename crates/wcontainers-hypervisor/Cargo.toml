@@ -13,6 +13,8 @@ wcontainers-inside = { path = "../wcontainers-inside" }
 # What the guest's architecture says the floor sets up (stack pointer alignment).
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
 wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu" }
+# The inside's translations, made by the monitor.
+wcontainers-translator = { path = "../wcontainers-translator", features = ["native"] }
 # Reading the inside's ELF image.
 object = { version = "0.37.3", default-features = false, features = ["read_core", "elf"] }
 libc = "0.2.178"
@@ -30,8 +32,6 @@ wcontainers-inside = { path = "../wcontainers-inside" }
 cc = "1.11.2"
 
 [dev-dependencies]
-# The native output's pieces, carried through the emitter in the structure test.
-wcontainers-translator = { path = "../wcontainers-translator", features = ["native"] }
 # The stop test's seeded waits and the structure test's seeded words.
 fastrand = "2.5.0"
 # The floor cases' messages.

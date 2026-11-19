@@ -2,12 +2,15 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod boot;
 pub mod build_environment;
 pub mod layout;
 pub mod link;
 pub mod stop;
 pub mod syndrome;
+pub mod translation;
 
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod floor;

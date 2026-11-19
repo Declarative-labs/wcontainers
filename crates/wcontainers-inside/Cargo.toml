@@ -13,6 +13,8 @@ wcontainers-abi.workspace = true
 wcontainers-arm64 = { path = "../wcontainers-arm64", default-features = false }
 # The position map, which stops are resolved with.
 wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu", default-features = false }
+# The position map as the link carries it.
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 # The link's messages as words.
 zerocopy.workspace = true
 # Page table entry bits.
