@@ -28,7 +28,9 @@ applevisor-sys = "1.0.0"
 wcontainers-inside = { path = "../wcontainers-inside" }
 
 [dev-dependencies]
-# The stop test's seeded waits.
+# The native output's pieces, carried through the emitter in the structure test.
+wcontainers-translator = { path = "../wcontainers-translator", features = ["native"] }
+# The stop test's seeded waits and the structure test's seeded words.
 fastrand = "2.5.0"
 # The floor cases' messages.
 zerocopy.workspace = true

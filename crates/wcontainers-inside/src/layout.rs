@@ -68,8 +68,12 @@ impl Region {
     }
 }
 
-/// The entry mirror fills the top half of the inside's half.
-pub const MIRROR: u64 = INSIDE_HALF | (1 << (VA_BITS - 1));
+/// The entry mirror, which fills the top half of the inside's half.
+pub use wcontainers_arm64::mirror::MIRROR;
+const _: () = assert!(
+    MIRROR == INSIDE_HALF | (1 << (VA_BITS - 1)),
+    "the mirror fills the top half of the inside's half"
+);
 
 /// The inside's address of guest-physical `address`, through the linear map.
 pub const fn linear(address: u64) -> u64 {

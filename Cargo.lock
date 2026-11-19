@@ -2507,6 +2507,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
+ "wcontainers-translator",
  "zerocopy",
 ]
 
@@ -2521,6 +2522,7 @@ dependencies = [
  "safe-mmio",
  "spin",
  "wcontainers-abi",
+ "wcontainers-arm64",
  "zerocopy",
 ]
 
