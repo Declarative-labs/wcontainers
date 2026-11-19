@@ -151,6 +151,9 @@ pub enum Resume {
 pub enum Fixup {
     /// The host register, by number, gets the constant being built in it.
     Constant { register: u8, value: u64 },
+    /// The host register, by number (the zero register's number: the stack pointer), gets host register
+    /// `from`'s value.
+    Move { register: u8, from: u8 },
     /// The exclusive monitor is written whole for an access of `bytes` (`pair`: two of them) at the address
     /// held there, its value read again from guest memory.
     Remember {
