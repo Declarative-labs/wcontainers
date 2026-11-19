@@ -12,11 +12,16 @@
 use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use wcontainers_translator_test::guest::x86_64::plain;
+use wcontainers_guest_cpu::Guest;
+use wcontainers_translator_test::guest::x86_64::{RIP, plain};
 use wcontainers_translator_test::guest::{GuestTest, Stop};
 use wcontainers_translator_test::layer1::on_reference;
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_x86::X86_64;
+use wcontainers_x86::encoding::{
+    ADDRESS_SIZE, ES, ESCAPE, ESCAPE_0F3A, ESCAPES_THREE_BYTE, EVEX, OPERAND_SIZE, REP, REPNE, REX,
+    REX_W, VEX2, VEX3,
+};
 
 /// The fillers after the opcode: a ModRM asking for nothing more (reg 0 and reg 7), and one asking for a SIB
 /// and a 32-bit displacement. The rest of each is `c0`.
@@ -26,32 +31,46 @@ const FILLERS: [&[u8]; 3] = [&[0xc0], &[0x04, 0x05], &[0xf8]];
 fn escapes() -> Vec<Vec<u8>> {
     let mut all: Vec<Vec<u8>> = Vec::new();
     // The four legacy maps, alone and after each prefix that can change what follows.
-    for context in [&[][..], &[0x66], &[0x48], &[0x67], &[0xf2], &[0xf3]] {
-        for map in [&[][..], &[0x0f], &[0x0f, 0x38], &[0x0f, 0x3a]] {
+    let escape_0f38 = *ESCAPES_THREE_BYTE.start();
+    let wide = REX | REX_W;
+    for context in [
+        &[][..],
+        &[OPERAND_SIZE],
+        &[wide],
+        &[ADDRESS_SIZE],
+        &[REPNE],
+        &[REP],
+    ] {
+        for map in [
+            &[][..],
+            &[ESCAPE],
+            &[ESCAPE, escape_0f38],
+            &[ESCAPE, escape_0f38 | ESCAPE_0F3A],
+        ] {
             all.push([context, map].concat());
         }
     }
     // In place of the opcode: the byte after 8F (XOP's map field, a ModRM to Intel CPUs), and a 3DNow suffix
     // after 0F 0F and a register ModRM.
     all.push(vec![0x8f]);
-    all.push(vec![0x0f, 0x0f, 0xc0]);
+    all.push(vec![ESCAPE, ESCAPE, 0xc0]);
     // Two-byte VEX, without and with pp = 66.
-    all.push(vec![0xc5, 0xf8]);
-    all.push(vec![0xc5, 0xf9]);
+    all.push(vec![VEX2, 0xf8]);
+    all.push(vec![VEX2, 0xf9]);
     // Three-byte VEX, every value of the map field; W and pp for the first four.
     for map in 0..32u8 {
-        all.push(vec![0xc4, 0xe0 | map, 0x78]);
+        all.push(vec![VEX3, 0xe0 | map, 0x78]);
     }
     for map in 0..4u8 {
         for fields in [0xf8, 0x79, 0xf9] {
-            all.push(vec![0xc4, 0xe0 | map, fields]);
+            all.push(vec![VEX3, 0xe0 | map, fields]);
         }
     }
     // EVEX, every value of the three map bits; for the first four W, pp, the bit of P1 that must be 1, the
     // bit of P0 that must be 0, and R and X both set (which would be a ModRM's register mode outside 64-bit
     // mode).
     for map in 0..8u8 {
-        all.push(vec![0x62, 0xf0 | map, 0x7c, 0x08]);
+        all.push(vec![EVEX, 0xf0 | map, 0x7c, 0x08]);
     }
     for map in 0..4u8 {
         for (p0, p1) in [
@@ -61,20 +80,20 @@ fn escapes() -> Vec<Vec<u8>> {
             (0xf8, 0x7c),
             (0x30, 0x7c),
         ] {
-            all.push(vec![0x62, p0 | map, p1, 0x08]);
+            all.push(vec![EVEX, p0 | map, p1, 0x08]);
         }
     }
     all
 }
 
-/// The probe's first 16 bytes after `prefixes` segment prefixes. What lies past them never decides the
+/// The probe's first `MAX_LENGTH` + 1 bytes after `prefixes` segment prefixes. What lies past them never decides the
 /// answer: a byte there that the CPU reads makes the instruction longer than 15 bytes whatever it is.
 fn probe(prefixes: usize, escape: &[u8], opcode: u8, filler: &[u8]) -> Vec<u8> {
-    let mut bytes = vec![0x26; prefixes];
+    let mut bytes = vec![ES; prefixes];
     bytes.extend(escape);
     bytes.push(opcode);
     bytes.extend(filler);
-    bytes.resize(16, 0xc0);
+    bytes.resize(longest() + 1, 0xc0);
     bytes
 }
 
@@ -84,13 +103,13 @@ fn length(reference: &mut Reference, escape: &[u8], opcode: u8, filler: &[u8]) -
         let case = plain(&probe(prefixes, escape, opcode, filler));
         let outcome = on_reference::<X86_64>(reference, &case);
         outcome.stop == Stop::GeneralProtection
-            && outcome.state.0[16] == u128::from(wcontainers_translator_test::layout::CODE)
+            && outcome.state.0[RIP] == u128::from(wcontainers_translator_test::layout::CODE)
     };
     if too_long(0) {
         return None;
     }
-    // Fewer than `low` prefixes fit; `high` do not (16 bytes at least).
-    let (mut low, mut high) = (0, 15);
+    // Fewer than `low` prefixes fit; `high` do not (one byte past the limit at least).
+    let (mut low, mut high) = (0, longest());
     while high - low > 1 {
         let middle = (low + high) / 2;
         if too_long(middle) {
@@ -99,7 +118,12 @@ fn length(reference: &mut Reference, escape: &[u8], opcode: u8, filler: &[u8]) -
             low = middle;
         }
     }
-    Some(16 - high as u8)
+    Some((longest() + 1 - high) as u8)
+}
+
+/// The CPU's limit on an instruction's length.
+fn longest() -> usize {
+    X86_64::MAX_LENGTH as usize
 }
 
 fn hex(bytes: &[u8]) -> String {

@@ -19,7 +19,8 @@ use wcontainers_x86::{X86_64, X86Block};
 use zerocopy::{FromBytes, IntoBytes};
 
 const RSP: usize = 4;
-const RIP: usize = 16;
+/// The field of rip in the reference's state.
+pub const RIP: usize = 16;
 const RFLAGS: usize = 17;
 const FS: usize = 18;
 const GS: usize = 19;
