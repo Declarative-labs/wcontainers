@@ -7,6 +7,7 @@
 use super::tessellation::DomainDraw;
 use super::*;
 use crate::desc::{ViewDesc, bind};
+use crate::device::COUNTER_BYTES;
 use wcontainers_gpu::BufferUsage;
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::Converted;
@@ -39,8 +40,6 @@ pub(crate) struct StageRun<B: Backend> {
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
 const FILLED_BYTES: u64 = 32;
-/// The bytes of one filled size or primitive count.
-const COUNTER_BYTES: usize = size_of::<u32>();
 
 /// Direct3D's primitive topology as the stage helper takes it; `None` for patch lists.
 pub(super) fn input_topology(t: u32) -> Option<InputTopology> {

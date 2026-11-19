@@ -898,17 +898,21 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
     }
 }
 
+/// Refused: a shader the converter fails on.
+const UNCONVERTED: &str = "shaders the converter does not yet turn into a valid module";
+
 /// A conversion's failure as Direct3D's answer.
 fn refusal<T>(e: ConvertError) -> Result<T> {
+    use crate::error::WARNING_PREFIX;
     match e {
         ConvertError::Rejected(why) => {
-            eprintln!("wcontainers direct3d 11: shader refused by the converter: {why}");
+            eprintln!("{WARNING_PREFIX}: shader refused by the converter: {why}");
             Err(Error::InvalidArg("bytecode the converter refuses"))
         }
         ConvertError::Unsupported(what) => not_implemented(what),
         e => {
-            eprintln!("wcontainers direct3d 11: shader conversion failed: {e}");
-            not_implemented("shaders the converter does not yet turn into a valid module")
+            eprintln!("{WARNING_PREFIX}: shader conversion failed: {e}");
+            not_implemented(UNCONVERTED)
         }
     }
 }

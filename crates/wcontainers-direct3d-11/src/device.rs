@@ -204,6 +204,10 @@ pub fn level_texture_limits(level: u32) -> [u32; 4] {
     }
 }
 
+/// The bytes of a 32-bit counter: a structured buffer's hidden counter, and the stage helper's
+/// filled sizes and primitive counts.
+pub(crate) const COUNTER_BYTES: usize = size_of::<u32>();
+
 /// The color targets of 9_3 (`D3D_FL9_3_SIMULTANEOUS_RENDER_TARGET_COUNT`).
 const L9_3_TARGETS: u32 = 4;
 
@@ -1587,7 +1591,6 @@ impl<B: Backend> Device<B> {
         self.live()?;
         self.bury();
         let counter = if counted != 0 {
-            const COUNTER_BYTES: usize = size_of::<u32>();
             let desc = BufferDesc {
                 byte_width: COUNTER_BYTES as u32,
                 usage: usage::DEFAULT,

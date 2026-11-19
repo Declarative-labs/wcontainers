@@ -235,6 +235,7 @@ fn unserved_shaders_are_refused_not_faked() {
 
 /// The bytecode of HLSL `source` compiled by the system's compiler for `target`.
 fn compile(source: &str, target: windows::core::PCSTR) -> Vec<u8> {
+    let entry = std::ffi::CString::new(wcontainers_shaders::ENTRY_POINT).unwrap();
     let mut blob = None;
     unsafe {
         windows::Win32::Graphics::Direct3D::Fxc::D3DCompile(
@@ -243,7 +244,7 @@ fn compile(source: &str, target: windows::core::PCSTR) -> Vec<u8> {
             windows::core::PCSTR::null(),
             None,
             None::<&windows::Win32::Graphics::Direct3D::ID3DInclude>,
-            windows::core::s!("main"),
+            windows::core::PCSTR(entry.as_ptr().cast()),
             target,
             0,
             0,
