@@ -80,7 +80,8 @@ command gives +17.00% [+16.14 .. +17.42] and the system-call part 80.3 ns; by pa
 new layouts of it at +17.75% to +19.03%, every one under +21.2% (below, "N4 run 17"). Run 18 found that a native run
 spent about 164 million cycles before the program started, finding the float state moves by decoding every system
 register six times, and found them in one pass once a process: the bar's command gives +11.08% [+10.42 .. +11.52] and
-the system-call part 76.4 ns; by pairs the compute part went from +18.68% to +12.51% (below, "N4 run 18").
+the system-call part 76.4 ns; by pairs the compute part went from +18.68% to +12.51% (below, "N4 run 18"). Run 19
+changed no code and waited on Docker for the suites that need the reference (below, "N4 run 19").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -107,6 +108,23 @@ the system-call part 76.4 ns; by pairs the compute part went from +18.68% to +12
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 19 (2026-11-20): waiting on Docker for the reference
+
+Start: origin/main and origin/phase-1-literals had nothing new; no new ruling in the brief since run 15, and no answer in
+the orchestrator's folder to run 18's asks. The plan already matches the embedder's interface as last ruled
+(`ThreadOrdering { Serial, Parallel }` with `ReplayDeterminism` beside it, per-thread table roots for `PerThreadWatch`,
+the dirty marks from the page tables), so nothing in it changed. No code changed this run, so run 18's suites and
+measurements stand as they are and were not repeated. Files in scratch native/n4r19 (scripts/wait-docker.sh,
+wait-docker.log, scripts/docker-suites.sh).
+
+Docker on the Mac: `docker ps` and `docker info` answer, and `docker create` makes a container in 2 s, but `docker start`
+of it never returns (killed after 30 s; the container removed after), from about 03:56 (run 18) to at least the last
+probe below. Other tracks' `docker run`s hang the same way (24 waiting at 05:02). The orchestrator's guard
+(orchestrator/docker-guard/guard.sh) restarts Docker only when `docker ps` or `docker info` fails, so it does not see
+this. This track does not restart Docker Desktop: it is shared, and other tracks' containers are in it. The three suites
+that need the reference (the kernel test with the count at every counted event alike at none and 256, busybox, and both
+at whole page) are one command, `sh n4r19/scripts/docker-suites.sh`, run as soon as a probe succeeds.
 
 ## N4 run 18 (2026-11-20): what a native run costs before the program starts
 
@@ -3056,6 +3074,11 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 19: Docker Desktop on the Mac answers `docker ps` and `docker info` but starts no container (`docker start`
+  hangs) from about 03:56; the guard does not restart it, since it only probes those two. The kernel test, busybox and
+  whole page wait on it (`sh scratch native/n4r19/scripts/docker-suites.sh`). Run 18's asks stand: the bar, the forms
+  index, the table's size, loaded translations shared between processes.
 
 - N4 run 18: (1) A native run spent about 164 million cycles (about 36 ms on the M5) before the program's first
   instruction, in the monitor finding the float state moves; they are now found in one pass once a process. Nothing a
