@@ -99,7 +99,75 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   VEX instructions had no meaning though claimed, layer 1's default list skipped VEX forms and forms without
   a meaning, 66-prefixed near branches and `lss` with REX.W were not marked, layer 2 had no rep strings, and
   nothing tested the time stamp's designed answer; it also gave x86 its smoke programs and the CPUID
-  feature test, and stated plan 5.10's topology rule (see "X5, run 7").
+  feature test, and stated plan 5.10's topology rule (see "X5, run 7"). Run 8 (2026-11-20) fixed what the
+  second independent check of X5 found: `stmxcsr` was not marked as varying, nothing tested MXCSR's designed
+  answers, layer 2's generator could write over its own code, and `rep stos` of a wider value stored one
+  element a turn (see "X5, run 8").
+
+## X5, run 8 (2026-11-20)
+
+Machines: the rented x86-64 machine for lint, layer 2 for x86 and the suite; the rented ARM64 machine for
+ARM64's layer 2 and tests; the i7-8750H for the hand-made cases and layer 1 (`run8-*` logs there, 4 at once);
+the Mac for git, formatting and the literal check. Logs in scratch `x5/run8/`.
+
+The second independent check's findings, all fixed:
+- `stmxcsr` was marked as giving every CPU's answer, but while MXCSR's flags are not kept it stores them as
+  last written (f7d5a8e0). Decision: the mark goes on what reads the flags, not on every float instruction that
+  may raise one, since only a reader makes the difference seen. `stmxcsr`, `vstmxcsr`, `fxsave`, `xsave`,
+  `xsavec` and `xsaveopt` (both widths) are marked; the four saves are X7's and X8's meanings, marked now so
+  that the mark is there when they are written. `facts.rs` now expects the mark on `0F AE 1B`. Plan 5.2 lists
+  them and says why; a signal frame's MXCSR stays plan 12's known gap.
+- Nothing tested MXCSR's designed answers (58246b3c). `Designed` has two more fields: `tracking` (whether the
+  float flags must be kept after, read back by a new `GuestTest::tracked`) and `counted` (slow paths by name,
+  with the count each must have; a name no slow path has fails the test). `hand_cases_do_what_they_must`
+  checks both after the translated run (`layer1::translated_on` keeps the machine, `Machine::count_named`).
+  Seven x86 cases, each also compared with the CPU: `ldmxcsr` turns tracking on and counts nothing; `divss`
+  1/3 in the default mode leaves the flags and takes no exact path; with tracking on it keeps PE (exact path
+  counted once); rounding down keeps PE with tracking still off; with PE unmasked it stops with
+  `FloatException(PE)`; `stmxcsr` counts "MXCSR's exception flags read while not kept" once with tracking off
+  and not at all with it on. Plan 7.2's as-built note names the fields.
+- Layer 2's generator let a group load into its own base and then access through the loaded value, which can
+  be a code address (x86 pushes return addresses into the area), so a program wrote over its own code (seed
+  24621, case 11616) (5d6954f6). Now only a group's last access may load into its base, so no access follows a
+  loaded value; and x86's emitter loads a pair whose first register is the base in the other order (rt2
+  first), so both halves come from the base as it was, as the pair's one load reads them (with rt as the base
+  the second load followed the loaded value too). This is the shared generator, so ARM64's programs change for
+  the same seed (see "Departures").
+- `rep stos` of a value that is not one byte repeated stored one element a turn (f9b78abf). It now splats the
+  value across a vector and stores 16 bytes a turn up to the last whole vector, then the last elements one at
+  a time. Plan 5.6 says so. Three new hand-made cases (`rep stosw`, `stosd`, `stosq` of a value not one byte
+  repeated, from an unaligned start, 125 vectors and one element) are compared with the CPU.
+
+Measured:
+- The hand-made cases on the i7-8750H (load 0 to 2): 108 (98 and the ten new): pass. The four `stos` forms at
+  1,000 a form, seed 9390: 0 failing. After the fixes, 100,000 random instructions in no form, seed 9392: 0
+  failing (291 s); the three `stos` forms with `stmxcsr` and `ldmxcsr` at 5,000 a form, seed 9393: 0 failing
+  (load 1 to 4).
+- Replay of the failing case (`WC_LAYER2_FROM=11616 WC_LAYER2_CASES=1 WC_LAYER2_SEED=24621`, rented x86-64
+  machine): passes. Layer 2 for x86 at 20,000 programs, seed 24621 (the check's), all on the CPU, 1 in Chrome,
+  96 at once (`l2-x86-24621.log`, load 3 to 60, another track's job beside it): 0 failing (315 s; 6,898
+  faulted, 2,474 left to an address at full).
+- Layer 2 for ARM64 at 10,000 programs, seed 9391, all on the CPU, 12 at once (rented ARM64 machine,
+  `l2-arm-9391.log`, load 32 to 35): 0 failing (239 s; 3,351 faulted, 789 left to an address at full).
+- The literal check (the Mac): exits 0. The case names and the division's operands are named constants; no
+  line was added to the baseline.
+- Clippy with warnings denied for the five crates and `cargo fmt --check` (rented x86-64 machine): pass.
+- The suite at 58246b3c. Rented x86-64 machine (`suite-x86m.log` and `suite-x86m-attach.log`, 2,742 s, load 4
+  to 63, another track's job beside it): clippy passes; 106 passed, 13 ignored, 30 failed, the same 30 as run
+  7 and for the same reasons: the 25 ARM64 tests, the three 5-level paging changes, `unoffered_forms_are_illegal`
+  (that machine has the features) and `hand_cases_do_what_they_must_x86_64` (Sapphire Rapids runs `movbe`
+  with 66 and REX.W; its verdict is the i7-8750H's, which passes, above). Rented ARM64 machine (`suite-arm.log`,
+  1,194 s, load 13 to 19): 50 passed, 2 failed, the two layer 1 tests its manual keeps on the Mac.
+- Not run: those two ARM64 layer 1 tests on the Mac. Docker Desktop on the Mac was not starting containers
+  (every track's stayed "Created"; mine too, and I removed mine). The only change they share is that
+  `layer1::translated_with` now returns the outcome of `translated_on`, which also hands back the machine, so I
+  expect them to pass as in run 7; that is expected, not measured.
+
+So X5's pass bar holds as in run 7, with the four findings fixed: the meanings changed only in `rep stos`'s bulk
+pass (checked by the hand-made cases and 5,000 a form above) and in no instruction's result for the marks.
+
+What comes next: X5's independent check, then X6. For the orchestrator: the Mac's two ARM64 layer 1 verdicts,
+once Docker Desktop starts containers again.
 
 ## X5, run 7 (2026-11-20)
 
@@ -2933,6 +3001,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X5 run 8: the hand-made cases twice on the i7-8750H (108); the four `stos` forms at 1,000 a form, seed 9390;
+  100,000 in no form, seed 9392; five forms at 5,000 a form, seed 9393 (all on the i7-8750H);
+  layer 2 x86 at 20,000 programs, seed 24621, all on the CPU (rented x86-64 machine); layer 2 ARM64 at 10,000,
+  seed 9391, all on the CPU (rented ARM64 machine).
+
 - X5 run 7: layer 1 on the i7-8750H: 1,073 default forms at 1,000 a form, seed 9382 (1,073,000 cases); the ten
   BMI1 forms at 1,000, seed 9380; six far forms at 1,000, seed 9382, and three at 5,000, seed 9387; 100,000
   in no form, seed 9383; the Chrome sample, 3,219 cases, seed 9384; the hand-made cases twice. Layer 2 x86:
@@ -3120,6 +3193,9 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
+- X5 run 8: layer 2's shared generator lets only a group's last access load into its base. ARM64's layer 2
+  programs therefore differ from earlier runs' at the same seed; ARM64's layer 2 was run again at 10,000
+  (seed 9391, 0 failing).
 - X5 run 7: a far `call` writes its cs slot before it checks the return address's slot, so the brief's "one
   permission check before anything changes" does not hold for it: the reference CPU leaves cs written when
   only the second push faults, and matching the CPU is what makes the state exact.
