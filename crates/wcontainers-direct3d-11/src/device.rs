@@ -2973,6 +2973,7 @@ pub(crate) fn integer_format(format: Format) -> bool {
 /// The back end's sampler for Direct3D's description. Border and mirror-once addressing the back end
 /// lacks clamp; the program applies them (`BorderInShader`, `MirrorOnceInShader`).
 fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
+    use crate::desc::{address, filter as filter_bits};
     let filter = |bit: u32| {
         if d.filter & bit != 0 {
             Filter::Linear
@@ -2980,27 +2981,27 @@ fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
             Filter::Nearest
         }
     };
-    if d.filter & !0xd5 != 0 {
+    if d.filter & !filter_bits::SERVED != 0 {
         return not_implemented("minimum and maximum filtering");
     }
-    let anisotropic = d.filter & 0x40 != 0;
+    let anisotropic = d.filter & filter_bits::ANISOTROPIC != 0;
     // Direct3D takes 0 as 1.
-    if anisotropic && d.max_anisotropy > 16 {
+    if anisotropic && d.max_anisotropy > crate::desc::MAX_ANISOTROPY {
         return Err(Error::InvalidArg("anisotropy above 16"));
     }
     let mut address = [AddressMode::Repeat; 3];
     for (a, &mode) in address.iter_mut().zip(&d.address) {
         *a = match mode {
-            1 => AddressMode::Repeat,
-            2 => AddressMode::Mirror,
-            3 => AddressMode::Clamp,
-            4 if caps.has(Features::BORDER_COLOR) => AddressMode::Border,
-            5 if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
-            4 | 5 => AddressMode::Clamp,
+            address::WRAP => AddressMode::Repeat,
+            address::MIRROR => AddressMode::Mirror,
+            address::CLAMP => AddressMode::Clamp,
+            address::BORDER if caps.has(Features::BORDER_COLOR) => AddressMode::Border,
+            address::MIRROR_ONCE if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            address::BORDER | address::MIRROR_ONCE => AddressMode::Clamp,
             _ => return Err(Error::InvalidArg("unknown address mode")),
         };
     }
-    let compare = if d.filter & 0x80 != 0 {
+    let compare = if d.filter & filter_bits::COMPARISON != 0 {
         Some(compare_fn(d.comparison)?)
     } else {
         None
@@ -3015,17 +3016,17 @@ fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
         min: if anisotropic {
             Filter::Linear
         } else {
-            filter(0x10)
+            filter(filter_bits::MIN_LINEAR)
         },
         mag: if anisotropic {
             Filter::Linear
         } else {
-            filter(0x4)
+            filter(filter_bits::MAG_LINEAR)
         },
         mip: if anisotropic {
             Filter::Linear
         } else {
-            filter(0x1)
+            filter(filter_bits::MIP_LINEAR)
         },
         address,
         // WebGPU takes no minimum above the maximum: such a range holds every level at the
