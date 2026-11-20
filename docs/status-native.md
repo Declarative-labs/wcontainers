@@ -36,7 +36,7 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   (guest pages now get their frames at the first touch) and its minor ones (below, "N3 run 9"); run 10 settled the next
   check's blocking finding (a faulting `dc zva` or `dc c*` panicked the inside) and its three minor ones (below, "N3 run
   10"). N3 is done, for its independent check.
-- N4 (linking and speed) is started, not done: run 1 settled the last check's findings and built pieces to the end of
+- N4 (linking and speed) is done, for its independent check: run 1 settled the last check's findings and built pieces to the end of
   their page at the monitor's look-ahead, filled entry slots, linked direct exits, turns with a count limit run in
   steps, and the count test across look-aheads (below, "N4 run 1"); run 2 fixed the mappings failure at look-ahead none,
   built the speed test and made returns go by `br`: the speed bar fails, +63.74% [+61.86 .. +65.48] against +21.2%
@@ -87,13 +87,18 @@ event alike at none and 256 on the benchmark set (same hashes), busybox 56 of 56
 blocks program's two `dc cvau` lines differ, from that machine's hardware, and wait for the Mac's reference (below, "N4
 run 20"). Run 21 changed no code; once Docker Desktop started containers again, the kernel test (blocks included, the
 count at every counted event alike at none and 256 with the same hashes), busybox 56 of 56 and both at whole page passed
-against the Mac's own reference (below, "N4 run 21"). Run 22 found nothing new to build on and changed no code. What
-is left of N4 is the orchestrator's rulings and the independent check.
+against the Mac's own reference (below, "N4 run 21"). Run 22 found nothing new to build on and changed no code. Run 23
+wrote the orchestrator's rulings of 2026-11-20 08:40 into the plan (the bar passes on run 18's figures; the jump table
+keeps 256 entries; loaded translations shared between processes are not part of N4; the forms index is the translator
+track's), with four questions for the owner (plan decisions 15 to 18), and ran the suites again at the same code with
+new seeds. N4 is done, for its independent check (below, "N4 run 23").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
   and 10's final choice, which N1's trial narrows: option C does not work on Hypervisor.framework (below),
-  so it is A or B.
+  so it is A or B. Added at N4 run 23: 15 (a smaller jump table for two more instructions on the hit's way), 16
+  (loaded translations shared between processes), 17 (slots a guest-level load can read, the study's option (c)),
+  18 (the code area within its slots' 8 GiB region, a sound layout described, not built).
 
 ## What changed in the plan at the start of N1 (the last check's findings)
 
@@ -115,6 +120,51 @@ is left of N4 is the orchestrator's rulings and the independent check.
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 23 (2026-11-20): the orchestrator's rulings written in; N4 to its independent check
+
+Start (08:14, load 9): origin/main and origin/phase-1-literals had nothing new. The brief's section of 2026-11-20 08:40
+answers run 18's four asks. No code changed this run (the code is 1736f6a1's, as in runs 18 to 22). Files in scratch
+native/n4r23 (scripts/mac.sh, mac.log, suite/*.log, arm/log).
+
+The rulings, as written into the plan (commit 7fa4f9cc):
+- The speed bar passes on run 18's figures (plan section 8, "The result"): compute part +11.08% [+10.42 .. +11.52] by the
+  bar's command (load 5.9 to 8.6), +12.51% by alternating pairs (load 7.1 to 9.3), +13.05% on the worst of four seeded
+  layouts by pairs (load 3.2 to 5.3), against +21.2%; the worst layout is 8.15 points under the line, the spread over
+  layouts measured in runs 15 to 18 1.3 to 3.4 points, so the pass does not rest on layout luck, by either method. The
+  system-call part: the back end's share 76.4 ns [74.7 .. 79.1] against 100 ns. Each program's figures beside the
+  untranslated run's are in plan section 8.
+- The jump table keeps 256 entries: 1036 bytes a site, 1036 bytes in all on the benchmark set (interpret's one site),
+  none on busybox (plan 3.2). A smaller table for two more instructions on the hit's way is plan decision 15.
+- Loaded translations shared between processes are not part of N4: both ways described in plan 5.3 with what is measured
+  and what is only expected; plan decision 16.
+- The decoder's faster index of forms is the translator track's to apply; not committed here.
+- Also written for the owner: the study's option (c) as decision 17 (not built; nothing of it is on this branch), and run
+  15's sound layout with the code area within its slots' 8 GiB region as decision 18 (described, not built, not
+  measured). Confirmed and recorded as built: a return's and a call's last target, adds counted ahead.
+
+Suites again at this code with new seeds (Mac, Hypervisor.framework and Docker Desktop's reference, -j 4, 3 test
+threads, 08:16 to 08:22, load 7.3 to 17.0; scripts/mac.sh, mac.log, suite/*.log), all exit 0:
+- The kernel test: hello, bench, calls, jumptables, forks, code, blocks and mappings as the reference; a stop at every
+  counted event alike at look-ahead none and 256: bench 177,072 stops (hash 10937141521840235265), calls 3,004
+  (18260131204484228776), jumptables 5,484 (17339527552300285948), the same as runs 15 to 21.
+- Forced interrupts: 12,257 stops over 14 functions (28 cases) at 3 look-aheads, 0 failed, new seed 0x23c0ffee17.
+- The differential test against the WebAssembly output, 16 drawn cases a form, 0 failing each: none 32,228 cases (seed
+  0x7a23c4e11), bounded 16 32,493 (0x7a23c4e116), bounded 256 32,353 (0x7a23c4e1256).
+- Busybox 56 of 56 as the reference (seed 0x6b65726e); whole page (bound 4294967295): busybox 56 of 56 and the kernel test
+  to the end with the same stops and hashes.
+- Floor 21 cases and 1 measurement, 0 failed; probe 0 forms of 16 bytes or fewer differ (44 larger, the Split route's);
+  registers, exits (4 programs, 0 failed), carry, kept, the monitor's lib tests (9), the inside's and the policy crate's
+  tests, the literal check's tests pass; the literal check exits 0. Clippy with warnings denied for the inside and the
+  monitor (all targets) on the Mac.
+- On the rented ARM64 machine (arm/log, 100 s, its load 24): format check; clippy with warnings denied for arm64 and
+  guest-cpu (all targets and without default features), the translator with its native feature, the inside and the policy
+  crate (all targets) and the inside's softfloat target; the tests of arm64, guest-cpu and the translator with native.
+- Literals: the baseline is unchanged at 8148 lines (the inside 25, the monitor 1).
+
+What is left of N4: the independent check (the bar repeated as alternating pairs, the differential test at each look-ahead
+with a new seed, the count identical across look-aheads on the benchmark set, the jump table's adversarial programs, which
+are the kernel test's jumptables program and the forced-interrupt test's three jump-table functions).
 
 ## N4 run 22 (2026-11-20): nothing to build
 
@@ -2948,6 +2998,9 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   the guest's table is read, not the byte read, and the table is indexed by that byte, so a table of the bound's size
   would let a guest table holding a larger byte branch past ours (the same kind of fault as the writeback case). Every
   site's table has the 256 entries a byte can take. The two sound ways to size it are put to the orchestrator.
+  Ruled 2026-11-20 08:40: kept as built, since both sound sizings cost two instructions on the hit's way; the smaller
+  table is the owner's to weigh (plan decision 15). Size: 1036 bytes a site; 1036 bytes in all on the benchmark set
+  (interpret's one site), none on busybox.
 
 - N4 run 13: the same last target for a call through a register (`blr xN`, xN neither x30 nor withheld), x30 built
   first so that a hit is one direct branch (sort -22.2% cycles, nothing slower beyond the noise). Plan 3.2 says so.
@@ -2964,7 +3017,8 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   fills its own mirror: the inside links every direct exit within its process, which is right only for a process that
   maps the target's code, so shared frames need either exits through slots past a loaded translation (a speed trade,
   put to the orchestrator) or code frames copied before a link is written while another process holds them. Plan 5.3
-  says so.
+  says so. Ruled 2026-11-20 08:40: not part of N4; both ways are described in plan 5.3 with what is measured and
+  expected, for the owner (plan decision 16).
 
 - N4 run 11: plan 3.2 says loading a translation into the code area writes its address places. As built, the monitor
   writes them (`Translation::moved`) before it puts the piece in the link, so the inside still receives code made for
@@ -3152,6 +3206,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 23: your four rulings of 2026-11-20 08:40 are in the plan (sections 3.2, 5.3, 8, 9 and 10) and N4 is reported
+  complete for its independent check. For the owner, in plan section 10: 15 (a smaller jump table), 16 (loaded
+  translations shared between processes), 17 (the study's option (c)), 18 (the code area within its slots' 8 GiB region,
+  the sound layout of run 15, described and not built: it still waits for a ruling). The forms index patch
+  (scratch native/n4r19/forms-index.patch) is not committed here.
 
 - N4 run 21: after your Docker Desktop restart at 08:06 the reference's suites passed on the Mac's own reference at
   b86341ea (code of 693f60ff): the kernel test with blocks, the count at every counted event alike at none and 256 on
