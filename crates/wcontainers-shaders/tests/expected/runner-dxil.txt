@@ -1419,7 +1419,7 @@ hlsl+uav-rwstructuredbuffer-5-ps.dxil	ok ; glsl compiles
 hlsl+uav-rwstructuredbuffer-6-ps.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+uav-rwstructuredbuffer-7-ps.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+uav-rwstructuredbuffer-8-ps.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-hlsl+unbounded-array-5.1-1-cs.dxil	unsupported ResourceArray
+hlsl+unbounded-array-5.1-1-cs.dxil	unsupported UnboundedResourceArray
 hlsl+uniform-semantics-1-ps.dxil	ok ; glsl compiles
 hlsl+uniform-semantics-2-ps.dxil	ok ; glsl compiles
 hlsl+uniform-semantics-3-ps.dxil	ok ; glsl compiles

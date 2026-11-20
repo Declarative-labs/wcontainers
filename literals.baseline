@@ -13151,7 +13151,6 @@ code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a binding past the resource list"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of another class"
-code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of no class"
 code	crates/wcontainers-shaders/src/dxil.rs	str	draw_bases	"shader"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftoi"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftou"

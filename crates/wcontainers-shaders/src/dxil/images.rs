@@ -174,6 +174,13 @@ pub(super) fn declare_elements(
     declared.extend(elements.map(|binding| Declared { binding, ..d }));
 }
 
+/// Whether the resource at `binding` is a typed buffer, which the reader takes as a 1D image.
+pub(super) fn typed_buffer_at(declared: &[Declared], binding: naga::ResourceBinding) -> bool {
+    declared
+        .iter()
+        .any(|d| d.buffer && (d.set, d.binding) == (binding.group, binding.binding))
+}
+
 /// Each declared image's global variable, matched by set, binding and kind while the bindings are
 /// still dxil-spirv's.
 pub(super) fn globals(

@@ -10,6 +10,7 @@ cs_readonly.dxbc	ok ; glsl absent compute
 cs_shared.dxbc	ok ; glsl absent compute
 cs_texels.dxbc	ok views:R32Float ; glsl absent compute
 cs_through.dxbc	ok views:R32Float through ; glsl absent compute
+cs_typed_array.dxbc	unsupported UnboundedResourceArray
 ds_line.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 ds_quad.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 ds_tri.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")

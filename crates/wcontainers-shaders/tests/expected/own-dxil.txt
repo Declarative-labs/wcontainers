@@ -10,6 +10,7 @@ cs_readonly.dxil	ok ; glsl absent compute
 cs_shared.dxil	ok ; glsl absent compute
 cs_texels.dxil	ok views:R32Float ; glsl absent compute
 cs_through.dxil	ok views:R32Float through ; glsl absent compute
+cs_typed_array.dxil	unsupported UnboundedResourceArray
 gs_adjacent.dxil	unsupported DxilGeometryShader
 gs_clip.dxil	unsupported DxilGeometryShader
 gs_cut.dxil	unsupported DxilGeometryShader

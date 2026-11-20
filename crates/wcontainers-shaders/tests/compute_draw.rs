@@ -1226,6 +1226,35 @@ const BUFFER_ARRAYS: [(SlotKind, u32, u32); 5] = [
 ];
 const BUFFER_ARRAY_INVOCATIONS: u32 = 8;
 
+/// `cs_typed_array`'s arrays as declared (kind, first register, elements), the unbounded ones
+/// sized as the test's ranges give them.
+const TYPED_ARRAYS: [(SlotKind, u32, u32); 4] = [
+    (SlotKind::Uniform, 0, 1),
+    (SlotKind::Texture, 0, 3),
+    (SlotKind::Texture, 3, 2),
+    (SlotKind::Storage, 0, 3),
+];
+
+/// What `cs_typed_array` leaves in its storage views (u0 to u2), from the seeded constant (one
+/// buffer), sources (t0 to t4) and storage words, by Direct3D's rules.
+fn typed_array_expected(
+    picks: &[[u32; 4]],
+    sources: &[Vec<u32>],
+    start: &[Vec<u32>],
+) -> Vec<Vec<u32>> {
+    let mut out = start.to_vec();
+    let (rest, last) = (3, 2);
+    let p = picks[0];
+    for i in 0..BUFFER_ARRAY_INVOCATIONS {
+        let at = i as usize;
+        let summed = sources[((p[1] + i) % 3) as usize][at]
+            .wrapping_add(sources[rest + ((p[2] + i) % 2) as usize][at]);
+        out[((p[0] + i) % 2) as usize][at] = summed;
+        out[last][at] = sources[last][at] ^ sources[rest + ((p[3] + i) % 2) as usize][at];
+    }
+    out
+}
+
 /// What `cs_buffer_array` leaves in its storage views (u0 to u3), from the seeded constants (four
 /// words per constant buffer), sources (t0 to t4) and storage words, by Direct3D's rules.
 fn buffer_array_expected(
@@ -1253,6 +1282,39 @@ fn buffer_array_expected(
 /// Direct3D's rules give. Seeded words: `WCONTAINERS_COMPUTE_SEED` and `WCONTAINERS_COMPUTE_CASES`.
 #[test]
 fn buffer_arrays_use_the_elements_picked() {
+    buffer_arrays_alike(
+        "cs_buffer_array",
+        &BUFFER_ARRAYS,
+        buffer_array_expected,
+        &[false],
+    );
+}
+
+/// Arrays of typed buffers alone (`cs_typed_array`, fxc's shader model 5.1 and dxc's 6.0), one of
+/// each kind declared without a length and sized by the root signature's ranges, as
+/// `buffer_arrays_use_the_elements_picked`.
+#[test]
+fn typed_buffer_arrays_use_the_elements_picked_on_both_routes() {
+    buffer_arrays_alike(
+        "cs_typed_array",
+        &TYPED_ARRAYS,
+        typed_array_expected,
+        &[false, true],
+    );
+}
+
+/// What an array test's shader leaves in its storage views, from its seeded constants (four words
+/// per constant buffer), sources and storage words.
+type ArrayResults = fn(&[[u32; 4]], &[Vec<u32>], &[Vec<u32>]) -> Vec<Vec<u32>>;
+
+/// `shader`, declaring `arrays`, converted from fxc's bytecode and, where `dxil` holds true, dxc's,
+/// with every element bound at its register, against `expected`.
+fn buffer_arrays_alike(
+    shader: &str,
+    arrays: &[(SlotKind, u32, u32)],
+    expected: ArrayResults,
+    dxil: &[bool],
+) {
     let mut b = webgpu();
     let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
         .map(|s| s.parse().unwrap())
@@ -1261,7 +1323,7 @@ fn buffer_arrays_use_the_elements_picked() {
         .map(|s| s.parse().unwrap())
         .unwrap_or(4);
     let registers = |kind| -> Vec<u32> {
-        BUFFER_ARRAYS
+        arrays
             .iter()
             .filter(|a| a.0 == kind)
             .flat_map(|a| a.1..a.1 + a.2)
@@ -1284,134 +1346,144 @@ fn buffer_arrays_use_the_elements_picked() {
         register_ranges: ranges,
         ..Default::default()
     };
-    let c = convert(Source::Dxbc(&bytecode("cs_buffer_array.dxbc")), &key, None).unwrap();
-    let shader = b.create_shader(&c.modules[0]).unwrap();
-    let program = b.create_program(&Program::Compute(&shader)).unwrap();
     let word = size_of::<u32>();
     let pick_words = size_of::<[u32; 4]>() / word;
     let mut failures = Vec::new();
-    for seed in seed..seed + seeds {
-        let mut next = rng(seed);
-        let picks: Vec<[u32; 4]> = registers(SlotKind::Uniform)
-            .iter()
-            .map(|_| [(); 4].map(|_| next() >> 4))
-            .collect();
-        let mut seeded = |kind| -> Vec<Vec<u32>> {
-            registers(kind)
-                .iter()
-                .map(|_| (0..BUFFER_ARRAY_INVOCATIONS).map(|_| next() >> 4).collect())
-                .collect()
+    for &dxil in dxil {
+        let (build, code) = match dxil {
+            true => ("dxil", bytecode(&format!("{shader}.dxil"))),
+            false => ("dxbc", bytecode(&format!("{shader}.dxbc"))),
         };
-        let sources = seeded(SlotKind::Texture);
-        let start = seeded(SlotKind::Storage);
-        let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
-        let constants: Vec<_> = picks
-            .iter()
-            .map(|p| buffer(&mut b, &words(p), BufferUsage::UNIFORM))
-            .collect();
-        let read_only: Vec<_> = sources
-            .iter()
-            .map(|w| buffer(&mut b, &words(w), usage))
-            .collect();
-        let written: Vec<_> = start
-            .iter()
-            .map(|w| buffer(&mut b, &words(w), usage))
-            .collect();
-        let bytes = u64::from(BUFFER_ARRAY_INVOCATIONS) * word as u64;
-        let entries: Vec<_> = c
-            .reflection
-            .bindings
-            .iter()
-            .map(|r| {
-                let at = r.register as usize;
-                let resource = match r.kind {
-                    SlotKind::Uniform => BindingResource::UniformBuffer(BufferRange {
-                        buffer: &constants[at],
-                        offset: 0,
-                        size: (pick_words * word) as u64,
-                    }),
-                    SlotKind::Texture | SlotKind::Storage => {
-                        let storage = r.kind == SlotKind::Storage;
-                        let buffer = if storage {
-                            &written[at]
-                        } else {
-                            &read_only[at]
-                        };
-                        BindingResource::StorageBuffer {
-                            range: BufferRange {
-                                buffer,
-                                offset: 0,
-                                size: bytes,
-                            },
-                            writable: storage,
-                        }
-                    }
-                    other => panic!("{other:?}"),
-                };
-                BindingEntry {
-                    binding: r.binding,
-                    stages: StageSet::COMPUTE,
-                    resource,
-                }
-            })
-            .collect();
-        let set = b.create_binding_set(&entries).unwrap();
-        let mut helpers = vec![0u8; c.reflection.helper_size as usize];
-        for h in &c.reflection.helpers {
-            let HelperValue::TexelBufferView { .. } = h.value else {
-                panic!("{h:?}");
+        let source = match dxil {
+            true => Source::Dxil(&code),
+            false => Source::Dxbc(&code),
+        };
+        let c = convert(source, &key, None).unwrap();
+        let module = b.create_shader(&c.modules[0]).unwrap();
+        let program = b.create_program(&Program::Compute(&module)).unwrap();
+        for seed in seed..seed + seeds {
+            let mut next = rng(seed);
+            let picks: Vec<[u32; 4]> = registers(SlotKind::Uniform)
+                .iter()
+                .map(|_| [(); 4].map(|_| next() >> 4))
+                .collect();
+            let mut seeded = |kind| -> Vec<Vec<u32>> {
+                registers(kind)
+                    .iter()
+                    .map(|_| (0..BUFFER_ARRAY_INVOCATIONS).map(|_| next() >> 4).collect())
+                    .collect()
             };
-            // Every view starts at its buffer's first word and holds a word per invocation.
-            let at = h.offset as usize + word;
-            helpers[at..at + word].copy_from_slice(&BUFFER_ARRAY_INVOCATIONS.to_le_bytes());
-        }
-        let helper_buffer = buffer(&mut b, &helpers, BufferUsage::UNIFORM);
-        let helper_set = b
-            .create_binding_set(&[BindingEntry {
-                binding: helper_binding(ShaderStage::Compute),
-                stages: StageSet::COMPUTE,
-                resource: BindingResource::UniformBuffer(BufferRange {
-                    buffer: &helper_buffer,
-                    offset: 0,
-                    size: helpers.len() as u64,
-                }),
-            }])
+            let sources = seeded(SlotKind::Texture);
+            let start = seeded(SlotKind::Storage);
+            let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
+            let constants: Vec<_> = picks
+                .iter()
+                .map(|p| buffer(&mut b, &words(p), BufferUsage::UNIFORM))
+                .collect();
+            let read_only: Vec<_> = sources
+                .iter()
+                .map(|w| buffer(&mut b, &words(w), usage))
+                .collect();
+            let written: Vec<_> = start
+                .iter()
+                .map(|w| buffer(&mut b, &words(w), usage))
+                .collect();
+            let bytes = u64::from(BUFFER_ARRAY_INVOCATIONS) * word as u64;
+            let entries: Vec<_> = c
+                .reflection
+                .bindings
+                .iter()
+                .map(|r| {
+                    let at = r.register as usize;
+                    let resource = match r.kind {
+                        SlotKind::Uniform => BindingResource::UniformBuffer(BufferRange {
+                            buffer: &constants[at],
+                            offset: 0,
+                            size: (pick_words * word) as u64,
+                        }),
+                        SlotKind::Texture | SlotKind::Storage => {
+                            let storage = r.kind == SlotKind::Storage;
+                            let buffer = if storage {
+                                &written[at]
+                            } else {
+                                &read_only[at]
+                            };
+                            BindingResource::StorageBuffer {
+                                range: BufferRange {
+                                    buffer,
+                                    offset: 0,
+                                    size: bytes,
+                                },
+                                writable: storage,
+                            }
+                        }
+                        other => panic!("{other:?}"),
+                    };
+                    BindingEntry {
+                        binding: r.binding,
+                        stages: StageSet::COMPUTE,
+                        resource,
+                    }
+                })
+                .collect();
+            let set = b.create_binding_set(&entries).unwrap();
+            let mut helpers = vec![0u8; c.reflection.helper_size as usize];
+            for h in &c.reflection.helpers {
+                let HelperValue::TexelBufferView { .. } = h.value else {
+                    panic!("{h:?}");
+                };
+                // Every view starts at its buffer's first word and holds a word per invocation.
+                let at = h.offset as usize + word;
+                helpers[at..at + word].copy_from_slice(&BUFFER_ARRAY_INVOCATIONS.to_le_bytes());
+            }
+            let helper_buffer = buffer(&mut b, &helpers, BufferUsage::UNIFORM);
+            let helper_set = b
+                .create_binding_set(&[BindingEntry {
+                    binding: helper_binding(ShaderStage::Compute),
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &helper_buffer,
+                        offset: 0,
+                        size: helpers.len() as u64,
+                    }),
+                }])
+                .unwrap();
+            let mut bindings = [Some(&set), None, None, None];
+            bindings[HELPER_SET as usize] = Some(&helper_set);
+            b.dispatch(&DispatchCall {
+                program: &program,
+                bindings,
+                immediates: &[],
+                groups: DispatchGroups::Direct([1, 1, 1]),
+            })
             .unwrap();
-        let mut bindings = [Some(&set), None, None, None];
-        bindings[HELPER_SET as usize] = Some(&helper_set);
-        b.dispatch(&DispatchCall {
-            program: &program,
-            bindings,
-            immediates: &[],
-            groups: DispatchGroups::Direct([1, 1, 1]),
-        })
-        .unwrap();
-        let expected = buffer_array_expected(&picks, &sources, &start);
-        let mut apart = 0;
-        for (k, buffer) in written.iter().enumerate() {
-            let mut out = vec![0; bytes as usize];
-            b.read_back_now(
-                &ReadSource::Buffer {
-                    buffer,
-                    offset: 0,
-                    size: bytes,
-                },
-                &mut out,
-            )
-            .unwrap();
-            apart += out
-                .chunks(word)
-                .zip(&expected[k])
-                .filter(|(o, e)| u32::from_le_bytes((*o).try_into().unwrap()) != **e)
-                .count();
-        }
-        assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
-        eprintln!("seed {seed} cs_buffer_array: {apart} words apart");
-        if apart > 0 {
-            failures.push(seed);
+            let expected = expected(&picks, &sources, &start);
+            let mut apart = 0;
+            for (k, buffer) in written.iter().enumerate() {
+                let mut out = vec![0; bytes as usize];
+                b.read_back_now(
+                    &ReadSource::Buffer {
+                        buffer,
+                        offset: 0,
+                        size: bytes,
+                    },
+                    &mut out,
+                )
+                .unwrap();
+                apart += out
+                    .chunks(word)
+                    .zip(&expected[k])
+                    .filter(|(o, e)| u32::from_le_bytes((*o).try_into().unwrap()) != **e)
+                    .count();
+            }
+            assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+            eprintln!("seed {seed} {build} {shader}: {apart} words apart");
+            if apart > 0 {
+                failures.push(format!("{build} seed {seed}"));
+            }
         }
     }
-    assert!(failures.is_empty(), "seeds {failures:?}");
+    assert!(failures.is_empty(), "{failures:?}");
 }
 
 /// Whether the device has `format` for a typed buffer view (`uav`: one written by the program).
