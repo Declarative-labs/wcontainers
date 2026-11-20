@@ -8,7 +8,10 @@
 use crate::compare::{
     self, COMPUTE_GROUPS, CompareOptions, NAMED_DIFFERENCES, RUNTIME_ELEMENTS, Verdict,
 };
-use crate::interface::Kind;
+use crate::interface::{COMPONENT_BYTES, Kind};
+
+/// The bytes of a word of a block.
+const BYTES_A_WORD: usize = COMPONENT_BYTES as usize;
 use crate::lavapipe::{self, Element, Job, Lavapipe};
 use crate::llvmpipe::{Block, Llvmpipe, UniformValue, Variable};
 use ash::vk;
@@ -18,7 +21,6 @@ use rand_chacha::ChaCha8Rng;
 use wcontainers_gpu::ReflectedBinding;
 use wcontainers_nir::mesa::{GlslName, GlslNameKind, Stage};
 
-const WORD: usize = size_of::<u32>();
 /// What OpenGL's reflection adds to an array's name.
 const FIRST_ELEMENT: &str = "[0]";
 /// A name inside an array of structures or of arrays: its outermost array is apart from its own.
@@ -26,7 +28,7 @@ const INSIDE_ARRAY: [&str; 2] = ["[0].", "[0]["];
 /// The driver's true in a default-block boolean (the bridge's `UniformBooleanTrue`).
 const UNIFORM_TRUE: u32 = u32::MAX;
 /// The words a block's size is rounded up to: the common form's uniform arrays step by 16 bytes.
-const BLOCK_ALIGNMENT: usize = 4 * WORD;
+const BLOCK_ALIGNMENT: usize = 4 * BYTES_A_WORD;
 
 /// A value type of OpenGL's reflection: its kind, columns and rows, and whether it is boolean.
 #[derive(Clone, Copy)]
@@ -127,22 +129,22 @@ fn block_bytes(
                             + top * stride(v.top_level_stride)
                             + element * stride(v.array_stride)
                             + major * stride(v.matrix_stride)
-                            + minor * WORD;
+                            + minor * BYTES_A_WORD;
                         words.push((at, scalar(rng, ty), ty.kind));
                     }
                 }
             }
         }
     }
-    let end = words.iter().map(|w| w.0 + WORD).max().unwrap_or(0);
+    let end = words.iter().map(|w| w.0 + BYTES_A_WORD).max().unwrap_or(0);
     let size = end
         .max(block.size as usize)
         .next_multiple_of(BLOCK_ALIGNMENT);
     let mut bytes = vec![0; size];
-    let mut kinds = vec![None; size / WORD];
+    let mut kinds = vec![None; size / BYTES_A_WORD];
     for (at, value, kind) in words {
-        bytes[at..at + WORD].copy_from_slice(&value.to_le_bytes());
-        kinds[at / WORD] = Some(kind);
+        bytes[at..at + BYTES_A_WORD].copy_from_slice(&value.to_le_bytes());
+        kinds[at / BYTES_A_WORD] = Some(kind);
     }
     Ok((bytes, kinds))
 }
@@ -181,9 +183,9 @@ fn default_block(
             } else {
                 word
             };
-            let at = (name.at as usize + i) * WORD;
+            let at = (name.at as usize + i) * BYTES_A_WORD;
             bytes
-                .get_mut(at..at + WORD)
+                .get_mut(at..at + BYTES_A_WORD)
                 .ok_or_else(|| format!("{} lies past uniform buffer 0", name.name))?
                 .copy_from_slice(&word.to_le_bytes());
         }

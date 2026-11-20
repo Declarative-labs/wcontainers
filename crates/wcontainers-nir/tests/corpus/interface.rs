@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use wcontainers_nir::spirv::{HEADER_WORDS, WORD_COUNT_SHIFT, instructions};
 
 /// Transform feedback captures 32-bit components, each at a multiple of their size.
-const COMPONENT_BYTES: u32 = u32::BITS / u8::BITS;
+pub const COMPONENT_BYTES: u32 = u32::BITS / u8::BITS;
 const COMPONENT_BITS: u32 = u32::BITS;
 
 /// The kind of a component.

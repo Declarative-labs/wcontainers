@@ -174,7 +174,7 @@ fn alpha_to_one_gives_route_b_a_sample_mask_and_alpha_one() {
 }
 
 const GLSL_VERTEX: &str = "#version 450
-layout(location = 0) in vec4 position;
+layout(location = 0) in vec4 corner;
 layout(location = 1) in vec2 at;
 uniform mat4 transform;
 uniform float scale[3];
@@ -183,9 +183,9 @@ layout(std430, binding = 1) readonly buffer Offsets { vec4 offsets[]; };
 out vec2 texel;
 out vec4 shade;
 void main() {
-    gl_Position = transform * position * scale[gl_VertexID % 3] + offsets[gl_InstanceID];
+    gl_Position = transform * corner * scale[gl_VertexID % 3] + offsets[gl_InstanceID];
     texel = at;
-    shade = light.colour * max(dot(light.direction, position.xyz), 0.0);
+    shade = light.colour * max(dot(light.direction, corner.xyz), 0.0);
 }
 ";
 
@@ -236,7 +236,7 @@ fn route_b_reads_a_linked_glsl_program() {
         named(0, GlslNameKind::StorageBlock, "Offsets"),
         Some((2, 1))
     );
-    assert_eq!(named(0, GlslNameKind::Input, "position"), Some((0, 1)));
+    assert_eq!(named(0, GlslNameKind::Input, "corner"), Some((0, 1)));
     assert_eq!(named(0, GlslNameKind::Input, "at"), Some((1, 1)));
     assert_eq!(named(1, GlslNameKind::Sampler, "picture"), Some((0, 1)));
     assert_eq!(named(1, GlslNameKind::StorageBlock, "Count"), Some((1, 1)));
