@@ -143,7 +143,9 @@ Results:
   56; the kernel test as above, the same stops and hashes, blocks differing on the same two lines, the rest to the end.
 - So the count at every counted event is identical across look-aheads on the benchmark set, against the reference, at
   this head. What is left of the reference on the Mac: blocks' comparison, once Docker Desktop starts containers
-  (`sh n4r19/scripts/docker-suites.sh`, the kernel test alone is enough).
+  (`sh n4r19/scripts/docker-suites.sh`, the kernel test alone is enough). Probed every 5 minutes from 07:29 to 07:54
+  (scripts/wait-mac-docker.sh, wait-mac-docker.log, load 1.4 to 3.8): none of 6 probes started a container; each was
+  removed. The forwarded socket is closed and the copy on the rented machine (/work/native-ref) removed.
 
 ## N4 run 19 (2026-11-20): waiting on Docker for the reference
 
