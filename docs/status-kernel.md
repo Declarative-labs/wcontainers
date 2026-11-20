@@ -94,8 +94,10 @@ fixed with a test that failed before: fs_di never ended (a copy_file_range of ma
 messages asked forever, from f84695a7), and setrlimit06 got SIGKILL without SIGXCPU (a turn of
 the stand-in on the machine's clock ran past its slice). At 18eda16f the whole suite gives only
 the ARM list and the whole comparison only new differences from the stand-in's clock reads
-(six fsx timeouts, now cheaper at 91d85e31) and getrusage04's timing. A whole comparison and
-reruns at 91d85e31 are running; the Mac's part waits for Docker Desktop. See "K6c, twenty-first
+(six fsx timeouts, now cheaper at 91d85e31) and getrusage04's timing. At 91d85e31 K6c's bar is
+met: the whole comparison (4154 of 4211 match, every other with its named cause, the 13 waiting
+for the owner counted apart), the whole suite on the ARM64 machine (only the ARM list fails),
+the Mac's part, and the literal check. Ready for the independent check. See "K6c, twenty-first
 run".
 
 K6c, nineteenth and twentieth runs: the orchestrator's three rulings are built or recorded (the
@@ -330,15 +332,25 @@ At 91d85e31 on the ARM64 machine:
     ADSP038 (a timeout at 900 s here).
   - The reference host's timer precision, 3: clock_nanosleep02, select02, prctl09.
   - Slower than 900 s on the stand-in, 5: dio30, ADSP037, ADSP073, ADSP074, fsx22; each gave
-    the reference's verdict with a two-hour limit at 2c06b713 (fourteenth run) and runs so again
-    at 91d85e31 (job kernel-c/20261120-192705-4065170, `LTP_JOBS=5 LTP_LIMIT=7200`, results
-    target/ltp-k6c21/slow.tsv in the kernel-c folder there).
+    the reference's verdict with a two-hour limit at 91d85e31 too (job
+    kernel-c/20261120-192705-4065170, `LTP_JOBS=5 LTP_LIMIT=7200`, 19:27 to 20:40 UTC, load 13
+    to 30; scratch k6c21/kernel-c/slow.tsv): ADSP073 passes in 1841.8 s, ADSP074 in 1865.6 s,
+    dio30 in 2300.7 s, fsx22 in 3491.5 s, ADSP037 in 4358.3 s.
   - 36 + 13 + 3 + 5 = 57.
 - Reruns, job kernel-c/20261120-175947-1820040 (17:59 to 18:12 UTC, load 7 to 33; scratch
   k6c21/kernel-c/reruns-91d85e31.log): the six fsx tests, six at once, all pass (643.5 to
   741.5 s); getrusage04 and setrlimit06 pass 5 of 5 each.
-- The whole suite at 18eda16f stands for 91d85e31 but for the stand-in on the machine's clock,
-  which only the LTP and cpulimit use; cpulimit passed at 91d85e31.
+- The whole suite at 91d85e31 (job kernel/20261120-192748-4074837, 19:27 to 20:57 UTC, load 7
+  to 31; scratch k6c21/suite-91d85e31.log, k6c21/fail-91d85e31.txt): fmt and clippy with
+  warnings denied clean; 275 passed, 36 failed, 6 ignored; the 36 are exactly the ARM list
+  (k6c14/fail14.txt), each of which the Mac's part passes.
+
+K6c's bar is met at 91d85e31: the whole LTP comparison's every difference has a named cause
+(36 section 15, 13 waiting for the owner, 3 the reference host's timers, 5 slower than 900 s
+that give the reference's verdict with two hours), the whole suite fails only the ARM list,
+the Mac's part passes, and the literal check passes with the baseline shrunk to 8446 lines.
+The ARM64 machine's spare build folders (kernel-b, kernel-c, kernel-d) are deleted;
+/work/src/kernel-b keeps the LTP image tar.
 
 The Mac's part at 91d85e31 (scratch k6c19/mac5.sh, log k6c19/mac5.log; 18:10 to 18:22 UTC, load
 5 to 12, -j 4): layer 1 seeds 9191123 to 9191125 passed (300 sequences, 32 on the backend, 32 on
@@ -5039,20 +5051,10 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-K6c, after the twenty-first run (A is the orchestrator's cloud/arm-run, S the scratch folder
-kernel; the code to judge is 91d85e31):
-1. The whole suite at 18eda16f met the bar (all failures on the ARM list); nothing it runs
-   changed since but the stand-in on the machine's clock (cpulimit passed at 91d85e31).
-2. The reruns: `A --fetch kernel-c target/ltp-k6c21 S/k6c21/kernel-c/` (re-fsx.tsv, re-1 to
-   re-5.tsv). The fsx tests must pass; getrusage04 and setrlimit06 how often they pass.
-3. The LTP comparison at 91d85e31: `A --fetch kernel-b target/ltp-k6c21b/whole.tsv
-   S/k6c21/b/` once job kernel-b/20261120-175937-1811146 ends (`A --status kernel-b`). Compare
-   with ltp/reference-20260930.tsv and ltp/ours-20260930-18eda16f.tsv; commit it as
-   ltp/ours-20260930-91d85e31.tsv; write the table as the fourteenth run's, the 13 under
-   "Waiting for the owner" counted apart; rerun any new difference; then delete
-   /work/target/kernel-b, kernel-c and kernel-d there.
-3. When Docker Desktop starts containers: `bash S/k6c19/mac5.sh > S/k6c19/mac5.log 2>&1`.
-4. If all three hold, say K6c's bar is met; the independent check follows "For the independent check".
+K6c, after the twenty-first run: the bar is met at 91d85e31 (K6c, twenty-first run). Next is
+the independent check, which follows "For the independent check"; the Mac's part is scratch
+kernel/k6c19/mac5.sh with fresh layer 1 seeds (from 9191126), and the five tests slower than
+900 s take `LTP_LIMIT=7200`. The 13 under "Waiting for the owner" are the owner's to rule on.
 
 K6c, after the twentieth run (A is the orchestrator's cloud/arm-run, S the scratch folder kernel):
 1. Read the whole suite: `A --fetch kernel /work/jobs/kernel/20261120-141523-126036/log
