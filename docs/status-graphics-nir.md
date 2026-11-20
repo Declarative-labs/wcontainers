@@ -853,6 +853,11 @@ Next (after G8's check):
   732 s, up from 251 s: the references that do not end are now run on up to four seeds, two
   minutes each, one after another. Time per shader to the validated common form at 172 at once on
   the 998 shaders both routes match: A median 542 us, mean 831 us; B median 429 us, mean 519 us.
+- The whole suite of wcontainers-nir (run 14, x86-64 machine, load 10.3 to 11.2): without Mesa
+  every test target builds and passes (no tests run without it); with Mesa `glsl_buffers` 1,
+  `glsl_reference` 9 and 1 ignored (the known failure), `narrow` 1, `route` 11 passed. Clippy with
+  warnings denied clean with and without Mesa; the literal check exits 0 (from a bundle of the
+  branch on the x86 machine, as run 6).
 - The whole suite of wcontainers-nir (run 13, x86-64 machine, load about 14): without Mesa every
   test target builds and passes (no tests run without it); with Mesa `glsl_buffers` 1,
   `glsl_reference` 7, `narrow` 1, `route` 11 passed.
