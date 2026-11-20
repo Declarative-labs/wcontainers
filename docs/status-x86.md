@@ -82,7 +82,75 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   compares of SSE4.2, and the rest of the bar. 864 of the 1,295 default legacy forms are written. Run 3
   (2026-11-19) wrote the float forms of SSE to SSE4.1 with MXCSR's fast and exact paths, `ldmxcsr`,
   `stmxcsr`, the prefetches, the not-a-number probe and its fix-ups, and `rcpps`/`rsqrtps` by plan 5.8's
-  formula with its test over all 2^32 inputs (see "X5, run 3"): 944 of the 1,295 written.
+  formula with its test over all 2^32 inputs (see "X5, run 3"): 944 of the 1,295 written. Run 4
+  (2026-11-20) wrote SSE4.2's string compares, `enter`, `maskmovdqu` and the descriptor table instructions
+  (`lar`, `lsl`, `verr`, `verw`, `sldt`, `str`, `smsw`, `sgdt`, `sidt`), each checked at 1,000 a form against
+  the i7-8750H (see "X5, run 4"): 976 of the 1,295 have layer 1 forms. Left: the segment register and
+  far-transfer group, and the rest of the bar.
+
+## X5, run 4 (2026-11-20)
+
+Machines: the rented x86-64 machine (load 0.3 to 6) for builds, lint, the suite and quick layer 1 runs (its
+5-level paging makes every case with an address between 2^47 and 2^56 differ, so its layer 1 runs only show
+that nothing else differs); the i7-8750H (load 0.1 to 1.7 before, 4 test processes at once) for layer 1's
+verdicts, built and run there (`x5/run4/laptop-bg.sh`); the Mac only for git, `cargo fmt` and the literal
+check. Logs in scratch `x5/run4/`.
+
+Written (commit 63fa3b23), each against the i7-8750H:
+- `pcmpestri`, `pcmpestrm`, `pcmpistri`, `pcmpistrm` and the REX.W forms (`crates/wcontainers-x86/src/text.rs`):
+  specialised on the immediate at translate time; each aggregation is a WebAssembly vector compare per
+  element of the first operand (equal any, ranges, equal each, equal ordered with shifted copies of the
+  second), the polarity on the lane mask, then the flags (CF, ZF and SF from the lengths, OF the first
+  result), ecx or xmm0. Lengths are |eax| or |rax| capped, or up to the first zero element. Layer 1 draws, for
+  these forms, short signed lengths in rax and rdx and strings of a few element values (zero among them), or
+  of the memory operand's own 16 bytes. Deterministic: not marked as varying.
+- `enter` (both operand sizes): push rbp, copy level - 1 frame pointers from below rbp, push the frame, then a
+  write check at the final rsp, then rbp and rsp. The reference showed that order (a fault at the final rsp
+  comes after the pushes, which stay written; a fault on the push of rbp comes before anything); every access
+  of `enter` through the stack segment is a stack fault when not canonical.
+- `maskmovdqu`: the upper 8 bytes checked first, then the lower, whatever the mask (plan section 2, run 8);
+  each half's address wraps by itself under an address-size prefix (seen: with `67` the upper half's address
+  is (edi + 8) mod 2^32), so the halves are two accesses and two stores of the bytes the mask keeps.
+- `lar`, `lsl`, `verr`, `verw` (`descriptors.rs`): Linux's user segments as the reference shows them
+  (scratch `x5/run4/descriptors.c` and `descriptors.out`, every selector below 0x100 on four processors):
+  0x23 (rights 0x00cffb00), 0x2b (0x00cff300, the only writable one), 0x33 (0x00affb00), 0x7b (0x0040f500),
+  limits 0xffffffff, any privilege level, nothing else; only ZF changes; the destination only on success.
+  `sldt` 0, `str` 0x40, `smsw` CR0 0x80050033 (truncated by the destination). The 0x7b limit is the
+  processor's number there (0 to 3 on four processors), so ours is 0 by design and layer 1 reconciles a
+  successful `lsl` whose limit is not 0xffffffff to 0. `sgdt` and `sidt` store a zero limit and Linux's UMIP
+  dummy bases (the GDT base differed on each processor, and the IDT limit was 0xfff on three and 0xffff on
+  one); layer 1 leaves them out with that reason and three designed cases check `lsl` of 0x7b, `sgdt` and
+  `sidt`. `lsl`, `sldt`, `str`, `smsw`, `sgdt` and `sidt` are marked as varying between CPUs (`may_vary`); the
+  rented machine (UMIP) emulates `sldt`, `str` and `smsw`.
+
+Layer 1 on the i7-8750H: the six string compares, seed 9101, 1,000 a form, 0 failing (`text1`); `enter` and
+`maskmovdqu`, seed 9102, 1,000 a form, 0 failing after the fixes above (`enter1`, `mask2`); the 30 forms of this
+run together, seed 9104, 1,000 a form, 0 failing, 90.5 s at 4 at once (`desc2`).
+
+What comes next, in this order:
+- The segment register and far-transfer group (37 forms: `mov` to and from segment registers, `push`/`pop`
+  `fs`/`gs`, `lfs`/`lgs`/`lss`, far `call`/`jmp`, `retf`, `iretq` and their 16- and 32-bit forms), with
+  `iretq`'s partly mapped frames. What the reference shows (`descriptors.out`): ds, es, fs and gs are 0, ss
+  0x2b, cs 0x33; the loadable selectors are exactly those `verr` accepts (0x20 to 0x33 and 0x78 to 0x7b, any
+  privilege level) and null; ss takes 0x2b alone. The design I would build: the block's `reserved1` becomes
+  `selectors: [u16; 4]` (ds, es, fs, gs; same size, so no offset moves), a load writes the selector and, for
+  fs and gs, a base of 0 (Intel clears the base for a null selector, and every user segment's base is 0);
+  layer 1's state gains the four selectors, and the reference runner loads them in its handler before
+  `rt_sigreturn` and reads them first thing in its handler after the case (Linux neither saves nor restores
+  them on a signal); since `arch_prctl(ARCH_SET_FS)` clears the fs selector, a case with a non-null fs or gs
+  selector has that base 0 and the runner sets only the selector. Check on the reference first: whether
+  `push fs` with 64-bit operand size writes 2 bytes or 8 (Intel allows either), and what `mov r32, fs` leaves
+  in the upper half.
+- The never-claimed list in layer 1 at 100 a form (needs case drawing for VEX, EVEX, XOP and 3DNow operand
+  kinds: ymm, zmm, k and mm registers, the vvvv and is4 operands, VSIB) with `REFERENCE_HAS`.
+- The fix-up path for hosts whose probe answers 0, run on an x86 host by forcing the answer in the test
+  harness, and what the probe answers in wasmtime and Chrome on x86 and ARM hosts.
+- Layer 3 Csmith for x86 at 1,000 programs; the passed-register lists; the Chrome sample, the no-form and
+  refusal tests against the laptop; 100,000 random instructions of a new seed; then the bar as a whole.
+
+Literals: the check exits 0 (the Mac). New code adds no baseline line; `XMM_BYTES` is now one constant of the
+x86 crate (it was the SIMD module's and a test's copy), and `tests/reciprocals.rs` names the export through the
+translator's `MEMORY`. Baseline lines: x86 125, interface 28, translator 72, test crate 2,106.
 
 ## X5, run 3 (2026-11-19)
 
@@ -2480,6 +2548,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X5 run 4: layer 1 on the i7-8750H at 1,000 a form: 6 forms at seed 9101, 3 at seed 9102 (twice, before and
+  after the `maskmovdqu` fix), 21 at 300 a form at seed 9103 (twice), 30 at seed 9104; quick runs of the same
+  forms on the rented machine.
+
 - X5 run 1: layer 2 x86 at seed 8675309, 300 programs (100 in Chrome, 24 at once), and at seed 1919, 2,000
   (24 in Chrome), every one also on the CPU; the ARM64 layer 2, changes and look-ahead tests once at their
   defaults (seed 1) on the rented ARM64 machine; x86's checks three times (once without the proof fix).
@@ -2641,6 +2713,13 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   (MIT), era2m_softfloat 0.2.1 (BSD-3-Clause-Clear). Nothing copied.
 
 ## Departures from the plan
+
+X5 run 4:
+- `wait` (`fwait`) is left to X7 with x87: its whole meaning is the check for a pending unmasked x87
+  exception, which only x87 instructions raise and which needs X7's x87 state and fault path.
+- `enter` checks the write at the final stack pointer after its pushes, not before: the reference does so.
+- Layer 1 reconciles `lsl` of the per-CPU segment to processor 0 (plan 5.10 asked to leave it out of the
+  comparison; reconciling keeps every other selector of `lsl` compared).
 
 X5 run 3:
 - An unmasked SIMD floating point exception reports MXCSR's raised unmasked flags as its detail, not the
