@@ -27,7 +27,7 @@ pub trait System:
 }
 
 /// The system call proxy and the hooks on processes.
-pub trait ProcessTracer: Sync {
+pub trait ProcessTracer {
     type ProcessState: Clone + Send;
 
     fn intercept_system_call_request<P: Process<State = Self::ProcessState>>(
@@ -107,7 +107,7 @@ pub trait ProcessTracer: Sync {
 }
 
 /// The source of the ids of processes and threads.
-pub trait TaskIdSource: Sync {
+pub trait TaskIdSource {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         wcontainers_kernel::task_id_after(previous)
     }
@@ -115,35 +115,35 @@ pub trait TaskIdSource: Sync {
 }
 
 /// The embedder's side of each of the kernel's streams.
-pub trait StreamPeer: Sync {
+pub trait StreamPeer {
     fn send_stream(&self, end: End, bytes: &[u8]);
     fn credit_stream(&self, end: End, bytes: u64);
     fn close_stream(&self, end: End);
 }
 
 /// The monotonic clock and the wall clock.
-pub trait Clock: Sync {
+pub trait Clock {
     fn monotonic_nanoseconds(&self) -> u64;
     fn realtime_nanoseconds(&self) -> u64;
 }
 
 /// The source of random bytes.
-pub trait RandomSource: Sync {
+pub trait RandomSource {
     fn fill_random_bytes(&self, into: &mut [u8]);
 }
 
 /// The log of the kernel's warnings.
-pub trait WarningLog: Sync {
+pub trait WarningLog {
     fn warn(&self, warning: Warning<'_>);
 }
 
 /// The server of the container's files over FUSE.
-pub trait FileServer: Sync {
+pub trait FileServer {
     fn send_backend(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 }
 
 /// The network outside the container.
-pub trait Network: Sync {
+pub trait Network {
     fn connect(
         &self,
         connection: ConnectionId,
@@ -160,6 +160,6 @@ pub trait Network: Sync {
 }
 
 /// The resolver of names to addresses.
-pub trait NameResolver: Sync {
+pub trait NameResolver {
     fn look_up(&self, request: u64, name: &str) -> Result<(), HostError>;
 }
