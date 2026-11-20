@@ -798,7 +798,7 @@ impl Lowering<'_> {
             in_slots,
         } = shape;
         let c = self.output_vertices();
-        let units = (max + 1).saturating_sub(c).max(1);
+        let units = stage::replay_slots(max, c);
         let u32_ty = build::scalar(&mut self.module, Scalar::U32);
         let uvec4 = build::vec4(&mut self.module, Scalar::U32);
         let vec4 = build::vec4(&mut self.module, Scalar::F32);

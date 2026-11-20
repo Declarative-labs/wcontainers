@@ -284,7 +284,7 @@ const LINE_CORNERS_BINDING: u32 = 2;
 const LINE_CORNERS: u32 = 4;
 const LINE_INDICES: u32 = 2 * TRIANGLE_VERTICES;
 /// The vertices of a line.
-const LINE_VERTICES: u32 = 2;
+pub(super) const LINE_VERTICES: u32 = 2;
 /// A draw on the line route of another topology than lines.
 const LINE_TOPOLOGY: &str = "AntialiasedLinesTopology";
 /// The line route run without the viewport's size, or another route with it.
@@ -351,12 +351,12 @@ const CULL_DATA_BINDING: u32 = 1;
 /// Refusals by name, and what is malformed in a call.
 const WITHOUT_WORK: &str = "the stage helper without work";
 const STAGE_INDEX_U8: &str = "StageIndexU8";
-const STAGE_INDIRECT: &str = "StageIndirect";
+pub(super) const STAGE_INDIRECT: &str = "StageIndirect";
 const DOMAIN_SETS: &str = "the sets of the stages after a domain stage";
 const GEOMETRY_PRIMITIVE_ID_AFTER_DOMAIN: &str = "GeometryPrimitiveIdAfterDomain";
 const NOT_A_DOMAIN_SHADER: &str = "not a domain shader";
 const NOT_A_HULL_SHADER: &str = "not a hull shader";
-const NOT_A_GEOMETRY_SHADER: &str = "not a geometry shader";
+pub(super) const NOT_A_GEOMETRY_SHADER: &str = "not a geometry shader";
 const STREAM_OUTPUT_ENTRIES: &str = "StreamOutputEntries";
 /// A filled sizes block without the words of every stream the shader writes.
 const STREAM_FILLED_SIZE: &str = "the filled sizes block shorter than the shader's streams";
@@ -900,23 +900,7 @@ impl<B: Backend> Stages<B> {
             (None, None, None, Some(n)) => (extended, n.drawn_slots),
             (None, None, None, None) => return None,
         };
-        let mut desc = VertexLayoutDesc {
-            streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
-            attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
-        };
-        desc.streams[0] = Some(VertexStream {
-            stride: words * WORD,
-            step: StepMode::Vertex,
-        });
-        for slot in 0..=slots {
-            desc.attributes[slot as usize] = Some(VertexAttribute {
-                location: slot,
-                stream: 0,
-                offset: super::SLOT_BYTES * slot,
-                format: VertexFormat::Uint32x4,
-            });
-        }
-        Some(desc)
+        Some(record_layout(words, slots))
     }
 
     /// Records the stages' dispatches for one API draw (outside a pass), and returns what the front
@@ -1914,7 +1898,29 @@ fn index_words<'a, B: Backend>(
     Ok((bytes, (index.offset - start) as u32, range))
 }
 
-fn list_topology(n: u32) -> Topology {
+/// The pass-through's vertex layout: records of `words` words in stream 0, read as `slots + 1`
+/// four-word slots from location 0.
+pub(super) fn record_layout(words: u32, slots: u32) -> VertexLayoutDesc {
+    let mut desc = VertexLayoutDesc {
+        streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+        attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: words * WORD,
+        step: StepMode::Vertex,
+    });
+    for slot in 0..=slots {
+        desc.attributes[slot as usize] = Some(VertexAttribute {
+            location: slot,
+            stream: 0,
+            offset: super::SLOT_BYTES * slot,
+            format: VertexFormat::Uint32x4,
+        });
+    }
+    desc
+}
+
+pub(super) fn list_topology(n: u32) -> Topology {
     match n {
         1 => Topology::PointList,
         LINE_VERTICES => Topology::LineList,
@@ -1922,7 +1928,7 @@ fn list_topology(n: u32) -> Topology {
     }
 }
 
-fn words_as_bytes(words: &[u32]) -> Vec<u8> {
+pub(super) fn words_as_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 

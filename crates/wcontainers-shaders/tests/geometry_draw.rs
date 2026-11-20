@@ -13,16 +13,17 @@ use wcontainers_gpu::{
     ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource, DrawCall, DrawRange,
     Extent, FillMode, Format, FrontFace, HelperValue, IndexBinding, IndexFormat, Interpolation,
     LinkedValues, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
-    RenderTargetBlend, ShaderStage, SlotKind, StageSet, StoreOp, SystemValue, TextureRegion,
-    TextureUsage, VariantFlags, VariantKey, VertexBinding, VertexFormat, Viewport, helper_binding,
+    RenderTargetBlend, ShaderModule, ShaderStage, SlotKind, StageSet, StepMode, StoreOp,
+    SystemValue, TextureRegion, TextureUsage, VariantFlags, VariantKey, VertexAttribute,
+    VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, Viewport, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{
-    InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT, STREAM_BUFFERS,
-    STREAM_FILLED_WORDS, STREAMS, StageDraw, StageIndex, Stages, StreamOutput, StreamOutputEntry,
-    StreamTargets,
+    FinalDraw, GeometryReplay, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
+    ReplayDraw, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw, StageError, StageIndex,
+    Stages, StreamOutput, StreamOutputEntry, StreamTargets,
 };
-use wcontainers_shaders::{Source, convert};
+use wcontainers_shaders::{Converted, Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -561,16 +562,15 @@ fn declaration(gs: &str) -> StreamOutput {
     }
 }
 
-fn ours<B: Backend>(
-    b: &mut B,
+/// The case's vertex, geometry and pixel programs, linked as a front links them: the vertex shader
+/// under `vs_key`, the geometry shader with `gs_flags` too.
+fn linked(
     case: &Case,
-    vertices: &[f32],
-    indices: &[u8],
-    stream: Option<(&StreamOutput, &Bound)>,
-) -> Made {
-    let (stream, bound) = (stream.map(|s| s.0), stream.map(|s| s.1));
+    vs_key: VariantKey,
+    gs_flags: VariantFlags,
+) -> (Converted, Option<Converted>, Converted) {
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
-    // as it reads them, every vertex input pulled.
+    // as it reads them.
     let ps = convert(
         Source::Dxbc(&bytecode("ps_geometry.dxbc")),
         &VariantKey::default(),
@@ -585,6 +585,7 @@ fn ours<B: Backend>(
             .filter(|v| v.system.is_none() && v.interpolation != Interpolation::Perspective)
             .map(|v| (v.location, v.interpolation))
             .collect(),
+        flags: gs_flags,
         ..Default::default()
     };
     let gs = (!case.gs.is_empty()).then(|| {
@@ -595,11 +596,6 @@ fn ours<B: Backend>(
         )
         .unwrap()
     });
-    let vs_key = VariantKey {
-        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
-        draw_base: DrawBaseSource::Helpers,
-        ..Default::default()
-    };
     let vs_code = bytecode(&format!("{}.dxbc", case.vs));
     let vs = convert(Source::Dxbc(&vs_code), &vs_key, None).unwrap();
     // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
@@ -630,7 +626,7 @@ fn ours<B: Backend>(
             clip_distances: clips as u8,
         };
         let key = |base: &VariantKey, samples| VariantKey {
-            flags: VariantFlags::CLIP_DISTANCE,
+            flags: base.flags | VariantFlags::CLIP_DISTANCE,
             linked,
             samples,
             ..base.clone()
@@ -654,6 +650,23 @@ fn ours<B: Backend>(
             }
         }
     };
+    (vs, gs, ps)
+}
+
+fn ours<B: Backend>(
+    b: &mut B,
+    case: &Case,
+    vertices: &[f32],
+    indices: &[u8],
+    stream: Option<(&StreamOutput, &Bound)>,
+) -> Made {
+    let (stream, bound) = (stream.map(|s| s.0), stream.map(|s| s.1));
+    let vs_key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        draw_base: DrawBaseSource::Helpers,
+        ..Default::default()
+    };
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty());
     // Without a geometry stage or stream output, the vertex stage writes cull distances.
     let mut stages = match (&gs, stream) {
         (None, None) => Stages::culled(b, &vs, None).unwrap(),
@@ -827,9 +840,25 @@ fn ours<B: Backend>(
         return Made::Streamed(streamed, words);
     }
     let last = last.expect("primitives");
+    let picture = picture(
+        b,
+        stages.passthrough().unwrap(),
+        &stages.vertex_layout().unwrap(),
+        &ps,
+        &last,
+    );
+    Made::Picture(picture)
+}
 
-    // The draw after the stages: the helper's vertex program with the pixel program.
-    let vertex = b.create_shader(stages.passthrough().unwrap()).unwrap();
+/// The draw after the stages, `passthrough` with the pixel program, into a cleared target: its texels.
+fn picture<B: Backend>(
+    b: &mut B,
+    passthrough: &ShaderModule,
+    layout: &VertexLayoutDesc,
+    ps: &Converted,
+    last: &FinalDraw<B>,
+) -> Vec<u8> {
+    let vertex = b.create_shader(passthrough).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
     let program = b
         .create_program(&Program::Render {
@@ -837,9 +866,7 @@ fn ours<B: Backend>(
             fragment: Some(&fragment),
         })
         .unwrap();
-    let vertex_layout = b
-        .create_vertex_layout(&stages.vertex_layout().unwrap())
-        .unwrap();
+    let vertex_layout = b.create_vertex_layout(layout).unwrap();
     let blend = b
         .create_blend(&BlendDesc {
             targets: [RenderTargetBlend {
@@ -965,7 +992,136 @@ fn ours<B: Backend>(
     )
     .unwrap();
     assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
-    Made::Picture(out)
+    out
+}
+
+/// Whether the replay route takes `case`: it refuses strips with adjacency and indexed strips by name.
+fn replayed(case: &Case) -> bool {
+    !(matches!(
+        case.topology,
+        InputTopology::LineStripAdjacency | InputTopology::TriangleStripAdjacency
+    ) || (strip(case.topology) && case.indexed.is_some()))
+}
+
+/// `case` through the replay route (`GeometryReplay`), as a front on a back end without compute
+/// draws it: the vertex shader's inputs as drawn, its draw bases from its helper block.
+fn ours_replayed<B: Backend>(
+    b: &mut B,
+    case: &Case,
+    vertices: &[f32],
+    indices: &[u8],
+) -> Result<Vec<u8>, StageError> {
+    let vs_key = VariantKey {
+        draw_base: DrawBaseSource::Helpers,
+        ..Default::default()
+    };
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY);
+    let gs = gs.expect("a geometry shader");
+    let mut replay = GeometryReplay::new(b, &vs, &gs).unwrap();
+    let vertex_buffer = buffer(b, bytes_of(vertices), BufferUsage::VERTEX);
+    let mut layout = VertexLayoutDesc {
+        streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+        attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+    };
+    layout.streams[0] = Some(VertexStream {
+        stride: COLOURED_VERTEX_BYTES,
+        step: StepMode::Vertex,
+    });
+    for (location, offset, format) in [
+        (0, 0, VertexFormat::Float32x3),
+        (1, POSITION_BYTES, VertexFormat::Float32x4),
+    ] {
+        layout.attributes[location as usize] = Some(VertexAttribute {
+            location,
+            stream: 0,
+            offset,
+            format,
+        });
+    }
+    let vertex_layout = b.create_vertex_layout(&layout).unwrap();
+    let mut helpers = vec![0u8; vs.reflection.helper_size as usize];
+    let base = case.indexed.unwrap_or(case.first as i32);
+    for h in &vs.reflection.helpers {
+        assert!(matches!(h.value, HelperValue::DrawBase), "{h:?}");
+        let at = h.offset as usize;
+        for (i, w) in [base as u32, case.first_instance].iter().enumerate() {
+            helpers[at + 4 * i..at + 4 * i + 4].copy_from_slice(&w.to_le_bytes());
+        }
+    }
+    let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
+    let vertex_helpers = b
+        .create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Vertex),
+            stages: StageSet::VERTEX,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &helper_buffer,
+                offset: 0,
+                size: helpers.len() as u64,
+            }),
+        }])
+        .unwrap();
+    let constants = constants();
+    let constant_buffer = buffer(b, &constants, BufferUsage::UNIFORM);
+    let geometry_entries: Vec<_> = gs
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| {
+            assert_eq!((r.kind, r.register), (SlotKind::Uniform, 0), "{r:?}");
+            BindingEntry {
+                binding: r.binding,
+                stages: StageSet::VERTEX,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &constant_buffer,
+                    offset: 0,
+                    size: constants.len() as u64,
+                }),
+            }
+        })
+        .collect();
+    assert!(gs.reflection.helpers.is_empty());
+    let geometry_set = b.create_binding_set(&geometry_entries).unwrap();
+    let index_buffer = case.indexed.map(|_| buffer(b, indices, BufferUsage::INDEX));
+    let range = match case.indexed {
+        Some(base_vertex) => DrawRange::Indexed {
+            first: case.first,
+            count: case.count,
+            base_vertex,
+            first_instance: case.first_instance,
+            instances: case.instances,
+        },
+        None => DrawRange::Vertices {
+            first: case.first,
+            count: case.count,
+            first_instance: case.first_instance,
+            instances: case.instances,
+        },
+    };
+    let last = replay
+        .run(
+            b,
+            ReplayDraw {
+                vertex_sets: [None, None, None, Some(&vertex_helpers)],
+                vertex_layout: &vertex_layout,
+                vertex_buffers: &[Some(VertexBinding {
+                    buffer: &vertex_buffer,
+                    offset: 0,
+                })],
+                index: index_buffer.as_ref().map(|buffer| IndexBinding {
+                    buffer,
+                    offset: 0,
+                    format: IndexFormat::U16,
+                }),
+                immediates: &[],
+                geometry_sets: [Some(&geometry_set), None, None, None],
+                topology: case.topology,
+                range,
+            },
+        )?
+        .expect("primitives");
+    let out = picture(b, replay.passthrough(), &replay.vertex_layout(), &ps, &last);
+    replay.destroy(b);
+    Ok(out)
 }
 
 /// Real Direct3D 11's stream output of `case` (`gs` empty: from the vertex shader) under `so` into
@@ -1635,6 +1791,96 @@ fn geometry_shaders_draw_as_direct3d_does() {
                 "{} {:?}: no primitive dropped",
                 case.vs, case.topology
             ));
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The geometry shaders of [`geometry_shaders_draw_as_direct3d_does`] through the replay route on the
+/// WebGL 2 back end (ANGLE on the same GPU), against real Direct3D 11: the same seeds, cases and
+/// allowances, but for the topologies the route refuses by name.
+#[test]
+fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
+    let mut backend = webgl();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for (i, case) in CASES.iter().enumerate() {
+            let name = format!(
+                "seed {seed} {} {:?} {} from {} x{}{}",
+                case.gs,
+                case.topology,
+                case.count,
+                case.first,
+                case.instances,
+                case.indexed
+                    .map(|b| format!(" indexed, base {b}"))
+                    .unwrap_or_default()
+            );
+            let indices = indices(seed, case);
+            let made = ours_replayed(&mut backend, case, &vertices, &indices);
+            if !replayed(case) {
+                match made {
+                    Err(StageError::Unsupported(reason)) => eprintln!("{name}: refused, {reason}"),
+                    _ => failures.push(format!("{name}: not refused by name")),
+                }
+                continue;
+            }
+            let reference = direct3d(&gpu, case, &vertices, &indices);
+            let drawn = reference
+                .chunks(4)
+                .filter(|t| *t != &reference[..4])
+                .count();
+            let picture = made.unwrap();
+            let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
+            // As on the compute route: clipped in the pixel program, attributes round apart by a step
+            // or two.
+            let allowed = if case.gs == "gs_clip" { 2 } else { 0 };
+            compared += 1;
+            eprintln!(
+                "{name}: {drawn} texels drawn by direct3d, {count} differ (largest {largest}, \
+                 allowed {allowed})"
+            );
+            if std::env::var_os("WCONTAINERS_SHADERS_OUT").is_some() {
+                keep(
+                    &format!("replay-{seed}-{i}-{}-d3d", case.gs),
+                    &reference,
+                    Format::Rgba8Unorm,
+                );
+                keep(
+                    &format!("replay-{seed}-{i}-{}-ours", case.gs),
+                    &picture,
+                    Format::Rgba8Unorm,
+                );
+            }
+            if drawn == 0 || largest > allowed {
+                let apart = reference
+                    .chunks(4)
+                    .zip(picture.chunks(4))
+                    .enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .take(16);
+                for (i, (a, b)) in apart {
+                    let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
+                    eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
+                }
+                failures.push(name);
+            }
         }
     }
     eprintln!("{compared} comparisons, {} failed", failures.len());
