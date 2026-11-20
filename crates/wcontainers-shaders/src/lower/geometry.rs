@@ -185,8 +185,7 @@ pub(crate) const EMIT: &str = "gs_emit";
 pub(crate) const CUT: &str = "gs_cut_strip";
 /// Why a geometry shader is malformed: it declares no vertex count.
 const NO_VERTEX_COUNT: &str = "a geometry shader without its vertex count";
-/// The compute form's bound list of primitives and its output.
-const LIST_VARIABLE: &str = "stage_list";
+/// The compute form's output.
 const OUT_VARIABLE: &str = "stage_geometry";
 /// The invocation's number, and each stream's counters in `Counters`' order (a later stream's
 /// names end with its number).
@@ -516,7 +515,7 @@ impl GeometryPass<'_> {
             let word_array = build::runtime_array(m, u32_ty, build::WORD);
             let list = build::global(
                 m,
-                LIST_VARIABLE,
+                stage::LIST_VARIABLE,
                 AddressSpace::Storage {
                     access: StorageAccess::LOAD,
                 },

@@ -664,6 +664,8 @@ const VALUES_TYPE: &str = "StageValues";
 const VALUES_VARIABLE: &str = "stage_values";
 const INDICES_VARIABLE: &str = "stage_indices";
 pub(crate) const VERTICES_VARIABLE: &str = "stage_vertices";
+/// The name of a geometry shader's compute form's bound list of primitives.
+pub const LIST_VARIABLE: &str = "stage_list";
 pub(crate) const ID_ARGUMENT: &str = "id";
 const POSITIONED_OUTPUTS_TYPE: &str = "PositionedOutputs";
 /// Refusals of a vertex program by the compute form, and what is malformed in one.
