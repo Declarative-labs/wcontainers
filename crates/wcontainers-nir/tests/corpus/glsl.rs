@@ -460,6 +460,9 @@ const FRAG_DATA: &str = "gl_FragData";
 const FRAG_DEPTH: &str = "gl_FragDepth";
 /// OpenGL's attribute that is generic attribute 0.
 const VERTEX_ATTRIBUTE: &str = "gl_Vertex";
+/// Vertex inputs the draw gives, not attributes: the same on both sides (first vertex 0, one
+/// instance).
+const DRAW_VALUES: [&str; 3] = ["gl_VertexID", "gl_InstanceID", "gl_InstanceIDARB"];
 /// OpenGL's fragment inputs and the vertex outputs that feed them.
 const FED_BUILTINS: [(&str, &str); 4] = [
     ("gl_Color", "gl_FrontColor"),
@@ -697,6 +700,9 @@ fn attributes(
     let (mut ours, mut theirs) = (Vec::new(), Vec::new());
     for v in &gl.inputs {
         let name = bare(&v.name);
+        if DRAW_VALUES.contains(&name) {
+            continue;
+        }
         let ty = gl_type(v.ty)
             .ok_or_else(|| format!("{name} of type {:#x} is not set up here", v.ty))?;
         let location = match (v.location, name) {
