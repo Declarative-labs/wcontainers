@@ -16,6 +16,8 @@
 //   robust:      a child's worker holds a robust lock in memory shared with the parent and reads an
 //                empty pipe; at the child's mark the worker is taken and the child exits; the
 //                parent then takes the lock.
+//   robust-copy: as robust, but the parent only tries the lock (the test makes the child's end the
+//                end of a copy of its context, its worker going on elsewhere).
 //   vfork:       a vfork child is taken at its mark (on the reference it pauses); another child
 //                kills it; the parent goes on and waits for both.
 
@@ -225,7 +227,7 @@ static void *holder(void *unused) {
     return NULL;
 }
 
-static void robust(void) {
+static void robust(int try_only) {
     shared_lock = mmap(NULL, sizeof *shared_lock, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
                        -1, 0);
     pthread_mutexattr_t attributes;
@@ -246,8 +248,8 @@ static void robust(void) {
     }
     int status;
     waitpid(child, &status, 0);
-    int answer = pthread_mutex_lock(shared_lock);
-    printf("lock %s\n", answer == EOWNERDEAD ? "owner died" : strerror(answer));
+    int answer = try_only ? pthread_mutex_trylock(shared_lock) : pthread_mutex_lock(shared_lock);
+    printf("lock %s\n", answer == EOWNERDEAD ? "owner died" : answer == EBUSY ? "held" : strerror(answer));
 }
 
 static void vfork_killed(void) {
@@ -293,7 +295,9 @@ int main(int argc, char **argv) {
     } else if (strcmp(mode, "leader-proc") == 0) {
         leader_proc();
     } else if (strcmp(mode, "robust") == 0) {
-        robust();
+        robust(0);
+    } else if (strcmp(mode, "robust-copy") == 0) {
+        robust(1);
     } else if (strcmp(mode, "vfork") == 0) {
         vfork_killed();
     } else {

@@ -1,6 +1,7 @@
 //! Tasks taken off the kernel whose process ends or runs a new program while they are away end as
 //! stopped threads end in Linux (guest/taskend.c): what the program prints is the reference's,
-//! where nothing is taken, and the task is handed back when it is put back.
+//! where nothing is taken, and the task is handed back when it is put back. The end of a copy of a
+//! context makes no last stores for the tasks that go on with the original.
 
 use std::cell::RefCell;
 use std::ops::ControlFlow;
@@ -9,7 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use wcontainers_abi::{Cpu, SystemCallRequest};
 use wcontainers_kernel::linux::general;
-use wcontainers_kernel::{Kernel, Process, SuspendedTask, SystemCallResponse, TaskId};
+use wcontainers_kernel::{
+    ExecutionConfig, Kernel, Process, ProcessContext, SuspendedTask, SystemCallResponse, TaskId,
+};
 use wcontainers_kernel_test::driver::{self, Run};
 use wcontainers_kernel_test::guest_directory_entry;
 use wcontainers_kernel_test::hooks::Hooks;
@@ -61,6 +64,9 @@ fn ours(arguments: &[&str], hooks: Box<dyn Hooks>, seed: u64) -> Run {
 thread_local! {
     /// The tasks the test holds while they are away (they are the kernel's own values).
     static TAKEN: RefCell<Vec<SuspendedTask>> = const { RefCell::new(Vec::new()) };
+    /// A copy of a context the test puts on the kernel, and the original it holds.
+    static COPY: RefCell<Option<ProcessContext>> = const { RefCell::new(None) };
+    static ORIGINAL: RefCell<Option<ProcessContext>> = const { RefCell::new(None) };
 }
 
 /// Which task the test takes at the mark (`getppid`).
@@ -218,4 +224,85 @@ fn a_robust_lock_held_by_a_task_away_is_marked_as_its_owners_death_when_its_proc
 #[test]
 fn a_vfork_parent_goes_on_when_its_child_away_is_killed() {
     as_the_reference(Take::Caller, &["vfork"]);
+}
+
+/// At the first mark, copies the caller's process context and takes the whole process (the
+/// original, held as if it went on elsewhere); once the kernel is idle, puts the copy on the kernel
+/// and the caller back, the other thread staying with the original.
+#[derive(Default)]
+struct CopyEnds {
+    caller: Option<TaskId>,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+impl Hooks for CopyEnds {
+    fn intercept_system_call_request(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if request.number != u64::from(general::__NR_getppid) || self.caller.is_some() {
+            return ControlFlow::Continue(request);
+        }
+        self.caller = Some(thread);
+        let copy = process.copy_process_context();
+        let (original, tasks) = process.suspend_process();
+        let mut log = self.log.lock().unwrap();
+        log.push(format!("{:?} {:?}", copy.origin(), original.origin()));
+        let tasks: Vec<SuspendedTask> = tasks.map(|(_, task)| task).collect();
+        log.push(format!("taken {}", tasks.len()));
+        TAKEN.with_borrow_mut(|held| held.extend(tasks));
+        COPY.set(Some(copy));
+        ORIGINAL.set(Some(original));
+        ControlFlow::Continue(request)
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let Some(copy) = COPY.take() else {
+            return false;
+        };
+        let mut log = self.log.lock().unwrap();
+        let refused = kernel.resume_process(copy, ExecutionConfig::default());
+        log.push(format!("copy refused {}", refused.is_some()));
+        let caller = self.caller.expect("the caller");
+        let (back, staying): (Vec<SuspendedTask>, Vec<SuspendedTask>) = TAKEN
+            .take()
+            .into_iter()
+            .partition(|task| task.id() == caller);
+        TAKEN.set(staying);
+        log.push(format!(
+            "handed back {}",
+            kernel.resume_tasks(cpu, back).count()
+        ));
+        true
+    }
+}
+
+#[test]
+fn a_copys_end_makes_no_last_stores_for_the_tasks_going_on_with_the_original() {
+    // On the reference the worker ends with its process, and its lock is marked.
+    let theirs = theirs(&["robust-copy"]);
+    assert_eq!(theirs, "lock owner died\n");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let hooks = CopyEnds::default();
+        let log = hooks.log.clone();
+        let run = ours(&["robust-copy"], Box::new(hooks), seed);
+        TAKEN.take();
+        ORIGINAL.take();
+        let log = log.lock().unwrap().clone();
+        assert_eq!(
+            log,
+            [
+                "Copied Suspended",
+                "taken 2",
+                "copy refused false",
+                "handed back 0"
+            ],
+            "seed {seed}"
+        );
+        // Here the worker goes on with the original: its lock stays held.
+        let output = String::from_utf8_lossy(&run.outcome.stdout).into_owned();
+        assert_eq!(output, "lock held\n", "seed {seed}: {log:?}");
+    }
 }
