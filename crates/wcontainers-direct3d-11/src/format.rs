@@ -257,7 +257,7 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
     }
     if view == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
         return Err(Error::InvalidArg(
-            "a view of R10G10B10_XR_BIAS_A2_UNORM, which Direct3D 11 never binds",
+            "a view of the extended-range format, which Direct3D never binds",
         ));
     }
     if view != texture && typeless_group(view) != texture {

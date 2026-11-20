@@ -1058,7 +1058,7 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg(SHARING_INVALID));
         }
         if self.level < level::L11_0 && format::from_11_0(d.format) {
-            return Err(Error::InvalidArg("a format of feature level 11_0"));
+            return Err(Error::InvalidArg("a format of a later feature level"));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         let format = self.held_as_integer(format).unwrap_or(format);
