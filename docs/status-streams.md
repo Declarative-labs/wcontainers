@@ -82,7 +82,11 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   ceiling nothing is announced and it maps more. `a_fixed_request_past_the_ceiling_...`: a page at
   1.25 GiB with `MAP_FIXED` and then `MAP_FIXED_NOREPLACE` is announced twice with a page each and
   both fail, counted as outgrown and not as above the address space; with no ceiling both map.
-  Both pass.
+  Both pass. Under ceilings below 128 MiB and against whole programs: see "S2 seventh check
+  findings" (three tests, passing on the ARM machine).
+- A hook called while another runs is reported, not waited on:
+  `a_hook_called_while_one_runs_is_reported_as_nested`. A successful exec and a handler's return
+  answered to the proxy: `a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop`.
 - Watches met before calls write, inside the hook and left unmet and met later (between steps,
   through `Kernel::process`), the result unchanged:
   `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 48 children each making one
@@ -747,9 +751,15 @@ anything shipped.
   `Start::ceiling`, `Start::execution`; `task_id_after` (the default counter);
   `PerThreadWatch::set_thread_permissions`.
 - For the owner (speed): the system call proxy costs every call two calls of empty methods
-  through `&dyn System`, measured about 0.5 % user CPU on the memory test binary (see
-  "Measurements"). Zero cost would need the kernel generic over its `System` (resolved at compile
+  through `&dyn System`, and every copy into program memory notes its range for
+  `on_memory_written_by_kernel`. The ninth run measured about 0.5 % user CPU on the memory test
+  binary; S2's seventh check measured no difference from before S2 (see "Measurements"). Zero
+  cost by construction would need the kernel generic over its `System` (resolved at compile
   time), a larger change than this milestone's.
+- For the owner: a thread waiting on a watch the embedder never resolves cannot be killed (see
+  "Departures"); Linux's userfaultfd wait can be, skipping the kernel's store.
+- For the owner: a container whose first program does not fit below `Start::ceiling` fails its
+  start with ENOMEM, counted, with no `on_process_outgrown` (its process is not announced yet).
 - For the runtime track: the abi's `Syscall` is `SystemCallRequest`; `Host::stream_send`,
   `stream_credit`, `stream_close` are `send_stream`, `credit_stream`, `close_stream`;
   `System::free_task_id` has no default.
