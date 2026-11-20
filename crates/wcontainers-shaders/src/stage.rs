@@ -29,8 +29,9 @@ use wcontainers_gpu::{
 mod helper;
 mod tessellate;
 pub use helper::{
-    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, StageDraw, StageError, StageIndex,
-    Stages, StreamOutput, StreamOutputEntry, StreamTargets, TessellatedDraw,
+    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw,
+    StageError, StageIndex, Stages, StreamOutput, StreamOutputEntry, StreamTargets,
+    TessellatedDraw,
 };
 pub use tessellate::{Tessellation, Tessellator};
 
@@ -1276,10 +1277,12 @@ pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> 
     let passed: Vec<(ScalarKind, Binding)> = locations(&reflection.outputs)
         .into_iter()
         .map(|loc| {
+            // The drawn stream's value where several streams place one there.
             let value = reflection
                 .outputs
                 .iter()
-                .find(|v| v.system.is_none() && v.location == loc)
+                .filter(|v| v.system.is_none() && v.location == loc)
+                .min_by_key(|v| v.stream)
                 .expect("a listed location");
             let kind = match value.scalar {
                 ValueKind::Float => ScalarKind::Float,

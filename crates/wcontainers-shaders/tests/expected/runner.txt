@@ -551,14 +551,14 @@ hlsl+geometry-shader-syntax-13-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-14-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-15-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-16-gs.dxbc	ok ; glsl absent compute
-hlsl+geometry-shader-syntax-17-gs.dxbc	unsupported GeometryStreams
+hlsl+geometry-shader-syntax-17-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-18-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-19-gs.dxbc	unsupported GeometryStreams
 hlsl+geometry-shader-syntax-2-gs.dxbc	ok ; glsl absent compute
-hlsl+geometry-shader-syntax-20-gs.dxbc	unsupported GeometryStreams
+hlsl+geometry-shader-syntax-20-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-21-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-22-gs.dxbc	ok ; glsl absent compute
-hlsl+geometry-shader-syntax-23-gs.dxbc	unsupported GeometryStreams
+hlsl+geometry-shader-syntax-23-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-3-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-4-gs.dxbc	ok ; glsl absent compute
 hlsl+geometry-shader-syntax-5-gs.dxbc	ok ; glsl absent compute

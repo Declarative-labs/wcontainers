@@ -192,7 +192,12 @@ struct Io {
     location: Option<(u32, u32)>,
     builtin: Option<u64>,
     interpolation: u64,
+    /// The geometry stream an output belongs to.
+    stream: u32,
 }
+
+/// An output of a geometry stream past the first in another stage.
+const STREAM_OUTSIDE_GEOMETRY: &str = "a stream outside a geometry shader";
 
 struct Block2 {
     label: u32,
@@ -1122,14 +1127,14 @@ impl<'a> Lowering<'a> {
         if let Some(b) = builtin {
             self.check_builtin(b, input)?;
         }
-        // Only stream 0 is drawn; the others feed stream output alone.
         let stream = match op.code {
             code::DCL_OUTPUT => op.lits.get(2),
             code::DCL_OUTPUT_BUILT_IN => op.lits.get(1),
             _ => None,
         };
-        if self.geometry.is_some() && stream.is_some_and(|&s| s != 0) {
-            return Err(unsupported(crate::refusal::GEOMETRY_STREAMS));
+        let stream = stream.map_or(0, |&s| s as u32);
+        if stream != 0 && self.geometry.is_none() {
+            return Err(malformed(STREAM_OUTSIDE_GEOMETRY.into()));
         }
         let ty = self.ir_ty(&op.ty)?;
         let name = format!("{}{id}", if input { "in" } else { "out" });
@@ -1143,6 +1148,7 @@ impl<'a> Lowering<'a> {
                 location,
                 builtin,
                 interpolation,
+                stream,
             },
         ));
         Ok(())
@@ -1866,6 +1872,10 @@ impl<'a> Lowering<'a> {
             system,
             location: location.unwrap_or(0),
             component: component as u8,
+            stream: self
+                .io_index
+                .get(&id)
+                .map_or(0, |&i| self.io[i].1.stream as u8),
         };
         if input {
             self.reflection.inputs.push(value);
@@ -3021,13 +3031,11 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 return Ok(());
             }
             c::EMIT_VERTEX | c::EMIT_PRIMITIVE => {
-                if op.lits.first().is_some_and(|&stream| stream != 0) {
-                    return Err(unsupported(crate::refusal::GEOMETRY_STREAMS));
-                }
+                let stream = op.lits.first().map_or(0, |&s| s as usize);
                 let g = self.l.geometry.as_ref();
                 let function = g
                     .and_then(|g| match op.code {
-                        c::EMIT_VERTEX => g.emit,
+                        c::EMIT_VERTEX => g.emit.get(stream).copied(),
                         _ => g.cut,
                     })
                     .ok_or_else(|| malformed("an emit outside a geometry shader".into()))?;

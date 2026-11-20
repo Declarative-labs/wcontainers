@@ -13403,7 +13403,6 @@ code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_entry_point	"id"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"a geometry shader without its vertex count"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_cut"
-code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_emit"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_emitted"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_invocation"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_strip"
@@ -23299,7 +23298,6 @@ restated	crates/wcontainers-shaders/tests/early_draw.rs	float	case	4096.0
 restated	crates/wcontainers-shaders/tests/early_draw.rs	int	case	4096
 restated	crates/wcontainers-shaders/tests/filter_draw.rs	float	SHIFT	256.0
 restated	crates/wcontainers-shaders/tests/fuzz.rs	float	md5_block	4294967296.0
-restated	crates/wcontainers-shaders/tests/geometry_draw.rs	int	STREAM_SIZES	4096
 restated	crates/wcontainers-shaders/tests/glsl_writer.rs	int	try_write_glsl	300
 restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	SCENE_WIDTH	256
 restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	direct3d	1024
