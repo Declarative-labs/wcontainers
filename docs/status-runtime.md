@@ -26,9 +26,17 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   mmapstress09 and 10; the kernel's task.rs:206: outside `clients_talk_to_a_server_outside_as_linux` at full on
   that machine). Two owned surface tests were fixed for Docker on Linux. A program of this track's own against the library's public surface served a TCP
   connection from the host and read and wrote files of a host directory at full, none and bound 7 (ARM machine).
-- Next: see "Left" at the end of section "J5 run 6".
+- J5 run 7: nothing new on origin/phase-1 or origin/phase-1-literals; the build script's facts and the cache's
+  file writing taken from established crates (section "J5 run 7").
+- Next: see "Left" at the end of section "J5 run 7".
 
 ## For the orchestrator
+
+- J5 run 7, for the literals track: a fact named once in a `macro_rules!` that both a build script and its
+  library include (`env!(name_macro!())`, which rustc accepts) is gated by the check as a code literal, so hard
+  case 4 (the build identity's variable, written in build.rs and in lib.rs's `env!`) cannot close that way.
+  And "Cargo.lock" is a private constant of the literals crate (`LOCK_FILE`), so a build script that names it
+  makes a `redefinition` it cannot fix by importing.
 
 - The literal check is adopted on this branch (J5 run 4, 11aeb561): origin/phase-1-literals at 7668c010 merged
   directly and `init` run in the merge, as the brief says twice ("merge origin/phase-1-literals into your
@@ -164,6 +172,40 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 7 (2026-11-20, the task's run 5; the rented ARM and x86 machines, and this Mac for git, edits and the literal check)
+
+- Merges: origin/phase-1 (eb515b7a) and origin/phase-1-literals (7668c010) had nothing new. The kernel track's
+  branch (origin/phase-1-kernel, not merged here) still has the task.rs `debug_assert` (now line 224).
+- Literal fixes (43f2f4b6), fix list step 8 and item 29: the build script reads its manifest's path and writes
+  its instructions through the cargo team's build-rs (no "CARGO_MANIFEST_DIR", "Cargo.toml" or "cargo:..."
+  strings left), and names the translator's and the guest interface's packages once each; a cache file is
+  written through tempfile's `NamedTempFile` in the cache's directory and put in place by `persist`, in place of
+  a hand-made "partial" name and rename. Baseline lines deleted: 10 (wcontainers-wasmtime 94 to 84; runtime 265
+  and the driver 31 unchanged). The check exits 0; marks: none.
+- Hard case 4 (the build identity's variable named in build.rs and in lib.rs's `env!`) is not closed. Tried: one
+  `macro_rules!` in a file both include, with `env!(translator_build_variable!())`; rustc takes it (built and
+  tested on the x86 machine), but the check gates the literal inside the macro as code (a `+` line), so the
+  variable stays a named constant in build.rs and a literal in lib.rs's `env!`, as before. "Cargo.lock" stays
+  as it was in build.rs (its baseline line kept): a constant for it is a `redefinition` of the literals crate's
+  private `LOCK_FILE`, which build.rs cannot import.
+- Lint: fmt and clippy with warnings denied pass for the owned crates on x86-64 Linux (x86 machine, load 3 to
+  4), ARM64 Linux (ARM machine) and macOS (this Mac, load 8). The kernel test crate's warning at
+  reference.rs:352 (the streams track's) is still there on Linux.
+- The owned suite at 43f2f4b6 (ARM machine, copy `runtime-check`, 8 jobs, load 22 to 39; j5run8/owned-arm.log):
+  135 passed, 1 ignored (`run_with_the_cache`, as before), 0 failed, 70 s. The cache's tests (lib and
+  tests/cache.rs) also pass on the x86 machine.
+- Python `language_test_modules_match_reference` at look-ahead none, alone with a 4 hour limit (ARM machine, job
+  runtime/20261120-015320-3372935 at 836be254, which differs from 43f2f4b6 only in the build script and the cache's
+  writing; `j5run8/python-none.sh`, log j5run8/arm/python-none.log): running at the time of writing.
+- Left for J5, all waiting on other tracks: the kernel track's fix of task.rs's assertion (outside
+  `clients_talk_to_a_server_outside_as_linux` at full on the ARM machine); the address ceiling's move (java x2,
+  node system, python system modules, LTP pth_str01 and pth_str03); the progress count (LTP mmapstress09 and
+  mmapstress10). The literal list's remaining lines wait on the orchestrator's rulings (spec.rs's JSON keys, hard
+  case 1; other refusal reasons, hard case 2; hard case 4 above) or on other tracks' constants (the kernel's
+  defaults, step 13; path syntax and `MAX_SYMLINKS`; the translator's hook counts, code line size and hook
+  return values), or are messages the check catches wrongly (docs/literals.md: text passed to `fail(...)` or
+  `.to_string()`).
 
 ## J5 run 6 (2026-11-19, the task's run 4 after a restart; the rented ARM machine, the rented x86 machine, and this Mac for git, edits and Docker Desktop)
 
@@ -2008,7 +2050,7 @@ array of slots in microseconds.
 
 ## Dependencies
 
-Added in J5 run 8 to wcontainers-wasmtime (licences read from the registry's manifests on 2026-11-20):
+Added in J5 run 7 to wcontainers-wasmtime (licences read from the registry's manifests on 2026-11-20):
 build-rs 0.3.6 (MIT OR Apache-2.0; the cargo team's), a build dependency only, for reading the build script's
 input and writing its instructions (it brings unicode-ident, already in the lock); tempfile 3.27.0 (MIT OR
 Apache-2.0, already in the lock with fastrand, once_cell, rustix and getrandom) for writing a cache file whole.
