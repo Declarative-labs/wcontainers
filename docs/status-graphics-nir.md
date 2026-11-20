@@ -1749,7 +1749,7 @@ None.
 
 ## Literal check
 
-G9 run 5: run at 3a34e4c8 less the last two commits (x86-64 machine, from a git bundle; marks 0; the clone and
+G9 run 5: run at 99e5ff55 (x86-64 machine, from a git bundle; marks 0; the clone and
 its build deleted after). Findings shown: `CUBE_FACES` twice (Waiting on others) and
 `COMPONENTS` in `wcontainers-nir/src/mesa.rs` ("a second name for MAX"), now gone: the swizzle's
 length is `naga::VectorSize::MAX` itself (d287ead9). Only the summary's last lines were kept, so
