@@ -77,6 +77,7 @@ pub enum Pause {
 /// What a pause function may look at and change while the thread is paused.
 pub struct Paused<'a, 'b, G: GuestTest> {
     caller: &'a mut Caller<'b, Host<G>>,
+    at: Pause,
 }
 
 impl<G: GuestTest> Paused<'_, '_, G> {
@@ -89,6 +90,26 @@ impl<G: GuestTest> Paused<'_, '_, G> {
         memory
             .read(&*self.caller, address as usize, into)
             .expect("read inside guest memory");
+    }
+
+    /// At a stop: write guest memory as another thread of the process does while this one is stopped. A page
+    /// locked for code drops its pieces first, and this thread then gives up its WebAssembly frames, which
+    /// may run pieces of that page, and carries on from its registers.
+    pub fn write(&mut self, address: u64, bytes: &[u8]) {
+        let host = self.caller.data_mut();
+        if code_written_in(host, address, bytes.len()) {
+            assert_eq!(
+                self.at,
+                Pause::Stop,
+                "code written at a {:?} pause",
+                self.at
+            );
+            host.lose_stack = true;
+        }
+        let memory = host.memory.unwrap();
+        memory
+            .write(&mut *self.caller, address as usize, bytes)
+            .expect("write inside guest memory");
     }
 
     /// Say what a page aligned range allows, as a kernel would for another thread or a system call.
@@ -457,18 +478,7 @@ impl<G: GuestTest> Machine<G> {
     /// Write guest memory as the kernel does, past the page permissions; a page locked for code drops its
     /// pieces first.
     pub fn write(&mut self, address: u64, bytes: &[u8]) {
-        let pages = address / PAGE_SIZE..(address + bytes.len() as u64).div_ceil(PAGE_SIZE);
-        for page in pages {
-            if self
-                .store
-                .data()
-                .locks
-                .get(page as usize)
-                .is_some_and(|l| l & LOCK_CODE != 0)
-            {
-                code_written(self.store.data_mut(), page);
-            }
-        }
+        code_written_in(self.store.data_mut(), address, bytes.len());
         self.memory
             .write(&mut self.store, address as usize, bytes)
             .expect("write inside guest memory");
@@ -871,10 +881,28 @@ fn code_written<G: GuestTest>(host: &mut Host<G>, page: u64) {
     );
 }
 
+/// Bytes are about to be written past the permission table: every page of them locked for code takes the
+/// step. Whether any did.
+fn code_written_in<G: GuestTest>(host: &mut Host<G>, address: u64, length: usize) -> bool {
+    let pages = address / PAGE_SIZE..(address + length as u64).div_ceil(PAGE_SIZE);
+    let mut any = false;
+    for page in pages {
+        if host
+            .locks
+            .get(page as usize)
+            .is_some_and(|l| l & LOCK_CODE != 0)
+        {
+            code_written(host, page);
+            any = true;
+        }
+    }
+    any
+}
+
 /// Run the pause function, if there is one.
 fn pause<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, at: Pause) {
     if let Some(mut function) = caller.data_mut().pause.take() {
-        function(at, &mut Paused { caller });
+        function(at, &mut Paused { caller, at });
         caller.data_mut().pause = Some(function);
     }
 }

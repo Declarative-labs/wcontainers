@@ -832,3 +832,89 @@ fn trap_flag_steps_match_linux_x86_64() {
         full_matches_in_chrome::<X86_64>(&blob, &theirs);
     }
 }
+
+/// Where `written_by_another`'s spinning code holds the immediate the other thread writes: after the one
+/// opcode byte of `mov eax, imm32` at the start of its page.
+const SPIN_IMMEDIATE: u64 = 1;
+/// The immediate the other thread writes there.
+const SPIN_WRITTEN: u32 = 2;
+
+/// Code another thread changes while this one runs it (`programs/x86_64/written_by_another.c`). On the
+/// reference a second thread writes it; the test runners give one thread, so the runner writes the same
+/// bytes as that thread at the first stop of the spinning thread on the written page, which drops the
+/// page's pieces and makes the thread give up its frames. Every look-ahead as on Linux, with none's
+/// registers and memory. Not in Chrome: its runner has no pause for another thread to act in.
+#[test]
+fn code_written_by_another_thread_matches_linux_x86_64() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_translator_test::runner::Pause;
+    let defines = [
+        format!("PAGE_SIZE={PAGE_SIZE}"),
+        format!("IMMEDIATE={SPIN_IMMEDIATE}"),
+        format!("NEW={SPIN_WRITTEN}"),
+    ];
+    let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
+    for optimisation in ["-O0", "-O2"] {
+        let blob = build_with::<X86_64>("written_by_another", optimisation, Library::C, &defines);
+        let theirs = native::<X86_64>(&blob);
+        assert_eq!(theirs.status, 0, "{}", blob.name);
+        let mut runs = Vec::new();
+        for how in [
+            (LookAhead::None, Optimise::Speed),
+            (LookAhead::Full, Optimise::Speed),
+            (LookAhead::Full, Optimise::Size),
+            (LookAhead::AT_RUN_TIME, Optimise::Speed),
+        ] {
+            let mut machine = ready_on::<X86_64>(
+                &blob,
+                how,
+                Default::default(),
+                wcontainers_translator_test::runner::probe::<X86_64>(),
+            );
+            let code = blob.load..blob.load + blob.code_bytes;
+            let written = Rc::new(Cell::new(false));
+            let seen = written.clone();
+            machine.raise_stop_flag();
+            machine.on_pause(move |at, paused| {
+                if seen.get() {
+                    return;
+                }
+                let rip = paused.registers().rip;
+                if at == Pause::Stop && !code.contains(&rip) {
+                    let page = rip / PAGE_SIZE * PAGE_SIZE;
+                    paused.write(page + SPIN_IMMEDIATE, &SPIN_WRITTEN.to_le_bytes());
+                    seen.set(true);
+                } else {
+                    paused.raise_stop_flag();
+                }
+            });
+            let (stopped, registers) = machine.run();
+            let what = format!("{} at {how:?}", blob.name);
+            assert!(written.get(), "{what}: never stopped on the written page");
+            assert!(
+                machine.count(Reason::CodeWrittenWithoutAnnouncement) >= 1,
+                "{what}"
+            );
+            runs.push((
+                what,
+                ran::<X86_64>(&blob, &machine, stopped, &registers),
+                machine,
+                registers,
+            ));
+        }
+        for (what, ours, _, _) in &runs {
+            assert_eq!(*ours, theirs, "{what}");
+        }
+        let (_, _, mut none_machine, none_registers) = runs.remove(0);
+        for (what, _, mut machine, registers) in runs {
+            assert_eq!(registers, none_registers, "registers of {what}");
+            assert!(
+                reachable_memory::<X86_64>(&mut machine, &blob)
+                    == reachable_memory::<X86_64>(&mut none_machine, &blob),
+                "memory of {what}"
+            );
+        }
+    }
+}
