@@ -12,6 +12,7 @@ use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{
     Library, build_with, ran, reachable_memory, ready, translated,
 };
+use wcontainers_x86::X86_64;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))
@@ -167,4 +168,21 @@ fn measure_translating_at_run_time_arm64() {
 #[ignore]
 fn measure_bound_arm64() {
     measure_bound::<Arm64>();
+}
+
+#[test]
+fn bounded_matches_none_x86_64() {
+    bounded_matches_none::<X86_64>();
+}
+
+#[test]
+#[ignore]
+fn measure_translating_at_run_time_x86_64() {
+    measure_translating_at_run_time::<X86_64>();
+}
+
+#[test]
+#[ignore]
+fn measure_bound_x86_64() {
+    measure_bound::<X86_64>();
 }

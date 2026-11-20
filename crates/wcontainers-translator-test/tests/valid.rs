@@ -1,4 +1,4 @@
-//! ARM64's own: every module the translator makes of ARM64 code is valid WebAssembly. Cases:
+//! Every module the translator makes of random code is valid WebAssembly, for each guest. Cases:
 //! `PROPTEST_CASES` (default 256); seed: `PROPTEST_RNG_SEED` (default 1).
 
 use proptest::prelude::*;
@@ -6,12 +6,16 @@ use proptest::test_runner::{Config, RngSeed};
 use wasmparser::{Validator, WasmFeatures};
 use wcontainers_arm64::{Arm64, Host};
 use wcontainers_translator::{LookAhead, Optimise, thread_module, translate};
+use wcontainers_x86::{Offer, X86_64};
 
 /// A host that needs every fix-up and the software fused multiply-add, so their code is checked too.
 const HOST: Host = Host {
     fused_multiply_add: false,
     arm_nans: false,
 };
+
+/// A host whose NaNs are not x86's, so the fix-ups' code is checked too.
+const HOST_X86_64: wcontainers_x86::Host = wcontainers_x86::Host { x86_nans: false };
 
 fn validate(wasm: &[u8]) {
     if let Err(error) = check(wasm) {
@@ -38,6 +42,24 @@ fn check(wasm: &[u8]) -> Result<(), String> {
 #[test]
 fn thread_module_is_valid_arm64() {
     validate(&thread_module::<Arm64>());
+}
+
+#[test]
+fn thread_module_is_valid_x86_64() {
+    validate(&thread_module::<X86_64>());
+}
+
+/// The most random bytes an x86 case translates, 255: many instructions of every length.
+const CASE_BYTES: usize = u8::MAX as usize;
+
+/// The starts (sorted) where a whole x86 instruction starts within the bytes.
+fn whole_x86_64(bytes: &[u8], starts: &[u64]) -> Vec<u64> {
+    use wcontainers_guest_cpu::Guest;
+    starts
+        .iter()
+        .copied()
+        .filter(|&s| X86_64::decode(&bytes[s as usize..]).is_some())
+        .collect()
 }
 
 /// The environment's settings, with a fixed seed when none is given.
@@ -119,6 +141,38 @@ proptest! {
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
         let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::Full, Optimise::Speed, HOST, ()).unwrap();
+        validate(&translation.modules[0].wasm);
+    }
+
+    /// Random bytes translated from every byte address at look-ahead none: x86 code may start anywhere. A
+    /// piece for every start but those whose instruction runs past the end of the bytes.
+    #[test]
+    fn code_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES)) {
+        let starts: Vec<u64> = (0..bytes.len() as u64).collect();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, &starts, LookAhead::None, Optimise::Speed, HOST_X86_64, Offer::default()).unwrap();
+        prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
+        validate(&translation.modules[0].wasm);
+    }
+
+    /// Random bytes at full look-ahead, from the first byte and from a few others.
+    #[test]
+    fn full_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4)) {
+        let mut starts = vec![0];
+        starts.extend(picks.iter().map(|p| p.index(bytes.len()) as u64));
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, &starts, LookAhead::Full, Optimise::Speed, HOST_X86_64, Offer::default()).unwrap();
+        for module in &translation.modules {
+            validate(&module.wasm);
+        }
+    }
+
+    /// Random bytes at bounded look-ahead of random N, from a few byte addresses: one piece in the table each.
+    #[test]
+    fn bounded_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
+        let mut starts: Vec<u64> = picks.iter().map(|p| p.index(bytes.len()) as u64).collect();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, &starts, LookAhead::Bounded(bound), Optimise::Speed, HOST_X86_64, Offer::default()).unwrap();
+        starts.sort();
+        starts.dedup();
+        prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
         validate(&translation.modules[0].wasm);
     }
 

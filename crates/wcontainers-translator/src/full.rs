@@ -325,6 +325,17 @@ impl<G: Guest> Finder<'_, G> {
         }
     }
 
+    /// Whether a whole instruction starts at an offset, so that a function may: one that would run past the
+    /// end of the code gets no piece, and is translated from memory when it is reached.
+    fn whole(&self, offset: u64) -> bool {
+        self.code.inside(offset) && self.try_get(offset).is_some()
+    }
+
+    /// The offsets of `starts` where a whole instruction starts.
+    fn whole_at<'s>(&self, starts: &'s [u64]) -> impl Iterator<Item = u64> + use<'s, '_, G> {
+        starts.iter().copied().filter(|&s| self.whole(s))
+    }
+
     /// An instruction of a function found.
     fn get(&self, offset: u64) -> Decoded<G> {
         self.try_get(offset).expect("a whole instruction")
@@ -346,7 +357,7 @@ impl<G: Guest> Finder<'_, G> {
     /// the extra entries that keep every function's control flow reducible, and those that cut functions too
     /// large in parts.
     fn functions(&mut self, starts: &[u64]) -> Vec<Function> {
-        let mut entries: BTreeSet<u64> = starts.iter().copied().collect();
+        let mut entries: BTreeSet<u64> = self.whole_at(starts).collect();
         let mut explored = BTreeSet::new();
         loop {
             // In rounds: every entry not yet explored, all at once, then what they found.
@@ -364,7 +375,7 @@ impl<G: Guest> Finder<'_, G> {
                 work = Vec::new();
                 let mut round = Found::new();
                 for (offset, means) in found.into_iter().flatten() {
-                    if self.code.inside(offset) && !entries.contains(&offset) {
+                    if self.whole(offset) && !entries.contains(&offset) {
                         note(&mut round, offset, means);
                     }
                 }
@@ -407,7 +418,7 @@ impl<G: Guest> Finder<'_, G> {
     /// One stretch per start: what the code reaches from it in its first `limit` instructions, stopping at the
     /// other starts and at the blocks that would make its control flow irreducible.
     fn stretches(&mut self, starts: &[u64], limit: usize) -> Vec<Function> {
-        let starts: BTreeSet<u64> = starts.iter().copied().collect();
+        let starts: BTreeSet<u64> = self.whole_at(starts).collect();
         let mut bounds = starts.clone();
         loop {
             let stretches: Vec<Function> = starts
