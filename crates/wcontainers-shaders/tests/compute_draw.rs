@@ -704,9 +704,12 @@ fn compare_compute(cases: fn(u64) -> Vec<Case>) {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// `cs_images`' storage textures: slot, format, its Direct3D format, layers, and whether it starts
-/// with seeded texels (the one read and written again).
-const IMAGES: [(u32, Format, DXGI_FORMAT, u32, bool); 4] = [
+/// One of `cs_images`' storage textures: slot, format, its Direct3D format, layers, and whether it
+/// starts with seeded texels (the one read and written again).
+type Image = (u32, Format, DXGI_FORMAT, u32, bool);
+
+/// `cs_images`' storage textures, each of the kind its declaration reads.
+const IMAGES: [Image; 4] = [
     (0, Format::Rgba8Unorm, DXGI_FORMAT_R8G8B8A8_UNORM, 1, false),
     (1, Format::R32Float, DXGI_FORMAT_R32_FLOAT, 1, true),
     (
@@ -717,6 +720,27 @@ const IMAGES: [(u32, Format, DXGI_FORMAT, u32, bool); 4] = [
         false,
     ),
     (3, Format::Rg32Sint, DXGI_FORMAT_R32G32_SINT, 1, false),
+];
+
+/// `cs_images`' storage textures each of another kind than its declaration reads, which Direct3D
+/// reads and writes by their bits; the values written fit each format.
+const OTHER_KIND_IMAGES: [Image; 4] = [
+    (
+        0,
+        Format::Rgba32Uint,
+        DXGI_FORMAT_R32G32B32A32_UINT,
+        1,
+        false,
+    ),
+    (1, Format::R32Uint, DXGI_FORMAT_R32_UINT, 1, true),
+    (
+        2,
+        Format::Rgba16Sint,
+        DXGI_FORMAT_R16G16B16A16_SINT,
+        3,
+        false,
+    ),
+    (3, Format::Rg32Uint, DXGI_FORMAT_R32G32_UINT, 1, false),
 ];
 const IMAGE_SIZE: u32 = 16;
 
@@ -732,11 +756,11 @@ fn image_texels(seed: u64, format: Format, layers: u32, seeded: bool) -> Vec<u8>
 }
 
 /// Each texture's texels after real Direct3D 11 runs `cs_images`, layer after layer.
-fn direct3d_images(gpu: &Gpu, seed: u64) -> Vec<Vec<u8>> {
+fn direct3d_images(gpu: &Gpu, seed: u64, images: &[Image]) -> Vec<Vec<u8>> {
     let shader = gpu.cs(&bytecode("cs_images.dxbc")).unwrap();
     let mut textures = Vec::new();
     let mut views = Vec::new();
-    for &(_, format, dxgi, layers, seeded) in &IMAGES {
+    for &(_, format, dxgi, layers, seeded) in images {
         let mut desc = d3d11::tex2d(IMAGE_SIZE, IMAGE_SIZE, dxgi, D3D11_BIND_UNORDERED_ACCESS);
         desc.ArraySize = layers;
         let texels = image_texels(seed, format, layers, seeded);
@@ -789,9 +813,9 @@ fn direct3d_images(gpu: &Gpu, seed: u64) -> Vec<Vec<u8>> {
 
 /// The same through the WebGPU back end, each view's format given in the variant, from fxc's
 /// bytecode (DXBC) or dxc's (DXIL).
-fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
+fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -> Vec<Vec<u8>> {
     let key = VariantKey {
-        storage_formats: IMAGES.iter().map(|&(slot, f, ..)| (slot, f)).collect(),
+        storage_formats: images.iter().map(|&(slot, f, ..)| (slot, f)).collect(),
         ..Default::default()
     };
     let c = if dxil {
@@ -802,7 +826,7 @@ fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
     .unwrap();
     assert!(c.reflection.helpers.is_empty());
     let mut textures = Vec::new();
-    for &(_, format, _, layers, seeded) in &IMAGES {
+    for &(_, format, _, layers, seeded) in images {
         let texture = b
             .create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
@@ -917,6 +941,16 @@ fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
 
 #[test]
 fn storage_textures_match_direct3d() {
+    storage_textures_alike(&IMAGES);
+}
+
+#[test]
+fn storage_textures_of_another_kind_read_and_write_their_bits_as_direct3d_does() {
+    storage_textures_alike(&OTHER_KIND_IMAGES);
+}
+
+/// `cs_images` on `images` through real Direct3D 11 and through ours, every texel compared.
+fn storage_textures_alike(images: &[Image]) {
     let mut backend = webgpu();
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
@@ -932,10 +966,10 @@ fn storage_textures_match_direct3d() {
         .unwrap_or(4);
     let mut failures = Vec::new();
     for seed in seed..seed + seeds {
-        let reference = direct3d_images(&gpu, seed);
+        let reference = direct3d_images(&gpu, seed, images);
         for (dxil, source) in [(false, "dxbc"), (true, "dxil")] {
-            let made = ours_images(&mut backend, seed, dxil);
-            for ((a, o), &(slot, format, ..)) in reference.iter().zip(&made).zip(&IMAGES) {
+            let made = ours_images(&mut backend, seed, dxil, images);
+            for ((a, o), &(slot, format, ..)) in reference.iter().zip(&made).zip(images) {
                 let apart = a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count();
                 eprintln!("seed {seed} {source} u{slot} {format:?}: {apart} words apart");
                 if apart > 0 {
@@ -1392,7 +1426,7 @@ fn texel_supported(gpu: &Gpu, format: Format, uav: bool) -> bool {
 
 /// One seeded case: each view's format picked from the formats the device has for it, its first
 /// element and length (some invocations read and write past it), and seeded bytes everywhere.
-fn texel_views(gpu: &Gpu, seed: u64) -> Vec<TexelView> {
+fn texel_views(gpu: &Gpu, seed: u64, kinds: Kinds) -> Vec<TexelView> {
     let mut next = rng(seed);
     let pick = |from: &[Format], uav: bool, next: &mut dyn FnMut() -> u32| {
         let have: Vec<Format> = from
@@ -1402,13 +1436,26 @@ fn texel_views(gpu: &Gpu, seed: u64) -> Vec<TexelView> {
             .collect();
         have[next() as usize % have.len()]
     };
+    // Each declaration's own kind, or the formats of the other two kinds.
+    let floats = [LOADED_UINTS.as_slice(), &LOADED_SINTS].concat();
+    let uints = [LOADED_FLOATS.as_slice(), &LOADED_SINTS].concat();
+    let sints = [LOADED_FLOATS.as_slice(), &LOADED_UINTS].concat();
+    let (floats, uints, sints, counts) = match kinds {
+        Kinds::Declared => (
+            LOADED_FLOATS.as_slice(),
+            LOADED_UINTS.as_slice(),
+            LOADED_SINTS.as_slice(),
+            Format::R32Uint,
+        ),
+        Kinds::Other => (floats.as_slice(), &uints[..], &sints[..], Format::R32Sint),
+    };
     let slots = [
-        (SlotKind::Texture, 0, pick(&LOADED_FLOATS, false, &mut next)),
-        (SlotKind::Texture, 1, pick(&LOADED_UINTS, false, &mut next)),
-        (SlotKind::Texture, 2, pick(&LOADED_SINTS, false, &mut next)),
-        (SlotKind::Texture, 3, pick(&LOADED_FLOATS, false, &mut next)),
-        (SlotKind::Storage, 0, pick(&LOADED_FLOATS, true, &mut next)),
-        (SlotKind::Storage, 1, Format::R32Uint),
+        (SlotKind::Texture, 0, pick(floats, false, &mut next)),
+        (SlotKind::Texture, 1, pick(uints, false, &mut next)),
+        (SlotKind::Texture, 2, pick(sints, false, &mut next)),
+        (SlotKind::Texture, 3, pick(floats, false, &mut next)),
+        (SlotKind::Storage, 0, pick(floats, true, &mut next)),
+        (SlotKind::Storage, 1, counts),
     ];
     slots
         .into_iter()
@@ -1734,8 +1781,26 @@ fn stored_apart(v: &TexelView, results: &[u8], a: &[u8], o: &[u8]) -> (usize, us
     (apart, tolerated)
 }
 
+/// Whether `cs_texels`' views are of the kinds its declarations read or of others.
+#[derive(Clone, Copy)]
+enum Kinds {
+    Declared,
+    Other,
+}
+
 #[test]
 fn typed_buffers_match_direct3d() {
+    typed_buffers_alike(Kinds::Declared);
+}
+
+#[test]
+fn typed_buffers_of_another_kind_read_and_write_their_bits_as_direct3d_does() {
+    typed_buffers_alike(Kinds::Other);
+}
+
+/// `cs_texels` on seeded views of `kinds` through real Direct3D 11 and through ours, every word
+/// compared.
+fn typed_buffers_alike(kinds: Kinds) {
     let mut backend = webgpu();
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
@@ -1751,7 +1816,7 @@ fn typed_buffers_match_direct3d() {
         .unwrap_or(4);
     let mut failures = Vec::new();
     for seed in seed..seed + seeds {
-        let views = texel_views(&gpu, seed);
+        let views = texel_views(&gpu, seed, kinds);
         let formats: Vec<_> = views.iter().map(|v| v.format).collect();
         let reference = direct3d_texels(&gpu, &views);
         for (dxil, build) in [(false, "dxbc"), (true, "dxil")] {

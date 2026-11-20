@@ -135,7 +135,7 @@ hlsl+attrout-semantics-6-ps.dxil	ok ; glsl compiles
 hlsl+barriers-1-cs.dxil	ok ; glsl absent compute
 hlsl+barriers-2-ps.dxil	ok ; glsl compiles
 hlsl+barriers-3-cs.dxil	ok views:R32Float ; glsl absent compute
-hlsl+barriers-4-cs.dxil	ok views:R32Uint ; glsl absent compute
+hlsl+barriers-4-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+bitwise-1-ps.dxil	ok ; glsl compiles
 hlsl+bitwise-10-ps.dxil	ok ; glsl compiles
 hlsl+bitwise-11-ps.dxil	ok ; glsl compiles
@@ -301,10 +301,10 @@ hlsl+color-clamping-5-vs.dxil	ok ; glsl compiles
 hlsl+color-clamping-6-ps.dxil	ok ; glsl compiles
 hlsl+comma-1-ps.dxil	ok ; glsl compiles
 hlsl+compute-1-cs.dxil	ok views:R32Float ; glsl absent compute
-hlsl+compute-2-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+compute-3-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+compute-4-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+compute-5-cs.dxil	ok views:R32Uint ; glsl absent compute
+hlsl+compute-2-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+compute-3-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+compute-4-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+compute-5-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+conditional-1-ps.dxil	ok ; glsl compiles
 hlsl+conditional-10-ps.dxil	ok ; glsl compiles
 hlsl+conditional-11-ps.dxil	ok ; glsl compiles
@@ -337,7 +337,7 @@ hlsl+constructgswithso-4-ps.dxil	ok ; glsl compiles
 hlsl+constructgswithso-5-ps.dxil	ok ; glsl compiles
 hlsl+constructgswithso-6-ps.dxil	ok ; glsl compiles
 hlsl+coverage-1-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+coverage-2-ps.dxil	ok views:R32Uint through ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+hlsl+coverage-2-ps.dxil	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+cross-1-ps.dxil	ok ; glsl compiles
 hlsl+cross-2-ps.dxil	ok ; glsl compiles
 hlsl+d3dcolor-to-ubyte4-1-ps.dxil	ok ; glsl compiles
@@ -886,7 +886,7 @@ hlsl+primitive-id-1-vs.dxil	ok ; glsl compiles
 hlsl+primitive-id-2-gs.dxil	unsupported DxilGeometryShader
 hlsl+primitive-id-3-ps.dxil	ok ; glsl needs PRIMITIVE_INDEX compile
 hlsl+rasteriser-ordered-views-1-vs.dxil	ok ; glsl compiles
-hlsl+rasteriser-ordered-views-2-ps.dxil	ok views:R32Uint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+hlsl+rasteriser-ordered-views-2-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+rasteriser-ordered-views-3-ps.dxil	unsupported RasterizerOrderedView
 hlsl+rasteriser-ordered-views-4-ps.dxil	unsupported RasterizerOrderedView
 hlsl+rasteriser-ordered-views-5-ps.dxil	unsupported RasterizerOrderedView
@@ -1328,8 +1328,8 @@ hlsl+texture-load-typed-1-ps.dxil	ok ; glsl compiles
 hlsl+texture-load-typed-3-ps.dxil	ok ; glsl compiles
 hlsl+tgsm-10-cs.dxil	ok ; glsl absent compute
 hlsl+tgsm-11-cs.dxil	ok ; glsl absent compute
-hlsl+tgsm-12-cs.dxil	unsupported TypedBufferFormatKind (with views)
-hlsl+tgsm-13-cs.dxil	unsupported TypedBufferFormatKind (with views)
+hlsl+tgsm-12-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+tgsm-13-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+tgsm-14-cs.dxil	ok ; glsl absent compute
 hlsl+tgsm-15-cs.dxil	ok ; glsl absent compute
 hlsl+tgsm-16-cs.dxil	ok ; glsl absent compute
@@ -1367,22 +1367,22 @@ hlsl+trunc-3-ps.dxil	ok ; glsl compiles
 hlsl+type-names-2-ps.dxil	ok ; glsl compiles
 hlsl+type-names-3-ps.dxil	ok ; glsl compiles
 hlsl+type-names-7-ps.dxil	ok ; glsl compiles
-hlsl+uav-atomics-1-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+uav-atomics-2-cs.dxil	ok views:R32Sint ; glsl absent compute
-hlsl+uav-atomics-3-cs.dxil	ok views:R32Uint through ; glsl absent compute
-hlsl+uav-atomics-4-cs.dxil	ok views:R32Sint through ; glsl absent compute
-hlsl+uav-atomics-5-cs.dxil	unsupported TypedBufferFormatKind (with views)
-hlsl+uav-atomics-6-cs.dxil	unsupported TypedBufferFormatKind (with views)
+hlsl+uav-atomics-1-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-2-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-3-cs.dxil	ok views:R32Float through ; glsl absent compute
+hlsl+uav-atomics-4-cs.dxil	ok views:R32Float through ; glsl absent compute
+hlsl+uav-atomics-5-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-6-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+uav-atomics-7-cs.dxil	ok ; glsl absent compute
 hlsl+uav-counter-1-cs.dxil	ok ; glsl absent compute
 hlsl+uav-counter-2-cs.dxil	ok ; glsl absent compute
-hlsl+uav-counter-3-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+uav-counter-4-cs.dxil	ok views:R32Uint ; glsl absent compute
+hlsl+uav-counter-3-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+uav-counter-4-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+uav-load-1-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+uav-out-param-1-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+uav-out-param-2-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+uav-rwbuffer-10-ps.dxil	ok ; glsl compiles
-hlsl+uav-rwbuffer-11-ps.dxil	ok views:R32Sint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+hlsl+uav-rwbuffer-11-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+uav-rwbuffer-12-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+uav-rwbuffer-13-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+uav-rwbuffer-14-cs.dxil	ok views:R32Float ; glsl absent compute
@@ -1448,10 +1448,10 @@ hlsl+vertex-shader-ops-3-vs.dxil	ok ; glsl compiles
 hlsl+vertex-shader-ops-4-vs.dxil	ok ; glsl compiles
 hlsl+vp-array-index-1-vs.dxil	unsupported ViewportArrayIndex
 hlsl+vp-array-index-2-ps.dxil	spirv-reader unsupported builtin %10
-hlsl+wave-ops-float-1-cs.dxil	unsupported TypedBufferFormatKind (with views)
+hlsl+wave-ops-float-1-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-10-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-11-cs.dxil	ok views:R32Float ; glsl absent compute
-hlsl+wave-ops-float-12-cs.dxil	unsupported TypedBufferFormatKind (with views)
+hlsl+wave-ops-float-12-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-13-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-14-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-15-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
@@ -1459,7 +1459,7 @@ hlsl+wave-ops-float-16-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_W
 hlsl+wave-ops-float-17-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+wave-ops-float-18-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+wave-ops-float-19-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-hlsl+wave-ops-float-2-cs.dxil	unsupported TypedBufferFormatKind (with views)
+hlsl+wave-ops-float-2-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-20-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+wave-ops-float-21-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+wave-ops-float-22-cs.dxil	unsupported Float64
@@ -1470,7 +1470,7 @@ hlsl+wave-ops-float-26-cs.dxil	unsupported Float64
 hlsl+wave-ops-float-27-cs.dxil	unsupported Float64
 hlsl+wave-ops-float-28-cs.dxil	unsupported Float64
 hlsl+wave-ops-float-29-cs.dxil	unsupported Float64
-hlsl+wave-ops-float-3-cs.dxil	unsupported TypedBufferFormatKind (with views)
+hlsl+wave-ops-float-3-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-30-cs.dxil	unsupported Float64
 hlsl+wave-ops-float-31-cs.dxil	unsupported Float64
 hlsl+wave-ops-float-4-cs.dxil	ok views:R32Float ; glsl absent compute
@@ -1479,22 +1479,22 @@ hlsl+wave-ops-float-6-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-7-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-8-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-9-cs.dxil	ok views:R32Float ; glsl absent compute
-hlsl+wave-ops-int-1-cs.dxil	ok views:R32Sint ; glsl absent compute
-hlsl+wave-ops-int-2-cs.dxil	ok views:R32Sint ; glsl absent compute
+hlsl+wave-ops-int-1-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-int-2-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-int-3-cs.dxil	unsupported Int64
 hlsl+wave-ops-int-4-cs.dxil	unsupported Int64
-hlsl+wave-ops-uint-1-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-10-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-11-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-12-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-13-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-14-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-15-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-16-cs.dxil	ok views:R32Uint ; glsl absent compute
+hlsl+wave-ops-uint-1-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-10-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-11-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-12-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-13-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-14-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-15-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-16-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-uint-17-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-18-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-19-cs.dxil	unsupported Int64
-hlsl+wave-ops-uint-2-cs.dxil	ok views:R32Uint ; glsl absent compute
+hlsl+wave-ops-uint-2-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-uint-20-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-21-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-22-cs.dxil	unsupported Int64
@@ -1505,13 +1505,13 @@ hlsl+wave-ops-uint-26-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-27-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-28-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-29-cs.dxil	unsupported Int64
-hlsl+wave-ops-uint-3-cs.dxil	ok views:R32Uint ; glsl absent compute
+hlsl+wave-ops-uint-3-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-uint-30-cs.dxil	unsupported Int64
-hlsl+wave-ops-uint-4-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-5-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-6-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-7-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-8-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-ops-uint-9-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-reconvergence-1-cs.dxil	ok views:R32Uint ; glsl absent compute
-hlsl+wave-reconvergence-2-cs.dxil	ok views:R32Uint ; glsl absent compute
+hlsl+wave-ops-uint-4-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-5-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-6-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-7-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-8-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-ops-uint-9-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-reconvergence-1-cs.dxil	ok views:R32Float ; glsl absent compute
+hlsl+wave-reconvergence-2-cs.dxil	ok views:R32Float ; glsl absent compute

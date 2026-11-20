@@ -13,7 +13,7 @@ compute.cs_counter.dxbc	ok ; glsl absent compute
 compute.cs_shared.dxbc	ok ; glsl absent compute
 compute.cs_structured.dxbc	ok ; glsl absent compute
 compute.cs_texture.dxbc	ok views:R32Float ; glsl absent compute
-compute.ps_overlap.dxbc	ok views:R32Uint through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+compute.ps_overlap.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 constants.ps_slots.dxbc	ok ; glsl compiles
 constants.ps_window.dxbc	ok ; glsl compiles
 depth.ps_depth.dxbc	ok ; glsl compiles

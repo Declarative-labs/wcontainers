@@ -28,18 +28,18 @@
 0ed13ec7e200b7b3.dxbc	ok ; glsl compiles
 0f2a8f44bbb387ef.dxbc	ok views:R32Float ; glsl absent compute
 0f88fb04b077b025.dxbc	ok ; glsl compiles
-0fe5b394fdfc104e.dxbc	unsupported TypedBufferFormatKind (with views)
+0fe5b394fdfc104e.dxbc	ok views:R32Float ; glsl absent compute
 10442468fed32dec.dxbc	ok ; glsl compiles
 10b67eabe8d67160.dxbc	ok ; glsl compiles
 11f120fd5b63b765.dxbc	ok ; glsl compiles
-1280103dab5ea5d2.dxbc	unsupported StorageFormatKind (with views)
+1280103dab5ea5d2.dxbc	ok views:R32Float ; glsl absent compute
 1356c3a56ebacc06.dxbc	ok ; glsl compiles
 148558cecc141083.dxbc	ok ; glsl compiles
 14b77a76af0e6d5d.dxbc	ok ; glsl compiles
 15067d53e6e0eccf.dxbc	ok views:R32Float ; glsl absent compute
 159e61a7590bad67.dxbc	ok views:R32Float ; glsl absent compute
 1619e502ddcac10c.dxbc	ok views:R32Float ; glsl absent compute
-1723d517afa6cc78.dxbc	ok views:R32Uint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+1723d517afa6cc78.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 191fba7bc23a119e.dxbc	ok views:R32Float ; glsl absent compute
 19421bced7311ed0.dxbc	ok ; glsl compiles
 19537f71dc7803cd.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
@@ -47,7 +47,7 @@
 19bbd3eb10a33f04.dxbc	ok ; glsl compiles
 1a6f4186a93b8470.dxbc	ok ; glsl compiles
 1a89182aeaaf77d9.dxbc	ok ; glsl compiles
-1aaa30be816f795a.dxbc	unsupported TypedBufferFormatKind (with views)
+1aaa30be816f795a.dxbc	ok views:R32Float ; glsl absent compute
 1b969924dd484fda.dxbc	ok ; glsl compiles
 1c110faf672a2f8a.dxbc	ok ; glsl compiles
 1c259f4366732767.dxbc	ok ; glsl compiles
@@ -86,8 +86,8 @@
 2e1ee16c2846c1a1.dxbc	ok ; glsl compiles
 2eb18e731f6e5a45.dxbc	ok ; glsl compiles
 30e4f85db207f1d4.dxbc	ok ; glsl compiles
-31a57f107f7a4ad0.dxbc	ok views:R32Uint ; glsl absent compute
-31aeff0b3cb1b1b6.dxbc	unsupported TypedBufferFormatKind (with views)
+31a57f107f7a4ad0.dxbc	ok views:R32Float ; glsl absent compute
+31aeff0b3cb1b1b6.dxbc	ok views:R32Float ; glsl absent compute
 31c2fc5c0ffd34ac.dxbc	ok ; glsl compiles
 31c6b54f700ef73e.dxbc	ok ; glsl compiles
 31f7442a72674d50.dxbc	ok ; glsl compiles
@@ -179,7 +179,7 @@
 5e94d66e31bf6f5a.dxbc	ok ; glsl compiles
 5ebdc4ccd0fff123.dxbc	ok ; glsl compiles
 5ef0bbc5df5289b6.dxbc	ok ; glsl compiles
-5faa9fc4ce774b63.dxbc	ok views:R32Sint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+5faa9fc4ce774b63.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 5fe5d6dff361ad92.dxbc	ok ; glsl compiles
 603a6950a9f4db8b.dxbc	ok ; glsl compiles
 605faa3448fe6500.dxbc	ok ; glsl compiles
@@ -274,7 +274,7 @@
 8b81793155045934.dxbc	ok ; glsl compiles
 8bfc96724defee84.dxbc	ok ; glsl compiles
 8d0a6e84ac4ab059.dxbc	ok ; glsl compiles
-8d1a5452ed3866fa.dxbc	ok views:R32Uint ; glsl absent compute
+8d1a5452ed3866fa.dxbc	ok views:R32Float ; glsl absent compute
 8d455e9f1bfa4044.dxbc	ok ; glsl compiles
 8e08a8985ffa76c9.dxbc	ok ; glsl compiles
 8ecd424d8fbb4d7b.dxbc	ok ; glsl compiles
@@ -296,13 +296,13 @@
 93d20a5319197c76.dxbc	ok ; glsl compiles
 941e18786b31b33b.dxbc	ok ; glsl compiles
 94ab779679733fde.dxbc	ok ; glsl compiles
-9524c26707570e12.dxbc	unsupported TypedBufferFormatKind (with views)
+9524c26707570e12.dxbc	ok views:R32Float ; glsl absent compute
 954a44d0bc5a9adb.dxbc	ok ; glsl compiles
 95bf6ad464f24849.dxbc	unsupported RenderTargetArrayIndex
 95cc59c4f6f9af1a.dxbc	ok ; glsl compiles
 96167f2d1d4de040.dxbc	ok ; glsl compiles
 966b040ce1d2f8c9.dxbc	ok ; glsl compiles
-9682628897118ed4.dxbc	unsupported TypedBufferFormatKind (with views)
+9682628897118ed4.dxbc	ok views:R32Float ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 97c72733370fc70c.dxbc	ok ; glsl compiles
 983db97998af0908.dxbc	ok ; glsl compiles
 9949838bfee0af93.dxbc	ok views:R32Float ; glsl absent compute
@@ -383,7 +383,7 @@ be5cad385d72cb84.dxbc	ok ; glsl compiles
 bed64dd5644c03b4.dxbc	ok ; glsl compiles
 bedee97239a96db3.dxbc	ok ; glsl compiles
 bf4b9f4770dfd7ca.dxbc	ok ; glsl compiles
-bfa45b98c14fa486.dxbc	unsupported TypedBufferFormatKind (with views)
+bfa45b98c14fa486.dxbc	ok views:R32Float ; glsl absent compute
 bfeac1f423972114.dxbc	ok ; glsl compiles
 c0a18f157915389d.dxbc	ok ; glsl compiles
 c159440f562b4a23.dxbc	ok ; glsl compiles
@@ -415,9 +415,9 @@ cafd10650ec1016b.dxbc	ok ; glsl compiles
 cc97d9216fe9d74e.dxbc	ok ; glsl compiles
 ce0c3350c3bc8696.dxbc	ok ; glsl compiles
 ce0cf1eabb8d74b4.dxbc	ok views:R32Float ; glsl absent compute
-ce6ef53db8c1f63e.dxbc	ok views:R32Uint ; glsl absent compute
+ce6ef53db8c1f63e.dxbc	ok views:R32Float ; glsl absent compute
 cee0ad2c20a40b1c.dxbc	ok ; glsl compiles
-cf323ae9e3407c46.dxbc	ok views:R32Uint ; glsl absent compute
+cf323ae9e3407c46.dxbc	ok views:R32Float ; glsl absent compute
 d07773fb8588d7a2.dxbc	ok ; glsl compiles
 d0ad377bb488a0fb.dxbc	ok ; glsl compiles
 d0d65c2b21d07e43.dxbc	ok ; glsl compiles
@@ -431,7 +431,7 @@ d4cc93b1f96218e8.dxbc	ok ; glsl compiles
 d4efc86314d18be1.dxbc	ok ; glsl compiles
 d507f57029a510e1.dxbc	ok ; glsl compiles
 d599fbc7efa911be.dxbc	ok ; glsl compiles
-d60d137b5904b7eb.dxbc	ok views:R32Uint ; glsl absent compute
+d60d137b5904b7eb.dxbc	ok views:R32Float ; glsl absent compute
 d71ce4837272e6eb.dxbc	ok ; glsl compiles
 d79351b05e80c816.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 d8259b97b06f7a88.dxbc	ok ; glsl compiles
@@ -446,7 +446,7 @@ dddda1b9cb6b9c8d.dxbc	ok ; glsl absent compute
 de72e785abb239b5.dxbc	ok ; glsl compiles
 df2ec9f1a8b14394.dxbc	ok ; glsl compiles
 dff055a294f9dc3b.dxbc	ok ; glsl compiles
-e0bc77c192dd1730.dxbc	ok views:R32Uint ; glsl absent compute
+e0bc77c192dd1730.dxbc	ok views:R32Float ; glsl absent compute
 e10ecbce28758284.dxbc	ok ; glsl compiles
 e15960d476c736fd.dxbc	ok ; glsl compiles
 e259fac63117465a.dxbc	ok ; glsl compiles
@@ -487,7 +487,7 @@ efabecf387b6e1b3.dxbc	ok ; glsl compiles
 efe2732ebe174ca5.dxbc	ok ; glsl compiles
 f070a477de414bc7.dxbc	ok ; glsl compiles
 f08836a482e4fabc.dxbc	ok ; glsl compiles
-f092830b5c83e017.dxbc	unsupported TypedBufferFormatKind (with views)
+f092830b5c83e017.dxbc	ok views:R32Float ; glsl absent compute
 f09923aa6dd9bf59.dxbc	ok ; glsl compiles
 f0a33e2d3a8cc6b9.dxbc	ok ; glsl compiles
 f0acbb1a5174f8c3.dxbc	ok ; glsl compiles
@@ -511,7 +511,7 @@ f85c97430ddfffbf.dxbc	ok ; glsl compiles
 f8af169093906187.dxbc	ok ; glsl compiles
 fa22897e28a2b649.dxbc	ok ; glsl compiles
 fa3758054298f72a.dxbc	ok ; glsl compiles
-faa0ad39e3db0935.dxbc	ok views:R32Uint ; glsl absent compute
+faa0ad39e3db0935.dxbc	ok views:R32Float ; glsl absent compute
 faf730d92ccb80df.dxbc	ok ; glsl compiles
 fb1edd3f0ffb2e66.dxbc	ok ; glsl compiles
 fb59f15f2e6503a9.dxbc	ok ; glsl compiles

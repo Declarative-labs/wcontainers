@@ -568,7 +568,6 @@ fn storage_image(
     else {
         return Err(ConvertError::Malformed("a storage image's type".into()));
     };
-    let declared = texel_kind(&module.types[module.global_variables[var].ty].inner);
     let slot = d.slot(module, var);
     let format = variant
         .storage_formats
@@ -579,11 +578,6 @@ fn storage_image(
     let format = storage_format(format).ok_or(ConvertError::Unsupported(
         crate::refusal::STORAGE_FORMAT_ABSENT,
     ))?;
-    if declared != Some(storage_kind(format)) {
-        return Err(ConvertError::Unsupported(
-            crate::refusal::STORAGE_FORMAT_KIND,
-        ));
-    }
     let access = match (uses.load, uses.store) {
         (true, false) => naga::StorageAccess::LOAD,
         (false, _) => naga::StorageAccess::STORE,
@@ -708,7 +702,7 @@ fn typed_buffer(
         .1;
     let declared = texel_kind(&module.types[module.global_variables[var].ty].inner)
         .ok_or_else(|| ConvertError::Malformed("a typed buffer's type".into()))?;
-    let layout = TexelBuffer::layout(format, declared)?;
+    let layout = TexelBuffer::layout(format)?;
     let atomic = word_scalar(uses, declared, layout.2);
     let place = if texture {
         let ty = module.types.insert(
@@ -718,7 +712,7 @@ fn typed_buffer(
                     dim: ImageDimension::D2,
                     arrayed: false,
                     class: ImageClass::Sampled {
-                        kind: declared,
+                        kind: TexelBuffer::view_kind(&layout),
                         multi: false,
                     },
                 },
@@ -739,6 +733,7 @@ fn typed_buffer(
     let buffer = TexelBuffer::declared(
         var,
         layout,
+        declared,
         atomic,
         place,
         stage,
@@ -791,12 +786,9 @@ fn through_image(
         .find(|(s, _)| *s == slot)
         .ok_or(ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT))?
         .1;
-    let layout = TexelBuffer::layout(format, declared).map_err(|e| match e {
+    let layout = TexelBuffer::layout(format).map_err(|e| match e {
         ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_ABSENT) => {
             ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT_ABSENT)
-        }
-        ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_KIND) => {
-            ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT_KIND)
         }
         e => e,
     })?;
@@ -809,6 +801,7 @@ fn through_image(
     let buffer = TexelBuffer::declared(
         var,
         layout,
+        declared,
         atomic,
         place,
         stage,
@@ -818,6 +811,172 @@ fn through_image(
     let vec4 = vec4(module, buffer.scalar());
     Ok((buffer, vec4, (dim, arrayed)))
 }
+
+/// The program's and the bound view's scalar kinds of a storage image read and written natively,
+/// where they differ.
+fn other_kind(
+    module: &Module,
+    variant: &VariantKey,
+    var: Handle<GlobalVariable>,
+    d: &Declared,
+) -> Option<(ScalarKind, ScalarKind)> {
+    let declared = texel_kind(&module.types[module.global_variables[var].ty].inner)?;
+    let slot = d.slot(module, var);
+    let &(_, format) = variant.storage_formats.iter().find(|(s, _)| *s == slot)?;
+    let view = storage_kind(storage_format(format)?);
+    (declared != view).then_some((declared, view))
+}
+
+/// Reads and writes of the storage images in `casts` (each with the program's and the view's scalar
+/// kinds) by their bits, as Direct3D gives a view of another kind than the declaration's: each load
+/// becomes a call of a function loading the view's texel and giving its bits as the program's kind,
+/// and each store's value is cast to the view's kind.
+fn cast_kinds(
+    module: &mut Module,
+    casts: &[(Handle<GlobalVariable>, (ScalarKind, ScalarKind))],
+    atomics: &mut [TexelAtomic],
+) -> Result<()> {
+    if casts.is_empty() {
+        return Ok(());
+    }
+    let cast_of = |f: &Function, e: Handle<Expression>| match f.expressions[e] {
+        Expression::GlobalVariable(g) => casts.iter().find(|(v, _)| *v == g).copied(),
+        _ => None,
+    };
+    let count = module.functions.len();
+    let owners: Vec<Function> = module
+        .functions
+        .iter()
+        .map(|(_, f)| f.clone())
+        .chain(module.entry_points.iter().map(|ep| ep.function.clone()))
+        .collect();
+    // Each load: its owner, the expression, and the function made for it.
+    let mut callees: Vec<(String, Function)> = Vec::new();
+    let mut sites = Vec::new();
+    for (owner, f) in owners.iter().enumerate() {
+        for (h, e) in f.expressions.iter() {
+            let Expression::ImageLoad {
+                image,
+                coordinate,
+                array_index,
+                ..
+            } = *e
+            else {
+                continue;
+            };
+            let Some((var, (declared, _))) = cast_of(f, image) else {
+                continue;
+            };
+            let operands: Vec<_> = core::iter::once(coordinate).chain(array_index).collect();
+            let types = crate::variant::types_of(module, f, &operands)?;
+            let out = crate::build::vec4(
+                module,
+                Scalar {
+                    kind: declared,
+                    ..Scalar::U32
+                },
+            );
+            let mut b = Builder::new(&alloc::format!("{CAST_LOAD_FUNCTION}{}", var.index()));
+            for &ty in &types {
+                b.f.arguments.push(naga::FunctionArgument {
+                    name: None,
+                    ty,
+                    binding: None,
+                });
+            }
+            b.f.result = Some(naga::FunctionResult {
+                ty: out,
+                binding: None,
+            });
+            let image = b.global(var);
+            let coordinate = b.argument(0);
+            let array_index = array_index.map(|_| b.argument(1));
+            let texel = b.expr(Expression::ImageLoad {
+                image,
+                coordinate,
+                array_index,
+                sample: None,
+                level: None,
+            });
+            let value = b.bitcast(texel, declared);
+            b.ret(Some(value));
+            let callee = b.finish();
+            let key = alloc::format!("{callee:?}");
+            let at = callees
+                .iter()
+                .position(|(k, _)| *k == key)
+                .unwrap_or_else(|| {
+                    callees.push((key, callee));
+                    callees.len() - 1
+                });
+            sites.push((owner, h, at, operands));
+        }
+    }
+    let (made, moved) = functions_first(module, |module| {
+        callees
+            .into_iter()
+            .map(|(_, f)| module.functions.append(f, Span::UNDEFINED))
+            .collect::<Vec<_>>()
+    });
+    remap(atomics, &moved);
+    for (owner, _) in owners.iter().enumerate() {
+        let f = match owner < count {
+            true => &mut module.functions[moved[owner]],
+            false => &mut module.entry_points[owner - count].function,
+        };
+        let calls: Vec<Placed> = sites
+            .iter()
+            .filter(|s| s.0 == owner)
+            .map(|(_, h, at, operands)| Placed {
+                result: *h,
+                function: made[*at],
+                arguments: operands.clone(),
+                pre: None,
+            })
+            .collect();
+        place_calls(f, &calls);
+        let Function {
+            body, expressions, ..
+        } = f;
+        each_block(body, &mut |block| {
+            let cast = |expressions: &naga::Arena<Expression>, s: &Statement| match s {
+                Statement::ImageStore { image, .. } => match expressions[*image] {
+                    Expression::GlobalVariable(g) => casts
+                        .iter()
+                        .find(|(v, _)| *v == g)
+                        .map(|&(_, (_, view))| view),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if !block.iter().any(|s| cast(expressions, s).is_some()) {
+                return;
+            }
+            for (mut s, span) in core::mem::take(block).span_into_iter() {
+                if let Some(view) = cast(expressions, &s)
+                    && let Statement::ImageStore { value, .. } = &mut s
+                {
+                    let bits = expressions.append(
+                        Expression::As {
+                            expr: *value,
+                            kind: view,
+                            convert: None,
+                        },
+                        Span::UNDEFINED,
+                    );
+                    block.push(Statement::Emit(Range::new_from_bounds(bits, bits)), span);
+                    *value = bits;
+                }
+                block.push(s, span);
+            }
+        });
+    }
+    Ok(())
+}
+
+/// The name of a function loading a storage image's texel as another kind, before its variable's
+/// index.
+const CAST_LOAD_FUNCTION: &str = "storage_load_bits_";
 
 /// The number of coordinate components of a storage image of `dim`.
 fn components(dim: ImageDimension) -> u32 {
@@ -1400,12 +1559,19 @@ pub(super) fn finish(
     if globals.is_empty() {
         return Ok(());
     }
-    let uses = uses(module, globals, atomics);
     let through = |module: &Module, i: usize| {
         let (var, d) = &globals[i];
         let slot = d.slot(module, *var);
         !d.buffer && slot < 64 && variant.texels_through_buffer >> slot & 1 != 0
     };
+    let casts: Vec<_> = globals
+        .iter()
+        .enumerate()
+        .filter(|&(i, (_, d))| d.set != super::COUNTER && !d.buffer && !through(module, i))
+        .filter_map(|(_, &(var, ref d))| other_kind(module, variant, var, d).map(|k| (var, k)))
+        .collect();
+    cast_kinds(module, &casts, atomics)?;
+    let uses = uses(module, globals, atomics);
     // Plans are read while the views still have their image types.
     let mut typed_at = vec![None; globals.len()];
     let mut n = 0;
