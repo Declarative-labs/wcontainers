@@ -61,6 +61,14 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   process. From the tenth run of K6c the LTP comparison on our kernel runs only on the rented
   ARM64 machine (native Docker, no vsock link); the Mac's run was stopped at 07:40 on the 19th.
 
+- KF, first run: the lowest placement tier's top is the lower of 4 GiB and the executor's
+  ceiling, so where the ceiling is below 4 GiB (the WebAssembly back end's, about 0xFF00_0000 for
+  ARM64 from its slot table) the stack and the mmap base sit lower than on the stand-in or a
+  native executor, and the layouts differ between them. Placement independent of every ceiling
+  needs a lowest tier at or below the lowest ceiling of any executor, a value the kernel does not
+  know (the WebAssembly ceiling is the wasmtime crate's, from the translator's contract). A ruling
+  or a shared constant in wcontainers-abi for that tier would settle it (Departures).
+
 ## Waiting for the owner
 
 LTP tests that differ from the reference for a cause outside plan section 15's list, each with its
@@ -94,9 +102,10 @@ KF (what other tracks ask of the kernel), first run: the K6c check's four findin
 its cause; the ttylock race is measured on ARM64 Linux on one CPU; the ARM64 machine's two other
 verdicts are recorded). Built: waits, epoll and shared futexes keyed on kernel-numbered ids and
 inode numbers, not host addresses; the page size from the abi everywhere in the kernel's crates
-(baseline 8446 to 8347 lines). The two bugs were fixed in K6c (eighth and ninth runs). Not
-started: the record and replay test, low-first placement with the address width, memory size
-and ceiling given at start, the runtime's start values. See "KF, first run".
+(baseline 8446 to 8347 lines); `Start` takes the container's address width and memory size, and
+mappings are placed in tiers, lowest first, apart from the executor's ceiling. The two bugs were
+fixed in K6c (eighth and ninth runs). Not started: the record and replay test and the runtime's
+start values. KF is not complete. See "KF, first run".
 
 K6c, twenty-first run: the whole LTP comparison at 000f95e8 showed two new differences, both
 fixed with a test that failed before: fs_di never ended (a copy_file_range of many backend
@@ -303,6 +312,24 @@ The brief's asks:
   `wcontainers_abi::PAGE_SIZE` (with `MAX_SKB_FRAGS`, `SKB_MAX_ALLOC`, `SHARED_INFO`, `SK_BUFF`,
   `MAX_PAGE_ORDER` and FUSE's `MIN_MAX_WRITE` named once). The literal check passes; the
   baseline went from 8446 to 8347 lines (kf1/lit2.txt).
+- The address width, the memory size and the ceiling (bdf4674f): `Start` takes
+  `address_space_bytes` (at most `ARM64_ADDRESS_SPACE_BYTES`, 2^48, the reference's) and
+  `memory_bytes` (what /proc/meminfo, `sysinfo` and tmpfs's limits say), where the kernel read
+  both from `Cpu::address_space`, which is now only the executor's ceiling (with
+  `Start::ceiling`, the lower of the two). Mappings are placed in tiers (`PLACEMENT_TIERS`, 4 and
+  16 GiB, then the address space's end): the stack, the mmap base and a program placed anywhere
+  under the lowest tier's top, mappings top-down below the mmap base, then top-down in each
+  higher tier only once the ones below are full. A tier the ceiling cuts is not used in part: the
+  request fails as out of memory (ENOMEM), counted "process outgrown" and announced
+  (`System::on_process_outgrown`, the streams track's hook), so a mapping lands at the same
+  address on every executor that can hold it. The kernel test crate's driver and layer 1, and the
+  runtime crate's start (a minimal edit to a crate this track does not own), give the 2^48 width
+  and, as the memory size, the executor's ceiling as before, so the stand-in's layout and every
+  guest-visible size are unchanged. Test: kernel unit test
+  `placement_fills_the_lowest_tier_first_whatever_the_ceiling_and_width` (widths 2^36, 2^40, 2^48,
+  each with ceilings 4 GiB, 16 GiB and the width: every placement under the ceiling and the
+  width, the lowest tier filled the same way under every ceiling, higher tiers used in order,
+  outgrown exactly when the ceiling cut the search); passed on the ARM64 machine.
 
 ## K6c, twenty-first run
 
@@ -4331,6 +4358,10 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- KF: the lowest placement tier is capped by the executor's ceiling (For the orchestrator), so
+  placement depends on the ceiling below 4 GiB. The brief's ceiling "fails as out of memory,
+  counted and warned" is the streams track's `PROCESS_OUTGROWN` counter and hook, kept as built.
+
 - K6c, nineteenth run: the orchestrator's ruling on the literal baseline's two starts asked for
   two conditions (the starts on different parents of a merge; the merged baseline holding no line
   in neither parent's). The check also asks that each start brought the checker's crate with it
@@ -5104,6 +5135,26 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KF, after its first run (the bar: each item's tests, the whole suite unchanged but where an item
+changes it, the literal check with a smaller baseline):
+1. Read the whole suite at bdf4674f (ARM64 job kernel/20261120-230854-3849256, log
+   scratch kf1/suite-bdf4674f.log, `arm-run --fetch kernel /work/jobs/kernel/<id>/log` if the
+   follower stopped) and the Mac's part (scratch kf1/mac.sh, log kf1/mac.log: layer 1 seeds
+   9191126 to 9191128, the Mac list). Every failure must be on the ARM list
+   (k6c14/fail14.txt) or settled. backend, inet and inotify failed in the ids run
+   (kf1/ids/log, names cut off by the filter): confirm they are the ARM list's.
+2. The record and replay test: the driver keeps every result the System and the Cpu gave the
+   kernel in a run (clock, randomness, backend answers, stream events, the CPU side's exits and
+   reads), a second kernel runs from that record alone, and every process's memory is compared
+   at the end; for the shell tests (shell.rs, busybox.rs) and layer 1's sequences.
+3. The runtime's start values (origin/main docs/status-runtime.md "Asked of the kernel track"):
+   user and group, umask, capability sets, limits, no_new_privs, a seccomp filter, sysctls, the
+   mount list, the domain name, the per-process values; and the defaults as public constants
+   (capabilities and limits are exported; the umask is; the mounts with their options, the
+   read-only paths and the wait status's parts are not; the literal fix list's step 10 names the
+   wait module).
+4. The literal fix list, from step 2 (time units).
 
 K6c, after the twenty-first run: the bar is met at 91d85e31 (K6c, twenty-first run). Next is
 the independent check, which follows "For the independent check"; the Mac's part is scratch
