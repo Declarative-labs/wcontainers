@@ -1,5 +1,6 @@
-//! Candidate A end to end on a program naga writes as SPIR-V: SPIR-V to NIR, NIR's serialised key,
-//! Zink's SPIR-V, naga's reader and validation.
+//! Both candidates end to end on programs naga writes as SPIR-V: SPIR-V to NIR, NIR's serialised
+//! key, the common form's step, then Zink's SPIR-V and naga's reader (A) or NIR read straight into
+//! naga (B), each validated.
 #![cfg(mesa)]
 
 use wcontainers_gpu::{ShaderStage, SlotKind};
@@ -88,4 +89,36 @@ fn the_key_follows_the_nir() {
     };
     assert_eq!(key(COMPUTE), key(COMPUTE));
     assert_ne!(key(COMPUTE), key(&COMPUTE.replace("3u", "5u")));
+}
+
+#[test]
+fn both_routes_bind_a_sampling_program_alike() {
+    let bound = |module: &naga::Module| {
+        let mut b: Vec<_> = module
+            .global_variables
+            .iter()
+            .filter_map(|(_, g)| g.binding)
+            .map(|b| (b.group, b.binding))
+            .collect();
+        b.sort();
+        b
+    };
+    let mut a = Nir::from_spirv(&spirv(SAMPLED), Stage::Fragment, ENTRY_POINT).unwrap();
+    a.to_common_form(Stage::Fragment).unwrap();
+    let (through_zink, _) = wcontainers_nir::spirv::read(&a.into_spirv().unwrap()).unwrap();
+    let mut b = Nir::from_spirv(&spirv(SAMPLED), Stage::Fragment, ENTRY_POINT).unwrap();
+    b.to_common_form(Stage::Fragment).unwrap();
+    let direct = wcontainers_nir::direct::module(&mut b).unwrap();
+    wcontainers_nir::spirv::validate(&direct).unwrap();
+    assert_eq!(bound(&direct), bound(&through_zink));
+    assert_eq!(direct.entry_points[0].stage, naga::ShaderStage::Fragment);
+}
+
+#[test]
+fn candidate_b_reads_a_compute_program() {
+    let mut nir = Nir::from_spirv(&spirv(COMPUTE), Stage::Compute, ENTRY_POINT).unwrap();
+    nir.to_common_form(Stage::Compute).unwrap();
+    let module = wcontainers_nir::direct::module(&mut nir).unwrap();
+    wcontainers_nir::spirv::validate(&module).unwrap();
+    assert_eq!(module.entry_points[0].workgroup_size, [1, 1, 1]);
 }

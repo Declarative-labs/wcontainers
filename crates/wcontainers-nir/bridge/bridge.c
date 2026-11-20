@@ -268,6 +268,12 @@ wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
                       const struct wc_slot_range ranges[WC_SLOT_KINDS], struct wc_bindings *bindings)
 {
    nir_shader_instructions_pass(nir, round_array_layer, nir_metadata_control_flow, NULL);
+   /* The common form's dispatches start at workgroup 0, and Vulkan has no global offset. */
+   const nir_lower_compute_system_values_options from_zero = {0};
+   NIR_PASS(_, nir, nir_lower_compute_system_values, &from_zero);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   NIR_PASS(_, nir, nir_opt_algebraic);
+   NIR_PASS(_, nir, nir_opt_dce);
    split_combined_samplers(nir);
    const nir_variable_mode modes = nir_var_uniform | nir_var_image | nir_var_mem_ubo | nir_var_mem_ssbo;
    size_t found = 0;

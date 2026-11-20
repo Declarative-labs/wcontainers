@@ -77,6 +77,7 @@ struct nir_shader *wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_
 
 /* What every route does to the NIR to give it the common form's meaning and bindings: array layers of
  * sampling rounded to the nearest integer (Vulkan's rule; the common form's layer is an integer);
+ * dispatches counted from workgroup 0 with no global offset;
  * each combined image sampler split into a texture and a sampler of the same shape; then every
  * resource renumbered into `set`, each kind from its range's first binding in the order of the
  * program's (set, binding). `out` receives one entry a resource. */

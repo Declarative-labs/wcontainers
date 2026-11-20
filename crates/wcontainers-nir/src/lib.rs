@@ -1,10 +1,12 @@
 //! Turns NIR, the shader form Mesa's OpenGL and Vulkan drivers receive, into the common form of
 //! `wcontainers-gpu` (a validated naga module). Two routes are measured against each other (plan
 //! 15.3): NIR to SPIR-V by Zink's compiler then naga's SPIR-V reader (`spirv`), and NIR read straight
-//! into naga. The parts that read NIR link the pinned Mesa and are built when `WCONTAINERS_MESA`
+//! into naga (`direct`). The parts that read NIR link the pinned Mesa and are built when `WCONTAINERS_MESA`
 //! names its build (`mesa/build`).
 
 pub mod bind;
+#[cfg(mesa)]
+pub mod direct;
 #[cfg(mesa)]
 pub mod mesa;
 pub mod spirv;
@@ -21,6 +23,8 @@ pub enum ConvertError {
     /// The program's resources do not fit the common form's binding rule (plan 6.4), for the named
     /// reason.
     Bindings(&'static str),
+    /// Candidate B does not take this part of NIR.
+    Unsupported(String),
 }
 
 impl core::fmt::Display for ConvertError {
@@ -30,6 +34,7 @@ impl core::fmt::Display for ConvertError {
             ConvertError::Reader(s) => write!(f, "spirv-reader: {s}"),
             ConvertError::Invalid(s) => write!(f, "invalid: {s}"),
             ConvertError::Bindings(why) => write!(f, "bindings: {why}"),
+            ConvertError::Unsupported(what) => write!(f, "not taken: {what}"),
         }
     }
 }

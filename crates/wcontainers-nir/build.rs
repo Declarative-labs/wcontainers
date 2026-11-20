@@ -15,6 +15,9 @@ const LINK_DYNAMIC: &str = "cargo::rustc-link-lib=dylib=";
 
 const BRIDGE_SOURCE: &str = "bridge/bridge.c";
 const BRIDGE_HEADER: &str = "bridge/bridge.h";
+/// Candidate B's flattening of NIR.
+const FLAT_SOURCE: &str = "bridge/flat.c";
+const FLAT_HEADER: &str = "bridge/flat.h";
 const BRIDGE_LIBRARY: &str = "wcontainers_nir_bridge";
 /// Meson's record of the build, which names the source folder it was made from.
 const MESON_INFO: &str = "meson-info/meson-info.json";
@@ -89,6 +92,8 @@ fn main() {
     let build = &build;
     println!("{RERUN_IF_CHANGED}{BRIDGE_SOURCE}");
     println!("{RERUN_IF_CHANGED}{BRIDGE_HEADER}");
+    println!("{RERUN_IF_CHANGED}{FLAT_SOURCE}");
+    println!("{RERUN_IF_CHANGED}{FLAT_HEADER}");
     let roots = [source_folder(build), build.clone()];
     let includes: Vec<PathBuf> = INCLUDES
         .iter()
@@ -100,6 +105,7 @@ fn main() {
     // Mesa's headers warn under the flags cc adds by default; Mesa builds them without those.
     bridge
         .file(BRIDGE_SOURCE)
+        .file(FLAT_SOURCE)
         .includes(&includes)
         .warnings(false);
     for flag in &flags {

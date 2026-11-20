@@ -77,10 +77,15 @@ pub fn read(words: &[u32]) -> Result<(naga::Module, ModuleInfo), ConvertError> {
     let module = naga::front::spv::Frontend::new(words.iter().copied(), &options)
         .parse()
         .map_err(|e| ConvertError::Reader(chain(&e)))?;
-    let info = Validator::new(ValidationFlags::all(), capabilities(&module))
-        .validate(&module)
-        .map_err(|e| ConvertError::Invalid(chain(e.as_inner())))?;
+    let info = validate(&module)?;
     Ok((module, info))
+}
+
+/// Validates a module with what the common form allows it.
+pub fn validate(module: &naga::Module) -> Result<ModuleInfo, ConvertError> {
+    Validator::new(ValidationFlags::all(), capabilities(module))
+        .validate(module)
+        .map_err(|e| ConvertError::Invalid(chain(e.as_inner())))
 }
 
 /// An error with every error beneath it, outermost first.

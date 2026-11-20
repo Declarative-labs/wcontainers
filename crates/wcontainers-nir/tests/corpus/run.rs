@@ -27,7 +27,8 @@ const CRASH_LINES: usize = 3;
 
 /// The candidate routes of plan 15.3, by name in the results.
 pub const ROUTE_ZINK: &str = "zink-spirv-naga";
-pub const ROUTES: [&str; 1] = [ROUTE_ZINK];
+pub const ROUTE_DIRECT: &str = "nir-naga";
+pub const ROUTES: [&str; 2] = [ROUTE_ZINK, ROUTE_DIRECT];
 /// A route's outcome while it runs, replaced by the crash's reason if the child dies in it.
 const IN_ROUTE: &str = "in the route";
 /// The same while the converted shader is held to the reference.
@@ -397,8 +398,12 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
         },
     );
     match route {
-        ROUTE_ZINK => {
-            let (mut route, converted) = zink_route(nir, stage, file);
+        ROUTE_ZINK | ROUTE_DIRECT => {
+            let (mut route, converted) = if route == ROUTE_ZINK {
+                zink_route(nir, stage, file)
+            } else {
+                direct_route(nir, stage)
+            };
             if let Some((module, reflection)) = converted {
                 provisional(
                     &result,
@@ -431,6 +436,38 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
         other => panic!("no route named {other}"),
     }
     result
+}
+
+/// Candidate B: the common form's step, then NIR read straight into naga and validated.
+fn direct_route(
+    mut nir: Nir,
+    stage: Stage,
+) -> (RouteResult, Option<(naga::Module, Vec<ReflectedBinding>)>) {
+    let started = Instant::now();
+    let converted = nir.to_common_form(stage).and_then(|reflection| {
+        let module = wcontainers_nir::direct::module(&mut nir)?;
+        wcontainers_nir::spirv::validate(&module)?;
+        Ok((module, reflection))
+    });
+    let convert_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    match converted {
+        Ok(c) => (
+            RouteResult {
+                route: ROUTE_DIRECT.into(),
+                outcome: Outcome::Failed(IN_ROUTE.into()),
+                convert_ns,
+            },
+            Some(c),
+        ),
+        Err(e) => (
+            RouteResult {
+                route: ROUTE_DIRECT.into(),
+                outcome: Outcome::Failed(e.to_string()),
+                convert_ns,
+            },
+            None,
+        ),
+    }
 }
 
 /// Candidate A: the binding rule, Zink's SPIR-V, naga's reader and validation. With `WC_NIR_DUMP` set, Zink's SPIR-V

@@ -59,7 +59,7 @@ enum BindResult {
 }
 
 #[repr(C)]
-struct NirShader {
+pub(crate) struct NirShader {
     _opaque: [u8; 0],
 }
 
@@ -108,6 +108,10 @@ fn initialised() {
 }
 
 impl Nir {
+    pub(crate) fn raw(&mut self) -> *mut NirShader {
+        self.0
+    }
+
     /// The NIR of one entry point of a Vulkan SPIR-V module.
     pub fn from_spirv(words: &[u32], stage: Stage, entry_point: &str) -> Result<Nir, ConvertError> {
         initialised();
