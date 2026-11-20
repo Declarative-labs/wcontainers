@@ -827,6 +827,8 @@ where
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
         standard: host.standard(),
+        address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
+        memory_bytes: cpu.address_space().end,
         ceiling,
         execution: ExecutionConfig::default(),
     };

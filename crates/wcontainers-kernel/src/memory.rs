@@ -109,6 +109,17 @@ impl LayoutRandomization {
     }
 }
 
+/// The tops of the ranges placement fills in turn, lowest first, below the container's address
+/// space's end: a mapping goes above one only when the program asks for an address there or the
+/// range below is full. They are the ceilings of a 32 bit memory and of a browser's 64 bit one.
+pub const PLACEMENT_TIERS: [u64; 2] = [1 << 32, 1 << 34];
+
+/// The top of the lowest range placement fills, which the stack and the mmap base are placed
+/// under: the lowest tier, or the executor's ceiling where that is lower.
+pub(crate) fn first_tier_top(ceiling: u64) -> u64 {
+    PLACEMENT_TIERS[0].min(ceiling)
+}
+
 /// Linux's `mmap_base` for a top-down layout: below the stack's limit, its guard gap and, when
 /// randomized, its random move, with at least `MIN_GAP` and at most five sixths of the space left
 /// above, then `offset` lower.
@@ -541,7 +552,7 @@ impl AddressMap {
             guards: BTreeSet::new(),
             end,
             ceiling,
-            mmap_base: mmap_base(ceiling, STACK_LIMIT, None, 0),
+            mmap_base: mmap_base(first_tier_top(ceiling), STACK_LIMIT, None, 0),
             brk_start: 0,
             brk: 0,
             data_size: 0,
@@ -1001,7 +1012,8 @@ impl AddressMap {
     }
 
     /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search,
-    /// which goes on below the program and its heap down to the lowest address.
+    /// which goes on below the program and its heap down to the lowest address, then in each
+    /// higher tier in turn, top-down from its top.
     pub fn find_free(&self, length: u64) -> Option<u64> {
         self.find_free_beside(length, &[])
     }
@@ -1009,16 +1021,44 @@ impl AddressMap {
     /// Free space as [`AddressMap::find_free`] finds it with `taken` in use too: where the loader
     /// will place a new program's parts.
     pub fn find_free_beside(&self, length: u64, taken: &[core::ops::Range<u64>]) -> Option<u64> {
-        let mut ceiling = self.mmap_base;
-        let floor = LOWEST_ADDRESS;
+        let mut ranges = alloc::vec![(LOWEST_ADDRESS, self.mmap_base)];
+        let mut floor = first_tier_top(self.ceiling);
+        for tier in PLACEMENT_TIERS.into_iter().chain([self.end]) {
+            let top = tier.min(self.end);
+            if top > floor {
+                ranges.push((floor, top));
+                floor = top;
+            }
+        }
+        for (floor, top) in ranges {
+            // A range the executor cannot give is never filled in part, so that placement is the
+            // same on every executor.
+            if top > self.ceiling {
+                break;
+            }
+            if let Some(start) = self.find_free_between(floor, top, length, taken) {
+                return Some(start);
+            }
+        }
+        if self.ceiling < self.end {
+            self.outgrown.set(Some(length));
+        }
+        None
+    }
+
+    /// The highest free space for `length` bytes in `[floor, top)`, with `taken` in use too.
+    fn find_free_between(
+        &self,
+        floor: u64,
+        top: u64,
+        length: u64,
+        taken: &[core::ops::Range<u64>],
+    ) -> Option<u64> {
+        let mut ceiling = top;
         loop {
-            let start = ceiling.checked_sub(length).filter(|start| *start >= floor);
-            let Some(start) = start else {
-                if self.ceiling < self.end {
-                    self.outgrown.set(Some(length));
-                }
-                return None;
-            };
+            let start = ceiling
+                .checked_sub(length)
+                .filter(|start| *start >= floor)?;
             // The highest mapping that, with the guard gap below one that grows down, overlaps
             // [start, ceiling).
             let mapped = self
@@ -1697,6 +1737,73 @@ mod tests {
         assert_eq!(gap(tiny), MAX_GAP_SHARE.0 * PAGE_SIZE);
         for top in [large, small, tiny, 0] {
             assert!(gap(top) <= top);
+        }
+    }
+
+    /// Places up to `count` mappings of `length` bytes with no address, until placement fails,
+    /// and returns where each went.
+    fn fill(map: &mut AddressMap, length: u64, count: usize) -> Vec<u64> {
+        let mut placed = Vec::new();
+        while placed.len() < count
+            && let Some(start) = map.find_free(length)
+        {
+            let mapping = Mapping {
+                start,
+                end: start + length,
+                permissions: Permissions::READ,
+                allowed: Permissions::all(),
+                shared: false,
+                locked: Lock::None,
+                grows_down: false,
+                on_fork: OnFork::default(),
+                backing: Backing::Anonymous,
+            };
+            map.mappings.insert(start, mapping);
+            placed.push(start);
+        }
+        placed
+    }
+
+    #[test]
+    fn placement_fills_the_lowest_tier_first_whatever_the_ceiling_and_width() {
+        let length = PLACEMENT_TIERS[0] / 8;
+        let count = 64;
+        let lowest = |map: &AddressMap| map.mmap_base;
+        for width in [1 << 36, 1 << 40, crate::user::ADDRESS_LIMIT] {
+            let mut first = None;
+            for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1], width] {
+                let outgrown = Rc::new(Cell::new(None));
+                let mut map = AddressMap::new(width, ceiling, outgrown.clone());
+                let placed = fill(&mut map, length, count);
+                assert!(
+                    placed
+                        .iter()
+                        .all(|start| start + length <= ceiling.min(width))
+                );
+                // Under the lowest tier the mappings go where they go under any ceiling.
+                let low: Vec<u64> = placed
+                    .iter()
+                    .copied()
+                    .filter(|start| *start < PLACEMENT_TIERS[0])
+                    .collect();
+                assert!(low.iter().all(|start| start + length <= lowest(&map)));
+                assert_eq!(*first.get_or_insert(low.clone()), low, "width {width:#x}");
+                // A higher tier is used only once the one below is full.
+                let tier_of =
+                    |start: u64| PLACEMENT_TIERS.iter().filter(|top| start >= **top).count();
+                assert!(
+                    placed
+                        .windows(2)
+                        .all(|pair| tier_of(pair[0]) <= tier_of(pair[1]))
+                );
+                let ended = placed.len() < count;
+                assert_eq!(outgrown.get().is_some(), ended && ceiling < width);
+                assert_eq!(
+                    ended,
+                    ceiling < width,
+                    "width {width:#x}, ceiling {ceiling:#x}"
+                );
+            }
         }
     }
 }

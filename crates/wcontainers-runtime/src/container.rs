@@ -112,6 +112,7 @@ impl<B: BackEnd> Runtime<B> {
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
         let standard = outside.standard();
+        let memory_bytes = wcontainers_abi::Cpu::address_space(&cpu).end;
         kernel
             .start(
                 &mut cpu,
@@ -125,6 +126,8 @@ impl<B: BackEnd> Runtime<B> {
                     groups: &accepted.groups,
                     backend: None,
                     standard,
+                    address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
+                    memory_bytes,
                     ceiling: None,
                     execution: wcontainers_kernel::ExecutionConfig::default(),
                 },

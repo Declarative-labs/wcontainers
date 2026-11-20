@@ -1016,7 +1016,7 @@ impl Kernel {
         process.pending = Default::default();
         let memory = process.memory;
         let empty = crate::memory::AddressMap::new(
-            self.machine.memory_bytes,
+            self.machine.address_space_bytes,
             self.ceiling,
             self.outgrown.clone(),
         );

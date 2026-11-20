@@ -52,12 +52,14 @@ pub use counters::reason;
 pub use credentials::DOCKER_DEFAULT as DOCKER_CAPABILITIES;
 pub use ends::Standard;
 pub use errno::Errno;
+pub use memory::PLACEMENT_TIERS;
 pub use process::DOCKER_LIMITS;
 pub use syscall::tty::PTMX_PATH;
 pub use system::{
     AccessKind, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism, System,
     SystemCallResponse, TaskId, ThreadOrdering, Unsupported, WatchesFor, task_id_after,
 };
+pub use user::ADDRESS_LIMIT as ARM64_ADDRESS_SPACE_BYTES;
 
 use counters::Counters;
 use fs::{FileSystem, Node, Numbers, Time};
@@ -98,8 +100,12 @@ pub(crate) struct Machine {
     /// `uname`'s release and version.
     pub release: &'static str,
     pub version: &'static str,
-    /// The memory size reported, the host's cap on one process's addresses.
+    /// The memory size reported.
     pub memory_bytes: u64,
+    /// The container's address-space size: one past the highest address a process may use.
+    pub address_space_bytes: u64,
+    /// The top of the lowest placement tier this executor gives, which layouts are made under.
+    pub lowest_tier_top: u64,
 }
 
 impl Machine {
@@ -373,6 +379,8 @@ impl Kernel {
                 release: "7.0.0-wcontainers",
                 version: "#1 SMP PREEMPT",
                 memory_bytes: 0,
+                address_space_bytes: 0,
+                lowest_tier_top: 0,
             },
             hostname: Vec::new(),
             domainname: b"(none)".to_vec(),

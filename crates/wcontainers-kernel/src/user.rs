@@ -12,7 +12,7 @@ use crate::system::AccessKind;
 use crate::{Errno, errno};
 
 /// One past the highest user address on ARM64 Linux with 48 bit virtual addresses (`TASK_SIZE_MAX`).
-pub(crate) const ADDRESS_LIMIT: u64 = 1 << 48;
+pub const ADDRESS_LIMIT: u64 = 1 << 48;
 
 /// arm64 Linux's `untagged_addr`: the memory calls ignore a user address's top byte, a tag the CPU's
 /// top byte ignore also skips (kernel addresses, bit 55 set, are kept whole).

@@ -68,8 +68,14 @@ pub struct Start<'a> {
     pub backend: Option<&'a [u8]>,
     /// What descriptors 0 to 2 are.
     pub standard: Standard,
+    /// The container's address-space size: one past the highest address its processes may use,
+    /// at most [`crate::ARM64_ADDRESS_SPACE_BYTES`], the reference's.
+    pub address_space_bytes: u64,
+    /// The memory size the guest is told (`/proc/meminfo`, `sysinfo`, tmpfs's limits).
+    pub memory_bytes: u64,
     /// The highest address the executor can give a process now, if below the end of its address
-    /// space; a request past it is announced as `System::on_process_outgrown`.
+    /// space; a request past it fails as out of memory and is announced as
+    /// `System::on_process_outgrown`.
     pub ceiling: Option<u64>,
     /// How the first process is run.
     pub execution: crate::ExecutionConfig,
@@ -742,10 +748,17 @@ impl Kernel {
         self.wall_offset = wall.wrapping_sub(self.boot_monotonic);
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
-        self.machine.memory_bytes = cx.cpu.address_space().end;
-        self.ceiling = start.ceiling.map_or(self.machine.memory_bytes, |ceiling| {
-            ceiling.min(self.machine.memory_bytes)
-        });
+        self.machine.memory_bytes = start.memory_bytes;
+        let space = start
+            .address_space_bytes
+            .min(crate::ARM64_ADDRESS_SPACE_BYTES);
+        self.machine.address_space_bytes = space;
+        self.ceiling = start
+            .ceiling
+            .unwrap_or(space)
+            .min(cx.cpu.address_space().end)
+            .min(space);
+        self.machine.lowest_tier_top = crate::memory::first_tier_top(self.ceiling);
         self.hostname = start.hostname.to_vec();
         for (end, sends) in start.standard.ends() {
             self.ends.name(end, sends);
@@ -773,7 +786,7 @@ impl Kernel {
             session: pid,
             memory: wcontainers_abi::MemoryId(0),
             map: Rc::new(core::cell::RefCell::new(crate::memory::AddressMap::new(
-                self.machine.memory_bytes,
+                self.machine.address_space_bytes,
                 self.ceiling,
                 self.outgrown.clone(),
             ))),

@@ -1902,7 +1902,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 MMAP_RND_BITS => {
                     let random =
-                        crate::memory::LayoutRandomization::for_space(machine.memory_bytes);
+                        crate::memory::LayoutRandomization::for_space(machine.lowest_tier_top);
                     value_line(&mut out, random.mmap_bits);
                 }
                 "sysvipc/msg" => out = crate::syscall::ipc::proc_msg(source.ipc),

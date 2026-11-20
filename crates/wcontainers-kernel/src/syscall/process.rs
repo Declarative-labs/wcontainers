@@ -1456,7 +1456,7 @@ fn set_mm_map(
     }
     let map: prctl_mm_map = guest(kernel, cx, tid).read_value(address)?;
     // `validate_prctl_map_addr`: inside the address space, pairs in order, under RLIMIT_DATA.
-    let end = cx.cpu.address_space().end;
+    let end = kernel.process_of(tid).map.borrow().end;
     let fields = [
         map.start_code,
         map.end_code,

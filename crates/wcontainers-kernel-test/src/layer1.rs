@@ -4573,6 +4573,8 @@ fn run_ours_on(
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
         backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
         standard: crate::streams::StreamClient::default().standard(),
+        address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
+        memory_bytes: wcontainers_abi::Cpu::address_space(&cpu).end,
         ceiling: None,
         execution: wcontainers_kernel::ExecutionConfig::default(),
     };
