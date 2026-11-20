@@ -253,3 +253,42 @@ fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
         ))
     );
 }
+
+/// Direct3D's opcodes of the typed, raw and structured view declarations, and the bit of their first
+/// word declaring the view globally coherent.
+const VIEW_DECLARATIONS: std::ops::RangeInclusive<u32> = 0x9c..=0x9e;
+const GLOBALLY_COHERENT_BIT: u32 = 1 << 16;
+
+/// A signed compute shader whose first view is declared `globallycoherent`: refused by name, as no
+/// back end makes its stores seen across workgroups; unchanged, it converts.
+#[test]
+fn a_globally_coherent_view_is_refused_by_name() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_atomics.dxbc");
+    let mut b = std::fs::read(path).unwrap();
+    assert!(convert(Source::Dxbc(&b), &VariantKey::default(), None).is_ok());
+    let words: Vec<u32> = b
+        .as_chunks::<{ size_of::<u32>() }>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let tag = u32::from_le_bytes(*b"SHEX");
+    let mut at = words
+        .iter()
+        .position(|&w| w == tag)
+        .expect("the program chunk")
+        + PROGRAM_HEADER_WORDS;
+    while !VIEW_DECLARATIONS.contains(&(words[at] & OPCODE_BITS)) {
+        at += ((words[at] >> LENGTH_SHIFT) & LENGTH_BITS) as usize;
+    }
+    let first = size_of::<u32>() * at;
+    let marked = words[at] | GLOBALLY_COHERENT_BIT;
+    b[first..first + size_of::<u32>()].copy_from_slice(&marked.to_le_bytes());
+    sign(&mut b);
+    assert_eq!(
+        convert(Source::Dxbc(&b), &VariantKey::default(), None).map(|_| ()),
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::GLOBALLY_COHERENT
+        ))
+    );
+}
