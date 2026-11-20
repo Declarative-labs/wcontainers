@@ -4,11 +4,17 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 14 (2026-11-20). Complete but for one item waiting on the owner's decision, named below;
-handed to G8's independent check again. Both candidates are measured on the SPIR-V corpus,
-piglit's, bgfx's and dEQP's GLSL, Godot's Compatibility renderer and Godot's RenderingDevice
+G8 run 15 (2026-11-20). Complete but for one item waiting on the owner's decision, named below;
+handed to G8's independent check again. Run 15 fixed the second check's findings: route B's
+unordered not-equal (NIR's `fneu`, which naga made ordered: a NaN compared as not unequal) is
+now the not of equal, held to llvmpipe on NaNs; the fixed-function state values, the last
+closable harness limit, are filled and match (their empty name was the standalone compiler's
+stubbed state string); a formatless image read and written is bound as one component and held
+by 273 Vulkan CTS programs; the robustness CTS programs are in the corpus; both routes are timed
+without the cache key; the known failure is traced to llvmpipe's code generation. Both
+candidates are measured on the SPIR-V corpus, the Vulkan CTS's programs, piglit's, bgfx's and dEQP's GLSL, Godot's Compatibility renderer and Godot's RenderingDevice
 shaders; candidate B leads on every count and on time, and is the route (The choice, below;
-final). Run 14 fixed the findings of G8's check: the 15.4 rewrites are now made on route B's
+final). Run 14 fixed the findings of G8's first check: the 15.4 rewrites are now made on route B's
 output by the shaders crate's `rewrite` (`direct::rewrite`), each with corpus programs using it;
 the GLSL bridge reports the atomic counter buffer size st/mesa does (48 refused programs now
 compile) and route B takes GLSL's workgroup memory; the last two closable harness limits are
@@ -19,7 +25,12 @@ Waiting on others (G8's bar, as the orchestrator ruled on 2026-11-19 night):
   interface change of 15.7 and one of the owner's open decisions of 15.9 (not on the shared line
   nor on any graphics branch at the start of run 14). Owner: the owner, then the interface track.
   Step 2 (storage as runtime-sized arrays of words, 32-bit accesses) is already what the bridge
-  makes of OpenGL's buffers (Done); steps 1 and 3 need the helper value.
+  makes of OpenGL's buffers (Done); steps 1 and 3 need the helper value. Checked again in run 15:
+  `HelperValue::BufferRange` is on no graphics branch. What does not need it is done: the
+  Vulkan CTS's `dEQP-VK.robustness.buffer_access` programs are in the corpus since run 15
+  (`corpus/cts-programs`; 162 programs: 52 need what our Vulkan 1.1 does not report, route B
+  matches 62, 24 fail by name on 64-bit values and 24 on texel buffers; compared without the
+  lowering, which they will be held with once steps 1 and 3 exist).
 
 Not a bar item, waiting on the shaders track: 20 of Godot's RenderingDevice programs with arrays
 of textures (`gi.glsl` and kin) reach the shaders crate's `rewrite`, which validates without
@@ -381,21 +392,52 @@ Done:
   refused by name, and so is a variant asking for more than 15.4's rewrites (those read the stage
   values, which the driver's reflection holds: G9, G10). `direct::module` keeps refusing the
   three by name for callers that do not rewrite. The corpus run rewrites where a module needs it,
-  each formatless slot bound as the four 32-bit components of its kind; the comparison joins a
+  each formatless slot bound as the four 32-bit components of its kind, or as one where the
+  program reads and writes it (run 15: the common form reads and writes only one-component
+  storage, so a four-component view was refused as `ReadWriteStorageFormat`); the comparison joins a
   split array's elements again on the reference's side (`Resource::first_element`), and on
-  OpenGL's side feeds element k through the uniform `name[k]`. Corpus programs using each, all
-  matched (run 14): arrays of textures and samplers 19 piglit (`sampler_array_indexing` and
+  OpenGL's side feeds element k through the uniform `name[k]`. Corpus programs using each that
+  match (run 14; one formatless program, piglit's `imageStore-array`, differs on seed 0x5eed by
+  an index past its array, and matches on seed 271828): arrays of textures and samplers 19 piglit (`sampler_array_indexing` and
   kin), 4 Godot RD (`volumetric_fog_process`), 1 Sascha Willems (`texturemipmapgen`); formatless
   storage 2 Godot RD (`fsr2_accumulate_pass`, `fsr2_rcas_pass`), 3 Slang compute samples, 6
-  piglit; a gather at a run-time offset, piglit's `fs-textureGatherOffset-uniform-array-offset`.
-  Held by `tests/glsl_reference.rs` (a program of an array read at a run-time index, a gather at a
+  piglit; a gather at a run-time offset, piglit's `fs-textureGatherOffset-uniform-array-offset`;
+  since run 15 also 273 Vulkan CTS programs of `dEQP-VK.image.load_store.without_format`, which
+  read and write formatless images. Held by `tests/glsl_reference.rs` (a program of an array read at a run-time index, a gather at a
   run-time offset and a formatless storage image: matched; with element k fed through
-  `name[k+1]` on OpenGL's side, temporarily, 64 values differed). One known failure, ignored with
-  its reason: the same array read at a run-time and at a constant index in one program; each read
-  alone matches, and llvmpipe's constant read gives 0 and 4.0, values no seeded texel holds (all
-  lie in [-2, 2)); whether llvmpipe or the comparison's OpenGL set-up is at fault is not yet
-  known. llvmpipe also aborts in LLVM ("Cannot select ... sint_to_fp") on a gather at a run-time
+  `name[k+1]` on OpenGL's side, temporarily, 64 values differed); a formatless image read and
+  written is held only by the CTS programs (above), as GLSL needs
+  `GL_EXT_shader_image_load_formatted` for it, which our OpenGL does not report. One known failure,
+  ignored with its reason, traced in run 15 to llvmpipe: a compute program reading one array at
+  a run-time index and at a constant one. llvmpipe's constant read gives values no texel holds,
+  the same whichever element it names (0, 1 or 2), and NaN in every fourth word once the two
+  reads are swapped in the source; the textures, units and uniforms are the same in every
+  variant, two run-time reads match, and llvmpipe's own final NIR indexes both reads correctly
+  (`texture 0` plus the offset; `texture 2`). So the fault is in llvmpipe's code generation
+  (gallivm takes a run-time index outside the fragment stage invocation by invocation,
+  `lp_bld_nir_soa.c`), not in the route or the set-up; the checker's Vulkan copy of the program
+  matches lavapipe on route B on three seeds. llvmpipe also aborts in LLVM ("Cannot select ... sint_to_fp") on a gather at a run-time
   offset from an array element; the test gathers from a single sampler.
+- Unordered float comparisons (run 15; a fault of route B found by G8's second check): NIR's
+  `fneu` (true where either side is NaN: GLSL's `isnan`, `!=`, `notEqual`; SPIR-V's `OpIsNan` and
+  `OpFUnordNotEqual`) was naga's `NotEqual`, which naga's SPIR-V writer makes `OpFOrdNotEqual`,
+  false on NaN. Route B now writes `fneu` as the not of `Equal`, and `bany_fnequal` as the not of
+  all equal. Held by `tests/glsl_reference.rs` (NaN made from every seeded value by its exponent's
+  bits, in every other invocation: `isnan`, `notEqual`, `!=`, `any(notEqual)`, and the ordered
+  `==`, `<`, `>=`, `all(equal)` beside them: matched; with the old mapping, temporarily, it fails).
+- Matrix state values (run 15): the bridge names each state value itself, since the standalone
+  compiler's `_mesa_program_state_string` is a stub giving no name (`standalone_scaffolding.cpp`;
+  this was the empty name of runs 7 to 14): a matrix as `matrix.<matrix>.<form>.<index>.<first
+  row>.<last row>`, anything else as `state.` and Mesa's tokens. The GLSL comparison sets a seeded
+  model-view (a scale, a turn and a move) and projection (a perspective) on llvmpipe with
+  `glMatrixMode` and `glLoadMatrixf`, from a stream of the seed of its own (the program's inputs
+  stay as they were), and fills each matrix state value as st/mesa's `copy_matrix` does: rows of
+  the matrix or its inverse, or of their transposes (`gl_NormalMatrix` is the inverse's rows,
+  `gl_ModelViewProjectionMatrix` the product's columns), inverses made in 64 bits; uniforms
+  beginning `gl_` are OpenGL's state and are not set by the comparison. The texture and program
+  matrices, and every other state value, are refused by name ("not filled here"). piglit's
+  `glsl-fs-normalmatrix` and `glsl-vs-ff-frag` match on seeds 0x5eed, 1, 2 and 3; with the
+  inverse's form and the transpose's swapped (temporary) both differ on seed 1.
 - Atomic counters (run 14): the bridge reports `MaxAtomicBufferSize` (4 bytes a counter, st/mesa's
   4,096 counters without hardware counters), `MaxCombinedAtomicBuffers`,
   `MaxCombinedAtomicCounters` and `ARB_shader_atomic_counter_ops` (core in OpenGL 4.6); before,
@@ -680,6 +722,36 @@ same run before the harness limits, the implicit level and `ARB_shader_atomic_co
   past llvmpipe's output components), `alpha_to_one` (G10's CTS), and 2 programs llvmpipe refuses
   (`GL_ARB_bindless_texture`, `GL_ARB_compute_variable_group_size`).
 
+Run 15, the corpus with the Vulkan CTS's `without_format` and `buffer_access` programs added
+(18,738 items; `results/run15/nir-results-r15a.jsonl`; x86-64 machine, 172 children on cores
+10-95 and 106-191 beside the timed sample, load 41.1 at the start and 100.4 at the end (other
+tracks' jobs), 735 s):
+- In all: 12,748 items reach a route. Route B converts 12,229 and matches 12,069, 154 differ, 6
+  not compared; route A converts 1,229 and matches 1,075, 7 differ, 147 not compared.
+- Against run 14, on the same 18,222 items, route B's only changed outcomes are the two
+  fixed-function programs (`glsl-fs-normalmatrix`, `glsl-vs-ff-frag`): not compared, now matched
+  (`scripts/outcome_changes.py`). The unordered-comparison fix changes nothing on seed 0x5eed.
+- The 516 CTS programs: `without_format` 354 (route B 273 match, 81 fail by name on texel
+  buffers; route A 0: naga's SPIR-V reader refuses `StorageImageReadWithoutFormat`),
+  `buffer_access` 162 (above, Waiting on others).
+- The NaN programs again, on seeds 0x5eed, 271828, 90210 and 1 with 256 input sets each (a probe
+  folder of five, not kept): piglit's `arb_gl_spirv` `unordered-comparison` matches on all four
+  (it differed on 271828 before the fix). `fs-saturate-sqrt` and `vs-saturate-sqrt` differ on
+  all four: `clamp(sqrt(v), 0, 1)` of a seeded negative, llvmpipe 0 and the route 1 for the NaN;
+  GLSL leaves `sqrt` of a negative undefined, so they stay in that class. bgfx's
+  `cs_atmo_transmittance` (a `sqrt` of a seeded negative, clamped) differs on 90210 and 1, and
+  `fs_hdr_bright` (operations on an overflowed infinity) on 271828, 90210 and 1; both match on
+  0x5eed. Neither depends on an unordered comparison.
+- Outcomes that depend on the seed, from G8's second check (seed 271828, 256 input sets; all of
+  the classes above): route B, matched on 0x5eed and differing there, glsl-1.10's
+  `fs-input-array-float-index-rd` and `fs-input-array-vec2-index-rd` (a seeded negative index),
+  glsl-1.20's `vs-inout-index-inout-vec4-array-element-array` (an index from a seeded uniform),
+  `glsl-array-bounds-13`; not compared there, `glsl-fs-varying-array` (the reference's outputs
+  differ between its two runs); matched there and differing on 0x5eed, the three Godot RD
+  programs explained by a seeded zero and `imageStore-array`. Route A only: `scene_forward_clustered`
+  `10.vert` differs there by 9e-6, past the tolerance, and `descriptorheap` `cube.vert` crashed in
+  the comparison (SIGSEGV), neither looked at further (A is not chosen).
+
 The choice (final; 15.3): the route is B (`nir-naga`, `src/direct.rs`). It follows from the
 counts, which are far apart on every source; the times agree with them.
 - Run 14's corpus run (above): B matches 11,732 programs, A 1,013; on the 1,012 both match, at
@@ -709,13 +781,8 @@ counts, which are far apart on every source; the times agree with them.
   A 726, B 773 match; on the 725 both match, A median 219 us, B median 107 us.
 - Dolphin is not in the corpus (Next 4); the choice does not wait on it: B leads on every source.
 
-Harness limits left, each with why it is not closed (run 14; programs route B converts but the
-comparison does not hold, of 18,222 items):
-- Fixed-function state values (2 piglit: `glsl-fs-normalmatrix`, `glsl-vs-ff-frag`, which read
-  `gl_NormalMatrix` and its kin): their values are what st/mesa computes from OpenGL's matrices
-  (an inverse transpose), which is G9's state tracking. Not compared until then. Open fault of
-  this crate's bridge: these state values reach the comparison with an empty name (seen again in
-  run 14), though Mesa names a state parameter by its state string; not yet traced.
+Harness limits left, each with why it is not closed (run 15; programs route B converts but the
+comparison does not hold, of 18,738 items; 6 in all with the two programs llvmpipe refuses):
 - A uniform llvmpipe's linker removes and the route's program reads (2 dEQP: `linkage.test#varying_7`,
   `varying.rules.vertex_use_fragment_use`, `u_false`): OpenGL has no value for it, and inventing one
   would compare nothing. Left not compared.
@@ -730,9 +797,8 @@ Next (after G8's check):
    above among them.
 2. When the shaders crate's `rewrite` validates with `Capabilities::IMMEDIATES`: rerun the
    corpus; 20 Godot RD programs with arrays of textures should then reach the comparison.
-3. When `HelperValue::BufferRange` is decided: robustBufferAccess's steps 1 and 3; add
-   `dEQP-VK.robustness.buffer_access` to `corpus/cts-programs`' groups and lower those programs
-   before both runs.
+3. When `HelperValue::BufferRange` is decided: robustBufferAccess's steps 1 and 3, and lower the
+   `buffer_access` programs (in the corpus since run 15) before both runs.
 4. Dolphin (GPL: run as a test input only, never copied or paraphrased) is left out of G8's corpus:
    its shaders exist only when Dolphin runs, and no permissively licensed FIFO log or homebrew to
    boot was found. One clean way is recorded for later: a boot image written here (a few
@@ -960,6 +1026,8 @@ Next (after G8's check):
 - `spirv` 0.4 (Apache-2.0; the SPIR-V grammar's names, already in the workspace through naga), a
   dependency. `rand` 0.9 and `rand_chacha` 0.9 (MIT OR Apache-2.0, already in the workspace),
   dev-dependencies.
+- `glam` 0.30.10 (MIT OR Apache-2.0), a dev-dependency since run 15 (new to the lock file): the
+  GLSL comparison's seeded fixed-function matrices, their product and inverses.
 - Corpus, test data only, fetched into the build folder and never in the repository or shipped:
   VK-GL-CTS at 5bb4c7e8 (since run 9; Apache-2.0, its `LICENSE`; only `data/gles2/shaders`,
   `data/gles3/shaders`, `data/gles31/shaders` and the licence are fetched by `corpus/fetch`;
@@ -1159,11 +1227,26 @@ None.
   by name until then (66 of Godot's RenderingDevice programs).
 - Interface track: a public `CUBE_FACES` (the layers of one cube) beside `ViewDimension`;
   `resource.rs` writes it as a literal, and `wcontainers_nir::CUBE_FACES` defines it until the
-  interface has it, and will import it then.
+  interface has it, and will import it then. Since the Direct3D 11 track's 7e4d8df6 its device
+  defines one too (`pub(crate)`), and the literal check, on a tree holding both, reports the NIR
+  crate's as a redefinition (run 15): neither front nor this crate can import the other's, so the
+  interface's is the one place for it.
+- Shaders track (a finding of run 15, from G8's second check): naga's SPIR-V reader maps
+  `OpFUnordNotEqual` to `BinaryOperator::NotEqual` (`front/spv/convert.rs`), and naga's SPIR-V
+  writer emits `NotEqual` on floats as `OpFOrdNotEqual` (`back/spv/block.rs`), so an unordered
+  not-equal (true on NaN) becomes ordered (false on NaN) on the way through naga. Route B no longer
+  uses `NotEqual` for NIR's `fneu`; dxil-spirv's and dxbc-spirv's output reaches the same reader
+  (HLSL's `!=` and `isnan` on floats are unordered).
 - Literals track: `CARGO_OUT_DIR` public (in a public module), so a build script can name `OUT_DIR`
   through it.
 
 ## Literal check
+
+Run 15: exit 1 at 52c083b9 (x86-64 machine, from a git bundle; marks 0), for one finding outside
+this track's reach: `CUBE_FACES` in `wcontainers-nir/src/lib.rs` (since run 9) is reported as a
+redefinition of the Direct3D 11 device's, added on that branch at 7e4d8df6 and merged here this
+run (Requests: the interface's one constant). Every other finding is the shaders crate's
+submodules, not checked out in the bundle's clone (as run 6 found); this run added no literal.
 
 Run 13: exit 0 at the run's last code commit, 86cefeb2 (x86-64 machine, from a git bundle;
 marks 0). wcontainers-nir still has no baseline lines.
