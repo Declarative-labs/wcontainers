@@ -1,0 +1,6 @@
+/* The Gallium headers the driver is written against, for bindgen (build.rs). */
+#include "pipe/p_context.h"
+#include "pipe/p_defines.h"
+#include "pipe/p_screen.h"
+#include "pipe/p_state.h"
+#include "util/u_screen.h"
