@@ -145,8 +145,31 @@ Built (X6):
 - Fixed on the way: `frame_slots` worked out an operand size for every faulting instruction and underflowed
   (a panic in debug builds) on byte accesses (3924e111).
 
-Measured:
-- PENDING
+- Fixed in the fixtures: a page holding both code and data the program writes takes the step at every write
+  to that data. The flat blobs (`flat.ld`) and x86's layer 2 blobs (their area) had such a page, which made
+  the shared programs and layer 2 run for tens of minutes with growing memory; both now put written data on
+  pages of their own (see "Departures"). The panics program's allocator handed the unwinder an exception
+  object aligned to 8, and x86's unwinder stores to it with `movaps`: the program died with general protection
+  on the reference itself; it now aligns as malloc does, 16 (bad2735e).
+
+Measured (rented x86-64 machine unless said; load as given):
+- x86 programs, at every look-ahead and mixed, wasmtime and Chrome, against the reference: `written_code`
+  and `null_call` at -O0 and -O2, `self_written` (202 writes to code pages counted at every look-ahead and in
+  every mixed run), the nine trap flag cases (every stop's rip and general registers equal the reference's,
+  "trap flag set by the program" counted), `jumps`, `exceptions` and `panics`, `fibers` and `coroutines`: all
+  pass (load 40 to 90 on 192). The whole `--test programs` set for x86 (19 tests) before the last two fixes:
+  17 passed, the two that then failed (`switch.h` missing, the panics allocator) pass alone after them.
+- x86's changes tests (load about 50): 8 hand-made programs pass; 64 random programs at seed 1 (1,927 changes,
+  375 faults handled, 3,892 pieces translated at run time at full, 2,247 instructions run alone); 36 program
+  runs (42,087 changes, 1,291 faults handled): 0 failing.
+- Layer 2 for x86, seed 24621 (the check's): case 11616 alone passes; 20,000 programs, all on the CPU, 64 at
+  once: 0 failing (255 s, load 32 to 59; 6,898 faulted, 2,474 left to an address at full, the counts of X5
+  run 8).
+- One write to the page a loop runs from, at full in wasmtime (scratch `x6/scratch_smc_cost.rs`, best of 5,
+  200 and 20,200 passes, load 54 to 88): 1.83 s and 111.5 s, so about 5.5 ms a write. Plan 12 records it.
+- Not measured: the cost of a single step (a step ends the program until signal handlers come at X10).
+- The literal check (the Mac): exits 0, no line added; the baseline lost the line of x86's old `changes`
+  panic. Clippy with warnings denied for the six crates touched and `cargo fmt --check`: pass.
 
 ## X5, run 8 (2026-11-20)
 
@@ -3258,6 +3281,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   11616 with the restriction lifted, X6 run 1). Code written without announcement is tested by its own
   programs (`written_code`, `self_written`) instead. ARM64 (return addresses in a register) makes these
   programs again, the same programs per seed as before X5 run 8.
+- X6 run 1: x86's layer 2 blobs put their area on a page of its own (a page further on where it would have
+  shared one with code or tables); x86's layer 2 programs keep their code but move their area per seed.
 - X6 run 1: the flat blobs' linker script starts writable data (from `.dynamic` on) on a page of its own,
   as a linker's writable segment does, so no page of a test blob holds both code and data the program
   writes (plan 5.7, "As built at X6"). Every blob built from C changes layout, ARM64's too.
