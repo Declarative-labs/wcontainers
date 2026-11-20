@@ -601,6 +601,17 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- Tenth run, tests: the embedder tests (25, seeds 1 to 3) and the kernel's unit tests (4) passed
+  on the ARM machine; clippy with warnings denied over the three crates passed there. Whole suite
+  on the ARM machine at ae37b07c's tree (the command in "How to run" with `-j $ARM_JOBS` and 12
+  test threads; scratch streams/s2j/suite-arm.log, 2099 s, ending about 04:20 UTC, load 14 to
+  18): 574 passed, 28 failed, 6 ignored. The 28 are the ninth run's 27 (the manual's list and the
+  literal check's workspace test, no git there) and `terminal::splice_holds_the_pipe`, failed on
+  the reference's side (Docker's tty echoed `abc` once more, as seen before). The 20 binaries
+  kept on the Mac (s2j/mac-only.log, this Mac, 19:44 to 19:47 Pacific, load 3 to 7): 94 passed,
+  `splice_holds_the_pipe` among them. The literal check's tests on this Mac: all passed
+  (s2j/literals-mac.log). Combined: 608 tests, 602 passed, 6 ignored, none failed.
+
 - Ninth run, tests: the embedder tests (20, seeds 1 to 3) on the ARM machine (scratch
   streams/s2g/embedder-2.log, affected-1.log; the nesting checks added to the new hooks last,
   nest.log). Clippy with warnings denied over the three crates passed on the x86 machine
