@@ -4,5 +4,7 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "util/format/u_format.h"
+#include "util/u_blitter.h"
+#include "util/u_framebuffer.h"
 #include "util/u_screen.h"
 #include "util/u_upload_mgr.h"

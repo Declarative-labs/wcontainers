@@ -17,9 +17,9 @@ const GALLIUM_HEADER: &str = "bridge/gallium.h";
 const BINDINGS: &str = "gallium.rs";
 /// What the bindings hold: Gallium's types and constants, and the functions of Mesa's that the
 /// driver calls.
-const ALLOWED_TYPES: &str = "pipe_.*|util_format_description";
-const ALLOWED_FUNCTIONS: &str =
-    "u_init_pipe_screen_caps|u_upload_create_default|u_upload_destroy|util_format_description";
+const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context";
+const ALLOWED_FUNCTIONS: &str = "u_init_pipe_screen_caps|u_upload_create_default|u_upload_destroy|\
+     util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported)";
 const ALLOWED_CONSTANTS: &str = "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*";
 /// The Gallium file whose defines the bindings take from Mesa's compile commands.
 const FLAGS_FROM: &str = "u_screen.c";

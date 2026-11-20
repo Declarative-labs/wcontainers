@@ -4,6 +4,8 @@
 //! `WCONTAINERS_MESA` names its build.
 
 #[cfg(mesa)]
+mod blit;
+#[cfg(mesa)]
 mod context;
 #[cfg(mesa)]
 mod device;

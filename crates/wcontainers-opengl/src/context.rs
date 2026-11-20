@@ -14,7 +14,7 @@ use crate::gallium::*;
 use crate::resource::{self, Resource};
 use crate::screen::{DRIVER_NAME, Screen};
 use crate::state::{self, Stage, Stages};
-use crate::{draw, present, view};
+use crate::{blit, draw, present, view};
 
 /// Ends the process naming a Gallium entry point the driver does not have yet, so that a case
 /// reaching it is a crash with the name in its log, never a call that does nothing.
@@ -54,6 +54,10 @@ pub struct Context<B: Backend> {
     pub programs: Programs<B>,
     pub bound: state::Bound<B>,
     pub present: Option<present::Copy<B>>,
+    /// Gallium's blitter, made at the first blit.
+    pub blitter: *mut blitter_context,
+    /// The fragment stage's uniform bytes the blitter saved, alive until it puts them back.
+    pub blit_bytes: Vec<u8>,
 }
 
 impl<B: Backend> Context<B> {
@@ -91,6 +95,8 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
         programs: Programs::default(),
         bound: state::Bound::default(),
         present: None,
+        blitter: std::ptr::null_mut(),
+        blit_bytes: Vec::new(),
     });
     let base = &mut context.base;
     base.screen = screen;
@@ -115,6 +121,7 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
 fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.destroy = Some(destroy::<B>);
     c.draw_vbo = Some(draw::draw_vbo::<B>);
+    c.blit = Some(blit::blit::<B>);
     c.flush = Some(flush::<B>);
     c.clear = Some(clear::<B>);
     c.clear_render_target = Some(clear_render_target::<B>);
@@ -147,7 +154,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
         get_query_result,
         get_query_result_resource,
         render_condition,
-        blit,
         create_gs_state,
         bind_gs_state,
         delete_gs_state,
@@ -171,6 +177,10 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
 unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
     // SAFETY: Mesa destroys a context it made once, after its last use.
     let mut context = unsafe { Box::from_raw(pipe.cast::<Context<B>>()) };
+    if !context.blitter.is_null() {
+        // SAFETY: made on this context, destroyed once.
+        unsafe { util_blitter_destroy(context.blitter) };
+    }
     // SAFETY: the uploader was made with this context.
     unsafe { u_upload_destroy(context.base.stream_uploader) };
     context.bound.release();
