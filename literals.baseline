@@ -22926,7 +22926,6 @@ restated	crates/wcontainers-direct3d-12/src/features.rs	int	FEATURE_LEVEL_11_0	0
 restated	crates/wcontainers-direct3d-12/src/features.rs	int	LEVEL_11_0_TEXTURE_3D	2048
 restated	crates/wcontainers-direct3d-12/src/features.rs	int	LEVEL_11_0_TEXTURE_LAYERS	2048
 restated	crates/wcontainers-direct3d-12/src/resource.rs	int	HEAP_FLAG_SHADER_ATOMICS	0x400
-restated	crates/wcontainers-direct3d-12/src/resource.rs	int	PLACEMENT_ALIGNMENT	512
 restated	crates/wcontainers-direct3d-12/src/resource.rs	int	STATE_COPY_DEST	0x400
 restated	crates/wcontainers-direct3d-12/tests/device.rs	int	footprints_follow_the_pitch_and_placement_rules	256
 restated	crates/wcontainers-direct3d-12/tests/device.rs	int	footprints_follow_the_pitch_and_placement_rules	256

@@ -149,8 +149,9 @@ format_91.support1 0x11fcd3f0 0x1fcd3f0
 # video abilities: no browser canvas shows the extended-range bias encoding (status, gap list):
 format_24.support1 0x33fcd3f3 0x2fcd3f3
 #
-# R32G32B32 (6, 7, 8): multisample load and resolve; WebGPU renders no three-channel format, so
-# none is multisampled (optional at 11_0). 6 is sampled and gathered beyond real (served).
+# R32G32B32 (6, 7, 8): multisample load (required at 11_0 for all three) and resolve (required
+# for 6): WebGPU renders no three-channel format, so none is multisampled; section 9's named
+# multisample count shortfall (status, gap list). 6 is sampled and gathered beyond real (served).
 # R32G32B32_UINT also lacks logic operations (absent).
 format_6.support1 0x5411fb 0x9013fb
 format_7.support1 0x5011fb 0x1011fb

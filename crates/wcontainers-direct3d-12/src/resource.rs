@@ -2,7 +2,7 @@
 
 use wcontainers_directx_graphics_infrastructure::d3d::{
     DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT, DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
-    SMALL_RESOURCE_PLACEMENT_ALIGNMENT,
+    SMALL_RESOURCE_PLACEMENT_ALIGNMENT, TEXTURE_DATA_PLACEMENT_ALIGNMENT,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi::{
     NV12, OPAQUE_420, R8_TYPELESS, R8G8_TYPELESS, R32_TYPELESS, YUY2,
@@ -53,8 +53,6 @@ pub const FLAG_DENY_SHADER_RESOURCE: u32 = 8;
 
 /// Rows of a texture in a buffer start at multiples of this (`D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`).
 pub const PITCH_ALIGNMENT: u64 = 256;
-/// Subresources in a buffer start at multiples of this (`D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`).
-pub const PLACEMENT_ALIGNMENT: u64 = 512;
 /// Constant buffer views start at, and span, multiples of this
 /// (`D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT`).
 pub const CONSTANT_BUFFER_ALIGNMENT: u64 = 256;
@@ -596,7 +594,7 @@ impl ResourceDesc {
             let rows = height.div_ceil(bh);
             let row_size = u64::from(width.div_ceil(bw)) * u64::from(bytes);
             let row_pitch = row_size.next_multiple_of(pitch_alignment);
-            offset = offset.next_multiple_of(PLACEMENT_ALIGNMENT);
+            offset = offset.next_multiple_of(TEXTURE_DATA_PLACEMENT_ALIGNMENT);
             // Offsets wrap as the API's unsigned arithmetic does.
             let at = base_offset.wrapping_add(offset);
             out.push(FootprintInfo {

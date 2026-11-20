@@ -358,12 +358,17 @@ impl<B: Backend> Device<B> {
         }
         let mut formats = f.made.clone();
         for &(visibility, slot, format) in &self.bound_formats {
-            if visibility == f.visibility
-                && let Some(b) = formats.iter_mut().find(|b| b.0 == slot)
-            {
-                b.1 = format;
+            if visibility != f.visibility {
+                continue;
+            }
+            match formats.iter_mut().find(|b| b.0 == slot) {
+                Some(b) => b.1 = format,
+                // A texture view of another component kind than the program declares.
+                None if !slot.0 => formats.push((slot, format)),
+                None => {}
             }
         }
+        formats.sort_by_key(|b| b.0);
         let through = self
             .bound_through
             .iter()

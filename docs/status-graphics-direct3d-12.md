@@ -8,58 +8,53 @@ commit cf55bbe8 (`git show cf55bbe8:docs/status-graphics-direct3d-12.md`).
 
 ## Where things stand
 
-G5 is ready for the independent check again (run 51, 2026-11-20): the fifth check (at c65ea523)
-left three blocking items and four minor ones, all handled in this run:
-- Atomics on typed storage views (blocking): `CheckFeatureSupport` now answers every atomic
-  operation on `R32_UINT` and `R32_SINT` and exchange on `R32_FLOAT` wherever it answers typed
-  stores, as section 9 says: the front serves them through a buffer (`AtomicsThroughBuffer`).
-  Test `atomics_on_typed_storage_views_are_answered_through_a_buffer`; the shared
-  `atomic_operations` names the bits once; features-differing.txt lines 41, 42 and 43 now lack
-  only tiled resources and, for `R32_UINT`, logic operations.
-- The 11_0 table's other required abilities answered absent (blocking): each is now on the gap
-  list with its cause (`A8_UNORM`'s typed unordered access, `B8G8R8X8_UNORM`'s buffer and vertex
-  input, `R10G10B10_XR_BIAS_A2_UNORM` and `R10G10B10A2_UNORM`'s back buffer cast to it), the
-  Departures item now names them, and features-differing.txt lists every lower answer under the
-  cause of each bit it lacks, not under one generic comment. None is built in this run.
-- bgfx 26-occlusion frame 10 (blocking, run 51): traced and shown to be real Direct3D 12's own
-  variation, not a fault of ours. bgfx's renderer reads each occlusion result from a mapped readback
-  buffer once its fence shows the list done, and draws each cube only if its last known result is
-  not zero; which frame's results it has when frame 10 is drawn depends on how fast the GPU finished
-  against the CPU. Evidence (scratch run51/): real Direct3D 12 run 20 times against a reference of
-  two real runs drew frame 10 differently once (real1/real-20-frame-10.png: "Passing pixels count:
-  91", 5 tiles beyond allowance, the worst at 224,608 with 41 pixels, the same signature as the
-  check's failure); the check's failing frame of ours (icheck50/bgfx26/ours-10.png) equals this
-  session's real frame 10 exactly (0 pixels beyond 8 outside the overlay, bin/pngdiff.py), and the
-  check's real frame 10 (icheck50/bgfx26/real-10.png) is a third outcome. So real draws frame 10 at
-  least three ways (the count text 92, or 91 with one query result zero, or 91 with none zero),
-  and which one it draws changes between sessions. Ours: a trace of fence values, the program's
-  completed-value reads and the readback bytes (scratch run51/trace.patch and trace2.patch, never
-  committed) over 32 runs showed every readback's bytes copied in before the fence value covering
-  it is reported (`completed` finishes the read backs first), and the same result latency in every
-  frame of every run. The fix is to the comparison, not the front: the bgfx references are now
-  recorded from several real runs (bin/bgfx-compare.ps1 takes 6 by default, bin/loop26.ps1 any
-  count), as the rig's `--record` already ignores tiles real draws differently from run to run,
-  so real's own variation in a session is not counted against ours. Proof: references from 10 real
-  runs, then 30 runs of ours, all 30 pass every frame (run51/loop-proof1.log); with the trace, 32
-  more runs of ours passed against two real runs (loop-trace1.log, loop-trace2.log). In this
-  session real drew frame 10 the check's "failing" way in 29 of 30 runs, so the check's two-run
-  reference would also have passed here: these runs show ours and real agree in this session, not
-  that a session like the check's (real drawing the 92 frame every time) cannot occur again; in such
-  a session ours may draw the 91 frame, which real also draws.
-- Minor: the gap list's copy_block_compressed_texture entry now says how device removal differs
-  before real's crash; the sentence on bgfx's E_NOTIMPL calls names `CreateReservedResource`;
-  `outputs` and `answers` are compared with their own lists (outputs-differing.txt,
-  answers-differing.txt), so a lower answer not listed with its cause fails, as for features.
-- The WebGPU track's shared placement alignment was not moved: naming it
-  `TEXTURE_DATA_PLACEMENT_ALIGNMENT` in the infrastructure crate's `d3d` module fails the literal
-  check (the baseline line cannot move, as the baseline only shrinks, and the name and value
-  restate `VariantFlags::TEXTURE_INFO` by the check's word rule). It stays
-  `resource::PLACEMENT_ALIGNMENT`, now tied to the SDK's `D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT` by
-  test `shared_constants_are_the_sdks` (Windows only), with the three resource placement
-  alignments of the `d3d` module. Asked of the orchestrator ("Asked of other tracks").
+G5 is ready for the independent check again (run 52, 2026-11-20). The sixth check (at 7a3a7fe0)
+left one blocking item and five minor ones, handled in this run:
+- Items the gap list said waited on the shaders track, which had delivered them (blocking): all
+  three are now used by the front, so nothing on the gap list waits on another track's item that
+  is delivered.
+  - A pipeline without a pixel shader whose variant needs one takes the shaders crate's
+    `builtin::pixel_program_for_variant` (depth clamped into a depth target, clip distances), also
+    for its counted draws.
+  - Depth clamping the back end lacks is applied behind the stage helper by its last vertex
+    stage: a geometry shader converted with `DEPTH_CLAMP` (its pass-through clamps), the domain
+    program, and the vertex program the cull route runs (which also passes clip distances the back
+    end lacks, the shaders track's answer to the run-51 ask). The draw after the stage helper
+    gives the pixel program the viewport's depth range as direct draws do.
+  - A texture view of another component kind than the program declares is given in
+    `texel_formats` and the program converted again, reading the view's values by their bits.
+  Tests: `depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clamp` (GPU)
+  now draws seven routes (direct, without a pixel shader, geometry shader, cull route,
+  tessellation, and with a clip distance without a pixel shader and through the cull route), each
+  with wgpu's own depth clamping and clip distances and with both hidden, two depth ranges each:
+  0 pixels differ in all 14 comparisons, and the slow paths are counted exactly where hidden.
+  The own program's new case `texture-kinds` loads four textures as another kind than their
+  views: our words equal real Direct3D 12's. Still refused by name, the front's own open parts
+  (gap list): depth clamping of alpha-antialiased lines, into stream output of a culled vertex
+  or domain program, behind a layer-naming geometry shader without a depth format, and of a
+  pipeline without a depth format drawing into a bound depth view; a texture of another kind in a
+  stage run before a geometry or domain stage, or through a stencil view.
+- Also in this run: a shader resource view single-sampled where the program declares a
+  multisampled texture (or the reverse) is refused by name as a view of another dimension (not
+  to be matched); the back end had lost the device on it (the shader runner's texture-load).
+- features-differing.txt's `R32G32B32` lines now say the 11_0 table requires multisample load
+  (6, 7, 8) and resolve (6); the gap list and the Departures item name them under section 9's
+  multisample count shortfall.
+- The WebGPU track's shared constant: `d3d::TEXTURE_DATA_PLACEMENT_ALIGNMENT` is now the one
+  definition, in the infrastructure crate, written `1 << 9` like the three resource placement
+  alignments beside it (an expression of small numbers, which the literal check does not compare
+  by value; as the plain 512 it would be taken as restating `VariantFlags::TEXTURE_INFO`, another
+  fact of the same value). `resource::PLACEMENT_ALIGNMENT` is gone with its baseline line;
+  `shared_constants_are_the_sdks` ties it to the SDK's value.
+- The crates' test count is now written as the owned crates' alone ("Results of run 52").
+- bgfx 26-occlusion: the check's two notes for the record are under "Real programs".
+- Godot's 3D platformer's one pixel stays listed and untraced.
 - No seeded random test: none in these crates takes random input (unchanged).
-- Merges (run 51): origin/phase-2-graphics-shaders (the interface's `texel_formats` and
-  `StreamOutAfterReplay` texts, the shaders crate); nothing new on the other branches.
+- Merges (run 52): origin/phase-2-graphics-shaders (the shaders crate's run 58 and G6a work,
+  with the Direct3D 11 track's commits it had merged); nothing new on the shared line, the WebGPU,
+  WebGL and rig branches or phase-1-literals.
+- Section 10's one family library is, by the orchestrator's ruling of 2026-11-20, a joint step
+  after G4 and G5 have passed their checks ("Next" 4); it is not part of G5.
 
 The pass bar, item by item:
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080:
@@ -72,44 +67,43 @@ The pass bar, item by item:
   Direct3D 12, every differing answer listed with its reason in features-differing.txt, and the
   crates' tests of section 9's answers ("CheckFeatureSupport").
 - The queue, fence, query, predication, placed-resource and indirect cases against real Direct3D
-  12: the own program's 34 cases ("Cases").
+  12: the own program's 35 cases ("Cases").
 
-For the independent check, one command each (scratch `bin/all51.sh <n>` runs them all):
+For the independent check, one command each (scratch `bin/all52.sh <n>` runs them all):
 - a sample of test files: `wine-tests run --dll ... vkd3d-d3d12:test_a/test_b` ("How to run");
-- the 34 cases: `check_d3d12 cases` through the own program ("How to run");
-- bgfx 26-occlusion repeated: scratch `bin/loop51.sh <tag> 30 26-occlusion record ours 10`;
-- the real programs: scratch `bin/real51.sh <n>` (Microsoft's two samples, Godot's two
-  platformers, bgfx 37) and `bin/bgfx51.sh <n>` (bgfx 01-cubes, 26-occlusion, 35-dynamic,
+- the 35 cases: `check_d3d12 cases` through the own program ("How to run");
+- bgfx 26-occlusion repeated: scratch `bin/loop52.sh <tag> 30 26-occlusion record ours 10`;
+- the real programs: scratch `bin/real52.sh <n>` (Microsoft's two samples, Godot's two
+  platformers, bgfx 37) and `bin/bgfx52.sh <n>` (bgfx 01-cubes, 26-occlusion, 35-dynamic,
   38-bloom).
 Before running test files apply scratch run20/rig-wine-run-fix.patch to
 tools/graphics-rig/desktop/wine-run.ps1 and undo it afterwards ("How to run"); it is never
 committed.
 
-## Results of run 51
+## Results of run 52
 
-2026-11-20, RTX 3080, desktop shared with other tracks unless said; scratch run51/, at d9497d6e
-with the rig patch (`all51.sh 1`, then `bgfx51.sh 1` and `programs51.sh 1`):
-- Lint clean (lint1.log, lint2.log). The crates' tests: 63 pass, none fail (test1.log, test2.log;
-  new `atomics_on_typed_storage_views_are_answered_through_a_buffer` and
-  `shared_constants_are_the_sdks`). Literal check passes (lit1.log; lit2.log at the commit).
-- Test files 189 of 198 (full1.log, logs-full1/): the same 9 failures as runs 48 to 50, each on
-  the gap list.
-- Own program (check1.log): draw 0 of 4096 pixels beyond 1; features 166 of 872 differ, each
-  listed under its cause; outputs 22 of 110 and answers 2 of 40 differ, each listed (new lists);
-  34 of 34 cases equal; `antialiased-lines` 0 of 4096 beyond 63, largest difference 38.
-- Shader runner 214 of 302 (runner1.log), the same 88 failing files. Scenes 95 pass, 22 fail, 3
-  absent, the same outputs (scenes1.log). Wine's five dxgi tests: 3 pass, 2 fail on the absent
-  software adapter (dxgi1.log).
+2026-11-20, RTX 3080, desktop shared with other tracks unless said; scratch run52/:
+- Lint clean (lint2.log to lint4.log). The owned crates' tests: 61 pass, none fail, across their
+  binaries 16, 1, 18, 13, 3 and 10 (test2.log, and test4.log at 9c90facc's code); the same command also runs 2 tests of
+  wcontainers-gpu (its `slow` filter), not counted here. The GPU test of the seven clamp and clip
+  routes is clamp5.log (14 comparisons, 0 pixels differing), and with its slow path counts
+  asserted it passes in test2.log and test4.log. Literal check passes (lit3.log, lit4.log at 9c90facc,
+  marks 0).
+- Test files 189 of 198 (full2.log, logs-full2/; again after the last code change: full4.log, logs-full4/, at 9c90facc's code):
+  the same 9 failures as runs 48 to 51, each on the gap list; the refusals the logs print are the
+  same as run 51's.
+- Own program (check2.log, check3.log, check4.log): draw 0 of 4096 pixels beyond 1; features 166 of 872
+  differ, each listed under its cause; outputs 22 of 110 and answers 2 of 40 differ, each listed;
+  35 of 35 cases equal (new `texture-kinds`); `antialiased-lines` 0 of 4096 beyond 63, largest
+  difference 38.
+- Shader runner 214 of 302 (runner2.log; runner4.log at 9c90facc's code), the same 88 failing files.
+- Scenes 95 pass, 22 fail, 3 absent, the same outputs as run 51 (scenes1.log, at 9c90facc). Wine's five dxgi tests not rerun (nothing of dxgi changed).
 - Real programs: Microsoft's two samples equal (0 pixels beyond 8, p1-samples.log); Godot's 2D
-  platformer equal (0 of 518,400 beyond 8); bgfx 37 (p1-bgfx37.log) and 01-cubes, 26-occlusion,
-  35-dynamic and 38-bloom (b1-*.log, references from 6 real runs) every frame of both our runs
-  within the allowance (724 to 1207 pixels beyond 8 of 20,480 allowed, the overlay's text); in
-  26-occlusion's six real runs frame 120 itself drew one tile differently from run to run (35
-  pixels). Godot's 3D platformer the same one pixel as before (1 of 518,400 beyond 8, difference
-  48, frames 10, 60 and 120).
-- bgfx 26-occlusion frame 10: 10 real runs recorded, then 30 runs of ours, all pass every frame
-  (loop-proof1.log); 32 traced runs of ours and 20 real runs against two real runs as under
-  "Where things stand" (loop-trace1.log, loop-trace2.log, loop-real1.log).
+  platformer equal (0 of 518,400 beyond 8); bgfx 37 (p1-bgfx37.log, 711 to 805 pixels beyond 8)
+  and 01-cubes, 26-occlusion, 35-dynamic and 38-bloom (b1-*.log, references from 6 real runs,
+  762 to 1204 beyond 8) every frame of both our runs within the allowance of 20,480 (the
+  overlay's text). Godot's 3D platformer the same one pixel as before (1 of 518,400 beyond 8,
+  difference 48, frames 10, 60 and 120).
 - Fence round trip `--alone`: see "Measurements".
 
 ## Test files (Wine's and vkd3d's, through our libraries, RTX 3080)
@@ -119,8 +113,7 @@ test that skips what real runs, or runs fewer checks, fails. Tests failing some 
 are held to every other check. The counted set is 198 files: d3d12 (Wine's) 10,
 vkd3d-d3d12_invalid_usage 3, vkd3d-hlsl_d3d12 9, vkd3d-d3d12 176.
 
-Failing at run 51 (run51/full1.log, logs-full1/, at d9497d6e with the rig patch), each on the
-gap list: d3d12 10 of 10, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9, vkd3d-d3d12
+Failing at run 52 (run52/full2.log, logs-full2/, with the rig patch), each on the gap list: d3d12 10 of 10, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9, vkd3d-d3d12
 167 of 176. The 9:
 - test_create_reserved_resource: ran 4 checks of real's 22, skipped 1. Tiled resources absent.
 - test_get_resource_tiling: ran 11 of 1410, skipped 1. Tiled resources absent.
@@ -140,7 +133,7 @@ The refusals the counted test files printed (run 48's logs-full2): "logic operat
 (`RenderTargetArrayIndex`, ps_layer); none other.
 
 Whole counts by run: 129 of 198 (run 17), 157 (20), 164 (25), 169 (28), 180 (31), 184 (34), 186
-(35 to 45), 189 (46), 189 (48), 189 (49), 189 (50), 189 (51).
+(35 to 45), 189 (46), 189 (48), 189 (49), 189 (50), 189 (51), 189 (52).
 
 ## Gap list
 
@@ -203,6 +196,9 @@ each line under its cause):
   use at any level; it exists to be shown in the extended-range bias encoding, cast to and from
   the 10-bit layout and copied for that, and no browser canvas shows that encoding (a canvas
   shows `bgra8unorm`, `rgba8unorm` or `rgba16float`, in sRGB or Display P3). Absent, not built.
+- `R32G32B32_FLOAT`, `_UINT` and `_SINT` (6, 7, 8) multisample load (required by the 11_0
+  table for all three) and `R32G32B32_FLOAT` multisample resolve (required): WebGPU renders no
+  three-channel format, so none is multisampled; section 9's named multisample count shortfall.
 - Atomics on typed storage views of `R32_UINT`, `R32_SINT` (every operation) and `R32_FLOAT`
   (exchange) are answered present (run 51): the front serves them through a buffer
   (`AtomicsThroughBuffer`, counted and warned); the fifth check's own case (scratch
@@ -222,7 +218,8 @@ fetch past a vertex buffer's end are skipped whole by WebGPU, where Direct3D 12 
 (`IndirectFetchPastEnd`, counted and warned). Direct draws, and indirect ones whose arguments
 lie in an upload heap, are exact (`VertexFetchZeroed`).
 
-Every refusal by name in the front (106 refusal sites, from
+Every refusal by name in the front (107 refusal sites by run 51's count, one more than then:
+three depth clamping refusals and the pixel program for a variant's own replace three; from
 `NotImplemented` in src/; `cargo test` of none of them fails; which ones the test files, the
 runner, the scenes and the programs printed in run 48 is under "Results of run 48"). By cause:
 
@@ -248,7 +245,9 @@ domain shader the converter got wrong", "a shader feature the stage helper lacks
 shader fetching its inputs did not convert" ("Shader runner" names each file's).
 
 Not to be matched (Direct3D 12 leaves it undefined): "a shader resource view of another
-dimension than the program declares" and "an unordered access view of another dimension than
+dimension than the program declares" (since run 52 also a single-sampled view where the program
+declares a multisampled texture, or the reverse, which the back end refused by losing the device)
+and "an unordered access view of another dimension than
 the program declares" (one-layer 2D arrays bound to 2D declarations are bound as 2D views);
 "a shared buffer read after an overlapping one was written in the same submission".
 
@@ -256,20 +255,27 @@ The front's own open parts, each a route not built (no counted test file, case o
 meets one on the RTX 3080; "Next" 2). Those only met where the back end lacks a feature name it;
 browsers' WebGPU lacks `depth-clip-control`, `primitive-index`, polygon modes and texel buffers
 on some adapters, and WebGL 2 makes no Direct3D 12 device:
-- Depth clamping where the back end lacks `depth-clip-control` (`Features::DEPTH_CLAMP`;
-  `DepthClampInShader` serves the rest): into a depth target with no pixel shader ("depth
-  clamping the back end lacks into a depth target, without a pixel shader to apply it": the
-  front needs a pixel program made for the variant alone, asked of the shaders track); a pipeline
-  made with no depth format drawing while a depth view is bound ("depth clamping the back end
-  lacks, in a pipeline made with no depth-stencil format drawing while a depth-stencil view is
-  bound": its pixel variant would be made at the draw); behind a geometry, tessellation, stream output, culling or
-  antialiased line stage ("depth clamping the back end lacks, behind a geometry, tessellation,
-  stream output, culling or antialiased line stage": the stage helper's pass-through takes no
-  `DEPTH_CLAMP`, asked of the shaders track). The shadow-map case (no pixel shader) is the common
-  one.
-- Clip distances where the back end lacks them (`Features::CLIP_DISTANCE`): "clip distances the
-  back end lacks, without a pixel shader to apply them", "clip distances from a geometry,
-  domain, culling or antialiased line stage without the back end's (ClipDistanceInShader)".
+- Depth clamping where the back end lacks `depth-clip-control` (`Features::DEPTH_CLAMP`):
+  `DepthClampInShader` serves direct draws, pipelines without a pixel shader (the shaders crate's
+  `builtin::pixel_program_for_variant` writes the clamped depth), and draws behind a geometry
+  shader (its pass-through clamps), tessellation (the domain program clamps) and the cull route
+  (the vertex program clamps); test
+  `depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clamp` draws each
+  against wgpu's own clamp (run 52). Refused by name: "depth clamping the back end lacks, of
+  alpha-antialiased lines" (the line route's coverage values are linked where the unclamped
+  depth would pass), "... in the culled vertex or domain program stream output records" (the
+  records would hold the clamped position), "... behind a geometry shader naming a layer, in a
+  pipeline made with no depth-stencil format" (the pass-through passes the layer after a depth
+  value the pixel program, which writes no depth there, does not take), and "... in a pipeline
+  made with no depth-stencil format drawing while a depth-stencil view is bound" (its pixel
+  variant would be made at the draw).
+- Clip distances where the back end lacks them (`Features::CLIP_DISTANCE`):
+  `ClipDistanceInShader` serves direct draws, pipelines without a pixel shader (the pixel program
+  for the variant), geometry and domain shaders, and the cull route (the vertex program passes
+  them, the pass-through passes them on); the same test draws the two new routes with wgpu's clip
+  distances hidden (run 52). Refused by name: "clip distances from a geometry, domain, culling or
+  antialiased line stage without the back end's (ClipDistanceInShader)", now met only by the
+  antialiased line route and a culled vertex shader with stream output.
 - Wireframe where the back end lacks polygon modes: "wireframe without the back end's polygon
   mode (FillModeConverted, which needs the stage helper's route)". Direct3D culls triangles
   before drawing their edges, so the route needs each triangle's positions after the vertex
@@ -285,8 +291,10 @@ on some adapters, and WebGL 2 makes no Direct3D 12 device:
   bound as storage textures", "unordered access buffers in a custom heap the CPU sees".
 - Views and binding: "a buffer view starting inside one of the program's elements", "a constant
   buffer view shorter than the program's block, or past its buffer's end, of a buffer not in an
-  upload heap", "a texture read as another type than its view's format" (needs a variant reading
-  the slot in the view's type, with the shaders track), "a view of several layers of a
+  upload heap", "a texture read as another type than its view's format, of a stencil view or in
+  a geometry, hull or domain shader or a vertex shader before one" (elsewhere the program is
+  converted again reading the view's values by their bits, `VariantKey::texel_formats`, run 52;
+  a sample of such a view the converter refuses, `SampledViewKind`), "a view of several layers of a
   multisampled texture array", "a view reinterpreting a texture's bits without its twin",
   "arrays of resources in a shader" (beyond those the root signature bounds), "buffers read
   through views", "this kind of root binding", "a multisampled texture array viewed in a format
@@ -412,7 +420,7 @@ own on real and BT.709's on ours; answers-differing.txt: the two refusals, each 
 
 `check_d3d12 cases` runs each case in its own process on real Direct3D 12 and through ours and
 compares the lines exactly (examples/check/cases.rs); `antialiased-lines` also compares its
-picture within 63 of 255 (Direct3D leaves the line filter to the implementation). The 34 cases:
+picture within 63 of 255 (Direct3D leaves the line filter to the implementation). The 35 cases:
 - Placed resources: alias-copy, alias-storage, alias-cpu (overlapping placed buffers written by a
   copy, a root UAV and the CPU, read through the other), alias-texture, custom-heap.
 - Queues and fences: queues (copy and compute queues waiting on each other and on a late CPU
@@ -423,22 +431,30 @@ picture within 63 of 255 (Direct3D leaves the line filter to the implementation)
 - Others: depth-planes, vertex-past-end, vertex-pulled, restart, render-pass, ms-array, geometry,
   layers, antialiased-lines, filter-depth, vertex-views, line-bias, markers, undefined-topology,
   no-scissors, early-per-primitive.
-- Formats: video-formats (`NV12`, `420_OPAQUE` and `YUY2` stored as ordinary textures).
+- Formats: video-formats (`NV12`, `420_OPAQUE` and `YUY2` stored as ordinary textures),
+  texture-kinds (textures of `R8G8B8A8_UINT`, `R32G32B32A32_FLOAT`, `R8G8B8A8_SINT` and
+  `R8G8B8A8_UNORM` loaded by a compute shader declaring another component kind; new in run 52).
 
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
 Run with our d3d12.dll alone (our dxgi.dll serves Direct3D 12 only and every file starts with a
-Direct3D 11 part). Run 51 (run51/runner1.log): 214 of 302, the same 88 failing files as runs 34 to 46. Each failing file's cause was sorted in run 44 (scratch
-`bin/classify30.py`; the list is in this file at cf55bbe8, "Shader runner"): 61 run fewer checks
-than real with none failing (50 shader models above 6.0, which section 9 does not answer; the
-rest 64-bit integers, stencil export, depth bounds, raster order views, the layer and viewport
-index from any stage, all absent); 27 fail some checks (2 absent features, 2 not to be matched,
-22 named items of the shaders track, 1 refused by the front by name waiting on the shaders
-track: a texture read as another type than its view).
+Direct3D 11 part). Run 52 (run52/runner2.log): 214 of 302, the same 88 failing files as runs 34
+to 51. Each failing file's cause was sorted in run 44 (scratch `bin/classify30.py`; the list is
+in this file at cf55bbe8, "Shader runner"): 61 run fewer checks than real with none failing (50
+shader models above 6.0, which section 9 does not answer; the rest 64-bit integers, stencil
+export, depth bounds, raster order views, the layer and viewport index from any stage, all
+absent); 27 fail some checks (2 absent features, 3 not to be matched, 22 named items of the
+shaders track). texture-load, which run 44 counted as refused for a texture read as another type
+than its view (lines 235 to 267, a route built in run 52 and compared with real Direct3D 12 by
+case `texture-kinds`), has since run 46 ended earlier, at line 51: a `Texture2DMS` declaration
+bound to a view of a single-sampled texture, a view of another dimension than the program
+declares, which Direct3D 12 leaves undefined (not to be matched; real draws it; ours refuses it
+by name since run 52, where the back end lost the device before, and the device is removed, so
+the lines after it are not reached).
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
-Run 51 (run51/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs as runs 38 to 46. The failing outputs: raster, geometry, streamout, tessellation (DXIL geometry and
+Run 52 (run52/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs as runs 38 to 51. The failing outputs: raster, geometry, streamout, tessellation (DXIL geometry and
 hull shaders and one pixel shader the converter refuses, the shaders track's); topology (43
 pixels beyond 1, all in line cells: the aliased line listed loss), samplers-filters (anisotropy
 cells) and msaa-alpha_to_coverage, which draw with largest difference 0 on wgpu's Direct3D 12
@@ -449,7 +465,7 @@ targets, minimum and maximum filtering.
 
 RTX 3080, desktop shared with other tracks, not `--alone`, debug builds, 120 frames. Frames 10, 60
 and 120 compared with real Direct3D 12's at 8 of 255.
-- Run 51: as listed under "Results of run 51". Run 50: the same, bgfx against two real runs. Run 49: the same but times (Godot's 3D platformer
+- Run 52: as listed under "Results of run 52". Run 51 the same. Run 50: the same, bgfx against two real runs. Run 49: the same but times (Godot's 3D platformer
   10 s), and bgfx 741 to 1225 pixels beyond 8. Run 48 (run48/p1-*.log at 3dfef503, p2-*.log at 708bd126; b1-*.log): Microsoft's
   D3D12HelloTriangle and D3D12HelloConstBuffers equal (0 pixels beyond 8; 2.6 and 2.5 s);
   Godot's 2D platformer equal (0 of 518,400 beyond 8; 3.8 s); bgfx 37-gpudrivenrendering,
@@ -462,6 +478,12 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   the same one pixel (10 s).
 - bgfx is compared with the overlay's GPU time and memory lines ignored (rectangle 0,208,320,64);
   24-nbody draws differently on every real run, so it has no frames to compare.
+- bgfx 26-occlusion, for the record (sixth check): with references from several real runs, a
+  tile any real run draws differently is not compared, so in a session where a real run draws
+  frame 10's rare outcome, frame 10's occlusion tiles are not checked for ours at all. Ours shows
+  "L: 0" in the overlay's latency counter where real shows "L: 1": ours never runs a frame
+  behind, which is why its occlusion result latency is the same in every frame. Not measured
+  further.
 - Setup learnt on the way: the rig's forwarding library takes the name d3d12.dll and loads ours
   behind it (`WC_D3D12`), hence `wcontainers_d3d12.dll` and two forwarders; it aborts a program
   calling an export the library behind it lacks; bgfx calls `QueryVideoMemoryInfo` on the adapter
@@ -476,11 +498,8 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   adapter with `texture-compression-bc` but without `texture-compression-bc-sliced-3d` such a
   texture fails. Asked: hold 3D BC textures decoded there (`BlockDecoded`). The RTX 3080 has both.
 - WebGL 2 back end (G3): the same for S3TC and BPTC, which WebGL takes in 2D arrays only.
-- Orchestrator, new in run 51: the WebGPU track asked for `TEXTURE_DATA_PLACEMENT_ALIGNMENT` in
-  the infrastructure crate's `d3d` module; the literal check refuses moving the baselined
-  `resource::PLACEMENT_ALIGNMENT` there (see "Where things stand"). A ruling on moving a baselined
-  constant to its shared home, or the WebGPU track importing `resource::PLACEMENT_ALIGNMENT`
-  meanwhile, settles it.
+- WebGPU back end (G2), run 52: `d3d::TEXTURE_DATA_PLACEMENT_ALIGNMENT` is in the infrastructure
+  crate, as asked; its `DX12_PLACEMENT_ALIGNMENT` can import it.
 - WebGPU back end (G2), new in run 51: section 9 serves `A8_UNORM` storage stores as
   `rgba8unorm` storage where `texture-formats-tier1` is present; the back end gives `A8Unorm`
   (held as `rgba8unorm`) no storage use, so `A8_UNORM` typed unordered access views are answered
@@ -488,9 +507,6 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 - Interface (G1), new in run 51: a vertex format for `B8G8R8X8_UNORM` (bytes B, G, R, unused,
   read with alpha one), for its vertex input and typed buffer views, which the 11_0 table
   requires (gap list).
-- Shaders (G6), new in run 48: a pixel program made for a variant alone, for pipelines with no
-  pixel shader whose variant needs one (`DEPTH_CLAMP`, `CLIP_DISTANCE`), and `DEPTH_CLAMP` on the
-  stage helper's pass-throughs (gap list, depth clamping).
 - Shaders (G6), earlier and still open (evidence in the record at cf55bbe8): the converter
   refusals the runner prints (`TypedBufferFormatKind`, `ClipDistance` read by a pixel shader,
   DXIL `InterpolateAt`, `DxilGeometryShader`, `DxilHullShader`, `CalculateLevelOfDetail`,
@@ -498,8 +514,9 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   `SparseFeedback`, `globallycoherent` memory operands, unbounded arrays on the DXIL route); values
   differing from Direct3D's (a centroid `SV_Position` per sample, `min16float` constants, float
   subnormals in shader models 4 and 5, DXIL `frexp` of a NaN, the shader model 4.0 multisampled
-  load in a loop); a slot read in its view's type; `VariantFlags::CLIP_DISTANCE` on
-  `Stages::culled`'s pass-through.
+  load in a loop). (The pixel program for a variant alone, `DEPTH_CLAMP` on the pass-throughs, a
+  texture view read in another component kind and clip distances through the cull route were
+  delivered and are used since run 52.)
 - WebGPU back end (G2), on wgpu's Direct3D 12 path: clears through a float that keeps the bits
   (an `R32_FLOAT` denormal), and buffer-to-texture copies of several slices whose
   `rows_per_image` exceeds the copy's height (wgpu-hal 30's placed footprint).
@@ -510,8 +527,7 @@ and 120 compared with real Direct3D 12's at 8 of 255.
    and origin/phase-1-literals; keep the literal check passing (after a merge bringing new rules,
    run `init` once). Apply the rig patch uncommitted for test file runs (below).
 2. Fix only what the independent check finds. The front's own open parts, beyond the bar: the
-   depth clamping refusals (with the shaders track's pixel program for a variant alone),
-   wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
+   four remaining depth clamping refusals, wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
    capture), Godot's 3D platformer's one pixel (trace which draw writes it, on real and ours), the
    other refusals of the gap list, recording state combinations of other vertex strides in the
    cache file.
@@ -519,8 +535,10 @@ and 120 compared with real Direct3D 12's at 8 of 255.
    run36/dx12-path.patch, measured equal in the three scenes above; it broke three things, each
    another track's: the culling stage's clip distances, the two wgpu-hal items above, and the
    rig's forwarder wrapping wgpu's own device).
-4. Plan 4.8's call buffer with plan section 10's one library (`crates/wcontainers-directx`): move
-   this track's COM objects there, which also lets Wine's other 18 dxgi tests be counted.
+4. Plan section 10's one library (`crates/wcontainers-directx`): by the orchestrator's ruling of
+   2026-11-20, joining this track's COM objects with the Direct3D 11 track's is one joint step
+   after both G4 and G5 have passed their checks, not part of G5; it also lets Wine's other 18
+   dxgi tests be counted. Plan 4.8's call buffer comes with it.
 5. The literal sweep, a part per run.
 
 ## How to run
@@ -529,13 +547,13 @@ All on the Windows desktop through the rig; on the Mac only `nix develop -c carg
 build command starts with `set CARGO_INCREMENTAL=0&& ` (stale incremental objects once failed to
 link). Run one rig command of this branch at a time, and do not change the working tree while a
 `gpu-job` of it waits (the job refuses another tree). Scratch bin/ (this track's scratch
-directory) holds run 51's scripts (run 50's with run51 paths; `programs51.sh` for Godot and bgfx 37,
-`bgfx51.sh` with references of 6 real runs, `loop51.sh <tag> <count> [example] [record|norecord]
-[ours|real] [real runs]` for repeated runs of one bgfx example): `quick51.sh <n>` (lint, the crates' tests, the literal check),
-`full51.sh <n>` (lint, tests, every test file, the own program, the shader runner), `own51.sh <n>`
-(lint, build, the own program), `scenes51.sh <n> [scenes]`, `real51.sh <n>`, `bgfx51.sh <n>`,
-`all51.sh <n>` (everything, with Wine's five dxgi tests and the `--alone` fence timing); logs land
-in scratch run51/.
+directory) holds run 52's scripts (run 51's with run52 paths; `programs52.sh` for Godot and bgfx 37,
+`bgfx52.sh` with references of 6 real runs, `loop52.sh <tag> <count> [example] [record|norecord]
+[ours|real] [real runs]` for repeated runs of one bgfx example): `quick52.sh <n>` (lint, the crates' tests, the literal check),
+`full52.sh <n>` (lint, tests, every test file, the own program, the shader runner), `own52.sh <n>`
+(lint, build, the own program), `scenes52.sh <n> [scenes]`, `real52.sh <n>`, `bgfx52.sh <n>`,
+`all52.sh <n>` (everything, with Wine's five dxgi tests and the `--alone` fence timing); logs land
+in scratch run52/.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p wcontainers-gpu -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
 - Tests (three draw on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
@@ -574,9 +592,9 @@ in scratch run51/.
 
 ## No magic numbers
 
-The literal check passes (run48/lit3.log at the last code commit and lit2.log at the Map fix). Baseline lines of this track's crates: run 43
+The literal check passes (run52/lit4.log at the last code commit, marks 0). Baseline lines of this track's crates: run 43
 wcontainers-direct3d-12 471 and the infrastructure crate 63; run 48 458 and 63; run 49 457 and
-63 (main.rs's feature levels now the windows crate's `D3D_FEATURE_LEVEL_*`); run 50 456 and 63; run 51 456 and 63 (unchanged: the placement alignment was not moved)
+63 (main.rs's feature levels now the windows crate's `D3D_FEATURE_LEVEL_*`); run 50 456 and 63; run 51 456 and 63; run 52 455 and 63 (the placement alignment's line gone)
 (the planes' block sizes from the interface's formats). Named in run 48:
 the cull modes, comparison functions and primitive topologies (`state`), the root signature
 versions and the input layout flag (`root`), the buffer layout (`resource`); the tests' DXGI
@@ -606,6 +624,10 @@ merges.
 
 ## Measurements
 
+- Run 52, fence-wait (own program, 2000 rounds) as `gpu-job --alone` at ce605d0d
+  (run52/alone1.log, 06:15 to 06:17 on the desktop's clock; desktop CPU load 1 % before and 2 %
+  after, Win32_Processor LoadPercentage): real first 6 µs, mean 1 µs, 99th percentile 1 µs,
+  largest 6 µs; ours first 42 µs, mean 17 µs, 99th percentile 20 µs, largest 42 µs.
 - Run 51, fence-wait (own program, 2000 rounds) as `gpu-job --alone` at d9497d6e
   (run51/alone1.log; desktop CPU load 4 % before and 5 % after, Win32_Processor LoadPercentage):
   real first 8 µs, mean 1 µs, 99th percentile 1 µs, largest 58 µs; ours first 54 µs, mean 26 µs,
@@ -633,9 +655,10 @@ merges.
 ## Departures from the plan
 
 - Feature level 11_0 on browsers' WebGPU while some 11_0 abilities are refused by name where the
-  back end lacks them (depth clamping with no pixel shader, behind the stage helper, or with no
-  depth format; wireframe without polygon modes): section 9 gives 11_0, and every such refusal is
-  on the gap list as the front's own open part.
+  back end lacks them (depth clamping of alpha-antialiased lines, into culled vertex or domain
+  stream output, behind a layer-naming geometry shader without a depth format, or in a pipeline
+  without a depth format drawing into a bound depth view; wireframe without polygon modes):
+  section 9 gives 11_0, and every such refusal is on the gap list as the front's own open part.
 - Wireframe without the back end's polygon mode is refused by name, not converted
   (`FillModeConverted`): Direct3D culls triangles before drawing their edges, so the route needs
   positions after the vertex shader through the stage helper's capture (the Direct3D 11 front
@@ -694,7 +717,9 @@ merges.
   8x multisampled targets, which have no exact route on WebGPU (no 16-bit packed formats; an
   `rgba8unorm` target blends at 8 bits); `A8_UNORM`'s typed unordered access views (the back end
   gives the format no storage use, and the front's buffer route is not built for it);
-  `B8G8R8X8_UNORM`'s typed buffer views and vertex input (no interface vertex format for it); and
+  `B8G8R8X8_UNORM`'s typed buffer views and vertex input (no interface vertex format for it);
+  `R32G32B32`'s multisample load (`FLOAT`, `UINT`, `SINT`) and resolve (`FLOAT`), section 9's
+  multisample count shortfall (WebGPU renders no three-channel format); and
   `R10G10B10_XR_BIAS_A2_UNORM` with `R10G10B10A2_UNORM`'s back buffer casts to it (no canvas shows
   the encoding). All are answered absent, never faked, and the gap list names each with its cause;
   features-differing.txt lists every lower answer under its cause.
@@ -766,9 +791,9 @@ Nothing of this track beyond the rig's setup:
   run overwrites.
 - The rig's build folder C:\wc\target\phase-2-graphics-direct3d-12 is deleted at the end of each
   run (run 49: 8,318,929,943 bytes deleted; run 50: 8,314,346,230 bytes; run 51: 8,390,595,197
-  bytes). Run 51's repeated bgfx runs keep their logs and the evidence frames in
+  bytes; run 52: 8,393,597,398 bytes). Run 51's repeated bgfx runs keep their logs and the evidence frames in
   C:\wc\out\phase-2-graphics-direct3d-12\loop (5,119,280 bytes; the copied programs and libraries
   deleted). On the rented x86 machine run 51's one copy (/work/src and /work/target
-  graphics-direct3d-12, 359,310,563 bytes) is deleted. Nothing installed in
-runs 49 to 51; no build output in scratch
-  or on the Mac.
+  graphics-direct3d-12, 359,310,563 bytes) is deleted; run 52 used no rented machine (every heavy
+  run went to the desktop through the rig). Nothing installed in runs 49 to 52; no build output
+  in scratch or on the Mac.
