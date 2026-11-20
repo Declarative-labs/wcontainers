@@ -7,7 +7,7 @@
 
 use wcontainers_directx_graphics_infrastructure::{
     FormatSupport, dxgi, dxgi_format, dxgi_vertex_format, format_support as shared_format_support,
-    support1, takes_samples,
+    support1, support2, takes_samples,
 };
 use wcontainers_gpu::{Caps, Features, Format, FormatUse};
 
@@ -60,6 +60,9 @@ pub const SUPPORT1_TYPED_BUFFER: u32 = support1::BUFFER | support1::SHADER_LOAD;
 /// views and stream output, which this front serves through the program (`TexelBufferAsStorage`,
 /// `StreamOutAsCompute`): stream output into the formats of 32-bit components, as Direct3D lists.
 pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
+    if let Some(s) = video_format_support(caps, value) {
+        return s;
+    }
     let mut s = shared_format_support(caps, value);
     if typed_buffer(caps, value) {
         s.support1 |= SUPPORT1_TYPED_BUFFER;
@@ -73,6 +76,58 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         s.support1 |= support1::SO_BUFFER;
     }
     s
+}
+
+/// The abilities of a 2D texture of one level that Direct3D defines for `NV12` through views of
+/// its planes; `YUY2` has them but for targets.
+const NV12_ABILITIES: FormatSupport = FormatSupport {
+    support1: support1::TEXTURE2D
+        | support1::SHADER_LOAD
+        | support1::SHADER_SAMPLE
+        | support1::SHADER_GATHER
+        | support1::RENDER_TARGET
+        | support1::BLENDABLE
+        | support1::TYPED_UNORDERED_ACCESS_VIEW,
+    support2: support2::UAV_TYPED_STORE,
+};
+
+/// `D3D12_FEATURE_FORMAT_SUPPORT` of the video formats plan 4.12 stores as ordinary textures:
+/// `NV12` has what both its planes' formats (`R8_UNORM`, `R8G8_UNORM`) have of `NV12_ABILITIES`,
+/// `YUY2` what `R8G8B8A8_UNORM` has of them but targets, and `420_OPAQUE`, which only video
+/// decoders and processors use, is a 2D texture. None for other formats; the video abilities
+/// themselves are absent (section 9).
+fn video_format_support(caps: &Caps, value: u32) -> Option<FormatSupport> {
+    let of = |format: u32| shared_format_support(caps, format);
+    let (views, abilities) = match value {
+        dxgi::NV12 | dxgi::OPAQUE_420 => {
+            let (luma, chroma) = (of(dxgi::R8_UNORM), of(dxgi::R8G8_UNORM));
+            let both = FormatSupport {
+                support1: luma.support1 & chroma.support1,
+                support2: luma.support2 & chroma.support2,
+            };
+            let abilities = match value {
+                dxgi::NV12 => NV12_ABILITIES,
+                _ => FormatSupport {
+                    support1: support1::TEXTURE2D,
+                    support2: 0,
+                },
+            };
+            (both, abilities)
+        }
+        dxgi::YUY2 => (
+            of(dxgi::R8G8B8A8_UNORM),
+            FormatSupport {
+                support1: NV12_ABILITIES.support1
+                    & !(support1::RENDER_TARGET | support1::BLENDABLE),
+                ..NV12_ABILITIES
+            },
+        ),
+        _ => return None,
+    };
+    Some(FormatSupport {
+        support1: views.support1 & abilities.support1,
+        support2: views.support2 & abilities.support2,
+    })
 }
 
 /// Typed buffer views of DXGI format `value` are read: through storage buffers, decoded in the

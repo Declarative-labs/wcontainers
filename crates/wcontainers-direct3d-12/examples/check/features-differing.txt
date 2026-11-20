@@ -146,15 +146,12 @@ format_97.support2 0x200 0x0
 format_98.support2 0x200 0x0
 format_99.support2 0x200 0x0
 #
-# NV12 (103), 420_OPAQUE (106) and YUY2 (107): plan 4.12's route (ordinary textures: two planes,
-# or rgba8unorm of half the width) is not built in the Direct3D 12 front yet; the front's own open
-# part (status, gap list), answered absent until then.
-format_103.support1 0xfa80c320 err_80004005
-format_103.support2 0x80 err_80004005
-format_106.support1 0x38000020 err_80004005
-format_106.support2 0x0 err_80004005
-format_107.support1 0x32800320 err_80004005
-format_107.support2 0x80 err_80004005
+# NV12 (103), 420_OPAQUE (106) and YUY2 (107): stored as ordinary textures (plan 4.12: two planes,
+# or rgba8unorm of half the width), with every ability Direct3D defines for them but the video
+# decoder and processor ones, which section 9 answers absent.
+format_103.support1 0xfa80c320 0x280c320
+format_106.support1 0x38000020 0x20
+format_107.support1 0x32800320 0x2800320
 #
 # The other video formats (AYUV, Y410, Y416, P010, P016, Y210, Y216, NV11, AI44, IA44, P8, A8P8):
 # no browser API has them and the plan gives no route (status, departures); answered absent.
