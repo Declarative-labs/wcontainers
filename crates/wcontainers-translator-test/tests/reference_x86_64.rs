@@ -62,7 +62,7 @@ fn start() -> Vec<u128> {
     let mut state = vec![0u128; X86_64.fields.len()];
     state[at("rsp")] = (DATA + PAGE_SIZE).into();
     state[at("rflags")] = START_FLAGS;
-    state[at("mxcsr")] = 0x1f80;
+    state[at("mxcsr")] = wcontainers_x86::MXCSR_AT_START.into();
     state[at("fcw")] = 0x37f;
     state
 }
@@ -319,15 +319,23 @@ fn the_x86_64_reference_answers_by_the_manual() {
         &[0x0f, 0xae, 0x1b],
         |s| {
             s[at("rbx")] = (DATA + 0x200).into();
-            s[at("mxcsr")] = 0x1f80 | 0x6000;
+            s[at("mxcsr")] =
+                (wcontainers_x86::MXCSR_AT_START | wcontainers_x86::MXCSR_ROUNDING).into();
         },
         STEP,
         |l, _| {
             assert_eq!(
                 changed_from(l, 0x200, 4),
-                expected_writes(0x200, &0x7f80u32.to_le_bytes())
+                expected_writes(
+                    0x200,
+                    &(wcontainers_x86::MXCSR_AT_START | wcontainers_x86::MXCSR_ROUNDING)
+                        .to_le_bytes(),
+                )
             );
-            assert_eq!(get(l, "mxcsr"), 0x7f80);
+            assert_eq!(
+                get(l, "mxcsr"),
+                u128::from(wcontainers_x86::MXCSR_AT_START | wcontainers_x86::MXCSR_ROUNDING)
+            );
         },
     );
     check.case(

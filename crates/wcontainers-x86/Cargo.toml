@@ -12,6 +12,7 @@ wcontainers-abi.workspace = true
 zerocopy.workspace = true
 iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder"], optional = true }
 wasm-encoder = { version = "0.263.0", optional = true }
+rustc_apfloat = { version = "0.2.3", optional = true }
 
 [build-dependencies]
 # Each `Code`'s claim group comes from iced's own tables, read at build time.
@@ -24,7 +25,12 @@ iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "d
 [features]
 default = ["translate"]
 # The translation half: the decoder and the meanings. The kernel depends on the core alone, with this off.
-translate = ["dep:iced-x86", "dep:wasm-encoder", "wcontainers-guest-cpu/translate"]
+translate = [
+    "dep:iced-x86",
+    "dep:wasm-encoder",
+    "dep:rustc_apfloat",
+    "wcontainers-guest-cpu/translate",
+]
 
 [lints]
 workspace = true

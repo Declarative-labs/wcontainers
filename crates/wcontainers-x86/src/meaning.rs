@@ -77,7 +77,7 @@ pub fn written(i: &Instruction) -> bool {
                 | Scasq
         );
     }
-    if crate::simd::written(i) {
+    if crate::simd::written(i) || crate::float::written(i) {
         return true;
     }
     // Every operand of these is a general register, memory or an immediate.
@@ -134,6 +134,11 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     }
     if crate::simd::written(i) {
         crate::simd::emit(e, i, m);
+        e.next();
+        return true;
+    }
+    if crate::float::written(i) {
+        crate::float::emit(e, i, m);
         e.next();
         return true;
     }

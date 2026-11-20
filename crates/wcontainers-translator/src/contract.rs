@@ -114,7 +114,7 @@ pub const HOOK_WARN: &str = "warn";
 pub const HOOK_TRAP: &str = "trap";
 
 /// The export of a guest's probe module (`Guest::probe_module`) that gives the host answer.
-pub const PROBE: &str = "probe";
+pub use wcontainers_guest_cpu::PROBE;
 // After these six, the guest's own hooks follow, as `Guest::HOOKS` names and types them.
 
 /// Bytes a runner gives each thread at its block's place: the block (registers, then the stop flag), then

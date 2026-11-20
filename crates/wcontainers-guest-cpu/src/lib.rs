@@ -149,7 +149,8 @@ pub enum TrapKind {
     /// x86 general protection raised by the instruction itself (a privileged instruction, a non-canonical
     /// branch target, a misaligned vector access, `int n`): `SIGSEGV`, `SI_KERNEL`, address 0. Detail 0.
     GeneralProtection = 5,
-    /// An unmasked floating point exception: `SIGFPE`. Detail: the `si_code`.
+    /// An unmasked floating point exception: `SIGFPE`. Detail: what the kernel works the `si_code` out from
+    /// as Linux does (on x86-64 the exception flags of MXCSR that are raised and unmasked).
     FloatException = 6,
     /// x86 `int 4` (`into` has no 64-bit form): `SIGSEGV`, `SI_KERNEL`, a trap with pc after the
     /// instruction, which the kernel tells from general protection by its trap number. Detail 0.

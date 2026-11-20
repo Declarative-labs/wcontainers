@@ -2467,6 +2467,7 @@ version = "0.1.0"
 dependencies = [
  "iced-x86",
  "raw-cpuid",
+ "rustc_apfloat",
  "wasm-encoder 0.263.0",
  "wcontainers-abi",
  "wcontainers-guest-cpu",

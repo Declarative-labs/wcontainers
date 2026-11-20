@@ -3,9 +3,13 @@
 
 use crate::decode::Instruction;
 use crate::flags::{Condition, Flag, Flags, Shape};
+use crate::host::Host;
 use crate::meaning::is_string;
 use crate::operand::*;
-use crate::{FLAGS_WORD, FS_BASE, GS_BASE, RFLAGS, X86_64, X86Block, XMM};
+use crate::{
+    FLAGS_WORD, FLOAT_EXCEPTION, FS_BASE, GS_BASE, MXCSR, MXCSR_AT_START, MXCSR_MODE,
+    MXCSR_TRACKING, RFLAGS, X86_64, X86Block, XMM,
+};
 use core::ops::Range;
 use iced_x86::{Mnemonic, OpKind, Register};
 use wasm_encoder::{InstructionSink, ValType};
@@ -16,12 +20,19 @@ use wcontainers_guest_cpu::*;
 pub enum Control {
     /// The rflags bits user code keeps outside the six flags (TF, DF, NT and ID), at their positions.
     Rflags,
+    /// i32s: MXCSR, whether its flags are kept, and the float hook's unmasked exception.
+    Mxcsr,
+    MxcsrTracking,
+    FloatException,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hook {
     /// `() -> i64`: the clock in nanoseconds, which `rdtsc` and `rdtscp` give as a 1 GHz counter.
     Clock,
+    /// `(operation, a low, a high, b low, b high) -> (low, high)`: one SIMD floating point instruction on
+    /// the exact path (`crate::exact`).
+    Float,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +49,8 @@ pub enum Trap {
     Int1,
     /// `int 4`: a trap Linux sends as SIGSEGV, after the instruction.
     Overflow,
+    /// An unmasked SIMD floating point exception, with MXCSR's raised unmasked flags in this i64 local.
+    FloatException(u32),
 }
 
 /// x86's own slow paths.
@@ -55,7 +68,14 @@ pub enum Reason {
     StringRangeNotAllowed,
     TrapFlagNotStepped,
     AlignmentCheckNotProvided,
+    MxcsrFlagsReadNotKept,
 }
+
+/// The thread state the float hook works on: MXCSR in the block to the end of the private words.
+const FLOAT_STATE: StateBytes = StateBytes {
+    at: MXCSR as u16,
+    len: (FLOAT_EXCEPTION + size_of::<u32>() - MXCSR) as u16,
+};
 
 /// What the container offers beyond the default claims: the AVX setting (x86-64-v3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -121,6 +141,10 @@ const BITS: [Bit; 40] = {
     }
     bits
 };
+
+/// Every xmm register's bit: the float hook reads its destination from the block.
+const XMM_COUNT: u32 = crate::Fxsave::ZERO.xmm.len() as u32;
+const XMM_REGISTERS: Registers = Registers(((1 << XMM_COUNT) - 1) << FIRST_XMM);
 
 /// Every flag's register bit.
 pub(crate) const ALL_FLAGS: Registers = Registers(0x3f << FIRST_FLAG);
@@ -290,39 +314,87 @@ impl Guest for X86_64 {
 
     type Control = Control;
 
-    fn control_ty(_c: Control) -> ValType {
-        ValType::I64
+    fn control_ty(c: Control) -> ValType {
+        match c {
+            Control::Rflags => ValType::I64,
+            _ => ValType::I32,
+        }
     }
 
-    fn control_offset(_c: Control) -> usize {
-        RFLAGS
+    fn control_offset(c: Control) -> usize {
+        match c {
+            Control::Rflags => RFLAGS,
+            Control::Mxcsr => MXCSR,
+            Control::MxcsrTracking => MXCSR_TRACKING,
+            Control::FloatException => FLOAT_EXCEPTION,
+        }
     }
 
-    /// No floating point yet.
+    /// The exact path when MXCSR's mode is not the default or its flags are kept.
     fn float_slow<E: Emitter<Self> + ?Sized>(e: &mut E) {
-        e.sink().i32_const(0);
+        e.get_control(Control::Mxcsr);
+        e.sink()
+            .i32_const(MXCSR_MODE as i32)
+            .i32_and()
+            .i32_const((MXCSR_AT_START & MXCSR_MODE) as i32)
+            .i32_xor();
+        e.get_control(Control::MxcsrTracking);
+        e.sink().i32_or();
     }
 
-    const FLOAT_CONTROLS: &'static [Control] = &[];
+    const FLOAT_CONTROLS: &'static [Control] = &[Control::Mxcsr, Control::MxcsrTracking];
 
     type Hook = Hook;
-    const HOOKS: &'static [HookType] = &[HookType {
-        name: "clock",
-        params: &[],
-        results: &[ValType::I64],
-        registers: Registers::NONE,
-        state: StateBytes::NONE,
-        body: HookBody::Clock,
-    }];
+    const HOOKS: &'static [HookType] = &[
+        HookType {
+            name: "clock",
+            params: &[],
+            results: &[ValType::I64],
+            registers: Registers::NONE,
+            state: StateBytes::NONE,
+            body: HookBody::Clock,
+        },
+        HookType {
+            name: "float",
+            params: &[ValType::I32, ValType::I64, ValType::I64],
+            results: &[ValType::I64, ValType::I64],
+            registers: XMM_REGISTERS,
+            state: FLOAT_STATE,
+            body: HookBody::Cpu,
+        },
+    ];
 
     fn hook_index(h: Hook) -> usize {
         match h {
             Hook::Clock => 0,
+            Hook::Float => 1,
         }
     }
 
-    fn run_hook(hook: usize, _args: &[i64], _state: &mut [u8]) -> HookDone {
-        unreachable!("x86-64 has no hook {hook}")
+    fn run_hook(hook: usize, args: &[i64], state: &mut [u8]) -> HookDone {
+        assert_eq!(
+            hook,
+            Self::hook_index(Hook::Float),
+            "the float hook is x86's own"
+        );
+        let word = |offset: usize| {
+            offset - usize::from(FLOAT_STATE.at)
+                ..offset - usize::from(FLOAT_STATE.at) + size_of::<u32>()
+        };
+        let mut mxcsr = u32::from_le_bytes(state[word(MXCSR)].try_into().unwrap());
+        let wide =
+            |low: i64, high: i64| u128::from(low as u64) | u128::from(high as u64) << u64::BITS;
+        let code = args[0] as i32;
+        let register = word(XMM + usize::from(crate::exact::destination(code)) * size_of::<u128>());
+        let a = &state[register.start..register.start + size_of::<u128>()];
+        let a = u128::from_le_bytes(a.try_into().unwrap());
+        let (result, exception) = crate::exact::run(code, a, wide(args[1], args[2]), &mut mxcsr);
+        state[word(MXCSR)].copy_from_slice(&mxcsr.to_le_bytes());
+        state[word(FLOAT_EXCEPTION)].copy_from_slice(&exception.to_le_bytes());
+        HookDone {
+            results: [result as u64 as i64, (result >> u64::BITS) as u64 as i64],
+            reason: Some(wcontainers_guest_cpu::Reason::ExactFloatingPointRequested as u32),
+        }
     }
 
     type Trap = Trap;
@@ -340,6 +412,11 @@ impl Guest for X86_64 {
             Trap::Int3 => (TrapKind::Breakpoint, TrapDetail::Const(0), TrapPc::After),
             Trap::Int1 => (TrapKind::Breakpoint, TrapDetail::Const(1), TrapPc::After),
             Trap::Overflow => (TrapKind::Overflow, TrapDetail::Const(0), TrapPc::After),
+            Trap::FloatException(code) => (
+                TrapKind::FloatException,
+                TrapDetail::Local(code),
+                TrapPc::At,
+            ),
         }
     }
 
@@ -390,36 +467,24 @@ impl Guest for X86_64 {
             Reason::AlignmentCheckNotProvided,
             "alignment checking asked for, not provided",
         ),
+        (
+            Reason::MxcsrFlagsReadNotKept,
+            "MXCSR's exception flags read while not kept",
+        ),
     ];
 
-    type Host = ();
+    type Host = Host;
 
-    /// Nothing x86 does yet depends on the host's engine.
     fn probe_module() -> Vec<u8> {
-        use wasm_encoder::*;
-        let mut module = Module::new();
-        let mut types = TypeSection::new();
-        types.ty().function([], [ValType::I32]);
-        let mut functions = FunctionSection::new();
-        functions.function(0);
-        let mut exports = ExportSection::new();
-        exports.export("probe", ExportKind::Func, 0);
-        let mut code = CodeSection::new();
-        let mut f = Function::new([]);
-        f.instructions().i32_const(0).end();
-        code.function(&f);
-        module
-            .section(&types)
-            .section(&functions)
-            .section(&exports)
-            .section(&code);
-        module.finish()
+        crate::host::probe_module()
     }
 
-    fn host_from_probe(_answer: i32) {}
+    fn host_from_probe(answer: i32) -> Host {
+        Host::from_probe(answer)
+    }
 
-    fn host_key(_host: ()) -> u32 {
-        0
+    fn host_key(host: Host) -> u32 {
+        host.answer() as u32
     }
 
     type Offer = Offer;
@@ -838,6 +903,8 @@ impl Guest for X86_64 {
             // Answered by design: the clock, not the CPU's own counter; the claims and designed leaves, not the
             // CPU's; AC held clear and TF not stepped.
             Rdtsc | Rdtscp | Cpuid | Popf | Popfq => true,
+            // Intel's approximations are its own (plan 5.8).
+            m if crate::float::estimates(m) => true,
             // Intel leaves the result of 16 bits undefined.
             Bswap => crate::meaning::width(i, 0) == crate::operand::W16,
             m => matches!(

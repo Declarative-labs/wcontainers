@@ -229,6 +229,9 @@ pub trait Guest: Personality {
     fn loaded_max(i: &Self::Instruction) -> Option<(Self::Reg, i64)>;
 }
 
+/// The export of `Guest::probe_module`'s module.
+pub const PROBE: &str = "probe";
+
 /// The first number of a CPU's own slow paths (`Guest::REASONS`); the translator's are below it.
 pub const GUEST_REASONS: u32 = 64;
 

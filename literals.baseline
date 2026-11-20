@@ -7464,7 +7464,6 @@ code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
-code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	7
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	8
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	8
@@ -8182,8 +8181,6 @@ code	crates/wcontainers-x86/src/guest.rs	int	BITS	24
 code	crates/wcontainers-x86/src/guest.rs	int	BITS	40
 code	crates/wcontainers-x86/src/guest.rs	int	BITS	6
 code	crates/wcontainers-x86/src/guest.rs	int	general_bit	8
-code	crates/wcontainers-x86/src/guest.rs	str	<X86_64 as Guest>::probe_module	"probe"
-code	crates/wcontainers-x86/src/guest.rs	str	<X86_64 as Guest>::run_hook	"x86-64 has no hook {hook}"
 code	crates/wcontainers-x86/src/lib.rs	int	Fxsave	16
 code	crates/wcontainers-x86/src/lib.rs	int	Fxsave	16
 code	crates/wcontainers-x86/src/lib.rs	int	Fxsave	16
@@ -8444,7 +8441,6 @@ redefinition	crates/wcontainers-translator-test/tests/smoke.rs	int	PAGE	PAGE = 4
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	BLOCK_AT	BLOCK_AT = 0
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	LOAD = 65536
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	PERMISSIONS_AT	PERMISSIONS_AT = 4096
-redefinition	crates/wcontainers-translator/src/contract.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	CODE = 65536
@@ -8544,7 +8540,6 @@ restated	crates/wcontainers-translator-test/tests/programs.rs	float	measure	1e6
 restated	crates/wcontainers-translator-test/tests/programs.rs	float	switching_speed	1e9
 restated	crates/wcontainers-translator-test/tests/programs.rs	int	stops_at_every_check_change_nothing	1000
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	START_FLAGS	0x202
-restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	start	0x1f80
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	start	0x37f
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x100
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x100
@@ -8558,7 +8553,6 @@ restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x8
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x1000
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x1000
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x10000
-restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x1f80
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x200
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x200
 restated	crates/wcontainers-translator-test/tests/reference_x86_64.rs	int	the_x86_64_reference_answers_by_the_manual	0x200

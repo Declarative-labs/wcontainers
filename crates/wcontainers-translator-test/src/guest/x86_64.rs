@@ -110,7 +110,8 @@ impl GuestTest for X86_64 {
         format!("{text} ({:?})", instruction.code())
     }
 
-    const PROBE_ANSWERS: &'static [i32] = &[0];
+    // Not-a-number results follow x86's rules or not.
+    const PROBE_ANSWERS: &'static [i32] = &[0, 1];
 
     fn offered() -> Vec<&'static str> {
         wcontainers_x86::claims::DEFAULT_FEATURES.to_vec()
@@ -208,8 +209,10 @@ impl GuestTest for X86_64 {
         thread[..size_of::<X86Block>()].copy_from_slice(block.as_bytes());
     }
 
-    /// The float flags are always kept exact so far: nothing of floating point is translated yet.
-    fn track(_thread: &mut [u8]) {}
+    fn track(thread: &mut [u8]) {
+        let at = wcontainers_x86::MXCSR_TRACKING;
+        thread[at..at + size_of::<u32>()].copy_from_slice(&1u32.to_le_bytes());
+    }
 
     fn reconcile(case: &Case, expected: &mut Outcome, _actual: &Outcome) {
         // RF is in the frame of every fault, and the runner's own trap flag in r11 after `syscall`.
@@ -224,6 +227,21 @@ impl GuestTest for X86_64 {
         // AC is never held (plan 5.1): a popped AC reads back clear by design.
         if matches!(instruction.mnemonic(), Mnemonic::Popf | Mnemonic::Popfq) {
             expected.state.0[RFLAGS] &= !u128::from(wcontainers_x86::ALIGNMENT_CHECK);
+        }
+        // The CPU's part of an unmasked SIMD exception is MXCSR's flags; the kernel works out the si_code.
+        if let Stop::FloatException(_) = expected.stop {
+            let mxcsr = expected.state.0[MXCSR] as u32;
+            expected.stop = Stop::FloatException(wcontainers_x86::mxcsr_raised(mxcsr));
+        }
+        // In MXCSR's default mode, with its flags not kept, they keep what they had (plan 5.8).
+        let mode = u128::from(wcontainers_x86::MXCSR_MODE);
+        let flags = u128::from(wcontainers_x86::MXCSR_FLAGS);
+        if !case.tracking
+            && case.state.0[MXCSR] & mode == u128::from(wcontainers_x86::MXCSR_AT_START) & mode
+            && instruction.mnemonic() != Mnemonic::Ldmxcsr
+        {
+            let mxcsr = &mut expected.state.0[MXCSR];
+            *mxcsr = *mxcsr & !flags | case.state.0[MXCSR] & flags;
         }
         if instruction.mnemonic() == Mnemonic::Syscall {
             const R11: usize = 11;
@@ -619,10 +637,11 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     state[RFLAGS] = rflags(&mut draw);
     state[FS] = (draw.next() % USER_TOP).into();
     state[GS] = (draw.next() % USER_TOP).into();
-    state[MXCSR] = wcontainers_x86::MXCSR_AT_START.into();
+    state[MXCSR] = mxcsr(&mut draw).into();
+    let tracking = draw.chance(TRACKED);
     state[FCW] = wcontainers_x86::FCW_AT_START.into();
     for x in &mut state[XMM..XMM + 16] {
-        *x = u128::from(draw.value()) << 64 | u128::from(draw.value());
+        *x = vector(&mut draw);
     }
     let address32 = draw.chance(10);
     let mut memory = None;
@@ -808,9 +827,18 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         }
     }
     // Point the memory operand where the draw says, through its registers or the segment base.
+    let mut seed = None;
     if let Some(m) = memory {
         let size = u64::from(memory_size(&instruction)).max(1);
         let mut to = target(&mut draw, size);
+        // Most `ldmxcsr` cases load a value it takes: a place in the data whose bits above MXCSR's are zero.
+        if code == Code::Ldmxcsr_m32
+            && draw.chance(LOADABLE_MXCSR)
+            && let Some((s, at)) = loadable_mxcsr(&mut draw)
+        {
+            seed = Some(s);
+            to = DATA + at;
+        }
         // Most 16-byte operands aligned, as SSE's aligned forms need.
         if size == 16 && draw.chance(80) {
             to &= !15;
@@ -829,8 +857,97 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     Some(Case {
         code: Encoded::new(&bytes),
         state: State(state),
-        tracking: false,
-        seed: draw.next(),
+        tracking,
+        seed: seed.unwrap_or_else(|| draw.next()),
+    })
+}
+
+/// In a hundred: cases with MXCSR's flags kept, with MXCSR's start value, with its flags drawn, and with an
+/// exception unmasked (of those with a mode drawn); `ldmxcsr` cases aimed at a value it takes.
+const TRACKED: u64 = 50;
+const DEFAULT_MXCSR: u64 = 40;
+const FLAGS_DRAWN: u64 = 50;
+const UNMASKED: u64 = 30;
+const LOADABLE_MXCSR: u64 = 70;
+/// In a hundred: floats drawn negative. An xmm register is single or double lanes or integers.
+const NEGATIVE: u64 = 50;
+const VECTOR_KINDS: u64 = 3;
+/// Data seeds tried for a value `ldmxcsr` takes.
+const SEEDS_TRIED: usize = 8;
+
+/// MXCSR at the start of a case: mostly the default mode, with or without flags, else any mode.
+fn mxcsr(draw: &mut Draw) -> u32 {
+    use wcontainers_x86::{MXCSR_AT_START, MXCSR_FLAGS, MXCSR_MASK_SHIFT, MXCSR_MODE};
+    let flags = draw.next() as u32 & MXCSR_FLAGS;
+    if draw.chance(DEFAULT_MXCSR) {
+        return MXCSR_AT_START | if draw.chance(FLAGS_DRAWN) { flags } else { 0 };
+    }
+    let mut mode = draw.next() as u32 & MXCSR_MODE;
+    if !draw.chance(UNMASKED) {
+        mode |= MXCSR_FLAGS << MXCSR_MASK_SHIFT;
+    }
+    mode | flags
+}
+
+/// A float of `bits` bits weighted toward the edges: signed zeros, infinities, quiet and signaling
+/// not-a-numbers, denormals, the smallest and largest normals, one, and anything.
+fn float(draw: &mut Draw, bits: u32) -> u128 {
+    let fraction = if bits == u32::BITS {
+        f32::MANTISSA_DIGITS
+    } else {
+        f64::MANTISSA_DIGITS
+    } - 1;
+    let all = u128::MAX >> (u128::BITS - bits);
+    let sign = 1u128 << (bits - 1);
+    let exponent = all >> 1 & !((1 << fraction) - 1);
+    let quiet = 1u128 << (fraction - 1);
+    let any = u128::from(draw.next()) & all;
+    let some_fraction = any & ((1 << fraction) - 1);
+    let edges = [
+        0,
+        exponent,
+        exponent | quiet | some_fraction,
+        exponent | (some_fraction & !quiet).max(1),
+        some_fraction,
+        1 << fraction,
+        exponent - 1,
+        (exponent >> 1) & exponent,
+    ];
+    // Every edge as often as anything.
+    let pick = draw.below(edges.len() as u64 + 1) as usize;
+    let Some(&edge) = edges.get(pick) else {
+        return any;
+    };
+    edge | if draw.chance(NEGATIVE) { sign } else { 0 }
+}
+
+/// An xmm register's value: single or double precision lanes, or integers.
+fn vector(draw: &mut Draw) -> u128 {
+    let lanes = |draw: &mut Draw, bits: u32| {
+        (0..u128::BITS / bits).fold(0, |v, n| v | float(draw, bits) << (n * bits))
+    };
+    match draw.below(VECTOR_KINDS) {
+        0 => lanes(draw, u32::BITS),
+        1 => lanes(draw, u64::BITS),
+        _ => u128::from(draw.value()) << u64::BITS | u128::from(draw.value()),
+    }
+}
+
+/// A data seed and an offset in its data that `ldmxcsr` takes, when one turns up in a few seeds.
+fn loadable_mxcsr(draw: &mut Draw) -> Option<(u64, u64)> {
+    let unwritable = !wcontainers_x86::MXCSR_WRITABLE;
+    let mut data = vec![0u8; DATA_BYTES as usize];
+    (0..SEEDS_TRIED).find_map(|_| {
+        let seed = draw.next();
+        crate::layout::fill(seed, &mut data);
+        let start = draw.below(DATA_BYTES) as usize;
+        (0..data.len() - size_of::<u32>())
+            .map(|o| (start + o) % (data.len() - size_of::<u32>()))
+            .find(|&o| {
+                let word = u32::from_le_bytes(data[o..o + size_of::<u32>()].try_into().unwrap());
+                word & unwritable == 0
+            })
+            .map(|o| (seed, o as u64))
     })
 }
 

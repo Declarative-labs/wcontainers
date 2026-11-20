@@ -310,7 +310,7 @@ fn shift(m: Mnemonic) -> Option<(u8, u8)> {
 }
 
 /// The bytes of a vector, of its halves, and of its elements.
-const XMM_BYTES: u32 = size_of::<u128>() as u32;
+pub(crate) const XMM_BYTES: u32 = size_of::<u128>() as u32;
 const HALF: u8 = (XMM_BYTES / 2) as u8;
 const BYTE: u32 = size_of::<u8>() as u32;
 const WORD: u32 = size_of::<u16>() as u32;

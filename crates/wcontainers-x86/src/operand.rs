@@ -257,7 +257,12 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
     use Mnemonic::*;
     Some(match (at, ins.mnemonic()) {
         // A nop's memory operand is never reached: no access, no check, no fault.
-        (_, Nop | Reservednop | Lea) => return None,
+        // Nor is a prefetch's: it is a hint that never faults.
+        (_, Nop | Reservednop | Lea | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2) => {
+            return None;
+        }
+        (0, Ldmxcsr) => AccessKind::Read,
+        (0, Stmxcsr) => AccessKind::Write,
         (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt | Clflush | Xlatb) => {
             AccessKind::Read
         }

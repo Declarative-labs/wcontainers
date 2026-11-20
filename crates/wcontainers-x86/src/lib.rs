@@ -10,11 +10,17 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 #[cfg(feature = "translate")]
 mod decode;
 #[cfg(feature = "translate")]
+mod exact;
+#[cfg(feature = "translate")]
 mod flags;
+#[cfg(feature = "translate")]
+mod float;
 #[cfg(feature = "translate")]
 mod guest;
 #[cfg(feature = "translate")]
 mod habits;
+#[cfg(feature = "translate")]
+mod host;
 #[cfg(feature = "translate")]
 mod meaning;
 #[cfg(feature = "translate")]
@@ -31,7 +37,11 @@ pub use decode::{Instruction, claim_group, decode};
 #[cfg(feature = "translate")]
 pub use flags::{Condition, Flag, Flags, Shape, Test};
 #[cfg(feature = "translate")]
+pub use float::reciprocal;
+#[cfg(feature = "translate")]
 pub use guest::{Control, Offer, Reason, Trap};
+#[cfg(feature = "translate")]
+pub use host::Host;
 #[cfg(feature = "translate")]
 pub use meaning::written;
 #[cfg(feature = "translate")]
@@ -101,6 +111,44 @@ impl Fxsave {
 /// thread.
 pub const FCW_AT_START: u16 = 0x37f;
 pub const MXCSR_AT_START: u32 = 0x1f80;
+
+/// MXCSR's fields (Intel SDM Vol. 1 10.2.3): the six sticky exception flags (invalid, denormal, divide by
+/// zero, overflow, underflow, precision) in bits 0 to 5, denormals are zero, the six masks in the same
+/// order from bit 7, the rounding control (nearest, down, up, toward zero) and flush to zero.
+pub const MXCSR_INVALID: u32 = 1;
+pub const MXCSR_DENORMAL: u32 = 1 << 1;
+pub const MXCSR_DIVIDE_BY_ZERO: u32 = 1 << 2;
+pub const MXCSR_OVERFLOW: u32 = 1 << 3;
+pub const MXCSR_UNDERFLOW: u32 = 1 << 4;
+pub const MXCSR_PRECISION: u32 = 1 << 5;
+pub const MXCSR_FLAGS: u32 = (MXCSR_PRECISION << 1) - 1;
+pub const MXCSR_DENORMALS_ARE_ZERO: u32 = 1 << 6;
+pub const MXCSR_MASK_SHIFT: u32 = 7;
+pub const MXCSR_ROUNDING_SHIFT: u32 = 13;
+pub const MXCSR_ROUNDING: u32 = 3 << MXCSR_ROUNDING_SHIFT;
+pub const MXCSR_FLUSH_TO_ZERO: u32 = 1 << 15;
+/// The bits that set the mode, and the bits a program may set (`ldmxcsr` of any other is general
+/// protection); the i7-8750H's MXCSR_MASK.
+pub const MXCSR_MODE: u32 = MXCSR_FLUSH_TO_ZERO | (MXCSR_FLUSH_TO_ZERO - 1) & !MXCSR_FLAGS;
+pub const MXCSR_WRITABLE: u32 = MXCSR_MODE | MXCSR_FLAGS;
+
+/// MXCSR's exception flags that are raised and unmasked, from which Linux's `fpu__exception_code` works out
+/// the `si_code` of an unmasked SIMD floating point exception.
+pub const fn mxcsr_raised(mxcsr: u32) -> u32 {
+    mxcsr & !(mxcsr >> MXCSR_MASK_SHIFT) & MXCSR_FLAGS
+}
+
+/// x86's words of the thread state after the block, which the kernel never sees.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
+)]
+#[repr(C)]
+pub struct X86Private {
+    /// Not zero once the program wrote MXCSR, so its exception flags are kept exact.
+    pub mxcsr_tracking: u32,
+    /// The `si_code` of the unmasked SIMD floating point exception the float hook last met, 0 for none.
+    pub float_exception: u32,
+}
 /// The bits of an x87 slot that hold its register.
 pub const X87_REGISTER_BITS: u32 = 80;
 
@@ -120,6 +168,11 @@ pub const XMM: usize = FXSAVE + core::mem::offset_of!(Fxsave, xmm);
 pub const YMM_HIGH: usize = core::mem::offset_of!(X86Block, ymm_high);
 /// The i32 stop flag after the block.
 pub const STOP_FLAG: usize = size_of::<X86Block>();
+/// The private words, from the start of the block.
+pub const MXCSR_TRACKING: usize =
+    <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, mxcsr_tracking);
+pub const FLOAT_EXCEPTION: usize =
+    <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, float_exception);
 
 /// The rflags bits of the six arithmetic flags, and those of `X86Block::rflags`.
 pub const CF: u64 = 1;
@@ -188,7 +241,7 @@ impl Personality for X86_64 {
     const STOP_FLAG_OFFSET: usize = STOP_FLAG;
     const BLOCK_SIZE: usize =
         (STOP_FLAG + size_of::<i32>()).next_multiple_of(wcontainers_guest_cpu::BLOCK_ALIGNMENT);
-    const PRIVATE_BYTES: usize = 0;
+    const PRIVATE_BYTES: usize = size_of::<X86Private>();
 
     fn initial_block(pc: u64, sp: u64) -> X86Block {
         let mut block = X86Block {
