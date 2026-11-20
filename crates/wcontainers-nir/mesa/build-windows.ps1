@@ -11,8 +11,6 @@
 
 $FlexBisonVersion = '2.5.25'
 $FlexBisonUrl = "https://github.com/lexxmark/winflexbison/releases/download/v$FlexBisonVersion/win_flex_bison-$FlexBisonVersion.zip"
-$LlvmVersion = '21.1.8'
-$LlvmName = "clang+llvm-$LlvmVersion-x86_64-pc-windows-msvc"
 $LlvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmName.tar.xz"
 
 $Here = $PSScriptRoot
@@ -32,6 +30,10 @@ if (-not (Test-Path (Join-Path $Llvm 'bin\llvm-config.exe'))) {
     $archive = Fetch $LlvmUrl "$LlvmName.tar.xz"
     & $Python -c "import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2], filter='tar')" $archive $Tools
     Run 'unpacking LLVM'
+    # The rig's hidden desktop runs conformance cases as a user the unpacked folder does not
+    # admit; the local Users group (its well-known SID, as Windows translates the group's name)
+    # may read and run it, for lldb.
+    & icacls $Llvm /grant '*S-1-5-32-545:(OI)(CI)RX' /T /Q | Out-Null; Run 'icacls LLVM'
 }
 
 $env:PATH = "$FlexBison;$(Join-Path $Llvm 'bin');$env:PATH"

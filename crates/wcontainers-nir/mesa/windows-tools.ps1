@@ -12,6 +12,11 @@ $PythonVersion = '3.13.1'
 $PythonUrl = "https://www.nuget.org/api/v2/package/python/$PythonVersion"
 $PythonPackages = @('meson==1.12.1', 'ninja==1.13.0', 'mako==1.3.10', 'PyYAML==6.0.2', 'packaging==25.0')
 
+# LLVM's own Windows release: llvmpipe compiles with it, bindgen reads with its libclang, and its
+# lldb debugs a crashing case.
+$LlvmVersion = '21.1.8'
+$LlvmName = "clang+llvm-$LlvmVersion-x86_64-pc-windows-msvc"
+
 $Tools = Join-Path $Root 'tools'
 $Downloads = Join-Path $Tools 'downloads'
 New-Item -ItemType Directory -Force -Path $Tools, $Downloads | Out-Null
