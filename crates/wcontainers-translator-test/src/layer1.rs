@@ -443,12 +443,7 @@ pub enum Stop {
 
 /// The reference's result as an [`Outcome`].
 pub fn reference_outcome(landed: &Landed) -> Outcome {
-    const SIGILL: u32 = 4;
-    const SIGBUS: u32 = 7;
-    const SIGTRAP: u32 = 5;
-    const SIGSEGV: u32 = 11;
-    const SIGSYS: u32 = 31;
-    const BUS_ADRALN: u32 = 1;
+    use linux_raw_sys::general::{BUS_ADRALN, SIGBUS, SIGILL, SIGSEGV, SIGSYS, SIGTRAP};
     let pc = landed.registers[32];
     let stop = match landed.signal {
         SIGILL if pc == CODE => Stop::Illegal,

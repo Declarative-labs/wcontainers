@@ -22,7 +22,7 @@ gimli = { version = "0.34.0", default-features = false, features = ["read", "std
 zerocopy.workspace = true
 rayon = "1.12.0"
 rustc-hash = "2.1.3"
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "no_std"] }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "general", "no_std"] }
 
 [dev-dependencies]
 blake3 = "1"

@@ -7333,13 +7333,9 @@ code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::load_mixed	8
 code	crates/wcontainers-translator-test/src/runner.rs	int	code_at	16
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	63
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	64
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	214
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	64
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	66
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	8
-code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	8
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	93
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	94
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"built addresses"
@@ -7441,12 +7437,6 @@ redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_UNCO
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	NZCV	NZCV = 4026531840
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	PAGE = 4096
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors::FPSIMD_MAGIC	FPSIMD_MAGIC = 1179680769
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::BUS_ADRALN	BUS_ADRALN = 1
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGBUS	SIGBUS = 7
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGILL	SIGILL = 4
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGSEGV	SIGSEGV = 11
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGSYS	SIGSYS = 31
-redefinition	crates/wcontainers-translator-test/src/layer1.rs	int	reference_outcome::SIGTRAP	SIGTRAP = 5
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_EXECFN	AT_EXECFN = 31
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_HWCAP	AT_HWCAP = 16
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_HWCAP2	AT_HWCAP2 = 26
@@ -7456,10 +7446,6 @@ redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack:
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_PHENT	AT_PHENT = 4
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_PHNUM	AT_PHNUM = 5
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_RANDOM	AT_RANDOM = 25
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::EBADF	EBADF = 9
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::EFAULT	EFAULT = 14
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::EINVAL	EINVAL = 22
-redefinition	crates/wcontainers-translator-test/src/runner.rs	int	stand_in::ENOSYS	ENOSYS = 38
 redefinition	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	LOAD = 65536
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	BLOCK_AT	BLOCK_AT = 0
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	LOAD = 65536
@@ -7549,7 +7535,6 @@ restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_bina
 restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e6
 restated	crates/wcontainers-translator-test/tests/binaries.rs	int	LOAD	0x10_0000
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	plan	256
-restated	crates/wcontainers-translator-test/tests/changes.rs	int	programs_with_changes_match_none	1024
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	start	0x1000
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	alloca_loop_off_the_stack	1000u32
 restated	crates/wcontainers-translator-test/tests/checks.rs	int	index_written_back_by_a_narrow_load	0x0100
@@ -7573,7 +7558,6 @@ restated	crates/wcontainers-translator-test/tests/layer3.rs	int	csmith_programs_
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_bound	1e9
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_translating_at_run_time	1e3
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_translating_at_run_time	1e3
-restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	1024
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	256
 restated	crates/wcontainers-translator-test/tests/output.rs	int	LOOK_AHEADS	4096
 restated	crates/wcontainers-translator-test/tests/output.rs	str	bench	"thread"
@@ -7585,9 +7569,7 @@ restated	crates/wcontainers-translator-test/tests/programs.rs	str	a_container_th
 restated	crates/wcontainers-translator-test/tests/programs.rs	str	a_programs_own_ending_is_its_result	"alpine:latest"
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	0x10000
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	0x1000
-restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	1024
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	stop_flag_raised_while_running	0x1000
-restated	crates/wcontainers-translator-test/tests/smoke.rs	int	stop_flag_raised_while_running	1024
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	0x10000
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOOK_AHEADS	256
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOOK_AHEADS	4096

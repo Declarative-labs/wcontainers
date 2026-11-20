@@ -1375,12 +1375,11 @@ fn file(host: &mut Host, fd: u64) -> Option<&mut Vec<u8>> {
 
 /// The stand-in kernel.
 fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
-    const EBADF: i64 = 9;
-    const EFAULT: i64 = 14;
-    const ENOSYS: i64 = 38;
-    const EINVAL: i64 = 22;
-    // Linux's limit on the vectors of one writev.
-    const IOV_MAX: u64 = 1024;
+    // The error numbers, the vector limit and `iovec` are the same on every 64 bit architecture Linux has, so
+    // the host's are the guest's.
+    use linux_raw_sys::errno::{EBADF, EFAULT, EINVAL, ENOSYS};
+    use linux_raw_sys::general::{UIO_MAXIOV, iovec};
+    let error = |errno: u32| -i64::from(errno);
     let [a0, a1, a2, ..] = call.arguments;
     let memory = caller.data().memory.unwrap();
     // Guest bytes, if every one is on a page the guest may read. Like a write to a pipe on Linux, a buffer
@@ -1410,10 +1409,10 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
         // write
         64 => {
             if file(caller.data_mut(), a0).is_none() {
-                return -EBADF;
+                return error(EBADF);
             }
             let Some(bytes) = read(caller, a1, a2) else {
-                return -EFAULT;
+                return error(EFAULT);
             };
             file(caller.data_mut(), a0)
                 .unwrap()
@@ -1423,31 +1422,36 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
         // writev
         66 => {
             if file(caller.data_mut(), a0).is_none() {
-                return -EBADF;
+                return error(EBADF);
             }
             // Linux takes the vector count as a 32 bit number.
             let count = u64::from(a2 as u32);
-            if count > IOV_MAX {
-                return -EINVAL;
+            if count > u64::from(UIO_MAXIOV) {
+                return error(EINVAL);
             }
-            let Some(vectors) = read(caller, a1, 16 * count) else {
-                return -EFAULT;
+            let Some(vectors) = read(caller, a1, size_of::<iovec>() as u64 * count) else {
+                return error(EFAULT);
             };
             let vectors: Vec<(u64, u64)> = vectors
-                .chunks(16)
+                .chunks(size_of::<iovec>())
                 .map(|v| {
-                    let half = |at: usize| u64::from_le_bytes(v[at..at + 8].try_into().unwrap());
-                    (half(0), half(8))
+                    let word = |at: usize| {
+                        u64::from_le_bytes(v[at..at + size_of::<u64>()].try_into().unwrap())
+                    };
+                    (
+                        word(std::mem::offset_of!(iovec, iov_base)),
+                        word(std::mem::offset_of!(iovec, iov_len)),
+                    )
                 })
                 .collect();
             // A length that is negative as a signed number is invalid, checked before anything is read.
             if vectors.iter().any(|&(_, length)| (length as i64) < 0) {
-                return -EINVAL;
+                return error(EINVAL);
             }
             let mut gathered = Vec::new();
             for (base, length) in vectors {
                 let Some(bytes) = read(caller, base, length) else {
-                    return -EFAULT;
+                    return error(EFAULT);
                 };
                 gathered.extend_from_slice(&bytes);
             }
@@ -1468,7 +1472,7 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
         number => {
             let reason = Reason::SystemCallNotImplemented.number();
             slow_path(caller.data_mut(), reason, number, Duration::ZERO);
-            -ENOSYS
+            error(ENOSYS)
         }
     }
 }
