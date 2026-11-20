@@ -13231,7 +13231,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instru
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::math	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	10
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	3
@@ -23204,7 +23203,6 @@ restated	crates/wcontainers-shaders/tests/early_draw.rs	float	case	256.0
 restated	crates/wcontainers-shaders/tests/early_draw.rs	float	case	4096.0
 restated	crates/wcontainers-shaders/tests/early_draw.rs	int	case	4096
 restated	crates/wcontainers-shaders/tests/filter_draw.rs	float	SHIFT	256.0
-restated	crates/wcontainers-shaders/tests/fuzz.rs	float	md5_block	4294967296.0
 restated	crates/wcontainers-shaders/tests/glsl_writer.rs	int	try_write_glsl	300
 restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	SCENE_WIDTH	256
 restated	crates/wcontainers-shaders/tests/tessellation_draw.rs	int	direct3d	1024

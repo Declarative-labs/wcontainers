@@ -1,8 +1,83 @@
-# Shaders track (G6): the record of runs 1 to 61
+# Shaders track (G6): the record of runs 1 to 62
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
 superseded by the status file's.
+
+## G6a run 4 (run 62): the fourth check's findings at the pushed tip
+
+Every figure here comes from runs of the code at 6adeeef7 (the commits after it change only this
+file and the history file). Logs in scratch `graphics-shaders/g6a4`. No branch had anything new to
+merge (the NIR branch is not merged: nothing of it is needed here). G6a run 3's section moved to
+the history file. The only code change of this run is in tests built on Windows only.
+
+Runs at the tip:
+- Laptop (i7-8750H, load 0.0 to 1.4 before and after, ours alone; 4 cargo jobs under choom), the
+  whole suite with every corpus and glslang 8.13 (laptop-suite.log, `suite-run49.sh`): 108 passed,
+  0 failed (`--include-ignored --skip mutated`). Every corpus's verdicts equal their records.
+- WebAssembly under wasmtime on the laptop (load 0.0 to 1.6, wasm.log, scratch `g6a4/wasm.sh`,
+  which now mounts the runner corpora too): the corpus test's 11 tests pass, the runner's
+  included. Of the files both builds write (WGSL, `cache.txt`, `converter-version.txt`; the
+  native build also writes GLSL, which the WebAssembly build has no back end for), 27 WGSL files
+  differ, all DXBC (A8: the same five as before and 22 of the runner's), and so the `cache.txt` of
+  the four corpora holding them; every `converter-version.txt` equal.
+- Rented x86 machine (192 processors, load 41 at the start, 40 at the end, from others):
+  `cargo fmt --all -- --check` clean, `cargo clippy -p wcontainers-shaders --all-targets -- -D
+  warnings` clean, the whole suite with every corpus (no glslang): 108 passed, 0 failed
+  (x86-final.log).
+- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken): Windows clippy with
+  warnings denied clean (win-clippy-1.log); every test binary at default seeds (gpu.log): 151
+  passed, 0 failed, 5 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`).
+  `stage_draw` at seed 6201, 16 cases: both tests pass (antialiased lines 192 comparisons,
+  primitive numbers 224, none failed). `geometry_draw` at the check's seeds, the failures all
+  named in A10 and A12: seed 6201, 20 cases: `geometry_shaders_draw_as_direct3d_does` 560
+  comparisons, 5 failed (6202 `vs_cull` LineStrip, 6205, 6210, 6211, 6214 `gs_clip`), the replay
+  440, 4 failed (the four `gs_clip`), depth clamp 120, 1 failed (6212 `gs_cut` TriangleStrip, 20
+  steps); seed 9001, 16 cases: 448/4, 352/2, 96/1; seed 5101, 12 cases: 336/3, 264/1, 72/2; seed
+  4747, 12 cases: 336/4, 264/2, 72/1 (the same cases as in G6a run 3). The other five tests pass
+  at every seed. No case failed for ours drawing on an index list Direct3D drew nothing of.
+- Chrome on the desktop (one GPU job, chrome.log), the files the laptop's suite wrote at the tip:
+  WGSL 4,320 compile (corpus 185, games 527, games DXIL 441, own 135 and 73, rig 79 and 56, runner
+  1,438 and 1,386), none fail. GLSL ES 3.00: 3,576 compile, 40 fail, and each of the 40 is a shader
+  whose record names the need (`MULTISAMPLE_READ` 22, `SAMPLE_SHADING|MULTISAMPLE_READ` 1,
+  `PRIMITIVE_INDEX` 8, `CLIP_DISTANCE|CULL_DISTANCE` 9).
+- Literal check on the desktop (check.txt): passes, no line to add or delete; `literals.baseline`
+  unchanged (588 lines of this crate's src, build.rs, tests and examples).
+- Fuzz not run again: `src` is unchanged since 2545c0a9, whose figures A11 gives.
+- Clean-up at the end: this branch's build folders on the laptop (6.2 GB), the x86 machine (4.4 GB)
+  and the desktop (8.4 GB) deleted; nothing built on the Mac (only `cargo fmt`). Scratch `g6a4`
+  keeps the logs and the files written (51 MB).
+
+The check's findings, each against the tip:
+1. Geometry and tessellation inputs missing from the gap list (blocking): A13 (`GeometryPatchInput`,
+   5 runner files) and A14 (`HullWithoutControlPoints`, 1) are on the gap list now and on pass bar
+   item 4; the DXBC `AtomicSignedness` (`uav-atomics-5-cs`) is in "Also open" beside the DXIL case.
+   So that no other refusal is left out, the gap list now ends with every refusal in the nine
+   records, by name and count, each put with its gap, its absence or its key.
+2. `stage_draw` failing on its own empty scene at seed 6211 (minor): fixed. The scene choice of
+   `geometry_draw` (`scene`, with `drawn_texels`) moved to the tests' shared module, and both
+   `stage_draw` tests use it: an indexed list Direct3D draws nothing of is passed over for the
+   seed's next, and ours must draw nothing of it either (a failure by name if it does). Seed 6201,
+   16 cases now passes (it covers 6211); default seeds unchanged.
+3. One texel of a `vs_cull` line strip outside every gap (minor): recorded in A10 (seed 6202) with
+   its texel, colours and distance from the plane, cause not found, and pointed to from Known gaps.
+4. More seeds of A10 and A12 (minor): added (6205, 6210, 6211, 6214 to A10; 6212 to A12, and 4753,
+   which this crate's own seed 4747 runs had shown, to A12).
+5. The Chrome figure credited to a run not at the tip (minor): Chrome compiled the files written at
+   this tip (above), and pass bar item 2 cites this section.
+6. "All 197 write refusals are features GLSL ES 3.00 lacks" (minor): item 2 now says 184 end at the
+   back end's GLSL ES 3.00 refusal and 13 at its "sampled through two samplers (not built)", with
+   naga's own reason a lacking feature for all 197; the 13 are told to the WebGL 2 track under
+   "Asked of other tracks".
+7. `WEBGL_DECLARABLE` a second copy of caps.rs (minor): still open, for the reason given in G6a run
+   3 (history): the fact lives in the WebGL 2 back end's crate, which offers no public form of it;
+   asked of that track, which had nothing new on its branch this run.
+8. The WebAssembly comparison leaving out the runner corpora (minor): fixed. The WebAssembly run now mounts the
+   runner corpora (scratch `g6a4/wasm.sh`), and the runner test passes there. It found 22 more
+   DXBC files whose expression order differs between the two builds, the same cause as before at
+   two more places in dxbc-spirv; A8 now lists all 27 and what differs in each kind.
+
+The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner), since run 57.
 
 ## G6a run 3 (run 61): the third check's findings at the pushed tip
 
