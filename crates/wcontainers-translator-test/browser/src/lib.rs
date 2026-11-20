@@ -93,6 +93,7 @@ pub extern "C" fn translate(
     });
     match result {
         Ok(translation) => {
+            READ.set(translation.read);
             let mut modules = translation.modules.into_iter().map(|m| m.wasm);
             let first = modules.next().expect("a translation has a module");
             MORE.set(modules.collect());
@@ -144,6 +145,21 @@ fn translate_for<C: Guest>(
 thread_local! {
     /// The code modules of the last translation after its first.
     static MORE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    /// The blob bytes the last translation was made from.
+    static READ: RefCell<Vec<core::ops::Range<u64>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The blob bytes the last translation was made from, as little-endian u64 pairs of start and end. Returns
+/// their length in bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn translation_read() -> i32 {
+    let bytes = READ.with_borrow(|read| {
+        read.iter()
+            .flat_map(|r| [r.start, r.end])
+            .flat_map(u64::to_le_bytes)
+            .collect()
+    });
+    answer(bytes)
 }
 
 /// How many code modules the last translation has after the one [`translate`] gave.
@@ -315,6 +331,8 @@ pub extern "C" fn contract() -> i32 {
         "run": RUN,
         "bound": wcontainers_translator::BOUND,
         "unwindLeave": UNWIND_LEAVE,
+        "unwindGoToExact": UNWIND_GO_TO_EXACT,
+        "codeChangesDetected": G::CODE_CHANGES == wcontainers_guest_cpu::CodeChanges::Detected,
         "hookSyscall": HOOK_SYSCALL,
         "hookStop": HOOK_STOP,
         "hookMemoryFault": HOOK_MEMORY_FAULT,

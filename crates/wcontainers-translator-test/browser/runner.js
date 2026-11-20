@@ -95,8 +95,15 @@ function run({
   // The whole thread state when the thread stopped, which a system call's result may change afterwards.
   let stateAtStop = null;
   let thread = null;
-  // What each page allows, as the permission table says.
+  // What each page allows, as the kernel said; the table leaves out what the locks hold back.
   const pagePermissions = new Uint8Array(permissionPages);
+  // The write locks held on each page, a bit for each reason: LOCK_CODE, the page holds translated code.
+  const LOCK_CODE = 1;
+  const locks = new Uint8Array(permissionPages);
+  // Translate the instruction at this address without locking its page, at the next exact load there.
+  let exactMark = null;
+  // Each translation instantiated: the guest bytes it was made from, the addresses it gave pieces.
+  let translations = [];
   // By address, the piece of look-ahead none of the one instruction there, for the exact slot.
   const exactPieces = new Map();
   // The lookup table's next free slot.
@@ -150,18 +157,57 @@ function run({
     Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 1);
   }
 
-  function setPermissions(start, end, permissions, table) {
+  // What the table says a page allows: what the kernel said, without writing while a lock is held.
+  const allowed = (page) =>
+    page < permissionPages ? (locks[page] ? pagePermissions[page] & ~contract.write : pagePermissions[page]) : 0;
+  function writePermissionByte(page) {
+    const bits = (p, read, write) => (p & contract.read ? read : 0) | (p & contract.write ? write : 0);
+    new Uint8Array(state.buffer)[PERMISSIONS_AT + page] =
+      bits(allowed(page), contract.pageRead, contract.pageWrite) |
+      bits(allowed(page + 1), contract.nextPageRead, contract.nextPageWrite);
+  }
+
+  function setPermissions(start, end, permissions) {
     const first = Math.floor(start / pageSize);
     const last = Math.ceil(end / pageSize);
-    for (let page = first; page < last; page++) table[page] = permissions;
-    const bits = (p, read, write) => (p & contract.read ? read : 0) | (p & contract.write ? write : 0);
-    const bytes = new Uint8Array(state.buffer);
-    for (let page = Math.max(first - 1, 0); page < Math.min(last, permissionPages); page++) {
-      const next = page + 1 < permissionPages ? table[page + 1] : 0;
-      bytes[PERMISSIONS_AT + page] =
-        bits(table[page], contract.pageRead, contract.pageWrite) |
-        bits(next, contract.nextPageRead, contract.nextPageWrite);
+    for (let page = first; page < last; page++) pagePermissions[page] = permissions;
+    for (let page = Math.max(first - 1, 0); page < Math.min(last, permissionPages); page++) writePermissionByte(page);
+  }
+
+  function setLock(page, lock, held) {
+    const before = locks[page];
+    locks[page] = held ? before | lock : before & ~lock;
+    if ((before === 0) !== (locks[page] === 0)) {
+      writePermissionByte(page);
+      if (page > 0) writePermissionByte(page - 1);
     }
+  }
+
+  // Lock for code every page of the guest byte ranges a translation was made from.
+  function lockCode(read) {
+    if (!contract.codeChangesDetected) return;
+    const size = BigInt(pageSize);
+    for (const [start, end] of read) {
+      for (let page = start / size; page < (end + size - 1n) / size; page++) {
+        if (page < BigInt(permissionPages)) setLock(Number(page), LOCK_CODE, true);
+      }
+    }
+  }
+
+  // Code was written on a page locked for code: the lookup forgets every piece of every translation made from
+  // the page, and the lock is given back. Counted.
+  function codeWritten(page) {
+    const start = BigInt(page * pageSize);
+    const end = start + BigInt(pageSize);
+    const touches = (read) => read.some(([s, e]) => s < end && start < e);
+    translations = translations.filter((t) => {
+      if (!touches(t.read)) return true;
+      for (const address of t.addresses) setSlot(address, 0);
+      return false;
+    });
+    exactPieces.clear();
+    setLock(page, LOCK_CODE, false);
+    slowPath(reason("code written without announcement"), start, 0);
   }
 
   // The stand-in kernel.
@@ -244,6 +290,7 @@ function run({
 
   const hooks = {
     [contract.hookSyscall]: (number, ...a) => {
+      exactMark = null;
       // Instruction cases end at a system call, as the reference's do.
       if (stopAtSyscall) {
         stop({ kind: "syscall" });
@@ -253,6 +300,7 @@ function run({
       return standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v)));
     },
     [contract.hookStop]: () => {
+      exactMark = null;
       Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 0);
       // The runner raised the flag itself to make the thread leave.
       if (stopped) return contract.unwindLeave;
@@ -262,6 +310,13 @@ function run({
     },
     [contract.hookMemoryFault]: (address, access) => {
       address = BigInt.asUintN(64, address);
+      exactMark = null;
+      const page = Number(address / BigInt(pageSize));
+      if (access === 1 && page < permissionPages && locks[page] & LOCK_CODE && pagePermissions[page] & contract.write) {
+        codeWritten(page);
+        exactMark = registers().pc;
+        return contract.unwindGoToExact;
+      }
       slowPath(reason("memory fault"), address, 0);
       const fault = memoryFault(address);
       if (fault === "page") stop({ kind: "memory fault", address: address.toString(), write: access === 1 });
@@ -274,7 +329,9 @@ function run({
     [contract.hookLoadCode]: (address, exact) => {
       address = BigInt.asUintN(64, address);
       const table = thread.exports[contract.lookup];
-      if (exact && exactPieces.has(address)) {
+      const unlocked = exact && exactMark === address;
+      exactMark = null;
+      if (exact && !unlocked && exactPieces.has(address)) {
         table.set(contract.exactSlot, exactPieces.get(address));
         return 1;
       }
@@ -301,8 +358,9 @@ function run({
       const code = { bytes: guest().slice(Number(runStart), Number(runEnd)), load: runStart };
       const offset = address - runStart;
       if (exact) {
-        instantiateCode(code, offset, 2, 0, 1, true);
-        exactPieces.set(address, table.get(contract.exactSlot));
+        instantiateCode(code, offset, 2, 0, 1, true, unlocked);
+        // A piece of an unlocked page may be written over unseen, so it is not kept.
+        if (!unlocked) exactPieces.set(address, table.get(contract.exactSlot));
       } else {
         // Code made at run time never takes the place of a piece the lookup finds.
         if (slotOf(address) !== 0) throw new Error(`code asked for at 0x${address.toString(16)}, which has a piece`);
@@ -315,6 +373,7 @@ function run({
     },
     [contract.hookWarn]: (reasonIndex, detail) => slowPath(reasonIndex, BigInt.asUintN(64, detail), 0),
     [contract.hookTrap]: (kind, detail) => {
+      exactMark = null;
       const name = contract.trapKinds[kind];
       stop({ kind: name, detail: BigInt.asUintN(64, detail).toString() });
       if (name === "unsupported") slowPath(reason("unsupported instruction reached"), snapshot.pc, 0);
@@ -379,7 +438,8 @@ function run({
 
   // Translate code `b` (its bytes, where they are, and where in them the code is, all of it when not said)
   // from `start` and instantiate it, as `instantiateModule` says.
-  function instantiateCode(b, start, lookAhead, omit, bound = 0, exact = false) {
+  // With `unlocked`, the pages it was made from are not locked for code.
+  function instantiateCode(b, start, lookAhead, omit, bound = 0, exact = false, unlocked = false) {
     // The translator's memory may grow while it makes room, so its buffer is taken after.
     const at = translator.input(b.bytes.length);
     new Uint8Array(translator.memory.buffer, at, b.bytes.length).set(b.bytes);
@@ -397,7 +457,13 @@ function run({
     if (length < 0) throw new Error(`no translation from ${start}`);
     const modules = [result(length)];
     for (let i = 0; i < translator.more_modules(); i++) modules.push(result(translator.more_module(i)));
-    for (const bytes of modules) instantiateModule(new WebAssembly.Module(bytes), b, exact);
+    const words = new BigUint64Array(result(translator.translation_read()).slice().buffer);
+    const read = [];
+    for (let i = 0; i < words.length; i += 2) read.push([b.load + words[i], b.load + words[i + 1]]);
+    if (!unlocked) lockCode(read);
+    const addresses = [];
+    for (const bytes of modules) addresses.push(...instantiateModule(new WebAssembly.Module(bytes), b, exact));
+    if (!exact) translations.push({ read, addresses });
   }
 
   // The blob offsets of a code module's pieces, in slot order, from its description section.
@@ -450,7 +516,9 @@ function run({
       },
       [contract.thread]: thread.exports,
     });
-    if (!exact) offsets.forEach((offset, i) => setSlot(b.load + offset, first + i));
+    if (exact) return [];
+    offsets.forEach((offset, i) => setSlot(b.load + offset, first + i));
+    return offsets.map((offset) => b.load + offset);
   }
 
   const threadModule = new WebAssembly.Module(result(translator.thread_module()));
@@ -465,7 +533,7 @@ function run({
     },
   });
 
-  for (const [start, end, permissions] of regions) setPermissions(start, end, permissions, pagePermissions);
+  for (const [start, end, permissions] of regions) setPermissions(start, end, permissions);
   // The code area of instruction cases holds the guest's filler around the instruction: [start, end, byte].
   // Fresh memory is already 0, and writing it would only take memory.
   if (fill && fill[2] !== 0) guest().fill(fill[2], fill[0], fill[1]);
@@ -505,6 +573,9 @@ function run({
     for (let i = 0; i < cases; i++) {
       const bytes = caseBytes.subarray(i * size, (i + 1) * size);
       const code = bytes.slice(1, stateAt);
+      // The case's code replaces the last one's, as a kernel's write would: its pieces and locks go.
+      for (let page = 0; page < permissionPages; page++) if (locks[page]) setLock(page, LOCK_CODE, false);
+      translations = [];
       guest().set(code, load);
       loaded.bytes = code;
       loaded.codeEnd = BigInt(bytes[0]);
