@@ -1108,8 +1108,11 @@ fn ours_replayed<B: Backend>(
         ..Default::default()
     };
     let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY, None);
-    let gs = gs.expect("a geometry shader");
-    let mut replay = GeometryReplay::new(b, &vs, &gs, stream.map(|s| s.0))?;
+    let mut replay = match &gs {
+        Some(gs) => GeometryReplay::new(b, &vs, gs, stream.map(|s| s.0))?,
+        // A vertex shader alone is captured for its stream output, and drawn from the capture.
+        None => GeometryReplay::streamed(b, &vs, &declaration(case.gs))?,
+    };
     let vertex_buffer = buffer(b, bytes_of(vertices), BufferUsage::VERTEX);
     let mut layout = VertexLayoutDesc {
         streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
@@ -1155,9 +1158,8 @@ fn ours_replayed<B: Backend>(
     let constants = constants();
     let constant_buffer = buffer(b, &constants, BufferUsage::UNIFORM);
     let geometry_entries: Vec<_> = gs
-        .reflection
-        .bindings
         .iter()
+        .flat_map(|gs| &gs.reflection.bindings)
         .map(|r| {
             assert_eq!((r.kind, r.register), (SlotKind::Uniform, 0), "{r:?}");
             BindingEntry {
@@ -1171,8 +1173,10 @@ fn ours_replayed<B: Backend>(
             }
         })
         .collect();
-    assert!(gs.reflection.helpers.is_empty());
-    let geometry_set = b.create_binding_set(&geometry_entries).unwrap();
+    assert!(gs.iter().all(|gs| gs.reflection.helpers.is_empty()));
+    let geometry_set = gs
+        .as_ref()
+        .map(|_| b.create_binding_set(&geometry_entries).unwrap());
     // The route reads an indexed strip's indices back.
     let index_usage = BufferUsage::INDEX | BufferUsage::COPY_SRC;
     let index_buffer = case.indexed.map(|_| buffer(b, indices, index_usage));
@@ -1224,7 +1228,7 @@ fn ours_replayed<B: Backend>(
                     format: IndexFormat::U16,
                 }),
                 immediates: &[],
-                geometry_sets: [Some(&geometry_set), None, None, None],
+                geometry_sets: [geometry_set.as_ref(), None, None, None],
                 topology: case.topology,
                 range,
                 stream_output: stream.map(|_| StreamTargets {
@@ -1681,8 +1685,8 @@ fn streamed_alike(
     apart.iter().all(|&n| n == 0) && counts == statistics && statistics[0] != 0
 }
 
-/// Stream output after a geometry shader through the replay route on the WebGL 2 back end (ANGLE
-/// on the same GPU), against real Direct3D 11: the geometry cases of
+/// Stream output after a geometry shader, and from a vertex shader alone, through the replay route
+/// on the WebGL 2 back end (ANGLE on the same GPU), against real Direct3D 11: the cases of
 /// [`stream_output_matches_direct3d`]; those the route refuses must be refused by name.
 #[test]
 fn stream_output_after_replay_matches_direct3d() {
@@ -1703,11 +1707,15 @@ fn stream_output_after_replay_matches_direct3d() {
     let mut compared = 0;
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for case in STREAMED.iter().filter(|c| !c.gs.is_empty()) {
+        for case in &STREAMED {
             let indices = indices(seed, case);
             let name = format!(
                 "seed {seed} {} {:?} {} from {} x{}{}",
-                case.gs,
+                if case.gs.is_empty() {
+                    "vertex"
+                } else {
+                    case.gs
+                },
                 case.topology,
                 case.count,
                 case.first,
@@ -2108,7 +2116,8 @@ fn depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does() {
 
 /// The geometry shaders of [`geometry_shaders_draw_as_direct3d_does`] through the replay route on the
 /// WebGL 2 back end (ANGLE on the same GPU), against real Direct3D 11: the same seeds, cases and
-/// allowances, but for the topologies the route refuses by name.
+/// allowances, but for the topologies the route refuses by name; and the vertex shader alone of
+/// [`STREAMED`], drawn from its capture.
 #[test]
 fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
     let mut backend = webgl();
@@ -2129,10 +2138,16 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
     let mut compared = 0;
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for (i, case) in CASES.iter().enumerate() {
+        // Every geometry case, and the vertex shader alone drawn from its capture.
+        let vertex_alone = STREAMED.iter().filter(|c| c.gs.is_empty());
+        for (i, case) in CASES.iter().chain(vertex_alone).enumerate() {
             let name = format!(
                 "seed {seed} {} {:?} {} from {} x{}{}",
-                case.gs,
+                if case.gs.is_empty() {
+                    "vertex"
+                } else {
+                    case.gs
+                },
                 case.topology,
                 case.count,
                 case.first,
