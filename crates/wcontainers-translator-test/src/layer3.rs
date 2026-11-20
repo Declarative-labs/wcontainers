@@ -4,8 +4,9 @@
 
 use crate::layout::BLOB_SECONDS;
 use crate::programs::{
-    Blob, FLAT_SCRIPT, Ran, SIGNALLED, flatten, native, out_directory, run_container,
-    source_directory, unique, zig,
+    Blob, C_DRIVER, ELF_EXTENSION, FIXED_POSITION, FLAT_SCRIPT, LINK_SCRIPT, NO_BUILD_ID,
+    NO_SANITIZERS, OUTPUT_FLAG, Ran, SIGNALLED, ZIG_GUEST_TARGET, flatten, native, out_directory,
+    run_container, source_directory, unique, zig,
 };
 use crate::reference::{DOCKER, IMAGE, REFERENCE_CONTAINER, container_name, mount, mount_writable};
 use linux_raw_sys::general::SIGALRM;
@@ -23,6 +24,12 @@ const SCRIPT_MOUNT: &str = "/l";
 const OUT_MOUNT: &str = "/o";
 /// The compiler's flags that add an include folder and give the link script, each joined to its value.
 const INCLUDE_FLAG: &str = "-I";
+/// The compiler's flags for a static executable that runs wherever it is placed.
+const INDEPENDENT_POSITION: [&str; 3] = ["-static-pie", "-fPIE", "-Wl,-z,norelro"];
+/// The compiler's flag that turns warnings off (Csmith's programs set many off).
+const NO_WARNINGS: &str = "-w";
+/// gcc's command, in its image.
+const GCC: &str = "gcc";
 const LINK_SCRIPT_FLAG: &str = "-T";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,7 +121,7 @@ pub fn csmith(seed: u64) -> PathBuf {
             "8",
             "--max-block-depth",
             "4",
-            "-o",
+            OUTPUT_FLAG,
         ])
         .arg(&path)
         .status()
@@ -166,7 +173,7 @@ fn compile(
         "{stem}-{}{optimisation}{}",
         match compiler {
             Compiler::Clang => "clang",
-            Compiler::Gcc => "gcc",
+            Compiler::Gcc => GCC,
         },
         match position {
             Position::Fixed => "",
@@ -175,49 +182,51 @@ fn compile(
     );
     let out = out_directory();
     let own = unique(&name);
-    let elf = out.join(format!("{own}.elf"));
+    let elf = out.join(&own).with_added_extension(ELF_EXTENSION);
     let script = source_directory().join(FLAT_SCRIPT);
     let include = csmith_include();
     let code: &[&str] = match position {
-        Position::Fixed => &["-static", "-fno-pic", "-no-pie"],
-        Position::Independent => &["-static-pie", "-fPIE", "-Wl,-z,norelro"],
+        Position::Fixed => &FIXED_POSITION,
+        Position::Independent => &INDEPENDENT_POSITION,
     };
     match compiler {
         Compiler::Clang => {
             let (script, include, elf, source) = (
-                format!("-Wl,-T,{}", script.display()),
-                format!("-I{}", include.display()),
+                [LINK_SCRIPT, &script.display().to_string()].concat(),
+                [INCLUDE_FLAG, &include.display().to_string()].concat(),
                 elf.display().to_string(),
                 source.display().to_string(),
             );
-            let mut arguments = vec!["cc", "-target", "aarch64-linux-musl", optimisation];
+            let mut arguments = vec![C_DRIVER];
+            arguments.extend(ZIG_GUEST_TARGET);
+            arguments.push(optimisation);
             arguments.extend(code);
-            arguments.extend(["-fno-sanitize=all", "-w", &include]);
+            arguments.extend([NO_SANITIZERS, NO_WARNINGS, &include]);
             arguments.push(crate::programs::LINK_ONLY_WHAT_IS_REACHED);
             if flat {
                 arguments.push(&script);
             }
-            arguments.extend(["-Wl,--build-id=none", "-o", &elf, &source]);
+            arguments.extend([NO_BUILD_ID, OUTPUT_FLAG, &elf, &source]);
             zig(&arguments);
         }
         Compiler::Gcc => {
             gcc_image();
             let source_directory = source.parent().unwrap();
             let mut command = Command::new(DOCKER);
-            command.args(REFERENCE_CONTAINER).arg(container_name("gcc"));
+            command.args(REFERENCE_CONTAINER).arg(container_name(GCC));
             mount(&mut command, source_directory, SOURCE_MOUNT);
             mount(&mut command, &include, INCLUDE_MOUNT);
             mount(&mut command, script.parent().unwrap(), SCRIPT_MOUNT);
             mount_writable(&mut command, &out, OUT_MOUNT);
             command
-                .args([GCC_IMAGE, "gcc", optimisation, "-w"])
+                .args([GCC_IMAGE, GCC, optimisation, NO_WARNINGS])
                 .args(code)
                 .arg([INCLUDE_FLAG, INCLUDE_MOUNT].concat());
             if flat {
                 command.arg([LINK_SCRIPT_FLAG, &inside(SCRIPT_MOUNT, &script)].concat());
             }
             let status = command
-                .args(["-Wl,--build-id=none", "-o"])
+                .args([NO_BUILD_ID, OUTPUT_FLAG])
                 .arg(inside(OUT_MOUNT, &elf))
                 .arg(inside(SOURCE_MOUNT, source))
                 .status()

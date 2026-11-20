@@ -97,6 +97,41 @@ pub enum Library {
 /// library code nothing calls, such as `fmal`, which reads FPSR and so would keep every program's flags exact.
 pub(crate) const LINK_ONLY_WHAT_IS_REACHED: &str = "-Wl,--gc-sections";
 
+/// zig's flags that build C for the guest: ARM64 Linux with musl.
+pub(crate) const ZIG_GUEST_TARGET: [&str; 2] = ["-target", "aarch64-linux-musl"];
+/// zig's commands for C and for C++.
+pub(crate) const C_DRIVER: &str = "cc";
+const CPP_DRIVER: &str = "c++";
+/// The compiler's flags for a static executable at a fixed position.
+pub(crate) const FIXED_POSITION: [&str; 3] = ["-static", "-fno-pic", "-no-pie"];
+/// The compiler's flag that leaves out every sanitizer (zig turns some on by default).
+pub(crate) const NO_SANITIZERS: &str = "-fno-sanitize=all";
+/// The linker option, given through the compiler, that leaves out the build id.
+pub(crate) const NO_BUILD_ID: &str = "-Wl,--build-id=none";
+/// The linker option, given through the compiler, that names the link script, joined to its path.
+pub(crate) const LINK_SCRIPT: &str = "-Wl,-T,";
+/// The compiler's flag that names the file it writes.
+pub(crate) const OUTPUT_FLAG: &str = "-o";
+/// The extension of a linked program.
+pub(crate) const ELF_EXTENSION: &str = "elf";
+
+/// What a test program's source is written in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Language {
+    C,
+    Cpp,
+    Rust,
+    Assembly,
+}
+
+/// The extension of each language's source, in the order they are looked for.
+const SOURCES: [(&str, Language); 4] = [
+    ("c", Language::C),
+    ("cpp", Language::Cpp),
+    ("rs", Language::Rust),
+    ("S", Language::Assembly),
+];
+
 /// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
 /// assembly) at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
@@ -115,36 +150,34 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     let defines: Vec<String> = defines.iter().map(|d| format!("-D{d}")).collect();
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
-    let elf = out.join(format!("{own}.elf"));
-    let source = ["c", "cpp", "rs", "S"]
+    let elf = out.join(&own).with_added_extension(ELF_EXTENSION);
+    let (source, language) = SOURCES
         .iter()
-        .map(|extension| source_directory().join(format!("{name}.{extension}")))
-        .find(|source| source.exists())
+        .map(|(extension, language)| {
+            let source = source_directory()
+                .join(name)
+                .with_added_extension(extension);
+            (source, *language)
+        })
+        .find(|(source, _)| source.exists())
         .expect("a program of that name");
     let script = source_directory().join(FLAT_SCRIPT);
     let text = |p: &Path| p.to_str().unwrap().to_string();
-    if source.extension().unwrap() == "rs" {
+    if language == Language::Rust {
         rust(&source, &elf, &script, optimisation);
         return flatten(&elf, &own, stem);
     }
-    let script = format!("-Wl,-T,{}", text(&script));
-    let driver = if source.extension().unwrap() == "cpp" {
-        "c++"
+    let script = [LINK_SCRIPT, &text(&script)].concat();
+    let driver = if language == Language::Cpp {
+        CPP_DRIVER
     } else {
-        "cc"
+        C_DRIVER
     };
-    let mut arguments = vec![
-        driver,
-        "-target",
-        "aarch64-linux-musl",
-        optimisation,
-        "-static",
-        "-fno-pic",
-        "-no-pie",
-        "-fno-sanitize=all",
-        &script,
-        "-Wl,--build-id=none",
-    ];
+    let mut arguments = vec![driver];
+    arguments.extend(ZIG_GUEST_TARGET);
+    arguments.push(optimisation);
+    arguments.extend(FIXED_POSITION);
+    arguments.extend([NO_SANITIZERS, &script, NO_BUILD_ID]);
     if library == Library::C {
         arguments.push(LINK_ONLY_WHAT_IS_REACHED);
     }
@@ -160,7 +193,7 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     }
     arguments.extend(defines.iter().map(String::as_str));
     let (elf_text, source_text) = (text(&elf), text(&source));
-    arguments.extend(["-o", &elf_text, &source_text]);
+    arguments.extend([OUTPUT_FLAG, &elf_text, &source_text]);
     zig(&arguments);
     flatten(&elf, &own, stem)
 }
@@ -181,7 +214,7 @@ fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
         ])
         .arg("-C")
         .arg(format!("link-arg=-T{}", script.display()))
-        .arg("-o")
+        .arg(OUTPUT_FLAG)
         .arg(elf)
         .arg(source)
         .status()
@@ -211,7 +244,8 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         object::read::elf::ElfFile64::<object::Endianness>::parse(&*file).expect("an ELF file");
     let headers = parsed.elf_program_headers();
     let mut bytes = std::fs::read(&built).unwrap();
-    bytes.resize(bytes.len().next_multiple_of(8), 0);
+    // An ELF64 program header's fields are 64 bit words.
+    bytes.resize(bytes.len().next_multiple_of(size_of::<u64>()), 0);
     let at = bytes.len() as u64;
     bytes.extend_from_slice(object::pod::bytes_of_slice(headers));
     let blob = Blob {
@@ -224,7 +258,11 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     };
     std::fs::remove_file(&built).unwrap();
     std::fs::remove_file(&code).unwrap();
-    std::fs::rename(elf, out.join(format!("{}.elf", blob.name))).unwrap();
+    std::fs::rename(
+        elf,
+        out.join(&blob.name).with_added_extension(ELF_EXTENSION),
+    )
+    .unwrap();
     blob
 }
 
