@@ -16,7 +16,9 @@ with adjacency (see "Run 50"); run 51 the converter's half of A5, the geometry s
 for WebGL 2 (see "Run 51"); run 52 the route that runs it, `stage::GeometryReplay`, drawn on ANGLE
 equal to Direct3D 11 (see "Run 52"); run 53 stream output after it (see "Run 53"); run 54 the
 variant key's `decoded` and normalised targets in `targets_in_shader` (`NormAsInteger`, both
-fronts' 16-bit normalised textures; see "Run 54").
+fronts' 16-bit normalised textures; see "Run 54"); run 55 views of another kind than declared,
+read and written by their bits (A2 closed, the Direct3D 12 front's `TypedBufferFormatKind`), and
+arrays of typed buffers on the DXIL route (`ResourceArray` there; see "Run 55").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -32,11 +34,11 @@ The pass bar, item by item:
      asking the target's sample count, given by the front's `samples`; the corpus has no key),
      `RenderTargetArrayIndex` 1 (a vertex shader writing the layer: absent, plan 4.12),
      `StencilRef` 1 (absent on WebGPU and WebGL 2).
-   - Real programs' shaders (the rig's programs, `examples/containers.rs`): DXBC 519 of 529
-     convert, DXIL 426 of 443. Named: views of mixed kinds in one shader
-     (`StorageFormatKind`/`TypedBufferFormatKind`, DXBC 8, DXIL 15: gap A2),
-     `MultisampledArrayTexture` 1 and 1 (converts with the front's `texture_layers`; the corpus has
-     no key), `RenderTargetArrayIndex` 1 and 1 (absent, as above).
+   - Real programs' shaders (the rig's programs, `examples/containers.rs`): DXBC 527 of 529
+     convert, DXIL 441 of 443 (since run 55; 519 and 426 before, the rest views of mixed kinds,
+     now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
+     front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
+     as above).
    - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (137, 85) and vkd3d's shader runner
      files (1503 DXBC, 1517 DXIL).
 2. Every converted shader compiles in Chrome for each back end that can run it
@@ -69,17 +71,22 @@ The pass bar, item by item:
      `min_lod_clamped` (Direct3D 11's SetResourceMinLOD), `targets_in_shader`, `swizzled`,
      `samples` (and `inputs_evaluated_elsewhere_match_direct3d`), `draw_base` (`Helpers` and
      `Arguments`, non-zero bases, direct and indirect), `texel_formats` and `texel_buffers`
-     (`typed_buffers_draw_as_direct3d_does`), `texture_layers`
+     (`typed_buffers_draw_as_direct3d_does`; since run 55 every second seed binds both views of
+     the other kind), `texture_layers`
      (`multisampled_array_layers_read_as_direct3d_does`), `targets_in_shader` into normalised
      targets held as integers (since run 54, against Direct3D 11 drawing into the normalised
      format, both back ends).
-   - `compute_draw`: `storage_formats` (`storage_textures_match_direct3d`), `texel_buffers` and
-     `texel_formats` (`typed_buffers_match_direct3d`), `texels_through_buffer`
-     (`storage_textures_through_buffers_match_direct3d`), `STORAGE_OFFSET`
+   - `compute_draw`: `storage_formats` (`storage_textures_match_direct3d`, and since run 55
+     `storage_textures_of_another_kind_read_and_write_their_bits_as_direct3d_does`), `texel_buffers`
+     and `texel_formats` (`typed_buffers_match_direct3d`, and since run 55
+     `typed_buffers_of_another_kind_read_and_write_their_bits_as_direct3d_does`),
+     `texels_through_buffer` (`storage_textures_through_buffers_match_direct3d`), `STORAGE_OFFSET`
      (`storage_views_at_any_first_element_match_direct3d`), `register_ranges`
      (`buffer_arrays_use_the_elements_picked`: arrays of constant and typed buffers, two declared
-     without a length, sized by the ranges, against Direct3D's rules; not against real Direct3D 12,
-     which no drawn test here drives yet).
+     without a length, sized by the ranges, DXBC; since run 55
+     `typed_buffer_arrays_use_the_elements_picked_on_both_routes`, typed buffers alone, DXBC and
+     DXIL; against Direct3D's rules, not against real Direct3D 12, which no drawn test here drives
+     yet).
    - `filter_draw`: `filter_in_shader`, `border_in_shader`, `decoded` (since run 54: R16_UNORM,
      R16G16_SNORM, R16G16B16A16_UNORM and R8G8B8A8_SNORM held as their integer formats, every
      sampling mode and loads; against real Direct3D 11 and WARP;
@@ -132,11 +139,9 @@ The gap list (every item of the pass bar not met):
   bitcode reader does not know; the program never uses the type. Waits: nobody (a vkd3d runner file
   of the Direct3D 12 track's runner; no real program seen with it). Takes: dxil-spirv's reader
   taking the record (upstream, or a patch carried as naga's are).
-- A2. Shaders whose storage or typed buffer views are of mixed kinds (float, unsigned, signed) in
-  one program refuse in the corpus test only (DXBC 8, DXIL 15 of the real programs): the corpus has
-  no bound views and tries one kind for all slots. Fronts give each slot's format and these convert
-  there. Waits: nobody. Takes: each slot's kind read from the declaration in the test, or the
-  formats recorded from an API trace of the rig's programs.
+- A2. Closed in run 55: a typed buffer or storage texture bound as a view of another kind than
+  the program declares is read and written by its bits, as Direct3D gives it (no refusal by kind
+  is left), so every such shader converts under the corpus's one-kind view keys.
 - A3. Closed in run 47. Run 46 named the WebGL 2 back end's bitfield operations, gathers and loads
   at a level as its cause, but that back end has written all three since its commit 2080826c; the
   refusals came from the corpus test writing GLSL with naga itself. The test now uses the back
@@ -208,9 +213,10 @@ The gap list (every item of the pass bar not met):
 - Also open but not on the pass bar's words, for the fronts' real programs: a texture slot read
   in its view's type where the program declares another (the Direct3D 12 front's runner
   texture-load lines 235 to 267; needs an interface field giving the view's format per slot, then
-  the reads reinterpreted as `decoded`'s are decoded), `ResourceArray` on the
-  DXIL route for arrays of typed buffers and arrays declared without a length (the DXBC route takes
-  both since run 48), `InterpolateAt` on the DXIL route,
+  the reads by their bits as typed buffers' are since run 55), `ResourceArray` on the DXIL route
+  for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
+  holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
+  there since run 55), `InterpolateAt` on the DXIL route,
   `CalculateLevelOfDetail`, `SampleClamp`, `globallycoherent` storage, DXIL signed atomic minimum
   and maximum on unsigned words, early tests on 24-bit depth (not measured), comparison filtering
   with a border colour (needs the comparison in `SamplerState`); and dxil-spirv's crashes on signed
@@ -2278,6 +2284,68 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 55 (the gap list in the fronts' order: the Direct3D 12 front's `TypedBufferFormatKind`, A2,
+and the DXIL route's typed buffer arrays):
+- Merged nothing: no branch had anything new. Read both fronts' statuses: the Direct3D 12 front's
+  runner files srv-buffers, tgsm, uav-rwbuffer and wave-ops-float stop at `TypedBufferFormatKind`
+  (a typed view of another kind than declared), unbounded-array-5.1 at `ResourceArray` on DXIL;
+  the Direct3D 11 front waits on nothing here that a run can close (its 10_0 on WebGL 2 needs its
+  own transform feedback first; aliased lines into multisampled targets need a route and an
+  interface change, below).
+- Views of another kind (vkd3d's srv-buffers and texture-load show Direct3D gives the view's
+  values by their bits: an `R8G8B8A8_UINT` view read as `Buffer<float4>` gives the integers'
+  bits). `variant/texel.rs`: a `TexelBuffer` keeps the program's scalar kind beside the view's
+  format; its load, store and atomic functions work in the view's kind and cast by bits at their
+  edge, and the texture route declares its texture of the view's kind. DXBC storage textures:
+  loads cast to the declared kind (stores already cast). DXIL storage textures (`cast_kinds` in
+  `dxil/images.rs`): each load becomes a call of a function loading the view's texel and casting
+  it, each store's value is cast. `TypedBufferFormatKind` and `StorageFormatKind` are gone.
+- Found by the games corpus once those shaders went further: `components::rows` moved the
+  module's functions after the atomics' stand-ins were made, leaving their handles stale (a panic
+  on one bgfx DXIL shader). It now runs before them.
+- The corpus test's view keys: every shader now converts under the first key (R32Float), so the
+  records of shaders that took R32Uint or R32Sint read `views:R32Float` now (the matching kinds
+  are covered by the drawn tests). 74 records changed that way, 23 refusals became conversions,
+  one (runner `uav-atomics-5-cs.dxbc`) now ends at `AtomicSignedness`. The records were merged by
+  hand from the x86 machine's run (no glslang there): only the part before ` ; glsl` was taken
+  where it changed, and every changed record's GLSL outcome needs no glslang (absent compute,
+  or a named need).
+- DXIL arrays (`dxil/arrays.rs`): arrays of typed buffers split into elements as textures were;
+  an array declared without a length takes the rest of its range in `register_ranges`
+  (`UnboundedResourceArray` without one, `BindingsBeyondLimit` past the kind's slots). Arrays of
+  constant and structured buffers are refused by name (`ResourceArray`): naga's reader took
+  `cs_buffer_array`'s two constant buffers as one buffer holding an array of two, which would
+  have read past the bound buffer. No corpus shader's verdict changed by that refusal.
+- New own shader `cs_typed_array` (tests/own/arrays.hlsl, built by compile.cmd with the desktop's
+  fxc and dxc 10.0.26100; only its two files were taken back). Tests:
+  `typed_buffer_arrays_are_a_binding_per_element_on_both_routes` (tests/variants.rs),
+  `typed_buffer_arrays_use_the_elements_picked_on_both_routes` (compute_draw, against
+  Direct3D's rules), `views_of_another_kind_than_declared_convert_on_both_routes`
+  (tests/compute.rs), `typed_buffers_of_another_kind_read_and_write_their_bits_as_direct3d_does`
+  and `storage_textures_of_another_kind_read_and_write_their_bits_as_direct3d_does`
+  (compute_draw, against real Direct3D 11), and `typed_buffers_draw_as_direct3d_does` binding
+  both views of the other kind at every second seed (both back ends, both typed buffer routes).
+- Results at this run's code (logs in scratch `graphics-shaders/run55`):
+  - Desktop, RTX 3080, compute_draw and variant_draw's typed buffer and storage texture tests
+    (gpu1.log, one GPU job, shared queue, 3 cargo jobs, load not taken; seeds 1 to 8): 5 tests,
+    each 8 seeds, 0 failed; the other-kind cases drew e.g. `Rgb32Sint` into the float slot and
+    `Rgb10a2Unorm` into the unsigned one, every word equal to Direct3D 11's; variant_draw 48
+    comparisons, 0 failed.
+  - Desktop, the array tests (gpu2.log, seeds 1 to 8): 3 tests pass, 24 comparisons, 0 words
+    apart.
+  - Rented x86 machine (`x86-run`, 192 threads, load 2 to 30 from others): clippy with warnings
+    denied, clean; the whole suite with every corpus (`--include-ignored --skip mutated`): every
+    test passes but `runner_shaders_give_their_recorded_verdicts` on `hlsl+distance-4-ps.dxil`
+    (A1, left failing); variants 37, compute 4, corpus 11 (9 pass).
+  - Literal check (desktop, check3.txt): passes; this crate's baseline 590 lines (536 code, 46
+    restated, 6 role, 2 redefinition), from 594 (four deleted: three of the old storage texture
+    code, one message now a shared constant).
+  - Desktop, every test binary of this crate in one GPU job at default seeds (gpu-all.log, at the
+    run's last code, 22:13 to 22:27 Pacific): 21 binaries, 134 pass, 0 fail, 5 ignored.
+- Clean-up: this branch's build folder on the desktop deleted at the end; nothing built on the
+  laptop (load 34 from other work) or the Mac (only rustfmt). The x86 machine keeps
+  `/work/target/graphics-shaders` and the corpora copy for the next run.
+
 Run 54 (the gap list in the fronts' order: A4's `decoded` and normalised targets, `NormAsInteger`):
 - Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the others had
   nothing new. Read both fronts' statuses: no real program of theirs waits here now; the Direct3D
@@ -2337,6 +2405,21 @@ Run 54 (the gap list in the fronts' order: A4's `decoded` and normalised targets
     denied, Linux, clean; `cargo test -p wcontainers-shaders` without the corpora: every test
     passes (variants 36, geometry 17, glsl_writer 11, corpus 8 and 3 ignored, cache 6, compute
     3, fuzz 1).
+  - The whole suite with every corpus, at the run's last code, on the rented x86 machine this
+    time (the laptop was at load 80 from other work): the corpora copied from the laptop to
+    `/work/probes/shaders-corpus` there (4,184 files), `cargo test -p wcontainers-shaders --
+    --include-ignored --skip mutated` with the three corpus variables. Every test passes but
+    `runner_shaders_give_their_recorded_verdicts` on `hlsl+distance-4-ps.dxil` (A1, left
+    failing); the corpus, game, rig, rig DXIL and own verdicts equal their records. glslang is
+    not on that machine, so the GLSL ES outcomes read as `written` (no record's compile part
+    checked this run; no corpus key uses what changed). A first try failed on macOS `._` files
+    the copy from the Mac had added; they were deleted there.
+  - Desktop, every test binary of this crate in one GPU job at default seeds (gpu-all.log, at the
+    run's last code): 22 binaries, 129 pass, 0 fail, 5 ignored.
+- Clean-up: this branch's build folder on the desktop deleted at the end; nothing built on the
+  laptop or the Mac (only rustfmt there). The x86 machine keeps `/work/target/graphics-shaders`
+  and the corpora copy for the next run (a 5 TB disk; both go with the machine). Logs in scratch
+  `graphics-shaders/run54`.
 
 Run 53 (the gap list in the fronts' order: A5, stream output after a replayed geometry shader):
 - Merged nothing: no branch had anything new. Checked and committed run 52's work (below). The
@@ -2688,6 +2771,16 @@ Run 47 (the check of run 46's report: every finding fixed or recorded):
   `run47/out` (49 MB, the files Chrome compiled).
 
 Next (in order). The gap list (top of this file) in the order the fronts need it:
+Since run 55: the Direct3D 12 front's srv-buffers, tgsm, uav-rwbuffer, wave-ops-float and
+unbounded-array-5.1 (shader model 6.0) runner files should pass the converter after a merge (the
+last with the front's `register_ranges` in the DXIL key, as for DXBC). Left first, in order:
+the Direct3D 12 front's texture-load lines 235 to 267 (a texture slot read in its view's kind:
+an interface field naming each texture slot's view kind where the front binds an integer view,
+then the loads cast as typed buffers' are; samples of such a slot refused by name); arrays of
+constant and structured buffers on the DXIL route (each element its own buffer, the reader's one
+buffer split); the Direct3D 11 front's aliased lines into multisampled targets (a stage helper
+route drawing each line as the whole pixels the diamond rule picks, and the interface's word for
+it); then items 2 and 4 below.
 0. Done in run 50: indexed strips through the stage helper (the Direct3D 11 front's
    `StageIndexedStrip`) and triangle strips with adjacency (A7). Done in run 49: `GeometryStreams` (several streams of points). The primitive's number behind a
    geometry shader is not waited on now: the Direct3D 11 front draws the rig's geometry scene's
@@ -2931,6 +3024,15 @@ The older list, kept for its detail:
 
 ## Asked of other tracks
 
+- The Direct3D 12 track (run 55): a typed buffer or storage texture bound as a view of another
+  kind than the program declares now converts and reads and writes the view by its bits, as
+  Direct3D does (drawn equal to real Direct3D 11 on both routes); give the bound view's format in
+  `texel_formats`/`storage_formats` as for any view, with no check of its kind, and rerun the
+  runner's srv-buffers, tgsm, uav-rwbuffer and wave-ops-float. Arrays of typed buffers convert on
+  the DXIL route too, those without a length sized by `register_ranges` as on DXBC: rerun
+  unbounded-array-5.1's shader model 6.0 run with the ranges in its key. Arrays of constant or
+  structured buffers stay refused there (`ResourceArray`). Runner `uav-atomics-5-cs.dxbc` now
+  ends at `AtomicSignedness` instead of the kind.
 - Both Direct3D tracks (run 54): `decoded` and normalised targets in `targets_in_shader` are built
   (see "How the Direct3D fronts call `convert`"), drawn equal to real Direct3D 11 on both back
   ends. The Direct3D 11 front can hold 16-bit normalised textures as their integer formats where
@@ -2938,6 +3040,9 @@ The older list, kept for its detail:
   `typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does` (its
   storage views of them go through `texels_through_buffer`, built since run 18). The Direct3D 12
   front's view-typed reads (texture-load lines 235 to 267) still need an interface field.
+- The Direct3D 11 track (run 54): indexed strips run through `GeometryReplay` on WebGL 2 now
+  (drawn equal to Direct3D 11 on ANGLE, stream output after them too); make index buffers with
+  `BufferUsage::COPY_SRC` there, as the route reads an indexed strip's indices back.
 
 - The Direct3D 11 track (run 53): geometry shaders run on WebGL 2 by replay (`GeometryAsReplay`):
   `stage::GeometryReplay`, called as under "How the Direct3D fronts call `convert`", drawn equal
@@ -4224,6 +4329,18 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   Windows line ends the check reads multi-line strings differently and fails on other crates'.
 - A GPU job running several test binaries needs `--no-fail-fast`, or the first failing binary
   ends the job before the others run.
+- The rented x86 machine (the default for work without a GPU since 2026-11-19; run 54): from the
+  checkout, `<orchestrator>/cloud/x86-run . --name graphics-shaders -- '<command>'` copies the
+  working tree (submodules included) and runs the command in the checkout's `nix develop`, cargo
+  building into `/work/target/graphics-shaders`. Clippy and the crate's tests run as on the
+  laptop. The corpora are at `/work/probes/shaders-corpus/{dxbc,games,runner}` (copied from the
+  laptop's `~/wcontainers-graphics/corpus`; copy again without macOS `._` files if the machine is
+  new): `C=/work/probes/shaders-corpus; export WCONTAINERS_SHADER_CORPUS=$C/dxbc
+  WCONTAINERS_GAME_SHADERS=$C/games WCONTAINERS_RUNNER_SHADERS=$C/runner
+  WCONTAINERS_SHADERS_OUT=$PWD/target/shaders-out; cargo test --no-fail-fast -p
+  wcontainers-shaders -- --include-ignored --skip mutated` (about 3 minutes). It has no glslang,
+  so GLSL ES outcomes are not compiled there; the laptop's suite does that. The literal check
+  needs `.git`, which the copy leaves out: run it on the desktop.
 - Linux laptop (no GPU), one command from the Mac: `tools/graphics-rig/linux <command>`. It copies the
   working tree (submodules included) to `~/wcontainers-graphics/src/<branch>` and builds into
   `~/wcontainers-graphics/target/<branch>`, with 5 cargo jobs (2 when the laptop's load is 8 or more).

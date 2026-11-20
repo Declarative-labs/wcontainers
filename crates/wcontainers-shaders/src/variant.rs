@@ -1884,7 +1884,7 @@ fn owners(module: &Module) -> Vec<(usize, &Function)> {
 }
 
 /// The type of each of `exprs` in `f`, added to the module's types.
-fn types_of(
+pub(crate) fn types_of(
     module: &mut Module,
     f: &Function,
     exprs: &[Handle<Expression>],

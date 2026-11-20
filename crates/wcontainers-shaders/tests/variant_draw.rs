@@ -1406,9 +1406,14 @@ fn typed_buffers_draw_as_direct3d_does() {
             s ^= s << 17;
             (s >> 16) as u32
         };
+        // Every second seed binds each view of the other kind, which Direct3D reads by its bits.
+        let (first, second) = match seed % 2 {
+            0 => (&uints, &floats),
+            _ => (&floats, &uints),
+        };
         let formats = [
-            floats[next() as usize % floats.len()],
-            uints[next() as usize % uints.len()],
+            first[next() as usize % first.len()],
+            second[next() as usize % second.len()],
         ];
         let texel_buffers: Vec<TexelData> = formats
             .iter()

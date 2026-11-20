@@ -1284,7 +1284,7 @@ fn buffer_array_ranges() -> Vec<(SlotKind, u32, std::ops::Range<u32>)> {
 
 /// Arrays of constant buffers and typed buffers (DXBC shader model 5.1), two declared without a
 /// length: every element a binding at its register, sized by the root signature's ranges, and
-/// refused by name without them. The DXIL route refuses arrays of typed buffers by name.
+/// refused by name without them. The DXIL route refuses arrays of constant buffers by name.
 #[test]
 fn buffer_arrays_are_a_binding_per_element() {
     let code = read("tests/own/cs_buffer_array.dxbc");
@@ -1336,6 +1336,62 @@ fn buffer_arrays_are_a_binding_per_element() {
         .err(),
         Some(ConvertError::Unsupported(
             wcontainers_shaders::refusal::RESOURCE_ARRAY
+        ))
+    );
+}
+
+/// Arrays of typed buffers alone (`cs_typed_array`), one of each kind declared without a length, by
+/// both routes: every element a binding at its register, sized by the root signature's ranges, and
+/// refused by name without them or past the slots a kind holds.
+#[test]
+fn typed_buffer_arrays_are_a_binding_per_element_on_both_routes() {
+    let ranges = vec![(SlotKind::Texture, 0, 0..5), (SlotKind::Storage, 0, 0..3)];
+    let formats = |n: u32| (0..n).map(|r| (r, Format::R32Uint)).collect();
+    let key = VariantKey {
+        texel_buffers: wcontainers_gpu::TexelBufferRoute::Storage,
+        texel_formats: formats(5),
+        storage_formats: formats(3),
+        register_ranges: ranges.clone(),
+        ..Default::default()
+    };
+    let dxbc = read("tests/own/cs_typed_array.dxbc");
+    let dxil = read("tests/own/cs_typed_array.dxil");
+    for source in [Source::Dxbc(&dxbc), Source::Dxil(&dxil)] {
+        let c = convert(source, &key, None).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        for (kind, n) in [(SlotKind::Texture, 5), (SlotKind::Storage, 3)] {
+            for register in 0..n {
+                let b = c
+                    .reflection
+                    .bindings
+                    .iter()
+                    .find(|b| b.kind == kind && b.register == register)
+                    .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
+                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+            }
+        }
+        let without = VariantKey {
+            register_ranges: Vec::new(),
+            ..key.clone()
+        };
+        assert_eq!(
+            convert(source, &without, None).err(),
+            Some(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::UNBOUNDED_RESOURCE_ARRAY
+            ))
+        );
+    }
+    // Past the storage slots: the DXIL route refuses before making the elements.
+    let past = VariantKey {
+        register_ranges: vec![
+            ranges[0].clone(),
+            (SlotKind::Storage, 0, 0..SlotKind::Storage.slots() + 1),
+        ],
+        ..key
+    };
+    assert_eq!(
+        convert(Source::Dxil(&dxil), &past, None).err(),
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::BINDINGS_BEYOND_LIMIT
         ))
     );
 }

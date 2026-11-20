@@ -42,3 +42,22 @@ void cs_buffer_array(uint3 id : SV_DispatchThreadID)
     targets[(p.x + i) % 2][i] = sources[(p.y + i) % 3][i] + rest[(p.z + i) % 2][i];
     more[(p.w + i) % 2][i] = sources[2][i] ^ rest[i % 2][i];
 }
+
+// Arrays of typed buffers alone, one of each kind declared without a length (sized by the root
+// signature's ranges), each element picked at run time from a constant: invocation i writes element
+// i of the view it picks, so every result is determined.
+cbuffer choice : register(b0)
+{
+    uint4 pick;
+};
+Buffer<uint> loaded[3] : register(t0);
+Buffer<uint> loaded_rest[] : register(t3);
+RWBuffer<uint> stored[] : register(u0);
+
+[numthreads(8, 1, 1)]
+void cs_typed_array(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    stored[(pick.x + i) % 2][i] = loaded[(pick.y + i) % 3][i] + loaded_rest[(pick.z + i) % 2][i];
+    stored[2][i] = loaded[2][i] ^ loaded_rest[(pick.w + i) % 2][i];
+}
