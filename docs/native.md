@@ -495,10 +495,12 @@ tr/code.rs:124-127), under "withheld register named by the guest" (section 3.7).
   access in one aligned run of that many bytes, which no page boundary splits; `exact`, out of line, is the
   exact test above, which goes back to the access when it does not cross and to the probes when it does (N4
   run 7). In a straight-line part that loops to its own start, a base that no instruction of the part writes
-  is tested once, at the part's start (`Native::loop_invariant`, on ARM64 the bases with the largest size each
+  is tested at the part's start (`Native::loop_invariant`, on ARM64 the bases with the largest size each
   is tested for): when every such base is aligned, the code goes to a copy of the part, placed after the
   piece, whose accesses through those bases take no test and which loops to itself; otherwise it goes on into
-  the part as made without it, whose way back reaches the test again. A stop in the copy resumes at its guest
+  the part as made without it, whose way back reaches the test again, so a loop whose base fails runs the test
+  on every turn. Since no instruction of the part writes those bases, linking that way back past the test would
+  save it (not built; NH1's check found it). A stop in the copy resumes at its guest
   position as anywhere else, and every entry into the part from elsewhere goes through the test (N4 run 16;
   matrix -10.8% cycles by alternating pairs, nothing else moved beyond the noise). An
   access within one page is copied as it is (one page refuses all of it or none). On `cross` a probe of
@@ -1128,22 +1130,34 @@ path it lies on and what changes how many run:
 4. A last target (`last_target`): the hit runs `cbnz` (not taken) and its linked `b`: +1; a miss runs the `cbnz`
    taken and the slot jump: +3; the hit before its `b` is linked: +4; the first miss also calls the inside. Hits
    and misses are hot (a call whose target changes misses every time); which target is the last one depends on
-   history.
+   history. Before the last target is made its moves build 0, so a register holding 0 passes the test (`cbnz` not
+   taken) and its `b` goes to the miss way without calling the inside: the slot jump's `cbnz` and `br`, then the
+   empty slot's `udf` (by reading, not run; a faulting path made of items 3 and 4, rare).
 5. A known jump's table (`known_jump`): `br t` into the table and the entry's `b`: +1 linked; an entry not yet
    linked goes on to the slot jump after the table: +4. The table is not written when the count is ahead of the
    commit, so with the count such a `br` is a slot jump (+2) where without it it is a table (+1).
 6. The page test (`access`: `cbz`, `tbnz`, or `cbnz` on the base's alignment): one branch in line, run whether
-   taken or not, on every access that may cross a page: hot, constant per instruction in one translation. Its
-   crossing way out of line adds the way back `b`, and for a misaligned base the exact test and the way back
-   (+1, +2); for a stack pointer base the out-of-line probes start with the check SA0 makes, a `cbz` over a call
-   (one more): rare.
+   taken or not, on every access that may cross a page: hot, constant per instruction in one translation. Out of
+   line: for a misaligned base the exact test (`tbnz` or `cbz`) and the way back `b` (+2), taken by every access
+   through a misaligned base, on every turn of a loop over misaligned data (the tally's `invariant bases`
+   misaligned case, 8 of 8 turns): hot where the data is misaligned, set by the data as item 9's ways are; an
+   access that does cross a page runs its crossing way and the way back (+1 or more), and for a stack pointer base
+   the crossing way's probes start with the check SA0 makes, a `cbz` over a call (one more): rare.
 7. The alignment test (`cbnz` to a call, before forms that must be aligned, in `access`, and in `exclusive` for a
    store exclusive whose base is not sp), a stack pointer base's `cbz` before a vector pair into one register,
    and a load exclusive through sp's own SA0 test (`cbnz` in `exclusive`): hot, constant per instruction.
-8. A loop's aligned bases tested once before it (`test_aligned_bases`: a `cbnz` per base and a `cbz`): once per
-   entry into the loop; the copy it chooses runs the loop's accesses with no page test, the other copy with them.
-   So the branches per turn depend on the look-ahead (only a piece holding the loop has the test) and on the
-   data's alignment. Hot.
+8. A loop's aligned bases tested before it (`test_aligned_bases`: a `cbnz` for each base but the last, then a
+   `cbz` for the last, taken when every base is aligned). The test is written at the start of the looping part,
+   and the part's own back branch is linked to that start, before the test (crates/wcontainers-translator/src/
+   native.rs, `translate`: the part's entry is recorded before the test is written). When every base is aligned,
+   the `cbz` goes to the part's copy made with the bases settled, which loops to itself: the test runs once per
+   entry into the loop (+1 per base), and its turns run no page test. When a base is misaligned, the plain part
+   runs, its accesses with their page tests (item 6), and its back branch goes through the test again: the test
+   runs on every turn (+1 up to +1 per base, as far as the first failing base), and the turns' accesses add item
+   6's branches. Measured in the tally's `invariant bases` (two bases, 8 turns, full look-ahead): aligned, the
+   first turn's load +2 and the other seven 0; misaligned or crossing, +3 on every turn (the test's two branches
+   and the load's own test). So the branches per turn depend on the look-ahead (only a piece holding the loop has
+   the test) and on the data's alignment. Hot.
 9. The exclusive route (`exclusive`): `cbnz` for the remembered size and address, the status tests, `b` to the
    ends: the number depends on whether the store finds its reservation and on what the compare and swap reads.
    The way that succeeds is the common one; the others are rare in one thread.
@@ -1173,11 +1187,13 @@ native.rs, the inside and the monitor (at the commit that records this), matched
     them the guest's own (13 not E's) and 2 the translator's.
   - Every item above that lies on a hot path adds its branches each time its instruction runs: 1 and 2 (exits,
     with the look-ahead, link state and placement), 3 (+2 per jump through a slot), 4's hit (+1), 5 (+1 per known
-    jump), 6 and 7 (+1 per access tested), 8 (per entry into the loop, and which copy runs), 9 (the exclusive
-    route's tests). A position map entry per host instruction gives the offset within the current guest
+    jump), 6 and 7 (+1 per access tested, and 6's misaligned way +2), 8 (once per entry into the loop when its
+    bases are aligned, on every turn when one is not), 9 (the exclusive route's tests). A position map entry per host instruction gives the offset within the current guest
     instruction only, so it cannot say how many times each of these ran before; only an add beside each (the
     cost E's own add already is) or removing the branch would account for it. The WebAssembly output has none of
-    them.
+    them. How often items 3 to 9 run per guest instruction on the benchmark set, and so what those adds would
+    cost there, is not measured: the tally covers only the stepped functions. The answer does not wait on it,
+    since the guest's forward branches alone rule direct recovery out while E is unchanged.
   So a hardware count read directly needs the definition widened to every guest branch (the report's way C, the
   owner's decision) and every hot branch of items 1 to 9 removed or made to fault, which the owner's rule (the
   translator's branches are accounted for, not removed, unless removing one is free) excludes wherever removing
@@ -1203,6 +1219,16 @@ native.rs, the inside and the monitor (at the commit that records this), matched
     target's first miss), not at a new piece. Cost: one log entry per change, all on the inside's rare paths, and
     the code state's size at each known point; nothing on a hot path. This also covers link state and last
     targets (below), since the re-run repeats them.
+  - The pages backed at each known point. A guest page gets its frame at its first touch: the access's in-line
+    test runs, the access faults, the inside backs the page and goes on at the same guest instruction from a new
+    piece (`run_pieces`, `Stop::MemoryFault` then `first_touch`), so that instruction's tests run twice and the
+    exits after it are the new piece's. A re-run in which the page is already backed runs them once and stays in
+    the old piece; repeating the logged piece is not enough, since the re-run must also fault there. To account
+    for it: the set of backed pages is part of the state at each known point (the page tables a snapshot holds
+    already say it, one bit a page where they do not), and every change of it during the stretch either comes
+    from the guest's own path (its first touches; the kernel's frees and its own writes at system calls, at the
+    same positions in a re-run) or is logged at its position (pages the embedder gives or takes). Cost: nothing
+    on a hot path.
   - Items 10, 5's refusal and 1's halving: the counting translation the re-run uses has different branches from
     the translation without the count. Accounted for in the counting translation alone (a correction where it
     differs, or the same shapes chosen whatever the count): nothing on the recorded run.
@@ -1217,6 +1243,11 @@ native.rs, the inside and the monitor (at the commit that records this), matched
   - Items 3, 6, 7, 8 and 9 depend only on the guest's own state (addresses, data, the reservation) and the
     configuration, so they repeat in a re-run of one thread. Under parallel threads item 9's compare and swap
     reads what another thread wrote; that is the guest's own result, recorded as any shared memory is.
+  - A check that the classification stays whole. The tally's test asserts only that the guest's path is the same
+    in every variant; matching each extra host branch to items 1 to 10 was done by hand from its printed
+    sequences, so a branch the emitter gains later outside the items would pass it. A fast path built on way D
+    needs a test that predicts each instruction's host branch sequence from the items and fails on any it does
+    not predict.
 - This tally cannot say whether the conversion pays: the hardware count is not reachable on this Mac (the report:
   every counter configuration is refused here, and Hypervisor.framework shows the guest none).
 

@@ -104,8 +104,8 @@ build sits on the line (+19.3% to +21.3%) and one of four seeded layouts is over
 build's layout (below, "N4 run 25"). N4 is done by its bar's own words, for its independent check.
 - N4 passed its independent check at the line (the brief, 2026-11-20 12:10).
 - NH1 (can the processor keep the count: the experiment only) is done, for its independent check (below, "NH1
-  run 1" and "NH1 run 2", which settled the check's findings; the plan's section 4, "Can the processor keep the
-  count?").
+  run 1", and runs 2 and 3, which settled the two checks' findings; the plan's section 4, "Can the processor keep
+  the count?"). Run 3 left one speed fix for the next build run (a loop's base test on every turn when it fails).
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -134,6 +134,46 @@ build's layout (below, "N4 run 25"). N4 is done by its bar's own words, for its 
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## NH1 run 3 (2026-11-20): the second check's findings settled
+
+Start (12:32, Mac load 3.0): origin/main and origin/phase-1-literals had nothing new. No code changed this run:
+the plan's section 4 (NH1) and 3.4 were corrected. Nothing of a fast path is built.
+
+How each finding was settled:
+- (blocking) Item 8, the loop's aligned-base test: rewritten from the code and the tally. The part's back branch
+  is linked to its entry, before the test (translator native.rs, the entry recorded before `test_loop_invariant`
+  writes the test), so aligned bases run the test once per entry and then the copy that loops to itself, and a
+  misaligned or crossing base runs the plain part, which goes through the test again on every turn (tally,
+  `invariant bases` at full: aligned +2 on the first turn and 0 on seven; misaligned and crossing +3 on all 8). Plan
+  3.4's paragraph on the test said "tested once"; now says the test runs every turn when a base fails.
+- (minor) Item 6's misaligned way: now hot where the data is misaligned (+2 on every access through such a base),
+  set by the data as item 9's ways are; only the crossing way and the sp base's SA0 `cbz` stay rare. The answers do
+  not change.
+- (minor) The speed cost of that test on every turn: NOT fixed this run, on purpose. The milestone is the experiment
+  and its report on the code as it stands; linking the plain part's way back past the test changes the translator's
+  output and the tally being reported, and needs the differential, interrupt and count suites and a speed pair. Left
+  for the next build run (below, "Left for the next build run"), and written in plan 3.4 as not built.
+- (minor) Way D and the pages backed: a new condition in the plan. A first touch runs the access's test, faults, and
+  goes on at the same instruction from a new piece, so the pages backed at each known point are part of the state a
+  re-run starts from (the page tables a snapshot already holds), and changes of that set during the stretch either
+  come from the guest's own path or are logged at their position (pages the embedder gives or takes). Nothing on a
+  hot path. By reading; not built.
+- (minor) Item 4: before a last target is made its moves build 0, so a register holding 0 passes the test and goes
+  through the `b` to the miss way (slot jump, then the empty slot's `udf`) without calling the inside. Written in
+  item 4, by reading, not run.
+- (minor) The tally's test asserts only that guest paths agree: written in the plan as a condition of any fast path
+  on way D (a test that predicts each instruction's host branch sequence from the items and fails on any other).
+  Not built here: this milestone builds no fast path.
+- (minor) The cost of accounting for items 3 to 9 by adds on the benchmark set: written in the plan as not measured
+  (the tally covers only the stepped functions); the answer stands without it.
+
+Suites: none run this run; the code is unchanged since 3c7fb3c9, whose whole suite ran in run 2 (below) and stands.
+
+Left for the next build run:
+- Link a tested loop part's way back past its aligned-base test (an entry offset after the test, used only by
+  branches from inside the part), so a loop whose base fails runs the test once per entry, not every turn; then the
+  tally, the suites and a speed pair again.
 
 ## NH1 run 2 (2026-11-20): the independent check's findings settled
 
