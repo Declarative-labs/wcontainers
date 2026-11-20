@@ -2435,11 +2435,14 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
     }
 
-    /// Leave the piece through the lookup. A jump to outside its function is a tail call, which costs what a call
-    /// through a register costs; one to inside it is a table left unrecognised, the slow path, counted.
+    /// Leave the piece through the lookup. A jump to outside its function, or to its own function's entry, is a
+    /// tail call, which costs what a call through a register costs; one to inside it is a table left
+    /// unrecognised, the slow path, counted.
     fn unrecognised_jump(&mut self, target: u32) {
         self.sites[Reason::JumpThroughRegisterNotRecognised as usize] += 1;
         self.write_back();
+        let entry = self.function.entry;
+        let own_function = self.index.get(&entry) == Some(&self.own);
         let offsets = &self.function.offsets;
         let first = offsets
             .iter()
@@ -2459,8 +2462,13 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .i64_const(first as i64)
             .i64_sub()
             .i64_const((last - first) as i64)
-            .i64_le_u()
-            .if_(BlockType::Empty)
+            .i64_le_u();
+        if own_function {
+            s.local_get(target);
+            load.push(&mut s);
+            s.i64_sub().i64_const(entry as i64).i64_ne().i32_and();
+        }
+        s.if_(BlockType::Empty)
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)
             .call(F_WARN)

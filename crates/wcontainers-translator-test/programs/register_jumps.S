@@ -1,7 +1,7 @@
 // Jumps through a register, ROUNDS of each: a tail call to another function whose address is read from data,
 // a jump into its own function to an address no table explains (its start plus an offset worked out from
-// data), and a switch whose table's address the function keeps in its frame. Exits with the low bits of what
-// the calls gave back.
+// data), a switch whose table's address the function keeps in its frame, and three tail calls of a function
+// to its own start. Exits with the low bits of what the calls gave back.
 .text
 .globl _start
 _start:
@@ -17,6 +17,9 @@ _start:
   add x20, x20, x0
   mov x0, x19
   bl choose
+  add x20, x20, x0
+  mov x0, #3
+  bl again
   add x20, x20, x0
   subs x19, x19, #1
   b.ne 1b
@@ -47,6 +50,17 @@ wander:
   add x9, x9, x10
   mov x1, #0
   br x9
+
+// Tail calls itself through a register x0 times, then gives back 7.
+again:
+  cbz x0, 4f
+  sub x0, x0, #1
+  adr x9, itself
+  ldr x9, [x9]
+  br x9
+4:
+  mov x0, #7
+  ret
 
 // A switch on the low two bits of x0, its table's address kept at sp + 16.
 choose:
@@ -81,3 +95,5 @@ next:
   .quad step
 inside:
   .quad 4
+itself:
+  .quad again
