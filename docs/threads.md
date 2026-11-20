@@ -2180,17 +2180,19 @@ is exact only while one thread of everything that shows the page runs at a time.
   comes later faults into a drop, which moves the count.
   Rejected: the stop lock or the process's lock kept from reading the bytes to installing the pieces.
   Every group stop of the memory, and every other hook of the process, would then wait for a compile.
-- **A drop reaches the caller's memory only.** Today `ic ivau` also drops the same line in every other
-  memory that shows the block (wt/lib.rs:2008-2010). Across memories that is not needed and not
-  allowed. A block of code that a mapping may write would make the memories overlap, and a guest store
-  into it reaches the other places through the block, where the write lock of 7.4 and the kernel's
-  copy drop the code as for any write; a block no mapping may write cannot have changed through a
-  guest store; and the executor must not change the code of a memory that runs as `Serial` from
-  outside it (4.4 item 5). Such a block's bytes change only through a `write` to the file, which is the
-  kernel's entry (4.5).
+- **A drop reaches only the caller's memory and the memories that overlap it through that block.**
+  Today `ic ivau` also drops the same line in every other memory that shows the block
+  (wt/lib.rs:2008-2010). A memory that shows the block but does not overlap the caller's shows it
+  through no mapping that may write (section 3), so no guest store can have changed its bytes; such a
+  block's bytes change only through a `write` to the file, which is the kernel's entry (4.5). Reaching
+  it is not needed, and not allowed: its threads may be running, and the executor must not change the
+  code of a memory that runs as `Serial` from outside it (4.4 item 5). A memory that does overlap the
+  caller's through the block is reached by 4.5's rule: where either side runs as `Serial` none of its
+  threads is handed out (section 3, rule 1), and otherwise a group stop of it is made. On this executor
+  such overlapping memories run as `Serial` anyway (7.4).
   - **This one is T1's, not T2's.** Processes already run at the same time in T1. A hook that walked
-    every memory showing the block would reach the process records of another process, which that
-    process's running thread has locked for its whole stay (7.2). The try-lock would panic.
+    every memory showing the block would reach the records of a process that overlaps nobody here and
+    whose running thread has locked them for its whole stay (7.2). The try-lock would panic.
 - **Adding code needs no stop.** Today new code is instantiated in every thread of the process at once
   (docs/runtime.md section 9). With one store per thread, a thread cannot touch another's store. Instead:
   the new module goes on the process's list, its slots are written to the array of slots last, and each
