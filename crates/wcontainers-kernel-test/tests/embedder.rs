@@ -624,9 +624,14 @@ fn calls_made(run: &Run) -> usize {
 
 #[test]
 fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["calls", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout);
     for seed in wcontainers_kernel_test::schedule_seeds() {
         let plain = run_embedder_below(&["calls"], None, seed, None);
         assert_eq!(plain.outcome.exit_code, 0, "{:?}", plain.outcome);
+        assert_eq!(stdout(&plain), theirs, "seed {seed}");
         let calls = calls_made(&plain);
         assert_eq!(
             stdout(&plain).lines().count(),
@@ -679,26 +684,30 @@ fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
 
 #[test]
 fn an_access_that_ends_before_a_watched_page_does_not_announce_it() {
+    // span's store: the last 16 bytes but 8 of the buffer's second page.
+    let store = BUFFER + 2 * PAGE_SIZE - 2 * size_of::<u64>() as u64;
     for seed in wcontainers_kernel_test::schedule_seeds() {
-        let touches = Touches::default();
-        let run = run_embedder("span", Box::new(NextPage(touches.clone())), seed);
-        assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
-        assert!(
-            touches.lock().unwrap().is_empty(),
-            "seed {seed}: {:?}",
-            touches.lock().unwrap()
-        );
+        // The watch on the third page is in force: the same watch on the store's own page fires.
+        for (page, expected) in [(1, vec![store]), (2, vec![])] {
+            let touches = Touches::default();
+            let run = run_embedder("span", Box::new(NextPage(page, touches.clone())), seed);
+            assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
+            let touches = touches.lock().unwrap();
+            let addresses: Vec<u64> = touches.iter().map(|touch| touch.1).collect();
+            assert_eq!(addresses, expected, "seed {seed}, page {page}: {touches:?}");
+            assert!(touches.iter().all(|touch| touch.2 == Access::Write));
+        }
     }
 }
 
-/// Keeps a record of written pages and watches the buffer's third page in every child.
-struct NextPage(Touches);
+/// Keeps a record of written pages and watches one page of the buffer, by index, in every child.
+struct NextPage(u64, Touches);
 
 impl Hooks for NextPage {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
             process.memory_take_dirty();
-            process.memory_watch(page_of(BUFFER + 2 * PAGE_SIZE), Watch::Writes);
+            process.memory_watch(page_of(BUFFER + self.0 * PAGE_SIZE), Watch::Writes);
         }
     }
 
@@ -709,7 +718,7 @@ impl Hooks for NextPage {
         address: u64,
         access: Access,
     ) {
-        self.0
+        self.1
             .lock()
             .unwrap()
             .push((process.id().0, address, access, true));
