@@ -40,6 +40,9 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   with task.rs:224, no rulings on hard cases 1, 2, 4, 6; brief unchanged since 13:47 on 2026-11-19). The literal
   check ran on the Mac (exit 0, marks 0, the same baselines; j5run11/literals-mac.out); it cannot run on the x86
   machine, whose copy is not a git checkout (j5run11/literals-x86.out). Nothing else was built or run.
+- J5 run 12 (19:40 on 2026-11-19): the same again; the kernel branch still 7058ed46 with the assertion (now at
+  task.rs:224), the brief and the literal rulings unchanged. The tree is unchanged since run 11's literal check,
+  so nothing was rerun.
 - Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
