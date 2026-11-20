@@ -2018,6 +2018,11 @@ dependencies = [
 [[package]]
 name = "wcontainers-system"
 version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-kernel",
+ "wcontainers-process",
+]
 
 [[package]]
 name = "wcontainers-system-conformance"
