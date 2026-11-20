@@ -1312,6 +1312,11 @@ Next (after G8's check):
   build already fetches, Apache-2.0 WITH LLVM-exception; on Linux Nixpkgs' clang 21.1.8);
   nothing of it is linked. The driver now links Gallium's `u_init_pipe_screen_caps`
   (`u_screen.c`, MIT) from Mesa's own library.
+- G9 run 4, wcontainers-opengl: `naga` (the workspace's, MIT OR Apache-2.0, already a
+  dependency of wcontainers-nir and the interface) as a direct dependency (the uniform blocks'
+  declared sizes). The driver now also calls Mesa's `u_upload_mgr.c`, `u_blitter.c`,
+  `u_framebuffer.c` and `util/format/u_format.c` (each MIT by its header) from Mesa's own
+  library, which the WGL target links anyway; no new file of Mesa's is built.
 - Testing only, on the Windows desktop (`crates/wcontainers-opengl/cts`, never linked into
   anything of ours): VK-GL-CTS `opengl-cts-4.6.8.1` (Apache-2.0, its `LICENSE`) with what its
   `fetch_sources.py` pins (glslang BSD-3-Clause and others, SPIRV-Tools and SPIRV-Headers

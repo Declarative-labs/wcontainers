@@ -24,6 +24,9 @@ const ALLOWED_CONSTANTS: &str = "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*";
 /// The Gallium file whose defines the bindings take from Mesa's compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
 const CLANG_INCLUDE: &str = "-I";
+/// Mesa's atomics for the Visual C++ compiler call intrinsics libclang does not declare there; they
+/// sit in inline functions' bodies, which the bindings never hold.
+const UNDECLARED_CALLS_ALLOWED: &str = "-Wno-error=implicit-function-declaration";
 
 /// Folders of the Mesa tree, each under both its source and its build folder (generated headers).
 const INCLUDES: &[&str] = &[
@@ -50,6 +53,7 @@ fn main() {
     let bindings = bindgen::Builder::default()
         .header(GALLIUM_HEADER)
         .clang_args(includes.chain(defines))
+        .clang_arg(UNDECLARED_CALLS_ALLOWED)
         .allowlist_type(ALLOWED_TYPES)
         .allowlist_function(ALLOWED_FUNCTIONS)
         .allowlist_var(ALLOWED_CONSTANTS)
