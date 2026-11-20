@@ -227,6 +227,7 @@ const CULL_DISTANCES_UNSERVED: &str = "cull distances past the vertex stage, or 
 const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
     "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)";
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
+const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound to nothing";
 
 /// The color targets a pass takes at feature level `level`.
 fn level_targets(level: u32) -> u32 {
@@ -394,6 +395,11 @@ impl<B: Backend> Device<B> {
         })
     }
 
+    /// Counts a slow path the library around the front takes for this device.
+    pub fn count_slow_path(&mut self, path: SlowPath) {
+        self.backend.slow_paths().hit(path);
+    }
+
     pub fn feature_level(&self) -> u32 {
         self.level
     }
@@ -405,10 +411,29 @@ impl<B: Backend> Device<B> {
         use crate::desc::support::*;
         use crate::desc::support2::*;
         let caps = self.backend.caps();
+        // Every resource is shared through the host where devices hold no common memory
+        // (`SharedThroughHost`), so formats Direct3D shares claim it at 11_0.
+        let shareable = |support1: u32| {
+            if format::shared(dxgi) && support1 & TEXTURE2D != 0 && self.level >= level::L11_0 {
+                crate::desc::SUPPORT2_SHAREABLE
+            } else {
+                0
+            }
+        };
         if matches!(dxgi, format::NV12 | format::YUY2) {
+            let mut s = self.video_format_support(dxgi);
+            s.support2 |= shareable(s.support1);
+            return s;
+        }
+        if dxgi == dxgi::OPAQUE_420 {
+            // Held as NV12's planes; only made, copied and shared.
+            let held = [Format::R8Unorm, Format::Rg8Unorm]
+                .iter()
+                .all(|&f| caps.formats.get(f).contains(FormatUse::COPY_OUT));
+            let support1 = if held { TEXTURE2D } else { 0 };
             return FormatSupport {
-                support1: self.video_format_support(dxgi),
-                support2: 0,
+                support1,
+                support2: shareable(support1),
             };
         }
         if dxgi == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
@@ -419,13 +444,14 @@ impl<B: Backend> Device<B> {
                 .formats
                 .get(Format::Rgb10a2Unorm)
                 .contains(FormatUse::COPY_OUT);
+            let support1 = if held {
+                TEXTURE2D | CPU_LOCKABLE | CAST_WITHIN_BIT_LAYOUT
+            } else {
+                0
+            };
             return FormatSupport {
-                support1: if held {
-                    TEXTURE2D | CPU_LOCKABLE | CAST_WITHIN_BIT_LAYOUT
-                } else {
-                    0
-                },
-                support2: 0,
+                support1,
+                support2: shareable(support1),
             };
         }
         let mut s = wcontainers_directx_graphics_infrastructure::format_support(caps, dxgi);
@@ -535,41 +561,67 @@ impl<B: Backend> Device<B> {
             BLENDABLE,
         );
         remove(!format::displayed(dxgi, level), DISPLAY);
+        if format::back_buffer_cast(dxgi) && s.support1 & DISPLAY != 0 {
+            s.support1 |= BACK_BUFFER_CAST;
+        }
         if level < level::L11_0 && format::from_11_0(dxgi) {
             s.support1 = 0;
         }
         if level < level::L11_0 || s.support1 == 0 {
             s.support2 = 0;
         }
+        s.support2 |= shareable(s.support1);
         s
     }
 
-    /// `CheckFormatSupport` of NV12 and YUY2: 2D textures of one level, through views of each
-    /// plane's format (NV12) or of R8G8B8A8 (YUY2).
-    fn video_format_support(&self, dxgi: u32) -> u32 {
+    /// `CheckFormatSupport` and `D3D11_FEATURE_FORMAT_SUPPORT2` of NV12 and YUY2: 2D textures of
+    /// one level, through views of each plane's format (NV12) or of R8G8B8A8 (YUY2), their storage
+    /// views natively or through a buffer of texels.
+    fn video_format_support(&self, dxgi: u32) -> FormatSupport {
         use crate::desc::support::*;
+        use crate::desc::support2::*;
         let formats = &self.backend.caps().formats;
-        let uses = if dxgi == format::NV12 {
-            formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm)
+        let planes: &[Format] = if dxgi == format::NV12 {
+            &[Format::R8Unorm, Format::Rg8Unorm]
         } else {
-            formats.get(Format::Rgba8Unorm)
+            &[Format::Rgba8Unorm]
         };
+        let uses = planes
+            .iter()
+            .fold(FormatUse::all(), |all, &f| all & formats.get(f));
         if uses.is_empty() {
-            return 0;
+            return FormatSupport::default();
         }
-        let mut bits = TEXTURE2D;
+        let mut s = FormatSupport {
+            support1: TEXTURE2D,
+            support2: 0,
+        };
         for (has, bit) in [
             (FormatUse::SAMPLE, SHADER_LOAD),
-            (FormatUse::FILTER, SHADER_SAMPLE),
+            (FormatUse::FILTER, SHADER_SAMPLE | SHADER_GATHER),
             (FormatUse::RENDER, RENDER_TARGET),
+            (FormatUse::BLEND, BLENDABLE),
             (FormatUse::COPY_OUT, CPU_LOCKABLE),
         ] {
-            // Direct3D reports no target use of YUY2, though it takes target views of it.
-            if uses.contains(has) && !(dxgi == format::YUY2 && bit == RENDER_TARGET) {
-                bits |= bit;
+            // Direct3D reports no target use or blending of YUY2, though it takes target views
+            // of it.
+            if uses.contains(has)
+                && !(dxgi == format::YUY2 && bit & (RENDER_TARGET | BLENDABLE) != 0)
+            {
+                s.support1 |= bit;
             }
         }
-        bits
+        let stored = planes
+            .iter()
+            .all(|&f| formats.get(f).contains(FormatUse::STORAGE_WRITE) || self.through_takes(f));
+        if stored && self.level >= level::L11_0 {
+            s.support1 |= TYPED_UNORDERED_ACCESS_VIEW;
+            s.support2 |= UAV_TYPED_STORE;
+        }
+        if self.level < level::L10_1 {
+            s.support1 &= !SHADER_GATHER;
+        }
+        s
     }
 
     /// Whether textures of `format` drawn into or for depth take `samples` samples.
@@ -909,7 +961,12 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("a texture's misc flags on a buffer"));
         }
         if d.misc_flags
-            & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED | MISC_SHARED)
+            & !(MISC_DRAWINDIRECT_ARGS
+                | MISC_ALLOW_RAW_VIEWS
+                | MISC_STRUCTURED
+                | MISC_SHARED
+                | MISC_SHARED_KEYEDMUTEX
+                | MISC_SHARED_NTHANDLE)
             != 0
         {
             return not_implemented(
@@ -1004,7 +1061,8 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
-        if d.format == format::NV12 {
+        let sharing = MISC_SHARED | MISC_SHARED_KEYEDMUTEX | MISC_SHARED_NTHANDLE;
+        if format::two_planes(d.format) {
             if d.dimension != TexDim::D2
                 || !d.width.is_multiple_of(2)
                 || !d.height.is_multiple_of(2)
@@ -1015,9 +1073,15 @@ impl<B: Backend> Device<B> {
                     "an NV12 texture is 2D, of one sample and of even width and height",
                 ));
             }
-            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+            if mips != 1 || d.misc_flags & !sharing != 0 {
                 return not_implemented("NV12 textures of more than one level or with misc flags");
             }
+        }
+        // 420_OPAQUE is only copied and shared: Direct3D gives it no view and no CPU access.
+        if d.format == dxgi::OPAQUE_420
+            && (d.bind_flags != 0 || d.usage != usage::DEFAULT || d.cpu_access_flags != 0)
+        {
+            return Err(Error::InvalidArg(OPAQUE_420_BOUND));
         }
         if d.format == format::YUY2 {
             if d.dimension != TexDim::D2
@@ -1029,7 +1093,7 @@ impl<B: Backend> Device<B> {
                     "a YUY2 texture is 2D, of one sample and of even width",
                 ));
             }
-            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+            if mips != 1 || d.misc_flags & !sharing != 0 {
                 return not_implemented("YUY2 textures of more than one level or with misc flags");
             }
         }
@@ -1103,6 +1167,8 @@ impl<B: Backend> Device<B> {
                 | MISC_GENERATE_MIPS
                 | MISC_RESOURCE_CLAMP
                 | MISC_SHARED
+                | MISC_SHARED_KEYEDMUTEX
+                | MISC_SHARED_NTHANDLE
                 | MISC_GDI_COMPATIBLE)
             != 0
         {
@@ -1294,7 +1360,7 @@ impl<B: Backend> Device<B> {
         self.bury();
         // NV12's chroma plane: a texture of its own the program sees only through views and
         // through the joined rows of maps, copies and writes.
-        let chroma = if d.format == crate::format::NV12 {
+        let chroma = if format::two_planes(d.format) {
             let plane = TextureDesc {
                 format: crate::format::R8G8_TYPELESS,
                 width: d.width / 2,
@@ -1608,6 +1674,13 @@ impl<B: Backend> Device<B> {
                     && v.format == twin =>
             {
                 (format::texture_format_of(twin)?, false)
+            }
+            // Target views of a swap chain's buffer may take the other formats of its group.
+            _ if texture.chain == ChainBuffer::Drawn
+                && kind == bind::RENDER_TARGET
+                && format::back_buffer_cast(t.format) =>
+            {
+                format::view_format(v.format, format::typeless_group(t.format), texture.format)?
             }
             _ if texture.chroma.is_some() => {
                 format::view_format(v.format, format::R8_TYPELESS, texture.format)?

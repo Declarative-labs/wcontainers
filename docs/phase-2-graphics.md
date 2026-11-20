@@ -2335,7 +2335,9 @@ typeless groups, read backs of every format (depth and stencil by a draw), `D32_
 targets (a condition on WebGPU, below), mipmap generation of every
 format the tables require it on (including the 32-bit float formats where the adapter cannot filter
 them), the packed-pair formats `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` (decoded), and `NV12`, `YUY2` and
-`420_OPAQUE` built from ordinary textures. Shader model 5's early depth and stencil tests, required at
+`420_OPAQUE` built from ordinary textures, and shared resources (the tables' Shared Resource row): a
+resource opened on another device of the process is a copy on that device, copied through a read back
+at the API's synchronisation points (`SharedThroughHost`). Shader model 5's early depth and stencil tests, required at
 11_0, are served by `EarlyTestsInShader` and `EarlyTestsPerPrimitive`. The shortfalls against the
 tables, which the owner is told: multisample counts per format (4.12); and the video abilities of the
 video formats (Video Decoder Support, Video Processor Input and Output), since the Direct3D 11 front

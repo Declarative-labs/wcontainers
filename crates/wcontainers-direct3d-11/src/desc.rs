@@ -55,6 +55,8 @@ pub mod support {
 
 /// `D3D11_FORMAT_SUPPORT2` bits.
 pub use wcontainers_directx_graphics_infrastructure::support2;
+/// `D3D11_FORMAT_SUPPORT2_SHAREABLE`, which the infrastructure crate's list lacks.
+pub const SUPPORT2_SHAREABLE: u32 = 0x400;
 
 /// `D3D_FEATURE_LEVEL`.
 pub mod level {
@@ -121,11 +123,11 @@ pub mod buffer_uav {
 pub const MISC_GENERATE_MIPS: u32 = 0x1;
 /// `D3D11_RESOURCE_MISC_TEXTURECUBE`.
 pub const MISC_TEXTURECUBE: u32 = 0x4;
-/// Shareable with other devices; the sharing itself (`GetSharedHandle`) is not served.
+/// `D3D11_RESOURCE_MISC_SHARED`: shareable with other devices.
 pub const MISC_SHARED: u32 = 0x2;
-/// `D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX`: shared with a keyed mutex (not served).
+/// `D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX`: shared with a keyed mutex.
 pub const MISC_SHARED_KEYEDMUTEX: u32 = 0x100;
-/// `D3D11_RESOURCE_MISC_SHARED_NTHANDLE`: shared through an NT handle (not served).
+/// `D3D11_RESOURCE_MISC_SHARED_NTHANDLE`: shared through an NT handle.
 pub const MISC_SHARED_NTHANDLE: u32 = 0x800;
 /// `D3D11_RESOURCE_MISC_GDI_COMPATIBLE`: GDI draws into it through `IDXGISurface1::GetDC`.
 pub const MISC_GDI_COMPATIBLE: u32 = 0x200;

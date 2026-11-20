@@ -239,7 +239,7 @@ impl ID3D11Device1_Impl for Device_Impl {
         ppresource: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device1::OpenSharedResource1"))
+        self.open_shared_resource1(hresource, returnedinterface, ppresource)
     }
     fn OpenSharedResourceByName(
         &self,
@@ -249,7 +249,7 @@ impl ID3D11Device1_Impl for Device_Impl {
         ppresource: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device1::OpenSharedResourceByName"))
+        self.open_shared_resource_by_name(lpname, dwdesiredaccess, returnedinterface, ppresource)
     }
 }
 
@@ -574,7 +574,7 @@ impl ID3D11Device_Impl for Device_Impl {
         ppresource: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::OpenSharedResource"))
+        self.open_shared_resource(hresource, returnedinterface, ppresource)
     }
     fn CheckFormatSupport(
         &self,
@@ -1609,7 +1609,7 @@ impl ID3D10Device_Impl for Device_Impl {
         ppresource: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D10Device::OpenSharedResource"))
+        self.open_shared_resource10(hresource, returnedinterface, ppresource)
     }
     fn SetTextFilterSize(&self, width: u32, height: u32) {
         let _call = self.call();
@@ -4027,7 +4027,7 @@ impl IDXGIResource1_Impl for Buffer_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        self.nt_shared_handle()
+        self.nt_shared_handle(pattributes, *lpname)
     }
 }
 
@@ -4139,6 +4139,16 @@ impl IDXGISurface_Impl for Buffer_Impl {
     fn Unmap(&self) -> windows::core::Result<()> {
         let _lock = lock();
         Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
+impl IDXGIKeyedMutex_Impl for Buffer_Impl {
+    fn AcquireSync(&self, key: u64, dwmilliseconds: u32) -> windows::core::Result<()> {
+        self.acquire_sync(key, dwmilliseconds)
+    }
+    fn ReleaseSync(&self, key: u64) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.release_sync(key)
     }
 }
 
@@ -4277,7 +4287,7 @@ impl IDXGIResource1_Impl for Texture1D_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        self.nt_shared_handle()
+        self.nt_shared_handle(pattributes, *lpname)
     }
 }
 
@@ -4389,6 +4399,16 @@ impl IDXGISurface_Impl for Texture1D_Impl {
     fn Unmap(&self) -> windows::core::Result<()> {
         let _lock = lock();
         Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
+impl IDXGIKeyedMutex_Impl for Texture1D_Impl {
+    fn AcquireSync(&self, key: u64, dwmilliseconds: u32) -> windows::core::Result<()> {
+        self.acquire_sync(key, dwmilliseconds)
+    }
+    fn ReleaseSync(&self, key: u64) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.release_sync(key)
     }
 }
 
@@ -4535,7 +4555,7 @@ impl IDXGIResource1_Impl for Texture2D_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        self.nt_shared_handle()
+        self.nt_shared_handle(pattributes, *lpname)
     }
 }
 
@@ -4647,6 +4667,16 @@ impl IDXGISurface_Impl for Texture2D_Impl {
     fn Unmap(&self) -> windows::core::Result<()> {
         let _lock = lock();
         Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
+impl IDXGIKeyedMutex_Impl for Texture2D_Impl {
+    fn AcquireSync(&self, key: u64, dwmilliseconds: u32) -> windows::core::Result<()> {
+        self.acquire_sync(key, dwmilliseconds)
+    }
+    fn ReleaseSync(&self, key: u64) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.release_sync(key)
     }
 }
 
@@ -4792,7 +4822,7 @@ impl IDXGIResource1_Impl for Texture3D_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        self.nt_shared_handle()
+        self.nt_shared_handle(pattributes, *lpname)
     }
 }
 
@@ -4904,6 +4934,16 @@ impl IDXGISurface_Impl for Texture3D_Impl {
     fn Unmap(&self) -> windows::core::Result<()> {
         let _lock = lock();
         Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
+impl IDXGIKeyedMutex_Impl for Texture3D_Impl {
+    fn AcquireSync(&self, key: u64, dwmilliseconds: u32) -> windows::core::Result<()> {
+        self.acquire_sync(key, dwmilliseconds)
+    }
+    fn ReleaseSync(&self, key: u64) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.release_sync(key)
     }
 }
 
