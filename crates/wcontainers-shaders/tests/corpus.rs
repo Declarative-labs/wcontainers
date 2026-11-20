@@ -251,13 +251,19 @@ const WRITTEN: &str = "written";
 /// The need a cube array view names beside the back end's features.
 const CUBE_ARRAY_VIEW: &str = "CUBE_ARRAY_VIEW";
 
-/// The GLSL ES outcomes from glslang.
+/// The GLSL ES outcomes from glslang; a refusal is followed by glslang's first error.
 const COMPILES: &str = "compiles";
-const COMPILE_FAILED: &str = "compile";
+const COMPILE_FAILED: &str = "compile ";
+
+/// glslang's word before each error, and the line glslang ends a refused file with.
+#[cfg(not(target_arch = "wasm32"))]
+const GLSLANG_ERROR: &str = "ERROR: ";
+#[cfg(not(target_arch = "wasm32"))]
+const GLSLANG_TERMINATED: &str = "compilation terminated";
 
 /// The WebGL 2 back end's verdict on one module: the features it needs beyond the core language
 /// (`needs NAME|NAME`, absent from the part where none), then `absent compute`, `written`,
-/// `compiles`, `compile` (refused by glslang) or `write` with the back end's reason.
+/// `compiles`, `compile` with glslang's first error, or `write` with the back end's reason.
 #[cfg(not(target_arch = "wasm32"))]
 fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
     use wcontainers_gpu_webgl::glsl;
@@ -312,11 +318,34 @@ fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
     if run.status.success() {
         return format!("{needed}{COMPILES}");
     }
-    // glslang's words differ between its versions: they are kept beside the file, not recorded.
     let mut log = file.into_os_string();
     log.push(GLSLANG_LOG);
     std::fs::write(log, &run.stdout).unwrap();
-    format!("{needed}{COMPILE_FAILED}")
+    format!(
+        "{needed}{COMPILE_FAILED}{}",
+        glslang_error(&String::from_utf8_lossy(&run.stdout))
+    )
+}
+
+/// glslang's first error without its place in the file (`ERROR: 0:12: 'x' : undeclared identifier`
+/// gives `'x' : undeclared identifier`), its spaces made single.
+#[cfg(not(target_arch = "wasm32"))]
+fn glslang_error(output: &str) -> String {
+    let first = output
+        .lines()
+        .filter_map(|l| l.strip_prefix(GLSLANG_ERROR))
+        .find(|e| !e.contains(GLSLANG_TERMINATED))
+        .unwrap_or_default();
+    let place = |w: &str| {
+        w.trim_end_matches(':')
+            .split(':')
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let mut words = first.split_whitespace().peekable();
+    if words.peek().is_some_and(|w| place(w)) {
+        words.next();
+    }
+    words.collect::<Vec<_>>().join(" ")
 }
 
 /// Appended to a GLSL file's name for glslang's output where it refuses the file.
@@ -335,7 +364,7 @@ fn as_checked(record: &str, glslang: bool) -> String {
         return record.into();
     }
     let (needed, outcome) = split_needs(glsl);
-    if outcome == COMPILES || outcome == COMPILE_FAILED {
+    if outcome == COMPILES || outcome.starts_with(COMPILE_FAILED) {
         format!("{wgsl}{GLSL_PART}{needed}{WRITTEN}")
     } else {
         record.into()
@@ -361,20 +390,36 @@ fn class_of(verdict: &str) -> String {
     class.join(" ")
 }
 
-/// A verdict names its outcome: a conversion, or a refusal by name; a GLSL ES failure only where
-/// the shader needs a feature the core language lacks (the back end's or glslang's refusal of it is
-/// then the feature's absence, and Chrome's compile decides where WebGL 2 has it).
+/// A verdict names its outcome: a conversion, or a refusal by name. A GLSL ES compile failure only
+/// where the shader needs a feature the core language lacks (glslang's error, recorded, is then the
+/// feature's absence there, and Chrome's compile decides where WebGL 2 has it); a write failure
+/// only where it needs a feature the WebGL 2 back end never declares, so a shader it can run is
+/// written.
 fn is_named(verdict: &str) -> bool {
     let (wgsl, glsl) = verdict.split_once(GLSL_PART).unwrap_or((verdict, ""));
     let wgsl_named = ["ok", UNSUPPORTED.trim(), "spirv-reader"]
         .contains(&wgsl.split_whitespace().next().unwrap_or(""));
     let (needed, outcome) = split_needs(glsl);
-    let failed = outcome.starts_with(WRITE_FAILED) || outcome == COMPILE_FAILED;
+    let names = || needed.trim().strip_prefix(NEEDS).unwrap_or("").split('|');
+    let compile_named = !outcome.starts_with(COMPILE_FAILED) || !needed.is_empty();
+    let write_named = !outcome.starts_with(WRITE_FAILED)
+        || names().any(|n| !n.is_empty() && !WEBGL_DECLARABLE.contains(&n));
     let key_named = outcome
         .strip_prefix(KEY_FAILED)
         .is_none_or(|refusal| refusal.starts_with(UNSUPPORTED));
-    wgsl_named && (!failed || !needed.is_empty()) && key_named
+    wgsl_named && compile_named && write_named && key_named
 }
+
+/// The features `glsl::needs` names that the WebGL 2 back end declares where its context has the
+/// extension (wcontainers-gpu-webgl's caps.rs): a shader needing only these must be written.
+const WEBGL_DECLARABLE: [&str; 3] = ["DUAL_SOURCE_BLEND", "POINT_SIZE", "SAMPLE_SHADING"];
+
+/// Shaders whose recorded verdict is not a named one, each with its gap: their verdict must still
+/// equal the record.
+const KNOWN_UNNAMED: [(&str, &str); 1] = [(
+    "hlsl+distance-4-ps.dxil",
+    "gap A1: dxc 10.0.26100 writes a PPC_FP128 type record, which dxil-spirv's reader does not know",
+)];
 
 /// A verdict's GLSL ES part as its `needs` words (with their space, empty where none) and the
 /// outcome after them.
@@ -484,8 +529,12 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
         let matches = expected
             .get(&file)
             .is_some_and(|e| as_checked(e, glslang) == v);
-        // Only conversions and named failures may be recorded.
-        if !matches || !is_named(&v) {
+        // Only conversions and named failures may be recorded, besides the known ones.
+        let known = KNOWN_UNNAMED.iter().find(|(f, _)| *f == file);
+        if let Some((_, gap)) = known {
+            eprintln!("{file}: known unnamed verdict {v:?} ({gap})");
+        }
+        if !matches || (!is_named(&v) && known.is_none()) {
             differ.push(format!(
                 "{file}: expected {:?}, got {v:?}",
                 expected.get(&file)
