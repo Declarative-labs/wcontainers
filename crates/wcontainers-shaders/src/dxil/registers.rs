@@ -55,7 +55,7 @@ pub(crate) fn encode(spirv: &mut [u32]) {
 }
 
 /// The register and first component of an encoded location.
-fn decode(location: u32) -> (u32, u32) {
+pub(super) fn decode(location: u32) -> (u32, u32) {
     (location / COMPONENTS, location % COMPONENTS)
 }
 

@@ -148,6 +148,29 @@ pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
     Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
 }
 
+/// The start of a DXIL container's `PSV0` chunk (DirectXShaderCompiler's
+/// DxilPipelineStateValidation.h): the size of its runtime information, then that information, which
+/// for a geometry shader starts with `GSInfo`.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct PipelineStateGeometry {
+    runtime_info_size: u32,
+    input_primitive: u32,
+    output_topology: u32,
+    output_stream_mask: u32,
+}
+
+/// The tag of a DXIL container's pipeline state chunk.
+const PIPELINE_STATE_TAG: [u8; 4] = *b"PSV0";
+/// `D3D_PRIMITIVE_1_CONTROL_POINT_PATCH`, the first of the patch primitives.
+pub(crate) const FIRST_PATCH_PRIMITIVE: u32 = 8;
+
+/// A DXIL geometry shader's input primitive (`D3D_PRIMITIVE`), from its `PSV0` chunk.
+pub(crate) fn geometry_input_primitive(container: &[u8]) -> Option<u32> {
+    let psv = chunks(container, &PIPELINE_STATE_TAG).next()?;
+    word(psv, offset_of!(PipelineStateGeometry, input_primitive))
+}
+
 /// An element of an input or output signature.
 pub(crate) struct Element {
     pub(crate) semantic: alloc::string::String,

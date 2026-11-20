@@ -736,7 +736,8 @@ fn natural(kind: Kind) -> Scalar {
 
 /// One component's `bits` raw bits from its value, as Direct3D converts (functional specification
 /// 3.2.2 and 3.2.3): integers clamped to the format's range; normalised values with NaN as zero,
-/// clamped, scaled and rounded half away from zero; floats rounded toward zero, keeping NaN and
+/// clamped, scaled and rounded to nearest with halves toward zero, as the RTX 3080 rounds (the
+/// specification allows 0.6 of a unit either way); floats rounded toward zero, keeping NaN and
 /// infinities, past the largest finite value giving it, an unsigned format's negatives zero.
 pub(super) fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) -> Expr {
     let lit = |f: &mut Function, l: Literal| {
@@ -803,12 +804,22 @@ pub(super) fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bi
             let n = if signed { bits - 1 } else { bits };
             let scale = lit(f, Literal::F32(((1u64 << n) - 1) as f32));
             let c = binary(f, body, B::Multiply, c, scale);
+            // Halves toward zero: the magnitude less a half, rounded up.
             let half = lit(f, Literal::F32(0.5));
+            let magnitude = math(f, body, MathFunction::Abs, [c, c]);
+            let lowered = binary(f, body, B::Subtract, magnitude, half);
+            let rounded = math(f, body, MathFunction::Ceil, [lowered, lowered]);
             if signed {
-                let minus = lit(f, Literal::F32(-0.5));
                 let negative = binary(f, body, B::Less, c, zero);
-                let h = select(f, body, negative, minus, half);
-                let c = binary(f, body, B::Add, c, h);
+                let opposite = push(
+                    f,
+                    body,
+                    Expression::Unary {
+                        op: naga::UnaryOperator::Negate,
+                        expr: rounded,
+                    },
+                );
+                let c = select(f, body, negative, opposite, rounded);
                 let i = push(
                     f,
                     body,
@@ -821,8 +832,7 @@ pub(super) fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bi
                 let u = to_u32(f, body, i, None);
                 mask(f, body, u)
             } else {
-                let c = binary(f, body, B::Add, c, half);
-                to_u32(f, body, c, Some(Scalar::U32.width))
+                to_u32(f, body, rounded, Some(Scalar::U32.width))
             }
         }
         Kind::Float if bits == u32::BITS => to_u32(f, body, v, None),
