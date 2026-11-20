@@ -498,10 +498,24 @@ fn format_support_compared(
     assert!(differing.is_empty(), "{}", differing.join("\n"));
 }
 
-/// `ClearView` clears a target's rectangles, clipped to the target, and a whole storage view.
+/// `ClearView` clears targets' and storage views' rectangles, clipped to the view, in each
+/// layer or slice, and whole views of buffers and of 1D, 2D and 3D textures; integer values are
+/// clamped to the channel; `D3D11_OPTIONS.ClearView` is TRUE.
 #[test]
 fn clear_view_of_rectangles_and_storage_as_direct3d_does() {
     case("clear_view");
+}
+
+/// The same without `texture-formats-tier1` (natively, the adapter's own format features): a
+/// storage view of `R8G8B8A8_SNORM`, which no pass then draws into, is cleared by the storage
+/// clear program, whole or its rectangles.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn clear_view_without_texture_formats_tier1_as_direct3d_does() {
+    let tier1 = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        .as_str()
+        .unwrap();
+    case_env("clear_view", "untiered", &[(FEATURES_OFF, tier1)]);
 }
 
 /// A compute shader sampling, loading and gathering under resource clamps takes the clamped

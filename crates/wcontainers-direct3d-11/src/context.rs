@@ -385,6 +385,13 @@ const COMPUTE_VARIANT_OF_DRAWS: &str = "a compute program variant only draws tak
 const LINES_FACING: &str = "a pixel shader reading its facing on alpha-antialiased lines";
 /// Blending into a target held as its integer twin is done in the program from a copy of the
 /// target (`BlendInShader`), which the shaders crate does not build.
+/// The bits of the channels of `R10G10B10A2` and of `R11G11B10_FLOAT`.
+const RGB10A2_BITS: [u32; 4] = [10, 10, 10, 2];
+const RG11B10_BITS: [u32; 3] = [11, 11, 10];
+const CLEAR_OF_PACKED_FORMAT: &str = "a clear of a view of a packed or BGR format";
+const CLEAR_VIEW_BUFFER_RECTS: &str = "ClearView of a buffer view's rectangles";
+const CLEAR_VIEW_STORAGE_RECTS_UNSERVED: &str = "ClearView of rectangles of a storage view stored through a buffer or as an integer twin, of a 3D texture or one no pass draws into";
+const CLEAR_STORAGE_UNSERVED: &str = "a clear of a storage view stored through a buffer or as an integer twin that no pass draws into";
 const BLEND_INTO_INTEGER_TWIN: &str =
     "blending into a normalised target held as its integer twin (blending in the shader)";
 const VIEWPORT_BEHIND_GEOMETRY: &str =
@@ -906,15 +913,107 @@ impl<B: Backend> Device<B> {
         let rects: Vec<ScissorRect> = rects.iter().map(|&r| pixel_rect(r)).collect();
         self.settle();
         let value = color_value(view, color);
+        if view.texture.desc.dimension == TexDim::D3 {
+            return self.clear_slice_rects(view, value, &rects);
+        }
+        self.clear_rects_drawn(view, value, &rects, true)
+    }
+
+    /// `ClearView` of rectangles of a 3D target view: no view draws into one slice of a 3D level
+    /// alone, so a texture of one slice is cleared and each rectangle copied from it into each
+    /// slice the view sees (`ReinterpretCopy`).
+    fn clear_slice_rects(
+        &mut self,
+        view: &View<B>,
+        value: ClearValue,
+        rects: &[ScissorRect],
+    ) -> Result<()> {
+        let t = &view.texture;
+        let mip = view.desc.first_mip;
+        let extent = t.mip_extent(mip);
+        let desc = wcontainers_gpu::TextureDesc {
+            dimension: wcontainers_gpu::TextureDimension::D2,
+            format: view.format,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        };
+        let slice = self.backend.create_texture(&desc);
+        let slice = self.gpu(slice)?;
+        let id = self.id();
+        let slice = Kept::new(slice, id, Object::Texture, &self.graveyard);
+        self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        let cleared =
+            self.backend
+                .clear_texture(&slice.handle, &desc, view.format, 0..1, 0..1, value);
+        self.gpu(cleared)?;
+        let layers = view.desc.first_layer..view.desc.first_layer + view.desc.layer_count;
+        for r in rects {
+            let width = r.x.saturating_add(r.width).min(extent.width);
+            let height = r.y.saturating_add(r.height).min(extent.height);
+            if r.x >= width || r.y >= height {
+                continue;
+            }
+            let at = Origin {
+                x: r.x,
+                y: r.y,
+                z: 0,
+            };
+            for z in layers.clone() {
+                self.backend.copy_texture(
+                    &TextureRegion {
+                        texture: &slice.handle,
+                        mip: 0,
+                        layer: 0,
+                        origin: at,
+                        stencil: false,
+                    },
+                    &TextureRegion {
+                        texture: &t.gpu.handle,
+                        mip,
+                        layer: 0,
+                        origin: Origin { z, ..at },
+                        stencil: false,
+                    },
+                    Extent {
+                        width: width - r.x,
+                        height: height - r.y,
+                        depth_or_layers: 1,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Clears `rects` of each layer of `view` with `value` by drawing into it: through the view
+    /// itself where it is a target view of one layer (`target`), else through a target view of
+    /// each layer.
+    fn clear_rects_drawn(
+        &mut self,
+        view: &Rc<View<B>>,
+        value: ClearValue,
+        rects: &[ScissorRect],
+        target: bool,
+    ) -> Result<()> {
         for layer in 0..view.desc.layer_count {
-            let one = if view.desc.layer_count == 1 {
+            let one = if target && view.desc.layer_count == 1 {
                 view.clone()
             } else {
                 self.layer_view(view, layer, desc::bind::RENDER_TARGET)?
             };
+            // What lies outside the rectangles is copied in, so that copying out keeps it.
+            if one.copied() {
+                self.copy_twin(&one, true);
+            }
             let cleared = self
                 .backend
-                .clear_rects(&one.gpu.handle, one.format, value, &rects);
+                .clear_rects(&one.gpu.handle, one.format, value, rects);
             self.gpu(cleared)?;
             if one.copied() {
                 self.copy_twin(&one, false);
@@ -3018,18 +3117,183 @@ impl<B: Backend> Device<B> {
         self.buffer_written(dst)
     }
 
-    /// `ClearView` of a whole storage view: integer formats take each value cast, the others the
-    /// values converted as `ClearUnorderedAccessViewFloat` converts them.
-    pub fn clear_view_uav(&mut self, view: &ShaderView<B>, color: Color) -> Result<()> {
-        let integer = match view {
-            ShaderView::Texture(v) => integer_format(v.format),
-            ShaderView::Buffer(b) => b.texel.is_some_and(|(f, ..)| integer_format(f)),
+    /// `ClearView` of a storage view, whole or its rectangles (left, top, right, bottom) in each
+    /// of its layers or slices: integer formats take each value as an integer clamped to the
+    /// channel, the others the values converted as `ClearUnorderedAccessViewFloat` converts them.
+    pub fn clear_view_uav(
+        &mut self,
+        view: &ShaderView<B>,
+        color: Color,
+        rects: &[Rect],
+    ) -> Result<()> {
+        let values = match view {
+            ShaderView::Texture(v) => Some(v.values()),
+            ShaderView::Buffer(b) => b.texel.map(|(f, ..)| f),
         };
-        if integer {
-            self.clear_uav(view, color.map(|c| c as i64 as u32), false)
-        } else {
-            self.clear_uav(view, color.map(f32::to_bits), true)
+        let (values, float) = match values.filter(|&f| integer_format(f)) {
+            Some(f) => (integer_clear(f, color), false),
+            None => (color.map(f32::to_bits), true),
+        };
+        if rects.is_empty() {
+            return self.clear_uav(view, values, float);
         }
+        let ShaderView::Texture(v) = view else {
+            return not_implemented(CLEAR_VIEW_BUFFER_RECTS);
+        };
+        if self.predicated_out() {
+            return Ok(());
+        }
+        self.settle();
+        let rects: Vec<ScissorRect> = rects.iter().map(|&r| pixel_rect(r)).collect();
+        if self.stored_as_its_format(v) {
+            return self.store_clear(v, values, float, &rects);
+        }
+        if !v.texture.gpu_desc.usage.contains(TextureUsage::RENDER)
+            || v.desc.dimension == desc::ViewDim::Texture3D
+        {
+            return not_implemented(CLEAR_VIEW_STORAGE_RECTS_UNSERVED);
+        }
+        self.clear_rects_drawn(v, color_value(v, color), &rects, false)
+    }
+
+    /// Whether storage view `v` is a storage view of its own format on the back end: not stored
+    /// through a buffer, not held as an integer twin.
+    fn stored_as_its_format(&self, v: &View<B>) -> bool {
+        v.decoded.is_none()
+            && !self.stored_through(v.format)
+            && v.texture.gpu_desc.usage.contains(TextureUsage::STORAGE)
+    }
+
+    /// Clears `rects` of storage view `v` (each in every layer or slice it sees; all of it where
+    /// there are none) by the storage clear program of its format, `values` taken as
+    /// `builtin::storage_clear_value` takes them.
+    fn store_clear(
+        &mut self,
+        v: &View<B>,
+        values: [u32; COLOR_COMPONENTS],
+        float: bool,
+        rects: &[ScissorRect],
+    ) -> Result<()> {
+        use wcontainers_shaders::builtin;
+        if !self.stored_as_its_format(v) {
+            return not_implemented(CLEAR_STORAGE_UNSERVED);
+        }
+        let dimension = match v.desc.dimension {
+            desc::ViewDim::Texture1D | desc::ViewDim::Texture2D => ViewDimension::D2,
+            desc::ViewDim::Texture1DArray | desc::ViewDim::Texture2DArray => ViewDimension::D2Array,
+            desc::ViewDim::Texture3D => ViewDimension::D3,
+            _ => return Err(Error::InvalidArg("a storage view of another dimension")),
+        };
+        let value = builtin::storage_clear_value(v.format, values, float).or_else(refused)?;
+        let program = self.storage_clear_program(v.format, dimension)?;
+        let extent = v.texture.mip_extent(v.desc.first_mip);
+        let slices = match dimension {
+            ViewDimension::D3 if !v.window => {
+                v.desc.first_layer..v.desc.first_layer + v.desc.layer_count
+            }
+            ViewDimension::D2 => 0..1,
+            _ => 0..v.desc.layer_count,
+        };
+        let whole = [ScissorRect {
+            x: 0,
+            y: 0,
+            width: extent.width,
+            height: extent.height,
+        }];
+        let boxes: Vec<([u32; builtin::CLEAR_AXES], [u32; builtin::CLEAR_AXES])> =
+            if rects.is_empty() { &whole[..] } else { rects }
+                .iter()
+                .map(|r| {
+                    let end = [
+                        r.x.saturating_add(r.width).min(extent.width),
+                        r.y.saturating_add(r.height).min(extent.height),
+                        slices.end,
+                    ];
+                    ([r.x, r.y, slices.start], end)
+                })
+                .filter(|(origin, end)| origin.iter().zip(end).all(|(o, e)| o < e))
+                .collect();
+        if boxes.is_empty() {
+            return Ok(());
+        }
+        let params: Vec<[u8; builtin::CLEAR_PARAMS_BYTES]> = boxes
+            .iter()
+            .map(|&(origin, end)| builtin::clear_params(value, origin, end))
+            .collect();
+        let blocks: Vec<&[u8]> = params.iter().map(|p| &p[..]).collect();
+        let align = self.backend.caps().limits.min_uniform_offset_alignment;
+        let mut offsets = vec![0u64; blocks.len()];
+        let ring = self
+            .backend
+            .write_buffer_ring(RingKind::Data, &blocks, align, &mut offsets);
+        let ring = self.gpu(ring)?;
+        self.helper_blocks = None;
+        self.compute_helpers = None;
+        if v.twin.is_some() {
+            self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+            self.copy_twin(v, true);
+        }
+        for (&(origin, end), &offset) in boxes.iter().zip(&offsets) {
+            let entries = [
+                BindingEntry {
+                    binding: builtin::CLEAR_PARAMS_BINDING,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &ring,
+                        offset,
+                        size: builtin::CLEAR_PARAMS_BYTES as u64,
+                    }),
+                },
+                BindingEntry {
+                    binding: builtin::CLEAR_VIEW_BINDING,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::StorageTexture {
+                        view: &v.gpu.handle,
+                        writable: true,
+                    },
+                },
+            ];
+            let set = self.backend.create_binding_set(&entries);
+            let set = self.gpu(set)?;
+            let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
+            bindings[0] = Some(&set);
+            let r = self.backend.dispatch(&DispatchCall {
+                program: &program,
+                bindings,
+                immediates: &[],
+                groups: DispatchGroups::Direct(builtin::clear_groups(origin, end)),
+            });
+            self.backend.destroy(Object::BindingSet(set));
+            self.gpu(r)?;
+        }
+        if v.twin.is_some() {
+            self.copy_twin(v, false);
+        }
+        Ok(())
+    }
+
+    /// The storage clear program of `format` and `dimension`, made at its first use.
+    fn storage_clear_program(
+        &mut self,
+        format: Format,
+        dimension: ViewDimension,
+    ) -> Result<B::Program> {
+        if let Some(p) = self.storage_clears.get(&(format, dimension)) {
+            return Ok(p.handle.clone());
+        }
+        let module =
+            wcontainers_shaders::builtin::storage_clear(format, dimension).or_else(refused)?;
+        let shader = self.backend.create_shader(&module);
+        let shader = self.gpu(shader)?;
+        let program = self.backend.create_program(&Program::Compute(&shader));
+        self.backend.destroy(Object::Shader(shader));
+        let program = self.gpu(program)?;
+        let id = self.id();
+        self.storage_clears.insert(
+            (format, dimension),
+            Kept::new(program.clone(), id, Object::Program, &self.graveyard),
+        );
+        Ok(program)
     }
 
     /// `ClearUnorderedAccessViewUint` (`float` false) and `Float`: buffer views take the first value
@@ -3094,9 +3358,7 @@ impl<B: Backend> Device<B> {
                     return self.fill_texels(v, &uint_element(v.format, values)?);
                 }
                 if !v.texture.gpu_desc.usage.contains(TextureUsage::RENDER) {
-                    return not_implemented(
-                        "a clear of an unordered access view of a format no pass draws into",
-                    );
+                    return self.store_clear(v, values, float, &[]);
                 }
                 let r = self.backend.clear_texture(
                     &v.texture.gpu.handle,
@@ -5686,28 +5948,17 @@ fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
 /// `ClearUnorderedAccessViewUint` writes it: formats whose channels are stored in RGBA order.
 fn uint_element(format: Format, values: [u32; 4]) -> Result<Vec<u8>> {
     let (_, _, bytes) = format.block();
-    let mask = format.components();
-    let n = mask.count_ones();
-    let bits: &[u32] = match format {
-        Format::Rgb10a2Unorm | Format::Rgb10a2Uint => &[10, 10, 10, 2],
-        Format::Rg11b10Float => &[11, 11, 10],
-        Format::Bgra8Unorm
-        | Format::Bgra8UnormSrgb
-        | Format::Bgrx8Unorm
-        | Format::Bgrx8UnormSrgb
-        | Format::B5g6r5Unorm
-        | Format::Rgb9e5Float => {
-            return not_implemented("a clear of a typed buffer view of a packed or BGR format");
-        }
-        _ if mask == (1 << n) - 1 && bytes % n == 0 && [1, 2, 4, 8, 16].contains(&bytes) => {
-            &[8 * bytes / n; 4][..n as usize]
-        }
-        _ => return not_implemented("a clear of a typed buffer view of this format"),
+    let Some(bits) = channel_bits(format) else {
+        return not_implemented(CLEAR_OF_PACKED_FORMAT);
     };
     let mut element = 0u128;
     let mut at = 0;
     for (&b, &v) in bits.iter().zip(&values) {
-        let mask = if b == 32 { u32::MAX } else { (1 << b) - 1 };
+        let mask = if b == u32::BITS {
+            u32::MAX
+        } else {
+            (1 << b) - 1
+        };
         element |= u128::from(v & mask) << at;
         at += b;
     }
@@ -5798,13 +6049,66 @@ fn pixel_rect([l, t, r, b]: Rect) -> ScissorRect {
     }
 }
 
-/// A target view's clear value of `color`: integer formats take each value cast.
+/// A target view's clear value of `color`: integer formats take each value as an integer clamped
+/// to the channel.
 fn color_value<B: Backend>(view: &View<B>, color: Color) -> ClearValue {
     ClearValue::Color(if let Some(f) = view.decoded {
         color.map(|c| format::encode_norm(f, c))
     } else if integer_format(view.format) {
-        color.map(|c| c as i64 as u32)
+        integer_clear(view.format, color)
     } else {
         color.map(f32::to_bits)
     })
+}
+
+/// The integers a clear of an integer format writes for `color`, as Direct3D converts them:
+/// fractions dropped, NaN as zero, values past a channel's range clamped to it.
+fn integer_clear(format: Format, color: Color) -> [u32; COLOR_COMPONENTS] {
+    // Every integer format stores its channels in RGBA order.
+    let bits = channel_bits(format).unwrap_or_else(|| vec![u32::BITS; COLOR_COMPONENTS]);
+    let signed = format.kind() == FormatKind::Sint;
+    std::array::from_fn(|i| {
+        let Some(&b) = bits.get(i) else { return 0 };
+        let c = color[i];
+        if signed {
+            let max = (1i64 << (b - 1)) - 1;
+            (c as i64).clamp(-max - 1, max) as u32
+        } else {
+            (c as u64).min((1u64 << b) - 1) as u32
+        }
+    })
+}
+
+/// The bits of each channel of `format` in the order they are stored, for formats whose channels
+/// are stored in RGBA order; none for the packed and BGR ones.
+fn channel_bits(format: Format) -> Option<Vec<u32>> {
+    let (_, _, bytes) = format.block();
+    let mask = format.components();
+    let n = mask.count_ones();
+    match format {
+        Format::Rgb10a2Unorm | Format::Rgb10a2Uint => Some(RGB10A2_BITS.to_vec()),
+        Format::Rg11b10Float => Some(RG11B10_BITS.to_vec()),
+        Format::Bgra8Unorm
+        | Format::Bgra8UnormSrgb
+        | Format::Bgrx8Unorm
+        | Format::Bgrx8UnormSrgb
+        | Format::B5g6r5Unorm
+        | Format::Rgb9e5Float => None,
+        _ if mask == (1 << n) - 1
+            && bytes % n == 0
+            && bytes.is_power_of_two()
+            && bytes as usize <= size_of::<u128>() =>
+        {
+            Some(vec![u8::BITS * bytes / n; n as usize])
+        }
+        _ => None,
+    }
+}
+
+/// Fails as unserved with the reason the shaders crate gave.
+fn refused<T>(e: wcontainers_shaders::ConvertError) -> Result<T> {
+    match e {
+        wcontainers_shaders::ConvertError::Unsupported(why) => not_implemented(why),
+        _ => not_implemented(CLEAR_STORAGE_UNSERVED),
+    }
 }

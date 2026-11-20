@@ -2,15 +2,51 @@
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
 Runs so far: six on G4a; runs 1 to 25 of G4 (2026-11-17 and 18); round 2, runs 1 to 12 (2026-11-19
-and 20); round 3 run 1 and round 4 runs 2 and 3 (2026-11-20; the orchestrator counts all three as
+and 20); round 3 run 1 and round 4 runs 2 to 4 (2026-11-20; the orchestrator counts all four as
 round 4). This file keeps the current state only; each earlier run's record is in its git history
 (`git log -p docs/status-graphics-direct3d-11.md`).
 
 ## Where things stand
 
-G4 is reported complete for its sixth independent check, with the items below that wait on other
+G4 is reported complete for its next independent check, with the items below that wait on other
 tracks (round 4's task: do not spend further runs waiting on them). Nothing of the 11_0 format
 table is this front's own any more; what is left waits on other tracks (Gap list).
+
+Round 4, run 4 (2026-11-20, about 12:50 to 14:40 Pacific), the seventh check's findings:
+- Merged origin/phase-2-graphics-shaders (its g6b run 1: normalised codes encoded with halves
+  toward zero, DXIL geometry shaders); no conflict. No other branch had news.
+- `ClearView` (blocking): rectangles of storage views are served through the shaders crate's
+  storage clear program (`builtin::storage_clear`, `clear_params`, `clear_groups`), one dispatch
+  per rectangle over every layer or slice the view sees; whole storage views of textures no pass
+  draws into take it too (refused before). Rectangles of 3D target views are copied into each
+  slice from a texture of one slice cleared whole (`ReinterpretCopy`), as the interface's
+  `clear_rects` draws into one slice of a view. Integer clear values are clamped to the channel
+  (the specification, 5.2.3.3; the RTX 3080's targets clamp so); a decoded twin's storage
+  `ClearView` took its floats as integers before and now encodes them. Target rectangles on a
+  view made on a twin copy the twin in first, so the copy out keeps what lies outside them.
+  `D3D11_OPTIONS.ClearView` answers TRUE. The listed case (`clear_view`, measured first on the
+  RTX 3080) now covers rectangles of storage views of float, unorm, snorm, 8-, 16- and 32-bit
+  integer formats and a two-layer array, targets of an integer format, whole views of a buffer
+  and of 1D and 3D textures, and 1D and 3D rectangles; it and a new run without
+  texture-formats-tier1 (where `R8G8B8A8_SNORM` is stored but not drawn into) match real
+  Direct3D line by line.
+- Typed storage buffers of formats Direct3D does not store (the R32G32B32 formats among them,
+  which ours made though unclaimed) and typed buffer views of typeless formats answer
+  `E_INVALIDARG` as on the RTX 3080; typed storage buffers are served exactly where
+  `CheckFormatSupport` claims typed storage views. The eighth check's probe (scratch probe8):
+  no creation the RTX 3080 refuses succeeds (the formats whose success differs fell from 16 to
+  13: the A8 storage, B5 target and absent video formats' sharing shortfalls); the formats with
+  code-only differences fell from 48 to 22 (Differences from the RTX 3080 lists what is left).
+- Status corrections: the 9_x tables require `B5G6R5_UNORM` alone as a target (not
+  `B5G5R5A1_UNORM`); the integer twins' missing blending is now in the Gap list's failures of
+  the reported 11_0; the release module size is measured at this run's code (Measurements).
+- Not done: building ahead's pairing (0 hits; What comes next 3); the remaining creation codes.
+- The bar rerun at 8ec7532e (Measurements): lint of both builds clean; library com 15 (1
+  ignored), programs 49 (3 ignored); front 59, unit 5, cache 1; Wine d3d11 151 of 166 and
+  d3d10core 110 of 111, the same tests as before; scenes 135 pass; the three bar programs match.
+- Literal baseline: wcontainers-direct3d-11 527 to 512, wcontainers-directx 229; the check
+  exits 0 at 8ec7532e.
+
 
 Round 4, run 3 (2026-11-20, about 09:45 to 11:45 Pacific), the sixth check's findings:
 - Merged origin/phase-2-graphics-shaders (its g6a run 5); no conflict. No other branch had news.
@@ -71,13 +107,13 @@ formats (interface: `Format::integer_twin`), the format support comparison bit b
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), round 4
-run 3, on the RTX 3080 through the queue, not alone, rigfix/wine.sh, at e925f8f2's code:
-- d3d11: 151 pass of 166 (logs/q3l-wine.log); the failing are in the Gap list. At 1aee4aa1 (before
-  the run's last fixes) it was 151 (logs/q3j-wine.log). Sharing took test_keyed_mutex,
+run 4, on the RTX 3080 through the queue, not alone, rigfix/wine.sh, at 8ec7532e's code:
+- d3d11: 151 pass of 166 (logs/r4h-wine.log), the same 15 failing as in round 4 run 3; they are
+  in the Gap list. Round 4 run 3's sharing took test_keyed_mutex,
   test_create_buffer and the three texture interface tests off the list; test_shared_resource now
   differs only by the 11_1 device it skips. test_format_support's 7 checks are the B5 targets (6)
   and XR_BIAS's display (1).
-- d3d10core: 110 of 111 (logs/q3l-wine10.log): test_desktop_window (Gap list).
+- d3d10core: 110 of 111 (logs/r4h-wine10.log): test_desktop_window (Gap list).
 - d3d10core through the WebGL 2 build (10_0): 98 of 111 at round 2 run 12 (logs/r12d-wine10gl.log),
   not rerun this run; the 13 failing are under the WebGL 2 item of the Gap list.
 - dxgi (not on G4's bar): 4 of the 17 tests without a Direct3D 12 part at round 2 run 8.
@@ -95,9 +131,9 @@ process makes a swap chain with `Windowed = FALSE`, which would take the owner's
 Waiting on the joint step after G4 and G5 (orchestrator's ruling, 2026-11-20):
 - Section 10's one family library (one DXGI shell, `D3D12CreateDevice` exported, a Direct3D 11
   program loading Direct3D 12's code). Today there are two modules: ours,
-  `wcontainers_directx.dll` (Direct3D 10 and 11 and a DXGI), 14,157,312 bytes on WebGPU and
-  9,747,968 bytes on WebGL 2; and the Direct3D 12 track's `wcontainers_d3d12.dll` (its own DXGI),
-  13,649,408 bytes (release builds of 1aee4aa1's code, round 4 run 3, Measurements). Nothing else of section 10 is missing: the forwarders
+  `wcontainers_directx.dll` (Direct3D 10 and 11 and a DXGI), 14,263,296 bytes on WebGPU and
+  9,846,784 bytes on WebGL 2; and the Direct3D 12 track's `wcontainers_d3d12.dll` (its own DXGI),
+  13,689,344 bytes (release builds of 8ec7532e's code, round 4 run 4, Measurements). Nothing else of section 10 is missing: the forwarders
   (d3d11.dll, dxgi.dll, d3d10core.dll), the exports of Direct3D 10 and 11, and the WebGL 2 build
   of the same source are built and tested.
 
@@ -131,9 +167,21 @@ crate this track does not own before this front can serve it):
   this track may not touch, and this library depends on all of them. Asked of the interface
   track with those three; the Direct3D 12 track asked the same in its run 51. Wine
   test_vertex_formats runs 98 checks of real Direct3D's 100 and fails none.
-Why 11_0 is still reported: no level is truthful without these. The B5 targets are required from
-9_1 on Windows 8 and later (the 10Level9 tables list both as blendable targets), so reporting a
-lower level would not remove the shortfall and would refuse every program of the bar.
+- Blending into the 16-bit normalised formats where the back end lacks them (a browser without
+  texture-formats-tier1; natively `WEBGPU_OFF` with the 16-bit-norm feature): they are then held
+  as their integer twins (`NormAsInteger`), which no pass blends; blending into one is refused by
+  name (`BLEND_INTO_INTEGER_TWIN`) and `CheckFormatSupport` withdraws `BLENDABLE` (and the
+  multisample bits, which plan 4.12 names) from `R16G16B16A16_UNORM`/`_SNORM`, `R16G16_UNORM`/
+  `_SNORM` and `R16_UNORM`/`_SNORM`. Plan section 9 requires them blended at every level, by
+  `BlendInShader` (plan 4.12): the shaders crate's `TargetInShader::combine`, refused by name
+  there (`BLEND_IN_SHADER`, variant/targets.rs, still at this run's merge). The shaders track's
+  (Asked). With the features present (the RTX 3080 natively, browsers with tier1) nothing is
+  withdrawn. Compared in `format_support_without_16_bit_norm_as_direct3d_reports_it_but_the_named_shortfalls`.
+Why 11_0 is still reported: no level is truthful without these. `B5G6R5_UNORM` is a render and
+blendable target from 9_1 on Windows 8 and later (the 10Level9 tables of 9_1 and 9_3 require it;
+they leave `B5G5R5A1_UNORM`'s target rows unrequired, '-'), and the integer twins' blending is
+required at every level, so reporting a lower level would not remove the shortfall and would
+refuse every program of the bar.
 
 Absent features (each reported absent through its own query, so Wine's verdicts there differ):
 Wine's d3d11 file: 15 of 166 failing (logs/q3l-wine.log).
@@ -248,9 +296,27 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
 - A swap chain's back buffer used after the program released the swap chain: real DXGI keeps it
   working, ours destroyed its texture and the next view lost the device (seen in round 4 run 3
   while writing own_swap_chain; not fixed).
-- `ClearView` of rectangles of a storage view is refused and removes the device (warned), and
-  `D3D11_OPTIONS.ClearView` answers FALSE; real Direct3D clears them and answers TRUE. Takes a
-  storage clear program (the shaders crate's), which no front has yet.
+- `ClearView` of an integer storage view with negative values: the RTX 3080 writes -5 into an
+  8-bit unsigned channel as 0xfb and any negative value into a 16-bit signed channel as 0x7fff
+  (measured, round 4 run 4, logs/r4a-cv-sys.log); the functional specification (5.2.3.3) clamps
+  out-of-range values to the channel and ours does so (0 and the value itself). Target views
+  clamp on the RTX 3080 as the specification says, and ours matches them. The listed case
+  (`clear_view`) leaves negative storage values out for this reason.
+- `ClearView` of a buffer view's rectangles is refused by name (`CLEAR_VIEW_BUFFER_RECTS`; the
+  specification defines rectangles on 2D surfaces only); of rectangles of a storage view held
+  as an integer twin or stored through a buffer, of a 3D texture or one no pass draws into,
+  refused by name too. No program measured reaches either.
+- Creation refusals answered `E_NOTIMPL` where the RTX 3080 answers `E_INVALIDARG` (both fail;
+  only the code and the warning differ; the eighth check's probe): render target views and
+  mip generation of 1D, 3D and array textures of the R32G32B32 formats and `B4G4R4A4_UNORM`;
+  1D, 3D, array and cube-array textures of `R1_UNORM` and of the video formats ours holds no
+  texture of; shared textures of P016 and NV11. Telling an optional ability ours does not claim
+  (which the runtime refuses as invalid) from a shortfall of the reported level (unserved) needs
+  Microsoft's per-level table in the front; not built. Typed buffer views of typeless formats
+  and typed storage buffers of formats Direct3D does not store (the R32G32B32 formats among
+  them, which ours made before) are `E_INVALIDARG` since round 4 run 4; typed buffer views of
+  the formats ours holds no texture of (`R1_UNORM`, the extended-range format, the video
+  formats) are still `E_NOTIMPL` there. 22 formats differ so in the probe (probe8/out).
 - d3d11 test_clear_buffer_unordered_access_view passes through ours, where real Direct3D fails 223
   of its 934 checks: ours clears by the documented rule; NVIDIA's driver does not.
 - `IDXGISwapChain::GetContainingOutput` answers `E_NOTIMPL` (the infrastructure crate's).
@@ -259,12 +325,11 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
   WebGPU back end holds the format as `bgra8unorm`, clears alpha to 1 and widens initial data
   with 0xff (src/packed.rs). The WebGPU track's (Asked).
 - Values exactly halfway between two codes drawn into, or stored into, a 16-bit normalised
-  texture held as its integer twin round away from zero (0.5 gives 0x8000) where the RTX 3080
-  rounds toward zero (0x7fff): the shaders crate encodes them (variant/texel.rs `encode`, "rounded
-  half away from zero"); clears, which this front encodes, round as the RTX 3080 since round 4
-  run 2. Both are within the specification's 0.6 ULP. Filtered samples and mips of twins differ
-  by 1 ULP at most (the shaders crate's decoding, the interface's default `generate_mips`). The
-  shaders track's (Asked).
+  texture held as its integer twin: the shaders crate encodes halves toward zero as the RTX 3080
+  does since its 5873eeaa (merged in round 4 run 4), as this front's clears do since round 4 run
+  2; not measured through ours beyond the library suite. Filtered samples and mips of twins
+  differ by 1 ULP at most (the shaders crate's decoding, the interface's default
+  `generate_mips`), within the specification's tolerance.
 - `ID3D11Device3::ReadFromSubresource` and `WriteToSubresource` are not served: they warn and
   remove the device. No valid call reaches them, as `D3D11_OPTIONS2.MapOnDefaultTextures` is FALSE.
 - A swap chain on another process's window (the desktop window among them) is refused with
@@ -337,7 +402,8 @@ In order:
 4. A back buffer kept by the program past its swap chain's release (Gap list): keep the chain's
    textures alive while a buffer is held.
 5. Blending into integer twins (`BlendInShader`) once the shaders crate builds `combine`.
-6. `ClearView` of storage views' rectangles through a storage clear program.
+6. Creation refusals of optional abilities ours does not claim as `E_INVALIDARG` (Differences
+   from the RTX 3080): needs the per-level requirement table.
 7. Prove whose the WebGL 2 build's 3D second-level failure of test_generate_mips is; rerun the
    WebGL 2 build's Wine files with the integer twins.
 8. Replace the cube array probe (`makes_cube_arrays`) with a `Caps` feature once one exists.
@@ -364,7 +430,8 @@ needs the shaders crate's submodules, so commands start with `git submodule upda
   `run-g4s13.sh <label> [literals lint front lib wine wine10 scenes webgl programs]`.
 - This run's bar in one command: scratch q3-final.sh <label> (lint, library, the WebGL 2 build's
   10_0 cases, Wine's two files, scenes, programs, the seventh check's probe beside the system's
-  and ours, sizes, load times, building ahead, and real Direct3D's own runs of the two programs
+  and ours, the eighth check's (`probe8`, analysed by `cd probe8/out && python3 ../dims.py
+  -codes`), sizes, load times, building ahead, and real Direct3D's own runs of the two programs
   that differ); probe3/claims.py compares each library's claims with its creations.
 - The literal check at HEAD (commit first): `lit-check.sh <label>`; a `-` line it prints is a
   baseline line to delete in the same commit.
@@ -456,9 +523,13 @@ needs the shaders crate's submodules, so commands start with `git submodule upda
 
 ## Tests
 
-At round 4 run 3: front.rs 59, tests/cache.rs 1, unit 5 (wcontainers-direct3d-11, recording
-back end); com.rs 16 (1 ignored) and programs.rs 51 (3 ignored) (wcontainers-directx, real
-devices), of which 4 are ignored as known failures (Known failures). New in round 4 run 3:
+At round 4 run 4: front.rs 59, tests/cache.rs 1, unit 5 (wcontainers-direct3d-11, recording
+back end); com.rs 16 (1 ignored) and programs.rs 52 (3 ignored) (wcontainers-directx, real
+devices), of which 4 are ignored as known failures (Known failures). New in round 4 run 4:
+programs.rs `clear_view_without_texture_formats_tier1_as_direct3d_does`; own_cases `clear_view`
+covers storage rectangles of seven formats, an array, integer targets, buffers, 1D and 3D
+views; front.rs `creation_refuses_what_direct3d_refuses` covers typed buffer views of typeless
+formats and typed storage buffers of the R32G32B32 formats. New in round 4 run 3:
 front.rs `formats_direct3d_shares_claim_sharing` and 420_OPAQUE's refusals; programs.rs
 `resources_shared_between_devices_answer_and_read_as_direct3d_does` (example own_shared) and
 `yuy2_view_sizes_read_as_direct3d_reads_them` (ignored); own_nv12 and own_yuy2 gather and store
@@ -850,9 +921,16 @@ default seeds 1 to 8 at 300 steps each).
   the library exports no Direct3D 12 entry point, and the Direct3D 12 track's
   `wcontainers_d3d12.dll` has a DXGI of its own. Joining them is the joint step after G4 and G5
   pass (the orchestrator's ruling of 2026-11-20); until then the two modules are measured apart.
-- `D3D11_OPTIONS` answers `ClearView` FALSE, where section 9 says the front reports it: `ClearView`
-  serves render targets with rectangles and whole storage views (run 8), not rectangles of
-  storage views or video views. `DiscardAPIsSeenByDriver` is FALSE: discards keep the contents,
+- `D3D11_OPTIONS` answers `ClearView` TRUE since round 4 run 4: target and storage views, whole
+  or their rectangles (no video view can be made). Rectangles of a storage view go through the
+  shaders crate's storage clear program (`builtin::storage_clear`), one dispatch per rectangle
+  over every layer or slice the view sees; a storage view held as an integer twin or stored
+  through a buffer is cleared as a target where its texture is drawn into. Rectangles of a 3D
+  target view are copied into each slice from a texture of one slice cleared whole
+  (`ReinterpretCopy`): the interface's `clear_rects` draws into one slice of a view. Whole
+  storage views of textures no pass draws into take the storage clear program too (they were
+  refused before). Integer clear values are clamped to the channel, as the specification says.
+  `DiscardAPIsSeenByDriver` is FALSE: discards keep the contents,
   so no driver sees them. `ConstantBufferPartialUpdate`, `ConstantBufferOffsetting` and both
   `MapNoOverwriteOnDynamic...` answers are TRUE since run 8.
 - `CreateDXGIFactory` gives DXGI 1.0's factory (no `IDXGIFactory1`) only when asked for
@@ -884,6 +962,31 @@ default seeds 1 to 8 at 300 steps each).
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- Round 4 run 4. Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through the queue, not
+  alone except the load times (other tracks' jobs sharing it; a display-reset hazard job of
+  another track held the queue before the lint). Times Pacific, 2026-11-20. Code of 8ec7532e
+  (scratch q3-final.sh r4h, logs/r4h-*, 13:32 to 14:24).
+  - Lint of both crates and of the WebGL 2 build clean. Library: com 15 pass, 1 ignored;
+    programs 49 pass, 3 ignored (13:33 to 13:42). The WebGL 2 build's 10_0 cases: 5 pass, the
+    Direct3D 10 device case failing as before. Front 59, unit 5, cache 1 on the rented x86
+    machine (96 processors, load about 33), at b592a3a6.
+  - Wine's files and programs: as in Wine's section and the Gap list (the same tests and
+    programs pass and fail as in round 4 run 3). Scenes through the library 135 pass, 0 fail, 4
+    absent; the WebGL 2 build's scenes 95 pass, 17 fail, 30 absent.
+  - Module sizes (section 10), release builds 14:08 to 14:14 (r4h-sizes):
+    `wcontainers_directx.dll` 14,263,296 bytes on WebGPU and 9,846,784 bytes on WebGL 2;
+    `wcontainers_d3d12.dll` (the Direct3D 12 track's code as merged here) 13,689,344 bytes; the
+    forwarders 1,024 bytes each.
+  - Load time (section 10), alone, `LoadLibraryW` in 20 fresh processes each, medians
+    (r4h-load): the system's d3d11.dll 1,151 us; ours on WebGPU 1,637 us; ours on WebGL 2
+    1,101 us; `wcontainers_d3d12.dll` 1,632 us.
+  - Building ahead (plan 4.4; run-warm.sh, five programs run twice from one cache directory,
+    14:15 to 14:24): Godot 3D's cold run built 125 ahead and drew none, 66 at their first draw;
+    its warm start built its 61 recorded combinations at start and drew all 61, built 124 ahead
+    and drew none, and 26 at their first draw. Unchanged.
+  - The eighth check's probe beside the system's library and ours (probe8/out, 14:07) and the
+    seventh check's (probe3/out): see Where things stand.
 
 - Round 4 run 3. Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through the queue, not
   alone except the load times (other tracks' jobs sharing it; display-reset hazard jobs of other
@@ -1007,13 +1110,11 @@ Open asks only; the answered ones are in this file's git history.
   texture's (YUY2 views, whose `GetDimensions` reports pixels on the RTX 3080).
 - Shaders track: a storage form of `A8Unorm` (alpha in a wider format's fourth component), so
   `A8_UNORM` storage views can be served.
-- Shaders track: normalised outputs and stores encoded with halves toward zero, as the RTX 3080
-  does (`encode` rounds them away; this front's clears were changed in round 4 run 2); blending
-  into integer twins (`TargetInShader::combine`, refused by name today);
+- Shaders track: blending into integer twins (`TargetInShader::combine`, refused by name
+  today);
   atg-simplecomputepc's division (every pixel inside the Mandelbrot set just below 4 where
   Direct3D gives 4, inferred in run 17); the geometry replay's streams past the first and drawing
-  a stream past 0; an aliased-line route for multisampled targets (with the interface track); a
-  storage clear program for `ClearView`'s rectangles.
+  a stream past 0; an aliased-line route for multisampled targets (with the interface track); .
 - WebGL 2 track: copies from a depth texture into a colour texture of its group stored as a half
   float (`R16_TYPELESS` as `R16Float`) keep every bit pattern (Wine's test_format_compatibility).
 - Rig track: a way to run Wine's dxgi file with its Direct3D 12 tests kept off the GPU; the scene
@@ -1021,6 +1122,10 @@ Open asks only; the answered ones are in this file's git history.
 
 ## Literals
 
+- Round 4 run 4: 15 lines of wcontainers-direct3d-11 left the baseline (the clear's channel
+  table named once as `RGB10A2_BITS` and `RG11B10_BITS` and its sizes derived, the clear's
+  messages named once); new code adds none and makes no mark. wcontainers-direct3d-11 512 lines,
+  wcontainers-directx 229 (741). The check exits 0 at 8ec7532e (logs/r4g-literals.log).
 - Round 4 run 3: 10 lines of wcontainers-directx left the baseline (the open calls' names now
   served, the resource interfaces' vtable places named once); new code adds none and makes no
   mark. wcontainers-direct3d-11 527 lines, wcontainers-directx 229 (756). The check exits 0 at
@@ -1040,7 +1145,9 @@ Open asks only; the answered ones are in this file's git history.
 
 ## Licences
 
-Round 4 run 3 added no dependency. On the desktop it added the seventh check's probe, copied from
+Round 4 runs 3 and 4 added no dependency. Run 4 added on the desktop the eighth check's probe,
+built in C:\wc\out\phase-2-graphics-direct3d-11\probe8 (its build folder deleted at the end of
+the run). On the desktop it added the seventh check's probe, copied from
 scratch probe3 and built in C:\wc\out\phase-2-graphics-direct3d-11\probe3 (its build folder is
 deleted at the end of the run).
 
