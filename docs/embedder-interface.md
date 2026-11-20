@@ -77,10 +77,13 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   do when every number is taken. A number outside 1 to `pid_max` fails the fork or clone with
   EAGAIN at once, counted (`task id out of range`).
 - `free_task_id` is called when no process, thread, process group or session carries a number any
-  more: a thread that ended, a process reaped (or one whose parent did not want it), the numbers a
+  more: a thread that ended (a task taken off the kernel too, when its process ends or runs a new
+  program while it is away), a process reaped (or one whose parent did not want it), the numbers a
   process leaves behind by `setpgid` or `setsid`, the old number of a thread that took its
   process's number by `execve`, and every number still carried once the container has ended. It
-  is called when the kernel settles, after the call that let go.
+  is called when the kernel settles, after the call that let go. A task or a process context taken
+  off the kernel still carries its numbers there (its process group's too), so the kernel takes
+  none of them for a new thread or process while it is away.
 - Because the embedder hands out the numbers and hears when each is free, a number it keeps never
   names another process without its knowing; no generation is carried.
 
@@ -564,8 +567,9 @@ pub enum ContextOrigin { Suspended, Copied }
   its reason); running each call's interruption when the task is taken would mean running a call,
   with its hooks, inside the hook that takes it.
 - A task taken off the kernel is still a task of its process there, as a stopped one is in Linux
-  (the process's record keeps its number, the signals it blocks, and for the first thread what
-  Linux reads from it: credentials, name, scheduling):
+  (the process's record keeps its number, the signals it blocks, what Linux reads from it:
+  credentials, name, scheduling, and what its end does: its robust list, its `set_tid_address`
+  word, the `vfork` parent it keeps waiting):
   - The process ends only when its last task ends: a thread that exits while others are away
     ends alone, and the process's exit status is the last thread's, wherever it comes back.
   - A signal sent to the process or to the task while it is away is kept, as Linux keeps it for a
@@ -575,14 +579,33 @@ pub enum ContextOrigin { Suspended, Copied }
     to the process stays with the process. The task acts on them when it is put back, a task taken
     in a call after its call answers as above. SIGKILL ends the process at once, as it ends a
     stopped one; the tasks away are then handed back by `resume_tasks`. Every other end of the
-    process (`exit_group`, a fatal signal acted on, the container's end) also ends its tasks away.
+    process (`exit_group`, a fatal signal acted on, the container's end) also ends its tasks away,
+    and so does `execve` by any of its threads, as Linux's `de_thread` ends stopped threads (a
+    thread that runs a new program while the first thread is away takes the process's number).
+    A task away ends as any thread ends, before the embedder hears of the process's end: the locks
+    on its robust list are marked as their owner's death and a waiter woken, its `set_tid_address`
+    word is cleared and woken while others use the memory, its semaphore adjustments are made, a
+    `vfork` parent it kept waiting goes on, and its number is freed. `resume_tasks` then hands it
+    back (it is no longer a task of its process, even if the number names one again).
+  - `/proc` shows it as a stopped thread: in the process's thread count and `task` directory, at
+    `/proc/<tid>`, with state `T (stopped)`, its name, credentials and blocked signals, and its
+    `exe`, `cwd` and `root` links (also the process's, when the first thread is away). Its
+    descriptor directory (`fd`, `fdinfo`) is empty while it is away.
+  - It counts against `RLIMIT_NPROC`, and a `vfork` parent whose child is taken, or whose child's
+    context is, goes on waiting until the child runs a program or ends on this kernel.
   - The `ProcessContext` carries these records, so a process moved to another kernel keeps them
     there.
   The tests in tests/away.rs (guest/away.c) take a child's main thread while it joins a worker that
   then ends, a child's thread in a read while its parent sends SIGTERM or SIGKILL and closes the
   pipe, a thread in a read while its own timer fires, and one while the embedder sends it a
   signal (`send_signal`), and compare the output with the reference, where nothing is taken (and
-  the program sends the signal itself).
+  the program sends the signal itself). The tests in tests/taskend.rs (guest/taskend.c) take a
+  worker while the main thread runs a new program, the first thread while a worker runs one (then
+  ending with `SYS_exit`), a child's worker while the child exits (its number must be freed before
+  the parent goes on), a worker and the first thread while `/proc` is read, a worker holding a
+  robust lock shared with the parent while its process exits, and a `vfork` child that another
+  process kills; each compares the output with the reference and checks what `resume_tasks` hands
+  back.
 - What a context away maps stays in use on the kernel it left, as a stopped process's memory does
   in Linux: its executor memory is not dropped when the last process on the kernel that shares it
   ends (a `CLONE_VM` child), the blocks of the files it maps are kept and follow the file (moved
