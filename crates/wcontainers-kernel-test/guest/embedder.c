@@ -46,7 +46,8 @@
 //   environ WHOSE LONG: runs itself again with LONG in its environment, then reads that
 //     environment through /proc as cmdline reads the command line.
 //   suspend: four threads block, one reading an empty pipe, one on a mutex the main thread
-//     holds, one in a futex wait with a timeout and one taking from a System V semaphore; the main
+//     holds, one in a futex wait with a timeout and one taking from a System V semaphore (again after
+//     EINTR); the main
 //     thread sleeps twice, then writes the pipe, changes and wakes the futex, lets the mutex go,
 //     gives to the semaphore, joins them and prints what each saw.
 #define _GNU_SOURCE
@@ -1232,7 +1233,9 @@ static void *suspend_timed(void *argument) {
 
 static void *suspend_semaphore_taker(void *argument) {
     struct sembuf take = {0, -1, 0};
-    suspend_taken = semop(suspend_semaphore, &take, 1);
+    // A stop, as a suspension, answers EINTR (signal(7)): take again.
+    while ((suspend_taken = semop(suspend_semaphore, &take, 1)) == -1 && errno == EINTR) {
+    }
     return argument;
 }
 

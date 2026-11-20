@@ -162,11 +162,13 @@ impl Kernel {
         action_ignores(handler, signal) || (self.init == Some(pid) && handler == SIG_DFL)
     }
 
-    /// Whether a thread has a signal it does not block waiting for it (Linux's `signal_pending`).
+    /// Whether a thread has a signal it does not block waiting for it, or was taken off its kernel
+    /// in its call (Linux's `signal_pending`).
     pub(crate) fn signal_pending(&self, tid: Tid) -> bool {
         let thread = &self.threads[&tid];
         let process = &self.processes[&thread.process];
         (thread.pending.set | process.pending.set) & !thread.signal_mask != 0
+            || thread.suspended_in_call
     }
 
     /// Sends a signal to one thread (`tkill`, a fault, a timer); one that does not fit the user's

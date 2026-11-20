@@ -313,6 +313,9 @@ pub(crate) struct Thread {
     pub delivering: bool,
     /// A signal taken and announced to act on, kept while the thread waits on a watch first.
     pub signal_taken: Option<Queued>,
+    /// Taken off its kernel in a call: the call's next run answers as if a signal with no
+    /// handler had come (Linux's freezer, `fake_signal_wake_up`).
+    pub suspended_in_call: bool,
     /// Taken off the CPU in its own code since it last went back to it, so its restartable
     /// sequence is checked first (`rseq_event_mask`).
     pub rseq_event: bool,
@@ -592,6 +595,7 @@ impl Thread {
             filling: false,
             delivering: false,
             signal_taken: None,
+            suspended_in_call: false,
             rseq_event: false,
             fault: (0, 0),
             forced: 0,

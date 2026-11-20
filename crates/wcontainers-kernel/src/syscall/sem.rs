@@ -327,6 +327,15 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
     }
 }
 
+/// A waiter taken off its kernel leaves the queue and is told EINTR, as a stop tells it.
+pub(crate) fn leave(kernel: &mut Kernel, tid: Tid) {
+    if !queued(kernel, tid) {
+        return;
+    }
+    forget(kernel, tid);
+    kernel.ipc.sem.told.insert(tid, Err(Errno::EINTR));
+}
+
 /// `copy_semundo`: a thread or process made with `CLONE_SYSVSEM` shares its maker's undo list.
 pub(crate) fn copy_undo(kernel: &mut Kernel, parent: Tid, child: Tid, share: bool) {
     if share {

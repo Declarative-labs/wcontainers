@@ -239,6 +239,9 @@ impl Kernel {
         self.threads[&tid].taken.borrow_mut().rewind();
         self.begin_asking(tid);
         let mut outcome = syscall::dispatch(self, cx, tid, call, again);
+        if again && let Some(thread) = self.threads.get_mut(&tid) {
+            thread.suspended_in_call = false;
+        }
         // A copy that reached pages of a mapped backend file not read yet found them not there:
         // a call that failed for it runs again once they have come, as Linux's copy waits for
         // the fault. One that did part of its work first keeps its short result (counted).

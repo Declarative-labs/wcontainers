@@ -2,10 +2,10 @@
 
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Cpu, RegisterBlock, Resume, SYSTEM_CALL_NUMBER_REGISTER};
+use wcontainers_abi::{Cpu, RegisterBlock, Resume};
 
 use crate::counters::reason;
-use crate::process::{Call, Channel, Pid, Restart, Thread, Tid};
+use crate::process::{Call, Channel, Pid, Thread, Tid};
 use crate::system::{ExecutionConfig, Process, TaskId};
 use crate::{Kernel, sharing, syscall};
 
@@ -33,9 +33,9 @@ impl SuspendedTask {
 /// Where a task was in line when it was taken.
 #[derive(Clone, Copy)]
 enum Place {
-    /// Parked in its call, which runs again when it is put back.
+    /// Parked in its call, which runs again, interrupted, when it is put back.
     Waiting,
-    /// Its wait had ended; its call runs again first.
+    /// Its wait had ended; its call runs again first, interrupted.
     Woken,
     /// Waiting for its turn, or having it.
     Ready,
@@ -240,10 +240,10 @@ impl Kernel {
             .collect()
     }
 
-    /// Takes one task off the kernel. A call waiting in a futex's, a semaphore set's or a message
-    /// queue's line leaves it and is made again when the task is put back, as Linux restarts a
-    /// call a stop interrupted (`restart_syscall` for a futex wait with a timeout); any other
-    /// waiting call keeps its place in the call and runs again when the task is put back.
+    /// Takes one task off the kernel. A task in a call is treated as Linux treats a stop arriving
+    /// in it: the call's next run answers as interrupted by a signal with no handler, and a waiter
+    /// in a line a wake chooses from (a futex's, a semaphore set's, a message queue's) leaves it
+    /// now. A thread taken before its call began makes the call again.
     fn take_task(&mut self, cpu: &mut dyn Cpu, tid: Tid) -> SuspendedTask {
         let mut registers = RegisterBlock::ZERO;
         cpu.registers(self.threads[&tid].cpu, &mut registers);
@@ -257,29 +257,25 @@ impl Kernel {
         };
         let signalled = self.signalled.contains(&tid);
         self.unschedule(tid);
-        let in_line = wait == Some(Channel::Futex)
-            || syscall::sem::queued(self, tid)
-            || syscall::mqueue::queued(self, tid);
-        let before_call = self.stepping == Some(tid);
-        if before_call {
+        if self.stepping == Some(tid) {
             self.stepping = None;
-        }
-        if in_line || before_call {
-            syscall::futex::forget(self, tid);
-            syscall::sem::forget(self, tid);
-            syscall::mqueue::forget(self, tid);
-            let thread = self.thread_mut(tid);
-            let restart_block = in_line
-                && wait == Some(Channel::Futex)
-                && matches!(thread.restart, Some(Restart::Futex { .. }));
             registers.pc -= size_of::<u32>() as u64;
-            if restart_block {
-                registers.x[SYSTEM_CALL_NUMBER_REGISTER] =
-                    u64::from(crate::linux::general::__NR_restart_syscall);
-            }
+            let thread = self.thread_mut(tid);
             thread.call = Call::default();
             thread.resume = Resume::FromRegisters;
             place = Place::Ready;
+        }
+        if matches!(place, Place::Waiting) {
+            if wait == Some(Channel::Futex) {
+                syscall::futex::leave(self, tid);
+            }
+            syscall::sem::leave(self, tid);
+            if syscall::mqueue::queued(self, tid) {
+                syscall::mqueue::forget(self, tid);
+            }
+        }
+        if !matches!(place, Place::Ready) {
+            self.thread_mut(tid).suspended_in_call = true;
         }
         let thread = self.threads.remove(&tid).expect("thread exists");
         cpu.thread_drop(thread.cpu);

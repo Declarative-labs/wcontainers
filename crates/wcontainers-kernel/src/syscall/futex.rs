@@ -149,6 +149,13 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
     finish(kernel, tid);
 }
 
+/// A waiter taken off its kernel leaves its queues, so no wake chooses it while it is away; its
+/// call's next run answers as interrupted then, not timed out (`restart_syscall` keeps the time).
+pub(crate) fn leave(kernel: &mut Kernel, tid: Tid) {
+    finish(kernel, tid);
+    kernel.thread_mut(tid).call.deadline = None;
+}
+
 /// `get_futex_key`: the address must be aligned and in user space; a shared futex's page must be
 /// mapped and readable, or writable for the calls that change the word (`FUTEX_WRITE`). A page of
 /// a file is known by the file: one in a shared mapping, or a private one read-only and not yet

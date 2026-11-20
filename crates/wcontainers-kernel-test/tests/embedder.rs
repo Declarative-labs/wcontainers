@@ -62,16 +62,29 @@ fn try_embedder_below(
     ceiling: Option<u64>,
     buffer: u64,
 ) -> Result<Run, driver::Failure> {
-    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (buffer, pages) = (format!("{buffer:#x}"), PAGES.to_string());
+    let mut arguments = vec![mode[0], buffer.as_str(), pages.as_str()];
+    arguments.extend(&mode[1..]);
+    try_guest("embedder", &arguments, hooks, seed, ceiling)
+}
+
+/// Runs guest program `name` with `arguments` on our kernel, with `hooks` if given.
+fn try_guest(
+    name: &str,
+    arguments: &[&str],
+    hooks: Option<Box<dyn Hooks>>,
+    seed: u64,
+    ceiling: Option<u64>,
+) -> Result<Run, driver::Failure> {
+    let program = wcontainers_kernel_test::guest::build(name, &[], &out());
     let mut files = wcontainers_kernel_test::image::reference_image().to_vec();
     files.extend(wcontainers_kernel_test::image::host_directory(
         program.parent().expect("a directory"),
         guest_directory_entry(),
     ));
-    let path = in_guest_directory("embedder");
-    let (buffer, pages) = (format!("{buffer:#x}"), PAGES.to_string());
-    let mut command = vec![path.as_str(), mode[0], buffer.as_str(), pages.as_str()];
-    command.extend(&mode[1..]);
+    let path = in_guest_directory(name);
+    let mut command = vec![path.as_str()];
+    command.extend(arguments);
     let container = driver::Container {
         files: &files,
         path: &path,
@@ -2382,6 +2395,8 @@ thread_local! {
     /// Tasks a hook suspended, for the test to put back between steps (they are the kernel's
     /// records, which stay on the thread that drives it).
     static SUSPENDED: std::cell::RefCell<Vec<SuspendedTask>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A process context taken between steps, kept as [`SUSPENDED`] is.
+    static CONTEXT: std::cell::RefCell<Option<wcontainers_kernel::ProcessContext>> = const { std::cell::RefCell::new(None) };
 }
 
 /// How the suspending test takes tasks.
@@ -2742,6 +2757,187 @@ fn tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs() {
                 "{label}: {:?}",
                 run.counters
             );
+        }
+    }
+}
+
+/// How [`Stopper`] takes stopped.c's child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopPlan {
+    /// `suspend_process`, then `resume_process` and `resume_tasks`.
+    Process,
+    /// `suspend_tasks` naming every thread of the child, put back in the reverse order.
+    Tasks,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopStage {
+    Running,
+    /// The parent asked to stop the child.
+    StopAsked,
+    /// The parent, taken at its wait for the stop, is away until the child is taken.
+    ParentAway,
+    /// The child is away.
+    Stopped,
+    /// The parent asked to continue the child.
+    ContinueAsked,
+    Continued,
+}
+
+/// Stands in for stopped.c's stop and continue by taking the child off the kernel and
+/// putting it back: the parent's `kill` is answered 0, and its wait for the stop is answered with
+/// the child once the child is taken (the parent itself is taken at that wait, so the kernel goes
+/// idle with the child still waiting in its calls).
+struct Stopper {
+    plan: StopPlan,
+    stage: StopStage,
+    parent: Option<TaskId>,
+    child: Option<TaskId>,
+    threads: Vec<(TaskId, TaskId)>,
+    wrong: Arc<Mutex<Vec<String>>>,
+}
+
+impl Stopper {
+    fn check(&self, what: &str, holds: bool) {
+        if !holds {
+            self.wrong.lock().unwrap().push(what.to_owned());
+        }
+    }
+}
+
+impl Hooks for Stopper {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        self.parent.get_or_insert(process.id());
+    }
+
+    fn on_thread_starting(&mut self, process: Process<'_>, thread: TaskId) {
+        self.threads.push((process.id(), thread));
+    }
+
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if Some(thread) != self.parent {
+            return ControlFlow::Continue(request);
+        }
+        let [first, second, third, ..] = request.arguments;
+        let number = request.number;
+        let kill = number == u64::from(general::__NR_kill);
+        let wait =
+            number == u64::from(general::__NR_wait4) && third & u64::from(general::WUNTRACED) != 0;
+        match self.stage {
+            StopStage::Running if kill && second == u64::from(general::SIGSTOP) => {
+                self.child = Some(TaskId(first as u32));
+                self.stage = StopStage::StopAsked;
+                ControlFlow::Break(Ok(0))
+            }
+            StopStage::StopAsked if wait => {
+                let taken: Vec<_> = process.suspend_tasks(&[thread]).collect();
+                self.check("the parent taken at its wait", taken.len() == 1);
+                SUSPENDED
+                    .with_borrow_mut(|stash| stash.extend(taken.into_iter().map(|(_, task)| task)));
+                self.stage = StopStage::ParentAway;
+                ControlFlow::Continue(request)
+            }
+            StopStage::Stopped if wait => {
+                ControlFlow::Break(Ok(self.child.expect("the child").0.into()))
+            }
+            StopStage::Stopped if kill && second == u64::from(general::SIGCONT) => {
+                self.stage = StopStage::ContinueAsked;
+                ControlFlow::Break(Ok(0))
+            }
+            _ => ControlFlow::Continue(request),
+        }
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        match self.stage {
+            StopStage::ParentAway => {
+                let parent = SUSPENDED.take();
+                let child = self.child.expect("the child");
+                let every: Vec<TaskId> = std::iter::once(child)
+                    .chain(
+                        self.threads
+                            .iter()
+                            .filter(|(process, _)| *process == child)
+                            .map(|&(_, thread)| thread),
+                    )
+                    .collect();
+                let taken: Vec<_> = match self.plan {
+                    StopPlan::Process => {
+                        let (context, tasks) =
+                            kernel.suspend_process(cpu, child).expect("the child");
+                        CONTEXT.set(Some(context));
+                        tasks.collect()
+                    }
+                    StopPlan::Tasks => kernel.suspend_tasks(cpu, &every).collect(),
+                };
+                // A thread that already ended is absent.
+                self.check(
+                    "the child's threads taken",
+                    taken.first().map(|(id, _)| *id) == Some(child)
+                        && taken.iter().all(|(id, _)| every.contains(id)),
+                );
+                SUSPENDED.set(taken.into_iter().map(|(_, task)| task).collect());
+                self.check(
+                    "the parent put back",
+                    kernel.resume_tasks(cpu, parent).next().is_none(),
+                );
+                self.stage = StopStage::Stopped;
+                true
+            }
+            StopStage::ContinueAsked => {
+                if let Some(context) = CONTEXT.take() {
+                    self.check(
+                        "the child's context put back",
+                        kernel
+                            .resume_process(context, ExecutionConfig::default())
+                            .is_none(),
+                    );
+                }
+                let mut tasks = SUSPENDED.take();
+                if self.plan == StopPlan::Tasks {
+                    tasks.reverse();
+                }
+                self.check(
+                    "the child's threads put back",
+                    kernel.resume_tasks(cpu, tasks).next().is_none(),
+                );
+                self.stage = StopStage::Continued;
+                true
+            }
+            StopStage::Running
+            | StopStage::StopAsked
+            | StopStage::Stopped
+            | StopStage::Continued => false,
+        }
+    }
+}
+
+#[test]
+fn a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer() {
+    let program = wcontainers_kernel_test::guest::build("stopped", &[], &out());
+    let theirs = reference::run(&program, &[]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    for plan in [StopPlan::Process, StopPlan::Tasks] {
+        for seed in wcontainers_kernel_test::schedule_seeds() {
+            let wrong = Arc::new(Mutex::new(Vec::new()));
+            let stopper = Stopper {
+                plan,
+                stage: StopStage::Running,
+                parent: None,
+                child: None,
+                threads: Vec::new(),
+                wrong: wrong.clone(),
+            };
+            let run = try_guest("stopped", &[], Some(Box::new(stopper)), seed, None)
+                .expect("an outcome on our kernel");
+            let label = format!("{plan:?}, seed {seed}");
+            assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
+            assert_eq!(*wrong.lock().unwrap(), Vec::<String>::new(), "{label}");
         }
     }
 }
