@@ -88,7 +88,6 @@ pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32
 
 /// The setup's names for the thread's start, which runner.js reads: its stack pointer, and whether FPSR's
 /// flags are kept exact from the start.
-const START: &str = "start";
 const START_SP: &str = "sp";
 const KEEP_FLOAT_FLAGS: &str = "keepFloatFlags";
 
@@ -140,14 +139,10 @@ fn run_in_chrome(
             | (u8::from(omit.returns) << 2)
             | (u8::from(omit.depth) << 3),
     });
-    let mut start = serde_json::Map::new();
-    start.insert(START_SP.into(), place.sp.into());
-    start.insert(KEEP_FLOAT_FLAGS.into(), blob.reads_float_status().into());
     let mut setup = setup;
-    setup
-        .as_object_mut()
-        .expect("an object")
-        .insert(START.into(), start.into());
+    let fields = setup.as_object_mut().expect("an object");
+    fields.insert(START_SP.into(), place.sp.into());
+    fields.insert(KEEP_FLOAT_FLAGS.into(), blob.reads_float_status().into());
     let result = launch(&directory, &setup, flags);
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
