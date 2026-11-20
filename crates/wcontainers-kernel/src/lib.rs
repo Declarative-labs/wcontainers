@@ -157,6 +157,10 @@ pub struct Kernel {
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
     signalled: VecDeque<Tid>,
+    /// Processes sent a fatal signal while their memory is watched, with the signal: their
+    /// threads end of it on their way back to the program, once the kernel's stores at the end
+    /// have met the watches (`SIGNAL_GROUP_EXIT`).
+    dying: BTreeMap<Pid, u32>,
     /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
     /// host whose clock reads differently.
     monotonic_offset: u64,
@@ -256,6 +260,7 @@ impl Kernel {
             notices: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
+            dying: BTreeMap::new(),
             monotonic_offset: 0,
             wall_offset: 0,
             entry_now: 0,

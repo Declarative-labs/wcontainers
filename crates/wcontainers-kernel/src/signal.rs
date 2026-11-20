@@ -480,7 +480,11 @@ impl Kernel {
             && !self.dropped(pid, signal);
         if fatal || signal == SIGKILL {
             self.drop_pending(pid, bit(signal));
-            self.die_of(cx, pid, signal);
+            if self.watched(tid) {
+                self.die_when_met(pid, signal);
+            } else {
+                self.die_of(cx, pid, signal);
+            }
             return;
         }
         let wait = self.threads[&tid].call.wait;
@@ -493,6 +497,25 @@ impl Kernel {
             self.wake_thread(tid);
         } else if wait.is_none() && self.running != Some(tid) && !self.signalled.contains(&tid) {
             self.signalled.push_back(tid);
+        }
+    }
+
+    /// Leaves a fatal signal to the process's own threads, as Linux's threads end themselves: the
+    /// first to go back to its program meets the watches on what the kernel stores at the end,
+    /// then ends the process. None of them runs its program or a call again.
+    fn die_when_met(&mut self, pid: Pid, signal: u32) {
+        self.dying.insert(pid, signal);
+        self.processes.get_mut(&pid).expect("process").stopped = false;
+        for tid in self.processes[&pid].threads.clone() {
+            match self.threads[&tid].call.wait {
+                // It goes on once the watches change.
+                Some(Channel::Watch(_)) => continue,
+                Some(_) => self.wake_thread(tid),
+                None => {}
+            }
+            if self.running != Some(tid) && !self.signalled.contains(&tid) {
+                self.signalled.push_back(tid);
+            }
         }
     }
 
@@ -546,6 +569,19 @@ impl Kernel {
         tid: Tid,
         resume: Resume,
     ) -> Option<Resume> {
+        if !self.dying.is_empty() {
+            let pid = self.threads[&tid].process;
+            if let Some(&signal) = self.dying.get(&pid) {
+                if self.watched(tid)
+                    && !self.walk_watched(cx, tid, |kernel, cx| kernel.ends_touched(cx, tid))
+                {
+                    self.wait_on_watch(tid, Some(resume), true);
+                } else {
+                    self.die_of(cx, pid, signal);
+                }
+                return None;
+            }
+        }
         let mut restart = match resume {
             Resume::Return(value) => Errno::restart_of(value),
             _ => None,
@@ -1125,16 +1161,7 @@ impl Kernel {
         if action.sa_handler_kernel == SIG_DFL {
             let fatal = matches!(default_action(signal), Default::Terminate | Default::Core)
                 && (self.init != Some(pid) || self.forced(tid, signal));
-            if !fatal {
-                return true;
-            }
-            let ends = self.thread_ends(tid, crate::syscall::touch::Ending::Process);
-            let mut memory = crate::system::CallMemory {
-                kernel: self,
-                cx,
-                tid,
-            };
-            return crate::syscall::touch::thread_ends(&mut memory, &ends);
+            return !fatal || self.ends_touched(cx, tid);
         }
         let mut registers = RegisterBlock::ZERO;
         cx.cpu.registers(thread.cpu, &mut registers);
@@ -1155,6 +1182,18 @@ impl Kernel {
             }
         }
         self.rseq_touched(cx, tid)
+    }
+
+    /// Meets the embedder's watches on what the ends of thread `tid`'s process store; false if the
+    /// thread must wait.
+    fn ends_touched(&mut self, cx: &mut Context<'_>, tid: Tid) -> bool {
+        let ends = self.thread_ends(tid, crate::syscall::touch::Ending::Process);
+        let mut memory = crate::system::CallMemory {
+            kernel: self,
+            cx,
+            tid,
+        };
+        crate::syscall::touch::thread_ends(&mut memory, &ends)
     }
 
     /// Meets the embedder's watches on what `rseq_fixup` touches; false if the thread must wait.

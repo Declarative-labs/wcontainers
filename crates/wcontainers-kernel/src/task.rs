@@ -160,6 +160,11 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
+        // A thread of a process a fatal signal is ending does not run its call again.
+        if !self.dying.is_empty() && self.dying.contains_key(&self.threads[&tid].process) {
+            self.return_to_user(cx, tid, Resume::FromRegisters);
+            return;
+        }
         // The watched memory the call will touch is met before it acts, and its copies are
         // checked against what its description named.
         let watched = self.watched(tid);
@@ -608,13 +613,16 @@ impl Kernel {
             if !filling {
                 self.woken.push_back(tid);
             }
+            // A thread of a process a fatal signal is ending acts on it first.
+            let dying =
+                !self.dying.is_empty() && self.dying.contains_key(&self.threads[&tid].process);
             if delivering {
                 self.make_runnable(tid, resume);
-                if !self.signalled.contains(&tid) {
-                    self.signalled.push_back(tid);
-                }
             } else {
                 self.make_runnable(tid, Resume::FromRegisters);
+            }
+            if (delivering || dying) && !self.signalled.contains(&tid) {
+                self.signalled.push_back(tid);
             }
         }
     }
@@ -772,6 +780,7 @@ impl Kernel {
         if self.processes[&pid].ended.is_some() {
             return;
         }
+        self.dying.remove(&pid);
         let threads = self.processes[&pid].threads.clone();
         let memory = self.processes[&pid].memory;
         let shared = self.memory_in_use_elsewhere(pid, memory);

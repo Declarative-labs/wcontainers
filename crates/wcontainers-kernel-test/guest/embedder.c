@@ -25,6 +25,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
@@ -528,6 +529,41 @@ static void call_child_cleartid(void) {
     printf("child cleartid %d\n", *word == 0);
 }
 
+// A process of its own sharing the memory, waiting in ppoll on a stack of its own, killed by
+// another process: Linux clears its word as it ends (`mm_release`).
+static char sharer_stack[PTHREAD_STACK_MIN] __attribute__((aligned(16)));
+
+static long clone_waiting_sharer(int *child_word) {
+    register long x8 __asm__("x8") = SYS_clone;
+    register unsigned long x0 __asm__("x0") = CLONE_VM | CLONE_CHILD_CLEARTID | SIGCHLD;
+    register void *x1 __asm__("x1") = sharer_stack + sizeof sharer_stack;
+    register long x2 __asm__("x2") = 0;
+    register long x3 __asm__("x3") = 0;
+    register int *x4 __asm__("x4") = child_word;
+    __asm__ volatile("svc #0\n"
+                     "cbnz x0, 2f\n"
+                     "1: mov x0, xzr\n mov x1, xzr\n mov x2, xzr\n mov x3, xzr\n"
+                     "mov x8, %[ppoll]\n svc #0\n b 1b\n"
+                     "2:\n"
+                     : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x8)
+                     : [ppoll] "i"(SYS_ppoll)
+                     : "memory");
+    return (long)x0;
+}
+
+static void kill_sharer(int signal) {
+    int *word = (int *)AT;
+    long child = clone_waiting_sharer(word);
+    kill(child, signal);
+    int status = 0;
+    waitpid(child, &status, 0);
+    printf("killed sharer %d cleartid %d\n", WIFSIGNALED(status) && WTERMSIG(status) == signal,
+           *(volatile int *)word == 0);
+}
+
+static void call_sigkill_sharer(void) { kill_sharer(SIGKILL); }
+static void call_sigterm_sharer(void) { kill_sharer(SIGTERM); }
+
 // Each call, and what the parent puts in the buffer before the child that makes it starts.
 static const struct {
     void (*prepare)(void);
@@ -579,6 +615,8 @@ static const struct {
     {prepare_recvmmsg_split, call_recvmmsg_split},
     {prepare_sched_setattr, call_sched_setattr},
     {prepare_capset, call_capset},
+    {NULL, call_sigkill_sharer},
+    {NULL, call_sigterm_sharer},
 };
 
 static int calls(void) {

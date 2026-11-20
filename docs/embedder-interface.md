@@ -216,6 +216,16 @@ The kernel's own stores are met the same way before what makes them acts:
   sequence, before the abort is decided. If a watch stays the thread waits, and checks its sequence
   again when it goes on.
 
+A fatal signal (`SIGKILL`, or one whose default action ends the process and that has no handler)
+sent to a process whose memory is watched, by another process or by a call of its own, is left to
+the process's own threads, as Linux's threads end themselves on their way back to the program
+(`SIGNAL_GROUP_EXIT`): each thread is woken from any wait but a watch's (a stopped process
+included), and the first to go back meets the watches on what the ends of all its threads store,
+then ends the process; until then none of them runs its program or a call again, and one waiting
+on a watch acts on the signal once the watches change. The process's end and its hooks follow
+from there, in its own thread. A process with no watched memory ends at once, in the sender's
+call, as before.
+
 While the embedder watches anything, every copy a call makes is checked against what its
 description named: a read against anything named, a write against what was named as written
 (a range met as a read meets only `All` watches). A copy outside it is counted (`copy outside the call's description`, with the
@@ -245,9 +255,11 @@ A wake made between steps (a watch met through `Kernel::process`) makes `Kernel:
 threads before anything runs: an embedder that resolves watches between steps must answer that
 idle at once.
 
-What watching costs: while no process has a watch or a record of written pages, a call, a
-signal or a fault pays one flag test (`Kernel::watching`), recomputed when watches are set, a
-program starts, or a process ends. Once some process has one, every other process's call and
+What watching costs: while no process has a watch or a record of written pages, a call or a
+fault pays one flag test (`Kernel::watching`), recomputed when watches are set, a program starts,
+or a process ends, and a thread's way back to its program one more (whether a fatal signal waits
+on watches anywhere). Every copy a call makes, watched or not, also takes its address map's
+watches and finds no description and no watched page (two empty tests). Once some process has one, every other process's call and
 signal also looks up whether its own process has watched pages (its thread's and its process's
 entries, and a test); only a process with watched pages walks its calls' descriptions and has
 its copies checked. Page permissions are told to the CPU side again only for a process with a
