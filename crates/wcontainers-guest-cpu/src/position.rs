@@ -93,6 +93,8 @@ pub enum Resume {
 pub enum Fixup {
     /// The host register, by number, gets the constant being built in it.
     Constant { register: u8, value: u64 },
+    /// The host register, by number, gets the guest address being built in it, which moves with the code.
+    Address { register: u8, value: u64 },
     /// The host register, by number (the zero register's number: the stack pointer), gets host register
     /// `from`'s value.
     Move { register: u8, from: u8 },
@@ -139,6 +141,29 @@ pub struct DirectExit {
     /// Where the word is a branch the loader points at the target's piece itself, the bits holding its offset in
     /// instructions; otherwise a direct branch replaces the word.
     pub retarget: Option<u32>,
+}
+
+/// What an address place builds in its register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Holds {
+    /// The guest address itself.
+    Address,
+    /// The address of the guest address's entry slot.
+    EntrySlot,
+}
+
+/// One word of host code that builds a guest address in a register, written again when the code is loaded for
+/// another guest address (docs/native.md section 3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AddressPlace {
+    /// The word's first host byte, from the start of the code.
+    pub start: u32,
+    /// The host register, by number.
+    pub register: u8,
+    /// Which word of the sequence that builds the value it is, from the first.
+    pub part: u8,
+    pub address: u64,
+    pub holds: Holds,
 }
 
 /// A slow path of the native output that translating alone can count, per site (docs/native.md section 3.7).

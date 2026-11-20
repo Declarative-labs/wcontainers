@@ -3,9 +3,13 @@
 //! hardware computes it, and the meanings stay the definition the routes are proven against.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
+
+use serde::{Deserialize, Serialize};
 
 use crate::position::{
-    DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
+    AddressPlace, DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span,
+    Stopping,
 };
 use crate::{Flow, FlowKind, Guest};
 
@@ -74,6 +78,11 @@ pub trait Native: Guest {
     fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool;
     /// What a stop in one decoded instruction at guest `address` needs to know of it.
     fn stopping(i: &Self::Instruction, address: u64) -> Stopping;
+    /// The guest pages between which translated code moves by its address places alone: from any of them, every
+    /// address the code names stays in reach and builds in as many words.
+    fn movable() -> Range<u64>;
+    /// Writes the word of `code` at `place` for the place's address.
+    fn write_place(code: &mut [u8], place: &AddressPlace);
 }
 
 /// Host code with its position map, written one guest instruction after another.
@@ -92,6 +101,8 @@ pub struct HostCode {
     pub sites: [u64; NativeReason::ALL.len()],
     /// The exits to direct targets, in the order they were written.
     pub exits: Vec<DirectExit>,
+    /// The words that build guest addresses, in the order they were written.
+    pub places: Vec<AddressPlace>,
     /// Exits written while the count was ahead, by start: the bytes of their first words, which settle the
     /// count, or none for a branch only the code's own linking may point elsewhere.
     settling: BTreeMap<u32, Option<u32>>,
@@ -244,6 +255,23 @@ impl HostCode {
         self.state().lead = lead;
     }
 
+    /// Notes that the next word written is `place`'s, its start being where it is written.
+    pub fn place(&mut self, place: AddressPlace) {
+        let start = u32::try_from(self.offset()).expect("host code fits in u32 offsets");
+        self.places.push(AddressPlace { start, ..place });
+    }
+
+    /// The code once written, as a loader takes it.
+    pub fn translation(self) -> Translation {
+        Translation {
+            bytes: self.bytes,
+            spans: self.spans,
+            exits: self.exits,
+            places: self.places,
+            sites: self.sites,
+        }
+    }
+
     /// Writes bytes over earlier ones (a branch whose target is now known).
     pub fn patch(&mut self, at: usize, bytes: &[u8]) {
         self.bytes[at..at + bytes.len()].copy_from_slice(bytes);
@@ -310,6 +338,42 @@ impl HostCode {
     /// The span holding the host byte at `offset`.
     pub fn span(&self, offset: u32) -> Option<&Span> {
         crate::position::span_at(&self.spans, self.bytes.len(), offset)
+    }
+}
+
+/// Translated code as a loader takes and keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Translation {
+    pub bytes: Vec<u8>,
+    pub spans: Vec<Span>,
+    pub exits: Vec<DirectExit>,
+    pub places: Vec<AddressPlace>,
+    pub sites: [u64; NativeReason::ALL.len()],
+}
+
+impl Translation {
+    /// Moves the code `by` bytes of guest address, a whole number of pages from one page of `G::movable()` to
+    /// another: what translating it there gives.
+    pub fn moved<G: Native>(&mut self, by: u64) {
+        for place in &mut self.places {
+            place.address = place.address.wrapping_add(by);
+            G::write_place(&mut self.bytes, place);
+        }
+        let moved = |address: &mut u64| *address = address.wrapping_add(by);
+        for span in &mut self.spans {
+            moved(&mut span.guest);
+            if let Resume::At(address) = &mut span.resume {
+                moved(address);
+            }
+            for fixup in &mut span.fixups {
+                if let Fixup::Address { value, .. } = fixup {
+                    moved(value);
+                }
+            }
+        }
+        for exit in &mut self.exits {
+            moved(&mut exit.target);
+        }
     }
 }
 
