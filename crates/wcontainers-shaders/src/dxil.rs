@@ -286,6 +286,8 @@ pub(crate) fn lower(
     arrays::split(&mut module, &mut resources, &mut declared)?;
     depth::widen(&mut module)?;
     one_d::as_two_d(&mut module, &declared)?;
+    // Before the atomics' stand-ins are made, as it moves the module's functions.
+    components::rows(&mut module)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
     for (_, v) in module.global_variables.iter_mut() {
@@ -297,7 +299,6 @@ pub(crate) fn lower(
     }
     sample_mask_input(&mut module);
     sample_mask_output(&mut module);
-    components::rows(&mut module)?;
     unconverted(&module)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
