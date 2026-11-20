@@ -15,7 +15,7 @@ pub fn profile() -> PathBuf {
 pub fn place_libraries(dir: &Path) {
     let built = [
         profile().join("deps").join("wcontainers_directx.dll"),
-        Path::new(env!("OUT_DIR")).join("d3d11.dll"),
+        Path::new(env!("OUT_DIR")).join(wcontainers_directx::com::D3D11_LIBRARY),
     ];
     for from in built {
         let to = dir.join(from.file_name().unwrap());

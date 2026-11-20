@@ -16,8 +16,10 @@ pub struct Adapter {
     pub(super) private: Private,
     desc: AdapterDesc,
     /// The adapter of a factory of DXGI 1.0 (Direct3D 10's devices made without an adapter),
-    /// which answers none of the later factory interfaces.
+    /// which does not answer `IDXGIFactory1`.
     dxgi10: bool,
+    /// The factory that enumerated this adapter, its parent; none for a device's adapter.
+    parent: Option<IDXGIFactory6>,
 }
 
 impl Adapter {
@@ -26,6 +28,18 @@ impl Adapter {
             private: Private::default(),
             desc: AdapterDesc::from_caps(caps),
             dxgi10,
+            parent: None,
+        }
+    }
+
+    /// Another object for the same adapter, as each enumeration of DXGI's gives, whose parent is
+    /// the enumerating `factory`.
+    pub(super) fn another(&self, factory: IDXGIFactory6) -> Self {
+        Adapter {
+            private: Private::default(),
+            desc: self.desc.clone(),
+            dxgi10: self.dxgi10,
+            parent: Some(factory),
         }
     }
 
@@ -86,10 +100,16 @@ impl Adapter_Impl {
         Ok(super::output::Output::new(desc, monitor, self.to_interface()).into())
     }
 
-    /// A factory enumerating this adapter, which makes swap chains of its devices.
+    /// The factory that enumerated this adapter, or for a device's adapter a new factory
+    /// enumerating it, which makes swap chains of its devices.
     pub(super) fn get_parent(&self, riid: *const GUID, parent: *mut *mut c_void) -> Result<()> {
+        if let Some(factory) = &self.parent {
+            return unsafe { factory.query(riid, parent).ok() };
+        }
         let factory: IDXGIFactory6 = Factory::new(self.to_interface()).into();
         if self.dxgi10 {
+            // Microsoft's page on `CreateDXGIFactory`: DXGI 1.0's factory does not give
+            // `IDXGIFactory1` (DXGI 1.0 and 1.1 are not mixed); the later interfaces it gives.
             unsafe {
                 restrict::<IDXGIFactory6_Vtbl, 0>(factory.as_raw());
                 restrict::<windows::core::IInspectable_Vtbl, 1>(
@@ -131,22 +151,13 @@ unsafe fn restrict<V: 'static, const N: usize>(p: *mut c_void) {
     unsafe { *slot = copy as *const V };
 }
 
-/// `QueryInterface` of DXGI 1.0's factory: `IDXGIFactory1` and its successors are not answered.
+/// `QueryInterface` of DXGI 1.0's factory: `IDXGIFactory1` is not answered.
 unsafe extern "system" fn query_factory10<const N: usize>(
     this: *mut c_void,
     iid: *const GUID,
     out: *mut *mut c_void,
 ) -> windows::core::HRESULT {
-    let later = [
-        IDXGIFactory1::IID,
-        IDXGIFactory2::IID,
-        IDXGIFactory3::IID,
-        IDXGIFactory4::IID,
-        IDXGIFactory5::IID,
-        IDXGIFactory6::IID,
-        IDXGIFactory7::IID,
-    ];
-    if !iid.is_null() && later.contains(unsafe { &*iid }) {
+    if !iid.is_null() && unsafe { *iid } == IDXGIFactory1::IID {
         if !out.is_null() {
             unsafe { *out = std::ptr::null_mut() };
         }

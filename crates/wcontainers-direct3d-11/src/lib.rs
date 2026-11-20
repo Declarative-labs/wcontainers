@@ -14,6 +14,7 @@ pub mod object;
 mod present;
 pub mod query;
 pub mod record;
+pub mod runtime;
 pub mod shader;
 pub mod stream;
 
