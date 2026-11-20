@@ -1,11 +1,12 @@
 # wcontainers: guest threads in parallel
 
 Status: plan, revised 2026-11-19 to the owner's rulings of that day and to the independent check of
-the one scheduling rule, then corrected twice on 2026-11-20: for the faults that the first independent
-check of that revision found (orchestrator/overnight-2026-11-20/threads-check-the-revision.md, "the
-revision's check" here), and for those its second check found (threads-check-round-2.md in the same
-folder, "the second check" here). **This revision has had no passing independent check. Two checks
-were made and neither passed. Until one is recorded in docs/status-threads.md, every part the revision
+the one scheduling rule, then corrected three times on 2026-11-20: for the faults that the first
+independent check of that revision found (orchestrator/overnight-2026-11-20/threads-check-the-revision.md,
+"the revision's check" here), for those its second check found (threads-check-round-2.md in the same
+folder, "the second check" here), and for those its third check found (the check of commit c75d28a7,
+"the third check" here). **This revision has had no passing independent check. Three checks were
+made and none passed. Until one is recorded in docs/status-threads.md, every part the revision
 changed, and every correction of 2026-11-20, is unchecked.** The form before it had been corrected
 after its sixth independent check (docs/status-threads.md says what changed each time). Nothing here is
 built. The owner rules on section 16 first.
@@ -17,7 +18,13 @@ Three things in the corrections were decided by the orchestrator after the check
   wait compares its word again); a wait with a relative time limit goes on with the time left; a call
   that has already had an effect is not run again and returns what it did (a partial count, a wake's
   count); a waiter already chosen by a wake returns woken. This replaces the first correction's "its
-  call runs from the start" (4.5, section 6, decision 19);
+  call runs from the start" (4.5, section 6, decision 19). The plan reads it, as its own reading to
+  confirm with the proposal, to say also that a wait no signal without a handler interrupts is not
+  interrupted by being taken out: Linux leaves such a signal pending until exec's wait for its other
+  threads or `sched_setaffinity`'s wait for the move has ended (the second from memory of Linux's
+  source, not checked here), and in this kernel no such signal
+  interrupts a wait for a call-in (4.5). So a task whose call waits for a call-in is taken only once
+  that call has ended (the third check, its first finding);
 - **operations on one lock that span machines have one ordering point for each lock**: one kernel, or
   one sequencer on the embedder's side, decides the order of the wakes, the requeues and the changes
   the kernel makes to the number at that place. The first correction's "local part first, remote part
@@ -58,9 +65,13 @@ These are open. None is hidden further down.
    The corrections of 2026-11-20 add to what the model must cover: a new overlap that calls in the
    caller's own siblings and marks the caller's own memory (section 3); a resume that makes an overlap
    and puts a mark of its own on the other side without parking (section 3); a batch taken from outside
-   a hook, which marks named tasks and no memory (section 6); a task taken out while its call waits
-   for a call-in, whose marks then come off (4.5). The second check's corrections add: a change in how
-   a memory runs made only with none of its other threads handed out, and with the thread whose entry
+   a hook, which marks named tasks and no memory (section 6). The third check's corrections replace
+   the first correction's "a task taken out while its call waits for a call-in, whose marks then come
+   off" with: a batch that waits for a named task's wait for a call-in to end, and lets that waiter be
+   chosen although the batch has marked it (section 6); and an exec that ends its other threads before
+   it works out the overlap its new image makes (section 3, 4.5). The second check's corrections
+   add: a change in how a memory runs made only with none of its other threads handed out, and with
+   the thread whose entry
    makes it leaving `Execution::run` (section 3); an overlap that ends, which keeps its memories
    running as `Serial` until then (section 3); a batch's mark on every named task, handed out or not
    (section 6). Also unchecked: that "due a turn", which narrows
@@ -114,12 +125,14 @@ These are open. None is hidden further down.
     can write through a mapping. A process that mapped a file before any mapping could write it is not
     named when another process later maps the file shared and writable (section 3, decision 21).
 11. **Locks across machines are not designed** (the second check, its second, fifth and twelfth
-    findings). Their order needs one ordering point for each lock, and how that point is chosen is open
-    (4.5, decision 14). Until it is chosen, three cases have no answer in this plan: a wake or requeue
-    that touches two words whose points differ; the embedder's index of where waiters are, after a
-    requeue made on the waiters' own kernel, which no hook or call reports task by task; and the wake
-    a thread's end makes, which has no call to park and so goes without waiting, under conditions this
-    plan has not designed. Nothing here is built across machines until decision 14 is ruled.
+    findings; the third check, its third and fourth). Their order needs one ordering point for each
+    lock, and how that point is chosen is open (4.5, decision 14). Until it is chosen, four cases have
+    no answer in this plan: a wake or requeue that touches two words whose points differ; the
+    embedder's index of where waiters are, after a requeue made on the waiters' own kernel, which no
+    hook or call reports task by task; the wake a thread's end makes, whose clear of the word no agreed
+    call lets the point make, and which has no call to park and so goes without waiting; and a waker
+    whose step spans machines and is half made when its task is taken out or ended. Nothing here is
+    built across machines until decision 14 is ruled.
 12. **Under `CLONE_VM`, an owner given `None` still pays while its `Exact` co-owner's threads come in**
     (the second check, its sixth finding). A call-in's mark names a memory, and a marked memory hands
     none of its threads back to guest code, the `None` owner's included. The plan's way to keep that
@@ -129,6 +142,10 @@ These are open. None is hidden further down.
     a resume would break are found in the resume's entry; a mapping made before the overlap takes
     effect can add pairs that nobody calls in. Section 3 says what the plan suggests; it is unchecked,
     and that it ends is not argued.
+14. **A batch taken inside a hook that names a task whose call waits for a call-in is not designed**
+    (the third check, its first finding). Such a task is taken only once its call has ended (4.5,
+    section 6), and a hook cannot wait for that. What the batch does then is the same open question
+    as decision 11, now for any process, `Serial` ones included.
 
 Words used here:
 - **executor**: what runs the guest's instructions behind the kernel's `Cpu` side (`Executor`,
@@ -599,9 +616,16 @@ already.
   call names each of those memories, its own included, and puts its mark on each (4.5). This is the
   one statement of who is called in for a new overlap; 4.5, 7.2's lock rules and T1 say the same.
 - **Until they are in, nothing of the change has taken effect.** The `mmap` or `shmat` that makes the
-  mapping (kernel/syscall/memory.rs:109, ipc.rs:356), the exec, or the fork, is parked before it has
-  had any effect, and is made in the first entry in which none of those pairs is handed out. The caller
-  is then a waiter of a memory that may be marked, its own, and is chosen as any waiter is (4.5).
+  mapping (kernel/syscall/memory.rs:109, ipc.rs:356), or the fork, is parked before it has had any
+  effect, and is made in the first entry in which none of those pairs is handed out. An exec is
+  parked before its new image has any effect, but not before the exec has had any: it first ends its
+  other threads (4.5, "exec"; the ones not running at once, as today, and the running ones each in
+  its own entry while the exec waits), and only in the entry where the last of them has ended does it
+  work out the pairs its new image would make, and park again if any is handed out. That order is the
+  plan's, unchecked (the third check, its first finding: the form before said the exec "is parked
+  before it has had any effect", which 4.5 contradicted, and left the order of the two unstated). The
+  caller is then a waiter of a memory that may be marked, its own, and is chosen as any waiter is (4.5).
+  A task whose call waits so is not taken out of the kernel until the call has ended (4.5, section 6).
   Where its own memory comes to run as `Serial`, it leaves `Execution::run` when its call has been
   made (below, "a change in how a memory runs").
 - **A resume call cannot park**, and need not ("Resume stays outside hooks": it is called by the
@@ -1161,12 +1185,20 @@ The rule now:
 - **A thread in a waiter's way is asked in at once**, with `stop_thread`, whether or not it has a slice
   (section 5). Its overlappers stand still for the waiter, so it does not wait for a slice to end.
 - **A mark belongs to its call.** It comes off when the call has run again. It also comes off when the
-  call is given up: its thread is ended by a fatal signal while it waits, or its task is taken out of
-  the kernel while it waits (section 6). A call waiting for a call-in has had no effect yet (section
-  3), so a task taken out then is treated as for a signal with no handler: its call runs again where
-  the task is resumed, with marks of its own there if it needs them (proposed, to be confirmed by the
-  owner; decision 19, and "a task taken out while it waits" below). No other signal interrupts a wait
-  for a call-in: the wait is bounded, and the call has had no effect yet.
+  call is given up: its thread is ended by a fatal signal while it waits. No other signal interrupts a
+  wait for a call-in: the wait is bounded. **Being taken out of the kernel does not interrupt it
+  either**: a task whose call waits for a call-in is taken only once that call has ended (section 6).
+  This is the plan's reading of the orchestrator's proposal that taking a task out is treated exactly
+  as a signal with no handler (proposed, to be confirmed by the owner; decision 19): Linux leaves such
+  a signal pending until exec's wait for its other threads has ended (that wait is killable only, the
+  third check) and until `sched_setaffinity`'s wait for the move has ended (`affine_move_task` waits
+  for completion uninterruptibly; from memory of Linux's source, not checked here). Why (the third
+  check, its first finding): the second correction said a call waiting for a call-in "has had no
+  effect yet" and ran it again where the task was resumed. An exec has by then ended its threads
+  that were not running, and `sched_setaffinity` has set the new mask (4.3). Taken out, the exec's marks came
+  off, the siblings asked in to end were handed back, and the exec ran again on another kernel beside
+  the old image's remaining threads; a `sched_setaffinity` run again could answer `ESRCH` for a mask
+  already set. "Returns what it did" has no result for an exec part made.
 
 Why no circle is left. What a waiter needs before its call runs again is three things, and none of
 them is a mark coming off.
@@ -1407,7 +1439,9 @@ What is stopped before what, where M is the memory changed:
   its process's config.
 - **exec**: the process's other threads that are not running are ended as today (kernel/task.rs:648).
   Its running ones, which exist only in a `Parallel` process, are called in, and each ends in its own
-  entry. The caller parks until they have, as Linux's exec waits for the other threads to die.
+  entry. The caller parks until they have, as Linux's exec waits for the other threads to die. So the
+  exec has had an effect when it parks; a new overlap its image makes is worked out only after the
+  last of them has ended (section 3, "how a new overlap takes effect").
 - **`exit_group`, a fatal signal**: the process is marked as ending, and nobody waits.
   - When no thread of its memory is running other than the caller, it ends at once, as today
     (kernel/task.rs:685, kernel/signal.rs:481-485). With one processor that is always so.
@@ -1497,8 +1531,11 @@ What is stopped before what, where M is the memory changed:
       or a process's own memory). The point never moves, and two words of one object, such as glibc's
       condition variable and its internal lock, share it. Cost: every operation on a word with a waiter
       on another machine is a round trip to the home, even when the waker and every waiter are
-      elsewhere; the home must take the page, or ask for it, to make the kernel's changes of the word;
-      a home that leaves needs a hand-over; a requeue between two objects still meets two homes.
+      elsewhere; the home must take the page, or ask for it, to make the kernel's changes of the word,
+      and those changes asked for by a call on another kernel (`FUTEX_WAKE_OP`'s write, the clear at a
+      thread's end) are then made away from the caller's kernel, which needs a call the agreed two do
+      not have (the third check, its fifth finding); a home that leaves needs a hand-over; a requeue
+      between two objects still meets two homes.
     - **the embedder sequences.** The kernel keeps only the two calls; the embedder already keeps an
       index for each place, and every operation on a word with waiters on two machines passes through
       it, so the index can follow requeues. Cost: a round trip to the sequencer for each such operation,
@@ -1544,13 +1581,22 @@ What is stopped before what, where M is the memory changed:
     waiting for the other machine is sound only if nothing the waker does afterwards (a memory write
     leaving its machine, a signal, another futex call, its exit) becomes visible off its machine before
     the wake is put in order at that point.
-  - **The wake at a thread's end** (the second check, its twelfth finding). The kernel clears the
-    thread's word and wakes one waiter on it; no call is behind it, so there is nothing to park, and
-    no hook may wait. Nobody reads its count, so it goes without waiting, and the report's conditions
-    on such a wake apply to it. The clear itself is a change the kernel makes to the word, so at the
-    point it is one step with the wake, and a `pthread_join` that reads the word sees it no earlier than
-    the wake. What the ending thread's end makes visible besides (its process's exit, seen by a parent
-    through `wait4`) overtaking the wake is not designed (known fault 11).
+  - **The wake at a thread's end is not designed** (the second check, its twelfth finding; the third
+    check, its fourth; known fault 11). The kernel clears the thread's word and wakes one waiter on
+    it; no call is behind it, so there is nothing to park, and no hook may wait. Nobody reads its
+    count, so it goes without waiting, and the report's conditions on such a wake apply to it. The
+    clear is a change the kernel makes to the word, so by the rule above it belongs at the point with
+    the wake. No option makes that so yet: under the home kernel and the sequencer the clear is made
+    in the ending thread's own entry, which cannot park, and no agreed call lets the point make it;
+    under the kernel holding the page, the ending thread's kernel holds the page when it clears the
+    word, but the wake's part on other machines is made after its entry has ended, and nothing keeps
+    the page, and so the point, from leaving before that part is made. What
+    any answer must keep: **a waiter woken by this wake sees the cleared word.** A woken `pthread_join`
+    that still reads the thread's id waits on the word again, and no wake follows, because the thread
+    is gone. (The first correction argued the other direction, that a joiner sees the clear no earlier
+    than the wake. That one is harmless: a joiner that sees the clear first does not sleep, and the
+    late wake is a spurious one, which the report's D allows.) What the end makes visible besides (its
+    process's exit, seen by a parent through `wait4`) overtaking the wake is not designed either.
   - **The embedder's index after a requeue on the waiters' own kernel** (the second check, its fifth
     finding, which it marked plausible). A `FUTEX_CMP_REQUEUE` made on K2 moves K2's waiters from one
     word to another with no response for them and no call of the embedder's; the proposed return of
@@ -1571,12 +1617,15 @@ What is stopped before what, where M is the memory changed:
       compares its word again;
     - **a wait with a relative time limit goes on with the time left.** The kernel already turns the
       limit into a deadline on its monotonic clock at the call's first run (kernel/syscall/futex.rs:
-      274-286), and `restart_syscall` waits until the same deadline (:508-551) and answers `ETIMEDOUT`
-      once it has passed (:493-495). So the time a task spends between kernels counts, as Linux's
-      restart counts the time a task spent stopped, and a wait whose deadline passed while it was out
-      returns `ETIMEDOUT`, not `EAGAIN` (the second check, its ninth finding). That reading of "the time
-      left" is the plan's, to confirm with decision 19, and it needs the kernels' monotonic clocks to
-      agree, which is the embedder's and not designed;
+      274-286), and `restart_syscall` waits until the same deadline (:508-551). So the time a task
+      spends between kernels counts, as Linux's restart counts the time a task spent stopped. A wait
+      whose deadline passed while it was out first compares its word again, as every wait does
+      (`wait`, :433-460, answers `EAGAIN` when the word has changed, before it looks at the deadline;
+      Linux's `futex_wait_setup` does the same): it returns `EAGAIN` if the word changed, and
+      `ETIMEDOUT` (:493-495) only if the word is unchanged. (The second correction said `ETIMEDOUT`
+      whatever the word; the third check, its second finding, found that against the source it
+      cited.) That reading of "the time left" is the plan's, to confirm with decision 19, and it needs
+      the kernels' monotonic clocks to agree, which is the embedder's and not designed;
     - **a call that has already had an effect is not run again, and returns what it did**: a `read` or
       `write` that has moved some bytes returns that count, as Linux returns a partial count after a
       signal; a waking call whose step has been made at the ordering point returns its count;
@@ -1586,10 +1635,26 @@ What is stopped before what, where M is the memory changed:
       follows the same rule by the restart code it already answers for a signal. Linux's manual also
       lists calls that answer `EINTR` after a stop signal and `SIGCONT` even with no handler (signal(7),
       "Interruption of system calls and library functions by stop signals"); which of them this kernel
-      follows is T1's to read, not checked here.
+      follows is T1's to read, not checked here;
+    - **a call whose wait no signal without a handler interrupts is not interrupted by being taken
+      out**: a wait for a call-in (above, "a mark belongs to its call"), exec's wait for its other
+      threads to end, and `sched_setaffinity`'s wait for the move, the last two being waits for a
+      call-in here. The task is taken once its call has ended (section 6). This is the plan's reading
+      of the proposal, to confirm with decision 19 (the third check, its first finding).
     A waking call parked for the ordering point (above) has had no effect until its step is made:
     taken out before, it runs again where it is resumed and wakes once; taken out after, it carries the
-    count. Finishing a call whose task has moved is part of the same open call as finishing a parked
+    count. **Taken out while its step is half made, it is not designed** (the third check, its third
+    finding, which it marked plausible; known fault 11). A step that spans machines is made by separate
+    calls, one kernel after another, since nobody holds one kernel's handle while calling another
+    (above). Between them the waker has had part of its effect: for example `wake_waiters` has been
+    made on K3 and its own kernel has not yet written `FUTEX_WAKE_OP`'s second word, so neither "runs
+    again" nor "carries the count" is right, and glibc 2.17's internal lock would never be released.
+    The plan's requirement, unchecked and to confirm with decisions 14 and 19, adds no mechanism: the
+    embedder, which makes the step, does not take out a waker whose step it has begun until it has made
+    the whole step and finished the call; a kernel does not know which parts of a step are still to
+    come on other kernels, and does not check it. A fatal
+    signal that ends the waker while its step is half made is the same case, and is not designed
+    either. Finishing a call whose task has moved is part of the same open call as finishing a parked
     call (decision 14). The embedder takes the task's entry out of its index of waiters itself, since
     it made the call that took the task out. No call is needed to wake a `SuspendedTask`: it is in no
     list.
@@ -2142,19 +2207,22 @@ in through entries that need the kernel's lock (4.5):
   stops them is internal"): the call may wait. For each memory of the batch it makes the stop 4.5
   names: nothing when none of the named tasks is handed out, a group stop where it may hold them, and
   otherwise it asks in **the named tasks only**, after which it waits, outside the lock, until they are
-  in. Then it takes the batch in one entry. This is the path an embedder uses for a running `Serial`
+  in. In each case it also waits, outside the lock, until no named task's call waits for a call-in
+  (below). Then it takes the batch in one entry. This is the path an embedder uses for a running `Serial`
   or `Exact` process.
   - **It marks named tasks, not memories, and every named task.** Each named task gets a mark of the
     batch's own at the call's start, whether it is handed out, ready, or waiting: a marked task is not
     handed out, and a marked waiter is not chosen, so its call is not run again here (it is taken with
-    its call, below). A handed-out one, when it comes in, is not handed out again. Nothing else of its
+    its call, below), except a waiter of a call-in, which is chosen and taken once its call has ended
+    (below). A handed-out one, when it comes in, is not handed out again. Nothing else of its
     memory is held back. (The first correction marked only the named tasks that were handed out. The
     second check, its fourth finding: a named task that was ready, or woken, but not handed out when
     the call started had no mark; another worker could hand it out while the call waited outside the
     lock, and the take "in one entry" then met a running `Serial` or `Exact` task, for which the plan
     had no rule.) Unnamed siblings keep running, and so does "a thread started just before the call", which
     the ruling says "is not in the batch and keeps running". The mark comes off when the batch is
-    taken, in the entry where the last named task has come in, or when the last named task still out
+    taken, in the entry where the last named task has come in and the last named call-in waiter's call
+    has ended, or when the last named task still out
     has ended (it is then absent from what comes back, as the ruling has it). It belongs to no guest
     call, so it is not a call-in's mark, and 4.5's "why no circle" is not touched: nothing waits for a
     task that has come in. (The form before put a call-in's mark on the memory. The revision's check
@@ -2162,10 +2230,18 @@ in through entries that need the kernel's lock (4.5):
     guest code, unnamed ones included.)
   - A named task that is waiting is taken as Linux treats a signal with no handler arriving during
     its call (4.5, "a task taken out while it waits"; proposed, to be confirmed by the owner; decision
-    19): a call that has had no effect yet (a wait for a call-in, whose marks come off; a futex wait,
-    taken off its waiter list) runs again where the task is resumed; a wait with a time limit goes on
-    to the same deadline; a call that has had an effect returns what it did; a waiter already chosen by
-    a wake returns woken.
+    19): a call that has had no effect yet (a futex wait, taken off its waiter list) runs again where
+    the task is resumed; a wait with a time limit goes on to the same deadline, comparing its word
+    first; a call that has had an effect returns what it did; a waiter already chosen by a wake returns
+    woken.
+  - **A named task whose call waits for a call-in** (an `mmap` making an overlap, an exec, a
+    `sched_setaffinity`, and every other call 4.5 parks so) **is taken only once that call has ended**
+    (the plan's reading of decision 19; the third check, its first finding). The batch's mark does not
+    keep such a waiter from being chosen: when the call-in is done it is chosen as any waiter is (4.5),
+    its call runs, and it is then not handed out; it is taken as a ready task with its call answered.
+    If the call then parks for something else, it is taken as the item above says. The batch waits
+    the longer, by the call-in and the waiter's turn to be chosen: bounded by 4.5's "why no circle",
+    whose needs the batch's mark does not touch, since it keeps nobody from coming in. Not measured.
   - The call does not wait for its own host thread. The revision's check asked about an embedder that
     calls `run` itself and calls `suspend_tasks` from the host thread that serves the named task's
     processor. That host thread is then outside `run`, and `run` returns only for one of the four
@@ -2174,6 +2250,9 @@ in through entries that need the kernel's lock (4.5):
     The named tasks it waits for are handed out on other processors, whose workers bring them in.
 - **On a hook's handle, the process running as `Serial`**: no other thread of it runs (4.4 item 7).
   Nothing to stop. The hook's own thread is in its entry, with its registers saved.
+- **On a hook's handle, any process, a named task whose call waits for a call-in**: not designed
+  (known fault 14). It is taken only once its call has ended (above), and a hook cannot wait for that;
+  what the batch does then is decision 11's open question.
 - **On a hook's handle, the process with `Parallel` code and not `Exact`**, and no other owner of its
   memory given `Exact` (`CLONE_VM`; otherwise as the next case but one for those threads): the named
   tasks may be in guest code. The kernel asks the executor for a group stop of the memory and takes
@@ -3242,8 +3321,12 @@ replays a recording; the tests that did in the form before are moved to T8 and r
   (`Parallel`, `Exact`) process of four threads that only compute; `suspend_tasks` of one of them on the
   `Kernel` from another host thread. The other three never stop, a thread the process starts just
   before the call keeps running and is not in what comes back, and the call returns once the named
-  task is in. The same with the named task parked in a futex wait, and with it parked for a call-in:
-  resumed, its call runs again (decision 19). The same with the named task ready but not handed out
+  task is in. The same with the named task parked in a futex wait: resumed, its call runs again
+  (decision 19). The same with it parked for a call-in, in an `mmap` that makes an overlap, in an exec
+  whose running siblings are being called in, and in a `sched_setaffinity` of a running thread: the
+  call returns before the batch is taken, the exec's siblings end once and its image is replaced on
+  this kernel, the mask is set once, and resumed, the task carries its call's answer and runs nothing
+  again (the third check, its first finding). The same with the named task ready but not handed out
   when the call starts, and with it woken: the test build pauses the call while it waits outside the
   lock, and the task is never handed out before it is taken (the second check, its fourth finding).
 - **A task taken out while it waits** (once the suspend calls exist; a test embedder with two kernels
@@ -3254,13 +3337,17 @@ replays a recording; the tests that did in the form before are moved to T8 and r
     W's call, resumed, returns `EAGAIN`; after: W is woken on K3 and the wake returns 1. In both W never
     sleeps past the wake. The same with W woken but not yet run when it is taken out: resumed, it
     returns 0 and does not wait again;
-  - W waits with a time limit and is kept out past its deadline: resumed, it returns `ETIMEDOUT`; kept
-    out for less: it returns no sooner than the deadline (the second check, its ninth finding);
+  - W waits with a time limit and is kept out past its deadline: resumed with the word unchanged, it
+    returns `ETIMEDOUT`; resumed with the word changed, it returns `EAGAIN`, as Linux's restarted wait
+    does; kept out for less: it returns no sooner than the deadline (the second check, its ninth
+    finding; the third check, its second);
   - a requeue of W's word to another word is made while W is out: resumed, W compares its first word
     again, as Linux's restarted wait does;
   - a waker parked for the ordering point is taken out, once before its step is made and once after:
     the waiters are woken once, a `FUTEX_WAKE_OP`'s operation is applied once, and the resumed call
-    returns the count it made (the second check, its third finding);
+    returns the count it made (the second check, its third finding). A take asked for while the step is
+    half made is not tested until decision 14 says how the step is made (known fault 11); the test
+    embedder counts "waker taken out with its step half made", which must stay at zero;
   - a pipe `write` that has written part of its bytes and waits for room is taken out: resumed, it
     returns the partial count, and the reader reads each byte once.
 - **No hook waits for another kernel, and no handle is held across kernels** (with the same test
@@ -4206,8 +4293,11 @@ decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create
     process". In an `Exact` process with `Parallel` code, a running task can stop only at an entry of
     its own (4.4 item 5), which a call-in gives, and a hook holds the kernel's lock and cannot wait for
     one. The ruled return has no error, and reads a task left out as one that had already exited, so a
-    task left out for this reason would look exited. The answers the plan sees, none recommended over
-    the others yet:
+    task left out for this reason would look exited. The same question arises, for any process,
+    `Serial` ones included, when the batch names a task whose call waits for a call-in: such a task is
+    taken only once its call has ended (decision 19, the plan's reading), and a hook cannot wait for
+    that (known fault 14; the third check, its first finding). The answers the plan sees, none
+    recommended over the others yet:
     - the batch takes the tasks it can now (the hook's own, and any not running) and leaves the rest
       out; the return then needs a way to say "running, not taken", which the ruling's shape does not
       have;
@@ -4259,15 +4349,20 @@ decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create
       in 4.5: the kernel that holds the lock's page; a fixed home kernel for each memory object; the
       embedder as sequencer. **None is recommended here.** Each must also say what it does with an
       operation on two words whose points differ, with the embedder's index after a requeue made on the
-      waiters' own kernel, and with the wake at a thread's end, which goes without waiting (known
-      fault 11);
+      waiters' own kernel, and with the wake at a thread's end, which goes without waiting and whose
+      clear of the word no agreed call lets the point make, while a waiter it wakes must see the
+      cleared word (known fault 11). The home kernel and the sequencer each need a call the agreed two
+      do not have, for the kernel's changes of the word made away from the caller's kernel (4.5);
     - **how the call is finished from outside the hook.** Either the waking call parks, before it has
       had any effect, as any waiting call does, and the embedder, from outside any hook, has its step
       made at the ordering point and finishes the call with the count; or the proxy's request hook
       answers "break" and the call is finished later from outside the hook. Either needs a way for the
       embedder to finish a parked call with its result, which the ruled proxy does not have: its `Break`
       carries the response at once; and that way must reach a task that has been taken out after its
-      step and before its call was finished (decision 19). Recommended: the first, with that one call
+      step and before its call was finished (decision 19). A waker taken out, or ended by a fatal
+      signal, while its step is half made is not designed; the plan asks only that the embedder not
+      take out a waker whose step it has begun until the step is whole and the call finished (4.5;
+      known fault 11; the third check, its third finding). Recommended: the first, with that one call
       added, because the parked call is already the kernel's one way of waiting (4.1). Cost (expected):
       a waking call that crosses machines leaves `Execution::run` and comes back (300.8 ns measured for
       that alone, section 14) besides the round trip;
@@ -4317,17 +4412,29 @@ decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create
 19. **New (2026-11-20). What a task taken out while it waits carries.** Proposed by the orchestrator, to
     be confirmed by you: **taking a waiting task out of its kernel is treated exactly as Linux treats a
     signal with no handler arriving during that call.** A call that has had no effect yet runs again
-    where the task is resumed (a futex wait compares its word again; a call waiting for a call-in has
-    its marks taken off and makes them again where it runs); a wait with a relative time limit goes on
-    with the time left; a call that has already had an effect is not run again and returns what it did
-    (a partial count, a wake's count); a waiter already chosen by a wake returns woken (4.5, section
-    6). This replaces the first correction's "its call runs from its start", which the second check
-    found would wake twice for a waker taken out after its step, apply `FUTEX_WAKE_OP`'s operation
+    where the task is resumed (a futex wait compares its word again); a wait with a relative time
+    limit goes on with the time left; a call that has already had an effect is not run again and
+    returns what it did (a partial count, a wake's count); a waiter already chosen by a wake returns
+    woken (4.5, section 6). The plan's own reading, to confirm with this: a wait that no signal
+    without a handler interrupts is not interrupted by being taken out, so a task whose call waits for
+    a call-in is taken only once that call has ended. Linux leaves such a signal pending through
+    exec's wait for its other threads (killable only) and `sched_setaffinity`'s wait for the move, and
+    this kernel lets no such signal interrupt a wait for a call-in (4.5). Why (the third check, its
+    first finding): the second correction said a call waiting for a call-in "has had no effect yet"
+    and ran it again where the task was resumed, with its marks off; but an exec has by then ended its
+    threads that were not running, and `sched_setaffinity` has set the mask. Run again on another
+    kernel, the exec ran beside the old image's remaining threads, and `sched_setaffinity` could
+    answer `ESRCH`. Cost (expected, not measured): a batch naming such a task waits for its call-in
+    and its turn to be chosen. Inside a hook, which cannot wait, the case is open (known fault 14,
+    decision 11). This replaces the first correction's "its call runs from its start", which the
+    second check found would wake twice for a waker taken out after its step, apply `FUTEX_WAKE_OP`'s operation
     twice, and write a pipe's bytes twice. The kernel already has the path, for a signal with no
-    handler (kernel/signal.rs:628-638). Two readings are the plan's own, to confirm with this: "the
-    time left" is counted from the deadline the kernel already keeps (kernel/syscall/futex.rs:274-286),
-    so time between kernels counts and a deadline that passed meanwhile gives `ETIMEDOUT`, as Linux's
-    restart counts time stopped, which needs the kernels' clocks to agree; and the call run again
+    handler (kernel/signal.rs:628-638). Two more readings are the plan's own, to confirm with this:
+    "the time left" is counted from the deadline the kernel already keeps
+    (kernel/syscall/futex.rs:274-286), so time between kernels counts, as Linux's restart counts time
+    stopped, which needs the kernels' clocks to agree, and a wait whose deadline passed meanwhile
+    compares its word first and gives `EAGAIN` if it changed, `ETIMEDOUT` only if not (:433-460,
+    :493-495; the third check, its second finding); and the call run again
     passes through the proxy's request hook again, as a restarted call is seen again by a tracer on
     Linux. Why at all: the revision's check found a lost wake when a waiter is moved between kernels
     (4.5 walks the case). It closes that case where the waker changes the word before it wakes, as
@@ -4373,5 +4480,8 @@ decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create
     it adds a case to the model of known fault 1); or the cost is accepted for `CLONE_VM` as the
     ordering already is (section 3), bounded by the time the `Exact` owner's threads take to come in
     (the stop check's latency, 230 ns on average and 30 µs at worst measured in Chrome, plus 300.8 ns
-    measured for leaving `Execution::run` and coming back). Whether the ruling asks for the first is
-    yours.
+    measured for leaving `Execution::run` and coming back), and then by the time from the last of them
+    coming in until the waiting call is chosen, runs again and takes its mark off: a processor for the
+    waiter (section 5's condition, which may wait for a thread in its way to come in) and the call's
+    own work. That second part is expected, not measured, and was left out of this bound before (the
+    third check, its fifth finding). Whether the ruling asks for the first is yours.
