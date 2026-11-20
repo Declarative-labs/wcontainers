@@ -24,8 +24,6 @@ include!("../../src/layout.rs");
 const PAGE: u64 = 4096;
 /// What a served blob reads as its stdin.
 const EMPTY_INPUT: &str = "/dev/null";
-/// How long a blob may run.
-const BLOB_SECONDS: u32 = 20;
 const NZCV: u64 = 0xf000_0000;
 
 /// The registers the guest starts with: x0 to x30, sp, pc, pstate, thread pointer.

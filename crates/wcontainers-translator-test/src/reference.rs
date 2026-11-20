@@ -24,13 +24,38 @@ pub const RUNNER_FOLDER: &str = "/r";
 pub const PROGRAMS_FOLDER: &str = "/p";
 /// The reference runner's program, its package's name.
 pub const RUNNER_NAME: &str = "wcontainers-reference";
+/// The reference runner's package folder beside this crate's manifest, also its folder under `target`.
+const RUNNER_PACKAGE: &str = "reference";
+/// Where each process keeps its own copy of the reference runner, under the runner's target folder.
+const OWN_COPIES: &str = "run";
+/// Rust's name for the guest's target, the one the reference runner and Rust test programs are built for.
+pub const GUEST_TRIPLE: &str = "aarch64-unknown-linux-musl";
+/// The workspace's folder of build output, from this crate's manifest folder.
+const WORKSPACE_TARGET: &str = "../../target";
+/// The environment variable in which Cargo gives a test the path of the Cargo that runs it.
+const CARGO_VARIABLE: &str = "CARGO";
+/// Cargo's command for a quiet release build, its flags naming the target and the folder for its output, and
+/// the folder of a target's output that a release build writes.
+const QUIET_RELEASE_COMMAND: [&str; 3] = ["build", "--release", "--quiet"];
+pub const TARGET_FLAG: &str = "--target";
+pub const TARGET_FOLDER_FLAG: &str = "--target-dir";
+const RELEASE: &str = "release";
 
 /// Mount the host folder `host` read only at `inside` in a container.
 pub fn mount(command: &mut Command, host: &Path, inside: &str) {
+    mount_as(command, host, &[inside, READ_ONLY]);
+}
+
+/// Mount the host folder `host` at `inside` in a container, writable.
+pub fn mount_writable(command: &mut Command, host: &Path, inside: &str) {
+    mount_as(command, host, &[inside]);
+}
+
+fn mount_as(command: &mut Command, host: &Path, inside: &[&str]) {
     let host = host.to_str().expect("a folder named in UTF-8");
     command
         .arg(DOCKER_MOUNT)
-        .arg([host, inside, READ_ONLY].join(MOUNT_SEPARATOR));
+        .arg([&[host], inside].concat().join(MOUNT_SEPARATOR));
 }
 
 /// A container of the reference runner in `mode`, for `purpose`, taking requests on stdin and answering on
@@ -53,8 +78,30 @@ pub fn serving(purpose: &str, mode: &str, add: impl FnOnce(&mut Command)) -> Chi
         .expect("run docker")
 }
 
-fn workspace() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+/// The folder `name` of the workspace's build output.
+pub fn target_folder(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(WORKSPACE_TARGET)
+        .join(name)
+}
+
+/// The Cargo that runs this test.
+pub fn cargo() -> Command {
+    Command::new(std::env::var_os(CARGO_VARIABLE).expect("run by Cargo"))
+}
+
+/// Build the package in the folder `package` quietly for release, for the target `triple`, with its output
+/// in `target`, and return the folder that holds what it built.
+pub fn release_build(package: &Path, triple: &str, target: &Path) -> PathBuf {
+    let status = cargo()
+        .args(QUIET_RELEASE_COMMAND)
+        .args([TARGET_FLAG, triple, TARGET_FOLDER_FLAG])
+        .arg(target)
+        .current_dir(package)
+        .status()
+        .expect("run cargo");
+    assert!(status.success(), "{} did not build", package.display());
+    target.join(triple).join(RELEASE)
 }
 
 /// Build the reference runner for aarch64 Linux, once per process, and return a directory holding this
@@ -64,25 +111,15 @@ pub fn build() -> PathBuf {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("reference/Cargo.toml");
-            let target = workspace().join("target/reference");
-            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-            let status = Command::new(cargo)
-                .args(["build", "--release", "--quiet", "--manifest-path"])
-                .arg(&manifest)
-                .arg("--target-dir")
-                .arg(&target)
-                .current_dir(manifest.parent().unwrap())
-                .status()
-                .expect("run cargo for the reference");
-            assert!(status.success(), "the reference runner did not build");
-            let own = target.join("run").join(std::process::id().to_string());
+            let target = target_folder(RUNNER_PACKAGE);
+            let built = release_build(
+                &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(RUNNER_PACKAGE),
+                GUEST_TRIPLE,
+                &target,
+            );
+            let own = target.join(OWN_COPIES).join(std::process::id().to_string());
             std::fs::create_dir_all(&own).unwrap();
-            std::fs::copy(
-                target.join("aarch64-unknown-linux-musl/release/wcontainers-reference"),
-                own.join("wcontainers-reference"),
-            )
-            .unwrap();
+            std::fs::copy(built.join(RUNNER_NAME), own.join(RUNNER_NAME)).unwrap();
             own
         })
         .clone()

@@ -2,43 +2,49 @@
 //! from `browser/` so that code is translated at run time there too.
 
 use crate::programs::{Blob, Ran, placement};
+use crate::reference::{release_build, target_folder};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
+/// The browser translator's package folder beside this crate's manifest, also its folder under `target`.
+const PACKAGE: &str = "browser";
+/// Rust's name for the target the browser translator is built for, and the module that build makes.
+const MODULE_TRIPLE: &str = "wasm32-unknown-unknown";
+const MODULE: &str = "wcontainers_browser.wasm";
+/// The folder of the browser's target folder that holds a folder for each case.
+const CASES: &str = "cases";
+/// The files of a case's folder the runner loads: the translator module, the blob and its stack.
+const TRANSLATOR_FILE: &str = "translator.wasm";
+const BLOB_FILE: &str = "blob.bin";
+const STACK_FILE: &str = "stack.bin";
+
 fn package() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PACKAGE)
 }
 
 fn target() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/browser")
+    target_folder(PACKAGE)
 }
 
 /// Build the translator for the browser, once per process, and return the module's path.
 pub fn translator() -> PathBuf {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
-        .get_or_init(|| {
-            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-            let status = Command::new(cargo)
-                .args([
-                    "build",
-                    "--release",
-                    "--quiet",
-                    "--target",
-                    "wasm32-unknown-unknown",
-                    "--target-dir",
-                ])
-                .arg(target())
-                .current_dir(package())
-                .status()
-                .expect("run cargo for the browser translator");
-            assert!(status.success(), "the browser translator did not build");
-            target().join("wasm32-unknown-unknown/release/wcontainers_browser.wasm")
-        })
+        .get_or_init(|| release_build(&package(), MODULE_TRIPLE, &target()).join(MODULE))
         .clone()
+}
+
+/// The folder of the case `name`, holding the translator module, `blob` and `stack`.
+fn case_folder(name: &str, blob: &[u8], stack: &[u8]) -> PathBuf {
+    let directory = target().join(CASES).join(name);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::copy(translator(), directory.join(TRANSLATOR_FILE)).unwrap();
+    std::fs::write(directory.join(BLOB_FILE), blob).unwrap();
+    std::fs::write(directory.join(STACK_FILE), stack).unwrap();
+    directory
 }
 
 /// What happened in Chrome: the program's output and status, and the runner's report.
@@ -114,11 +120,7 @@ fn run_in_chrome(
     module_bytes: u32,
 ) -> Report {
     let place = placement(blob);
-    let directory = target().join("cases").join(&blob.name);
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
-    std::fs::write(directory.join("blob.bin"), &blob.bytes).unwrap();
-    std::fs::write(directory.join("stack.bin"), &place.stack).unwrap();
+    let directory = case_folder(&blob.name, &blob.bytes, &place.stack);
     let regions: Vec<Value> = place
         .regions
         .iter()
@@ -256,11 +258,7 @@ pub fn load_modules(
     modules: &[&[u8]],
     flags: &str,
 ) -> Result<Loaded, String> {
-    let directory = target().join("cases").join(format!("load-{name}"));
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
-    std::fs::write(directory.join("blob.bin"), image).unwrap();
-    std::fs::write(directory.join("stack.bin"), []).unwrap();
+    let directory = case_folder(&format!("load-{name}"), image, &[]);
     for (i, module) in modules.iter().enumerate() {
         std::fs::write(directory.join(format!("module-{i}.wasm")), module).unwrap();
     }
@@ -313,11 +311,7 @@ pub fn cases(
     places: &[std::ops::Range<u64>],
     cases: &[StateCase],
 ) -> Vec<StateRun> {
-    let directory = target().join("cases").join("instructions");
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
-    std::fs::write(directory.join("blob.bin"), cases[0].word.to_le_bytes()).unwrap();
-    std::fs::write(directory.join("stack.bin"), []).unwrap();
+    let directory = case_folder("instructions", &cases[0].word.to_le_bytes(), &[]);
     let mut bytes = Vec::new();
     for case in cases {
         bytes.extend(case.word.to_le_bytes());

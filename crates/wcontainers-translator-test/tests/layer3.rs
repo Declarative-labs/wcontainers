@@ -24,8 +24,8 @@ use wcontainers_translator_test::layer3::{
 };
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Ran, SIGNALLED, native, ran as outcome, reachable_memory, ready, translated_for,
-    translated_stopping_everywhere,
+    Blob, Ran, SIGNALLED, native, ran as outcome, reachable_memory, ready, source_directory,
+    translated_for, translated_stopping_everywhere,
 };
 
 fn setting(name: &str, default: u64) -> u64 {
@@ -243,7 +243,7 @@ fn csmith_programs_match_linux() {
 /// 8), with both compilers, every level and both positions.
 #[test]
 fn hand_picked_programs_match_linux() {
-    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs");
+    let directory = source_directory();
     let mut failures = Vec::new();
     for name in ["hello", "differences"] {
         for compiler in [Compiler::Clang, Compiler::Gcc] {

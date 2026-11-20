@@ -16,6 +16,9 @@ pub const REQUEST_END: u8 = b'\n';
 /// `AT_HWCAP` as the guest is told it; a test checks it against `wcontainers_abi::HWCAP`.
 pub const BLOB_HWCAP: u64 = 0x183;
 
+/// How long a program may run on Linux, in seconds, before the reference stops it.
+pub const BLOB_SECONDS: u32 = 20;
+
 /// The name a flat blob is started under, its `argv[0]`.
 pub const BLOB_NAME: &[u8] = b"blob\0";
 

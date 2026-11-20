@@ -1,6 +1,7 @@
 //! Real ARM64 Linux binaries, for measuring the translator at scale: each file's code and every start address
 //! the file offers.
 
+use crate::reference::{DOCKER, target_folder};
 use object::elf;
 use object::read::elf::{Dyn, ElfFile64, FileHeader, ProgramHeader, Rela, SectionHeader, Sym};
 use object::{Endianness, Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
@@ -60,6 +61,9 @@ pub const SOURCES: [Source; 9] = [
     },
 ];
 
+/// The folder under `target` that keeps the binaries taken from images.
+const BINARIES: &str = "binaries";
+
 impl Source {
     const fn alpine(name: &'static str, packages: &'static str, path: &'static str) -> Self {
         Source {
@@ -72,14 +76,14 @@ impl Source {
 
     /// The file, taken from its image once (with Docker) and kept under `target/binaries`.
     pub fn file(&self) -> PathBuf {
-        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/binaries");
+        let directory = target_folder(BINARIES);
         let file = directory.join(self.name);
         if file.exists() {
             return file;
         }
         std::fs::create_dir_all(&directory).unwrap();
         let container = crate::reference::container_name(&format!("binary-{}", self.name));
-        let mut create = Command::new("docker");
+        let mut create = Command::new(DOCKER);
         if self.packages.is_empty() {
             create.args(["create", "--name", &container, self.image, "true"]);
         } else {
@@ -94,12 +98,12 @@ impl Source {
             String::from_utf8_lossy(&made.stderr)
         );
         let partial = directory.join(format!("{}.partial", self.name));
-        let copied = Command::new("docker")
+        let copied = Command::new(DOCKER)
             .args(["cp", "-L", &format!("{container}:{}", self.path)])
             .arg(&partial)
             .status()
             .expect("run docker");
-        Command::new("docker")
+        Command::new(DOCKER)
             .args(["rm", "-f", &container])
             .output()
             .expect("run docker");

@@ -2,8 +2,8 @@
 
 use crate::layout::{REQUEST_END, REQUEST_SEPARATOR, SERVE_BLOBS, initial_stack};
 use crate::reference::{
-    DOCKER, IMAGE, PROGRAMS_FOLDER, REFERENCE_CONTAINER, RUNNER_FOLDER, RUNNER_NAME,
-    build as build_reference, container_name, mount, serving,
+    DOCKER, GUEST_TRIPLE, IMAGE, PROGRAMS_FOLDER, REFERENCE_CONTAINER, RUNNER_FOLDER, RUNNER_NAME,
+    build as build_reference, container_name, mount, serving, target_folder,
 };
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
 use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
@@ -55,8 +55,14 @@ impl Blob {
     }
 }
 
+/// The link script that places a program as a flat blob, in the programs' source folder.
+pub(crate) const FLAT_SCRIPT: &str = "flat.ld";
+
+/// The folder of the test programs' sources beside this crate's manifest, also their folder under `target`.
+const PROGRAMS: &str = "programs";
+
 pub(crate) fn out_directory() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/programs")
+    target_folder(PROGRAMS)
 }
 
 /// A file name no other build or run, in this process or another, uses.
@@ -66,8 +72,8 @@ pub(crate) fn unique(stem: &str) -> String {
     format!("{stem}.{}.{n}", std::process::id())
 }
 
-pub(crate) fn source_directory() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs")
+pub fn source_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PROGRAMS)
 }
 
 pub(crate) fn zig(arguments: &[&str]) {
@@ -115,7 +121,7 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
         .map(|extension| source_directory().join(format!("{name}.{extension}")))
         .find(|source| source.exists())
         .expect("a program of that name");
-    let script = source_directory().join("flat.ld");
+    let script = source_directory().join(FLAT_SCRIPT);
     let text = |p: &Path| p.to_str().unwrap().to_string();
     if source.extension().unwrap() == "rs" {
         rust(&source, &elf, &script, optimisation);
@@ -163,12 +169,7 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
 fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
     let level = optimisation.trim_start_matches("-O");
     let status = Command::new("rustc")
-        .args([
-            "--edition",
-            "2024",
-            "--target",
-            "aarch64-unknown-linux-musl",
-        ])
+        .args(["--edition", "2024", "--target", GUEST_TRIPLE])
         .args(["-C", &format!("opt-level={level}")])
         .args(["-C", "panic=unwind", "-C", "relocation-model=static"])
         .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])

@@ -2,10 +2,12 @@
 //! (zig's) or gcc (Alpine's, in Docker) at an optimisation level, as flat blobs of fixed position or
 //! position independent code, run on Linux and through the translator at none and full.
 
+use crate::layout::BLOB_SECONDS;
 use crate::programs::{
-    Blob, Ran, SIGNALLED, flatten, native, out_directory, run_container, source_directory, unique,
-    zig,
+    Blob, FLAT_SCRIPT, Ran, SIGNALLED, flatten, native, out_directory, run_container,
+    source_directory, unique, zig,
 };
+use crate::reference::{DOCKER, IMAGE, REFERENCE_CONTAINER, container_name, mount, mount_writable};
 use linux_raw_sys::general::SIGALRM;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,6 +15,15 @@ use std::sync::OnceLock;
 
 /// The Docker image with gcc and musl, made once from Alpine.
 const GCC_IMAGE: &str = "wc-translator-gcc";
+/// Where a container sees a program's source folder, the include folder, the link script's folder and the
+/// folder of built programs.
+const SOURCE_MOUNT: &str = "/s";
+const INCLUDE_MOUNT: &str = "/i";
+const SCRIPT_MOUNT: &str = "/l";
+const OUT_MOUNT: &str = "/o";
+/// The compiler's flags that add an include folder and give the link script, each joined to its value.
+const INCLUDE_FLAG: &str = "-I";
+const LINK_SCRIPT_FLAG: &str = "-T";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compiler {
@@ -62,7 +73,7 @@ fn csmith_include() -> PathBuf {
 fn gcc_image() {
     static MADE: OnceLock<()> = OnceLock::new();
     MADE.get_or_init(|| {
-        let present = Command::new("docker")
+        let present = Command::new(DOCKER)
             .args(["image", "inspect", GCC_IMAGE])
             .output()
             .expect("run docker")
@@ -71,7 +82,7 @@ fn gcc_image() {
         if present {
             return;
         }
-        let mut child = Command::new("docker")
+        let mut child = Command::new(DOCKER)
             .args(["build", "-q", "-t", GCC_IMAGE, "-"])
             .stdin(std::process::Stdio::piped())
             .spawn()
@@ -81,7 +92,7 @@ fn gcc_image() {
             .stdin
             .take()
             .unwrap()
-            .write_all(b"FROM alpine:latest\nRUN apk add --no-cache gcc musl-dev\n")
+            .write_all(format!("FROM {IMAGE}\nRUN apk add --no-cache gcc musl-dev\n").as_bytes())
             .unwrap();
         assert!(
             child.wait().unwrap().success(),
@@ -127,14 +138,11 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
 pub fn ordinary(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Ran {
     let (elf, ..) = compile(source, compiler, optimisation, position, false);
     let output = run_container("ordinary", |command| {
-        command
-            .arg("-v")
-            .arg(format!("{}:/o:ro", out_directory().display()))
-            .args([crate::reference::IMAGE, "sh", "-c"])
-            .arg(format!(
-                "timeout -s KILL 20 /o/{}",
-                elf.file_name().unwrap().to_str().unwrap()
-            ));
+        mount(command, &out_directory(), OUT_MOUNT);
+        command.args([IMAGE, "sh", "-c"]).arg(format!(
+            "timeout -s KILL {BLOB_SECONDS} {}",
+            inside(OUT_MOUNT, &elf)
+        ));
     });
     std::fs::remove_file(&elf).unwrap();
     Ran {
@@ -168,7 +176,7 @@ fn compile(
     let out = out_directory();
     let own = unique(&name);
     let elf = out.join(format!("{own}.elf"));
-    let script = source_directory().join("flat.ld");
+    let script = source_directory().join(FLAT_SCRIPT);
     let include = csmith_include();
     let code: &[&str] = match position {
         Position::Fixed => &["-static", "-fno-pic", "-no-pie"],
@@ -195,37 +203,35 @@ fn compile(
         Compiler::Gcc => {
             gcc_image();
             let source_directory = source.parent().unwrap();
-            let mut command = Command::new("docker");
+            let mut command = Command::new(DOCKER);
+            command.args(REFERENCE_CONTAINER).arg(container_name("gcc"));
+            mount(&mut command, source_directory, SOURCE_MOUNT);
+            mount(&mut command, &include, INCLUDE_MOUNT);
+            mount(&mut command, script.parent().unwrap(), SCRIPT_MOUNT);
+            mount_writable(&mut command, &out, OUT_MOUNT);
             command
-                .args(["run", "--rm", "--network", "none", "--name"])
-                .arg(crate::reference::container_name("gcc"))
-                .arg("-v")
-                .arg(format!("{}:/s:ro", source_directory.display()))
-                .arg("-v")
-                .arg(format!("{}:/i:ro", include.display()))
-                .arg("-v")
-                .arg(format!("{}:/l:ro", script.parent().unwrap().display()))
-                .arg("-v")
-                .arg(format!("{}:/o", out.display()))
                 .args([GCC_IMAGE, "gcc", optimisation, "-w"])
                 .args(code)
-                .arg("-I/i");
+                .arg([INCLUDE_FLAG, INCLUDE_MOUNT].concat());
             if flat {
-                command.arg("-T/l/flat.ld");
+                command.arg([LINK_SCRIPT_FLAG, &inside(SCRIPT_MOUNT, &script)].concat());
             }
             let status = command
                 .args(["-Wl,--build-id=none", "-o"])
-                .arg(format!("/o/{own}.elf"))
-                .arg(format!(
-                    "/s/{}",
-                    source.file_name().unwrap().to_str().unwrap()
-                ))
+                .arg(inside(OUT_MOUNT, &elf))
+                .arg(inside(SOURCE_MOUNT, source))
                 .status()
                 .expect("run gcc in docker");
             assert!(status.success(), "gcc failed for {name}");
         }
     }
     (elf, own, name)
+}
+
+/// Where a container that mounts the host file's folder at `mount` sees that file.
+fn inside(mount: &str, file: &Path) -> String {
+    let inside = Path::new(mount).join(file.file_name().unwrap());
+    inside.to_str().unwrap().to_owned()
 }
 
 /// The native run, or `None` when the program does not end in time (Csmith's programs may not).
