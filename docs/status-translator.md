@@ -4,6 +4,18 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
+- C1 touched two places outside this track's crates, to keep the workspace building: wcontainers-wasmtime's
+  one `translate` call and one `thread_module` call now pass `ProgressCount::Absent` (its behaviour is
+  unchanged). The runtime must pass `Kept` when `ReplayDeterminism::Exact` (or a host with one thread) asks
+  for it, to both, and make it part of its cache key; the description section's last byte says which.
+  Names to rule on: `ProgressCount { Absent, Kept }`, `contract::progress_limit_offset`,
+  `contract::progress_count_offset`; `translate` now has eight parameters, and grouping look-ahead, optimise
+  and the count into a `TranslationOptions` would be the owner's call.
+- C1 measured the leaf-call stall on this Mac (one test binary, 4 jobs, about two minutes a run, load 3 to
+  7): it is a property of Apple's core, which no rented machine has.
+- C1's choice of emission (see "C1") trades a 4.4-fold slowdown of leaf calls on Apple's core for a
+  1.7-fold one of one program (a spill) on the Graviton; please rule if you see it otherwise.
+
 - Please rule how T3's speed bar ("the benchmark set's speed is unchanged or better") is read. Against the
   merge (97fff482) it holds: every workload in both engines within 0.994 to 1.004. Against f6e760ae (the
   proof's code, before the merge) it does not: the fourth independent check measured fib in Chrome 1.7
@@ -90,8 +102,9 @@ Done:
   `translate(.., ProgressCount::Kept, ..)` (a new parameter after `Optimise`; the description section ends
   with it, version 4). Limit at 800, count at 808 (`contract::progress_limit_offset`/`progress_count_offset`,
   from `Guest::STOP_FLAG_OFFSET`). Stop check: `push_stop_wanted` (flag, or count >= limit); raising the stop
-  writes limit 0. Form "E-local": at full and bounded a piece keeps the count in a local (loaded at entry,
-  written back with the registers, loaded again after a call); at none every event adds to the block.
+  writes limit 0. First form, "E-local" (844c553d, replaced, below): at full and bounded a piece kept the
+  count in a local loaded at entry, written back with the registers and loaded again after a call; at none
+  every event added to the block.
 - Runner: `Machine::keep_progress_count`, `set_progress_limit`, `progress_count`; `Paused::progress_count`,
   `set_progress_limit`, `carry_on_at_none` (leave and carry on with pieces made at none only), `end_run`.
   `progress::reach` reaches a position (see the plan, "The progress count").
@@ -106,30 +119,49 @@ Done:
 - The benchmark set's counts are the prototype's exactly (fib 1,300,483,329, sieve 879,049,018, hash
   409,802,086, sort 477,041,232, interpret 758,494,538, matrix 268,224,251, search 901,000,429): an
   independent cross-check of definition E.
-- Cost of E-local, `measure_progress_count` (full, speed, wasmtime, best of 5, alternating; with over
-  without), commit fae9323c:
-  - ARM64, rented Graviton4, load 12 to 29: fib 1.154, sieve 1.152, hash 1.000, sort 1.019, interpret
-    1.076, matrix 0.988, walk 0.997, search 1.471; leaf calls below 1.074, above 1.083.
-  - x86-64, rented machine, load 6 to 50: fib 1.052, sieve 0.979, hash 0.999, sort 1.035, interpret 0.988,
-    matrix 0.948, walk 0.997, search 1.118; leaf calls 1.066 and 1.072.
-  - ARM64, this Mac (Apple M5 Max), load 3 to 7, run here because the stall is a property of Apple's core
-    and no rented machine has one: fib 1.071, sieve 1.053, hash 0.994, sort 1.022, interpret 1.078, matrix
-    1.040, walk 1.019, search 0.968; leaf calls 4.447 and 3.732 times: the leaf-call stall, reproduced.
-    Not seen on the Graviton. A leaf call there stores the count before the call, the leaf loads it, adds
-    and stores it, and the caller loads it again: two store-to-load round trips through memory a call.
+- Form "E-param" (731fd2d8), the one kept: the count is the pieces' last parameter (`Layout::L_COUNT`) and
+  last result, in the local of that parameter, so no call stores or loads it; the thread block gets it only
+  where registers are saved (`save`, `save_passed`, `depth_check`, the dispatcher and exact paths), and the
+  bottom loop passes it in and stores it back. `thread_module::<G>(ProgressCount)` now takes the choice (the
+  piece type differs). At none too the count is that local. E-local (844c553d) is gone.
+- Cost against today's output, `measure_progress_count` (full, speed, wasmtime, best of 5, alternating,
+  with over without), E-local first, then E-param:
+  - ARM64, this Mac (Apple M5 Max), load 3 to 7 (run here because the stall is a property of Apple's core;
+    no rented machine has one): fib 1.071 / 1.051, sieve 1.053 / 1.023, hash 0.994 / 1.016, sort 1.022 /
+    1.020, interpret 1.078 / 1.070, matrix 1.040 / 1.051, walk 1.019 / 1.000, search 0.968 / 0.972; leaf
+    calls below 4.447 / 1.109, above 3.732 / 1.101. Geometric mean of all ten 1.356 / 1.040.
+  - ARM64, rented Graviton4, load 12 to 43: fib 1.154 / 1.048, sieve 1.152 / 1.156, hash 1.000 / 1.675 (9
+    rounds again: 1.675), sort 1.019 / 0.982, interpret 1.076 / 1.067, matrix 0.988 / 0.989, walk 0.997 /
+    0.995, search 1.471 / 1.177 (again 1.180); leaf calls 1.074 / 1.150, 1.083 / 1.126. Geometric mean 1.094
+    / 1.123.
+  - x86-64, rented machine, load 2 to 50: fib 1.052 / 1.043, sieve 0.979 / 0.950, hash 0.999 / 1.000, sort
+    1.035 / 1.030, interpret 0.988 / 0.984, matrix 0.948 / 1.009, walk 0.997 / 0.991, search 1.118 / 1.109;
+    leaf calls 1.066 / 1.070, 1.072 / 1.121. Geometric mean 1.024 / 1.029.
+  - The leaf-call stall (E-local on the M5): a leaf call stored the count, the leaf loaded it, added and stored
+    it, and the caller loaded it again, two store-to-load round trips a call, which Apple's core pays for
+    heavily and the Graviton hardly. E-param removes it (4.4 to 1.11 times).
+  - Hash on the Graviton under E-param: wasmtime's register allocator spills the hash value in the inner loop
+    (`ldur x4, [sp]` ... `stur x4, [sp]` each turn, `c1/mc/mc/kept.all` against `absent.all`, from the
+    `machine-code` tool with `WC_PROGRESS_COUNT=kept`), a store-to-load chain the M5 does not feel. Not yet
+    avoided.
+  - Chosen: E-param, as its worst case (1.675, one program on one host, a spill) is far below E-local's
+    (4.4, every leaf call on Apple's core), and the means differ by under 3 percent elsewhere. The owner may
+    want to rule.
+- Tests on E-param (rented ARM64 machine, release, 4 threads): all five of `progress_count` passed (268 s).
 
 Next (in order):
-1. Form "E-param": the count as the pieces' last parameter and last result when kept (thread module, piece
-   and dispatcher types, `arguments`, `call`, `push_results`, the bottom loop, `save_passed` for leaving),
-   so no memory round trip is made at a call. Measure it on the M5, the Graviton and the x86 machine against
-   E-local, keep the cheaper (one form only), and record it.
-2. The long checks started on the rented ARM64 machine (scratch `c1/checks.sh`, log `c1/checks-arm.log`;
-   results in the copy's `target/c1`, fetch with `arm-run --fetch translator target/c1 <dir>`): Csmith 1,000
-   (seed 1), layer 2 10,000 at seed 1100, the progress tests. Then layer 1 on the Mac. Rerun all on the
-   chosen form.
+1. The long checks on E-param, running on the rented ARM64 machine (job of 2026-11-20 ~19:40 UTC, scratch
+   `c1/checks.sh`, log `c1/checks-arm-2.log`; results in the copy's `target/c1`, fetch with
+   `arm-run --fetch translator target/c1 <dir>`): Csmith 1,000 counted (seed 1; programs past 2^28 events
+   at full left out and counted), layer 2 10,000 at seed 1100, the progress tests. Layer 1 on the Mac (seed
+   1200, 1,000 a form, 10 in Chrome; log `c1/mac-layer1.log`), started 11:35 local. Record their results.
+   The first try of the long checks (on E-local, limit 2^32) was stopped after an hour: a few Csmith
+   programs at none ran for very long.
+2. The hash spill on the Graviton: try keeping the count in a fresh local copied from the parameter, or
+   adding the event where the check is, and measure; keep whichever is cheapest on all three hosts.
 3. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
-   hand-count `progress_events.S` or a program of its own.
-4. Search on the Graviton (+47%) is the largest cost: look at wasmtime's code for its loop.
+   hand-count `progress_events.S` or a program of its own; `measure_progress_count` on each host.
+4. The native track's index of forms (brief, 08:40), then the literal fix list.
 
 ## Done
 
@@ -751,6 +783,17 @@ contract's bits, in both runners).
   difference, and the translator keeps the M5's answer.
 
 ## Departures from the plan
+
+- C1: the count is classified from `Guest::flow` (the shared guest interface) rather than per ARM64
+  instruction, so every guest gets definition E with no code of its own; it is added at the instruction's
+  first way out (`jump`, `jump_if`, `call`, `ret`), after its own memory checks, so an instruction that
+  faults before it runs is never counted. A jump through memory (x86) counts as a jump through a register.
+- C1: the cost was measured with this track's `measure_progress_count` (wasmtime only), not the prototype's
+  harness; Chrome was not measured (the bar names hosts, not engines). The browser runner keeps the count
+  absent.
+- C1: the Csmith check runs layer 3's programs without Linux (the count's sameness needs no reference;
+  layer 3 already compares their output with Linux), and leaves out programs whose count passes 2^28 at full
+  look-ahead (counted and printed), as layer 3 leaves out those Linux does not end in 20 s.
 
 - T3: layer 2's rerun on the merged code is 100,000 programs (10 percent of the bar), every one compared with
   the real CPU, rather than the million: that is 100 times the CPU comparisons of P2's whole layer 2, and the
