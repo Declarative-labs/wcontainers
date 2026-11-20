@@ -857,7 +857,8 @@ Three primitives do all of it.
 **Stop one thread** (suggested: a `Host` service `thread_stop(thread)`). The kernel asks the system to
 bring a running thread back, and does not wait for it. The thread comes in by itself, through an entry of
 its own, after its next stop check. The request goes through the system, not straight to the executor,
-because when a thread stops is one of the things a replay must repeat (4.6): the slice timer already
+because a system that replays must be able to stop a thread at its recorded count in place of a stop
+asked for now (4.6, decision 12): the slice timer already
 works this way (rt/system.rs:256-268).
 
 **A request to stop is kept until the thread's next kernel entry.** Today one word does everything. Zero
@@ -866,14 +867,15 @@ the word each time round its loop (wt/lib.rs:2283) and in the stop hook (wt/lib.
 that lands in between is put back by `StopFlag`'s own latch (rt/lib.rs:64-74). With a word per thread and
 requests from any host thread, nothing would put it back. A lost request is a process that is never
 killed: a thread that only computes, alone on its processor, has no slice timer (kernel/task.rs:43-53,
-rt/system.rs:256-266), and a group called in is woken only by that thread's own entry.
+rt/system.rs:256-266), and a memory called in is woken only by that thread's own entry.
 
 So the stop word becomes a set of reasons. Each is a bit that only its owner writes, with an atomic or
 and an atomic and, never a plain store of the whole word:
 - **asked in** (suggested `STOP_ASKED`): set by `thread_stop`, from any host thread. Only the thread
   itself takes it off, and only inside a kernel entry of its own, as the first thing after the kernel's
   lock is taken, whatever that entry is for. Whatever the kernel wanted the thread for (a signal, a
-  group called in, a process ending, a new mask), it finds at that entry.
+  memory called in, a `Serial` overlapper due a turn, a process ending, a new mask), it finds at that
+  entry.
 - **held** (suggested `STOP_HELD`): set and taken off by whoever has the memory's stop lock (below). A
   group stop therefore never uses up a request to come in, and a request never lets a held thread go.
 - **the thread's own** (suggested `STOP_OWN`): its turn is counted by stop checks, or it is leaving
@@ -901,20 +903,22 @@ that did to the executor's locks; 7.2 no longer leans on the bit at all.)
   instruction, settling a fault, compiling) finds the bit at its first stop check.
 - What can happen is a request that crosses an entry and leaves the bit set with nothing left to do.
   That costs one stop check that hands in an `Exit::Stop` the kernel has no use for, counted "stop
-  asked for nothing". In a replay `thread_stop` does nothing (4.6), so the bit is never set.
+  asked for nothing". A replaying system whose `thread_stop` does nothing never sets the bit (4.6).
 
 What it costs a system call: one plain load of the word and a branch, after the lock is taken. The
 atomic and is made only when the bit is set.
 
-**Call a group in** (the kernel's). A call that needs groups stopped names every one of them at once:
-each memory it will reach, and its own when it joins its group to another (section 3). The kernel asks
+**Call a memory in** (the kernel's). A call that needs threads stopped names every memory it needs at
+once: each memory it will reach, and the other side of an overlap it makes (section 3). The kernel asks
 `thread_stop` for each of their running threads other than the caller, puts the call's mark on each
-memory named, and parks the call.
-- A group is called in while any call's mark is on one of its memories. `next` then hands none of its
-  threads back to guest code. A mark names a memory, so marks follow a join or a split of groups with
-  nothing done for them.
-- The call is woken by the entry after which no group it named has a thread in guest code. Its thread
-  is now a waiter.
+memory named, and parks the call. Section 3's rule 3 uses the same mark for the overlappers of a
+`Serial` task that is due a turn; that mark belongs to the due task, and comes off when it has been
+handed out or is no longer due.
+- A memory is called in while any mark is on it. `next` then hands none of its threads back to guest
+  code. A mark names a memory, so marks follow an overlap that starts or ends with nothing done for
+  them.
+- The call is woken by the entry after which no memory it named has a thread handed out (section 3,
+  rule 1: handed out, not only in guest code). Its thread is now a waiter.
 - The call runs again when the waiter is chosen (4.3), from its start, as every woken call does
   (kernel/task.rs:1-6, :343-375). It finds nobody running, does its work in that same entry, and takes
   its marks off. A call that then has to wait for something else parks for that as any call does,
@@ -922,64 +926,70 @@ memory named, and parks the call.
 - Each thread that came in did so through an ordinary entry, at a position when its code has the
   count.
 
-**Two call-ins never wait for each other.** The plan's earlier form let them, and its sixth check
-showed how. Process P1 has threads A1 and S1, process P2 has thread A2, all `Serial`, on two
-processors. A1 calls `write` on a file that P2 maps: P2's group is marked, A2 is asked in, A1 parks,
-and S1 is handed out. A2 comes in through its own `write` to a file that P1 maps: that wakes A1, marks
-P1's group, asks S1 in and parks A2. S1 comes in and wakes A2. Now both groups are marked, and each
-waiter is of a group the other's mark is on. Under the earlier rule a called-in group put forward only
-the caller that wanted that same group, so neither waiter was ever chosen and neither mark came off.
-A join, `process_vm_writev` or a tracer in the same shape hung the same way.
+**Two call-ins never wait for each other.** The form before the sixth check let them, and that check
+showed how. Process P1 has threads A1 and S1, process P2 has thread A2, all `Serial`, on two processors.
+A1 calls `write` on a file that P2 maps: P2's memory is marked, A2 is asked in, A1 parks, and S1 is
+handed out. A2 comes in through its own `write` to a file that P1 maps: that wakes A1, marks P1's
+memory, asks S1 in and parks A2. S1 comes in and wakes A2. Now both memories are marked, and each
+waiter is of a memory the other's mark is on. Under the earlier rule a called-in memory put forward
+only the caller that wanted that same memory, so neither waiter was ever chosen and neither mark came
+off. A new overlap, `process_vm_writev` or a tracer in the same shape hung the same way.
 
 The rule now:
-- **A mark keeps a group's threads out of guest code, and nothing else.** A waiter is put forward
-  whatever is called in, its own group included (4.3). Being chosen runs its call again, inside the
+- **A mark keeps a memory's threads out of guest code, and nothing else.** A waiter is put forward
+  whatever is called in, its own memory included (4.3). Being chosen runs its call again, inside the
   kernel.
-- **When its call has run, a waiter goes back to guest code only if its own group is not called in**
+- **When its call has run, a waiter goes back to guest code only if its own memory is not called in**
   by another call. Otherwise it stays ready, with its call answered, and is handed out when the last
-  mark on its group comes off. That is a choice that hands nobody out, which has its place in the order
-  of entries like any other (4.3).
-- **A waiter of a `Serial` group is still chosen only when none of its group's threads runs** (4.3). So
-  a woken call never touches its group's memory under a running sibling, and when its work is done no
-  thread of its own group or of a group it named is in guest code. Every process lock it needs is
-  free, and 7.2's rule stands as it was.
-- **A sibling in a waiter's way is asked in at once**, with `thread_stop`, whether or not it has a
-  slice (section 5). A whole group stands still for the waiter, so it does not wait for a slice to end.
+  mark on its memory comes off. That is a choice that hands nobody out (4.3).
+- **A waiter is chosen only where section 3's rule lets its work run.** A waiter that runs as `Serial`
+  is chosen only when none of its overlappers is handed out, and a waiter with `Parallel` code only
+  when no `Serial` task that overlaps it is handed out (rule 4). So a woken call never touches a memory
+  under a running thread whose code assumes it is alone, and when its work is done no overlapper that
+  must not run beside it, and no thread of a memory it named, is in guest code. Every process lock it
+  needs is free, and 7.2's rule stands as it was.
+- **A thread in a waiter's way is asked in at once**, with `thread_stop`, whether or not it has a slice
+  (section 5). Its overlappers stand still for the waiter, so it does not wait for a slice to end.
 - **A mark belongs to its call.** It comes off when the call has run again. It also comes off when the
   call is given up: its thread is ended by a fatal signal while it waits. No other signal interrupts a
   wait for a call-in: the wait is bounded, and the call has had no effect yet.
 
 Why no circle is left. What a waiter needs before its call runs again is three things, and none of
 them is a mark coming off.
-1. The running threads of the groups it named have come in. Each was asked, and no request to stop is
-   lost (above). A marked group is handed nobody new.
-2. In a `Serial` group, its own group's running thread has come in. It was asked at once.
+1. The running threads of the memories it named have come in. Each was asked, and no request to stop
+   is lost (above). A marked memory is handed nobody new.
+2. Where it runs as `Serial`, its overlappers' handed-out threads have come in; where it has `Parallel`
+   code, its handed-out `Serial` overlapper has. Each was asked at once.
 3. A processor. Section 5's condition gives one: somebody in the waiter's way is due in.
 So every mark comes off after a bounded time, whatever other marks are on. In the case above A1 is
-chosen first. Its `write` finds nobody of P2 running, is made, and A1's mark comes off P2's group. A1
-stays ready, because P1's group is still marked. A2 is chosen, its `write` is made with nobody of P1
-running, its mark comes off, and it runs. P1's group then puts forward its next thread, A1 or S1.
+chosen first. Its `write` finds nobody of P2 running, is made, and A1's mark comes off P2's memory. A1
+stays ready, because P1's memory is still marked. A2 is chosen, its `write` is made with nobody of P1
+running, its mark comes off, and it runs. P1 then puts forward the thread due a turn, A1 or S1.
 
-A model of these rules was searched for this correction (section 14): two `Serial` groups of two
-threads and one `Parallel` group of two, on one to four processors, with calls that reach another
-group, join two groups, or call the caller's own group in. In up to 62,189 states it found no state
-where nothing can move, no state from which the end cannot be reached, no thread in guest code beside
-a sibling of its `Serial` group, no call at work under a running thread of a group it named, and no
-call-in left pending when only the steps the kernel forces are taken. With the earlier rule the same
-search finds the sixth check's case.
+A model of the form before's rules was searched for its last correction (section 14): two `Serial`
+groups of two threads and one `Parallel` group of two, on one to four processors, with calls that reach
+another group, join two groups, or call the caller's own group in. In up to 62,189 states it found no
+state where nothing can move, no state from which the end cannot be reached, no thread in guest code
+beside a sibling of its `Serial` group, no call at work under a running thread of a group it named, and
+no call-in left pending when only the steps the kernel forces are taken. With the earlier rule the same
+search finds the sixth check's case. **That model is of groups. It has none of section 3's rule: no
+mixed overlap, no exclusion by "handed out", no mark for a task due a turn, no waiter held back by a
+handed-out `Serial` overlapper. It must be redone for them** (known fault 1). In particular, rule 3's
+mark and rule 4's held-back waiter are new ways for a waiter to wait, and the "why no circle" argument
+above has not been checked against them.
 
-The same rule covers a group that calls itself in (a group in force `Parallel` and `Exact`) and two
-groups being joined, where the caller's group is one of them (section 3): the caller is a waiter of a
-group that is called in, and is chosen.
+The same rule covers a memory that calls itself in (a (`Parallel`, `Exact`) process) and two memories
+that come to overlap, where the caller's memory is one of them (section 3): the caller is a waiter of a
+memory that is called in, and is chosen.
 
-While a mark is on, each of the group's threads that came in found nothing to run on its processor,
+While a mark is on, each of the memory's threads that came in found nothing to run on its processor,
 and those processors may have gone idle. Taking a mark off makes no thread ready: the threads were
 ready all along. So an idle processor is woken by a condition on the kernel's state, not by the event
-"a thread became ready" (section 5): the entry that takes a group's last mark off ends by waking a
+"a thread became ready" (section 5): the entry that takes a memory's last mark off ends by waking a
 processor for each thread it let run again.
 
 **Group stop** (the executor's), done inside the hook or the `Cpu` call that needs it. It makes every
-other thread of one memory held while one change is made. It is per memory and not per group: every
+other thread of one memory held while one change is made. It is per memory: every
 change it guards is to one memory's own page table, code or bytes, and a change that reaches several
 memories is made memory by memory. The native executor interrupts the virtual CPUs (section 10). On the
 WebAssembly executor three rules make it safe:
@@ -1049,35 +1059,39 @@ first.
 **Lock order**: the kernel's lock, then a stop lock, then a process's lock, then a block's (7.2). A
 thread never asks for the kernel's lock while it has a stop lock. So a group stop made inside a kernel
 entry cannot wait in a circle with a thread on its way into the kernel: that thread is held.
-The order has one exception, and it is stated here and not hidden. A thread of a `Serial` group has its
+The order has one exception, and it is stated here and not hidden. A thread of a `Serial` process has its
 process's lock for its whole stay in `Execution::run`, and asks for the kernel's lock under it at every
 system call (7.2). That is safe only because nobody who has the kernel's lock ever waits for a `Serial`
 process's lock. 7.2 makes that a rule the code checks.
 
-**Which primitive, for which group.** For a change that needs the other threads of memory M stopped:
-- **nobody**, when M's group is in force `Serial` and the caller is in it. No other thread of it runs;
-- **a group stop**, when M's group is in force `Parallel` and its guarantee in force is not `Exact`.
-  Where each thread was held is not recorded, and such a group promises nothing about that;
-- **a call-in** otherwise: M's group is `Serial` and the caller is outside it, or M's group is in force
-  `Parallel` and `Exact`. Every thread then stops at an entry of its own (4.4 item 5), and the caller
-  parks until they are in.
+**Which primitive, for which memory.** For a change that needs the other threads of memory M stopped:
+- **nobody**, when no other thread of M is handed out. That is always so when M's threads run as
+  `Serial` and the caller is one of them, or overlaps M and runs as `Serial` itself (section 3, rule 1);
+- **a group stop**, when M's threads run as `Parallel` and no process that owns M was given `Exact`.
+  Where each thread was held is not recorded, and such a process promises nothing about that;
+- **a call-in** otherwise: M's threads run as `Serial` and the caller is not one of them, or a process
+  that owns M was given `Exact`. Every thread then stops at an entry of its own (4.4 item 5), and the
+  caller parks until they are in.
+And for a `Serial` task's turn, its overlappers are called in, never held (section 3, rule 2).
 
 Below, "M's other threads are stopped" means by this rule. One change is never "nobody", although its
-caller may be in a `Serial` group: a mapping that joins the caller's group to another (below, and
-section 3).
+caller may run as `Serial`: a mapping that makes a new overlap with a memory whose threads are handed
+out (below, and section 3).
 
-A group in force `Parallel` and `Exact` keeps five uses of holding a thread in place. Four only order
-memory accesses, and that order is the embedder's part there (section 2): the 128 bit atomic (7.3), a
-write of the kernel's from outside into a memory that has one thread (7.3), `membarrier`, and the
-embedder setting a watch (section 8). The fifth changes nothing a guest can see: growing the
-executor's lookup tables (7.5). Where the embedder needs a held thread's position, it can read it: the
-thread is at a stop point, with its registers and its count saved.
+A (`Parallel`, `Exact`) process keeps five uses of holding a thread in place. Four only order memory
+accesses, and that order is the embedder's part there (section 2): the 128 bit atomic (7.3), a write of
+the kernel's from outside into a memory that has one thread (7.3), `membarrier`, and the embedder
+setting a watch (section 8). The fifth changes nothing a guest can see: growing the executor's lookup
+tables (7.5). Where the embedder needs a held thread's position, it can read it: the thread is at a stop
+point, with its registers and its count saved.
 
-A memory in force `Serial` keeps no marks, and accesses to it take no stop lock: within the group only
-the caller runs, and from outside the kernel has called the group in first. The kernel tells the
-executor each memory's config in force (7.3), and changes it only while none of that memory's other
-threads is in guest code. The executor counts "group stop reached a running thread of a Serial group"
-and "group stop for a change of the kernel's in an Exact group", which must both stay at zero.
+A memory whose threads run as `Serial` keeps no marks of a group stop, and accesses to it take no stop
+lock: within the memory only the caller runs, no overlapper is handed out beside it, and from outside
+the kernel has called it in first. The kernel tells the executor each memory's form of code, whether it
+runs as `Serial`, and whether it has several threads (7.3), and changes it only while none of that
+memory's other threads is handed out. The executor counts "group stop reached a running thread that
+runs as Serial" and "group stop for a change of the kernel's in an Exact process", which must both stay
+at zero.
 
 What is stopped before what, where M is the memory changed:
 - **A page loses a permission, is unmapped or remapped; code is dropped** (`set_permissions`,
@@ -1101,11 +1115,11 @@ What is stopped before what, where M is the memory changed:
     - A frame is only ever proved over pages that allow reading and writing (`Frame`,
       tr/full.rs:730-731). So a loss on any other page (code, read-only data, a reservation with no
       access) makes nobody give up anything.
-    - It is needed only after a group stop. Under a call-in the threads have left already, and a
-      `Serial` group's other threads are not in `Execution::run`.
+    - It is needed only after a group stop. Under a call-in the threads have left already, and the
+      other threads of a memory that runs as `Serial` are not in `Execution::run`.
     - It costs each other running thread 300.8 ns on top of its stop, and its calls in progress
       return through the bottom loop. That is paid at every `munmap` of data and every `mprotect`
-      that takes writing away in a `Parallel` group. How often is T2's and T3's measurement.
+      that takes writing away in a `Parallel` process. How often is T2's and T3's measurement.
     - Rejected: only the threads whose stack pointer lies at or below the page, in the mapping that
       holds it. That is the x86 plan's test for code on a live stack (x86 plan lines 1898-1905), and
       this plan's earlier form used it for watches. It misses a thread that has moved to another
@@ -1115,60 +1129,66 @@ What is stopped before what, where M is the memory changed:
       returns. A narrower test that is still sound needs the translator to bound where a thread's
       live frames are. It is asked of the translator track only if the count above is measured to
       matter.
-  - The change reaches M from another group when a file changes size or bytes: the kernel then lowers
+  - The change reaches M from another process when a file changes size or bytes: the kernel then lowers
     permissions and drops code in every process that maps the file (`changed`,
-    kernel/shared.rs:581-600). Counted "another group called in for its pages" when it is a call-in.
-  - In a group in force `Exact`, the hook that announces a code change (`ic ivau`) cannot make the drop
-    in place: it hands the kernel an exit for it, and the kernel calls the group in. Counted "group
+    kernel/shared.rs:581-600). Counted "memory called in for its pages" when it is a call-in.
+  - In an `Exact` process, the hook that announces a code change (`ic ivau`) cannot make the drop
+    in place: it hands the kernel an exit for it, and the kernel calls the memory in. Counted "memory
     called in for a code change".
 - **A page gains a permission, or a new mapping appears**: nobody, where the rule above says nobody or a
   group stop. A thread that still acts on the old table faults to the executor, which looks at the
   table again and carries the thread on. Counted "fault settled by the table as it is now". Where the
-  rule says a call-in, the group is called in, as for a loss: whether an access faults would otherwise
+  rule says a call-in, the memory is called in, as for a loss: whether an access faults would otherwise
   depend on the host's timing. A file that grows under another process's mapping is such a case. A new
-  mapping that joins groups is the next case, not this one.
-- **Groups are joined, or the config in force becomes stricter** (section 3): the running threads the
-  change binds are called in, and the call that caused it parks before it has any effect. For two
-  `Serial` groups that is the other group's one running thread. Counted "group called in to be joined"
-  and "group called in for a stricter config". The hook of section 3 fires in the call when it runs
-  again, before the mapping is made.
-- **The kernel reads or writes M's bytes from outside M's group** (a `write` to a file reaching pages M
-  shows, `process_vm_readv` and `process_vm_writev`, a tracer, `/proc/<pid>/mem`, `environ`, `cmdline`).
-  - M's group is `Serial`: it is called in. The read or write then has one place in the order. Counted
-    "another group called in for its memory". `cmdline` is not inspection (section 2), but it is still
-    such a read.
-  - M's group is `Parallel`: nobody is called in. The bytes land while its threads run, as on Linux.
-    The executor's copy into M is made with pointer writes, since "no guest runs" (wt/lib.rs:1423) no
-    longer holds, and with M's stop lock shared (rule 2). With `Exact` this is a memory access like a
-    thread's, and the embedder orders it through its watches (section 8).
+  mapping that makes a new overlap is the next case, not this one.
+- **Two memories come to overlap** (section 3): where either side runs as `Serial`, the other side's
+  handed-out threads are called in, and the call that caused it parks before it has any effect. For two
+  `Serial` processes that is the other's one running thread. Counted "tasks called in for a new
+  overlap". The shared-memory hook fires for each process in the call when it runs again, before the
+  mapping is made. (The form before also called threads in for "a stricter config in force", and fired
+  `on_execution_config_in_force_changing` here. Both are gone with the config in force.)
+- **The kernel reads or writes M's bytes from outside M's process** (a `write` to a file reaching pages
+  M shows, `process_vm_readv` and `process_vm_writev`, a tracer, `/proc/<pid>/mem`, `environ`,
+  `cmdline`). Every such write fires `on_memory_written_by_kernel` for M's process with its exact range
+  (section 2).
+  - M's threads run as `Serial`: M is called in. The read or write then lands while every thread of M
+    is at an entry of its own, at a position. Counted "memory called in for a read or write from
+    outside". `cmdline` is not inspection (section 2), but it is still such a read.
+  - M's threads run as `Parallel`: nobody is called in. The bytes land while its threads run, as on
+    Linux. The executor's copy into M is made with pointer writes, since "no guest runs"
+    (wt/lib.rs:1423) no longer holds, and with M's stop lock shared (rule 2). With `Exact` this is a
+    memory access like a thread's, and the embedder orders it through its watches, which the kernel's
+    own accesses fire too (section 8).
     - One case needs more. A write into a memory that has one thread is made under a group stop of
       that memory, so that it cannot land inside a 128 bit atomic made inline (7.3).
 - **The kernel changes a guest word that guest code changes too**: `FUTEX_WAKE_OP`
   (kernel/syscall/futex.rs:682-711), the owner word of a priority-inheritance lock (:760-786), the
   owner-died mark of a robust lock (:1020, :1163). Today each reads the word, works out the new value and
-  writes it. In a group in force `Parallel` another thread can change the word in between, and its
+  writes it. In a memory with `Parallel` code another thread can change the word in between, and its
   change is lost. Each becomes one compare and exchange, asked of the executor (suggested
   `Cpu::compare_exchange(memory, address, expected, new)`), and tried again when the word had changed,
   as Linux does (`futex_atomic_op_inuser`). Nobody is stopped. It is the one path for both orderings: in
-  a `Serial` group it succeeds the first time.
+  a memory that runs as `Serial` it succeeds the first time. By section 3's rule 4 it is made in the
+  phase where the word's other writers run: a `Parallel` writer's change is never made while a `Serial`
+  task that shows the word is handed out.
 - **Another thread's registers are read** (a tracer, a crash dump): that thread is called in, whatever
-  its group's config.
+  its process's config.
 - **exec**: the process's other threads that are not running are ended as today (kernel/task.rs:648).
-  Its running ones, which exist only in a `Parallel` group, are called in, and each ends in its own
+  Its running ones, which exist only in a `Parallel` process, are called in, and each ends in its own
   entry. The caller parks until they have, as Linux's exec waits for the other threads to die.
 - **`exit_group`, a fatal signal**: the process is marked as ending, and nobody waits.
-  - When no thread of its group is running other than the caller, it ends at once, as today
+  - When no thread of its memory is running other than the caller, it ends at once, as today
     (kernel/task.rs:685, kernel/signal.rs:481-485). With one processor that is always so.
-  - A `Serial` group whose thread is running (the signal came from outside the group): the thread is
-    asked in with `thread_stop`, and the whole ending is done in the entry that brings it in. Ending a
-    thread writes into the group's memory (the word cleared at a thread's exit), so it must not be done
-    under a running thread.
-  - A `Parallel` group: the threads that are not running are ended at once. Each running one other than
+  - A `Serial` process whose thread is running (the signal came from outside the process): the thread
+    is asked in with `thread_stop`, and the whole ending is done in the entry that brings it in. Ending
+    a thread writes into the process's memory (the word cleared at a thread's exit, which fires
+    `on_memory_written_by_kernel`), so it must not be done under a running thread.
+  - A `Parallel` process: the threads that are not running are ended at once. Each running one other than
     the caller is asked in and ends in its own entry. The process ends, with its memory dropped and its
     parent told, at its last thread's end, as on Linux.
 - **fork from a threaded process**: M's other threads are stopped for the length of the copy in
-  `memory_duplicate`, so that no page is copied half-written. Counted "group stopped for a fork" or
-  "group called in for a fork".
+  `memory_duplicate`, so that no page is copied half-written. Counted "memory stopped for a fork" or
+  "memory called in for a fork".
 - **A signal for a running thread**: that thread only, by `thread_stop`, and nobody waits. It takes the
   signal on its way back to the guest, as every thread does (kernel/task.rs:326-339).
 - **A signal for a process is never left with a thread that will not take it.** For a signal sent to a
@@ -1188,18 +1208,36 @@ What is stopped before what, where M is the memory changed:
   to take the signal at its hand-out otherwise. A thread's mask is written in nine places today
   (kernel/signal.rs:640, :892, :1000, :1035, kernel/syscall/epoll.rs:550, io.rs:3084, :3143,
   process.rs:942, signals.rs:344). They become one function, which is where the first case is caught.
-  It tests one value when nothing is pending on the process. This holds in a `Serial` group as in a
-  `Parallel` one: there the sibling left out is the parked one.
+  It tests one value when nothing is pending on the process. This holds in a `Serial` process as in a
+  `Parallel` one: there the sibling left out is the parked one. Wherever the signal is delivered, the
+  kernel fires `on_signal_delivering` first, inside the entry of the thread that takes it, so the
+  signal is at that thread's position (section 2).
 - **A stop signal, `SIGCONT`, a tracer**: the process's running threads, by `thread_stop` for each. Each
   parks itself when it comes in.
 - **A futex wait or wake**: nobody. Both are kernel entries, so the wait's "compare, then park" and the
   wake are already in one order.
+  - **Across machines** (interface notes, "locks across machines", agreed in substance, details open).
+    A lock is a 4-byte word plus the futex call; taking and releasing it is a write to the word, which
+    goes through the memory system, and the kernel keeps only the list of waiters for each place. The
+    embedder knows where it has waiters from the proxy: the request names the place and the bitset
+    before the kernel acts, and the response says when the wait ends. Two calls on the process handle
+    edit a waiter list for a thread on another machine: `wake_waiters(address, count, bitset)` and
+    `move_waiters(from, to, count)`. They cover wake, wake with a bitset, wake-and-change, requeue,
+    compare-and-requeue and a thread's end (the kernel clears a word and wakes: seen through
+    `on_memory_written_by_kernel`). Each is a kernel entry of the kernel that holds the waiters, made by
+    the embedder from outside any hook, and stops nobody. What they return is proposed and not
+    confirmed (decision 14).
+  - The count a wake returns must be exact, so a waking thread waits for the other machine when there
+    is a waiter there. Made in the proxy's response hook, that wait holds the kernel's lock and stalls
+    every processor's entries (4.4 item 6). The plan has no answer yet; it is decision 14. The
+    priority-inheritance group (six operations) is not covered by the two calls (decision 13).
 - **A thread's mask leaves out the processor it runs on** (`sched_setaffinity`): that thread only, by
   `thread_stop`. The caller parks until it has come in (4.3).
-- **`membarrier`**: a group stop of the caller's memory when it is in force `Parallel`, and for the
+- **`membarrier`**: a group stop of the caller's memory when its threads run as `Parallel`, and for the
   commands that mean every process, of every such memory. Each held thread has passed a full barrier:
-  it took its mark off with a sequentially consistent store. A `Serial` group needs nothing: one of its
-  threads runs at a time, and the hand-over between them goes through the kernel's lock.
+  it took its mark off with a sequentially consistent store. A memory that runs as `Serial` needs
+  nothing: one of its threads runs at a time, its overlappers are not handed out beside it, and every
+  hand-over goes through the kernel's lock.
   - One command needs more. `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ` must restart the restartable
     sequence of every running thread of the process, or with `MEMBARRIER_CMD_FLAG_CPU` of the thread on
     one processor. A sequence is restarted only in a kernel entry of its own thread (`rseq_preempted`,
@@ -1207,7 +1245,7 @@ What is stopped before what, where M is the memory changed:
     and a group stop holds threads in place with no entry. So for this command each such thread is asked
     in with `thread_stop` and restarts its sequence in the entry that brings it in, and the caller parks
     until all have. Linux's call also returns only after every such CPU has been interrupted. In a
-    `Serial` group the other threads are not running, and each was taken off through an entry.
+    `Serial` process the other threads are not running, and each was taken off through an entry.
 - **The container's first process ends**: every other process is ended as by a fatal signal, as Linux
   ends a container. Each worker's `next` then answers `Finished`.
 
