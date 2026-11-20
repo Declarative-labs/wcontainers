@@ -280,7 +280,7 @@ rewritten) would change only that function (brief).
   (n4r14/ab-blr.log): cycles sort -22.2% (its comparison callback), fib, calls.c, interpret and hash within
   2.3%, instructions sort -7.0%, the others within 0.1%.
 - **A jump table's known targets, ARM64** (N4 run 15, the jump study's option (b), ruled by the orchestrator on
-  2026-11-20). A `br xN` whose straight-line part shows xN = xB + xE (shifted left, or extended), with xB a
+  2026-11-20; built). A `br xN` whose straight-line part shows xN = xB + xE (shifted left, or extended), with xB a
   constant guest address (`adr`, or `adrp` and `add`) and xE last written by a one-byte load into xE itself
   (not a base the load writes back), nothing after the add writing xE, and xN, xE not withheld and not the same
   register, can only go to the base plus one of 256 values whatever memory holds. It becomes `adr t, table;
@@ -296,15 +296,34 @@ rewritten) would change only that function (brief).
   (1036 bytes) per site. Static count over the files' text, every `br` with the straight-line part before it
   (n4r16/sites.log): bench.c 1 of 1 (interpret's dispatch), calls.c none, busybox 0 of 438 (379 are PLT stubs;
   its switches are GCC's two-byte `ldrh` and `sxth` form, 35, and the byte form whose add writes the index
-  register, 16), musl's loader 0 of 42. Not sized by the guest's bound check: that check bounds which entry
+  register, 16), musl's loader 0 of 42. In all: 1036 bytes on the benchmark set (interpret's
+  one site) and none on busybox. Not sized by the guest's bound check: that check bounds which entry
   of the guest's table is loaded, not the byte loaded, so a table of fewer entries indexed by the byte would let
   a table holding a larger byte branch past ours; a table indexed by the bounded case number would need each
-  entry to compare the loaded byte (two more instructions on the hit's way), which trades speed for size and
-  is the orchestrator's to rule on. Why: on this M5 a jump through a register costs about twice as much when it
+  entry to compare the loaded byte (two more instructions on the hit's way), which trades speed for size. The
+  table is kept as built (the orchestrator, 2026-11-20); the smaller table for two more instructions is the
+  owner's to weigh (decision 15). Why: on this M5 a jump through a register costs about twice as much when it
   lands in a different 8 GiB region (aligned to 2^33) from where it was made, and the jump through a slot does
   that twice, from the code area to the mirror and back (the jump study, reproduced by its re-measurement:
   interpret 2.006 to 1.059 times plain with the code placed near the slots, a placement that is unsound;
   logs in scratch native/jump-study and jump-study-check). The table's branches stay in the code area.
+  Not built: slots a guest-level load can read (the study's option (c): on run 13's build the compute part went
+  from +31.58% to +19.34% by the re-measurement's alternating pairs, +19.55% by the study's, the gain mostly
+  interpret and sort, and it helps every jump through a register): a guest read of a mirror address would
+  succeed where Linux faults and show the guest host addresses of our code, a new difference that is the
+  owner's to rule on (decision 17).
+- **The code area within its slots' 8 GiB region, ARM64** (described, not built; decision 18). Placing code
+  inside the mirror is unsound, since every slot address is one a guest jump can compute. A sound layout
+  interleaves the mirror and the code area by region: a guest address g's slot is
+  MIRROR + ((g >> 30) << 33) + ((g mod 2^30) << 2), so each 8 GiB region holds the slots of one GiB of guest
+  addresses in its low 4 GiB and the pieces translated from that GiB in its high 4 GiB. A slot address always
+  has bit 32 clear, so no guest jump reaches the code half. The mirror grows to 2^48 bytes for the 2^45 ceiling
+  (the upper half of a 48-bit space), so the ceiling does not move. Costs: three more instructions in every
+  jump through a slot (`ubfx`, `lsl`, `bfi`, `lsl` in place of one `ubfiz`); one code area per region, a piece
+  that does not fit its region's half placed far (a counted slow path); a jump into another GiB of guest code
+  still lands far. Expected, not measured: returns, calls through a register and jumps the table does not
+  cover lose their far landings, as the near placement showed for interpret (2.006 to 1.059 times plain), less
+  the three instructions.
 - **The mirror's reach.** The mirror covers guest addresses below 2^45 (32 TiB), so the native ARM64 back
   end's address ceiling (`Cpu::address_space`, abi/cpu.rs:34-35) is 2^45, under the container's width of 2^48,
   as the brief's ruling on ceilings allows (section 6.2, K2; decision 9).
@@ -361,7 +380,7 @@ rewritten) would change only that function (brief).
   and read when a piece is not kept in memory; a file refused or not written is a counted and warned slow
   path. The offer and the withheld registers' choice are fixed by the build today, so they are in the key
   through it. Loaded translations are not yet shared between processes inside the machine: each process's
-  pieces come through the link, from the monitor's kept translations.
+  pieces come through the link, from the monitor's kept translations (section 5.3; decision 16).
 
 ### 3.3 Registers the translated code keeps for itself
 
@@ -1299,6 +1318,15 @@ maps another region (brief: leaving for more memory), up to the bound of section
   orchestrator), or a code area frame is copied before a process writes a link into it while another holds
   it, as for mirror frames, which shares little after the first links. What sharing would save is the link
   round trip and the copy of each piece (the translation itself is already kept); it is not measured yet.
+  Not part of N4 (the orchestrator, 2026-11-20): both ways cost something the owner must weigh (decision 16).
+  Exits through slots: every exit that leaves a loaded translation becomes a jump through its target's slot,
+  which on this M5 lands in another 8 GiB region twice (section 3.2: interpret ran 2.006 times plain through
+  slots against 1.059 with the code near them), on every run of a shared piece, forever. Code frames copied:
+  each process that links into a shared frame first copies it (expected one 4 KiB copy and a table write per
+  frame, a few hundred nanoseconds, not measured) and then holds its own frame, so sharing ends where the
+  process's links begin. Today's cost, against which both are weighed: one link round trip per piece a process
+  loads (an exit to the host, 0.7 µs on the M5 by the brief's measurement, plus the monitor's lookup of a kept
+  translation and its copy into the link; not measured per piece).
 - **Leaving a translation** (code changed, section 3.5, or the range unmapped) happens in one process:
   that process's slots for the range are emptied (copying the mirror frame first if shared) and its count of
   holders of the translation drops.
@@ -1903,6 +1931,18 @@ Handled, and proven by tests rather than assumed:
   cost of the shared decoder, crates/wcontainers-arm64/src/forms.rs, which the WebAssembly output pays too;
   building it form by form instead of bucket by bucket gives the same index for about 0.1 million, measured
   with a scratch patch: put to the translator track).
+  The result (N4 run 18, at commit 1736f6a1, on the M5 under Hypervisor.framework, every run 99 to 100% on
+  performance cores; ruled a pass by the orchestrator on 2026-11-20). Compute part, against +21.2%: +11.08%
+  [+10.42 .. +11.52] by the bar's own command (15 pairs, look-ahead 256, seed 1, 2000 resamples, load 5.9 to
+  8.6); +12.51% by alternating pairs against the build before (10 pairs a program with a plain run beside each,
+  load 7.1 to 9.3); +13.05% on the worst of four seeded layouts of the same build by pairs (6 pairs a program,
+  load 3.2 to 5.3; the others +11.73%, +11.78%, +12.41%). So the worst layout measured is 8.15 points under the
+  line, against a spread over layouts of 1.3 to 3.4 points measured in runs 15 to 18. System-call part, against
+  100 ns: the back end's share 76.4 ns [74.7 .. 79.1] (a call 175.4 ns, the kernel's share 99.0 ns). Each
+  program against plain, cycles in percent, native (instructions) and untranslated: fib +20.3 (+60.2) and
+  -3.7, sieve +12.7 (+20.7) and +6.8, hash +0.8 (+13.8) and -2.5, sort +18.5 (+115.4) and -4.5, interpret -4.7
+  (+67.0) and -6.0, matrix +12.6 (+12.3) and -14.1, walk +16.7 (+60.0) and +16.2, search +14.2 (+13.5) and
+  -10.3, calls.c +30.4 (+65.3) and -19.5.
 
 ## 9. Milestones
 
@@ -1993,7 +2033,9 @@ the ruling).
   left out, recorded, not a pass condition). Bar: N3's bar still
   passes at every look-ahead, the count test of section 4 gives the same count at every stop under every
   look-ahead (native side), and the speed method of section 8 on the Mac meets the speed bar by its
-  decision rule, every program's figures recorded beside the untranslated run's.
+  decision rule, every program's figures recorded beside the untranslated run's. Met at N4 run 18 (section 8,
+  the result); the count at every counted event is the same at look-ahead none, 256 and the whole page on the
+  benchmark set (runs 15 to 21, the kernel test's hash).
 - **N5, the execution side.** Needs decisions 1, 10 and 12 and the changes they bring (R2, R3, and R4 under
   option A), done by their owners or by this track if they agree. `Execution` and `Executor` for native,
   `run` and `step` as section 6.1 says, the pool of virtual CPUs with parking at `idle` (section 5.1),
@@ -2049,7 +2091,10 @@ Settled by the orchestrator as internal (brief, 2026-11-18 evening): 3 (yes), 4 
 difference, with the two free measures), 6 (the bar as written, with E's cost as N2 measures it), 8 (left
 out), 9 (option a), 11 (built into the inside), 13 (kept named); for 10, N1 tries option C. Still the
 owner's: 1, 2 (the names chosen so far are used), 7, 12, 14 (routing is built until then), and 10's final
-choice. The count's definition is E (section 4).
+choice. The count's definition is E (section 4). Ruled by the orchestrator on 2026-11-20: the speed bar passes
+on N4 run 18's figures (section 8); the jump table keeps its 256 entries; loaded translations shared between
+processes are not part of N4; the decoder's faster index of forms is the translator track's to apply. Added
+for the owner since: 15 to 18.
 
 1. The runtime's interface for a back end whose loop runs elsewhere (section 6.2): `Executor` without
    `Execution`, a stop handle from the back end, and `System` split into a `no_std` policy built into the
@@ -2161,6 +2206,20 @@ choice. The count's definition is E (section 4).
    once N4 and N9 have measured (b)'s cost: (a) costs nothing on a matching host, keeps one translation and
    keeps every native node on the one behaviour the other project needs, but leaves a residue (a model
    matching every probed input and differing on another, section 7.2) and departs from the letter.
+15. A smaller jump table (section 3.2, a jump table's known targets): sized by the guest's own bound check, each
+   entry comparing the loaded byte with the one it was made for (two more instructions on the hit's way), in
+   place of 256 entries of 1036 bytes a site. On the benchmark set that saves at most 1036 bytes (one site);
+   busybox has no site. Kept at 256 until the owner rules, since it trades run speed for size.
+16. Loaded translations shared between processes (section 5.3): exits through slots past a loaded translation
+   (run speed on every shared piece) or code frames copied before a link is written (memory and a copy per
+   frame), or neither, as built (one link round trip per piece a process loads).
+17. Slots a guest-level load can read (the jump study's option (c), section 3.2): on run 13's build the compute
+   part went from +31.58% to +19.34% (the re-measurement, by pairs; +19.55% by the study), close to what (b)
+   gave there (+20.12%), and it helps every jump through a register, at the price of a guest read of
+   a mirror address succeeding where Linux faults and showing host addresses of our code. Not built.
+18. The code area within its slots' 8 GiB region by interleaving the mirror and the code area (section 3.2):
+   sound, the ceiling unchanged, three more instructions in every jump through a slot and a code area per
+   region. Described, not built, not measured.
 
 ## 11. A guest of the other architecture on a native host
 
