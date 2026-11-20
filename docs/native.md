@@ -1088,31 +1088,38 @@ position map entry per host instruction, and additions on rare paths only), with
 branch the translator writes.
 
 **The tally (Mac, Hypervisor.framework).** Test `host_branches` (crates/wcontainers-hypervisor/tests): the
-stepping test's 15 functions (one more than before: calls whose target changes every turn and a leaf called from
-two places, so both last targets miss) are stepped at every host instruction in 36 variants each: look-ahead
-none, 3 and full; with the count and without; exits and jump tables unlinked, exits linked, exits and tables
-linked (the words the inside's loader writes); last targets never made, and made at the first miss as the inside
-makes them. Each host instruction belongs to the guest instruction whose span holds it (the position map), an
-entry slot's jump to the jump that went there; this runner maps no slots, so a jump into a slot whose target has a
-piece is counted as the slot's one `br` (a slot is three moves and a `br` by construction), and into one without
-as the empty slot's `udf`. A call into the inside (`brk`) and `udf` are exceptions, which an every-branch event
-does not count (Arm's definition; not measured on the G4). The guest's path is the same in every variant (checked;
-instructions the Nothing route leaves without host code are left out of the comparison). Seed
-0x14057b7ef767814f, 29 cases, 36 variants each, 0 differing paths (logs in scratch native/nh1/logs:
-host_branches.log, totals.txt, sequences.txt, dimensions.txt).
+stepping test's 18 functions (among them calls whose target changes every turn and a leaf called from two places,
+so both last targets miss; accesses through sp that cross a page and a vector pair into one register through sp; a
+128-bit exclusive pair in a loop and a load and store exclusive through sp; and forward and test-bit branches
+beside backward ones) are stepped at every host instruction in 36 variants each: look-ahead none, 3 and full;
+with the count and without; exits and jump tables unlinked, exits linked, exits and tables linked (the words the
+inside's loader writes); last targets never made, and made at the first miss as the inside makes them. Each host
+instruction belongs to the guest instruction whose span holds it (the position map), an entry slot's jump to the
+jump that went there; this runner maps no slots, so a jump into a slot whose target has a piece is counted as the
+slot's one `br` (a slot is three moves and a `br` by construction), and into one without as the empty slot's
+`udf`. A call into the inside (`brk`) and `udf` are exceptions, which an every-branch event does not count (Arm's
+definition; not measured on the G4). The guest's path is the same in every variant (checked; instructions the
+Nothing route leaves without host code are left out of the comparison). The seed draws the registers, vectors and
+flags a case starts with; each function's inputs (addresses, counts, tables) are fixed, so a new seed explores
+little that is new. Runs: seed 0x14057b7ef767814f, 34 cases, 0 differing paths; seed 0x6e6831723273 with 6
+starting states, 204 cases, 0 differing paths (logs in scratch native/nh1r2: host_branches-default.log,
+host_branches-seeded.log, totals-default.txt, analysis-default.txt; the first 15 functions' run in native/nh1/logs).
 
-Totals over the 29 cases (931 guest instructions at none, 212 guest branches, 198 events of E): host branches at
-look-ahead none 2197 unlinked, 1257 all linked (5.9 per guest branch); at 3, 1141 and 735 (3.5); at full, 603 and
-504 (2.4) without the count, 607 and 508 with it. These functions are dense in branches and transfers; they are a
-test of every path, not a measure of a program.
+Totals over the 34 cases (1023 guest instructions at none, 242 guest branches, 215 events of E): host branches at
+look-ahead none 2474 unlinked, 1430 all linked (5.9 per guest branch); at 3, 1320 and 860 (3.6); at full, 716 and
+613 (2.5) without the count, 617 with it all linked. These functions are dense in branches and transfers; they are
+a test of every path, not a measure of a program.
 
-**Every host branch with no guest branch behind it**, matched to where carry.rs (at 7361a452) writes it, with the
+**Every host branch with no guest branch behind it**, matched to where carry.rs (at ba9b39ea) writes it, with the
 path it lies on and what changes how many run:
 1. A piece's exit (`exit`, its `br t` and the entry slot's `br`; once linked one `b` written over the exit's first
    word): +2 unlinked, +1 linked for an instruction that falls off a piece's end, +1 and 0 for a guest `b` or `bl`.
    Hot wherever pieces end: every instruction at look-ahead none, at the bound's cuts at 3. Changes with the
-   look-ahead, with link state, and with the halving of look-ahead when a translation does not fit the link
-   (crates/wcontainers-hypervisor/src/translate.rs), which the count's adds make more likely (expected).
+   look-ahead, with link state, with the halving of look-ahead when a translation does not fit the link
+   (crates/wcontainers-hypervisor/src/translate.rs), which the count's adds make more likely (expected), with
+   placement (a direct exit whose target piece is beyond a `b`'s reach, 128 MiB, stays unlinked: +2 where linked
+   code runs +1), and with where pieces start, which depends on where the thread's stops landed (below, under the
+   second question).
 2. A conditional branch whose target is in another piece: straight to the target's piece (0), through its exit's
    `b` out of line (+1: when the count is ahead of the commit, a settling exit, or when the piece is out of the
    branch's reach, which depends on where the pieces were placed), or unlinked (+2). Hot on the taken side.
@@ -1128,9 +1135,11 @@ path it lies on and what changes how many run:
 6. The page test (`access`: `cbz`, `tbnz`, or `cbnz` on the base's alignment): one branch in line, run whether
    taken or not, on every access that may cross a page: hot, constant per instruction in one translation. Its
    crossing way out of line adds the way back `b`, and for a misaligned base the exact test and the way back
-   (+1, +2): rare.
-7. The alignment test (`cbnz` to a call, before forms that must be aligned), and a stack pointer base's `cbz`
-   before a vector pair into one register: hot, constant per instruction.
+   (+1, +2); for a stack pointer base the out-of-line probes start with the check SA0 makes, a `cbz` over a call
+   (one more): rare.
+7. The alignment test (`cbnz` to a call, before forms that must be aligned, in `access`, and in `exclusive` for a
+   store exclusive whose base is not sp), a stack pointer base's `cbz` before a vector pair into one register,
+   and a load exclusive through sp's own SA0 test (`cbnz` in `exclusive`): hot, constant per instruction.
 8. A loop's aligned bases tested once before it (`test_aligned_bases`: a `cbnz` per base and a `cbz`): once per
    entry into the loop; the copy it chooses runs the loop's accesses with no page test, the other copy with them.
    So the branches per turn depend on the look-ahead (only a piece holding the loop has the test) and on the
@@ -1140,34 +1149,74 @@ path it lies on and what changes how many run:
    The way that succeeds is the common one; the others are rare in one thread.
 10. With the count only: a settling exit's `sub` sends a conditional branch's taken side through its exit's `b`
     (item 2): measured in `nest`, 4 of 32 runs of its loop's exit branch ran one more branch with the count than
-    without.
-No other place writes a branch into translated code: the inside's loader writes only the linking `b` of items 1,
-2, 4 and 5 and the slots' `br`; `routines.rs`' `ret` runs at the inside's level, which a guest-level event
-does not count; the `bl` in translate.rs is in a unit test.
+    without, and in `forward branches` at look-ahead 3 with exits linked, its `cbz` to the `ret` one more on its
+    one run.
+No other place writes a branch into translated code. The inside's loader writes the linking `b` of items 1, 2, 4
+and 5 (`link_word`, which leaves an exit unlinked when the target is out of the branch's reach), a slot's moves and
+`br`, the last target's test `cbnz`, pointed at the miss way once the target is made (`make_last_target`, item 4),
+and `udf` into a dropped piece's slot (`drop_piece`, the empty slot of item 3); none adds a branch the items do
+not count. The translator's own `link` (crates/wcontainers-arm64/src/native.rs) points a guest branch or exit at a
+target inside its piece, which item 1 and 2's internal cases count. `routines.rs`' `ret` runs at the inside's
+level, which a guest-level event does not count; the `bl` in translate.rs is in a unit test. The check of this
+list: every `compare_branch`, `test_branch_nonzero`, `branch`, `branch_register` and `retarget` in carry.rs,
+native.rs, the inside and the monitor (at the commit that records this), matched to an item.
 
 **Answer to the first question, with the tallies.**
-- A count any output can reach from (host branches, position) alone: no, not without removing branches. Items 1, 2
-  and 8 change on hot paths with the look-ahead, item 8 also with the data's alignment, and the WebAssembly
-  output has none of these branches. A correction for each would be an add on a hot path: the cost E's own add
-  already is.
+- A count any output can reach from (host branches, position) alone: no, and removing the translator's branches
+  would not make it so. Two things stand in the way, either one enough:
+  - The guest's own branches that E does not count. Event 0x21 counts every branch the guest's level runs, and E
+    counts only those that can transfer backward; a forward `b`, `b.cond`, `cbz`, `cbnz`, `tbz` or `tbnz` is an
+    event of the one and not of the other. How many of them ran between two points depends on the path the data
+    chose, which no position map holds (no counter filters by direction either: the report's section 2A). Size:
+    on the G4 every branch over E's events is 1.461 on fib and 1.094 by the geometric mean (below); in the tally,
+    `forward branches` at full look-ahead with everything linked runs 21 host branches for 6 events of E, 19 of
+    them the guest's own (13 not E's) and 2 the translator's.
+  - Every item above that lies on a hot path adds its branches each time its instruction runs: 1 and 2 (exits,
+    with the look-ahead, link state and placement), 3 (+2 per jump through a slot), 4's hit (+1), 5 (+1 per known
+    jump), 6 and 7 (+1 per access tested), 8 (per entry into the loop, and which copy runs), 9 (the exclusive
+    route's tests). A position map entry per host instruction gives the offset within the current guest
+    instruction only, so it cannot say how many times each of these ran before; only an add beside each (the
+    cost E's own add already is) or removing the branch would account for it. The WebAssembly output has none of
+    them.
+  So a hardware count read directly needs the definition widened to every guest branch (the report's way C, the
+  owner's decision) and every hot branch of items 1 to 9 removed or made to fault, which the owner's rule (the
+  translator's branches are accounted for, not removed, unless removing one is free) excludes wherever removing
+  one costs something.
 - A position converted to E by re-running the stretch (the report's way D) on the same machine type with the same
-  translator configuration: yes, with conditions, keeping every branch. The host branches between two points
-  must be the same in the recorded run and the re-run, or be made up by a correction register on the way that
-  differs. What stands in the way, and what each costs to account for:
+  translator configuration: yes, keeping every branch, under the conditions below (by reading and by the tally;
+  nothing of it is built or measured end to end). The guest's forward branches are no obstacle here: the re-run
+  takes the same guest path, so runs the same guest branches. The host branches between two points must be the
+  same in the recorded run and the re-run, or be made up by a correction on the way that differs:
+  - The code as it stood, piece by piece. Which pieces exist, where each starts, how far it reaches and where it
+    is placed changes the exits that run (items 1 and 2). The inside makes a new piece wherever a thread goes on
+    at a guest instruction where none starts: after an interrupt or a turn's end, a system call, a first touch of a
+    page or an announced code change (`run_pieces` and `load` in crates/wcontainers-inside/src/native.rs); a full
+    code area is emptied; kept translations bring pieces made in an earlier run. A piece that starts inside a loop
+    holds the loop's back branch as an exit (+1 linked, +2 unlinked each turn, where the piece holding the loop's
+    head runs 0). So the host branches depend on where the recorded run's stops landed, which the re-run, with its
+    own stops or none, does not repeat. The tally cannot show this: its runner makes a piece at every address
+    before the run, rejoins at the piece for the pc and is never interrupted. To account for it: the recorded run
+    logs every change of its code (a piece made, with its look-ahead; a drop; the area emptied; a link or a last
+    target written) at its hardware position, and the code state (the pieces and their links) at each known point
+    the re-run can start from; the re-run starts from that state and makes the same changes at the same
+    positions, and goes on after its own stops where it stopped (as the inside already does after a last
+    target's first miss), not at a new piece. Cost: one log entry per change, all on the inside's rare paths, and
+    the code state's size at each known point; nothing on a hot path. This also covers link state and last
+    targets (below), since the re-run repeats them.
   - Items 10, 5's refusal and 1's halving: the counting translation the re-run uses has different branches from
     the translation without the count. Accounted for in the counting translation alone (a correction where it
     differs, or the same shapes chosen whatever the count): nothing on the recorded run.
-  - Link state (items 1, 2, 4's unlinked hit, 5's unlinked entries): the unlinked ways are rare once a program
-    runs, and each can carry a correction (a word the linking passes over): nothing on linked paths, one word per
-    exit.
-  - Item 2's straight link against the exit's `b` for a target out of reach: depends on placement; a correction on
-    the exit's way, one add per such taken branch (hot only where the code area outgrows a conditional branch's
-    reach, 1 MiB).
-  - Item 4, the last target: which target is last depends on history; the miss way can carry the correction, one
-    add per miss (the miss already runs a slot jump), and the first miss is the inside's.
-  - Items 6, 7, 8 and 9 depend only on the guest's own state (addresses, data, the reservation) and the
-    configuration, so they repeat in a re-run of one thread. Under parallel threads item 9's compare and swap reads
-    what another thread wrote; that is the guest's own result, recorded as any shared memory is.
+  - Placement (item 1's `b` and item 2's straight link, each only within its reach): the counting translation's
+    pieces are larger, so a target in reach in the recorded run may be out of it in the re-run. A correction on
+    the exit's way, one add per such exit (hot only where the code area outgrows a conditional branch's reach, 1
+    MiB).
+  - Link state and the last target (items 1, 2, 4 and 5), when not repeated from the log: the unlinked ways are
+    rare once a program runs and each can carry a correction (a word the linking passes over): nothing on linked
+    paths, one word per exit; which target is last depends on history, and the miss way can carry the correction,
+    one add per miss (the miss already runs a slot jump), the first miss being the inside's.
+  - Items 3, 6, 7, 8 and 9 depend only on the guest's own state (addresses, data, the reservation) and the
+    configuration, so they repeat in a re-run of one thread. Under parallel threads item 9's compare and swap
+    reads what another thread wrote; that is the guest's own result, recorded as any shared memory is.
 - This tally cannot say whether the conversion pays: the hardware count is not reachable on this Mac (the report:
   every counter configuration is refused here, and Hypervisor.framework shows the guest none).
 
@@ -2217,7 +2266,12 @@ the ruling).
 
 - **NH1, can the processor keep the count (an experiment only).** The host branch tally and the every-branch
   ratio on the rented Graviton4, section 4 ("Can the processor keep the count?"). Done 2026-11-20; nothing built
-  but the test and the count at a native run's end.
+  but the test, three more stepped functions, the count at a native run's end, and the look-ahead halving's
+  counter and warning (the brief, 2026-11-20 12:10). The halving, measured with that warning (Mac, at look-ahead
+  256 and at whole page): the kernel test's benchmark program 4 halvings over 3 of its 118 translations at both;
+  busybox's 56 commands, 2055 of their 32,160 translations halved at least once (about one in sixteen; 196
+  distinct addresses), 2614 halvings in all at 256 and 2625 at whole page. Logs: scratch native/nh1r2
+  (kernel-halving.log, busybox-halving.log, halvings.py, busybox_halvings.py).
 
 ## 10. Decisions for the owner
 

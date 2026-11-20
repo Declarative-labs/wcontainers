@@ -104,7 +104,8 @@ build sits on the line (+19.3% to +21.3%) and one of four seeded layouts is over
 build's layout (below, "N4 run 25"). N4 is done by its bar's own words, for its independent check.
 - N4 passed its independent check at the line (the brief, 2026-11-20 12:10).
 - NH1 (can the processor keep the count: the experiment only) is done, for its independent check (below, "NH1
-  run 1"; the plan's section 4, "Can the processor keep the count?").
+  run 1" and "NH1 run 2", which settled the check's findings; the plan's section 4, "Can the processor keep the
+  count?").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -134,6 +135,68 @@ build's layout (below, "N4 run 25"). N4 is done by its bar's own words, for its 
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
 
+## NH1 run 2 (2026-11-20): the independent check's findings settled
+
+Start (12:00, Mac load 2.5): origin/main and origin/phase-1-literals had nothing new. Files in scratch native/nh1r2.
+Nothing of a fast path is built.
+
+How each finding was settled:
+- (blocking) The first answer's reason: rewritten in the plan (section 4, "Answer to the first question"). Direct
+  recovery from (host branches, position) is ruled out by the guest's own forward branches alone (0x21 counts them,
+  E does not, and how many ran depends on the path: G4 fib 1.461, geometric mean 1.094; in the tally `forward
+  branches` at full, all linked: 21 host branches for 6 events of E, 13 of them guest branches E does not count),
+  and by every hot item, not only 1, 2 and 8: 3, 4's hit, 5, 6, 7, 8 and 9 add a fixed amount each time their
+  instruction runs, which a position map entry (an offset within the current instruction) cannot supply.
+- (blocking) Way D's missing condition: named in the plan, first under the second question. The piece set
+  (where pieces start, after stops, a full area emptied, kept translations) changes the exits that run, so the
+  host branches depend on where the recorded run's stops landed. What it costs to account for, by reading: the
+  recorded run logs every change of its code at its hardware position and the code state at each known point,
+  and the re-run repeats them and goes on after its own stops where it stopped; one log entry per change on the
+  inside's rare paths, nothing on a hot path. Not built, not measured; the tally's runner cannot show it (pieces
+  made in advance, no interrupts), and the plan says so. Placement under the counting translation's larger code
+  is listed as its own condition.
+- (minor) The two branches the classification missed: item 6 now has the sp base's SA0 `cbz` in the crossing way's
+  probes (rare), item 7 the load exclusive through sp's in-line SA0 `cbnz` (hot) and the store exclusive's own
+  alignment test. Both are now stepped: three new functions in tests/runner/functions.rs (`stack crossing`,
+  `exclusive pair loop`, `forward branches`), shared by the tally and the stepping test. The tally shows them:
+  `stack crossing` +0x8 runs [in-line test, SA0 `cbz`, `b` back] on its crossing case at 3 and full.
+- (minor) The loader paragraph: now lists the last target's test `cbnz` (`make_last_target`), `udf` into a dropped
+  slot (`drop_piece`), a direct exit left unlinked out of a `b`'s reach (+2, item 1), the translator's own `link`,
+  and how the list was checked (every branch-writing call in carry.rs, the arm64 native.rs, the inside and the
+  monitor).
+- (minor) The tally's seed in the suite: full.sh set only the stepping test's seed; fixed (run 2's script sets
+  `WCONTAINERS_BRANCHES_SEED`), run 1's status line corrected, and the plan and How to run say the seed draws only
+  the starting registers, vectors and flags.
+- (minor) The second step of the report's item 2 (the cost of counting every guest branch in software, round 3's
+  script with an every-branch rule, in alternating pairs): not done; the milestone asks only for the ratio. Left
+  for whoever builds on way C.
+- (minor) The look-ahead halving's counter and warning: built (ba9b39ea; reason "native translation's look-ahead
+  halved to fit the link", in the monitor's `Translator::slow`, with a unit test), and the run 1 deferral listed
+  under departures. How often (Mac, load 2 to 9): the kernel test's benchmark program 4 halvings over 3 of its 118
+  translations, at 256 and at whole page; busybox's 56 commands 2055 of 32,160 translations halved at least once,
+  2614 halvings at 256 and 2625 at whole page (logs kernel-halving.log, busybox-halving.log).
+
+Found while settling them: the count adds a branch in one more place than run 1 measured: `forward branches`' `cbz`
+to its `ret` at look-ahead 3 with exits linked runs its exit's `b` with the count and not without (plan item 10).
+
+Tally runs (Mac, Hypervisor.framework): seed 0x14057b7ef767814f, 34 cases (18 functions), 36 variants, 0 differing
+guest paths, 0.7 s, load 8.0; seed 0x6e6831723273 with 6 starting states, 204 cases, 0 differing, 3.8 s, load 7.7.
+Totals over the 34 cases (plan): host branches per guest branch, all linked, 5.9 at none, 3.6 at 3, 2.5 at full.
+The stepping test with the new functions: 15,309 stops over 18 functions (34 cases, seed 0x14057b7ef767814f) and
+45,927 stops (102 cases, seed 0x6e6831723274, 3 starting states), 0 failed each, load 6 to 7.
+
+The whole suite at 3c7fb3c9, new seeds, all exit 0 (Mac, Hypervisor.framework and Docker Desktop's reference, -j 4,
+3 test threads, scratch native/nh1r2/full.sh, full.log and suite/, 12:07 to 12:13, load 5.2 to 10.4): the
+differential test, 16 drawn cases a form, 0 failing each: none 32,398 cases (seed 0x2f7e5c21), bounded 16 32,317
+(0x2f7e5c216), bounded 256 32,330 (0x2f7e5c2256); forced interrupts 15,309 stops over 18 functions (34 cases) at 3
+look-aheads, 0 failed (seed 0x2c0ffee2); the tally, 34 cases, 0 differing (seed 0x2b4a9c4e2); probe (0 forms of 16
+bytes or fewer differ); floor (21 cases and 1 measurement, 0 failed); the kernel test (seed 0x6b65726f) with a stop
+at every counted event alike across look-aheads (bench 177,072 stops, hash 10937141521840235265; calls 3,004;
+jumptables 5,484, as before); busybox 56 of 56; both at whole page; registers, exits, carry, kept, the monitor's lib
+tests (10, the halving's new one among them), the inside's and the policy crate's tests, the literal check (exit 0)
+and its tests. Clippy with warnings denied for the monitor crate (all targets) and format checked on the Mac. The
+arm64, guest-cpu, translator and inside crates did not change this run; their suites at 4b696a28 (run 1) stand.
+
 ## NH1 run 1 (2026-11-20): the host branch tally and the every-branch ratio
 
 Start (11:10, Mac load 7.2): origin/main and origin/phase-1-literals had nothing new. Files in scratch native/nh1
@@ -149,14 +212,8 @@ Start (11:10, Mac load 7.2): origin/main and origin/phase-1-literals had nothing
 - The tally (Mac, Hypervisor.framework, `host_branches`, seed 0x14057b7ef767814f, 1 starting state, 29 cases x 36
   variants, 0 with differing guest paths, 0.7 s, load 3.8 to 5.6): the totals, every host branch with no guest
   branch behind it matched to the place the emitter writes it, its path and what changes it, and the answer, are in
-  the plan's section 4. In short: a count any output can reach from (host branches, position) alone needs
-  branches removed (piece exits, conditional exits' links and the loop's aligned-base copies change on hot paths
-  with the look-ahead and the data); a position converted by re-running the stretch keeps every branch, if the
-  counting translation is made to run the same branches as the one without the count (measured: `nest`'s settling
-  exits, 4 of 32, one more branch with the count; by reading: a known jump's table refused while the count is
-  ahead, and the look-ahead's halving for a too-large translation) and link state and last-target misses carry
-  corrections on their own ways (one word per exit; one add per miss and per conditional exit linked through its
-  `b`).
+  the plan's section 4. The short answer this run wrote here was wrong in its reasons and incomplete; run 2
+  corrected it (below, "NH1 run 2").
 - The ratio (rented Graviton4, bare metal, `perf stat -e r21:u,r08:u`, three runs each with identical counts, load
   32 to 35 on 96 cores, 19:31 UTC; E's events from the speed test's native run on the Mac, look-ahead 256, load 4.9
   to 6.4): every branch against E's events fib 1.461, sieve 1.255, hash 1.000, sort 1.089, interpret 1.027,
@@ -170,7 +227,8 @@ Start (11:10, Mac load 7.2): origin/main and origin/phase-1-literals had nothing
   0x2545f4914f6cdd1d) pass; the speed test's native runs of the eight workloads ran with the new `Ended` (one pair
   each, not a bar). Clippy with warnings denied for the monitor crate (all targets) on the Mac and for the inside
   (all targets) on the rented ARM64 machine, format checked there; the literal check exits 0.
-- The whole suite at 4b696a28, new seeds, all exit 0 (Mac, Hypervisor.framework and Docker Desktop's reference, -j 4,
+- The whole suite at 4b696a28, new seeds (except the tally's: full.sh set only the stepping test's seed variable,
+  so the tally ran at its default seed; fixed in full.sh since), all exit 0 (Mac, Hypervisor.framework and Docker Desktop's reference, -j 4,
   3 test threads, scratch native/nh1/full.sh, logs/full.log, 11:35 to 11:41, load 5.8 to 19.1): the differential
   test, 16 drawn cases a form, 0 failing each: none 32,514 cases (seed 0x26f7e5c1), bounded 16 32,337
   (0x26f7e5c16), bounded 256 32,359 (0x26f7e5c256); forced interrupts 13,321 stops over 15 functions (29 cases) at
@@ -181,7 +239,8 @@ Start (11:10, Mac load 7.2): origin/main and origin/phase-1-literals had nothing
   the literal check (exit 0) and its tests. On the rented ARM64 machine (logs/arm-suites.log, load 27 to 35): format
   check of the whole tree, clippy with warnings denied for arm64, guest-cpu, the translator with native and the
   inside (all targets), and the tests of arm64, guest-cpu and the translator with native, all passing.
-- Left for the next build run (the brief, 12:10): a counter and a warning for the look-ahead's halving.
+- Left for the next build run (the brief, 12:10): a counter and a warning for the look-ahead's halving. The brief
+  asked for it at the start of this run; it was deferred (a departure), and done in run 2.
 
 ## N4 run 25 (2026-11-20): the next check's six findings; the bar with clean child environments
 
@@ -2804,7 +2863,10 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
   7 minutes);
 - NH1's host branch tally: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test host_branches` (knobs
   `WCONTAINERS_BRANCHES_SEED`, `WCONTAINERS_BRANCHES_STARTS` starting states per case, default 1; under a second per
-  starting state); its summaries: `python3 scratch/native/nh1/analyse.py <log>`. Each workload's E events: the speed
+  starting state; the seed draws only the starting registers, vectors and flags); its summaries: `python3
+  scratch/native/nh1/analyse.py <log>` (what changes with each dimension) and `python3 scratch/native/nh1r2/totals.py
+  <log>` (totals per variant). The look-ahead halving's warnings in the kernel and busybox tests' output (run with
+  `-- --nocapture`): `python3 scratch/native/nh1r2/halvings.py <log>` and `busybox_halvings.py <log>`. Each workload's E events: the speed
   test with `WCONTAINERS_SPEED_PAIRS=1` prints "the count's events" per workload; the every-branch side on the rented
   ARM64 machine: copy the built programs (target/tmp/<workload>) and scratch native/nh1/g4-branches.sh into an
   untracked folder of the checkout, `arm-run <checkout> --name native -- 'bash <folder>/g4-branches.sh <folder>'`,
@@ -3424,6 +3486,8 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   pays that build (14.8 s cold at load 80, 0.1 s when up to date).
 - N1, SA0: the plan has the floor set it as `Guest::SP_ALIGNMENT_CHECKED` says; that trait is in the CPU
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
+- NH1 run 1 deferred the look-ahead halving's counter and warning, which the brief (2026-11-20 12:10) asked for at
+  the start of that build run as its own commit; NH1 run 2 built it (ba9b39ea).
 
 ## For the orchestrator
 
