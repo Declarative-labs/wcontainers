@@ -24,8 +24,10 @@ pub(super) fn exit(
 ) -> Outcome {
     let status = exit_status(arguments[0] as i32);
     let pid = kernel.threads[&tid].process;
-    // The last thread's status is the group's (`synchronize_group_exit`).
-    if kernel.processes[&pid].threads.len() == 1 {
+    // The last thread's status is the group's (`synchronize_group_exit`); one taken off the
+    // kernel is still a thread of the process.
+    let process = &kernel.processes[&pid];
+    if process.threads.len() == 1 && process.away.is_empty() {
         kernel.end_process(cx, pid, status);
     } else {
         kernel.end_thread(cx, tid);

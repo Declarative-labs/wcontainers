@@ -478,6 +478,7 @@ impl Kernel {
             child_subreaper: false,
             thp_disable: 0,
             pending: Default::default(),
+            away: Default::default(),
             exit_signal: SIGCHLD,
             ended: None,
             ended_leader: Default::default(),

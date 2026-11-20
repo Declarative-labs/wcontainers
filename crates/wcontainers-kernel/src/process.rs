@@ -1,6 +1,6 @@
 //! Processes and threads.
 
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -85,11 +85,14 @@ pub(crate) struct Process {
     pub thp_disable: u64,
     /// Signals sent to the whole process and not yet taken by one of its threads.
     pub pending: Pending,
+    /// Its tasks taken off this kernel and not put back; the process lives while one is.
+    pub away: BTreeMap<Tid, Away>,
     /// The signal the parent is sent when this process ends (clone's low byte); 0 for none.
     pub exit_signal: u32,
     /// Once every thread has ended: the wait status a parent's wait will reap (a zombie).
     pub ended: Option<i32>,
-    /// What a zombie's first thread keeps until it is reaped.
+    /// What the first thread keeps while it is not on this kernel: ended (a zombie's, until it is
+    /// reaped) or taken off.
     pub ended_leader: Leader,
     /// The inode its process descriptors share, once one is made.
     pub pidfd: Option<Node>,
@@ -173,6 +176,14 @@ impl Drop for Charge {
     fn drop(&mut self) {
         self.0.set(self.0.get() - 1);
     }
+}
+
+/// What the kernel keeps of a task taken off it: the signals it blocked, and those sent to it since,
+/// which it takes when it is put back.
+#[derive(Clone, Default)]
+pub(crate) struct Away {
+    pub signal_mask: u64,
+    pub pending: Pending,
 }
 
 /// Signals sent and not yet taken: one set, and their information in the order sent. A standard

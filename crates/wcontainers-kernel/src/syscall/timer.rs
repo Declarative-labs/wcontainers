@@ -335,7 +335,14 @@ fn signal_queued(kernel: &Kernel, pid: Pid, id: i32, notify: Notify) -> bool {
             && i32::from_le_bytes(queued.info[16..20].try_into().expect("four bytes")) == id
     };
     let pending = match notify {
-        Notify::Thread { tid, .. } => kernel.threads.get(&tid).map(|thread| &thread.pending),
+        Notify::Thread { tid, .. } => kernel
+            .threads
+            .get(&tid)
+            .map(|thread| &thread.pending)
+            .or_else(|| {
+                let process = kernel.processes.get(&pid)?;
+                process.away.get(&tid).map(|away| &away.pending)
+            }),
         _ => kernel.processes.get(&pid).map(|process| &process.pending),
     };
     pending.is_some_and(|pending| pending.queue.iter().any(is_ours))
@@ -371,7 +378,7 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             let entry = kernel.timers.all.get_mut(&id).expect("timer");
             entry.sent_at = Some(entry.sequence);
             let live = match target {
-                Some(tid) => kernel.threads.contains_key(&tid),
+                Some(tid) => kernel.task_of(pid, tid),
                 None => kernel
                     .processes
                     .get(&pid)
@@ -457,7 +464,7 @@ pub(crate) fn unignore(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid, sign
             continue;
         }
         kernel.timers.all.get_mut(&id).expect("timer").ignored = false;
-        if target.is_none_or(|tid| kernel.threads.contains_key(&tid)) {
+        if target.is_none_or(|tid| kernel.task_of(pid, tid)) {
             let info = timer_info(signal, number, 0, value);
             kernel.send_from_timer(cx, target, pid, signal, info);
         }

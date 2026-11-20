@@ -970,6 +970,8 @@ impl Kernel {
         process.stopped = false;
         process.report = None;
         process.pending = Default::default();
+        // Tasks of it taken off the kernel end with it: putting one back hands it back.
+        process.away.clear();
         let memory = process.memory;
         let empty = crate::memory::AddressMap::new(
             self.machine.memory_bytes,
@@ -1103,7 +1105,8 @@ impl Kernel {
             .filter(|process| process.parent == pid)
             .map(|process| process.pid)
             .collect();
-        if children.is_empty() {
+        let away = self.processes_away.values().any(|away| away.parent == pid);
+        if children.is_empty() && !away {
             return;
         }
         let mut reaper = self.processes[&pid].parent;
@@ -1124,6 +1127,13 @@ impl Kernel {
             .first()
             .copied()
             .unwrap_or(0);
+        for away in self.processes_away.values_mut() {
+            if away.parent == pid {
+                away.parent = reaper;
+                away.parent_thread = heir;
+                away.exit_signal = SIGCHLD;
+            }
+        }
         for child in children {
             let process = self.processes.get_mut(&child).expect("child");
             process.parent = reaper;

@@ -170,16 +170,20 @@ pub(super) fn signal_thread(
 ) -> Result<u64, Errno> {
     // An ended process's first thread is found until it is reaped; what it is sent is dropped
     // (`prepare_signal` for a group that is exiting).
+    // A task taken off the kernel is found as one on it is.
     let (process, ended) = match kernel.threads.get(&target) {
         Some(thread) => (thread.process, false),
-        None if kernel
-            .processes
-            .get(&target)
-            .is_some_and(|process| process.ended.is_some()) =>
-        {
-            (target, true)
-        }
-        None => return Err(Errno::ESRCH),
+        None => match kernel.away_process_of(target) {
+            Some(pid) => (pid, false),
+            None if kernel
+                .processes
+                .get(&target)
+                .is_some_and(|process| process.ended.is_some()) =>
+            {
+                (target, true)
+            }
+            None => return Err(Errno::ESRCH),
+        },
     };
     if group.is_some_and(|group| group != process) {
         return Err(Errno::ESRCH);

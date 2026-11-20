@@ -1,11 +1,14 @@
 //! Taking tasks and process contexts off a kernel, and putting them on a kernel again.
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use wcontainers_abi::{Cpu, RegisterBlock, Resume};
 
 use crate::counters::reason;
-use crate::process::{Call, Channel, Pid, Thread, Tid};
+use crate::linux::general::SIGRTMIN;
+use crate::process::{Away, Call, Channel, Leader, Pending, Pid, Thread, Tid};
 use crate::system::{ExecutionConfig, Process, TaskId};
 use crate::{Kernel, sharing, syscall};
 
@@ -47,12 +50,34 @@ enum Place {
 pub struct ProcessContext {
     process: crate::process::Process,
     announced: Vec<((crate::MemoryObject, Pid), sharing::Pieces)>,
+    origin: ContextOrigin,
+}
+
+/// How a process context was made: the process left the kernel with it, or it is a copy and the
+/// process stayed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextOrigin {
+    Suspended,
+    Copied,
 }
 
 impl ProcessContext {
     pub fn id(&self) -> TaskId {
         TaskId::of(self.process.pid)
     }
+
+    pub fn origin(&self) -> ContextOrigin {
+        self.origin
+    }
+}
+
+/// What a kernel keeps of a process whose context was taken off it, so that its parent's wait
+/// sees a live child.
+pub(crate) struct ProcessAway {
+    pub parent: Pid,
+    pub parent_thread: Tid,
+    pub group: Pid,
+    pub exit_signal: u32,
 }
 
 impl Kernel {
@@ -110,9 +135,16 @@ impl Kernel {
         let ProcessContext {
             mut process,
             announced,
+            ..
         } = context;
         process.execution = config;
         process.threads.clear();
+        // A parent that ended while it was away gave it to a reaper.
+        if let Some(away) = self.processes_away.remove(&process.pid) {
+            process.parent = away.parent;
+            process.parent_thread = away.parent_thread;
+            process.exit_signal = away.exit_signal;
+        }
         process
             .map
             .borrow_mut()
@@ -186,8 +218,14 @@ impl Kernel {
         taken
     }
 
-    /// Takes a process's context and its tasks; with a task the kernel cannot take now, the
-    /// process stays and the answer holds a copy of its context and the tasks taken.
+    /// Whether process `pid` is being ended, so that it cannot leave the kernel.
+    fn ending(&self, pid: Pid) -> bool {
+        self.dying.contains_key(&pid) || self.ending_process == Some(pid)
+    }
+
+    /// Takes a process's context and its tasks; none for a process not here or being ended. With
+    /// a task the kernel cannot take now, the process stays and the answer holds a copy of its
+    /// context and the tasks taken.
     pub(crate) fn take_process(
         &mut self,
         cpu: &mut dyn Cpu,
@@ -196,6 +234,9 @@ impl Kernel {
         self.processes
             .get(&pid)
             .filter(|record| record.ended.is_none())?;
+        if self.ending(pid) {
+            return None;
+        }
         let ids: Vec<TaskId> = self.processes[&pid]
             .threads
             .iter()
@@ -207,21 +248,70 @@ impl Kernel {
         }
         let process = self.processes.remove(&pid).expect("process exists");
         let announced = self.take_announced(pid);
+        // Its map stops noting to this kernel unless a process still here runs in it.
+        let shared = self
+            .processes
+            .values()
+            .any(|other| Rc::ptr_eq(&other.map, &process.map));
+        if !shared {
+            process.map.borrow_mut().stop_noting_to(&self.map_notes);
+        }
+        self.processes_away.insert(
+            pid,
+            ProcessAway {
+                parent: process.parent,
+                parent_thread: process.parent_thread,
+                group: process.group,
+                exit_signal: process.exit_signal,
+            },
+        );
         self.update_watching();
-        Some((ProcessContext { process, announced }, tasks))
+        let context = ProcessContext {
+            process,
+            announced,
+            origin: ContextOrigin::Suspended,
+        };
+        Some((context, tasks))
     }
 
-    /// A copy of process `pid`'s context, with no tasks.
+    /// A copy of process `pid`'s context, with no tasks: its own map and signal handlers, every
+    /// task of the process counted as away from it, and no pending signal, which stay with the
+    /// process.
     pub(crate) fn context_copy(&self, pid: Pid) -> ProcessContext {
         let mut process = self.processes[&pid].clone();
-        process.threads.clear();
+        let mut map = process.map.borrow().clone();
+        map.notes_to_none();
+        process.map = Rc::new(RefCell::new(map));
+        let actions = *process.actions.borrow();
+        process.actions = Rc::new(RefCell::new(actions));
+        process.pending = Pending::default();
+        for away in process.away.values_mut() {
+            away.pending = Pending::default();
+        }
+        for tid in core::mem::take(&mut process.threads) {
+            let thread = &self.threads[&tid];
+            if tid == pid {
+                process.ended_leader = Leader::of(thread);
+            }
+            process.away.insert(
+                tid,
+                Away {
+                    signal_mask: thread.signal_mask,
+                    pending: Pending::default(),
+                },
+            );
+        }
         let announced = self
             .shared_announced
             .iter()
             .filter(|((_, mapper), _)| *mapper == pid)
             .map(|(key, pieces)| (*key, pieces.clone()))
             .collect();
-        ProcessContext { process, announced }
+        ProcessContext {
+            process,
+            announced,
+            origin: ContextOrigin::Copied,
+        }
     }
 
     /// What the embedder was told process `pid` maps, taken out to go with its context.
@@ -279,11 +369,21 @@ impl Kernel {
         }
         let thread = self.threads.remove(&tid).expect("thread exists");
         cpu.thread_drop(thread.cpu);
-        self.processes
+        let process = self
+            .processes
             .get_mut(&thread.process)
-            .expect("process exists")
-            .threads
-            .retain(|other| *other != tid);
+            .expect("process exists");
+        process.threads.retain(|other| *other != tid);
+        if tid == thread.process {
+            process.ended_leader = Leader::of(&thread);
+        }
+        process.away.insert(
+            tid,
+            Away {
+                signal_mask: thread.signal_mask,
+                pending: Pending::default(),
+            },
+        );
         SuspendedTask {
             id: tid,
             thread: alloc::boxed::Box::new(thread),
@@ -324,16 +424,25 @@ impl Kernel {
         cpu.set_registers(cpu_thread, &task.registers);
         task.thread.cpu = cpu_thread;
         let pid = task.thread.process;
-        let threads = &mut self
-            .processes
-            .get_mut(&pid)
-            .expect("process exists")
-            .threads;
+        let process = self.processes.get_mut(&pid).expect("process exists");
         if tid == pid {
-            threads.insert(0, tid);
+            process.threads.insert(0, tid);
         } else {
-            threads.push(tid);
+            process.threads.push(tid);
         }
+        // What it was sent while away comes after what it had; a standard signal once.
+        if let Some(away) = process.away.remove(&tid) {
+            let pending = &mut task.thread.pending;
+            for queued in away.pending.queue {
+                let bit = crate::signal::bit(queued.signal);
+                if queued.signal >= SIGRTMIN || pending.set & bit == 0 {
+                    pending.queue.push_back(queued);
+                }
+            }
+            pending.set |= away.pending.set;
+        }
+        let deliverable =
+            (task.thread.pending.set | process.pending.set) & !task.thread.signal_mask != 0;
         let channel = task.thread.call.wait;
         let deadline = task.thread.call.deadline;
         let resume = task.thread.resume;
@@ -349,7 +458,8 @@ impl Kernel {
             }
             _ => self.make_runnable(tid, resume),
         }
-        if task.signalled && !self.signalled.contains(&tid) {
+        let ready = matches!(task.place, Place::Ready);
+        if (task.signalled || (ready && deliverable)) && !self.signalled.contains(&tid) {
             self.signalled.push_back(tid);
         }
         self.unsettled = true;
@@ -375,10 +485,19 @@ impl Process<'_> {
         ProcessContext,
         alloc::vec::IntoIter<(TaskId, SuspendedTask)>,
     ) {
-        let (context, tasks) = self
-            .kernel
-            .take_process(self.cpu, self.pid)
-            .expect("a hook's process is on its kernel");
+        // A process being ended stays, and its tasks with it, each counted.
+        let (context, tasks) = match self.kernel.take_process(self.cpu, self.pid) {
+            Some(taken) => taken,
+            None => {
+                let ids: Vec<TaskId> = self.kernel.processes[&self.pid]
+                    .threads
+                    .iter()
+                    .map(|&tid| TaskId::of(tid))
+                    .collect();
+                let tasks = self.kernel.take_tasks(self.cpu, Some(self.pid), &ids);
+                (self.kernel.context_copy(self.pid), tasks)
+            }
+        };
         (context, tasks.into_iter())
     }
 

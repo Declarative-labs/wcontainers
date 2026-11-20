@@ -276,11 +276,11 @@ pub(crate) struct AddressMap {
     pub dumpable: bool,
     /// The embedder's watches on these pages and its record of the pages written.
     pub watches: Watches,
-    /// What the map notes for the kernel.
-    notes: Rc<MapNotes>,
+    /// What the map notes for the kernels its processes are on.
+    notes: Vec<Rc<MapNotes>>,
 }
 
-/// What address maps note for the kernel, one value shared by every map.
+/// What address maps note for a kernel, one value shared by every map on it.
 #[derive(Debug, Default)]
 pub(crate) struct MapNotes {
     /// The length a placement asked for that found no room below the ceiling.
@@ -468,7 +468,13 @@ impl AddressMap {
             protection_keys: 1,
             dumpable: true,
             watches: Watches::default(),
-            notes,
+            notes: alloc::vec![notes],
+        }
+    }
+
+    fn note(&self, change: impl Fn(&MapNotes)) {
+        for notes in &self.notes {
+            change(notes);
         }
     }
 
@@ -496,9 +502,21 @@ impl AddressMap {
         Ok(())
     }
 
-    /// Notes what changes for another kernel from now on, as a map put on it.
+    /// Notes what changes for a kernel it is put on, too.
     pub fn note_to(&mut self, notes: Rc<MapNotes>) {
-        self.notes = notes;
+        if !self.notes.iter().any(|known| Rc::ptr_eq(known, &notes)) {
+            self.notes.push(notes);
+        }
+    }
+
+    /// Stops noting for a kernel no process of which runs in it any more.
+    pub fn stop_noting_to(&mut self, notes: &Rc<MapNotes>) {
+        self.notes.retain(|known| !Rc::ptr_eq(known, notes));
+    }
+
+    /// Notes for no kernel, as a copy not yet put on one.
+    pub fn notes_to_none(&mut self) {
+        self.notes.clear();
     }
 
     /// Sets the embedder's watch on the mapped pages of `[start, end)` (page aligned) and tells
@@ -827,7 +845,7 @@ impl AddressMap {
         if end <= self.ceiling {
             return false;
         }
-        self.notes.outgrown.set(Some(length));
+        self.note(|notes| notes.outgrown.set(Some(length)));
         true
     }
 
@@ -850,7 +868,7 @@ impl AddressMap {
             let start = ceiling.checked_sub(length).filter(|start| *start >= floor);
             let Some(start) = start else {
                 if self.ceiling < self.end {
-                    self.notes.outgrown.set(Some(length));
+                    self.note(|notes| notes.outgrown.set(Some(length)));
                 }
                 return None;
             };
@@ -882,7 +900,7 @@ impl AddressMap {
         self.watches.forget(start, end);
         let removed = self.split_out(start, end);
         if removed.iter().any(|mapping| mapping.shared) {
-            self.notes.sharing_changed.set(true);
+            self.note(|notes| notes.sharing_changed.set(true));
         }
         removed
     }
@@ -895,7 +913,7 @@ impl AddressMap {
     /// Notes that the processes using this map changed, if it shows shared memory.
     pub fn note_sharers_changed(&self) {
         if self.has_shared() {
-            self.notes.sharing_changed.set(true);
+            self.note(|notes| notes.sharing_changed.set(true));
         }
     }
 
@@ -944,7 +962,7 @@ impl AddressMap {
             cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
         }
         if mapping.shared {
-            self.notes.sharing_changed.set(true);
+            self.note(|notes| notes.sharing_changed.set(true));
         }
         self.mappings.insert(mapping.start, mapping);
         self.merge_around();

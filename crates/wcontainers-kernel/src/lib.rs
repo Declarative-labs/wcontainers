@@ -48,7 +48,7 @@ pub use container::{Attributes, FileRecord, NewFile, Start};
 pub use counters::reason;
 pub use ends::Standard;
 pub use errno::Errno;
-pub use suspend::{ProcessContext, SuspendedTask};
+pub use suspend::{ContextOrigin, ProcessContext, SuspendedTask};
 pub use system::{
     AccessKind, AnonymousMemoryId, DeviceId, ExecutionConfig, InodeNumber, MemoryError,
     MemoryObject, Process, ProcessInfo, ReplayDeterminism, SignalInformation, System,
@@ -213,6 +213,8 @@ pub struct Kernel {
     map_notes: Rc<memory::MapNotes>,
     /// What the embedder has been told each process maps of shared memory.
     shared_announced: sharing::Announced,
+    /// Processes whose context was taken off this kernel and not put back on it.
+    processes_away: BTreeMap<Pid, suspend::ProcessAway>,
     /// Processes on their way out whose shared memory has been announced ended.
     sharing_left: alloc::collections::BTreeSet<Pid>,
     /// The container's first process; when it ends the container ends.
@@ -306,6 +308,7 @@ impl Kernel {
             ids_let_go: Vec::new(),
             map_notes: Rc::default(),
             shared_announced: sharing::Announced::new(),
+            processes_away: BTreeMap::new(),
             sharing_left: alloc::collections::BTreeSet::new(),
             init: None,
             finished: None,
