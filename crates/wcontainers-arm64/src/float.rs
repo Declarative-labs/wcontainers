@@ -8,11 +8,10 @@
 //! multiply-add on hosts without a fused one.
 
 use crate::Arm64;
-use crate::exact::{DOUBLE, HALF, Operation, SINGLE};
+use crate::exact::{DOUBLE, HALF, Operation, SINGLE, format_parts};
 use crate::instruction::*;
 use crate::meaning::{Emitter, Flag, Flags, Hook};
 use crate::simd::{extract, replace};
-use rustc_apfloat::Float;
 use rustc_apfloat::ieee::{Double, Half, Single};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 
@@ -975,13 +974,10 @@ fn convert_bits<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8, to: 
 
 /// Fraction and exponent bits of a size.
 fn parts(size: u8) -> (u32, u32) {
-    fn of<F: Float>() -> (u32, u32) {
-        ((F::PRECISION - 1) as u32, (F::BITS - F::PRECISION) as u32)
-    }
     match size {
-        HALF => of::<Half>(),
-        SINGLE => of::<Single>(),
-        _ => of::<Double>(),
+        HALF => format_parts::<Half>(),
+        SINGLE => format_parts::<Single>(),
+        _ => format_parts::<Double>(),
     }
 }
 

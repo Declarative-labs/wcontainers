@@ -462,13 +462,17 @@ impl Context {
                 fraction_bits,
             } => {
                 let value = if signed {
-                    i128::from(if width == 64 {
+                    i128::from(if u32::from(width) == u64::BITS {
                         a as i64
                     } else {
                         a as i32 as i64
                     })
                 } else {
-                    i128::from(if width == 64 { a } else { a & 0xffff_ffff })
+                    i128::from(if u32::from(width) == u64::BITS {
+                        a
+                    } else {
+                        a & u64::from(u32::MAX)
+                    })
                 };
                 let scale = -i32::from(fraction_bits) as rustc_apfloat::ExpInt;
                 let result = self.finish(|round, _| {
@@ -684,8 +688,8 @@ impl Context {
                     }
                     v.value as u64
                 };
-                return if width == 32 {
-                    value & 0xffff_ffff
+                return if width == u32::BITS as usize {
+                    value & u64::from(u32::MAX)
                 } else {
                     value
                 };
@@ -869,7 +873,7 @@ impl Context {
             self.flags |= UFC;
             return zero(negative);
         }
-        F::from_bits(reciprocal_estimate_bits(x.to_bits() as u64, F::BITS as u32).into())
+        F::from_bits(reciprocal_estimate_bits::<F>(x.to_bits() as u64).into())
     }
 
     fn reciprocal_sqrt_estimate<F: Bits>(&mut self, x: F) -> F {
@@ -890,7 +894,7 @@ impl Context {
         if x.is_infinite() {
             return F::ZERO;
         }
-        F::from_bits(reciprocal_sqrt_estimate_bits(x.to_bits() as u64, F::BITS as u32).into())
+        F::from_bits(reciprocal_sqrt_estimate_bits::<F>(x.to_bits() as u64).into())
     }
 }
 
@@ -946,56 +950,77 @@ pub fn recip_sqrt_estimate(a: u64) -> u64 {
     b.div_ceil(2)
 }
 
+/// The fraction and exponent bits of a format.
+pub(crate) fn format_parts<F: Float>() -> (u32, u32) {
+    ((F::PRECISION - 1) as u32, (F::BITS - F::PRECISION) as u32)
+}
+
+/// The fraction bits the estimates work in: a double's.
+const WORKING_FRACTION_BITS: u32 = Double::PRECISION as u32 - 1;
+/// The bits below the leading one of the estimate tables' index and result (Arm's `RecipEstimate` and
+/// `RecipSqrtEstimate`).
+const ESTIMATE_FRACTION_BITS: u32 = 8;
+
 /// The estimate of a finite, normal-range, non-zero number's reciprocal, by Arm's `FPRecipEstimate`.
-fn reciprocal_estimate_bits(raw: u64, bits: u32) -> u64 {
-    let (fraction_bits, exponent_bits) = if bits == 32 { (23, 8) } else { (52, 11) };
+fn reciprocal_estimate_bits<F: Float>(raw: u64) -> u64 {
+    let (fraction_bits, exponent_bits) = format_parts::<F>();
+    let bits = F::BITS as u32;
     let sign = raw >> (bits - 1);
     let mut exponent = ((raw >> fraction_bits) & ((1 << exponent_bits) - 1)) as i64;
-    // The fraction as 52 bits.
-    let mut fraction = (raw & ((1 << fraction_bits) - 1)) << (52 - fraction_bits);
+    let mut fraction =
+        (raw & ((1 << fraction_bits) - 1)) << (WORKING_FRACTION_BITS - fraction_bits);
     if exponent == 0 {
-        if fraction >> 51 == 0 {
+        if fraction >> (WORKING_FRACTION_BITS - 1) == 0 {
             exponent = -1;
-            fraction = (fraction & ((1 << 50) - 1)) << 2;
+            fraction = (fraction & ((1 << (WORKING_FRACTION_BITS - 2)) - 1)) << 2;
         } else {
-            fraction = (fraction & ((1 << 51) - 1)) << 1;
+            fraction = (fraction & ((1 << (WORKING_FRACTION_BITS - 1)) - 1)) << 1;
         }
     }
-    let scaled = (1 << 8) | (fraction >> 44);
-    let mut result_exponent = if bits == 32 { 253 } else { 2045 } - exponent;
+    let scaled = (1 << ESTIMATE_FRACTION_BITS)
+        | (fraction >> (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS));
+    let mut result_exponent = 2 * i64::from(F::MAX_EXP) - 1 - exponent;
     let estimate = recip_estimate(scaled);
-    let mut fraction = (estimate & 0xff) << 44;
+    let mut fraction = (estimate & ((1 << ESTIMATE_FRACTION_BITS) - 1))
+        << (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS);
     if result_exponent == 0 {
-        fraction = (1 << 51) | (fraction >> 1);
+        fraction = (1 << (WORKING_FRACTION_BITS - 1)) | (fraction >> 1);
     } else if result_exponent == -1 {
-        fraction = (1 << 50) | (fraction >> 2);
+        fraction = (1 << (WORKING_FRACTION_BITS - 2)) | (fraction >> 2);
         result_exponent = 0;
     }
     (sign << (bits - 1))
         | ((result_exponent as u64) & ((1 << exponent_bits) - 1)) << fraction_bits
-        | fraction >> (52 - fraction_bits)
+        | fraction >> (WORKING_FRACTION_BITS - fraction_bits)
 }
+
+/// How many biases Arm's `FPRSqrtEstimate` puts in its result's exponent before halving it.
+const SQRT_ESTIMATE_BIASES: i64 = 3;
 
 /// The estimate of a positive, finite, non-zero number's reciprocal square root, by Arm's
 /// `FPRSqrtEstimate`.
-fn reciprocal_sqrt_estimate_bits(raw: u64, bits: u32) -> u64 {
-    let (fraction_bits, exponent_bits) = if bits == 32 { (23, 8) } else { (52, 11) };
+fn reciprocal_sqrt_estimate_bits<F: Float>(raw: u64) -> u64 {
+    let (fraction_bits, exponent_bits) = format_parts::<F>();
     let mut exponent = ((raw >> fraction_bits) & ((1 << exponent_bits) - 1)) as i64;
-    let mut fraction = (raw & ((1 << fraction_bits) - 1)) << (52 - fraction_bits);
+    let mut fraction =
+        (raw & ((1 << fraction_bits) - 1)) << (WORKING_FRACTION_BITS - fraction_bits);
     if exponent == 0 {
-        while fraction >> 51 == 0 {
-            fraction = (fraction << 1) & ((1 << 52) - 1);
+        while fraction >> (WORKING_FRACTION_BITS - 1) == 0 {
+            fraction = (fraction << 1) & ((1 << WORKING_FRACTION_BITS) - 1);
             exponent -= 1;
         }
-        fraction = (fraction << 1) & ((1 << 52) - 1);
+        fraction = (fraction << 1) & ((1 << WORKING_FRACTION_BITS) - 1);
     }
     let scaled = if exponent & 1 == 0 {
-        (1 << 8) | (fraction >> 44)
+        (1 << ESTIMATE_FRACTION_BITS)
+            | (fraction >> (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS))
     } else {
-        (1 << 7) | (fraction >> 45)
+        (1 << (ESTIMATE_FRACTION_BITS - 1))
+            | (fraction >> (WORKING_FRACTION_BITS - ESTIMATE_FRACTION_BITS + 1))
     };
-    let result_exponent = (if bits == 32 { 380 } else { 3068 } - exponent) / 2;
+    let result_exponent = (SQRT_ESTIMATE_BIASES * i64::from(F::MAX_EXP) - 1 - exponent) / 2;
     let estimate = recip_sqrt_estimate(scaled);
     ((result_exponent as u64) & ((1 << exponent_bits) - 1)) << fraction_bits
-        | (estimate & 0xff) << (fraction_bits - 8)
+        | (estimate & ((1 << ESTIMATE_FRACTION_BITS) - 1))
+            << (fraction_bits - ESTIMATE_FRACTION_BITS)
 }
