@@ -472,6 +472,15 @@ Found on the way, fixed:
   (s2f/clippy-x86.log, clippy-x86-2.log). The 20 test binaries the manual keeps on the Mac passed
   here, 94 tests (s2f/mac-only.log, 15:11 to 15:13 Pacific, load 8 to 14), and the literal check's
   tests and the check passed here (s2f/literals-mac.log).
+- Eighth run, whole suite on the ARM machine at 00b623f4's tree (the command in "How to run"
+  with `-j $ARM_JOBS`; scratch streams/s2f/suite-arm.log, 2214 s, ending 00:04 UTC, machine load
+  about 20 at the end): 567 passed, 27 failed, 6 ignored. The 27 are the 26 tests of the
+  manual's list that differ there and the literal check's `the_workspace_keeps_to_its_baseline`
+  (no git there); `terminal::splice_holds_the_pipe` passed there this time. All 27 passed on this
+  Mac (above). Combined (s2f/combined.log): 600 tests, 594 passed, 6 ignored, none failed.
+  `streams/verdicts.py s2e/combined.log s2f/combined.log`: every test of the seventh run's suite
+  has the same verdict, but the dirty record's test, renamed and passing; the vast watch test is
+  new and passes.
 
 ## Literals
 
