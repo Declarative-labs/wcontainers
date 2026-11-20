@@ -1658,21 +1658,9 @@ code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	4
 code	crates/wcontainers-direct3d-11/src/device.rs	float	gpu_sampler	32.0
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	0xb000
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	32
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	87
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	90
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	91
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	16
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	8
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	0xb000
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	12
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	20
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	31
@@ -1736,8 +1724,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"unordered access needs feature level 11_0"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_blend_state	"blend factors or operations per target below feature level 10_1"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_buffer	"buffers with misc flags other than structured, raw, indirect and shared"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_input_layout	"an input layout has at most 32 elements"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_input_layout	"input slot past 31"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_rasterizer_state	"wireframe without the back end's polygon mode"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_shader	"the primitive index without the back end's (PrimitiveIdAsGeometry)"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_view	"a depth view reinterpreting a typeless texture's bits as another format"
@@ -1757,7 +1743,6 @@ code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	4
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	6
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	8
 code	crates/wcontainers-direct3d-11/src/format.rs	str	unserved	"a DXGI format this front does not serve"
-code	crates/wcontainers-direct3d-11/src/object.rs	int	InputLayout	32
 code	crates/wcontainers-direct3d-11/src/object.rs	int	Shader	32
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"not a query Direct3D 11 has"
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"per-stream stream output queries need feature level 11_0"

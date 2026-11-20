@@ -12,8 +12,8 @@ use windows::Win32::Graphics::Direct3D10::{
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_A4B4G4R4_UNORM, DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE,
-    DXGI_FORMAT_V408,
+    DXGI_FORMAT, DXGI_FORMAT_A4B4G4R4_UNORM, DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_R1_UNORM,
+    DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_OFFER_RESOURCE_PRIORITY, DXGI_OFFER_RESOURCE_PRIORITY_HIGH,
@@ -1233,11 +1233,14 @@ impl Device_Impl {
         format: DXGI_FORMAT,
         samples: u32,
     ) -> Result<u32> {
-        // Values that name no DXGI format.
-        const LAST_VIDEO: i32 = DXGI_FORMAT_V408.0;
+        // Values Direct3D 11 refuses here (measured on the RTX 3080): `R1_UNORM`, and those past
+        // its last format but the later ones it was not asked about.
+        const LAST_OF_DIRECT3D_11: i32 = DXGI_FORMAT_B4G4R4A4_UNORM.0;
         const FIRST_FEEDBACK: i32 = DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE.0;
         const LAST: i32 = DXGI_FORMAT_A4B4G4R4_UNORM.0;
-        if !matches!(format.0, 0..=LAST_VIDEO | FIRST_FEEDBACK..=LAST) {
+        if format == DXGI_FORMAT_R1_UNORM
+            || !matches!(format.0, 0..=LAST_OF_DIRECT3D_11 | FIRST_FEEDBACK..=LAST)
+        {
             return Err(E_INVALIDARG.into());
         }
         if samples == 0 || samples > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT {

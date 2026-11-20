@@ -833,10 +833,10 @@ fn capability_queries_claim_only_what_creation_serves() {
 
 /// Constant buffers rewritten between draws by `Map(WRITE_DISCARD)` and by `UpdateSubresource`
 /// make no bind group per draw, counted by the WebGPU back end itself (its `Counters`): the front
-/// draws through it directly, as the library does. A known failure: each `Map(WRITE_DISCARD)` draw
-/// makes one, since the back end's uniform arena takes only buffers declared uniform alone and this
-/// front's constant buffers are also copied and read as storage (`ConstantsAsStorage`), so each
-/// discard gives the buffer new storage and its bind group is made again (status, Gap list).
+/// draws through it directly, as the library does. A known failure: each draw after the first
+/// makes one either way, since the back end's uniform arena takes only buffers whose usage is
+/// uniform alone, and no buffer the interface lets a front write is (writes need `COPY_DST`), so
+/// each rewrite gives the buffer new storage and its bind group is made again (status, Gap list).
 #[cfg(not(feature = "webgl"))]
 #[test]
 #[ignore]
@@ -946,11 +946,7 @@ fn constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu() {
             after_first = made(&dev);
         }
     }
-    assert_eq!(
-        made(&dev),
-        after_first,
-        "bind groups made by Map(WRITE_DISCARD) draws"
-    );
+    let discarded = made(&dev) - after_first;
     dev.set_constant_buffers(PIXEL, 0, &[Some(default.clone())])
         .unwrap();
     let d = Resource::Buffer(default);
@@ -961,10 +957,12 @@ fn constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu() {
             after_first = made(&dev);
         }
     }
+    let updated = made(&dev) - after_first;
     assert_eq!(
-        made(&dev),
-        after_first,
-        "bind groups made by UpdateSubresource draws"
+        (discarded, updated),
+        (0, 0),
+        "bind groups made after the first draw by Map(WRITE_DISCARD) draws and by \
+         UpdateSubresource draws"
     );
     assert!(dev.removed.is_none());
 }
