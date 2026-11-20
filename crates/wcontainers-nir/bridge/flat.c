@@ -13,17 +13,20 @@
 #include "util/format/u_formats.h"
 #include "util/hash_table.h"
 
-/* A growable array of one element type. */
-#define GROW(array, count, capacity)                                                               \
+/* A growable array of one element type; on failure `cleanup` runs and the function fails. */
+#define GROW_OR(array, count, capacity, cleanup)                                                   \
    do {                                                                                            \
       if ((count) == (capacity)) {                                                                 \
          (capacity) = (capacity) ? (capacity) * 2 : 64;                                            \
          void *grown = realloc((array), (capacity) * sizeof(*(array)));                            \
-         if (!grown)                                                                               \
+         if (!grown) {                                                                             \
+            cleanup;                                                                               \
             return false;                                                                          \
+         }                                                                                         \
          (array) = grown;                                                                          \
       }                                                                                            \
    } while (0)
+#define GROW(array, count, capacity) GROW_OR(array, count, capacity, (void)0)
 
 /* A stage value of lowered IO (load_input, load_interpolated_input, store_output): one variable a
  * slot, its type and interpolation gathered from the intrinsics that reach it. */
@@ -139,19 +142,25 @@ type_index(struct flattening *f, const struct glsl_type *type, uint32_t *index)
    } else if (glsl_type_is_struct_or_ifc(type)) {
       t.kind = WC_TYPE_STRUCT;
       t.length = glsl_get_length(type);
-      uint32_t field_types[t.length ? t.length : 1];
+      /* The fields' types first, since flattening them adds fields of their own. */
+      uint32_t *field_types = malloc((t.length ? t.length : 1) * sizeof(*field_types));
+      if (!field_types)
+         return false;
       for (uint32_t i = 0; i < t.length; i++) {
-         if (!type_index(f, glsl_get_struct_field(type, i), &field_types[i]))
+         if (!type_index(f, glsl_get_struct_field(type, i), &field_types[i])) {
+            free(field_types);
             return false;
+         }
       }
       t.element = f->out->field_count;
       for (uint32_t i = 0; i < t.length; i++) {
-         GROW(f->out->fields, f->out->field_count, f->field_capacity);
+         GROW_OR(f->out->fields, f->out->field_count, f->field_capacity, free(field_types));
          f->out->fields[f->out->field_count++] = (struct wc_flat_field){
             .type = field_types[i],
             .offset = glsl_get_struct_field_offset(type, i),
          };
       }
+      free(field_types);
    } else if (glsl_type_is_matrix(type)) {
       t.kind = WC_TYPE_MATRIX;
       /* Only a matrix laid out in memory has a layout; any other is column-major. */
