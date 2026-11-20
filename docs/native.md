@@ -472,7 +472,13 @@ tr/code.rs:124-127), under "withheld register named by the guest" (section 3.7).
   takes two words in line, `and t, xN, #(size - 1)`, `cbnz t, exact`: a base aligned to the size keeps the
   access in one aligned run of that many bytes, which no page boundary splits; `exact`, out of line, is the
   exact test above, which goes back to the access when it does not cross and to the probes when it does (N4
-  run 7). An
+  run 7). In a straight-line part that loops to its own start, a base that no instruction of the part writes
+  is tested once, at the part's start (`Native::loop_invariant`, on ARM64 the bases with the largest size each
+  is tested for): when every such base is aligned, the code goes to a copy of the part, placed after the
+  piece, whose accesses through those bases take no test and which loops to itself; otherwise it goes on into
+  the part as made without it, whose way back reaches the test again. A stop in the copy resumes at its guest
+  position as anywhere else, and every entry into the part from elsewhere goes through the test (N4 run 16;
+  matrix -10.8% cycles by alternating pairs, nothing else moved beyond the noise). An
   access within one page is copied as it is (one page refuses all of it or none). On `cross` a probe of
   each of the two pages comes first (a load: `ldrb wzr` at the access's first and last byte; a store:
   `staddb wzr` there, which needs write permission and changes nothing, measured in experiments/n0r3/
