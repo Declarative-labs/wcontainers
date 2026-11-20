@@ -17,7 +17,10 @@ use crate::instruction::{
     Address, BranchRegister, Instruction as I, MemoryAccess, Reg, SystemRegister,
 };
 use crate::meaning::Host;
-use crate::mirror::{self, MIRROR, REACH_BITS, SLOT_MOVES, SLOT_SHIFT};
+use crate::mirror::{
+    self, LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_MISSED, LAST_TARGET_TEST, MIRROR,
+    REACH_BITS, SLOT_MOVES, SLOT_SHIFT,
+};
 pub use crate::thread_state::{
     BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
@@ -924,6 +927,12 @@ pub struct LinkWords {
     pub branch: (u32, u32),
     /// An empty slot's first word.
     pub empty: u32,
+    /// The first move of a return's last target, as `moves`; the others are a slot's.
+    pub last_target_first: (u32, u32),
+    /// A return's test once its last target is made: it goes past the call.
+    pub last_target_test: u32,
+    /// A return's direct branch to its last target's piece before it is linked.
+    pub last_target_branch: u32,
 }
 
 /// The words a loader fills, from the encoder.
@@ -940,6 +949,18 @@ pub fn link_words() -> LinkWords {
         jump: encode::branch_register(form::BR, SCRATCH),
         branch: (clear, clear ^ back),
         empty: encode::exception(form::UDF, 0),
+        last_target_first: {
+            let clear = last_target_move(0, 0);
+            (clear, clear ^ last_target_move(0, u16::MAX))
+        },
+        last_target_test: encode::compare_branch(
+            true,
+            SCRATCH,
+            between(LAST_TARGET_TEST, LAST_TARGET_MISSED),
+        )
+        .expect("in reach"),
+        last_target_branch: encode::branch(false, between(LAST_TARGET_BRANCH, LAST_TARGET_MISSED))
+            .expect("in reach"),
     }
 }
 
@@ -1012,6 +1033,8 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     if withheld {
         out.code.slow(NativeReason::WithheldRegisterNamed);
         out.put(load_page(SCRATCH, withheld_slot(n)));
+    } else if op == BranchRegister::Ret {
+        last_target(out, n);
     }
     out.put(encode::ubfx(
         SCRATCH,
@@ -1053,6 +1076,48 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
             out.put(encode::branch_register(form::BR, SCRATCH));
         }
     }
+}
+
+/// The bytes from word `from` of a return's start to word `to`.
+fn between(from: usize, to: usize) -> i64 {
+    ((to - from) as u64 * INSTRUCTION) as i64
+}
+
+/// Move `k` of a return's last target into t, from the lowest part up, with immediate `imm16`: a `movz`, then a
+/// slot's `movk`s.
+fn last_target_move(k: usize, imm16: u16) -> u32 {
+    let half = k as u32;
+    if k == 0 {
+        encode::movz(SCRATCH, imm16, half)
+    } else {
+        encode::movk(SCRATCH, imm16, half)
+    }
+}
+
+/// The moves of a return's last target, with their immediates clear.
+fn last_target_moves() -> [u32; SLOT_MOVES] {
+    std::array::from_fn(|k| last_target_move(k, 0))
+}
+
+/// A return's last target compared in line (docs/native.md section 3.2): on a match a direct branch the inside
+/// links to that target's piece, otherwise on to the jump through the target's slot, by way of a call that has
+/// the inside make this target the last one while there is none.
+fn last_target(out: &mut Out, n: Register) {
+    out.put_all(&last_target_moves());
+    out.put(encode::logical_register(
+        form::EOR_SHIFTED,
+        SCRATCH,
+        SCRATCH,
+        n,
+    ));
+    out.put(
+        encode::compare_branch(true, SCRATCH, between(LAST_TARGET_TEST, LAST_TARGET_CALL))
+            .expect("in reach"),
+    );
+    out.put(
+        encode::branch(false, between(LAST_TARGET_BRANCH, LAST_TARGET_MISSED)).expect("in reach"),
+    );
+    out.call(InsideCall::LastTarget);
 }
 
 /// A read or write of the float status or mode between two calls into the inside.

@@ -21,3 +21,12 @@ pub const SLOT_MOVED_BITS: u32 = SLOT_MOVES as u32 * SLOT_MOVE_BITS;
 pub const fn slot(guest: u64) -> u64 {
     MIRROR | guest << SLOT_SHIFT
 }
+
+/// The words a return starts with (docs/native.md section 3.2), by their place: the moves of the return's last
+/// target into the scratch register, which the inside fills at the return's first miss, its compare with the
+/// target, the test, the direct branch the inside links to the last target's piece, and the call that has the
+/// inside fill them; the jump through the target's slot follows.
+pub const LAST_TARGET_TEST: usize = SLOT_MOVES + 1;
+pub const LAST_TARGET_BRANCH: usize = LAST_TARGET_TEST + 1;
+pub const LAST_TARGET_CALL: usize = LAST_TARGET_BRANCH + 1;
+pub const LAST_TARGET_MISSED: usize = LAST_TARGET_CALL + 1;
