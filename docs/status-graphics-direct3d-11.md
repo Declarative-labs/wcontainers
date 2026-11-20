@@ -30,9 +30,14 @@ Round 2, run 12 (2026-11-20, about 02:00 to 04:00 Pacific):
   `stream`), which matches real Direct3D on both builds.
 - The cube-face count is the named `CUBE_FACES` in device.rs; ten literal lines left the
   baseline.
-- The whole bar at 32c76f17 (logs/r12e-*, 02:50 to 03:40 Pacific) and the WebGL 2 build's
+- The whole bar at 32c76f17 (logs/r12e-*, 02:50 to 03:30 Pacific) and the WebGL 2 build's
   (logs/r12b-*, r12c-*, r12d-*, 02:09 to 02:41): see Wine's files, the Gap list and
-  Measurements.
+  Measurements. At 7e4d8df6 (the cube-face constant): literal check exit 0, lint of both builds
+  clean, front 55, unit 5, cache 1 (x86), library com 15 and programs 44 with 2 ignored
+  (logs/r12f-*, r12g-lib.log, 03:31 to 04:00).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (the WebGL 2 build
+  inside it) and the x86 machine's /work/target/g-d3d11 were deleted. Nothing was built on the
+  Mac (formatting only); nothing was installed.
 
 ## Wine's Direct3D 11 tests through ours
 
