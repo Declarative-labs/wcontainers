@@ -23,7 +23,7 @@ function New-DriverFolder([string]$Driver) {
     $program = Join-Path $folder (Split-Path -Leaf $Glcts)
     New-Item -ItemType HardLink -Path $program -Value $Glcts | Out-Null
     if ($Driver -ne $System) {
-        foreach ($library in Get-ChildItem (Join-Path $MesaBin '*.dll')) {
+        foreach ($library in Get-ChildItem (Join-Path $MesaBin '*') -Include '*.dll', '*.pdb') {
             Copy-Item -Force $library.FullName $folder
         }
         $env:GALLIUM_DRIVER = $Driver

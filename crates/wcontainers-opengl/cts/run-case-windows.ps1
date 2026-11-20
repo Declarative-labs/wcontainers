@@ -40,8 +40,12 @@ if ($Debugger) {
     }
     $env:PATH = "$(Join-Path $lldbPython 'tools');$env:PATH"
     $env:PYTHONHOME = Join-Path $lldbPython 'tools'
+    # Mesa's PDB files are read by lldb's own reader (Microsoft's needs a registered DLL).
+    $env:LLDB_USE_NATIVE_PDB_READER = '1'
     $command = Join-Path $Tools "$LlvmName\bin\lldb.exe"
-    $arguments = @('--batch', '-o', 'run', '-k', 'thread backtrace all', '-k', 'image list', '-k', 'kill',
+    # The stopped thread's stack words as symbols too, for frames the unwinder cannot follow.
+    $arguments = @('--batch', '-o', 'run', '-k', 'thread backtrace all',
+        '-k', 'memory read --format A --size 8 --count 512 $rsp', '-k', 'image list', '-k', 'kill',
         '--', $program) + $deqpArguments
     # Start-Process joins its arguments with spaces, so one holding a space is quoted.
     $arguments = $arguments | ForEach-Object { if ($_ -match ' ') { "`"$_`"" } else { $_ } }
