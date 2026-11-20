@@ -4,13 +4,18 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/aio_abi.h>
+#include <mqueue.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/inotify.h>
+#include <sys/signalfd.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -197,6 +202,38 @@ int main(void) {
     requests[0].aio_key = 3;
     R(cancel(ctx, &requests[0], got));
     R(cancel(ctx, (struct iocb *)8, got));
+
+    // Reads and writes of descriptors that are not files: refused at submission where the kind
+    // has no `read_iter` or `write_iter`.
+    sigset_t usr2;
+    sigemptyset(&usr2);
+    sigaddset(&usr2, SIGUSR2);
+    sigprocmask(SIG_BLOCK, &usr2, NULL);
+    struct {
+        const char *name;
+        int fd;
+    } kinds[] = {
+        {"eventfd", eventfd(5, EFD_NONBLOCK)},
+        {"timerfd", timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK)},
+        {"signalfd", signalfd(-1, &usr2, SFD_NONBLOCK)},
+        {"inotify", inotify_init1(IN_NONBLOCK)},
+        {"epoll", epoll_create1(0)},
+        {"pidfd", (int)syscall(SYS_pidfd_open, getpid(), 0)},
+        {"mqueue", mq_open("/aioqueue", O_RDWR | O_CREAT | O_NONBLOCK, 0600, NULL)},
+    };
+    mq_unlink("/aioqueue");
+    unsigned long long eight = 3;
+    for (unsigned i = 0; i < sizeof kinds / sizeof *kinds; i++) {
+        for (int write = 0; write < 2; write++) {
+            requests[0] = make(write ? IOCB_CMD_PWRITE : IOCB_CMD_PREAD, kinds[i].fd, &eight, 8, 0);
+            long n = submit(ctx, 1, list);
+            printf("%s %s: submit %ld %s\n", write ? "write" : "read", kinds[i].name, n,
+                   n < 0 ? strerror(errno) : "");
+            if (n == 1)
+                events(ctx, requests, 1);
+        }
+        close(kinds[i].fd);
+    }
 
     // A child has no contexts.
     pid_t child = fork();

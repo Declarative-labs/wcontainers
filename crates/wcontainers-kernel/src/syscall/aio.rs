@@ -322,7 +322,20 @@ fn submit_one(
                 {
                     return Err(Errno::EBADF);
                 }
-                if open.node.borrow().is_directory() {
+                // `aio_read` and `aio_write` want the kind's `read_iter` or `write_iter`:
+                // directories, epoll, inotify, process descriptors and message queues have
+                // neither, and event counters, timers and signal descriptors only read that way.
+                use crate::file::Anon;
+                use crate::fs::Content;
+                let iterates = match &open.anon {
+                    Some(Anon::Event(_) | Anon::Timer(_) | Anon::Signals(_)) => !write,
+                    Some(Anon::Epoll(_) | Anon::Inotify(_)) => false,
+                    None => !matches!(
+                        open.node.borrow().content,
+                        Content::Directory(_) | Content::Pidfd(..) | Content::Mqueue(_)
+                    ),
+                };
+                if !iterates {
                     return Err(Errno::EINVAL);
                 }
             }
