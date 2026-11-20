@@ -161,10 +161,12 @@ pub fn convert(
             .contains(VariantFlags::LAYER_FROM_STAGE)
             .then(|| stage::named_layer_location(variant));
         let mut module = stage::passthrough(&reflection, named_layer)?;
-        if variant.flags.contains(VariantFlags::CLIP_DISTANCE) {
-            // The pass-through is the last vertex stage: it passes the distances to the pixel program.
+        let last_vertex_stage = VariantFlags::CLIP_DISTANCE | VariantFlags::DEPTH_CLAMP;
+        if variant.flags.intersects(last_vertex_stage) {
+            // The pass-through is the last vertex stage: it passes the distances and the unclamped
+            // depth to the pixel program.
             let key = VariantKey {
-                flags: VariantFlags::CLIP_DISTANCE | variant.flags & VariantFlags::LAYER_FROM_STAGE,
+                flags: variant.flags & (last_vertex_stage | VariantFlags::LAYER_FROM_STAGE),
                 linked: variant.linked,
                 ..VariantKey::default()
             };
@@ -185,13 +187,12 @@ pub fn convert(
     })
 }
 
-/// Refuses, by name, the rewrites of the last vertex stage for a geometry shader: its draw's vertex
-/// program is the stage helper's, which makes none of them yet.
+/// Refuses, by name, the rewrites of the last vertex stage for a geometry shader that its draw's vertex
+/// program, the stage helper's pass-through, does not make.
 fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
     let vertex_flags = VariantFlags::VIEWPORT_ADJUST
         | VariantFlags::VIEWPORT_DEPTH_FLIP
-        | VariantFlags::CLIP_DEPTH_REWRITE
-        | VariantFlags::DEPTH_CLAMP;
+        | VariantFlags::CLIP_DEPTH_REWRITE;
     if variant.flags.intersects(vertex_flags)
         || !variant.pulled.is_empty()
         || variant.draw_base != DrawBaseSource::None

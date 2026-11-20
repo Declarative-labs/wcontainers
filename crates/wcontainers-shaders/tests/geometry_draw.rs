@@ -465,7 +465,11 @@ fn constants() -> Vec<u8> {
         .collect()
 }
 
-fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8> {
+/// A depth range drawn with depth clamped instead of clipped, into a Depth32Float buffer cleared
+/// to 1 and written by every fragment, whose texels the draw returns instead of the target's.
+type Clamped = Option<[f32; 2]>;
+
+fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8], clamped: Clamped) -> Vec<u8> {
     let (vs, ps) = (
         bytecode(&format!("{}.dxbc", case.vs)),
         bytecode("ps_geometry.dxbc"),
@@ -483,8 +487,22 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8>
     let constants = gpu
         .immutable(&constants(), D3D11_BIND_CONSTANT_BUFFER)
         .unwrap();
-    let raster = gpu.rasterizer(&d3d11::solid()).unwrap();
+    let mut raster = d3d11::solid();
+    raster.DepthClipEnable = clamped.is_none().into();
+    let raster = gpu.rasterizer(&raster).unwrap();
     let (target, rtv) = gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM).unwrap();
+    let depth = clamped.map(|_| {
+        let (texture, view) = gpu.depth(SIZE, SIZE, DXGI_FORMAT_D32_FLOAT).unwrap();
+        let state = gpu
+            .depth_stencil(&D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: true.into(),
+                DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: D3D11_COMPARISON_ALWAYS,
+                ..Default::default()
+            })
+            .unwrap();
+        (texture, view, state)
+    });
     let index_buffer = case
         .indexed
         .map(|_| gpu.immutable(indices, D3D11_BIND_INDEX_BUFFER).unwrap());
@@ -495,8 +513,20 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8>
         c.RSSetState(&raster);
         c.IASetPrimitiveTopology(d3d_topology(case.topology));
         c.ClearRenderTargetView(&rtv, &CLEAR);
-        c.OMSetRenderTargets(Some(&[Some(rtv)]), None);
+        c.OMSetRenderTargets(Some(&[Some(rtv)]), depth.as_ref().map(|d| &d.1));
         gpu.viewport(SIZE, SIZE);
+        if let (Some((_, view, state)), Some([near, far])) = (&depth, clamped) {
+            c.ClearDepthStencilView(view, D3D11_CLEAR_DEPTH.0, 1.0, 0);
+            c.OMSetDepthStencilState(state, 0);
+            c.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: SIZE as f32,
+                Height: SIZE as f32,
+                MinDepth: near,
+                MaxDepth: far,
+            }]));
+        }
         match (case.indexed, &index_buffer) {
             (Some(base), Some(ib)) => {
                 c.IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
@@ -511,8 +541,12 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8>
             _ => c.DrawInstanced(case.count, case.instances, case.first, case.first_instance),
         }
         c.GSSetShader(None, None);
+        c.OMSetDepthStencilState(None, 0);
     }
-    read(gpu, &target, Format::Rgba8Unorm)
+    match &depth {
+        Some((texture, _, _)) => read(gpu, texture, Format::Depth32Float),
+        None => read(gpu, &target, Format::Rgba8Unorm),
+    }
 }
 
 /// What the stage helper made: the picture, or the bound stream output buffers' bytes and the words
@@ -568,6 +602,7 @@ fn linked(
     case: &Case,
     vs_key: VariantKey,
     gs_flags: VariantFlags,
+    clamped: Clamped,
 ) -> (Converted, Option<Converted>, Converted) {
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them.
@@ -609,7 +644,16 @@ fn linked(
         .filter(|v| v.system == Some(SystemValue::ClipDistance))
         .map(|v| v.mask.count_ones())
         .sum();
-    let (vs, gs, ps) = if clips == 0 {
+    // Depth clamped in the programs as on a back end without depth clamping, linked the same way.
+    let clamp = match clamped {
+        Some(_) => VariantFlags::DEPTH_CLAMP,
+        None => VariantFlags::empty(),
+    };
+    let clip = match clips {
+        0 => VariantFlags::empty(),
+        _ => VariantFlags::CLIP_DISTANCE,
+    };
+    let (vs, gs, ps) = if (clip | clamp).is_empty() {
         (vs, gs, ps)
     } else {
         let location = last_stage
@@ -626,7 +670,7 @@ fn linked(
             clip_distances: clips as u8,
         };
         let key = |base: &VariantKey, samples| VariantKey {
-            flags: base.flags | VariantFlags::CLIP_DISTANCE,
+            flags: base.flags | clip | clamp,
             linked,
             samples,
             ..base.clone()
@@ -659,6 +703,7 @@ fn ours<B: Backend>(
     vertices: &[f32],
     indices: &[u8],
     stream: Option<(&StreamOutput, &Bound)>,
+    clamped: Clamped,
 ) -> Made {
     let (stream, bound) = (stream.map(|s| s.0), stream.map(|s| s.1));
     let vs_key = VariantKey {
@@ -666,7 +711,7 @@ fn ours<B: Backend>(
         draw_base: DrawBaseSource::Helpers,
         ..Default::default()
     };
-    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty());
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty(), clamped);
     // Without a geometry stage or stream output, the vertex stage writes cull distances.
     let mut stages = match (&gs, stream) {
         (None, None) => Stages::culled(b, &vs, None).unwrap(),
@@ -846,6 +891,7 @@ fn ours<B: Backend>(
         &stages.vertex_layout().unwrap(),
         &ps,
         &last,
+        clamped,
     );
     Made::Picture(picture)
 }
@@ -857,6 +903,7 @@ fn picture<B: Backend>(
     layout: &VertexLayoutDesc,
     ps: &Converted,
     last: &FinalDraw<B>,
+    clamped: Clamped,
 ) -> Vec<u8> {
     let vertex = b.create_shader(passthrough).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
@@ -880,8 +927,8 @@ fn picture<B: Backend>(
         .unwrap();
     let depth_stencil = b
         .create_depth_stencil(&DepthStencilDesc {
-            depth_compare: None,
-            depth_write: false,
+            depth_compare: clamped.map(|_| wcontainers_gpu::CompareFn::Always),
+            depth_write: clamped.is_some(),
             stencil: None,
             stencil_read_mask: [0xff; 2],
             stencil_write_mask: [0xff; 2],
@@ -910,9 +957,51 @@ fn picture<B: Backend>(
         SIZE,
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     );
+    let depth = clamped.map(|_| {
+        texture(
+            b,
+            Format::Depth32Float,
+            SIZE,
+            TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        )
+    });
+    // The pixel program's depth range, where it clamps.
+    let mut helpers = vec![0u8; ps.reflection.helper_size as usize];
+    for h in &ps.reflection.helpers {
+        assert_eq!(h.value, HelperValue::DepthRange, "{h:?}");
+        let range = clamped.expect("a range");
+        let at = h.offset as usize;
+        for (i, f) in range.iter().enumerate() {
+            let at = at + std::mem::size_of::<f32>() * i;
+            helpers[at..at + std::mem::size_of::<f32>()].copy_from_slice(&f.to_le_bytes());
+        }
+    }
+    let helper_buffer = (!helpers.is_empty()).then(|| buffer(b, &helpers, BufferUsage::UNIFORM));
+    let helper_set = helper_buffer.as_ref().map(|helper_buffer| {
+        b.create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Fragment),
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: helper_buffer,
+                offset: 0,
+                size: helpers.len() as u64,
+            }),
+        }])
+        .unwrap()
+    });
     let mut pass = PassDesc {
         colors: Default::default(),
-        depth: None,
+        depth: depth
+            .as_ref()
+            .map(|(_, view)| wcontainers_gpu::DepthAttachment {
+                view,
+                depth: Some(wcontainers_gpu::AspectOps {
+                    load: wcontainers_gpu::LoadOp::Clear(1.0f32.to_bits()),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+                stencil: None,
+            }),
         empty: None,
         occlusion: None,
     };
@@ -924,6 +1013,7 @@ fn picture<B: Backend>(
         store: StoreOp::Store,
     });
     b.begin_pass(&pass);
+    let [near, far] = clamped.unwrap_or([0.0, 1.0]);
     let range = match last.index_offset {
         Some(_) => DrawRange::Indexed {
             first: 0,
@@ -945,7 +1035,7 @@ fn picture<B: Backend>(
         depth_stencil: &depth_stencil,
         raster: &raster,
         vertex_layout: &vertex_layout,
-        bindings: [None; 4],
+        bindings: [None, None, None, helper_set.as_ref()],
         vertex_buffers: &[Some(VertexBinding {
             buffer: &last.buffer,
             offset: 0,
@@ -962,8 +1052,8 @@ fn picture<B: Backend>(
             y: 0.0f32.to_bits(),
             width: (SIZE as f32).to_bits(),
             height: (SIZE as f32).to_bits(),
-            min_depth: 0.0f32.to_bits(),
-            max_depth: 1.0f32.to_bits(),
+            min_depth: near.to_bits(),
+            max_depth: far.to_bits(),
         }],
         scissors: &[],
         blend_constant: [0; 4],
@@ -976,7 +1066,7 @@ fn picture<B: Backend>(
     b.read_back_now(
         &ReadSource::Texture {
             region: TextureRegion {
-                texture: &target,
+                texture: depth.as_ref().map_or(&target, |d| &d.0),
                 mip: 0,
                 layer: 0,
                 origin: Origin::default(),
@@ -1017,7 +1107,7 @@ fn ours_replayed<B: Backend>(
         draw_base: DrawBaseSource::Helpers,
         ..Default::default()
     };
-    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY);
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY, None);
     let gs = gs.expect("a geometry shader");
     let mut replay = GeometryReplay::new(b, &vs, &gs, stream.map(|s| s.0))?;
     let vertex_buffer = buffer(b, bytes_of(vertices), BufferUsage::VERTEX);
@@ -1172,7 +1262,14 @@ fn ours_replayed<B: Backend>(
         replay.destroy(b);
         return Ok(Made::Streamed(streamed, words));
     }
-    let out = picture(b, replay.passthrough(), &replay.vertex_layout(), &ps, &last);
+    let out = picture(
+        b,
+        replay.passthrough(),
+        &replay.vertex_layout(),
+        &ps,
+        &last,
+        None,
+    );
     replay.destroy(b);
     Ok(Made::Picture(out))
 }
@@ -1532,6 +1629,7 @@ fn stream_output_matches_direct3d() {
                 &vertices,
                 &indices,
                 Some((&so, &TWO_BUFFERS)),
+                None,
             ) else {
                 unreachable!()
             };
@@ -1742,9 +1840,14 @@ fn streams_past_the_first_match_direct3d() {
                 );
                 let (reference, statistics) =
                     direct3d_streamed(&gpu, case, &vertices, &indices, (&so, bound), STREAMS);
-                let Made::Streamed(streamed, words) =
-                    ours(&mut backend, case, &vertices, &indices, Some((&so, bound)))
-                else {
+                let Made::Streamed(streamed, words) = ours(
+                    &mut backend,
+                    case,
+                    &vertices,
+                    &indices,
+                    Some((&so, bound)),
+                    None,
+                ) else {
                     unreachable!()
                 };
                 compared += 1;
@@ -1837,13 +1940,14 @@ fn geometry_shaders_draw_as_direct3d_does() {
                 eprintln!("{name}: the planes drop {planes} primitives");
                 *total += planes;
             }
-            let reference = direct3d(&gpu, case, &vertices, &indices);
+            let reference = direct3d(&gpu, case, &vertices, &indices, None);
             // Texels drawn: those unlike the corner, which no case draws.
             let drawn = reference
                 .chunks(4)
                 .filter(|t| *t != &reference[..4])
                 .count();
-            let Made::Picture(picture) = ours(&mut backend, case, &vertices, &indices, None) else {
+            let Made::Picture(picture) = ours(&mut backend, case, &vertices, &indices, None, None)
+            else {
                 unreachable!()
             };
             let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
@@ -1927,6 +2031,81 @@ fn geometry_shaders_draw_as_direct3d_does() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// Units in the last place two interpolations of one value may round apart by.
+const INTERPOLATION_ULPS: f32 = 4.0;
+
+/// Depth clamped behind a geometry shader, in the stage helper's pass-through and the pixel program
+/// (as on a back end without depth clamping), against real Direct3D 11 with `DepthClipEnable` false:
+/// points made quads and triangles copied (`gs_quads`, `gs_cut`) at seeded depths reaching past both
+/// ends of the clip volume, a depth range of 0.25 to 0.75, depth buffers compared as f32 steps.
+#[test]
+fn depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let range = [0.25f32, 0.75];
+    let deepest = 2.0f32;
+    // The pixel program's depth is an interpolated value, the rasteriser's a plane of its own: they
+    // may round apart by a few units in the last place of the value, mapped by the depth range.
+    let allowed = INTERPOLATION_ULPS * f32::EPSILON * deepest * (range[1] - range[0]);
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let mut vertices = vertices(seed);
+        let mut rng = fastrand::Rng::with_seed(seed ^ 0xdee9);
+        for v in vertices.chunks_mut(COLOURED_VERTEX_BYTES as usize / std::mem::size_of::<f32>()) {
+            v[2] = rng.f32() * (deepest + 1.0) - 1.0;
+        }
+        for case in CASES
+            .iter()
+            .filter(|c| matches!(c.gs, "gs_quads" | "gs_cut"))
+        {
+            let indices = indices(seed, case);
+            let name = format!("seed {seed} {} {:?} depth clamped", case.gs, case.topology);
+            let reference = direct3d(&gpu, case, &vertices, &indices, Some(range));
+            let Made::Picture(picture) =
+                ours(&mut backend, case, &vertices, &indices, None, Some(range))
+            else {
+                unreachable!()
+            };
+            let depths = |t: &[u8]| -> Vec<f32> {
+                t.chunks(std::mem::size_of::<f32>())
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect()
+            };
+            let (theirs, mine) = (depths(&reference), depths(&picture));
+            // Texels Direct3D clamped to either end: none would leave the clamp unshown.
+            let at_ends = theirs.iter().filter(|z| range.contains(z)).count();
+            let largest = theirs
+                .iter()
+                .zip(&mine)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            let (count, steps) = differ(&reference, &picture, Format::Depth32Float);
+            compared += 1;
+            eprintln!(
+                "{name}: {at_ends} texels clamped by direct3d, {count} differ, largest {largest:e} \
+                 ({steps} steps; allowed {allowed:e})"
+            );
+            if at_ends == 0 || largest > allowed {
+                failures.push(name);
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// The geometry shaders of [`geometry_shaders_draw_as_direct3d_does`] through the replay route on the
 /// WebGL 2 back end (ANGLE on the same GPU), against real Direct3D 11: the same seeds, cases and
 /// allowances, but for the topologies the route refuses by name.
@@ -1971,7 +2150,7 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                 }
                 continue;
             }
-            let reference = direct3d(&gpu, case, &vertices, &indices);
+            let reference = direct3d(&gpu, case, &vertices, &indices, None);
             let drawn = reference
                 .chunks(4)
                 .filter(|t| *t != &reference[..4])

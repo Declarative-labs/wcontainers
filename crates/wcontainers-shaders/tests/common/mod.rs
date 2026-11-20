@@ -191,6 +191,8 @@ pub struct Reference {
     pub unbound: bool,
     /// The target cleared to zero instead of [`CLEAR`].
     pub cleared_to_zero: bool,
+    /// Drawn without a pixel shader.
+    pub no_pixel_shader: bool,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -260,6 +262,9 @@ pub fn direct3d_11(
         Vec::new()
     };
     gpu.program(&vs, &ps, &elements).unwrap();
+    if reference.no_pixel_shader {
+        unsafe { gpu.context.PSSetShader(None, None) };
+    }
     let vertices = grid();
     let _buffer = grid_drawn.then(|| gpu.vertices(0, bytes_of(&vertices), 20).unwrap());
     let constants = gpu
@@ -672,6 +677,9 @@ pub struct Setup {
     /// A component mapping applied to the sampled texture's texels as they are uploaded: what a view
     /// with that mapping reads, for comparing `VariantKey::swizzled` against.
     pub texel_map: Option<[wcontainers_gpu::ViewComponent; 4]>,
+    /// Drawn as a pipeline without a pixel shader: the pixel program is the built-in one for
+    /// `ps_key` (`builtin::pixel_program_for_variant`), writing no colour.
+    pub no_pixel_shader: bool,
 }
 
 /// `texels` (Rgba8Unorm) with each texel's components mapped by `map`.
@@ -709,6 +717,7 @@ impl Setup {
             texel_buffers: Vec::new(),
             layers: 0,
             texel_map: None,
+            no_pixel_shader: false,
         }
     }
 }
@@ -965,7 +974,11 @@ pub fn ours<B: Backend + 'static>(
 ) -> Vec<u8> {
     // As a front links the stages: the vertex program writes each output as the pixel program reads it.
     let setup = &draw.setup;
-    let ps = convert(draw.ps, &setup.ps_key, None).unwrap();
+    let ps = if setup.no_pixel_shader {
+        wcontainers_shaders::builtin::pixel_program_for_variant(&setup.ps_key).unwrap()
+    } else {
+        convert(draw.ps, &setup.ps_key, None).unwrap()
+    };
     let key = VariantKey {
         output_interpolation: ps
             .reflection
@@ -1302,7 +1315,11 @@ pub fn ours<B: Backend + 'static>(
         .create_blend(&BlendDesc {
             targets: [RenderTargetBlend {
                 blend: setup.blend,
-                writes: ColorWrites::all(),
+                writes: if setup.no_pixel_shader {
+                    ColorWrites::empty()
+                } else {
+                    ColorWrites::all()
+                },
             }; 8],
             same_for_all: true,
             alpha_to_coverage: false,
