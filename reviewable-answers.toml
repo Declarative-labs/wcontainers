@@ -369,6 +369,7 @@ copy_from_read_buf = { answer = "first_word", confidence = 0.9631013609019476, m
 copy_map = { answer = "first_word", confidence = 0.98585427689392, model = "perplexity/pplx-decider-v1.2-20261016" }
 copy_on_write = { answer = "first_word", confidence = 0.5761116081183133, model = "perplexity/pplx-decider-v1.2-20261016" }
 copy_out = { answer = "first_word", confidence = 0.9555177394185528, model = "perplexity/pplx-decider-v1.2-20261016" }
+copy_process_context = { answer = "first_word", confidence = 0.972999314505658, model = "perplexity/pplx-decider-v1.2-20261016" }
 copy_slot = { answer = "first_word", confidence = 0.9900297411134454, model = "perplexity/pplx-decider-v1.2-20261016" }
 copy_to_segments = { answer = "first_word", confidence = 0.992443778051131, model = "perplexity/pplx-decider-v1.2-20261016" }
 copy_touched = { answer = "first_word", confidence = 0.5270146001020996, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -1820,6 +1821,9 @@ restore_frame = { answer = "first_word", confidence = 0.9978003368904794, model 
 restored = { answer = "first_word", confidence = 0.9033828615962198, model = "perplexity/pplx-decider-v1.2-20261016" }
 restrict = { answer = "first_word", confidence = 0.9797184156035028, model = "perplexity/pplx-decider-v1.2-20261016" }
 result_path = { answer = "no_verb", confidence = 0.9330149179501144, model = "perplexity/pplx-decider-v1.2-20261016" }
+resume_no_tasks = { answer = "first_word", confidence = 0.945306549660502, model = "perplexity/pplx-decider-v1.2-20261016" }
+resume_process = { answer = "first_word", confidence = 0.909294020894092, model = "perplexity/pplx-decider-v1.2-20261016" }
+resume_tasks = { answer = "first_word", confidence = 0.9901148598685152, model = "perplexity/pplx-decider-v1.2-20261016" }
 resuming = { answer = "first_word", confidence = 0.9243265045866078, model = "perplexity/pplx-decider-v1.2-20261016" }
 ret = { answer = "no_verb", confidence = 0.6500765055398788, model = "perplexity/pplx-decider-v1.2-20261016" }
 return_of = { answer = "first_word", confidence = 0.5907773662290954, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -2264,7 +2268,9 @@ stuck_at = { answer = "first_word", confidence = 0.7480134758482364, model = "pe
 style = { answer = "no_verb", confidence = 0.8103927461916556, model = "perplexity/pplx-decider-v1.2-20261016" }
 supported = { answer = "first_word", confidence = 0.8421183602097366, model = "perplexity/pplx-decider-v1.2-20261016" }
 suqadd64 = { answer = "first_word", confidence = 0.1457442475609106, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
-suspend = { answer = "first_word", confidence = 0.9904101854061677, model = "perplexity/pplx-decider-v1.2-20261016" }
+suspend_no_tasks = { answer = "first_word", confidence = 0.9540918284888964, model = "perplexity/pplx-decider-v1.2-20261016" }
+suspend_process = { answer = "first_word", confidence = 0.9661939073959096, model = "perplexity/pplx-decider-v1.2-20261016" }
+suspend_tasks = { answer = "first_word", confidence = 0.9892605199684108, model = "perplexity/pplx-decider-v1.2-20261016" }
 swap = { answer = "first_word", confidence = 0.9815265386858772, model = "perplexity/pplx-decider-v1.2-20261016" }
 symlink = { answer = "no_verb", confidence = 0.7811867017445556, model = "perplexity/pplx-decider-v1.2-20261016" }
 symlinkat = { answer = "no_verb", confidence = 0.4341476694192978, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
