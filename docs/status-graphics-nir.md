@@ -4,12 +4,13 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 7 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and candidate
-B leads on both counts (The choice, below). Run 7: the GLSL reference is in for compute programs
-(llvmpipe through Mesa's EGL, the program's uniforms and blocks filled from OpenGL's own reflection
-and the bridge's names), and piglit's shader tests are in the corpus (compute programs compared,
-vertex and fragment programs converted only). GLSL vertex and fragment comparison, the other GLSL
-sources, the rest of the SPIR-V corpus, the 15.4 rewrites and robustBufferAccess remain (Next).
+G8 run 7 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and on
+piglit's GLSL; candidate B leads on both counts (The choice, below). Run 7: the GLSL reference on
+llvmpipe for compute, vertex and fragment programs (vertex and fragment programs drawn as points),
+piglit's shader tests in the corpus (1152 match on route B, 17 differ, all from undefined behaviour
+on the seeded inputs, listed below), and four faults in the GLSL bridge found by it and fixed.
+Textures on the GLSL side, the other GLSL sources, the rest of the SPIR-V corpus, the 15.4 rewrites
+and robustBufferAccess remain (Next).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -150,8 +151,38 @@ Done:
   `.shader_test` file's `[vertex shader]`, `[fragment shader]` and `[compute shader]` sections
   through `Nir::from_glsl` and each stage through the route; `[vertex shader passthrough]` is no
   stage of the file's; geometry, tessellation and assembly programs, two sources of one stage and a
-  compute stage beside others are refused by name. A compute program is held to llvmpipe; vertex
-  and fragment programs are converted and validated and counted "not yet held to llvmpipe".
+  compute stage beside others are refused by name. A source without `#version` gets the file's
+  `GLSL >= x` requirement's, as piglit's shader runner gives it (`shader_runner.c`).
+- GLSL vertex and fragment programs held to llvmpipe (`glsl::drawn_program`, `compare_draw`,
+  `Llvmpipe::draw`): drawn as points, one a pixel of a row, one input set each. A vertex program is
+  wrapped in its own source (`#define main wc_program_main` after `#version`; a new `main` calls it,
+  keeps `gl_Position` in `wc_position` and puts the point at the attribute `wc_point`); with no
+  fragment program it is followed by a catcher (written from llvmpipe's reflection of the wrapped
+  program linked separable) that writes every output to a storage block at the point's pixel. A
+  fragment program alone is fed by a vertex program written from its inputs (llvmpipe's reflection
+  of it linked separable; `gl_Color`, `gl_TexCoord` and the like fed through OpenGL's own outputs).
+  Desktop feeders and catchers are `#version 450 compatibility` (no interpolation to match between
+  stages from 4.40); an ES feeder is the program's own ES version. The drawn program goes through
+  `Nir::from_glsl` and the same route; llvmpipe draws it (window depth 0 to 1 by `glClipControl`,
+  vertex colour clamping off: both are draw-time variants of the driver's that the route does not
+  take), twice (they must agree), and lavapipe runs the route's two modules. Attributes at
+  llvmpipe's locations and at the bridge's; an attribute the route does not read is fed to llvmpipe
+  alone. State values filled as st/mesa does for a framebuffer object. Colour targets (each
+  output's components), depth and storage blocks compared. Not set up yet, by name: textures and
+  images on the GLSL side, OpenGL's other attributes (`gl_Color`, `gl_Normal`, ...), subroutine
+  uniforms, structure and block stage values, an ES vertex program alone.
+- Faults in the GLSL bridge the reference found (run 7), each fixed: blocks without a layout were
+  std140 where st/mesa makes them std430 for a driver that loads its constants from a buffer
+  (`UseSTD430AsDefaultPacking`; the one compute program that differed); a source without `#version`
+  was taken at no version at all and accepted 1.30 and later syntax (`DefaultGLSLVersion` is now
+  110, st/mesa's); `gl_FragColor` was not written to the draw buffers (`nir_lower_fragcolor` works
+  on variables, and stage values are lowered by then: the bridge now does it on lowered IO);
+  vertex inputs kept Mesa's slots, so `gl_Vertex` and the other attributes of OpenGL's own had no
+  location: they are now numbered as st/mesa gives the driver its vertex elements (each at its rank
+  among the attributes read, `nir_recompute_io_bases`), and the bridge names them so. OpenGL's own
+  varyings (`gl_FrontColor`/`gl_Color`, back colours, `gl_TexCoord[]`, fog) take locations after
+  the 32 generic ones, by their Mesa slot (`MAX_VARYING` + slot). A built-in still refused names
+  its Mesa slot.
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -220,7 +251,33 @@ start and 5.96 at the end, 256 s; `results/run5/nir-results-r5a.jsonl`):
 - Zink also writes `gl_ClipDistance` and `gl_CullDistance` outputs a glslang program never writes, so
   A's modules ask a back end for clip distances they do not use; B drops them.
 
-The choice, on this corpus (not final: GLSL and the other sources are still to come):
+Run 7, with piglit's shader tests (2541 files) beside the SPIR-V corpus (`results/run7/nir-results-r7g.jsonl`;
+x86-64 machine, 192 children, load 4.9 at the start and 13.2 at the end, 245 s):
+- SPIR-V corpus: unchanged, A 728 match, B 773 match, 0 differ, 8 not compared each.
+- piglit: 931 files reach no route (geometry 225, tessellation 147, assembly programs 91, several
+  sources of a stage 122, and the rest refused by Mesa's compiler with its log: extensions our
+  OpenGL does not report, and programs piglit itself expects to fail). Of the other 1610:
+  route B 1152 match, 17 differ, 98 not compared, 343 fail by name; route A 3 match, 11 not
+  compared, 1596 fail (Zink's compiler takes only its own lowered IO: `load_input` is not
+  implemented in `nir_to_spirv` without Zink's own passes, so A fails nearly every GLSL program).
+- B's 17 differences are all undefined behaviour on the seeded inputs: 14 index an array out of its
+  range with a seeded uniform (`fs-vec4-const-array-indirect-access-*` 8, `glsl-array-bounds-10`
+  and `-12`, `fs-mat4-out-of-bounds-1`, `glsl-fs-varying-array`, `vs-inout-index-inout-mat2-col-array`,
+  `array-initializers-1`; llvmpipe reads zero, naga's SPIR-V clamps the index), 2 clamp a NaN
+  (`fs-saturate-sqrt`, `vs-saturate-sqrt`: `sqrt` of a negative seeded value), 1 divides an integer
+  by zero (`fs-loop-unrolled-divide-by-zero`). Left as differences (known, for this reason).
+- B's 98 not compared: textures and images not filled on the GLSL side 84, subroutine uniforms 9,
+  a state value with no name 2 (to look at), and 3 drawn programs llvmpipe or the bridge refused
+  (an extension, too many attributes, ES versions that differ).
+- B's 343 failures by name: `load_ubo` 93 (64-bit loads of `arb_gpu_shader_fp64`, bindless
+  handles, uniform block arrays indexed at run time), naga validation of route B's output 126
+  (type resolution in fragment programs and "expected data type": route faults, to look at first), a stage value interpolated two ways 15,
+  textures of other dimensions or operands 25, `gl_PrimitiveID` and `gl_ClipVertex` (Mesa slots 21
+  and 16) 17, 64-bit values 14, binding arrays the common form does not allow 21, and smaller
+  groups (`scripts/glsl_reasons.py <results> nir-naga` in scratch counts them).
+
+The choice, on this corpus (not final: the other sources are still to come; piglit's GLSL gives the
+same order: B matches 1152 GLSL programs, A 3):
 `corpus/choose`, both routes optimised (`--release`), one shader and route at a time in a child of
 its own, on ten cores (`taskset -c 0-9`), x86-64 machine, load 5.5 at the start and 3.2 at the end
 (another track's tests ran beside it), before the Zink patch: A 726 match, B 773 match; on the 725
@@ -229,24 +286,13 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. GLSL vertex and fragment programs held to llvmpipe. The plan, from what run 7 found (names between
-   stages do not survive the linker): a vertex program is wrapped in its own source, not changed:
-   after the `#version` line `#define main wc_program_main`, and at the end `#undef main`, a `main`
-   that calls it, copies `gl_Position` into a flat output and puts the vertex on a pixel of its own
-   (`gl_Position` from `gl_VertexID`, point size 1); a catcher fragment program, written from
-   OpenGL's reflection of the vertex program's outputs (`GL_PROGRAM_OUTPUT`: names, types), reads
-   each by name and writes it to a storage block at the vertex's index, so that the comparison is
-   the storage comparison compute already has. A fragment program gets a feeder vertex program
-   written from OpenGL's reflection of its inputs (names, types; interpolation from the bridge's
-   names of the fragment program linked alone), one attribute an input; both stages go through
-   `Nir::from_glsl` and the route, and lavapipe runs the route's two modules (attributes by the
-   bridge's attribute names). Targets one pixel a vertex in a row; `glClipControl(GL_LOWER_LEFT,
-   GL_ZERO_TO_ONE)` on llvmpipe so window depth agrees with Vulkan's; the state values filled as
-   st/mesa does for a framebuffer object (`FragCoordYTransform` 1, 0, -1, height;
-   `PointCoordYTransform` 1, 0, 0, 0; `prog_statevars.c`). ES programs (`#version 300 es`) need
-   the catcher in the same version (no storage blocks before 3.10): targets instead. Textures,
-   images and atomic counter buffers are also still to be filled on the GLSL side (named "not set
-   up for GLSL here" today).
+1. Route B's invalid modules on piglit (126 "invalid: ...", most of them type resolution in fragment
+   programs, and "Expected data type"): route faults, to fix first. Then textures and images on the
+   GLSL side (79 programs): the same seeded texels as `compare::resources` gives the route, made as
+   OpenGL textures at the sampler's unit (`GlslNameKind::Sampler` gives the route's binding).
+   Then OpenGL's other attributes (`glColorPointer` and its kin, or generic attributes where Mesa
+   aliases them) and subroutine uniforms (`glUniformSubroutinesuiv`, the route's word from the
+   bridge's names).
 2. The other GLSL sources pinned in `corpus/sources`: dEQP's GLES programs, Godot Compatibility,
    bgfx, Dolphin. Legacy varyings (`gl_TexCoord`, `gl_FrontColor`: `VARYING_SLOT_TEX0`, `COL0`)
    reach `builtin_at` as "another built-in" and are refused; decide (locations past the generic
@@ -300,7 +346,9 @@ Next, in this order:
   built.
 - GLSL tests: `cargo test -p wcontainers-nir --test route --test glsl_buffers --test
   glsl_reference` (with `WCONTAINERS_MESA`, on the x86 machine). The corpus run takes piglit's
-  `.shader_test` files beside the `.spv` files, from the same `WC_NIR_CORPUS`.
+  `.shader_test` files beside the `.spv` files, from the same `WC_NIR_CORPUS`; all 3546 take about
+  4 minutes at 192 at once. `scripts/glsl_reasons.py <results> [route] [n]` (scratch) counts
+  piglit's reasons.
 - Test with Mesa (on the x86 machine, after the build):
   `export WCONTAINERS_MESA=$CARGO_TARGET_DIR/mesa/build; cargo test -p wcontainers-nir` and
   `cargo clippy -p wcontainers-nir --all-targets -- -D warnings`; and both again without the variable.
@@ -331,6 +379,10 @@ Next, in this order:
   at load 0.43 at the start.
 - Corpus run with the comparison, 1005 shaders, 192 children, x86-64 machine at load 0.3 rising to
   5.3: 124 s including an incremental build (run 3).
+- The whole suite with the SPIR-V corpus and piglit compared (run 7, x86-64 machine, 192 children,
+  load 4.9 at the start and 13.2 at the end): the corpus run 245 s for 3546 files. Time per shader
+  to the validated common form at 192 at once, on the 728 shaders both match: A median 431 us, B
+  median 341 us (busy machine; the choice's times are the ten-core ones below).
 - The whole suite with the SPIR-V corpus compared (run 6, after the GLSL work; x86-64 machine,
   192 children, load 1.0 at the start and 12.5 at the end, 245 s with the build;
   `results/run6/nir-results-r6.jsonl`): the same counts as runs 4 and 5, A 728 match, B 773
@@ -392,7 +444,10 @@ Next, in this order:
   dependency. `rand` 0.9 and `rand_chacha` 0.9 (MIT OR Apache-2.0, already in the workspace),
   dev-dependencies.
 - Corpus, test data only, fetched into the build folder and never in the repository or shipped:
-  Sascha Willems' Vulkan samples at d2d49bf7 (MIT, `LICENSE.md`).
+  Sascha Willems' Vulkan samples at d2d49bf7 (MIT, `LICENSE.md`); piglit at 92510281 (since run 7;
+  its `COPYING`: MIT for most of it, with some test shaders under their projects' own licences,
+  e.g. GStreamer's in `glslparsertest`; piglit is for testing only, as the routed decision says,
+  and never a dependency).
 - Build tools only, from the repository's locked nixpkgs: Meson 1.12.1 (Apache-2.0), Ninja (Apache-2.0),
   LLVM 21.1.8 (Apache-2.0 WITH LLVM-exception; llvmpipe and lavapipe use it, wcontainers-nir does not
   link it), GCC 16.2.0 (GPL-3.0 with the GCC runtime library exception).
@@ -468,6 +523,14 @@ Next, in this order:
 - The GLSL comparison fills its inputs from OpenGL's reflection of the program on llvmpipe (names,
   types, offsets, strides) and the bridge's names for where each lands in the route's module; the
   SPIR-V comparison fills from the route's module alone.
+- GLSL vertex and fragment programs are compared as a drawn program (the vertex program wrapped in
+  its own source, a feeder or catcher written beside it), not each stage alone: names between two
+  stages do not survive OpenGL's linker, and the draw is how llvmpipe runs a stage. In a vertex
+  and fragment pair, what the vertex program computes is compared through what the fragment
+  program makes of it; its position is compared only when it is alone (the catcher).
+- The 17 differences from undefined behaviour on seeded inputs are left as differences with their
+  reason, not hidden: the seed gives indices out of range and negative square roots, which the
+  programs' own tests never give.
 
 ## Interface changes
 
@@ -504,7 +567,8 @@ None.
 
 ## Literal check
 
-Run 6: exit 0 at 4294fcf0 (x86-64 machine, from a git bundle; marks 0; the 18 changes that could
+Run 7: exit 0 at the run's last code commit (x86-64 machine, from a git bundle of the branch; marks
+0); wcontainers-nir still has no baseline lines. Run 6: exit 0 at 4294fcf0 (x86-64 machine, from a git bundle; marks 0; the 18 changes that could
 add lines are the shaders branch's, as before). The bridge's numbers are `#define`s, named once;
 the Rust added has no new bare literals (test data apart). Adopted with the branch (merged from the
 shaders branch, which carries it). wcontainers-nir has no
