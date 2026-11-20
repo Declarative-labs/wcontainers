@@ -314,7 +314,7 @@ fn layered_geometry_shaders_name_each_vertex_run() {
     );
     // Its compute form writes the slot after the position: two slots of four words per vertex.
     let compute = wgsl(&gs.modules[0]);
-    assert!(compute.contains("stage_list"), "{compute}");
+    assert!(compute.contains(stage::LIST_VARIABLE), "{compute}");
     let plain = convert(
         Source::Dxbc(&own("gs_quads.dxbc")),
         &VariantKey::default(),

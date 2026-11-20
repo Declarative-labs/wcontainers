@@ -203,6 +203,47 @@ fn a_sample_picking_its_texture_and_sampler_at_two_indices_is_refused_by_name() 
     );
 }
 
+/// An array whose elements run past the slots of its kind is refused by name, as the Direct3D routes
+/// refuse it, at the kind's last slot plus one and far past it.
+#[test]
+fn an_array_longer_than_its_kind_binds_is_refused_by_name() {
+    let arrays = [
+        ("sampler", SlotKind::Sampler),
+        ("texture_2d<f32>", SlotKind::Texture),
+        ("texture_storage_2d<rgba8unorm, write>", SlotKind::Storage),
+    ];
+    for (ty, kind) in arrays {
+        for length in [kind.slots() + 1, u32::MAX >> 1] {
+            let source = ARRAYS
+                .replace(
+                    "@group(0) @binding(SAMPLER) var s: binding_array<sampler, 4>;",
+                    "@group(0) @binding(SAMPLER) var s: sampler;",
+                )
+                .replace(
+                    "@group(0) @binding(TEXTURE) var t: binding_array<texture_2d<f32>, 4>;",
+                    "@group(0) @binding(TEXTURE) var t: texture_2d<f32>;",
+                )
+                .replace("t[i], s[i]", "t, s")
+                .replace("t[2]", "t")
+                .replace("t[1], s[i]", "t, s")
+                + &format!(
+                    "@group(1) @binding({}) var a: binding_array<{ty}, {length}>;",
+                    kind.first_binding()
+                );
+            let source = source.replace("out[2] = ", "_ = a[u.i]; out[2] = ");
+            let module = parse(&source);
+            let reflection = compute_reflection(&module);
+            let refused = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
+                .expect_err("the array is refused");
+            assert_eq!(
+                refused,
+                ConvertError::Unsupported(refusal::BINDINGS_BEYOND_LIMIT),
+                "{ty} x {length}"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_array_of_buffers_is_refused_by_name() {
     let source = "

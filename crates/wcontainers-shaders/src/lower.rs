@@ -33,7 +33,7 @@ use wcontainers_gpu::{
 use crate::variant::texel::{TexelBuffer, TexelPlace};
 
 mod evaluate;
-mod geometry;
+pub(crate) mod geometry;
 mod hull;
 
 type Result<T> = core::result::Result<T, ConvertError>;
@@ -1863,48 +1863,24 @@ impl<'a> Lowering<'a> {
         system: Option<SystemValue>,
     ) {
         let (semantic, semantic_index) = self.semantics.get(&id).cloned().unwrap_or_default();
-        let s = Self::scalar(member.scalar).unwrap_or(Scalar::U32);
-        let scalar = match s.kind {
-            ScalarKind::Float => ValueKind::Float,
-            ScalarKind::Sint => ValueKind::Sint,
-            _ => ValueKind::Uint,
+        let stream = self
+            .io_index
+            .get(&id)
+            .map_or(0, |&i| self.io[i].1.stream as u8);
+        let place = Placed {
+            location,
+            component,
+            member,
+            modes,
+            system,
+            stream,
         };
-        let interpolation = if modes & interp::FLAT != 0 || scalar != ValueKind::Float {
-            Interpolation::Flat
-        } else {
-            let linear = modes & interp::NO_PERSPECTIVE != 0;
-            match (
-                linear,
-                modes & interp::CENTROID != 0,
-                modes & interp::SAMPLE != 0,
-            ) {
-                (false, false, false) => Interpolation::Perspective,
-                (true, false, false) => Interpolation::Linear,
-                (false, true, _) => Interpolation::PerspectiveCentroid,
-                (true, true, _) => Interpolation::LinearCentroid,
-                (false, false, true) => Interpolation::PerspectiveSample,
-                (true, false, true) => Interpolation::LinearSample,
-            }
-        };
-        let system = system.or_else(|| {
-            (self.stage == SourceStage::Pixel && !input)
-                .then(|| SystemValue::Target(location.unwrap_or(0) as u8))
-        });
-        let value = StageValue {
+        let value = stage_value(
             semantic,
             semantic_index,
-            register: location.unwrap_or(0),
-            mask: (((1u32 << member.size) - 1) << component) as u8,
-            scalar,
-            interpolation,
-            system,
-            location: location.unwrap_or(0),
-            component: component as u8,
-            stream: self
-                .io_index
-                .get(&id)
-                .map_or(0, |&i| self.io[i].1.stream as u8),
-        };
+            &place,
+            self.stage == SourceStage::Pixel && !input,
+        );
         if input {
             self.reflection.inputs.push(value);
         } else {
@@ -1940,7 +1916,66 @@ fn vector_size(n: u8) -> Result<VectorSize> {
     })
 }
 
-fn scalar_code(s: Scalar) -> u8 {
+/// Where a stage value is placed and how it is read, as the reflection records it.
+pub(crate) struct Placed {
+    pub location: Option<u32>,
+    pub component: u32,
+    pub member: Basic,
+    /// Interpolation modes (`ir::interp`).
+    pub modes: u64,
+    pub system: Option<SystemValue>,
+    pub stream: u8,
+}
+
+/// A stage value's reflection; a pixel program's output without a system value is a target.
+pub(crate) fn stage_value(
+    semantic: String,
+    semantic_index: u32,
+    p: &Placed,
+    pixel_output: bool,
+) -> StageValue {
+    let s = Lowering::scalar(p.member.scalar).unwrap_or(Scalar::U32);
+    let scalar = match s.kind {
+        ScalarKind::Float => ValueKind::Float,
+        ScalarKind::Sint => ValueKind::Sint,
+        _ => ValueKind::Uint,
+    };
+    let modes = p.modes;
+    let interpolation = if modes & interp::FLAT != 0 || scalar != ValueKind::Float {
+        Interpolation::Flat
+    } else {
+        let linear = modes & interp::NO_PERSPECTIVE != 0;
+        match (
+            linear,
+            modes & interp::CENTROID != 0,
+            modes & interp::SAMPLE != 0,
+        ) {
+            (false, false, false) => Interpolation::Perspective,
+            (true, false, false) => Interpolation::Linear,
+            (false, true, _) => Interpolation::PerspectiveCentroid,
+            (true, true, _) => Interpolation::LinearCentroid,
+            (false, false, true) => Interpolation::PerspectiveSample,
+            (true, false, true) => Interpolation::LinearSample,
+        }
+    };
+    let system = p
+        .system
+        .or_else(|| pixel_output.then(|| SystemValue::Target(p.location.unwrap_or(0) as u8)));
+    StageValue {
+        semantic,
+        semantic_index,
+        register: p.location.unwrap_or(0),
+        mask: (((1u32 << p.member.size) - 1) << p.component) as u8,
+        scalar,
+        interpolation,
+        system,
+        location: p.location.unwrap_or(0),
+        component: p.component as u8,
+        stream: p.stream,
+    }
+}
+
+pub(crate) fn scalar_code(s: Scalar) -> u8 {
     match s.kind {
         ScalarKind::Bool => scalar::BOOL,
         ScalarKind::Sint => scalar::I32,

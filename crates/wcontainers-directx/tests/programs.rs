@@ -185,9 +185,15 @@ fn yuy2_compared(args: &[&str]) {
 
 #[test]
 fn nv12_planes_view_write_copy_and_map_as_direct3d_does() {
-    let (code, want) = run("own_nv12", &place("nv12-system", false));
+    // The WebGL 2 build's device is 10_0's, so both are made at 10_0 there.
+    let args: &[&str] = if cfg!(feature = "webgl") {
+        &["10_0"]
+    } else {
+        &[]
+    };
+    let (code, want) = run_with("own_nv12", &place("nv12-system", false), args);
     assert_eq!(code, 0, "{want}");
-    let (code, got) = run("own_nv12", &place("nv12-ours", true));
+    let (code, got) = run_with("own_nv12", &place("nv12-ours", true), args);
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
         assert_eq!(w, g, "the first line that differs");
@@ -365,6 +371,12 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
             TARGET,
             0,
             "B5G5R5A1 targets: the back end has no such target",
+        ),
+        (
+            DXGI_FORMAT_A8_UNORM,
+            D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0,
+            D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0 | D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
+            "A8_UNORM storage views: the shaders crate has no storage form of it",
         ),
         (
             DXGI_FORMAT_B8G8R8X8_UNORM,

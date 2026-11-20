@@ -28,7 +28,6 @@ pub const DOMAIN_INPUT_SHAPE: &str = "DomainInputShape";
 pub const DOMAIN_POINT_COUNT: &str = "DomainPointCount";
 pub const DUAL_SOURCE_WITHOUT_TWO_TARGETS: &str = "DualSourceWithoutTwoTargets";
 pub const DXIL_DOMAIN_SHADER: &str = "DxilDomainShader";
-pub const DXIL_GEOMETRY_SHADER: &str = "DxilGeometryShader";
 pub const DXIL_HULL_SHADER: &str = "DxilHullShader";
 pub const DYNAMIC_OFFSET: &str = "DynamicOffset";
 pub const EARLY_TESTS_PER_SAMPLE: &str = "EarlyTestsPerSample";

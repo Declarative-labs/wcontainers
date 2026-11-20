@@ -34,19 +34,30 @@ pub(crate) fn split_arrays(module: &mut Module) -> Result<bool> {
     split_with(
         module,
         |module, binding, base, size| {
-            let element = matches!(
-                module.types[base].inner,
-                TypeInner::Image { .. } | TypeInner::Sampler { .. }
-            );
-            if !element {
-                return Err(ConvertError::Unsupported(crate::refusal::RESOURCE_ARRAY));
-            }
+            let kind = match module.types[base].inner {
+                TypeInner::Image {
+                    class: ImageClass::Storage { .. },
+                    ..
+                } => SlotKind::Storage,
+                TypeInner::Image { .. } => SlotKind::Texture,
+                TypeInner::Sampler { .. } => SlotKind::Sampler,
+                _ => return Err(ConvertError::Unsupported(crate::refusal::RESOURCE_ARRAY)),
+            };
             let ArraySize::Constant(n) = size else {
                 return Err(ConvertError::Unsupported(
                     crate::refusal::UNBOUNDED_RESOURCE_ARRAY,
                 ));
             };
-            Ok((binding.binding..binding.binding + n.get())
+            let end = binding
+                .binding
+                .checked_sub(kind.first_binding())
+                .and_then(|slot| slot.checked_add(n.get()))
+                .filter(|&end| end <= kind.slots())
+                .ok_or(ConvertError::Unsupported(
+                    crate::refusal::BINDINGS_BEYOND_LIMIT,
+                ))?
+                + kind.first_binding();
+            Ok((binding.binding..end)
                 .map(|b| ResourceBinding {
                     group: binding.group,
                     binding: b,

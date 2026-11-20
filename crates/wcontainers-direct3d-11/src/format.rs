@@ -123,6 +123,13 @@ pub fn storage_viewed(dxgi: u32) -> bool {
         )
 }
 
+/// Whether textures stored as `format` have no storage form in the shaders crate (its storage
+/// formats are WGSL's), so their storage views are not served: `A8_UNORM`, held as `rgba8unorm`
+/// with its value in alpha.
+pub fn no_storage_form(format: Format) -> bool {
+    format == Format::A8Unorm
+}
+
 /// Whether DXGI format `dxgi` is one of BC6H's and BC7's, which come with feature level 11_0.
 pub fn from_11_0(dxgi: u32) -> bool {
     matches!(dxgi, dxgi::BC6H_TYPELESS..=dxgi::BC7_UNORM_SRGB)

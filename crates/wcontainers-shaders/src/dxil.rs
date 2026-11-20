@@ -4,6 +4,7 @@
 pub(crate) mod arrays;
 mod components;
 mod depth;
+mod geometry;
 pub(crate) mod images;
 mod nonfinite;
 mod one_d;
@@ -248,12 +249,15 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    // naga's reader has no geometry or tessellation execution models, which the stage helper
-    // would take them through.
+    // naga's reader has no tessellation execution models, which the stage helper would take them
+    // through.
     match crate::container::program_type(dxil) {
-        Some(crate::ir::program::GEOMETRY) => {
+        Some(crate::ir::program::GEOMETRY)
+            if container::geometry_input_primitive(dxil)
+                .is_some_and(|p| p >= container::FIRST_PATCH_PRIMITIVE) =>
+        {
             return Err(ConvertError::Unsupported(
-                crate::refusal::DXIL_GEOMETRY_SHADER,
+                crate::refusal::GEOMETRY_PATCH_INPUT,
             ));
         }
         Some(crate::ir::program::HULL) => {
@@ -275,6 +279,7 @@ pub(crate) fn lower(
     }
     widths::widen(&mut spirv)?;
     registers::encode(&mut spirv);
+    let geometry = geometry::prepare(&mut spirv)?;
     let mut declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
@@ -388,6 +393,21 @@ pub(crate) fn lower(
         stage,
         &mut reflection,
     )?;
+    let stage = match &geometry {
+        Some(declared) => {
+            let (extras, [inputs, outputs]) =
+                geometry::finish(&mut module, declared, variant, [&inputs, &outputs])?;
+            reflection.stage = SourceStage::Geometry;
+            reflection.extras = extras;
+            reflection.inputs = inputs;
+            reflection.outputs = outputs;
+            match module.entry_points[0].stage {
+                naga::ShaderStage::Vertex => ShaderStage::Vertex,
+                _ => ShaderStage::Compute,
+            }
+        }
+        None => stage,
+    };
     helper_invocations(&mut module);
     Ok((module, reflection, stage))
 }

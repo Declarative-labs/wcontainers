@@ -32,6 +32,14 @@ use windows::core::s;
 /// Vertices per seed, each of `COLOURED_VERTEX_BYTES`.
 const VERTICES: usize = 64;
 
+/// The container a case's geometry shader is read from: fxc's DXBC or dxc's DXIL.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Route {
+    Dxbc,
+    Dxil,
+}
+
+#[derive(Clone, Copy)]
 struct Case {
     vs: &'static str,
     gs: &'static str,
@@ -42,6 +50,7 @@ struct Case {
     first_instance: u32,
     /// Indexed with this base vertex.
     indexed: Option<i32>,
+    route: Route,
 }
 
 const CASES: [Case; 20] = [
@@ -54,6 +63,7 @@ const CASES: [Case; 20] = [
         instances: 2,
         first_instance: 1,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -64,6 +74,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(5),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -74,6 +85,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -84,6 +96,7 @@ const CASES: [Case; 20] = [
         instances: 2,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -94,6 +107,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(-2),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -104,6 +118,7 @@ const CASES: [Case; 20] = [
         instances: 2,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -114,6 +129,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -124,6 +140,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -134,6 +151,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -144,6 +162,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -154,6 +173,7 @@ const CASES: [Case; 20] = [
         instances: 2,
         first_instance: 3,
         indexed: Some(4),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -164,6 +184,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -174,6 +195,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -184,6 +206,7 @@ const CASES: [Case; 20] = [
         instances: 2,
         first_instance: 1,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -194,6 +217,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -204,6 +228,7 @@ const CASES: [Case; 20] = [
         instances: 2,
         first_instance: 1,
         indexed: Some(3),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -214,6 +239,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(0),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -224,6 +250,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(2),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -234,6 +261,7 @@ const CASES: [Case; 20] = [
         instances: 2,
         first_instance: 1,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -244,6 +272,7 @@ const CASES: [Case; 20] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(2),
+        route: Route::Dxbc,
     },
 ];
 
@@ -259,6 +288,7 @@ const CULLED: [Case; 8] = [
         instances: 2,
         first_instance: 1,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_cull",
@@ -269,6 +299,7 @@ const CULLED: [Case; 8] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_cull",
@@ -279,6 +310,7 @@ const CULLED: [Case; 8] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(4),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_cull",
@@ -289,6 +321,7 @@ const CULLED: [Case; 8] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_cull",
@@ -299,6 +332,7 @@ const CULLED: [Case; 8] = [
         instances: 2,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_cull",
@@ -309,6 +343,7 @@ const CULLED: [Case; 8] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(-1),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_cull",
@@ -319,6 +354,7 @@ const CULLED: [Case; 8] = [
         instances: 2,
         first_instance: 0,
         indexed: Some(1),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_cull",
@@ -329,6 +365,7 @@ const CULLED: [Case; 8] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(0),
+        route: Route::Dxbc,
     },
 ];
 
@@ -623,6 +660,22 @@ fn declaration(gs: &str) -> StreamOutput {
     }
 }
 
+/// The case's geometry shader's container, if it has one.
+fn gs_bytecode(case: &Case) -> Vec<u8> {
+    match (case.gs, case.route) {
+        ("", _) => Vec::new(),
+        (gs, Route::Dxbc) => bytecode(&format!("{gs}.dxbc")),
+        (gs, Route::Dxil) => bytecode(&format!("{gs}.dxil")),
+    }
+}
+
+fn gs_source<'a>(case: &Case, code: &'a [u8]) -> Source<'a> {
+    match case.route {
+        Route::Dxbc => Source::Dxbc(code),
+        Route::Dxil => Source::Dxil(code),
+    }
+}
+
 /// The case's vertex, geometry and pixel programs, linked as a front links them: the vertex shader
 /// under `vs_key`, the geometry shader with `gs_flags` too.
 fn linked(
@@ -650,14 +703,9 @@ fn linked(
         flags: gs_flags,
         ..Default::default()
     };
-    let gs = (!case.gs.is_empty()).then(|| {
-        convert(
-            Source::Dxbc(&bytecode(&format!("{}.dxbc", case.gs))),
-            &gs_key,
-            None,
-        )
-        .unwrap()
-    });
+    let gs_code = gs_bytecode(case);
+    let gs =
+        (!case.gs.is_empty()).then(|| convert(gs_source(case, &gs_code), &gs_key, None).unwrap());
     let vs_code = bytecode(&format!("{}.dxbc", case.vs));
     let vs = convert(Source::Dxbc(&vs_code), &vs_key, None).unwrap();
     // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
@@ -711,8 +759,7 @@ fn linked(
         .unwrap();
         match gs {
             Some(_) => {
-                let gs_code = bytecode(&format!("{}.dxbc", case.gs));
-                let gs = convert(Source::Dxbc(&gs_code), &key(&gs_key, 0), None).unwrap();
+                let gs = convert(gs_source(case, &gs_code), &key(&gs_key, 0), None).unwrap();
                 (vs, Some(gs), ps)
             }
             None => {
@@ -1483,6 +1530,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1493,6 +1541,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1503,6 +1552,7 @@ const STREAMED: [Case; 14] = [
         instances: 2,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1513,6 +1563,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1523,6 +1574,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1533,6 +1585,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1543,6 +1596,7 @@ const STREAMED: [Case; 14] = [
         instances: 2,
         first_instance: 1,
         indexed: Some(3),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1553,6 +1607,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1563,6 +1618,7 @@ const STREAMED: [Case; 14] = [
         instances: 2,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1573,6 +1629,7 @@ const STREAMED: [Case; 14] = [
         instances: 2,
         first_instance: 0,
         indexed: Some(2),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1583,6 +1640,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(1),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1593,6 +1651,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(0),
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1603,6 +1662,7 @@ const STREAMED: [Case; 14] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1613,6 +1673,7 @@ const STREAMED: [Case; 14] = [
         instances: 2,
         first_instance: 0,
         indexed: Some(1),
+        route: Route::Dxbc,
     },
 ];
 
@@ -1869,6 +1930,7 @@ const STREAMS_CASES: [Case; 2] = [
         instances: 1,
         first_instance: 0,
         indexed: None,
+        route: Route::Dxbc,
     },
     Case {
         vs: "vs_geometry",
@@ -1879,6 +1941,7 @@ const STREAMS_CASES: [Case; 2] = [
         instances: 2,
         first_instance: 1,
         indexed: None,
+        route: Route::Dxbc,
     },
 ];
 
@@ -2006,12 +2069,18 @@ fn geometry_shaders_draw_as_direct3d_does() {
     let mut dropped = [0u32; CULLED.len()];
     let mut failures = Vec::new();
     let mut compared = 0;
+    // Each geometry shader also as dxc builds it, its vertex and pixel programs fxc's.
+    let dxil = CASES.map(|c| Case {
+        route: Route::Dxil,
+        ..c
+    });
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for (i, case) in CASES.iter().chain(&CULLED).enumerate() {
+        for (i, case) in CASES.iter().chain(&CULLED).chain(&dxil).enumerate() {
             let shader = if case.gs.is_empty() { case.vs } else { case.gs };
             let name = format!(
-                "seed {seed} {shader} {:?} {} from {} x{}{}",
+                "seed {seed} {shader} {:?} {:?} {} from {} x{}{}",
+                case.route,
                 case.topology,
                 case.count,
                 case.first,
@@ -2033,7 +2102,7 @@ fn geometry_shaders_draw_as_direct3d_does() {
             .map_err(|e| failures.push(format!("{name}: {e}"))) else {
                 continue;
             };
-            if let Some(total) = i.checked_sub(CASES.len()).map(|c| &mut dropped[c]) {
+            if let Some(total) = i.checked_sub(CASES.len()).and_then(|c| dropped.get_mut(c)) {
                 let planes = dropped_by_planes(case, &vertices, &indices);
                 eprintln!("{name}: the planes drop {planes} primitives");
                 *total += planes;
@@ -2239,18 +2308,24 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
         .unwrap_or(4);
     let mut failures = Vec::new();
     let mut compared = 0;
+    // Each geometry shader also as dxc builds it.
+    let dxil = CASES.map(|c| Case {
+        route: Route::Dxil,
+        ..c
+    });
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
         // Every geometry case, and the vertex shader alone drawn from its capture.
         let vertex_alone = STREAMED.iter().filter(|c| c.gs.is_empty());
-        for (i, case) in CASES.iter().chain(vertex_alone).enumerate() {
+        for (i, case) in CASES.iter().chain(vertex_alone).chain(&dxil).enumerate() {
             let name = format!(
-                "seed {seed} {} {:?} {} from {} x{}{}",
+                "seed {seed} {} {:?} {:?} {} from {} x{}{}",
                 if case.gs.is_empty() {
                     "vertex"
                 } else {
                     case.gs
                 },
+                case.route,
                 case.topology,
                 case.count,
                 case.first,

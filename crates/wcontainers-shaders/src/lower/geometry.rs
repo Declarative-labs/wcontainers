@@ -1,18 +1,20 @@
 //! A geometry shader as a compute program (plan section 7): one invocation per input primitive and
 //! geometry instance, reading its input vertices from the vertex stage's records and writing the
 //! vertices it emits, with the strip indices that join them, at slots of its own, so the output keeps
-//! Direct3D's order without counting across invocations. The layout is `crate::stage`'s.
+//! Direct3D's order without counting across invocations. The layout is `crate::stage`'s. Both routes
+//! use it: each describes its program's stage values ([`GeometryValue`]) and its main function, which
+//! calls the emit and cut functions this pass fills in.
 
 use super::{Lowering, Result, malformed, unsupported};
 use crate::build::{self, Builder, Expr};
-use crate::ir::{self, Basic, builtin, code, primitive, scalar};
+use crate::ir::{self, Basic, Ty, builtin, code, primitive, scalar};
 use crate::stage;
 use alloc::vec::Vec;
 use naga::{
-    AddressSpace, BinaryOperator, Binding, BuiltIn, FunctionArgument, Handle, Scalar, ScalarKind,
-    Span, StorageAccess,
+    AddressSpace, BinaryOperator, Binding, BuiltIn, FunctionArgument, Handle, Module, Scalar,
+    ScalarKind, Span, StorageAccess,
 };
-use wcontainers_gpu::{StageExtras, SystemValue, VariantFlags};
+use wcontainers_gpu::{StageExtras, SystemValue, VariantFlags, VariantKey};
 
 /// What a geometry shader declares, and the parts of its compute form.
 #[derive(Default)]
@@ -28,6 +30,84 @@ pub(crate) struct Geometry {
     pub cut: Option<Handle<naga::Function>>,
     state: Option<State>,
     counters: Vec<Counters>,
+}
+
+impl Geometry {
+    /// A geometry shader's declarations: its input and output primitives (`ir::primitive`), most
+    /// vertices emitted, instances, and the mask of streams it writes.
+    pub(crate) fn declared(
+        input: u64,
+        output: u64,
+        max_vertices: u32,
+        instances: u32,
+        stream_mask: u64,
+    ) -> Result<Geometry> {
+        let mut g = Geometry {
+            input,
+            max_vertices,
+            instances,
+            ..Geometry::default()
+        };
+        g.output_declared(output, stream_mask)?;
+        Ok(g)
+    }
+
+    fn output_declared(&mut self, output: u64, stream_mask: u64) -> Result<()> {
+        self.output = output;
+        self.streams = (u64::BITS - stream_mask.leading_zeros()).max(1);
+        if self.streams as usize > stage::STREAMS {
+            return Err(malformed(STREAM_PAST_DIRECT3D.into()));
+        }
+        // Direct3D takes several streams of points only.
+        if self.streams > 1 && output != primitive::POINTS {
+            return Err(unsupported(crate::refusal::GEOMETRY_STREAMS));
+        }
+        Ok(())
+    }
+
+    /// Streams written, at least one.
+    pub(crate) fn streams(&self) -> u32 {
+        self.streams.max(1)
+    }
+}
+
+/// Which side of the stage a [`GeometryValue`] is on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Side {
+    Input,
+    Output,
+}
+
+/// One stage value of a geometry shader: the private variable the program reads or writes, and
+/// where Direct3D places it (a register and component, or a built-in of `ir::builtin`).
+pub(crate) struct GeometryValue {
+    pub var: Handle<naga::GlobalVariable>,
+    pub side: Side,
+    pub location: Option<(u32, u32)>,
+    pub builtin: Option<u64>,
+    pub stream: u32,
+    pub ty: Ty,
+}
+
+/// A stage value the reflection takes, by its index among the [`GeometryValue`]s.
+pub(crate) struct Reflected {
+    pub value: usize,
+    pub side: Side,
+    pub location: Option<u32>,
+    pub component: u32,
+    pub member: Basic,
+    pub modes: u64,
+    pub system: Option<SystemValue>,
+}
+
+/// The pass that makes a geometry shader's emit and cut functions and its entry point.
+pub(crate) struct GeometryPass<'a> {
+    pub module: &'a mut Module,
+    pub variant: &'a VariantKey,
+    pub geometry: &'a mut Geometry,
+    pub values: &'a [GeometryValue],
+    /// The values the entry point reflects, in order.
+    pub reflected: Vec<Reflected>,
 }
 
 /// The private and bound variables the emit functions and the entry point share.
@@ -100,7 +180,17 @@ struct Counters {
 }
 
 /// The emit function's name; a later stream's ends with its number.
-const EMIT: &str = "gs_emit";
+pub(crate) const EMIT: &str = "gs_emit";
+/// The cut function's name.
+pub(crate) const CUT: &str = "gs_cut_strip";
+/// Why a geometry shader is malformed: it declares no vertex count.
+const NO_VERTEX_COUNT: &str = "a geometry shader without its vertex count";
+/// The compute form's output.
+const OUT_VARIABLE: &str = "stage_geometry";
+/// The invocation's number, and each stream's counters in `Counters`' order (a later stream's
+/// names end with its number).
+const INVOCATION_VARIABLE: &str = "gs_invocation";
+const COUNTER_VARIABLES: [&str; 3] = ["gs_emitted", "gs_written", "gs_strip"];
 /// The record slot holding the position.
 const POSITION_SLOT: u32 = 0;
 /// The replay form's outputs.
@@ -132,6 +222,8 @@ struct Shape {
     /// Slots per vertex record.
     in_slots: u32,
 }
+/// Why a geometry shader is malformed: its emit or cut functions were not made for its streams.
+const NO_CUT: &str = "a geometry shader without an emit function per stream and a cut function";
 /// A stream past `stage::STREAMS` in the output declaration.
 const STREAM_PAST_DIRECT3D: &str = "a geometry stream past Direct3D's";
 
@@ -160,30 +252,105 @@ impl Lowering<'_> {
             code::SET_GS_INSTANCES => g.instances = value as u32,
             code::SET_GS_INPUT_PRIMITIVE => g.input = value,
             code::SET_GS_OUTPUT_VERTICES => g.max_vertices = value as u32,
-            _ => {
-                g.output = value;
-                let mask = op.lits.get(1).copied().unwrap_or(1);
-                g.streams = (u64::BITS - mask.leading_zeros()).max(1);
-                if g.streams as usize > stage::STREAMS {
-                    return Err(malformed(STREAM_PAST_DIRECT3D.into()));
-                }
-                // Direct3D takes several streams of points only.
-                if g.streams > 1 && value != primitive::POINTS {
-                    return Err(unsupported(crate::refusal::GEOMETRY_STREAMS));
-                }
-            }
+            _ => g.output_declared(value, op.lits.get(1).copied().unwrap_or(1))?,
         }
         Ok(())
+    }
+
+    /// The stage values as the geometry pass takes them, with each one's declaring id.
+    fn geometry_values(&self) -> Result<(Vec<GeometryValue>, Vec<u32>)> {
+        let mut values = Vec::new();
+        let mut ids = Vec::new();
+        for (id, io) in &self.io {
+            let side = match self.ir.op(*id)?.code {
+                code::DCL_INPUT | code::DCL_INPUT_BUILT_IN => Side::Input,
+                code::DCL_OUTPUT | code::DCL_OUTPUT_BUILT_IN => Side::Output,
+                _ => continue,
+            };
+            values.push(GeometryValue {
+                var: io.var,
+                side,
+                location: io.location,
+                builtin: io.builtin,
+                stream: io.stream,
+                ty: io.ty.clone(),
+            });
+            ids.push(*id);
+        }
+        Ok((values, ids))
+    }
+
+    /// The emit and cut functions, ahead of the shader's own.
+    pub(super) fn geometry_functions(&mut self) -> Result<()> {
+        let (values, _) = self.geometry_values()?;
+        let mut g = self.geometry.take().unwrap();
+        let placeholders = |m: &mut Module, n: u32| -> Vec<Handle<naga::Function>> {
+            (0..n)
+                .map(|_| {
+                    m.functions
+                        .append(naga::Function::default(), Span::UNDEFINED)
+                })
+                .collect()
+        };
+        g.emit = placeholders(&mut self.module, g.streams());
+        g.cut = placeholders(&mut self.module, 1).first().copied();
+        let mut pass = GeometryPass {
+            module: &mut self.module,
+            variant: self.variant,
+            geometry: &mut g,
+            values: &values,
+            reflected: Vec::new(),
+        };
+        let done = pass.functions();
+        self.geometry = Some(g);
+        done
+    }
+
+    /// The entry point, and the stage values' reflection.
+    pub(super) fn geometry_entry_point(&mut self) -> Result<()> {
+        let (values, ids) = self.geometry_values()?;
+        let mut g = self.geometry.take().unwrap();
+        let main = self.functions[&self.main];
+        let mut pass = GeometryPass {
+            module: &mut self.module,
+            variant: self.variant,
+            geometry: &mut g,
+            values: &values,
+            reflected: Vec::new(),
+        };
+        let done = pass.entry_point(main);
+        let reflected = core::mem::take(&mut pass.reflected);
+        self.geometry = Some(g);
+        let extras = done?;
+        for r in reflected {
+            self.reflect_value(
+                ids[r.value],
+                r.side == Side::Input,
+                r.location,
+                r.component,
+                r.member,
+                r.modes,
+                r.system,
+            );
+        }
+        self.reflection.extras = extras;
+        Ok(())
+    }
+}
+
+impl GeometryPass<'_> {
+    /// The values of `side` with a built-in.
+    fn built_ins(&self, side: Side) -> impl Iterator<Item = &GeometryValue> {
+        self.values
+            .iter()
+            .filter(move |v| v.side == side && v.builtin.is_some())
     }
 
     /// The sorted user locations of the inputs (`input`) or outputs.
     fn geometry_locations(&self, input: bool) -> Result<Vec<u32>> {
         let mut locations = Vec::new();
-        for (id, io) in &self.io {
-            let is_input = matches!(
-                self.ir.op(*id)?.code,
-                code::DCL_INPUT | code::DCL_INPUT_BUILT_IN
-            );
+        for io in self.values {
+            let is_input = io.side == Side::Input;
             if let (true, Some((loc, _))) = (is_input == input, io.location)
                 && !locations.contains(&loc)
             {
@@ -198,8 +365,8 @@ impl Lowering<'_> {
     /// slot holding them (`stage::SELECTION_SLOT`).
     fn selection(&self) -> Result<Option<[Option<Handle<naga::GlobalVariable>>; 2]>> {
         let mut found = [None, None];
-        for (id, io) in &self.io {
-            if self.ir.op(*id)?.code != code::DCL_OUTPUT_BUILT_IN || io.stream != 0 {
+        for io in self.built_ins(Side::Output) {
+            if io.stream != 0 {
                 continue;
             }
             match io.builtin {
@@ -215,11 +382,8 @@ impl Lowering<'_> {
     /// each vertex record ends with their slots, four distances a slot ([`stage::distance_slots`]).
     fn clip_outputs(&self) -> Result<Vec<(Handle<naga::GlobalVariable>, u32)>> {
         let mut found = Vec::new();
-        for (id, io) in &self.io {
-            if io.builtin != Some(builtin::CLIP_DISTANCE)
-                || io.stream != 0
-                || self.ir.op(*id)?.code != code::DCL_OUTPUT_BUILT_IN
-            {
+        for io in self.built_ins(Side::Output) {
+            if io.builtin != Some(builtin::CLIP_DISTANCE) || io.stream != 0 {
                 continue;
             }
             let element = io.ty.members[..]
@@ -243,33 +407,34 @@ impl Lowering<'_> {
 
     /// Vertices per output primitive.
     fn output_vertices(&self) -> u32 {
-        match self.geometry.as_ref().map(|g| g.output) {
-            Some(primitive::POINTS) => 1,
-            Some(primitive::LINES) => 2,
+        match self.geometry.output {
+            primitive::POINTS => 1,
+            primitive::LINES => 2,
             _ => stage::TRIANGLE_VERTICES,
         }
     }
 
     fn strips(&self) -> bool {
-        self.geometry
-            .as_ref()
-            .is_some_and(|g| g.output != primitive::POINTS)
+        self.geometry.output != primitive::POINTS
     }
 
-    /// The emit and cut functions, ahead of the shader's own.
-    pub(super) fn geometry_functions(&mut self) -> Result<()> {
-        let g = self.geometry.as_ref().unwrap();
+    /// Fills the emit function of each stream and the cut function (`Geometry::emit` and
+    /// `Geometry::cut`, made empty by the caller ahead of the shader's own functions).
+    pub(crate) fn functions(&mut self) -> Result<()> {
+        let g = &*self.geometry;
         if g.max_vertices == 0 {
-            return Err(malformed(
-                "a geometry shader without its vertex count".into(),
-            ));
+            return Err(malformed(NO_VERTEX_COUNT.into()));
         }
         input_vertices(g.input)?;
         let (max, streams, gsi) = (g.max_vertices, g.streams.max(1), g.instances.max(1));
         let replay = self.variant.flags.contains(VariantFlags::GEOMETRY_REPLAY);
         let outputs = self.geometry_locations(false)?;
         let record_slots = 1 + outputs.len() as u32 + self.extra_slots()? as u32;
-        let m = &mut self.module;
+        let (emit, cut) = (g.emit.clone(), g.cut.ok_or(malformed(NO_CUT.into()))?);
+        if emit.len() != streams as usize {
+            return Err(malformed(NO_CUT.into()));
+        }
+        let m = &mut *self.module;
         let u32_ty = build::scalar(m, Scalar::U32);
         let values = stage::values(m);
         let uvec4 = build::vec4(m, Scalar::U32);
@@ -350,7 +515,7 @@ impl Lowering<'_> {
             let word_array = build::runtime_array(m, u32_ty, build::WORD);
             let list = build::global(
                 m,
-                "stage_list",
+                stage::LIST_VARIABLE,
                 AddressSpace::Storage {
                     access: StorageAccess::LOAD,
                 },
@@ -359,7 +524,7 @@ impl Lowering<'_> {
             );
             let out = build::global(
                 m,
-                "stage_geometry",
+                OUT_VARIABLE,
                 AddressSpace::Storage {
                     access: StorageAccess::LOAD | StorageAccess::STORE,
                 },
@@ -368,17 +533,16 @@ impl Lowering<'_> {
             );
             Form::Compute { list, out }
         };
-        let invocation = private(m, "gs_invocation", u32_ty);
+        let invocation = private(m, INVOCATION_VARIABLE, u32_ty);
         let counters: Vec<Counters> = (0..streams)
             .map(|s| {
-                let [emitted, written, strip] =
-                    ["gs_emitted", "gs_written", "gs_strip"].map(|name| {
-                        let name = match s {
-                            0 => name.into(),
-                            s => format!("{name}{s}"),
-                        };
-                        build::global(m, &name, AddressSpace::Private, None, u32_ty)
-                    });
+                let [emitted, written, strip] = COUNTER_VARIABLES.map(|name| {
+                    let name = match s {
+                        0 => name.into(),
+                        s => format!("{name}{s}"),
+                    };
+                    build::global(m, &name, AddressSpace::Private, None, u32_ty)
+                });
                 Counters {
                     emitted,
                     written,
@@ -400,7 +564,6 @@ impl Lowering<'_> {
 
         // emit: the stream's outputs' current values into its next slot, and its index into the strip;
         // in the replay form, into the kept slots when the vertex is the one the corner keeps.
-        let mut emits = Vec::new();
         for (stream, &c) in counters.iter().enumerate() {
             let (emitted, written, strip) = (c.emitted, c.written, c.strip);
             let mut b = Builder::new(&match stream {
@@ -422,7 +585,7 @@ impl Lowering<'_> {
                         accept,
                         reject: naga::Block::new(),
                     });
-                    emits.push(self.module.functions.append(b.finish(), Span::UNDEFINED));
+                    self.module.functions[emit[stream]] = b.finish();
                     continue;
                 }
                 Form::Compute { .. } => None,
@@ -444,27 +607,20 @@ impl Lowering<'_> {
             };
             let mut slots: Vec<(Expr, ScalarKind)> = Vec::new();
             let position = self
-                .io
-                .iter()
-                .find(|(id, io)| {
-                    io.builtin == Some(builtin::POSITION)
-                        && io.stream == stream as u32
-                        && self
-                            .ir
-                            .op(*id)
-                            .is_ok_and(|o| o.code == code::DCL_OUTPUT_BUILT_IN)
-                })
-                .map(|(_, io)| (io.var, io.ty.basic().map(|m| m.scalar)));
+                .built_ins(Side::Output)
+                .find(|io| io.builtin == Some(builtin::POSITION) && io.stream == stream as u32)
+                .map(|io| (io.var, io.ty.basic().map(|m| m.scalar)));
             if let Some((pos_var, pos_scalar)) = position {
-                let pos_scalar =
-                    Self::scalar(pos_scalar.ok_or(unsupported(crate::refusal::BUILT_IN_ARRAY))?)?;
+                let pos_scalar = Lowering::scalar(
+                    pos_scalar.ok_or(unsupported(crate::refusal::BUILT_IN_ARRAY))?,
+                )?;
                 let p = b.global(pos_var);
                 let p = b.load(p);
                 slots.push((p, pos_scalar.kind));
             } else {
                 // A shader feeding only stream output writes no position: the record carries (0, 0, 0,
                 // -1), outside every clip volume, as a vertex program without one does.
-                let vec4 = build::vec4(&mut self.module, Scalar::F32);
+                let vec4 = build::vec4(&mut *self.module, Scalar::F32);
                 let zero = b.expr(naga::Expression::Literal(naga::Literal::F32(0.0)));
                 let below = b.expr(naga::Expression::Literal(naga::Literal::F32(-1.0)));
                 let p = b.compose(vec4, alloc::vec![zero, zero, zero, below]);
@@ -477,7 +633,7 @@ impl Lowering<'_> {
             // The layer, viewport and clip distances are the drawn stream's: zeros in the others'.
             if let Some(vars) = selection {
                 let vars = if stream == 0 { vars } else { [None, None] };
-                let uvec4 = build::vec4(&mut self.module, Scalar::U32);
+                let uvec4 = build::vec4(&mut *self.module, Scalar::U32);
                 let mut comps = Vec::new();
                 for var in vars {
                     comps.push(match var {
@@ -517,7 +673,7 @@ impl Lowering<'_> {
                     _ => distances.push(v),
                 }
             }
-            let vec4 = build::vec4(&mut self.module, Scalar::F32);
+            let vec4 = build::vec4(&mut *self.module, Scalar::F32);
             for chunk in distances.chunks(build::VEC4 as usize) {
                 let mut comps = chunk.to_vec();
                 while comps.len() < build::VEC4 as usize {
@@ -574,11 +730,11 @@ impl Lowering<'_> {
                 accept,
                 reject: naga::Block::new(),
             });
-            emits.push(self.module.functions.append(b.finish(), Span::UNDEFINED));
+            self.module.functions[emit[stream]] = b.finish();
         }
 
         // cut: ends the strip being made, if it has a vertex (strips have one stream).
-        let mut b = Builder::new("gs_cut");
+        let mut b = Builder::new(CUT);
         let Counters {
             written,
             strip,
@@ -605,10 +761,8 @@ impl Lowering<'_> {
                 b.store(p, zero);
             });
         }
-        let cut = self.module.functions.append(b.finish(), Span::UNDEFINED);
-        let g = self.geometry.as_mut().unwrap();
-        g.emit = emits;
-        g.cut = Some(cut);
+        self.module.functions[cut] = b.finish();
+        let g = &mut *self.geometry;
         g.state = Some(state);
         g.counters = counters;
         Ok(())
@@ -622,39 +776,40 @@ impl Lowering<'_> {
         loc: u32,
         stream: u32,
     ) -> Result<(Expr, ScalarKind)> {
-        let decls: Vec<usize> = (0..self.io.len())
+        let decls: Vec<usize> = (0..self.values.len())
             .filter(|&i| {
-                self.ir
-                    .op(self.io[i].0)
-                    .is_ok_and(|o| o.code == code::DCL_OUTPUT)
-                    && self.io[i].1.location.is_some_and(|l| l.0 == loc)
-                    && self.io[i].1.stream == stream
+                let v = &self.values[i];
+                v.side == Side::Output
+                    && v.builtin.is_none()
+                    && v.location.is_some_and(|l| l.0 == loc)
+                    && v.stream == stream
             })
             .collect();
         let Some(&first) = decls.first() else {
             let zero = b.u32(0);
-            let uvec4 = build::vec4(&mut self.module, Scalar::U32);
+            let uvec4 = build::vec4(&mut *self.module, Scalar::U32);
             let comps = alloc::vec![zero; build::VEC4 as usize];
             return Ok((b.compose(uvec4, comps), ScalarKind::Uint));
         };
-        let first = self.io[first]
-            .1
+        let first = self.values[first]
             .ty
             .basic()
             .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
-        let s = Self::scalar(first.scalar)?;
+        let s = Lowering::scalar(first.scalar)?;
         let s = if s == Scalar::BOOL { Scalar::U32 } else { s };
         let mut comps = Vec::new();
-        for c in 0..4u32 {
+        for c in 0..build::VEC4 {
             let found = decls.iter().find(|&&i| {
-                let io = &self.io[i].1;
+                let values = self.values;
+                let io = &values[i];
                 let (_, comp) = io.location.unwrap();
                 let size = io.ty.basic().map_or(1, |b| b.size as u32);
                 (comp..comp + size).contains(&c)
             });
             let v = match found {
                 Some(&i) => {
-                    let io = &self.io[i].1;
+                    let values = self.values;
+                    let io = &values[i];
                     let (_, comp) = io.location.unwrap();
                     let m = io
                         .ty
@@ -663,7 +818,7 @@ impl Lowering<'_> {
                     let p = b.global(io.var);
                     let v = b.load(p);
                     let v = if m.size > 1 { b.field(v, c - comp) } else { v };
-                    let from = Self::scalar(m.scalar)?;
+                    let from = Lowering::scalar(m.scalar)?;
                     if from.kind == s.kind {
                         v
                     } else if from == Scalar::BOOL {
@@ -678,15 +833,17 @@ impl Lowering<'_> {
             };
             comps.push(v);
         }
-        let ty = self.vec_ty(4, s)?;
+        let ty = build::vec4(self.module, s);
         Ok((b.compose(ty, comps), s.kind))
     }
 
     /// The compute entry point: one invocation per input primitive and geometry instance (x) and API
     /// instance (y). It fills the inputs from the vertex records, runs the shader, and closes its
     /// slots: unused indices restart, unused point vertices lie outside the clip volume.
-    pub(super) fn geometry_entry_point(&mut self) -> Result<()> {
-        let g = self.geometry.as_ref().unwrap();
+    /// The entry point: the compute form's or the replay form's, its outputs reflected as a vertex
+    /// stage's for linking the pixel stage. Returns the stage's extras.
+    pub(crate) fn entry_point(&mut self, main: Handle<naga::Function>) -> Result<StageExtras> {
+        let g = &*self.geometry;
         let (input, max, gs_instances) = (g.input, g.max_vertices, g.instances.max(1));
         let state = g.state.unwrap();
         let counters = g.counters.clone();
@@ -702,23 +859,22 @@ impl Lowering<'_> {
         };
         let (function, entry_stage, workgroup_size) = match state.form {
             Form::Compute { .. } => (
-                self.geometry_compute_entry(state, &counters, shape, &inputs)?,
+                self.geometry_compute_entry(state, &counters, shape, &inputs, main)?,
                 naga::ShaderStage::Compute,
                 [stage::WORKGROUP, 1, 1],
             ),
             Form::Replay(r) => (
-                self.geometry_replay_entry(state, r, &counters, shape, &inputs)?,
+                self.geometry_replay_entry(state, r, &counters, shape, &inputs, main)?,
                 naga::ShaderStage::Vertex,
                 Default::default(),
             ),
         };
 
         // Outputs as a vertex stage's, for linking the pixel stage.
-        for i in 0..self.io.len() {
-            let (id, ref io) = self.io[i];
-            if self.ir.op(id)?.code != code::DCL_OUTPUT
-                && self.ir.op(id)?.code != code::DCL_OUTPUT_BUILT_IN
-            {
+        for i in 0..self.values.len() {
+            let values = self.values;
+            let io = &values[i];
+            if io.side != Side::Output {
                 continue;
             }
             // The layer, viewport and clip distances are the drawn stream's alone.
@@ -732,7 +888,7 @@ impl Lowering<'_> {
                     .first()
                     .ok_or(unsupported(super::CLIP_DISTANCE_TYPE))?;
                 let system = Some(SystemValue::ClipDistance);
-                self.reflect_value(id, false, None, 0, member, 0, system);
+                self.reflect(i, Side::Output, None, 0, member, 0, system);
                 continue;
             }
             let member = io
@@ -742,22 +898,23 @@ impl Lowering<'_> {
             match (io.location, io.builtin) {
                 (Some((loc, comp)), _) => {
                     let modes = super::output_modes(&self.variant.output_interpolation, loc);
-                    self.reflect_value(id, false, Some(loc), comp, member, modes, None);
+                    self.reflect(i, Side::Output, Some(loc), comp, member, modes, None);
                 }
                 (None, Some(builtin::POSITION)) => {
-                    self.reflect_value(id, false, None, 0, member, 0, Some(SystemValue::Position))
+                    let system = Some(SystemValue::Position);
+                    self.reflect(i, Side::Output, None, 0, member, 0, system)
                 }
                 (None, Some(which @ (builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX))) => {
                     let system = match which {
                         builtin::LAYER_INDEX => SystemValue::RenderTargetArrayIndex,
                         _ => SystemValue::ViewportArrayIndex,
                     };
-                    self.reflect_value(id, false, None, 0, member, 0, Some(system))
+                    self.reflect(i, Side::Output, None, 0, member, 0, Some(system))
                 }
                 _ => return Err(unsupported(crate::refusal::GEOMETRY_OUTPUT)),
             }
         }
-        self.reflection.extras = StageExtras::Geometry {
+        let extras = StageExtras::Geometry {
             input_vertices: n as u8,
             max_output_vertices: max,
             output_vertices: self.output_vertices() as u8,
@@ -775,7 +932,29 @@ impl Lowering<'_> {
             task_payload: None,
             incoming_ray_payload: None,
         });
-        Ok(())
+        Ok(extras)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reflect(
+        &mut self,
+        value: usize,
+        side: Side,
+        location: Option<u32>,
+        component: u32,
+        member: Basic,
+        modes: u64,
+        system: Option<SystemValue>,
+    ) {
+        self.reflected.push(Reflected {
+            value,
+            side,
+            location,
+            component,
+            member,
+            modes,
+            system,
+        });
     }
 
     /// The replay form's entry point: a vertex program whose vertex `v` draws corner `v % c` of output
@@ -792,6 +971,7 @@ impl Lowering<'_> {
         counters: &[Counters],
         shape: Shape,
         inputs: &[u32],
+        main: Handle<naga::Function>,
     ) -> Result<naga::Function> {
         let Shape {
             n,
@@ -801,9 +981,9 @@ impl Lowering<'_> {
         } = shape;
         let c = self.output_vertices();
         let units = stage::replay_slots(max, c);
-        let u32_ty = build::scalar(&mut self.module, Scalar::U32);
-        let uvec4 = build::vec4(&mut self.module, Scalar::U32);
-        let vec4 = build::vec4(&mut self.module, Scalar::F32);
+        let u32_ty = build::scalar(&mut *self.module, Scalar::U32);
+        let uvec4 = build::vec4(&mut *self.module, Scalar::U32);
+        let vec4 = build::vec4(&mut *self.module, Scalar::F32);
         let kept_ty = self.module.global_variables[r.kept].ty;
         let slots = match self.module.types[kept_ty].inner {
             naga::TypeInner::Array {
@@ -882,7 +1062,6 @@ impl Lowering<'_> {
             records.push(b.mul(record, per_record));
         }
         self.geometry_inputs(&mut b, state, &records, (prim, gi), inputs)?;
-        let main = self.functions[&self.main];
         b.call(main, Vec::new(), false);
         let whole = b.global(r.whole);
         let whole = b.load(whole);
@@ -961,6 +1140,7 @@ impl Lowering<'_> {
         counters: &[Counters],
         shape: Shape,
         inputs: &[u32],
+        main: Handle<naga::Function>,
     ) -> Result<naga::Function> {
         let Shape {
             n,
@@ -972,7 +1152,16 @@ impl Lowering<'_> {
         let outputs = self.geometry_locations(false)?;
         let out_words = stage::record_words(outputs.len() + self.extra_slots()?);
 
-        let uvec3 = self.vec_ty(naga::VectorSize::Tri as u8, Scalar::U32)?;
+        let uvec3 = self.module.types.insert(
+            naga::Type {
+                name: None,
+                inner: naga::TypeInner::Vector {
+                    size: naga::VectorSize::Tri,
+                    scalar: Scalar::U32,
+                },
+            },
+            Span::UNDEFINED,
+        );
         let mut b = Builder::new(crate::ENTRY_POINT);
         b.f.arguments.push(FunctionArgument {
             name: Some(stage::ID_ARGUMENT.into()),
@@ -1064,7 +1253,6 @@ impl Lowering<'_> {
 
         self.geometry_inputs(&mut b, state, &records, (prim, gi), inputs)?;
 
-        let main = self.functions[&self.main];
         b.when(runs, |b| {
             b.call(main, Vec::new(), false);
         });
@@ -1075,7 +1263,7 @@ impl Lowering<'_> {
             let written = b.global(c.written);
             let from = b.load(written);
             let to = b.u32(2 * max);
-            b.each(&mut self.module, from, to, |b, i| {
+            b.each(&mut *self.module, from, to, |b, i| {
                 let inv = match stream {
                     0 => invocation,
                     _ => stream_invocation(b, state, stream, gs_instances),
@@ -1097,7 +1285,7 @@ impl Lowering<'_> {
             let emitted = b.global(c.emitted);
             let from = b.load(emitted);
             let to = b.u32(max);
-            b.each(&mut self.module, from, to, |b, i| {
+            b.each(&mut *self.module, from, to, |b, i| {
                 let inv = match stream {
                     0 => invocation,
                     _ => stream_invocation(b, state, stream, gs_instances),
@@ -1132,12 +1320,10 @@ impl Lowering<'_> {
         inputs: &[u32],
     ) -> Result<()> {
         let n = records.len() as u32;
-        for i in 0..self.io.len() {
-            let (id, ref io) = self.io[i];
-            if !matches!(
-                self.ir.op(id)?.code,
-                code::DCL_INPUT | code::DCL_INPUT_BUILT_IN
-            ) {
+        for i in 0..self.values.len() {
+            let values = self.values;
+            let io = &values[i];
+            if io.side != Side::Input {
                 continue;
             }
             let (var, location, bi) = (io.var, io.location, io.builtin);
@@ -1146,7 +1332,7 @@ impl Lowering<'_> {
                 .members
                 .first()
                 .ok_or_else(|| malformed(INPUT_WITHOUT_TYPE.into()))?;
-            let to = Self::scalar(member.scalar)?;
+            let to = Lowering::scalar(member.scalar)?;
             let system = match (location, bi) {
                 (Some(_), None) => None,
                 (None, Some(builtin::POSITION)) => Some(SystemValue::Position),
@@ -1175,7 +1361,7 @@ impl Lowering<'_> {
                     b.store(p, v);
                     if which == builtin::PRIMITIVE_ID {
                         let system = Some(SystemValue::PrimitiveId);
-                        self.reflect_value(id, true, None, 0, member, 0, system);
+                        self.reflect(i, Side::Input, None, 0, member, 0, system);
                     }
                     continue;
                 }
@@ -1206,7 +1392,15 @@ impl Lowering<'_> {
                 let p = b.field(g, k as u32);
                 b.store(p, v);
             }
-            self.reflect_value(id, true, location.map(|l| l.0), comp, member, 0, system);
+            self.reflect(
+                i,
+                Side::Input,
+                location.map(|l| l.0),
+                comp,
+                member,
+                0,
+                system,
+            );
         }
         Ok(())
     }
