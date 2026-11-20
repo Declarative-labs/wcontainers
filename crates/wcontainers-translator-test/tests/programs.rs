@@ -315,7 +315,7 @@ fn differences_match_linux() {
 
 /// The same on a host whose fused multiply-add does not fuse and whose not-a-number results do not
 /// follow Arm's rules: the software fused multiply-add and the fix-up give Linux's output too, and the
-/// slow paths are counted.
+/// slow paths are counted; with FPSR read, every operation takes the exact path instead.
 #[test]
 fn differences_match_linux_on_other_hosts() {
     use wcontainers_translator_test::programs::{ran, ready_on};
@@ -323,36 +323,43 @@ fn differences_match_linux_on_other_hosts() {
         fused_multiply_add: false,
         arm_nans: false,
     };
-    for optimisation in ["-O0", "-O2"] {
-        let blob = build("differences", optimisation, Library::C);
-        let theirs = native(&blob);
-        for look_ahead in [LookAhead::None, LookAhead::Full] {
-            let mut machine = ready_on(
-                &blob,
-                (look_ahead, wcontainers_translator::Optimise::Speed),
-                wcontainers_translator::Omit::default(),
-                host,
-            );
-            let (stopped, registers) = machine.run();
-            let ours = ran(&blob, &machine, stopped, &registers);
-            let what = format!("differences at {optimisation}, look-ahead {look_ahead:?}");
-            assert_eq!(
-                String::from_utf8_lossy(&ours.stdout),
-                String::from_utf8_lossy(&theirs.stdout),
-                "output of {what}"
-            );
-            assert_eq!(ours.status, theirs.status, "exit status of {what}");
-            // The program reads FPSR, so its flags are kept from its start and every operation done in
-            // software, the fused multiply-adds included, is counted as exact floating point.
-            assert!(blob.reads_float_status(), "{what}");
-            assert_eq!(machine.count(Reason::SoftwareFusedMultiplyAdd), 0, "{what}");
-            assert!(
-                machine.count(Reason::ExactFloatingPointRequested) > 0,
-                "{what}"
-            );
-            // At full the slow path is reached by leaving the piece.
-            if look_ahead == LookAhead::Full {
-                assert!(machine.count(Reason::LeftToAddress) > 0, "{what}");
+    for (defines, reads_float_status) in [(&[][..], true), (&["WITHOUT_FENV"][..], false)] {
+        for optimisation in ["-O0", "-O2"] {
+            let blob = build_with("differences", optimisation, Library::C, defines);
+            let theirs = native(&blob);
+            for look_ahead in [LookAhead::None, LookAhead::Full] {
+                let mut machine = ready_on(
+                    &blob,
+                    (look_ahead, wcontainers_translator::Optimise::Speed),
+                    wcontainers_translator::Omit::default(),
+                    host,
+                );
+                let (stopped, registers) = machine.run();
+                let ours = ran(&blob, &machine, stopped, &registers);
+                let what =
+                    format!("differences {defines:?} at {optimisation}, look-ahead {look_ahead:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&ours.stdout),
+                    String::from_utf8_lossy(&theirs.stdout),
+                    "output of {what}"
+                );
+                assert_eq!(ours.status, theirs.status, "exit status of {what}");
+                assert_eq!(blob.reads_float_status(), reads_float_status, "{what}");
+                let software = machine.count(Reason::SoftwareFusedMultiplyAdd);
+                if reads_float_status {
+                    // Flags kept from the start: every operation in software is exact floating point,
+                    // which at full is reached by leaving the piece.
+                    assert_eq!(software, 0, "{what}");
+                    assert!(
+                        machine.count(Reason::ExactFloatingPointRequested) > 0,
+                        "{what}"
+                    );
+                    if look_ahead == LookAhead::Full {
+                        assert!(machine.count(Reason::LeftToAddress) > 0, "{what}");
+                    }
+                } else {
+                    assert!(software > 0, "{what}");
+                }
             }
         }
     }

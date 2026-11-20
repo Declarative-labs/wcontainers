@@ -87,6 +87,10 @@ pub enum Library {
     C,
 }
 
+/// The linker option that links only what the program reaches, as from an archive: zig otherwise keeps C
+/// library code nothing calls, such as `fmal`, which reads FPSR and so would keep every program's flags exact.
+const LINK_ONLY_WHAT_IS_REACHED: &str = "-Wl,--gc-sections";
+
 /// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
 /// assembly) at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
@@ -135,6 +139,9 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
         &script,
         "-Wl,--build-id=none",
     ];
+    if library == Library::C {
+        arguments.push(LINK_ONLY_WHAT_IS_REACHED);
+    }
     if library == Library::None {
         arguments.extend([
             "-ffreestanding",

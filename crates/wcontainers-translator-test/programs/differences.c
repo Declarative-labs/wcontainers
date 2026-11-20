@@ -1,6 +1,7 @@
 // Where ARM64 and WebAssembly differ: division, saturating conversion, fused multiply-add, not-a-number
 // bits, rounding modes and status flags, flush to zero, both styles of atomics, and the system instructions
 // a program may use. Every result is printed as bits, so the output matches Linux only if each is exact.
+// WITHOUT_FENV leaves out the parts that use <fenv.h>, so the program never reads FPSR.
 
 #include <fenv.h>
 #include <math.h>
@@ -95,6 +96,7 @@ static void nans(void) {
     printf("fcvt nan %08x\n", bits32(single));
 }
 
+#ifndef WITHOUT_FENV
 static const char *names[] = {"nearest", "upward", "downward", "towardzero"};
 static const int modes[] = {FE_TONEAREST, FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO};
 
@@ -134,6 +136,7 @@ static void flags(void) {
     printf(" exact %d\n", fetestexcept(FE_ALL_EXCEPT));
     (void)r;
 }
+#endif
 
 static void flush(void) {
     uint64_t fpcr;
@@ -252,8 +255,10 @@ int main(void) {
     conversions();
     fused();
     nans();
+#ifndef WITHOUT_FENV
     rounding();
     flags();
+#endif
     flush();
     atomics();
     system_instructions();
