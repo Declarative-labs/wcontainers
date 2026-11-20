@@ -25,6 +25,7 @@
 //     word of a memory sharer it kills; then takes a signal on an alternate stack in its fifth
 //     and sixth; then ends.
 //   proxy: prints its process id and its user id, each by raw calls and one write.
+//   exec PATH: runs PATH, or prints why it could not.
 //   scatter: in a child, receives the first of two datagrams with recvfrom into the buffer's
 //     second page, its address into the third and the address's length from the fourth, then
 //     the second datagram, and prints both.
@@ -871,6 +872,13 @@ static int proxy(void) {
     return 0;
 }
 
+static int exec_program(char *path) {
+    char *arguments[] = {path, NULL};
+    execve(path, arguments, NULL);
+    printf("exec %s\n", strerror(errno));
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) return 2;
     buffer = (char *)strtoul(argv[2], NULL, 0);
@@ -897,5 +905,6 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "scatter")) return scatter();
     if (!strcmp(mode, "kernelwrites") && argc > 4) return kernel_writes(strtol(argv[4], NULL, 0));
     if (!strcmp(mode, "proxy")) return proxy();
+    if (!strcmp(mode, "exec") && argc > 4) return exec_program(argv[4]);
     return 2;
 }

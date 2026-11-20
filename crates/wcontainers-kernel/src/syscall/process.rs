@@ -102,10 +102,11 @@ pub(super) fn execve(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [path, argv, envp, ..]: Args,
+    arguments: Args,
 ) -> Outcome {
+    let [path, argv, envp, ..] = arguments;
     match exec(kernel, cx, tid, AT_FDCWD as u64, path, argv, envp, 0) {
-        Ok(Exec::Started(now)) => started(kernel, cx, tid, now),
+        Ok(Exec::Started(now)) => started(kernel, cx, tid, now, (__NR_execve, arguments)),
         Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
@@ -116,21 +117,34 @@ pub(super) fn execveat(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [dirfd, path, argv, envp, flags, _]: Args,
+    arguments: Args,
 ) -> Outcome {
+    let [dirfd, path, argv, envp, flags, _] = arguments;
     match exec(kernel, cx, tid, dirfd, path, argv, envp, flags as u32) {
-        Ok(Exec::Started(now)) => started(kernel, cx, tid, now),
+        Ok(Exec::Started(now)) => started(kernel, cx, tid, now, (__NR_execveat, arguments)),
         Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
     }
 }
 
-/// A new program in place: the thread starts it, under the process's number if it took it.
-fn started(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, now: Tid) -> Outcome {
+/// A new program in place: the thread starts it, under the process's number if it took it, and
+/// there the embedder is asked for the call's answer.
+fn started(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    now: Tid,
+    (number, arguments): (u32, Args),
+) -> Outcome {
     if now == tid {
         return Outcome::Restart;
     }
+    let call = wcontainers_abi::SystemCallRequest {
+        number: number.into(),
+        arguments,
+    };
+    kernel.answer_in_registers(cx, now, &call);
     kernel.return_to_user(cx, now, Resume::FromRegisters);
     Outcome::Gone
 }

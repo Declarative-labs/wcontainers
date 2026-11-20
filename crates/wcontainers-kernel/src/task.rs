@@ -255,6 +255,7 @@ impl Kernel {
             self.counters
                 .count(cx.host, reason::COPY_UNDESCRIBED, call.number);
         }
+        let mut runs_again = false;
         if let Some((address, access)) = touched {
             let met = self.watch_touched(cx, tid, address, access);
             match outcome {
@@ -272,6 +273,7 @@ impl Kernel {
                         registers.pc -= size_of::<u32>() as u64;
                         cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
                         outcome = syscall::Outcome::Restart;
+                        runs_again = true;
                     } else {
                         self.wait_on_watch(tid, None, false);
                         outcome = syscall::Outcome::Parked;
@@ -319,12 +321,41 @@ impl Kernel {
             }
             syscall::Outcome::Restart => {
                 self.finish_call(cx, tid);
+                if !runs_again {
+                    self.answer_in_registers(cx, tid, &call);
+                }
                 self.return_to_user(cx, tid, Resume::FromRegisters);
             }
             syscall::Outcome::Parked => {
                 debug_assert!(self.threads[&tid].call.wait.is_some());
             }
             syscall::Outcome::Gone => {}
+        }
+    }
+
+    /// Asks the embedder for its answer to a call that replaced its thread's registers (a new
+    /// program, a handler's return): the result is the thread's x0, and the answer goes there.
+    pub(crate) fn answer_in_registers(
+        &mut self,
+        cx: &mut Context<'_>,
+        tid: Tid,
+        call: &SystemCallRequest,
+    ) {
+        let Some(thread) = self.threads.get(&tid) else {
+            return;
+        };
+        let (pid, cpu) = (thread.process, thread.cpu);
+        let mut registers = RegisterBlock::ZERO;
+        cx.cpu.registers(cpu, &mut registers);
+        let given = crate::system::response_of(registers.x[0]);
+        let mut response = given;
+        let thread = crate::TaskId::of(tid);
+        self.announce(cx, pid, |system, process| {
+            response = system.intercept_system_call_response(process, thread, call, response);
+        });
+        if response != given && self.threads.contains_key(&tid) {
+            registers.x[0] = crate::system::return_of(response);
+            cx.cpu.set_registers(cpu, &registers);
         }
     }
 

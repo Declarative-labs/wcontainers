@@ -33,6 +33,25 @@ pub(crate) const STACK_LIMIT: u64 = 8 << 20;
 /// The gap Linux keeps below a stack that may grow (`stack_guard_gap`, 256 pages).
 pub(crate) const STACK_GUARD_GAP: u64 = 256 * PAGE_SIZE;
 
+/// The least gap Linux leaves between the stack's top and the mmap base (`MIN_GAP`, mm/util.c).
+const MMAP_GAP_MIN: u64 = 128 << 20;
+
+/// The greatest gap, as a fraction of the stack's top (`MAX_GAP`, five sixths, mm/util.c).
+const MMAP_GAP_MAX_SIXTHS: u64 = 5;
+const SIXTHS: u64 = 6;
+
+/// The gap below a stack's top at `top` before the mmap base, as Linux's `mmap_base` sizes it for
+/// the default stack limit, so an address space of any size keeps room for mappings.
+fn mmap_gap(top: u64) -> u64 {
+    let gap = STACK_LIMIT + STACK_GUARD_GAP;
+    let max = top / SIXTHS * MMAP_GAP_MAX_SIXTHS;
+    if gap < MMAP_GAP_MIN && MMAP_GAP_MIN < max {
+        MMAP_GAP_MIN
+    } else {
+        gap.min(max)
+    }
+}
+
 /// What a range holds, for `/proc/<pid>/maps` and for what happens past the end of a file.
 #[derive(Clone)]
 pub(crate) enum Backing {
@@ -420,8 +439,7 @@ impl AddressMap {
             used: BTreeMap::new(),
             end,
             ceiling,
-            // Linux leaves at least 128 MiB below the stack's top for the stack and its gap.
-            mmap_base: page_down(ceiling - (128 << 20)),
+            mmap_base: page_down(ceiling - mmap_gap(ceiling)),
             brk_start: 0,
             brk: 0,
             data_size: 0,
@@ -787,8 +805,19 @@ impl AddressMap {
 
     /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search.
     pub fn find_free(&self, length: u64) -> Option<u64> {
+        self.find_free_beside(length, self.brk, &[])
+    }
+
+    /// Free space as [`AddressMap::find_free`] finds it with the heap ending at `brk` and `taken`
+    /// in use too: where the loader will place a new program's parts.
+    pub fn find_free_beside(
+        &self,
+        length: u64,
+        brk: u64,
+        taken: &[core::ops::Range<u64>],
+    ) -> Option<u64> {
         let mut ceiling = self.mmap_base;
-        let floor = self.brk.max(LOWEST_ADDRESS);
+        let floor = brk.max(LOWEST_ADDRESS);
         loop {
             let start = ceiling.checked_sub(length).filter(|start| *start >= floor);
             let Some(start) = start else {
@@ -799,15 +828,21 @@ impl AddressMap {
             };
             // The highest mapping that, with the guard gap below one that grows down, overlaps
             // [start, ceiling).
-            let blocking = self
+            let mapped = self
                 .mappings
                 .range(..ceiling.saturating_add(STACK_GUARD_GAP))
                 .rev()
                 .map(|(_, mapping)| mapping)
                 .find(|mapping| mapping.start_gap() < ceiling)
-                .filter(|mapping| mapping.end > start);
-            match blocking {
-                Some(mapping) => ceiling = mapping.start_gap(),
+                .filter(|mapping| mapping.end > start)
+                .map(Mapping::start_gap);
+            let reserved = taken
+                .iter()
+                .filter(|range| range.start < ceiling && range.end > start)
+                .map(|range| range.start)
+                .max();
+            match mapped.max(reserved) {
+                Some(below) => ceiling = below,
                 None => return Some(start),
             }
         }
@@ -1441,4 +1476,23 @@ fn apply_permissions_in(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_mmap_gap_is_linuxs_for_an_address_space_of_any_size() {
+        let large = 1 << 32;
+        assert_eq!(mmap_gap(large), MMAP_GAP_MIN);
+        // Five sixths of a top below the least gap is under it: the stack's own gap is kept.
+        let small = MMAP_GAP_MIN;
+        assert_eq!(mmap_gap(small), STACK_LIMIT + STACK_GUARD_GAP);
+        let tiny = SIXTHS * PAGE_SIZE;
+        assert_eq!(mmap_gap(tiny), MMAP_GAP_MAX_SIXTHS * PAGE_SIZE);
+        for top in [large, small, tiny, 0] {
+            assert!(mmap_gap(top) <= top);
+        }
+    }
 }

@@ -1,7 +1,7 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
 use std::ops::{ControlFlow, Range};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
@@ -170,7 +170,7 @@ impl TestHost {
     }
 
     /// The same host with the test's side of the kernel's hooks.
-    fn with_hooks(self, hooks: Box<dyn Hooks>) -> TestHost<Box<dyn Hooks>> {
+    pub fn with_hooks(self, hooks: Box<dyn Hooks>) -> TestHost<Box<dyn Hooks>> {
         TestHost {
             state: self.state,
             hooks: Mutex::new(hooks),
@@ -202,9 +202,14 @@ impl<H> TestHost<H> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The test's hooks, for the kernel's calls; hooks never nest, so this is never held twice.
-    fn hooks(&self) -> MutexGuard<'_, H> {
-        self.hooks.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The test's hooks for a call the kernel makes; one made while another is running nested in
+    /// it, which is reported rather than waited on.
+    pub fn hook(&self) -> MutexGuard<'_, H> {
+        match self.hooks.try_lock() {
+            Ok(hooks) => hooks,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => panic!("a hook nested in another"),
+        }
     }
 
     /// The host a saved container is brought back on. What the container wrote has already left;
@@ -254,10 +259,10 @@ impl System for TestHost {
 
 impl System for TestHost<Box<dyn Hooks>> {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
-        self.hooks().allocate_task_id(previous)
+        self.hook().allocate_task_id(previous)
     }
     fn free_task_id(&self, id: TaskId) {
-        self.hooks().free_task_id(id);
+        self.hook().free_task_id(id);
     }
     fn intercept_system_call_request(
         &self,
@@ -265,7 +270,7 @@ impl System for TestHost<Box<dyn Hooks>> {
         thread: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
-        self.hooks()
+        self.hook()
             .intercept_system_call_request(process, thread, request)
     }
     fn intercept_system_call_response(
@@ -275,23 +280,23 @@ impl System for TestHost<Box<dyn Hooks>> {
         request: &SystemCallRequest,
         response: SystemCallResponse,
     ) -> SystemCallResponse {
-        self.hooks()
+        self.hook()
             .intercept_system_call_response(process, thread, request, response)
     }
     fn on_process_starting(&self, process: Process<'_>) {
-        self.hooks().on_process_starting(process);
+        self.hook().on_process_starting(process);
     }
     fn on_program_starting(&self, process: Process<'_>) {
-        self.hooks().on_program_starting(process);
+        self.hook().on_program_starting(process);
     }
     fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {
-        self.hooks().on_thread_starting(process, thread);
+        self.hook().on_thread_starting(process, thread);
     }
     fn on_process_exiting(&self, process: Process<'_>) {
-        self.hooks().on_process_exiting(process);
+        self.hook().on_process_exiting(process);
     }
     fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
-        self.hooks().on_process_outgrown(process, bytes);
+        self.hook().on_process_outgrown(process, bytes);
     }
     fn on_watched_memory_accessing(
         &self,
@@ -300,11 +305,11 @@ impl System for TestHost<Box<dyn Hooks>> {
         address: u64,
         kind: AccessKind,
     ) {
-        self.hooks()
+        self.hook()
             .on_watched_memory_accessing(process, thread, address, kind);
     }
     fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
-        self.hooks()
+        self.hook()
             .on_memory_written_by_kernel(process, thread, range);
     }
 }

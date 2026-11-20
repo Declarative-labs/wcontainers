@@ -12,7 +12,8 @@ use std::ops::ControlFlow;
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::linux::general;
 use wcontainers_kernel::{
-    AccessKind, Kernel, MemoryError, Process, SystemCallResponse, TaskId, WatchesFor, reason,
+    AccessKind, Errno, Kernel, MemoryError, Process, System, SystemCallResponse, TaskId,
+    WatchesFor, reason, task_id_after,
 };
 use wcontainers_kernel_test::driver::{self, Run};
 use wcontainers_kernel_test::hooks::Hooks;
@@ -49,6 +50,17 @@ fn run_embedder_below(
     seed: u64,
     ceiling: Option<u64>,
 ) -> Run {
+    try_embedder_below(mode, hooks, seed, ceiling, BUFFER).expect("an outcome on our kernel")
+}
+
+/// As [`run_embedder_below`], with the buffer at `buffer` and a failure to start given back.
+fn try_embedder_below(
+    mode: &[&str],
+    hooks: Option<Box<dyn Hooks>>,
+    seed: u64,
+    ceiling: Option<u64>,
+    buffer: u64,
+) -> Result<Run, driver::Failure> {
     let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
     let mut files = wcontainers_kernel_test::image::reference_image().to_vec();
     files.extend(wcontainers_kernel_test::image::host_directory(
@@ -56,7 +68,7 @@ fn run_embedder_below(
         guest_directory_entry(),
     ));
     let path = in_guest_directory("embedder");
-    let (buffer, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let (buffer, pages) = (format!("{buffer:#x}"), PAGES.to_string());
     let mut command = vec![path.as_str(), mode[0], buffer.as_str(), pages.as_str()];
     command.extend(&mode[1..]);
     let container = driver::Container {
@@ -76,7 +88,6 @@ fn run_embedder_below(
         ..driver::prepare(&container)
     };
     driver::run_prepared(prepared, &container, seed, Default::default())
-        .expect("an outcome on our kernel")
 }
 
 fn stdout(run: &Run) -> String {
@@ -244,6 +255,16 @@ impl Hooks for Recorder {
         let seen = Seen::Exiting(process.id().0);
         self.enter(&mut process, seen);
     }
+}
+
+/// The order tests' check that no hook nests can fail: a call into the test's hooks while one is
+/// running is reported, not waited on.
+#[test]
+#[should_panic(expected = "a hook nested in another")]
+fn a_hook_called_while_one_runs_is_reported_as_nested() {
+    let host = driver::TestHost::new(1).with_hooks(Box::new(Recorder::default()));
+    let _running = host.hook();
+    host.allocate_task_id(TaskId(1));
 }
 
 #[test]
@@ -442,6 +463,135 @@ fn heap_growth_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         // With no ceiling below the address space's end the heap grows, as on Linux.
         let run = run_embedder_below(&["brk", &growth], None, seed, None);
         assert_eq!(stdout(&run), "brk grown\n", "{:?}", run.outcome);
+    }
+}
+
+/// A ceiling below the least gap Linux leaves under the stack's top for the mmap base, a buffer
+/// below it and above the program, the piece mapped at a time under it, and a ceiling too low for the program itself.
+const SMALL_CEILING: u64 = 100 << 20;
+const LOW_BUFFER: u64 = 48 << 20;
+const SMALL_PIECE: u64 = 4 << 20;
+const TINY_CEILING: u64 = 16 * PAGE_SIZE;
+
+#[test]
+fn a_small_ceiling_is_kept_and_a_first_program_past_it_is_refused() {
+    let piece = format!("{SMALL_PIECE:#x}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let run = try_embedder_below(
+            &["outgrow", &piece],
+            Some(Box::new(Outgrown(seen.clone()))),
+            seed,
+            Some(SMALL_CEILING),
+            LOW_BUFFER,
+        )
+        .expect("an outcome on our kernel");
+        let text = stdout(&run);
+        let words: Vec<&str> = text.split_whitespace().collect();
+        assert_eq!(words.first(), Some(&"outgrown"), "{:?}", run.outcome);
+        assert_eq!(words[2], "ENOMEM", "{text}");
+        let pieces: u64 = words[1].parse().expect("a count");
+        assert!(pieces > 0 && pieces * SMALL_PIECE < SMALL_CEILING, "{text}");
+        let sizes: Vec<u64> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(bytes, _)| *bytes)
+            .collect();
+        assert_eq!(sizes, [SMALL_PIECE]);
+        assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 1);
+        // The first program does not fit: its start fails as out of memory before it has a
+        // process to announce.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let failed = try_embedder_below(
+            &["outgrow", &piece],
+            Some(Box::new(Outgrown(seen.clone()))),
+            seed,
+            Some(TINY_CEILING),
+            LOW_BUFFER,
+        );
+        assert!(
+            matches!(failed, Err(driver::Failure::Start(error)) if error == Errno::ENOMEM),
+            "{:?}",
+            failed.map(|run| run.outcome)
+        );
+        assert!(seen.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn a_new_program_past_the_ceiling_is_refused_before_the_old_one_goes() {
+    let program = wcontainers_kernel_test::guest::build("bigdata", &[], &out());
+    let path = in_guest_directory(program.file_name().expect("a name").to_str().expect("text"));
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let run = try_embedder_below(
+            &["exec", &path],
+            Some(Box::new(Outgrown(seen.clone()))),
+            seed,
+            Some(SMALL_CEILING),
+            LOW_BUFFER,
+        )
+        .expect("an outcome on our kernel");
+        // The old program carries on and is told, as Linux's execve refuses before its point of
+        // no return.
+        assert_eq!(stdout(&run), "exec Out of memory\n", "{:?}", run.outcome);
+        assert_eq!(run.outcome.exit_code, 0);
+        let sizes: Vec<u64> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(bytes, _)| *bytes)
+            .collect();
+        assert_eq!(sizes.len(), 1, "{sizes:?}");
+        assert!(sizes[0] > SMALL_CEILING, "{sizes:?}");
+        assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 1);
+        // With no ceiling below the address space's end it runs.
+        let run = try_embedder_below(&["exec", &path], None, seed, None, LOW_BUFFER)
+            .expect("an outcome on our kernel");
+        assert_eq!((stdout(&run).as_str(), run.outcome.exit_code), ("", 0));
+    }
+}
+
+/// The default counter's numbers, but `answer` on the `at`-th ask.
+struct Misnumbered {
+    asked: u32,
+    at: u32,
+    answer: TaskId,
+}
+
+impl Hooks for Misnumbered {
+    fn allocate_task_id(&mut self, previous: TaskId) -> TaskId {
+        self.asked += 1;
+        if self.asked == self.at {
+            self.answer
+        } else {
+            task_id_after(previous)
+        }
+    }
+}
+
+#[test]
+fn a_task_id_out_of_range_fails_the_fork_with_eagain() {
+    for answer in [TaskId(0), TaskId(u32::MAX)] {
+        // The first ask is the first process's, the second the shell's fork.
+        let hooks = Misnumbered {
+            asked: 0,
+            at: 2,
+            answer,
+        };
+        let run = busybox::run_ours_hooked(
+            &["sh", "-c", "true & wait $!; echo status $?"],
+            1,
+            Box::new(hooks),
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.outcome.stderr),
+            "sh: can't fork: Resource temporarily unavailable\n",
+            "{answer:?}"
+        );
+        assert!(run.outcome.stdout.is_empty(), "{answer:?}");
+        assert_eq!(counted(&run, reason::TASK_ID_OUT_OF_RANGE), 1, "{answer:?}");
     }
 }
 
@@ -1538,5 +1688,86 @@ fn the_embedder_answers_and_changes_system_calls() {
             format!("pid {PROXY_PID}uid {PROXY_UID}"),
             "seed {seed}"
         );
+    }
+}
+
+/// One call the proxy was asked about: the process, the thread, the call's number, and the
+/// response, none for the request.
+type Asked = (u32, u32, u64, Option<SystemCallResponse>);
+
+/// Notes every request and response the proxy is asked about, changing nothing.
+struct CallLog(Arc<Mutex<Vec<Asked>>>);
+
+impl Hooks for CallLog {
+    fn intercept_system_call_request(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        let entry = (process.id().0, thread.0, request.number, None);
+        self.0.lock().unwrap().push(entry);
+        ControlFlow::Continue(request)
+    }
+
+    fn intercept_system_call_response(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        let entry = (process.id().0, thread.0, request.number, Some(response));
+        self.0.lock().unwrap().push(entry);
+        response
+    }
+}
+
+/// How many requests and responses `asked` holds for the call `number`.
+fn asked_about(asked: &[Asked], number: u32) -> (usize, usize) {
+    let of = asked
+        .iter()
+        .filter(|(_, _, asked, _)| *asked == u64::from(number));
+    let responses = of.clone().filter(|(.., response)| response.is_some());
+    (of.count() - responses.clone().count(), responses.count())
+}
+
+#[test]
+fn a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop() {
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let run = run_embedder("paths", Box::new(CallLog(asked.clone())), seed);
+        assert!(
+            stdout(&run).contains("threaded exec 0\n"),
+            "{:?}",
+            run.outcome
+        );
+        let asked = std::mem::take(&mut *asked.lock().unwrap());
+        // Each exec answers once, a successful one with 0 in the new program, to the thread
+        // that carries the process's number by then.
+        let (requests, responses) = asked_about(&asked, general::__NR_execve);
+        assert_eq!(requests, responses, "{asked:?}");
+        let started: Vec<_> = asked
+            .iter()
+            .filter(|entry| entry.2 == u64::from(general::__NR_execve) && entry.3 == Some(Ok(0)))
+            .collect();
+        assert!(started.len() >= 2, "{started:?}");
+        assert!(
+            started
+                .iter()
+                .all(|(process, thread, ..)| process == thread)
+        );
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let length = PAGE_SIZE.to_string();
+        let run = run_embedder_below(
+            &["kernelwrites", &length],
+            Some(Box::new(CallLog(asked.clone()))),
+            seed,
+            None,
+        );
+        assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
+        let asked = asked.lock().unwrap();
+        let (requests, responses) = asked_about(&asked, general::__NR_rt_sigreturn);
+        assert!(requests > 0 && requests == responses, "{asked:?}");
     }
 }

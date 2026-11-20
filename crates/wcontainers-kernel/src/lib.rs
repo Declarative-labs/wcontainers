@@ -578,12 +578,9 @@ impl Kernel {
         for _ in RESERVED_PIDS..PID_MAX {
             let id = cx.host.allocate_task_id(TaskId::of(self.last_id)).pid();
             if !(1..PID_MAX).contains(&id) {
-                return Err(self.counters.refuse(
-                    cx.host,
-                    reason::TASK_ID_OUT_OF_RANGE,
-                    id as u32 as u64,
-                    Errno::EAGAIN,
-                ));
+                self.counters
+                    .count(cx.host, reason::TASK_ID_OUT_OF_RANGE, id as u32 as u64);
+                return Err(Errno::EAGAIN);
             }
             self.last_id = id;
             if !self.carried(id) {

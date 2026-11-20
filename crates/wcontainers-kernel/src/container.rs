@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 use wcontainers_abi::{Cpu, End, PAGE_SIZE, Resume};
 
+use crate::counters::reason;
 use crate::credentials::Credentials;
 use crate::ends::Standard;
 use crate::file::{FdTable, OpenFile};
@@ -568,6 +569,12 @@ impl Kernel {
                 })
             };
             self.end_asking(pid, result == Err(Errno::PARKED));
+            // The first program did not fit below the ceiling: counted, with no hook, since its
+            // process is announced only once its program is loaded.
+            if self.outgrown.take().is_some() {
+                self.counters
+                    .count(cx.host, reason::PROCESS_OUTGROWN, u64::from(__NR_execve));
+            }
             match result {
                 // The mounts are made: the first program's part asks afresh.
                 Ok(false) => continue,
