@@ -13433,8 +13433,6 @@ code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_out	4
-code	crates/wcontainers-shaders/src/variant.rs	int	loads	128
-code	crates/wcontainers-shaders/src/variant.rs	int	loads	4
 code	crates/wcontainers-shaders/src/variant.rs	int	min_lod_zero	4
 code	crates/wcontainers-shaders/src/variant.rs	int	mirror_once	3
 code	crates/wcontainers-shaders/src/variant.rs	int	mirror_once	4
@@ -13466,7 +13464,6 @@ code	crates/wcontainers-shaders/src/variant.rs	str	helper_name	"samples_{texture
 code	crates/wcontainers-shaders/src/variant.rs	str	helper_name	"stream_{input}"
 code	crates/wcontainers-shaders/src/variant.rs	str	helper_name	"viewport"
 code	crates/wcontainers-shaders/src/variant.rs	str	linked_out	"clip distances not an array"
-code	crates/wcontainers-shaders/src/variant.rs	str	loads	"load_clamped_{texture}"
 code	crates/wcontainers-shaders/src/variant.rs	str	sample_mask	"sample_mask"
 code	crates/wcontainers-shaders/src/variant.rs	str	samples	"MirrorOnceOnComparison"
 code	crates/wcontainers-shaders/src/variant.rs	str	samples	"MirrorOnceOnGather"

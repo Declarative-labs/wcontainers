@@ -716,7 +716,7 @@ fn natural(kind: Kind) -> Scalar {
 /// 3.2.2 and 3.2.3): integers clamped to the format's range; normalised values with NaN as zero,
 /// clamped, scaled and rounded half away from zero; floats rounded toward zero, keeping NaN and
 /// infinities, past the largest finite value giving it, an unsigned format's negatives zero.
-fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) -> Expr {
+pub(super) fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) -> Expr {
     let lit = |f: &mut Function, l: Literal| {
         f.expressions
             .append(Expression::Literal(l), Span::UNDEFINED)
