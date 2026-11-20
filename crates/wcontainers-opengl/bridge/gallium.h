@@ -3,4 +3,6 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
+#include "util/format/u_format.h"
 #include "util/u_screen.h"
+#include "util/u_upload_mgr.h"

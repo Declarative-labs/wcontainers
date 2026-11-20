@@ -4,10 +4,22 @@
 //! `WCONTAINERS_MESA` names its build.
 
 #[cfg(mesa)]
-pub mod device;
+mod context;
 #[cfg(mesa)]
-pub mod format;
+mod device;
 #[cfg(mesa)]
-pub mod gallium;
+mod draw;
 #[cfg(mesa)]
-pub mod screen;
+mod format;
+#[cfg(mesa)]
+mod gallium;
+#[cfg(mesa)]
+mod present;
+#[cfg(mesa)]
+mod resource;
+#[cfg(mesa)]
+mod screen;
+#[cfg(mesa)]
+mod state;
+#[cfg(mesa)]
+mod view;

@@ -1,54 +1,75 @@
 //! The driver's `pipe_screen`: Gallium's view of the device, its caps from the interface's.
 
-use std::ffi::{c_char, c_int, c_uint, c_void};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::ffi::{CString, c_char, c_int, c_uint};
+use std::sync::{Mutex, MutexGuard};
 
-use wcontainers_gpu::{Backend, Caps};
+use wcontainers_gpu::{Backend, Caps, Object};
 
-use crate::device::Device;
+use crate::device::HostWindows;
 use crate::format;
 use crate::gallium::*;
+use crate::present::Window;
 
 /// The driver's name, as `GALLIUM_DRIVER` chooses it and OpenGL's renderer string starts.
-const DRIVER_NAME: &core::ffi::CStr = c"wcontainers";
+pub const DRIVER_NAME: &core::ffi::CStr = c"wcontainers";
 
 /// One screen: Gallium's struct first, so that a `pipe_screen` pointer is one to it.
 #[repr(C)]
-pub struct Screen {
+pub struct Screen<B: Backend> {
     base: pipe_screen,
-    pub device: Mutex<Device>,
+    backend: Mutex<B>,
+    /// Objects whose Gallium owner went, given back to the back end when it is next used (Mesa
+    /// destroys resources from inside the driver's own calls).
+    retired: Mutex<Vec<Object<B>>>,
+    caps: Caps,
+    name: CString,
+    pub windows: Mutex<HashMap<usize, Window<B>>>,
 }
 
-impl Screen {
+impl<B: Backend> Screen<B> {
     /// # Safety
     /// `screen` is one this driver made.
-    pub unsafe fn of<'a>(screen: *mut pipe_screen) -> &'a Screen {
+    pub unsafe fn of<'a>(screen: *mut pipe_screen) -> &'a Screen<B> {
         // SAFETY: the caller's; `base` is the first field.
-        unsafe { &*screen.cast::<Screen>() }
+        unsafe { &*screen.cast::<Screen<B>>() }
+    }
+
+    /// The back end, for one call of the driver's.
+    pub fn backend(&self) -> MutexGuard<'_, B> {
+        let mut backend = self.backend.lock().expect("the device lock");
+        let retired = std::mem::take(&mut *self.retired.lock().expect("the retired lock"));
+        for object in retired {
+            backend.destroy(object);
+        }
+        backend
+    }
+
+    /// Gives an object back to the back end.
+    pub fn retire(&self, object: Object<B>) {
+        self.retired.lock().expect("the retired lock").push(object);
+    }
+
+    pub fn caps(&self) -> &Caps {
+        &self.caps
     }
 }
 
-unsafe extern "C" fn destroy(screen: *mut pipe_screen) {
+unsafe extern "C" fn destroy<B: Backend>(screen: *mut pipe_screen) {
     // SAFETY: Mesa destroys the screen it was given once.
-    drop(unsafe { Box::from_raw(screen.cast::<Screen>()) });
+    drop(unsafe { Box::from_raw(screen.cast::<Screen<B>>()) });
 }
 
 unsafe extern "C" fn name(_: *mut pipe_screen) -> *const c_char {
     DRIVER_NAME.as_ptr()
 }
 
-unsafe extern "C" fn device_name(screen: *mut pipe_screen) -> *const c_char {
-    // SAFETY: Mesa passes this driver's screen; the name lives as long as the device.
-    let screen = unsafe { Screen::of(screen) };
-    screen
-        .device
-        .lock()
-        .expect("the device lock")
-        .name()
-        .as_ptr()
+unsafe extern "C" fn device_name<B: Backend>(screen: *mut pipe_screen) -> *const c_char {
+    // SAFETY: Mesa passes this driver's screen; the name lives as long as it.
+    unsafe { Screen::<B>::of(screen) }.name.as_ptr()
 }
 
-unsafe extern "C" fn is_format_supported(
+unsafe extern "C" fn is_format_supported<B: Backend>(
     screen: *mut pipe_screen,
     format: pipe_format,
     target: pipe_texture_target,
@@ -57,10 +78,9 @@ unsafe extern "C" fn is_format_supported(
     bindings: c_uint,
 ) -> bool {
     // SAFETY: Mesa passes this driver's screen.
-    let screen = unsafe { Screen::of(screen) };
-    let device = screen.device.lock().expect("the device lock");
+    let screen = unsafe { Screen::<B>::of(screen) };
     format::supported(
-        &device.backend.caps().formats,
+        &screen.caps.formats,
         format,
         target,
         samples,
@@ -69,24 +89,18 @@ unsafe extern "C" fn is_format_supported(
     )
 }
 
-unsafe extern "C" fn context_create(
-    _: *mut pipe_screen,
-    _: *mut c_void,
-    _: c_uint,
-) -> *mut pipe_context {
-    eprintln!(
-        "{}: refused: an OpenGL context (the driver's context is not built yet)",
-        DRIVER_NAME.to_string_lossy()
-    );
-    std::ptr::null_mut()
-}
-
 /// Levels of a full chain on a side of `size` texels.
 fn levels(size: u32) -> u32 {
     size.ilog2() + 1
 }
 
-/// Gallium's screen caps: its defaults, with the interface's limits over them.
+/// The GLSL version st/mesa's GLSL compiler takes for this driver, and OpenGL ES's: the
+/// versions whose programs the NIR route converts and whose state the context draws with.
+const GLSL_VERSION: c_uint = 120;
+const ESSL_VERSION: c_uint = 100;
+
+/// Gallium's screen caps: its defaults, with the interface's limits over them and what the
+/// context does and does not do.
 fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     let limits = &ours.limits;
     caps.max_texture_2d_size = limits.max_texture_2d;
@@ -100,6 +114,30 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_line_width = limits.max_line_width;
     caps.max_texture_anisotropy = f32::from(limits.max_anisotropy);
     caps.constant_buffer_offset_alignment = limits.min_uniform_offset_alignment;
+    caps.max_varyings = limits.inter_stage_slots;
+    caps.glsl_feature_level = GLSL_VERSION;
+    caps.glsl_feature_level_compatibility = GLSL_VERSION;
+    caps.essl_feature_level = ESSL_VERSION;
+    caps.npot_textures = true;
+    // Maps are copies the driver writes back, never the device's own memory.
+    caps.buffer_map_persistent_coherent = false;
+    caps.allow_mapped_buffers_during_execution = false;
+    caps.texture_transfer_modes = 0;
+    // The host's fragment coordinates, and depth clip spaces of both kinds (the vertex program
+    // is rewritten for OpenGL's).
+    caps.fs_coord_origin_upper_left = true;
+    caps.fs_coord_pixel_center_half_integer = true;
+    caps.clip_halfz = true;
+    // Uniforms packed in words into buffer 0, as the NIR route's options take them.
+    caps.packed_uniforms = true;
+    // OpenGL's fixed-function steps the host lacks, made by st/mesa in the programs.
+    caps.flatshade = false;
+    caps.alpha_test = false;
+    caps.two_sided_color = false;
+    caps.point_size_fixed = 0;
+    caps.clip_planes = 0;
+    caps.texrect = false;
+    caps.gl_clamp = false;
 }
 
 /// The stages the driver takes programs for. Compute waits on the context's dispatch.
@@ -137,31 +175,30 @@ fn fill_shader_caps(caps: &mut pipe_shader_caps, stage: mesa_shader_stage, ours:
     caps.indirect_const_addr = true;
 }
 
-/// The screen on the GPU the back end finds, or null without one (Mesa then tries its next
-/// driver).
-#[unsafe(no_mangle)]
-pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
-    let Some(device) = Device::new() else {
-        return std::ptr::null_mut();
-    };
+/// The screen over `backend`, named `name`.
+pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
+    let caps = backend.caps().clone();
     let mut screen = Box::new(Screen {
         base: pipe_screen::default(),
-        device: Mutex::new(device),
+        backend: Mutex::new(backend),
+        retired: Mutex::new(Vec::new()),
+        caps,
+        name: gpu,
+        windows: Mutex::new(HashMap::new()),
     });
-    let ours = screen
-        .device
-        .get_mut()
-        .expect("the device lock")
-        .backend
-        .caps()
-        .clone();
+    let ours = screen.caps.clone();
     let base = &mut screen.base;
-    base.destroy = Some(destroy);
+    base.destroy = Some(destroy::<B>);
     base.get_name = Some(name);
     base.get_vendor = Some(name);
-    base.get_device_vendor = Some(device_name);
-    base.is_format_supported = Some(is_format_supported);
-    base.context_create = Some(context_create);
+    base.get_device_vendor = Some(device_name::<B>);
+    base.is_format_supported = Some(is_format_supported::<B>);
+    base.context_create = Some(crate::context::context_create::<B>);
+    base.resource_create = Some(crate::resource::resource_create::<B>);
+    base.resource_destroy = Some(crate::resource::resource_destroy::<B>);
+    base.fence_reference = Some(crate::context::fence_reference::<B>);
+    base.fence_finish = Some(crate::context::fence_finish::<B>);
+    base.flush_frontbuffer = Some(crate::present::flush_frontbuffer::<B>);
     // SAFETY: the screen is complete enough for Mesa's defaults, which only write its caps.
     unsafe { u_init_pipe_screen_caps(base, 1) };
     fill_caps(&mut base.caps, &ours);
@@ -172,4 +209,14 @@ pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
         fill_shader_caps(&mut base.shader_caps[stage as usize], stage, &ours);
     }
     Box::into_raw(screen).cast()
+}
+
+/// The screen on the GPU the back end finds, or null without one (Mesa then tries its next
+/// driver).
+#[unsafe(no_mangle)]
+pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
+    match crate::device::webgpu() {
+        Some((backend, name)) => screen(backend, name),
+        None => std::ptr::null_mut(),
+    }
 }

@@ -1,6 +1,6 @@
 //! Gallium's formats in the interface's terms, and what the device can do with each.
 
-use wcontainers_gpu::{Format, FormatCaps, FormatUse};
+use wcontainers_gpu::{Format, FormatCaps, FormatUse, VertexFormat};
 
 use crate::gallium::*;
 
@@ -99,6 +99,70 @@ pub fn format(format: pipe_format) -> Option<Format> {
         .map(|(_, ours)| *ours)
 }
 
+/// Every Gallium format a vertex attribute may be stored in that the interface reads.
+const VERTEX_FORMATS: &[(pipe_format, VertexFormat)] = &[
+    (PIPE_FORMAT_R8_UINT, VertexFormat::Uint8x1),
+    (PIPE_FORMAT_R8G8_UINT, VertexFormat::Uint8x2),
+    (PIPE_FORMAT_R8G8B8_UINT, VertexFormat::Uint8x3),
+    (PIPE_FORMAT_R8G8B8A8_UINT, VertexFormat::Uint8x4),
+    (PIPE_FORMAT_R8_SINT, VertexFormat::Sint8x1),
+    (PIPE_FORMAT_R8G8_SINT, VertexFormat::Sint8x2),
+    (PIPE_FORMAT_R8G8B8_SINT, VertexFormat::Sint8x3),
+    (PIPE_FORMAT_R8G8B8A8_SINT, VertexFormat::Sint8x4),
+    (PIPE_FORMAT_R8_UNORM, VertexFormat::Unorm8x1),
+    (PIPE_FORMAT_R8G8_UNORM, VertexFormat::Unorm8x2),
+    (PIPE_FORMAT_R8G8B8_UNORM, VertexFormat::Unorm8x3),
+    (PIPE_FORMAT_R8G8B8A8_UNORM, VertexFormat::Unorm8x4),
+    (PIPE_FORMAT_R8_SNORM, VertexFormat::Snorm8x1),
+    (PIPE_FORMAT_R8G8_SNORM, VertexFormat::Snorm8x2),
+    (PIPE_FORMAT_R8G8B8_SNORM, VertexFormat::Snorm8x3),
+    (PIPE_FORMAT_R8G8B8A8_SNORM, VertexFormat::Snorm8x4),
+    (PIPE_FORMAT_R16_UINT, VertexFormat::Uint16x1),
+    (PIPE_FORMAT_R16G16_UINT, VertexFormat::Uint16x2),
+    (PIPE_FORMAT_R16G16B16_UINT, VertexFormat::Uint16x3),
+    (PIPE_FORMAT_R16G16B16A16_UINT, VertexFormat::Uint16x4),
+    (PIPE_FORMAT_R16_SINT, VertexFormat::Sint16x1),
+    (PIPE_FORMAT_R16G16_SINT, VertexFormat::Sint16x2),
+    (PIPE_FORMAT_R16G16B16_SINT, VertexFormat::Sint16x3),
+    (PIPE_FORMAT_R16G16B16A16_SINT, VertexFormat::Sint16x4),
+    (PIPE_FORMAT_R16_UNORM, VertexFormat::Unorm16x1),
+    (PIPE_FORMAT_R16G16_UNORM, VertexFormat::Unorm16x2),
+    (PIPE_FORMAT_R16G16B16_UNORM, VertexFormat::Unorm16x3),
+    (PIPE_FORMAT_R16G16B16A16_UNORM, VertexFormat::Unorm16x4),
+    (PIPE_FORMAT_R16_SNORM, VertexFormat::Snorm16x1),
+    (PIPE_FORMAT_R16G16_SNORM, VertexFormat::Snorm16x2),
+    (PIPE_FORMAT_R16G16B16_SNORM, VertexFormat::Snorm16x3),
+    (PIPE_FORMAT_R16G16B16A16_SNORM, VertexFormat::Snorm16x4),
+    (PIPE_FORMAT_R16_FLOAT, VertexFormat::Float16x1),
+    (PIPE_FORMAT_R16G16_FLOAT, VertexFormat::Float16x2),
+    (PIPE_FORMAT_R16G16B16_FLOAT, VertexFormat::Float16x3),
+    (PIPE_FORMAT_R16G16B16A16_FLOAT, VertexFormat::Float16x4),
+    (PIPE_FORMAT_R32_FLOAT, VertexFormat::Float32x1),
+    (PIPE_FORMAT_R32G32_FLOAT, VertexFormat::Float32x2),
+    (PIPE_FORMAT_R32G32B32_FLOAT, VertexFormat::Float32x3),
+    (PIPE_FORMAT_R32G32B32A32_FLOAT, VertexFormat::Float32x4),
+    (PIPE_FORMAT_R32_UINT, VertexFormat::Uint32x1),
+    (PIPE_FORMAT_R32G32_UINT, VertexFormat::Uint32x2),
+    (PIPE_FORMAT_R32G32B32_UINT, VertexFormat::Uint32x3),
+    (PIPE_FORMAT_R32G32B32A32_UINT, VertexFormat::Uint32x4),
+    (PIPE_FORMAT_R32_SINT, VertexFormat::Sint32x1),
+    (PIPE_FORMAT_R32G32_SINT, VertexFormat::Sint32x2),
+    (PIPE_FORMAT_R32G32B32_SINT, VertexFormat::Sint32x3),
+    (PIPE_FORMAT_R32G32B32A32_SINT, VertexFormat::Sint32x4),
+    (PIPE_FORMAT_B8G8R8A8_UNORM, VertexFormat::Bgra8Unorm),
+    (PIPE_FORMAT_R10G10B10A2_UNORM, VertexFormat::Unorm10_10_10_2),
+    (PIPE_FORMAT_R10G10B10A2_UINT, VertexFormat::Uint10_10_10_2),
+    (PIPE_FORMAT_R11G11B10_FLOAT, VertexFormat::Float11_11_10),
+];
+
+/// The interface's vertex format of a Gallium format, if it reads it.
+pub fn vertex_format(format: pipe_format) -> Option<VertexFormat> {
+    VERTEX_FORMATS
+        .iter()
+        .find(|(gallium, _)| *gallium == format)
+        .map(|(_, ours)| *ours)
+}
+
 /// What each Gallium binding needs of a format; a binding not listed is not served.
 const BINDINGS: &[(u32, FormatUse)] = &[
     (PIPE_BIND_RENDER_TARGET, FormatUse::RENDER),
@@ -124,9 +188,10 @@ pub fn supported(
     bindings: u32,
 ) -> bool {
     if target == PIPE_BUFFER {
-        // Buffers of no format: texel buffers are not served yet.
-        return format == PIPE_FORMAT_NONE
-            && bindings & !(PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER) == 0;
+        // Vertex streams of the formats the interface reads; texel buffers are not served yet.
+        let plain = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER | PIPE_BIND_CONSTANT_BUFFER;
+        return bindings & !plain == 0
+            && (bindings & PIPE_BIND_VERTEX_BUFFER == 0 || vertex_format(format).is_some());
     }
     let Some(ours) = self::format(format) else {
         return false;

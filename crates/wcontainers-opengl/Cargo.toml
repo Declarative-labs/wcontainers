@@ -11,6 +11,7 @@ repository.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+naga = { workspace = true }
 pollster = "1.0.1"
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
@@ -18,7 +19,7 @@ wcontainers-nir = { path = "../wcontainers-nir", default-features = false }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "vulkan"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 bindgen = "0.71.1"
