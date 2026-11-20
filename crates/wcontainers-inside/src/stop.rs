@@ -227,7 +227,9 @@ pub fn fixed_up(
     let (mut hardware, mut fixed) = (h.clone(), page.clone());
     for fixup in &span.fixups {
         match *fixup {
-            Fixup::Constant { register, value } => hardware.x[usize::from(register)] = value,
+            Fixup::Constant { register, value } | Fixup::Address { register, value } => {
+                hardware.x[usize::from(register)] = value
+            }
             Fixup::Move { register, from } => {
                 let value = h.x[usize::from(from)];
                 match hardware.x.get_mut(usize::from(register)) {
