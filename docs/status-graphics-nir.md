@@ -290,6 +290,10 @@ Next, in this order:
   at load 0.43 at the start.
 - Corpus run with the comparison, 1005 shaders, 192 children, x86-64 machine at load 0.3 rising to
   5.3: 124 s including an incremental build (run 3).
+- The whole suite with the SPIR-V corpus compared (run 6, after the GLSL work; x86-64 machine,
+  192 children, load 1.0 at the start and 12.5 at the end, 245 s with the build;
+  `results/run6/nir-results-r6.jsonl`): the same counts as runs 4 and 5, A 728 match, B 773
+  match, 0 differ, 8 not compared on each.
 - `tests/glsl_buffers.rs` and `tests/route.rs` (run 6): 0.08 s and 0.01 s, x86-64 machine, load
   0.5 to 4.2.
 - `tests/narrow.rs` (2,097,152 invocations, both programs on lavapipe): 0.47 s, x86-64 machine,
