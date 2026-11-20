@@ -16,8 +16,9 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
   step comes from the merge (97fff482, main's test harness): the translator's output for the benchmark set
   is the same at both commits. Against the merge, every workload in both engines is within 0.997 to 1.004
   (independent check). So the bar holds against the merge but not against f6e760ae.
-- Docker on the Mac (sixth run, 2026-11-20 04:30 to 05:00 local): containers stayed in "Created", and the
-  watcher did not restart Docker because `docker ps` still answered. The third independent check's
+- Docker on the Mac (sixth run, 2026-11-20 from 04:30 to at least 05:08 local): every new container stayed in
+  "Created" (the watcher's own `alpine:3.22 true` probes too, one a minute), and the watcher did not restart
+  Docker because `docker ps` still answered. The third independent check's
   containers wc-translator-layer1-15045-1, -2, -4 (running) and -8 (Created) cannot be removed ("did not
   receive an exit event"). Someone with authority over the shared Docker needs to restart it and remove them.
   This run removed its own three (wc-translator-blobs-90637-0 to -2).
