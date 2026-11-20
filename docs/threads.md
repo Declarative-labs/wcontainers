@@ -1,19 +1,30 @@
 # wcontainers: guest threads in parallel
 
 Status: plan, revised 2026-11-19 to the owner's rulings of that day and to the independent check of
-the one scheduling rule, then corrected on 2026-11-20 for the faults that the first independent check
-of that revision found (orchestrator/overnight-2026-11-20/threads-check-the-revision.md, "the
-revision's check" here). **This revision has had no passing independent check. Until one is recorded
-in docs/status-threads.md, every part it changed, and every correction of 2026-11-20, is unchecked.**
-The form before it had been corrected after its sixth independent check (docs/status-threads.md says
-what changed each time). Nothing here is built. The owner rules on section 16 first.
+the one scheduling rule, then corrected twice on 2026-11-20: for the faults that the first independent
+check of that revision found (orchestrator/overnight-2026-11-20/threads-check-the-revision.md, "the
+revision's check" here), and for those its second check found (threads-check-round-2.md in the same
+folder, "the second check" here). **This revision has had no passing independent check. Two checks
+were made and neither passed. Until one is recorded in docs/status-threads.md, every part the revision
+changed, and every correction of 2026-11-20, is unchecked.** The form before it had been corrected
+after its sixth independent check (docs/status-threads.md says what changed each time). Nothing here is
+built. The owner rules on section 16 first.
 
-Two things in the corrections were decided by the orchestrator after the revision's check. They are
+Three things in the corrections were decided by the orchestrator after the checks. They are
 **proposed, to be confirmed by the owner**, and not ruled (decisions 14 and 19):
-- a task taken out while it waits carries the call to run again, not a place in a waiter list; where it
-  is resumed its call runs from the start, as Linux runs an interrupted call again (4.5, section 6);
-- waiting for another machine's answer to a wake never happens inside a hook while the kernel's lock is
-  held (4.5).
+- **a task taken out of its kernel while it waits is treated exactly as Linux treats a signal with no
+  handler arriving during that call**: a call that has had no effect yet runs again at resume (a futex
+  wait compares its word again); a wait with a relative time limit goes on with the time left; a call
+  that has already had an effect is not run again and returns what it did (a partial count, a wake's
+  count); a waiter already chosen by a wake returns woken. This replaces the first correction's "its
+  call runs from the start" (4.5, section 6, decision 19);
+- **operations on one lock that span machines have one ordering point for each lock**: one kernel, or
+  one sequencer on the embedder's side, decides the order of the wakes, the requeues and the changes
+  the kernel makes to the number at that place. The first correction's "local part first, remote part
+  later" is withdrawn: it lets glibc 2.17's condition variable lose a wake even when the waker waits,
+  and makes a requeue two steps. How the point is chosen, and what it costs, is open for the owner;
+  4.5 and decision 14 describe the options and recommend none;
+- **nobody waits inside a hook for another machine** (as in the first correction; 4.4 item 6, 4.5).
 
 The rulings are in the interface notes, from "Ruled by the owner, 2026-11-19: where replay is
 recorded" to the end. The check is orchestrator/threads-mixed-ordering/REPORT.md, called "the
@@ -48,7 +59,11 @@ These are open. None is hidden further down.
    caller's own siblings and marks the caller's own memory (section 3); a resume that makes an overlap
    and puts a mark of its own on the other side without parking (section 3); a batch taken from outside
    a hook, which marks named tasks and no memory (section 6); a task taken out while its call waits
-   for a call-in, whose marks then come off (4.5). Also unchecked: that "due a turn", which narrows
+   for a call-in, whose marks then come off (4.5). The second check's corrections add: a change in how
+   a memory runs made only with none of its other threads handed out, and with the thread whose entry
+   makes it leaving `Execution::run` (section 3); an overlap that ends, which keeps its memories
+   running as `Serial` until then (section 3); a batch's mark on every named task, handed out or not
+   (section 6). Also unchecked: that "due a turn", which narrows
    the mixed-ordering check's "while a writer is pending", leaves no `Serial` task waiting for ever;
    that rests on weighted time alone (section 3, rule 3; decision 15).
    Also still unread by any checker from the form before: a woken call runs again whatever is called
@@ -98,6 +113,22 @@ These are open. None is hidden further down.
     The shared-memory hooks fire per process at its own mapping, and only for sources some process
     can write through a mapping. A process that mapped a file before any mapping could write it is not
     named when another process later maps the file shared and writable (section 3, decision 21).
+11. **Locks across machines are not designed** (the second check, its second, fifth and twelfth
+    findings). Their order needs one ordering point for each lock, and how that point is chosen is open
+    (4.5, decision 14). Until it is chosen, three cases have no answer in this plan: a wake or requeue
+    that touches two words whose points differ; the embedder's index of where waiters are, after a
+    requeue made on the waiters' own kernel, which no hook or call reports task by task; and the wake
+    a thread's end makes, which has no call to park and so goes without waiting, under conditions this
+    plan has not designed. Nothing here is built across machines until decision 14 is ruled.
+12. **Under `CLONE_VM`, an owner given `None` still pays while its `Exact` co-owner's threads come in**
+    (the second check, its sixth finding). A call-in's mark names a memory, and a marked memory hands
+    none of its threads back to guest code, the `None` owner's included. The plan's way to keep that
+    owner free (a mark per owner) is a suggestion, not built or checked; the owner decides whether the
+    ruling asks for it (decision 22).
+13. **A resume's pending overlap is worked out once** (the second check, its seventh finding). The pairs
+    a resume would break are found in the resume's entry; a mapping made before the overlap takes
+    effect can add pairs that nobody calls in. Section 3 says what the plan suggests; it is unchecked,
+    and that it ends is not argued.
 
 Words used here:
 - **executor**: what runs the guest's instructions behind the kernel's `Cpu` side (`Executor`,
@@ -315,7 +346,8 @@ three items below come from sections that do not, and each says so.
 - **Locks across machines** ("2026-11-19 late night: locks across machines (discussed with the owner; the
   two calls agreed in substance, details open)"; agreed in substance, not ruled): on the process handle,
   `wake_waiters(address, count, bitset)` and `move_waiters(from, to, count)`, and "the count a wake
-  returns must be exact" (4.5).
+  returns must be exact" (4.5). The ordering point for each lock is the orchestrator's proposal, not
+  part of what was agreed (top of this plan, decision 14).
 
 **What each pair means, and what it pays.** The count costs translated code 11.9% to 16.3% more
 instructions in its best measured form (orchestrator/progress-count-cost.json, form 3, the x86 laptop
@@ -421,10 +453,14 @@ run at once anyway: tasks that run as `Parallel` and have no overlapper that run
   take turns when any of them was given `Serial` (the mixed-ordering check: a second form on one
   memory is not possible). Counted "Parallel process runs Serial code: it owns a memory with a Serial
   one", warned once per process. This is the one place where a neighbour's ordering reaches a process,
-  and it is the ordering only. A guarantee never does, under `CLONE_VM` either: an owner given `None`
-  beside one given `Exact` is never called in for the other's sake (4.5, "which primitive"), and its
-  code holds no count (7.2, the cache key). The form before this correction called in every thread of
-  a memory that any owner given `Exact` shared, which the revision's check found against the ruling;
+  and it is meant to be the ordering only. The plan's design is that a guarantee never reaches a
+  process, under `CLONE_VM` either: an owner given `None` beside one given `Exact` is not asked in for
+  the other's sake (4.5, "which primitive"), and its code holds no count (7.2, the cache key; not built
+  or checked). It does not yet keep that whole: while the `Exact` owner's threads come in, the call's
+  mark is on the memory, and the `None` owner's threads that come in meanwhile are not handed back
+  until it comes off (known fault 12, decision 22). The form before the first correction called in
+  every thread of a memory that any owner given `Exact` shared, which the revision's check found
+  against the ruling;
 - **when the executor cannot run it beside others**, which the executor says of itself
   (`Cpu::parallel_limits()`, 7.4): on the WebAssembly executor a writable block shown in two places
   of one memory, or in two memories that both have `Parallel` code (7.4); on that executor too, a
@@ -566,13 +602,25 @@ already.
   mapping (kernel/syscall/memory.rs:109, ipc.rs:356), the exec, or the fork, is parked before it has
   had any effect, and is made in the first entry in which none of those pairs is handed out. The caller
   is then a waiter of a memory that may be marked, its own, and is chosen as any waiter is (4.5).
+  Where its own memory comes to run as `Serial`, it leaves `Execution::run` when its call has been
+  made (below, "a change in how a memory runs").
 - **A resume call cannot park**, and need not ("Resume stays outside hooks": it is called by the
-  embedder, between entries). Its entry puts the resumed tasks in the kernel but does not put them
-  forward, and changes neither the overlaps nor how any task runs. It puts a mark of its own on the
-  memory of each task it calls in, asks them in with `stop_thread`, and returns. The overlap, and any
-  change in how tasks run, takes effect in the entry in which the last of them has come in; the mark
-  comes off there, and the resumed tasks may then be put forward. The mark belongs to the pending
-  overlap as a call's belongs to its call (4.5).
+  embedder, between entries). `resume_process` brings in a memory with its mappings, and
+  `resume_tasks` brings in tasks to a memory already here; either can make the overlap (the second
+  check: the first correction said this only of a resume of tasks). The entry of either puts in what
+  it brings but does not put any resumed task forward, and records the overlap as pending: it changes
+  neither the overlaps the rule counts nor how any task runs. It puts a mark of its own on the memory
+  of each task it calls in, asks them in with `stop_thread`, and returns. The overlap, and any change
+  in how tasks run, takes effect in the entry in which the last of them has come in; the mark comes
+  off there, and the resumed tasks may then be put forward. The mark belongs to the pending overlap as
+  a call's belongs to its call (4.5).
+  - **A known gap** (the second check, its seventh finding; known fault 13). The pairs are worked out
+    in the resume's entry only. If another memory maps the block before the overlap takes effect, on
+    the WebAssembly executor its tasks may come to run as `Serial` with nobody calling them in. The
+    plan's suggestion, unchecked: the entry where the overlap would take effect works the pairs out
+    again from the state then, with every overlap pending included, asks in the tasks of any new pair
+    under the same mark, and lets the overlap take effect only when a working-out finds no pair handed
+    out. That this ends while mappings keep being made is not argued.
 - `mremap` and `mprotect` change a mapping inside one memory and make no overlap. A fork's child is new
   and has no running thread; the fork is here only for what it does to its parent's way of running.
 - **Why the caller's siblings.** The revision's check: B is `Parallel` with four threads, all handed
@@ -586,10 +634,37 @@ already.
   privately; P2, on another, maps the same file shared and writable; both carry on, and two tasks that
   run as `Serial` and overlap are in guest code at once. That breaks 4.4 items 3 and 7 and the
   executor's lock rule (7.2).
-- Where every task concerned runs as `Parallel` before and after, nobody is stopped. An overlap that
-  ends stops nobody either. On the native executor, b1's `mmap` beside A calls in A alone: B keeps
-  `Parallel` code and runs as `Parallel` beside its siblings.
+- Where every task concerned runs as `Parallel` before and after, nobody is stopped. On the native
+  executor, b1's `mmap` beside A calls in A alone: B keeps `Parallel` code and runs as `Parallel`
+  beside its siblings.
 Counted "tasks called in for a new overlap".
+
+**A change in how a memory runs, either way.** A thread that runs as `Serial` keeps its process's lock
+for its whole stay in `Execution::run`, and one that runs as `Parallel` takes it only in hooks (7.2).
+So a thread must never carry on in guest code across a change in how its memory runs. Two rules, the
+plan's own (the second check, its first finding and the related one):
+- **The thread whose entry makes the change leaves `Execution::run`** in that entry (`Carry::Leave`,
+  4.2), and is handed out again under the new way, taking or not taking the lock as that way says.
+  This is the caller of a new overlap whose own memory comes to run as `Serial` (it had no lock, and
+  would otherwise run `Serial` code without it), and the caller of an `munmap`, exit or exec that ends
+  an overlap and lets its own memory run as `Parallel` (it would otherwise keep the lock while its
+  siblings are handed out and wait for it in their hooks). Cost: one leave of `Execution::run` and
+  coming back, 300.8 ns measured for that alone (above), at each such change.
+- **An overlap that ends changes how a memory runs only in an entry where none of that memory's
+  threads is handed out other than the one whose entry it is.** Until then the memory goes on running
+  as `Serial`, which is never wrong, only slower: the overlap is gone from the rule's counting, and the
+  executor limit that made the memory run as `Serial` is kept for it until that entry. A memory that
+  runs as `Serial` has at most one thread handed out (rule 1), so the change is made at that thread's
+  next entry, by the rule above. The kernel does not ask it in for this; a thread that computes alone
+  with nothing ready in its way keeps the memory as `Serial` for as long as it computes, which costs
+  nothing, because nothing of it waits.
+- Why (the second check, its first finding). The first correction said "an overlap that ends stops
+  nobody". On the WebAssembly executor B ran as `Serial` (an executor limit) with b1 handed out and
+  holding B's lock for its whole stay. The overlap ended, B ran as `Parallel` at once, and B's other
+  threads were handed out; their hooks waited on b1's lock, and a `Cpu` call on B's memory from
+  another worker's entry either failed the try-lock of 7.2 and panicked, or waited for B's lock while
+  b1 waited for the kernel's at its next system call. 7.3 already said the change is made only with
+  the memory's other threads stopped; this now agrees with it.
 
 **Withdrawn with the rulings.** "A kernel is recorded whole, or not at all", and with it the kernel's
 order of entries, are withdrawn ("where replay is recorded"): replay is per process (4.6), so no
@@ -947,9 +1022,11 @@ after its system call must get its own processor's answer, or it leaves `Executi
      another thread's entry.
 6. The kernel still never waits on its own stack. A `Host` call or a hook made inside an entry holds the
    lock while it runs. A slow hook stalls every processor's kernel entries until the split. The
-   proxy's hooks are such hooks, at every system call (4.6). A hook never waits for another machine:
-   waiting there for another kernel's answer can deadlock two kernels, not only stall them (4.5,
-   decision 14; proposed, to be confirmed by the owner).
+   proxy's hooks are such hooks, at every system call (4.6). "Nobody waits inside a hook for another
+   machine" (the orchestrator's proposal, to be confirmed by the owner; decision 14): waiting there for
+   another kernel's answer can deadlock two kernels, not only stall them (4.5). The plan adds, as its
+   own reading of the same danger and not the orchestrator's words: nobody holds a handle of one kernel
+   while calling or waiting for another (4.5, "where they are called").
 7. **When a hook about a process fires, no thread of that process runs guest code, if the process runs
    as `Serial`.** This follows from item 5: a hook fires inside an entry, and an entry that acts on a
    `Serial` process from outside it has called it in first. It holds across a new overlap too (section
@@ -1085,10 +1162,11 @@ The rule now:
   (section 5). Its overlappers stand still for the waiter, so it does not wait for a slice to end.
 - **A mark belongs to its call.** It comes off when the call has run again. It also comes off when the
   call is given up: its thread is ended by a fatal signal while it waits, or its task is taken out of
-  the kernel while it waits (section 6). A task taken out so carries the call to run again, and the
-  call runs from its start where the task is resumed, with marks of its own there if it needs them
-  (proposed, to be confirmed by the owner; decision 19). No other signal interrupts a wait for a
-  call-in: the wait is bounded, and the call has had no effect yet.
+  the kernel while it waits (section 6). A call waiting for a call-in has had no effect yet (section
+  3), so a task taken out then is treated as for a signal with no handler: its call runs again where
+  the task is resumed, with marks of its own there if it needs them (proposed, to be confirmed by the
+  owner; decision 19, and "a task taken out while it waits" below). No other signal interrupts a wait
+  for a call-in: the wait is bounded, and the call has had no effect yet.
 
 Why no circle is left. What a waiter needs before its call runs again is three things, and none of
 them is a mark coming off.
@@ -1212,11 +1290,15 @@ process's lock. 7.2 makes that a rule the code checks.
   run as `Parallel`, **for the threads of M that are of a process given `Exact`, and only for them**.
   Each such thread then stops at an entry of its own (4.4 item 5), and the caller parks until they are
   in. When the call runs again, M's other running threads, of owners not given `Exact` under
-  `CLONE_VM`, are held by a group stop in that entry, as they would be with no `Exact` owner. So an
-  owner given `None` pays only what it pays alone. (The form before called in every thread of M
-  whenever an owner of M was given `Exact`, so a co-owner given `None` paid for the other's guarantee.
-  The revision's check found that against "where replay is recorded": "a process with
-  ReplayDeterminism::None costs nothing and breaks no neighbour".)
+  `CLONE_VM`, are held by a group stop in that entry, as they would be with no `Exact` owner. That is
+  meant to make an owner given `None` pay only what it pays alone, and it does not yet: the call's
+  mark names M, so while the `Exact` owner's threads come in, a thread of the `None` owner that comes
+  in for any reason is not handed back until the mark is off (the second check, its sixth finding;
+  known fault 12). A mark that names a memory and, under `CLONE_VM`, the owners it calls in would
+  close it; that is a suggestion, not built or checked, and whether the ruling asks for it is the
+  owner's (decision 22). (The form before the first correction called in every thread of M whenever
+  an owner of M was given `Exact`. The revision's check found that against "where replay is
+  recorded": "a process with ReplayDeterminism::None costs nothing and breaks no neighbour".)
 And for a `Serial` task's turn, its overlappers are called in, never held (section 3, rule 2).
 
 Below, "M's other threads are stopped" means by this rule. One change is never "nobody", although its
@@ -1369,27 +1451,81 @@ What is stopped before what, where M is the memory changed:
   - **Across machines** (interface notes, "2026-11-19 late night: locks across machines (discussed with
     the owner; the two calls agreed in substance, details open)"; not ruled). A lock is a 4-byte word
     plus the futex call; taking and releasing it is a write to the word, which goes through the memory
-    system, and the kernel keeps only the list of waiters for each place. The embedder knows where it
-    has waiters from the proxy: the request names the place and the bitset before the kernel acts, and
-    the response says when the wait ends. Two calls "on the process handle" edit a waiter list for a
-    thread on another machine: `wake_waiters(address, count, bitset)` and `move_waiters(from, to,
+    system, and the kernel keeps only the list of waiters for each place. The interface notes' discussion
+    says the embedder knows where it has waiters from the proxy: the request names the place and the
+    bitset before the kernel acts, and the response says when the wait ends. That is the discussion's
+    claim, not a ruling, and it is not whole: a requeue made on the waiters' own kernel moves them with
+    no report task by task (below, and known fault 11). Two calls "on the process handle" edit a
+    waiter list for a thread on another machine: `wake_waiters(address, count, bitset)` and `move_waiters(from, to,
     count)`. They cover wake, wake with a bitset, wake-and-change, requeue, compare-and-requeue and a
     thread's end (the kernel clears a word and wakes: seen through `on_memory_written_by_kernel`). Each
     is a kernel entry of the kernel that holds the waiters, and stops nobody. What they return is
     proposed and not confirmed (decision 14).
+  - **One ordering point for each lock** (proposed by the orchestrator, to be confirmed by the owner;
+    decision 14). Every operation on one lock word that spans machines is put in order at one point for
+    that word: the wakes, the requeues to and from it, and the changes the kernel makes to the word
+    itself (`FUTEX_WAKE_OP`'s write of its second word, the clear at a thread's end, the owner-died
+    mark). Linux does the same on one machine under the word's hash bucket lock. A waking call that
+    reaches another machine parks **before it has had any effect**; its whole operation, the part on
+    its own kernel and the parts on others, is then made at the point as one step, and the call is
+    finished with the count. Withdrawn: the first correction's "its local part done in its entry", with
+    the remote part made later.
+    - Why (the second check, its second finding; the wake-result-use report's counterexample A, from
+      glibc 2.17's cond_signal.c:41-60 and cond_wait.c:118-171, as CentOS 7 ships it). W1 sleeps on a
+      condition variable's word on K3. Thread A on K1 signals: it raises `wakeup_seq`, then makes one
+      `FUTEX_WAKE_OP` that wakes on the condition's word and releases the condition's internal lock
+      word. With the local part first, K1 writes the internal lock word in A's entry and A parks for
+      the remote wake: the internal lock is free before the wake is in order. W2 on K2 takes the
+      internal lock, records seq = 1 and sleeps on the condition's word. The remote wake, made later,
+      picks W2, which sees `val == seq` and sleeps again; W1 sleeps on. A wake is lost although A
+      waited. With one point, the release of the internal lock and the wake are one step there, so W2
+      cannot queue before the wake has picked W1. The report's counterexample B, a requeue made
+      locally and then remotely, is two steps the same way; at one point it is one.
+    - Not covered yet (known fault 11): an operation on two words whose points differ (a requeue from
+      one memory object to another; `FUTEX_WAKE_OP` on two words in two objects) is two steps again
+      unless both points are taken together, in a fixed order, as Linux takes two buckets. How is part
+      of decision 14.
+  - **How the point is chosen is open, for the owner** (decision 14). The options, each with what it
+    costs (all expected, nothing measured), none recommended here:
+    - **the kernel that holds the lock's page decides.** No new state, and on a contended lock the
+      waker fetches the page anyway (the report, section 4: about one round trip before it unlocks).
+      Cost: the point moves with the page, so a step under way must finish before the page leaves, and
+      every other access to that page waits meanwhile; an operation on two words on two pages needs
+      both pages on one kernel; a requeue made on the waiters' own kernel is made there with no report
+      to the embedder's index, task by task.
+    - **a fixed home kernel for each memory object** (a `MemoryObject` of the ruling on shared memory,
+      or a process's own memory). The point never moves, and two words of one object, such as glibc's
+      condition variable and its internal lock, share it. Cost: every operation on a word with a waiter
+      on another machine is a round trip to the home, even when the waker and every waiter are
+      elsewhere; the home must take the page, or ask for it, to make the kernel's changes of the word;
+      a home that leaves needs a hand-over; a requeue between two objects still meets two homes.
+    - **the embedder sequences.** The kernel keeps only the two calls; the embedder already keeps an
+      index for each place, and every operation on a word with waiters on two machines passes through
+      it, so the index can follow requeues. Cost: a round trip to the sequencer for each such operation,
+      the waker's own kernel's part included, so a wake whose waiters are partly local is no longer
+      made in place; the kernel's changes of the word must then be made by the sequencer or through
+      it, which needs a call the agreed two do not have.
+    In each, a word whose waiters and waker are all on one kernel is ordered by that kernel's lock, as
+    today.
   - **Where they are called.** The ruling-in-substance says only "on the process handle". This plan:
     on a handle of the kernel that holds the waiters, taken with `kernel.process(id)` from outside any
     hook. A hook never calls them on another kernel, because that waits for the other kernel's lock
-    (next item; proposed, to be confirmed by the owner). Section 5 says the same.
+    ("nobody waits inside a hook for another machine", the orchestrator's proposal, to be confirmed by
+    the owner). The plan adds, as its own rule and not the orchestrator's: **the embedder never holds a
+    handle of one kernel while it calls or waits for another.** It drops K1's handle before it takes
+    K2's. Why (the second check, its eighth finding): a handle from `kernel.process(id)` holds its
+    kernel's lock while it lives (section 5), so a thread holding K1's handle, to finish T1's parked
+    call, while it calls `wake_waiters` on K2, against a thread doing the reverse, is the circle below
+    again, outside any hook. Section 5 says the same.
   - **The waking thread never waits for another machine inside a hook** (proposed by the orchestrator,
     to be confirmed by the owner; decision 14). The count a wake returns must be exact ("the count a
     wake returns must be exact (Linux defines it), so the waking thread waits for the other machine WHEN
     there is a waiter there"). That wait is made with no kernel's lock held: the waking call is parked
-    as any waiting call is, its local part done in its entry, and the embedder, from outside any hook,
-    calls `wake_waiters` on the other kernel and then completes the call with the sum. Or the proxy's
-    request hook answers the call (`Break`) and the call is completed later from outside the hook. Both
-    need one thing the ruled proxy does not have: a way for the embedder to complete a parked call with
-    its result later (the ruled `Break` carries the response at once). That is decision 14.
+    as any waiting call is, and the embedder, from outside any hook and holding no other kernel's
+    handle, has the step made at the ordering point and then finishes the call with the count. Or the
+    proxy's request hook answers the call (`Break`) and the call is finished later from outside the
+    hook. Both need one thing the ruled proxy does not have: a way for the embedder to finish a parked
+    call with its result later (the ruled `Break` carries the response at once). That is decision 14.
     - Why (the revision's check, its third finding). T1 on kernel K1 is inside a proxy hook, holding
       K1's lock and waiting for K2's wake count; at the same time T2 on K2 is inside its hook, holding
       K2's lock and waiting for K1's. Each embedder's `wake_waiters` needs the other kernel's lock, so
@@ -1408,15 +1544,55 @@ What is stopped before what, where M is the memory changed:
     waiting for the other machine is sound only if nothing the waker does afterwards (a memory write
     leaving its machine, a signal, another futex call, its exit) becomes visible off its machine before
     the wake is put in order at that point.
-  - **A waiter taken out of the kernel carries its call, not its place** (proposed by the orchestrator,
-    to be confirmed by the owner; decision 19). `suspend_tasks` takes a waiting task off the waiter
-    list, and its `SuspendedTask` holds the futex call to run again. Where the task is resumed the call
-    runs from its start, as Linux runs an interrupted call again, so the wait compares the word again;
-    a wait with a time limit runs with the time left, as Linux's restart keeps the deadline. A waiter
-    already chosen by a wake whose call has not yet returned carries its result instead, 0, and does
-    not wait again (the third requirement above). The embedder takes the task's entry out of its index
-    of waiters itself, since it made the call that took the task out. No call is needed to wake a
-    `SuspendedTask`: it is in no list.
+  - **The wake at a thread's end** (the second check, its twelfth finding). The kernel clears the
+    thread's word and wakes one waiter on it; no call is behind it, so there is nothing to park, and
+    no hook may wait. Nobody reads its count, so it goes without waiting, and the report's conditions
+    on such a wake apply to it. The clear itself is a change the kernel makes to the word, so at the
+    point it is one step with the wake, and a `pthread_join` that reads the word sees it no earlier than
+    the wake. What the ending thread's end makes visible besides (its process's exit, seen by a parent
+    through `wait4`) overtaking the wake is not designed (known fault 11).
+  - **The embedder's index after a requeue on the waiters' own kernel** (the second check, its fifth
+    finding, which it marked plausible). A `FUTEX_CMP_REQUEUE` made on K2 moves K2's waiters from one
+    word to another with no response for them and no call of the embedder's; the proposed return of
+    `move_waiters` covers only moves the embedder asks for. A later wake of the second word from K1 is
+    then not sent to K2, and the moved waiters sleep with the lock free. Whether this arises depends on
+    the ordering point: where the point is the embedder's, or a home that is not K2, the requeue passes
+    through it and the index can follow; where it is the kernel holding the page, it does not. Known
+    fault 11, decision 14; the plan adds no mechanism for it.
+  - **A task taken out while it waits** (proposed by the orchestrator, to be confirmed by the owner;
+    decision 19). `suspend_tasks` treats a waiting task exactly as Linux treats a signal with no handler
+    arriving during that call. The kernel already has that path for a signal (kernel/signal.rs:628-638:
+    "No handler ran: the call runs again, from `restart_syscall` for one that keeps state"), and taking
+    a task out uses it:
+    - **a call that has had no effect yet runs again where the task is resumed.** It answers its
+      restart code, and its registers are set to make it again (pc back one instruction, and
+      `restart_syscall` for a call that keeps state); the `SuspendedTask` carries them with the task's
+      restart record (kernel/process.rs:300). A futex wait is taken off its waiter list and, resumed,
+      compares its word again;
+    - **a wait with a relative time limit goes on with the time left.** The kernel already turns the
+      limit into a deadline on its monotonic clock at the call's first run (kernel/syscall/futex.rs:
+      274-286), and `restart_syscall` waits until the same deadline (:508-551) and answers `ETIMEDOUT`
+      once it has passed (:493-495). So the time a task spends between kernels counts, as Linux's
+      restart counts the time a task spent stopped, and a wait whose deadline passed while it was out
+      returns `ETIMEDOUT`, not `EAGAIN` (the second check, its ninth finding). That reading of "the time
+      left" is the plan's, to confirm with decision 19, and it needs the kernels' monotonic clocks to
+      agree, which is the embedder's and not designed;
+    - **a call that has already had an effect is not run again, and returns what it did**: a `read` or
+      `write` that has moved some bytes returns that count, as Linux returns a partial count after a
+      signal; a waking call whose step has been made at the ordering point returns its count;
+    - **a waiter already chosen by a wake returns woken**, 0, and does not wait again (the third
+      requirement above; the kernel's `woken`, kernel/syscall/futex.rs:487-490);
+    - **every other waiting call** (`read`, `poll`, `nanosleep`, `wait4`, `epoll_wait` and the rest)
+      follows the same rule by the restart code it already answers for a signal. Linux's manual also
+      lists calls that answer `EINTR` after a stop signal and `SIGCONT` even with no handler (signal(7),
+      "Interruption of system calls and library functions by stop signals"); which of them this kernel
+      follows is T1's to read, not checked here.
+    A waking call parked for the ordering point (above) has had no effect until its step is made:
+    taken out before, it runs again where it is resumed and wakes once; taken out after, it carries the
+    count. Finishing a call whose task has moved is part of the same open call as finishing a parked
+    call (decision 14). The embedder takes the task's entry out of its index of waiters itself, since
+    it made the call that took the task out. No call is needed to wake a `SuspendedTask`: it is in no
+    list.
     - Why (the revision's check, its second finding). W waits on a futex on K2, and the embedder's
       index says K2 has a waiter there. The embedder takes W out (`suspend_tasks`) to move it to K3. In
       the form before, the wait travelled in the `SuspendedTask` and the index still said K2. T on K1
@@ -1425,11 +1601,19 @@ What is stopped before what, where M is the memory changed:
       names K2, and T's wake returns 0, which is what Linux returns for a waiter that has left the queue
       to run its call again. W's call runs again on K3, compares the word, finds the value T changed
       before it woke, and returns `EAGAIN` without sleeping, as Linux does.
-    - It closes the case only where the waker changes the word before it wakes, which every futex user
-      does (the orchestrator's statement; it was not checked here site by site), and only where the
-      memory system shows that change to the machine where the call runs again once the wake has been
-      put in order. One machine writes a page at a time (the interface notes, same heading), which is
-      expected to give that; it is not built or checked.
+    - Why not "runs from its start" for every call (the second check, its third finding). A waking call
+      parked for the other machine's count had, under the first correction, already made its local
+      wake; run from its start, it woke again and applied `FUTEX_WAKE_OP`'s operation twice. A pipe
+      `write` that had written part of its bytes and waited for room wrote them twice. Now the first
+      has had no effect until its step (above), and the second returns its partial count.
+    - It closes the lost wake only where the waker changes the word before it wakes, as locks,
+      condition variables and once-flags do (not checked here site by site), and only where the memory
+      system shows that change to the machine where the call runs again once the wake has been put in
+      order. One machine writes a page at a time (the interface notes, same heading), which is expected
+      to give that; it is not built or checked. A program that waits on a word nobody changes (the
+      second check recalls perf's futex wake bench and LTP's `futex_wake` tests so; not checked here)
+      has its wait run again and sleep on. That is Linux's own window for a wait restarted after a stop,
+      opened here at every move.
   - The priority-inheritance group (six operations) is not covered by the two calls (decision 13).
 - **A thread's mask leaves out the processor it runs on** (`sched_setaffinity`): that thread only, by
   `stop_thread`. The caller parks until it has come in (4.3).
@@ -1819,7 +2003,9 @@ What changes with it:
     never answer that error. This plan calls them on a handle of the kernel that holds the waiters,
     from `kernel.process(id)` outside any hook, and never from a hook for another kernel, because that
     would wait for the other kernel's lock inside a hook (4.5; proposed, to be confirmed by the owner).
-    The interface notes say only "on the process handle". 4.5 says the same.
+    The embedder also never holds one kernel's handle while it calls or waits for another (4.5; the
+    plan's own rule, from the second check's eighth finding). The interface notes say only "on the
+    process handle". 4.5 says the same.
   - **For those cases the embedder suspends the tasks first.** The form before added a call and a hook
     for this (`Kernel::process_call_in(id)` and `on_process_called_in(process)`). They are withdrawn.
     That the ruled `Kernel::suspend_tasks` does the same job is this plan's design, not the ruling's:
@@ -1958,9 +2144,15 @@ in through entries that need the kernel's lock (4.5):
   otherwise it asks in **the named tasks only**, after which it waits, outside the lock, until they are
   in. Then it takes the batch in one entry. This is the path an embedder uses for a running `Serial`
   or `Exact` process.
-  - **It marks named tasks, not memories.** Each named task that is handed out gets a mark of the
-    batch's own: when it comes in it is not handed out again, and nothing else of its memory is held
-    back. Unnamed siblings keep running, and so does "a thread started just before the call", which
+  - **It marks named tasks, not memories, and every named task.** Each named task gets a mark of the
+    batch's own at the call's start, whether it is handed out, ready, or waiting: a marked task is not
+    handed out, and a marked waiter is not chosen, so its call is not run again here (it is taken with
+    its call, below). A handed-out one, when it comes in, is not handed out again. Nothing else of its
+    memory is held back. (The first correction marked only the named tasks that were handed out. The
+    second check, its fourth finding: a named task that was ready, or woken, but not handed out when
+    the call started had no mark; another worker could hand it out while the call waited outside the
+    lock, and the take "in one entry" then met a running `Serial` or `Exact` task, for which the plan
+    had no rule.) Unnamed siblings keep running, and so does "a thread started just before the call", which
     the ruling says "is not in the batch and keeps running". The mark comes off when the batch is
     taken, in the entry where the last named task has come in, or when the last named task still out
     has ended (it is then absent from what comes back, as the ruling has it). It belongs to no guest
@@ -1968,10 +2160,12 @@ in through entries that need the kernel's lock (4.5):
     task that has come in. (The form before put a call-in's mark on the memory. The revision's check
     found that it had no rule for coming off, and that it kept every thread of the memory out of
     guest code, unnamed ones included.)
-  - A named task that is waiting is taken as it is: a task whose call waits for a call-in has its
-    call's marks taken off, and a task waiting on a futex is taken off the waiter list; each carries
-    its call to run again, and a task already woken carries its result (4.5; proposed, to be confirmed
-    by the owner; decision 19).
+  - A named task that is waiting is taken as Linux treats a signal with no handler arriving during
+    its call (4.5, "a task taken out while it waits"; proposed, to be confirmed by the owner; decision
+    19): a call that has had no effect yet (a wait for a call-in, whose marks come off; a futex wait,
+    taken off its waiter list) runs again where the task is resumed; a wait with a time limit goes on
+    to the same deadline; a call that has had an effect returns what it did; a waiter already chosen by
+    a wake returns woken.
   - The call does not wait for its own host thread. The revision's check asked about an embedder that
     calls `run` itself and calls `suspend_tasks` from the host thread that serves the named task's
     processor. That host thread is then outside `run`, and `run` returns only for one of the four
@@ -2193,7 +2387,11 @@ What follows from a shared import:
         `Serial` (section 3, "how a new overlap takes effect"), and a task that runs as `Serial` is
         handed out only when no overlapper is (section 3, rule 1). So two overlapping memories never
         have two workers that each hold a process's lock for a running thread where one side runs as
-        `Serial`, and one memory never has two such workers;
+        `Serial`, and one memory never has two such workers. A change in how a memory runs, either
+        way, is made only with none of its other threads handed out, and the thread whose entry makes
+        it is not told to carry on: it leaves, and is handed out again under the new way (section 3, "a
+        change in how a memory runs"). So no worker keeps a `Serial` thread's lock for a thread that
+        now runs as `Parallel`, and none runs a thread as `Serial` without it;
       - **a worker lets its process's lock go before it lets the kernel's lock go, whenever its
         thread is not told to carry on.** A thread is told to carry on only when it is handed out
         again in the same entry, and a thread of a memory that is called in is not handed out. So
@@ -3025,9 +3223,18 @@ replays a recording; the tests that did in the form before are moved to T8 and r
     and while b2 to b4 are on their way in. The same with a fork in place of the `mmap`, whose child
     inherits a shared writable mapping, and with a resume, once the resume calls exist, that brings in
     a memory showing the file: the resume returns at once, and the resumed task is handed out only
-    after B's threads are in.
+    after B's threads are in. The caller b1 leaves `Execution::run` when its `mmap` returns on the
+    WebAssembly executor (counted "left run: its memory changed how it runs");
+  - *an overlap that ends* (the second check, its first finding; T2's WebAssembly executor). The same
+    B, running as `Serial` beside C, with b1 handed out and computing; C's thread `munmap`s the file.
+    B goes on running as `Serial` until b1's next entry, b1 then leaves `Execution::run`, and B's
+    threads are then handed out as `Parallel`: the try-lock of 7.2 never fails, no hook of B waits for
+    B's lock, and "Serial task handed out beside an overlapper" stays at zero. The same with b1 itself
+    making the `munmap`. With the test build's pause points on both sides of the `munmap`;
 - **A neighbour's guarantee under `CLONE_VM`** (from T4, where `Exact` with `Parallel` code exists).
-  Two processes own one memory, both given `Parallel`, one `Exact` and one `None`. The `None` one's
+  Two processes own one memory, both given `Parallel`, one `Exact` and one `None`. Until decision 22
+  is ruled this test records, and does not bar on, the time the `None` one's threads spend kept out of
+  guest code by a call-in's mark (known fault 12). The `None` one's
   threads are never called in for a change of the kernel's (counted per process), its code holds no
   count (read in its modules' cache keys), and the counter "group stop reached a thread of an Exact
   process for a change of the kernel's" stays at zero.
@@ -3036,17 +3243,37 @@ replays a recording; the tests that did in the form before are moved to T8 and r
   `Kernel` from another host thread. The other three never stop, a thread the process starts just
   before the call keeps running and is not in what comes back, and the call returns once the named
   task is in. The same with the named task parked in a futex wait, and with it parked for a call-in:
-  resumed, its call runs again from its start (decision 19).
-- **A waiter taken out runs its call again** (once the suspend calls exist; a test embedder with two
-  kernels in one host program stands for two machines). W waits on a futex on kernel K2 and is taken
-  out to be resumed on K3. A thread on K1 sets the word to a new value and wakes it, before W is
-  resumed and again after. Before: the wake returns 0 and W's call, resumed, returns `EAGAIN`; after: W
-  is woken on K3 and the wake returns 1. In both W never sleeps past the wake. The same with W woken
-  but not yet run when it is taken out: resumed, it returns 0 and does not wait again.
-- **No hook waits for another kernel** (with the same test embedder, once decision 14 has its answer).
-  Threads on K1 and on K2 wake each other's waiters across the two kernels at the same time, many
-  rounds, over seeds: both finish, each wake's count is the number of waiters it woke, and a test build
-  counts "hook waited for another kernel", which stays at zero.
+  resumed, its call runs again (decision 19). The same with the named task ready but not handed out
+  when the call starts, and with it woken: the test build pauses the call while it waits outside the
+  lock, and the task is never handed out before it is taken (the second check, its fourth finding).
+- **A task taken out while it waits** (once the suspend calls exist; a test embedder with two kernels
+  in one host program stands for two machines; decision 19). Each case against the reference with a
+  stop signal and `SIGCONT` in place of the move, where Linux has the same case:
+  - W waits on a futex on kernel K2 and is taken out to be resumed on K3. A thread on K1 sets the word
+    to a new value and wakes it, before W is resumed and again after. Before: the wake returns 0 and
+    W's call, resumed, returns `EAGAIN`; after: W is woken on K3 and the wake returns 1. In both W never
+    sleeps past the wake. The same with W woken but not yet run when it is taken out: resumed, it
+    returns 0 and does not wait again;
+  - W waits with a time limit and is kept out past its deadline: resumed, it returns `ETIMEDOUT`; kept
+    out for less: it returns no sooner than the deadline (the second check, its ninth finding);
+  - a requeue of W's word to another word is made while W is out: resumed, W compares its first word
+    again, as Linux's restarted wait does;
+  - a waker parked for the ordering point is taken out, once before its step is made and once after:
+    the waiters are woken once, a `FUTEX_WAKE_OP`'s operation is applied once, and the resumed call
+    returns the count it made (the second check, its third finding);
+  - a pipe `write` that has written part of its bytes and waits for room is taken out: resumed, it
+    returns the partial count, and the reader reads each byte once.
+- **No hook waits for another kernel, and no handle is held across kernels** (with the same test
+  embedder, once decision 14 has its answer). Threads on K1 and on K2 wake each other's waiters across
+  the two kernels at the same time, many rounds, over seeds: both finish, each wake's count is the
+  number of waiters it woke, and a test build counts "hook waited for another kernel" and "handle held
+  while another kernel was called", which both stay at zero.
+- **A condition variable across machines** (with the same test embedder, once decision 14 has its
+  answer). glibc 2.17's condition variable, as its `pthread_cond_signal` and `pthread_cond_wait` are
+  written (the wake-result-use report's counterexample A), with waiters on K2 and K3 and a signaller
+  on K1, the test build pausing between the release of the internal lock and the wake wherever the
+  ordering point allows one: no signal is lost. The same for a requeue by `pthread_cond_broadcast`
+  (counterexample B).
 - **A woken call reads its arguments once** (4.4). A thread of a `Serial` process parks in `ppoll`
   with an array of descriptors in its memory, and its sibling changes the array while it waits; the
   call that runs again acts on the array as it first read it, as the reference does. In T1. In T2 the
@@ -3456,8 +3683,8 @@ Not milestones here: the form that orders atomic instructions for (`Parallel`, `
 the ordered x86 form (decision 5), a browser, the suspend and resume calls, which are the embedder
 interface's, and locks across machines (4.5; decisions 13 and 14), and placing tasks across kernels
 (decision 20). What the kernel itself must do for them is built with the suspend calls and tested by
-section 12's tests that name them: a batch that marks only its tasks, and a waiter taken out with its
-call (decision 19). The group stop that taking tasks out needs in a `Parallel` process is T2's. What
+section 12's tests that name them: a batch that marks only its tasks, and every one of them, and a task
+taken out while it waits (decision 19). The group stop that taking tasks out needs in a `Parallel` process is T2's. What
 the values that leave the kernel may hold (4.2) is asked of the interface track. Fewer workers than processors (known fault 3) is not a milestone.
 
 ## 14. Measurements behind the decisions
@@ -3798,7 +4025,7 @@ Each of the ten decisions the form before put to you is said below to be settled
 partly settled (what is left), or open as before. What is written as recommended is this plan's
 recommendation, not a ruling, and what is written as proposed by the orchestrator is the orchestrator's
 decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create them. Decisions 19 to
-21 are new on 2026-11-20, from the revision's check.
+21 are new on 2026-11-20, from the revision's check, and 22 from its second check.
 
 1. **When a process cannot be run as its config says, what happens? And what does `None` mean beside a
    recorded process?** **Partly settled** (the form before this correction said "settled" while still
@@ -4018,21 +4245,37 @@ decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create
     check showed that they deadlock two kernels, not only stall them: a thread on K1 waits in its hook,
     holding K1's lock, for K2's count, while a thread on K2 does the same for K1's, and each embedder's
     `wake_waiters` needs the lock the other holds; splitting the lock does not help, because the
-    waiter lists stay under whichever lock the waiting hook holds (4.5). Both are withdrawn. What is
-    left to rule:
-    - **how the call is finished from outside the hook.** Either the waking call parks as any waiting
-      call does, and the embedder, from outside any hook, makes the remote wake and finishes the call
-      with the sum; or the proxy's request hook answers "break" and the call is completed later from
-      outside the hook. Either needs a way for the embedder to finish a parked call with its result,
-      which the ruled proxy does not have: its `Break` carries the response at once. Recommended: the
-      first, with that one call added, because the parked call is already the kernel's one way of
-      waiting (4.1). Cost (expected): a waking call that crosses machines leaves `Execution::run` and
-      comes back (300.8 ns measured for that alone, section 14) besides the round trip;
+    waiter lists stay under whichever lock the waiting hook holds (4.5). Both are withdrawn. The plan
+    adds, as its own rule and not the orchestrator's, that the embedder never holds one kernel's handle
+    while it calls or waits for another, which the second check found to be the same circle outside
+    hooks. What is left to rule:
+    - **one ordering point for each lock, and how it is chosen.** Proposed by the orchestrator, to be
+      confirmed by you: every operation on one lock word that spans machines (wakes, requeues, and the
+      changes the kernel makes to the word) is put in order at one point, one kernel or one sequencer of
+      the embedder's. The first correction's "local part first, remote part later" is withdrawn: the
+      second check showed, from the wake-result-use report, that it lets glibc 2.17's condition
+      variable lose a wake although the waker waits, and makes a requeue two steps (4.5 walks it). How
+      the point is chosen is yours; the options, with what each costs (expected, nothing measured), are
+      in 4.5: the kernel that holds the lock's page; a fixed home kernel for each memory object; the
+      embedder as sequencer. **None is recommended here.** Each must also say what it does with an
+      operation on two words whose points differ, with the embedder's index after a requeue made on the
+      waiters' own kernel, and with the wake at a thread's end, which goes without waiting (known
+      fault 11);
+    - **how the call is finished from outside the hook.** Either the waking call parks, before it has
+      had any effect, as any waiting call does, and the embedder, from outside any hook, has its step
+      made at the ordering point and finishes the call with the count; or the proxy's request hook
+      answers "break" and the call is finished later from outside the hook. Either needs a way for the
+      embedder to finish a parked call with its result, which the ruled proxy does not have: its `Break`
+      carries the response at once; and that way must reach a task that has been taken out after its
+      step and before its call was finished (decision 19). Recommended: the first, with that one call
+      added, because the parked call is already the kernel's one way of waiting (4.1). Cost (expected):
+      a waking call that crosses machines leaves `Execution::run` and comes back (300.8 ns measured for
+      that alone, section 14) besides the round trip;
     - what both calls return: the tasks they woke or moved, proposed in the interface notes and not
       confirmed. With the per-task index of 4.5 the embedder needs them to keep its index exact.
     The investigation of call sites that never read the count (interface notes; its report,
     orchestrator/wake-result-use/REPORT.md) would let the wake go without waiting where it is proven,
-    under that report's conditions, which 4.5 lists.
+    under that report's conditions, which 4.5 lists; its second condition names the ordering point.
 15. **New. Fairness between a `Serial` task and its `Parallel` overlappers.** The mixed-ordering check
     puts it to you: whether a `Serial` task that becomes ready calls its overlappers in at once, or at
     the end of their slices. The plan's choice, made for you and not a ruling (section 3, rule 3, which
@@ -4072,20 +4315,29 @@ decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create
     recommendation. The other answer, naming the writer's thread, names a task of another process in a
     hook about this one, which a hook cannot look up.
 19. **New (2026-11-20). What a task taken out while it waits carries.** Proposed by the orchestrator, to
-    be confirmed by you: the call to run again, not a place in a waiter list. Where the task is
-    resumed, its call runs from its start, as Linux runs an interrupted call again, so a futex wait
-    compares its word again; a wait with a time limit runs with the time left; a waiter already
-    chosen by a wake carries its result, 0, and does not wait again; a call waiting for a call-in has
-    its marks taken off and makes them again where it runs (4.5, section 6). Why: the revision's check
-    found a lost wake when a waiter is moved between kernels (4.5 walks the case). It closes that case
-    where the waker changes the word before it wakes, which the orchestrator states every futex user
-    does, and where the memory system shows that change on the machine where the call runs again
-    (expected, not checked). Cost: nothing on a call that is not taken out; a resumed wait makes one
-    more kernel entry than a wait that travelled whole. The other answer, the waiter list travelling
-    with the task, needs a call that wakes a `SuspendedTask` and the embedder's index kept in step
-    with every move, which the check found nothing in the plan or the rulings to do. This plan also
-    reads the call run again as passing through the proxy's request hook again, as a restarted call
-    is seen again by a tracer on Linux; that is its own reading, to confirm with this.
+    be confirmed by you: **taking a waiting task out of its kernel is treated exactly as Linux treats a
+    signal with no handler arriving during that call.** A call that has had no effect yet runs again
+    where the task is resumed (a futex wait compares its word again; a call waiting for a call-in has
+    its marks taken off and makes them again where it runs); a wait with a relative time limit goes on
+    with the time left; a call that has already had an effect is not run again and returns what it did
+    (a partial count, a wake's count); a waiter already chosen by a wake returns woken (4.5, section
+    6). This replaces the first correction's "its call runs from its start", which the second check
+    found would wake twice for a waker taken out after its step, apply `FUTEX_WAKE_OP`'s operation
+    twice, and write a pipe's bytes twice. The kernel already has the path, for a signal with no
+    handler (kernel/signal.rs:628-638). Two readings are the plan's own, to confirm with this: "the
+    time left" is counted from the deadline the kernel already keeps (kernel/syscall/futex.rs:274-286),
+    so time between kernels counts and a deadline that passed meanwhile gives `ETIMEDOUT`, as Linux's
+    restart counts time stopped, which needs the kernels' clocks to agree; and the call run again
+    passes through the proxy's request hook again, as a restarted call is seen again by a tracer on
+    Linux. Why at all: the revision's check found a lost wake when a waiter is moved between kernels
+    (4.5 walks the case). It closes that case where the waker changes the word before it wakes, as
+    locks, condition variables and once-flags do, and where the memory system shows that change on
+    the machine where the call runs again (expected, not checked); a program that waits on a word
+    nobody changes meets Linux's own window for a restarted wait, at every move. Cost: nothing on a
+    call that is not taken out; a resumed wait makes one more kernel entry than a wait that travelled
+    whole. The other answer, the waiter list travelling with the task, needs a call that wakes a
+    `SuspendedTask` and the embedder's index kept in step with every move, which the first check found
+    nothing in the plan or the rulings to do.
 20. **New (2026-11-20). How tasks that must take turns are placed across kernels.** The rule counts
     only the tasks one kernel holds, and "the kernel must be able to move one task apart from its
     siblings" ("the embedder-side view `WorkloadPlacement`"). Two tasks of one `Serial` process on two
@@ -4109,3 +4361,17 @@ decision, to be confirmed by you. Decisions 11 to 18 are new: the rulings create
     already shows it, and `on_shared_memory_unmapped` likewise for each when the last such mapping
     goes. Cost: one hook call for each such process at that moment, and nothing at any other. The
     other answer: the embedder is told nothing, and its view misses those processes.
+22. **New (2026-11-20). Under `CLONE_VM`, what an owner given `None` pays for a co-owner given
+    `Exact`.** "Where replay is recorded" rules that a process given `None` "costs nothing and breaks
+    no neighbour", and the proposed section after it says "the replay guarantee is never forced onto a
+    neighbour". Under `CLONE_VM` two processes own one memory, and a call-in's mark names a memory: so
+    while the `Exact` owner's threads come in for a change of the kernel's, a thread of the `None` owner
+    that comes in meanwhile, for any reason, is not handed back until the mark is off (4.5; the second
+    check, its sixth finding; known fault 12). The answers the plan sees, none recommended: a mark that
+    names a memory and, under `CLONE_VM`, the owners it calls in, so that the `None` owner's threads
+    are handed back and held by the group stop when the call runs (a suggestion, not built or checked;
+    it adds a case to the model of known fault 1); or the cost is accepted for `CLONE_VM` as the
+    ordering already is (section 3), bounded by the time the `Exact` owner's threads take to come in
+    (the stop check's latency, 230 ns on average and 30 µs at worst measured in Chrome, plus 300.8 ns
+    measured for leaving `Execution::run` and coming back). Whether the ruling asks for the first is
+    yours.
