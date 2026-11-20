@@ -555,9 +555,9 @@ catches a host thread that asks again for a lock it has. It does not catch this 
 check found. Three of the system's methods are called from inside guest code, in hooks that are not
 stop points (4.5): `ran` and the clock's answer (`Host::monotonic_nanoseconds`) from the clock hook, and
 `cpu_warning` from `warn` (rt/lib.rs:291-299). The worker has no lock of the kernel's there, and in a
-group in force `Parallel` its thread still counts as in guest code (its mark is on, 4.5).
+memory with `Parallel` code its thread still counts as in guest code (its mark is on, 4.5).
 - What goes wrong. Thread X is in the clock hook. Its system's answer calls `kernel.process(id)` and
-  waits for the kernel's lock. Worker Y has that lock for an `mprotect` in the same group, and its
+  waits for the kernel's lock. Worker Y has that lock for an `mprotect` in the same process, and its
   group stop waits until every mark is off, X's included. Neither moves.
 - The rule, in the doc comment of each of the three: it may be called from inside guest code; it does
   not call the kernel, and it does not wait for anything that a caller of the kernel may hold. How long
@@ -565,11 +565,11 @@ group in force `Parallel` its thread still counts as in guest code (its mark is 
 - The first half is checked. Each worker has a mark of its own, "inside a guest hook that is not a stop
   point". The executor sets it before such a hook calls the system and clears it after: two plain
   stores into the thread's own record, which the hook has in hand already (wt/lib.rs:2124-2131). They
-  are made on the clock hook and on `warn` only, in every group, so that an embedder's mistake shows
+  are made on the clock hook and on `warn` only, in every process, so that an embedder's mistake shows
   under `Serial` as it would under `Parallel`.
 - Every way into the kernel but the loop's own looks at the calling worker's mark, and panics with the
-  call's name when it is set: `run`, `kernel.process(id)`, `process_call_in`, `kill`, an event handed
-  in, `resume`. The kernel finds the mark through the same piece of the build that names the calling
+  call's name when it is set: `run`, `kernel.process(id)`, the `Kernel` calls that suspend and resume
+  tasks (section 6), `kill`, an event handed in. The kernel finds the mark through the same piece of the build that names the calling
   host thread.
 - The loop's own entries do not look. `run` looked when it was called, and hands `Kernel::enter` a
   value that says so (suggested `Kernel::enter(checked)`, the value made only by a check). So a system
@@ -609,7 +609,8 @@ kernel's lock would be free while the executor's is still held.
 - The kernel's answer kept for the worker's next step (`kept`, rt/lib.rs:191-194) stays as it is. It
   was made inside the same entry.
 - On every path that leaves: another thread runs next, new registers, nothing to run, the container
-  finished, the system asked for the thread out, and an entry told `Later` (4.6).
+  finished, the system asked for the thread out. (The form before had a sixth, an entry told `Later`
+  by a recording system; the order of entries is withdrawn, 4.6.)
 - It costs a system call nothing: a call answered in place returns `Carry::On`. A leave moves one
   more value.
 - The try-lock of 7.2 and its test (section 12) check the order in every run of the stress schedule.
@@ -630,16 +631,19 @@ put to the owner (decision 7).
 
 **Everything else T1 could add to a `Serial` system call, and how each is kept off it.** The lock must be
 the only cost, so each of these is designed away, and T1's bar checks that it is (section 12).
-- *Asking the system whether an entry may take effect* (4.6) would be two indirect calls a system call:
-  one for the thread coming back, one for its hand-out. The kernel asks only a system that said at the
-  start that it orders entries. In any other kernel each entry tests one value.
-- *The executor's locks* (7.2). A thread of a `Serial` group takes its process's lock once, when it
+- *Asking the system whether an entry may take effect*: withdrawn with the order of entries (4.6). In
+  its place the ruled proxy calls the system twice at each system call,
+  `intercept_system_call_request` and `intercept_system_call_response`, and the kernel's writes call
+  `on_memory_written_by_kernel`. Each has a default that does nothing, and the interface notes leave
+  it unverified that an unused one costs nothing. They are the interface track's, but they sit on
+  every `Serial` system call, so T1's three builds measure them with the lock (section 12, decision 7).
+- *The executor's locks* (7.2). A thread of a `Serial` process takes its process's lock once, when it
   enters `Execution::run`, and keeps it until it leaves. Its hooks take nothing.
 - *The system's own locks.* `System` methods take `&self`, but what a system call touches in the
   shipped system is already atomic: `turn` stores one deadline word (rt/system.rs:256-266), and `ran` and
   `arrived` do nothing (:268-275). It keeps one such word per processor and adds no lock.
 - *The stop word* (4.5): one plain load and a branch at each kernel entry, after the lock is taken.
-- *The marks of a group stop* (4.5) are kept only for a memory in force `Parallel`: one flag tested in
+- *The marks of a group stop* (4.5) are kept only for a memory with `Parallel` code: one flag tested in
   each hook that is a stop point.
 - *The holder's word* (above): written and cleared with the lock, and read by nobody on this path.
 - *The worker's mark for a guest hook* (above): looked at when `run` is called, never at a system call.
@@ -661,33 +665,38 @@ the state is reached only under the lock, and no clone leaves it. A test checks 
 the kernel holds an `Rc`, but for the one below. The handle a hook is given (`Process<'_, E>`) borrows
 under the lock and cannot outlive it.
 
-`suspend` is where that reason would break, as the sixth check showed. The interface track builds it,
-and section 6 relies on it. It takes a process's records out of the kernel by ownership, as a
-`SuspendedProcess` (interface notes lines 110-114). The embedder may hold that value, move it to
-another host thread, or drop it, all outside the lock. Today those records hold `Rc` clones that
-processes left in the kernel share: an open file description after a fork (`FileRef`,
+Taking tasks out is where that reason would break, as the sixth check showed. The interface track
+builds it, and section 6 relies on it. Since the ruling on suspend and resume by task it hands out two
+kinds of value, both types the kernel provides: a `SuspendedTask`, and a `ProcessContext` (the memory
+space, the descriptor table, the signal handlers and the filesystem information that a process's tasks
+share), taken by `suspend_process` or copied by `copy_process_context`. The embedder may hold either,
+move it to another host thread, or drop it, all outside the lock. Today the kernel's records hold `Rc`
+clones that processes left in the kernel share: an open file description after a fork (`FileRef`,
 kernel/file.rs:94), and the address map, the signal handlers, the descriptor table and the directories
-of processes made with `CLONE_VM`, `CLONE_SIGHAND`, `CLONE_FILES` and `CLONE_FS`
-(kernel/process.rs:243, :247, :251, :262). A clone or a drop of one outside the lock, while a worker
-changes the same count under it, is a data race. Nothing is wrong in T1, which has no `suspend`. The
-rule is asked of the embedder interface track, for the day it builds it:
-- **What `suspend` hands out shares no `Rc` with what stays.** An object that only the suspended
-  process holds moves out with it. For an object it shares with a process that stays, the kernel keeps
-  the suspended process's reference itself, in a table under the lock, and the value holds a key.
-  `resume` puts the references back. `export` turns each into an end, which it must do anyway for
-  whatever crosses a wire.
-- `SuspendedProcess` is then `Send` for the kernel state's own reason: every `Rc` in it is reachable
-  only through it. A build for tests checks at `suspend` that each `Rc` in the value has no holder
-  outside it.
-- A `SuspendedProcess` that is dropped lets its kept references go under the lock, not where it is
-  dropped: its `Drop` puts the key on a list that the kernel empties at its next entry.
-- Cost: one table entry for each shared object at `suspend` and at `resume`. Nothing on a system call.
-Rejected: a `SuspendedProcess` that is not `Send` and may be dropped only under the kernel's lock. A
-`resume` from another host thread is what the value is for, and no compiler checks where a value is
-dropped. Rejected: these five types made `Arc` before `suspend` lands. Every descriptor lookup hands
-out a clone (kernel/file.rs:181, kernel/syscall/io.rs:33), so every system call on a descriptor would
-pay two atomic counts for a call few processes ever see. A part's objects become `Arc` when that part
-is split out (4.7), each measured, and from then on they can leave as they are.
+of processes made with `CLONE_VM`, `CLONE_SIGHAND`, `CLONE_FILES` and `CLONE_FS` (kernel/process.rs:243,
+:247, :251, :262). A task taken alone also leaves its siblings holding what it shares with them. A
+clone or a drop of one outside the lock, while a worker changes the same count under it, is a data
+race. Nothing is wrong in T1, which takes nothing out. The rule is asked of the embedder interface
+track, for the day it builds the calls:
+- **What leaves the kernel shares no `Rc` with what stays.** An object that only the value holds moves
+  out with it. For an object it shares with a task or a process that stays, the kernel keeps the
+  reference itself, in a table under the lock, and the value holds a key. `resume_process` and
+  `resume_tasks` put the references back. A copied context holds keys too, or copies; which is the
+  interface track's to choose. The form that crosses a wire turns each into an end, which it must do
+  anyway.
+- `SuspendedTask` and `ProcessContext` are then `Send` for the kernel state's own reason: every `Rc` in
+  them is reachable only through them. A build for tests checks, at each call that hands one out, that
+  each `Rc` in the value has no holder outside it.
+- A value that is dropped lets its kept references go under the lock, not where it is dropped: its
+  `Drop` puts the key on a list that the kernel empties at its next entry.
+- Cost: one table entry for each shared object when a value is handed out and when it is put back.
+  Nothing on a system call.
+Rejected: values that are not `Send` and may be dropped only under the kernel's lock. A resume from
+another host thread, or on another machine, is what the values are for, and no compiler checks where a
+value is dropped. Rejected: these five types made `Arc` before the calls land. Every descriptor lookup
+hands out a clone (kernel/file.rs:181, kernel/syscall/io.rs:33), so every system call on a descriptor
+would pay two atomic counts for a call few processes ever see. A part's objects become `Arc` when that
+part is split out (4.7), each measured, and from then on they can leave as they are.
 
 Rejected for now: turning every `Rc` into `Arc` and every `RefCell` into a lock. It is the right end state
 for the parts that are split out (4.7), and it costs every system call something. It is paid part by part
