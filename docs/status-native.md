@@ -91,7 +91,12 @@ against the Mac's own reference (below, "N4 run 21"). Run 22 found nothing new t
 wrote the orchestrator's rulings of 2026-11-20 08:40 into the plan (the bar passes on run 18's figures; the jump table
 keeps 256 entries; loaded translations shared between processes are not part of N4; the forms index is the translator
 track's), with four questions for the owner (plan decisions 15 to 18), and ran the suites again at the same code with
-new seeds. N4 is done, for its independent check (below, "N4 run 23").
+new seeds. Run 24 settled the independent check's two findings: the speed test's plain run decoded the program's code
+itself (about 70 million cycles of test work in every plain run), so the bar's figures from run 2 on flattered the
+native side; with the breakpoints put before the run the bar's command gives +19.10% [+18.57 .. +19.95], a pass by its
+decision rule, but by alternating pairs the build is at +20.5% to +21.1% and one of four seeded layouts over the line
+(+21.59%): no headroom. And the differential test's runner left a function's words in the code page for the cases after
+it; it now writes the whole page (below, "N4 run 24"). N4 is done by its bar's own words, for its independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -121,6 +126,71 @@ new seeds. N4 is done, for its independent check (below, "N4 run 23").
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
 
+## N4 run 24 (2026-11-20): the independent check's two findings; the bar measured fairly
+
+Start (09:00, load 12): origin/main and origin/phase-1-literals had nothing new. The independent check of run 23 found
+two problems (scratch native/check-n4). Both are fixed. Files in scratch native/n4r24 (scripts/, logs/, suite/, ab/).
+
+The plain run was not plain (blocking). The speed test's plain child found the `svc` words by decoding every code word
+through the shared decoder, which builds the decoder's index of forms: about 70 million cycles and 550 million
+instructions in every plain run that no plain program does. Fixed (bac5c1eb): the test writes the plain run's copy of
+each program, a breakpoint over each `svc`, before any run, and the plain child takes only that copy. Measured after
+(Mac, Hypervisor.framework, the inside's and monitor's code that of 1736f6a1):
+- Start cost, bench.c built with no workload (the checker's file), five runs of each side (logs/empty.log, load 8.4):
+  plain 14.5 to 18.4 million cycles, 42.6 million instructions (before: 85 to 92 million, 597 million); native 97.1 to
+  103.8 million, 628 million; untranslated 18.0 to 18.8 million, 46.5 million. Native with the translator track's faster
+  index of forms (scratch build of n4r19/forms-index.patch, reverted at once, logs/empty-fastindex.log): 39.8 to 42.2
+  million, 147 million. So the decoder's index is about 58 million cycles of every native run.
+- The bar's command (scripts/speed.sh, logs/speed.log and speed.jsonl, 15 pairs, look-ahead 256, seed 1, load 7.6 to
+  10.2, 98 to 100% on performance cores): compute part +19.10% [+18.57 .. +19.95], PASSES by the decision rule against
+  +21.2%, 2.1 points under (the interval's top 1.25). Native against plain, cycles (instructions), untranslated: fib
+  +28.2 (+71.1) +0.4, sieve +20.2 (+38.2) +11.9, hash +3.6 (+35.2) +0.2, sort +24.1 (+157.5) +0.4, interpret +0.3 (+86.7)
+  +0.2, matrix +33.4 (+38.9) +1.0, walk +18.1 (+113.7) +17.6, search +29.4 (+30.0) +1.4, calls +65.0 (+142.9) +1.0.
+  System-call part: 178.4 ns a call, the kernel's share 99.7, the back end's 78.6 ns [75.9 .. 83.9], PASSES.
+- Alternating pairs, the build against itself (scripts/pairs.py, which now gives the plain run its copy; 10 pairs a
+  program with a plain run beside each, logs/pairs.log, load 7.7 to 10.2): +20.97% and +21.05%. As the first side of
+  the five runs below: +20.54%, +21.13%, +20.79%, +21.12%, +21.13%. So by pairs 0.07 to 0.66 points under the line.
+  Hash and interpret ran partly on efficiency cores in the first of these (P-share down to 0.25); their medians are
+  near the bar's command's.
+- Four new seeded layouts (scripts/layouts.sh, run 16's scratch padding of the inside's `place` with seeds 13 to 16,
+  restored after; 6 pairs a program, logs/layouts.log and layouts.jsonl, load 7.9 to 14.3): +19.38%, +21.59%, +20.84%,
+  +20.94%. One of four over the line; the spread 2.2 points.
+- Plainly: the bar passes by its own command and decision rule, with 2.1 points of headroom; by alternating pairs it
+  sits on the line, inside the layout luck, and one layout of four fails. There is no headroom to claim. The figures
+  of runs 18 and 23 (+11.08%, +12.51%, +13.05%) and the orchestrator's ruling that rested on them were wrong; so were
+  the bar's figures of runs 2 to 17, all measured against the same plain run (their changes' A/B ratios between native
+  builds stand, since both sides of those shared the plain run).
+- What would give headroom: the faster index of forms (the translator track's file, not committed here, per the ruling
+  of 08:40): by pairs +14.71% against this build's +21.13% in the same runs (10 pairs, load 7.7 to 9.3, logs/layouts.log
+  end, fastindex.jsonl). Nothing else known of this track's own is near that size: the rest of a native start over a
+  plain one is about 25 million cycles (the machine, the kernel, the image).
+
+The differential test's state carried over (minor). The checker's case (`ldp x28, x17, [x17], #imm`, x17 = 0x50000004)
+loads the guest's code page's second word. The runner wrote each case's word at the code address and nothing else, so
+that word was still the second word of the last exclusive pair run before (0xc800fe81, a store exclusive), where the
+WebAssembly side's fresh machine has 0. Fixed (4b562754): the runner writes the whole code page for every case and
+function, zeros after the words. Kept test: the differential test first runs a two-word function, then a case loading
+the code page's second word, and compares with the WebAssembly output; with the old runner it fails ("register 0
+0xb9400020, expected 0x0"), with the fix it passes.
+
+Suites at 4b562754 (Mac, scripts/full.sh, logs/full.log, suite/*.log, from 09:20, load 7.5 to 18.9):
+- The checker's seed, 128 cases a form at bounded 256 (seed 0x5eed128256): 250,134 cases, 0 failing (it failed 1 before).
+- The differential test, 16 cases a form, new seeds, 0 failing each: none 32,447 (0x24f7e5c1), bounded 16 32,256
+  (0x24f7e5c16), bounded 256 32,341 (0x24f7e5c256).
+- Forced interrupts: 12,257 stops over 14 functions at 3 look-aheads, 0 failed (seed 0x24c0ffee24). Probe: 0 forms of 16
+  bytes or fewer differ (44 larger, the Split route's). Floor: 21 cases and 1 measurement, 0 failed.
+- The kernel test against Docker Desktop's reference: every program as the reference; a stop at every counted event
+  alike at look-ahead none and 256 on the benchmark set: bench 177,072 stops (hash 10937141521840235265), calls 3,004
+  (18260131204484228776), jumptables 5,484 (17339527552300285948), as runs 15 to 23. Busybox 56 of 56 (seed 0x6b65726e);
+  whole page: busybox 56 of 56 and the kernel test with the same stops and hashes.
+- Registers, exits (4 programs, 0 failed), carry, kept, the monitor's lib tests (9), the inside's and the policy crate's
+  tests, the literal check's tests pass; the literal check exits 0, its baseline unchanged at 8148 lines (the inside 25,
+  the monitor 1). Clippy with warnings denied for the monitor crate, all targets, on the Mac (the changed files are
+  tests that build only on macOS); format checked.
+
+What is left of N4: the independent check. Open for the orchestrator: the faster index of forms, the only known change
+that would give the compute part headroom (For the orchestrator).
+
 ## N4 run 23 (2026-11-20): the orchestrator's rulings written in; N4 to its independent check
 
 Start (08:14, load 9): origin/main and origin/phase-1-literals had nothing new. The brief's section of 2026-11-20 08:40
@@ -133,7 +203,8 @@ The rulings, as written into the plan (commit 7fa4f9cc):
   layouts by pairs (load 3.2 to 5.3), against +21.2%; the worst layout is 8.15 points under the line, the spread over
   layouts measured in runs 15 to 18 1.3 to 3.4 points, so the pass does not rest on layout luck, by either method. The
   system-call part: the back end's share 76.4 ns [74.7 .. 79.1] against 100 ns. Each program's figures beside the
-  untranslated run's are in plan section 8.
+  untranslated run's are in plan section 8. (Wrong, found by the independent check: the plain side carried the test's
+  own decoding; the margins above do not hold. See "N4 run 24".)
 - The jump table keeps 256 entries: 1036 bytes a site, 1036 bytes in all on the benchmark set (interpret's one site),
   none on busybox (plan 3.2). A smaller table for two more instructions on the hit's way is plan decision 15.
 - Loaded translations shared between processes are not part of N4: both ways described in plan 5.3 with what is measured
@@ -293,7 +364,8 @@ Results (Mac, Hypervisor.framework):
   layouts.jsonl, 04:20 to 04:27, load 3.2 to 5.3): compute part +11.73%, +11.78%, +13.05%, +12.41%; the unpadded build
   in the same runs +12.04%, +12.45%, +12.27%, +12.45%. Every figure of this build by pairs is under +21.2%, the worst
   (seed 11) by 8.15 points; the spread over these layouts is 1.3 points. So the bar passes well outside the layout
-  luck measured so far, by either method.
+  luck measured so far, by either method. (Wrong: every plain run here carried about 70 million cycles of the test's
+  own decoding; see "N4 run 24".)
 - Suites (Mac, scripts/mac.sh, suite/*.log, 04:10 to 04:19, load 3 to 10): forced interrupts 12257 stops over 14
   functions at 3 look-aheads, 0 failed (seed 0x14057b7ef767814f); the differential test with new seeds, 0 failing each:
   none 32,456 cases (seed 0x5e1d2a7c1), bounded 16 32,568 (0x5e1d2a7c16), bounded 256 32,490 (0x5e1d2a7c256); floor (21
@@ -2622,9 +2694,9 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
   `WCONTAINERS_SPEED_PROGRAMS` a comma-separated subset, which gives figures but no verdict on the compute part, `syscalls`
   naming the system-call part; `WCONTAINERS_NATIVE_BOUND` the look-ahead; about 20 minutes at 15 pairs; it fails while
   either part fails);
-- the bar's comparison as alternating pairs of two builds (N4 run 15): after a speed run, scratch
-  native/n4r16/scripts/snapshot.sh <name> <label> copies the signed test binary, the inside and the programs into
-  n4r16/ab/<name>; then `RAW=<file> python3 -I scripts/pairs.py <dir A> - <dir B> - <pairs> fib sieve hash sort
+- the bar's comparison as alternating pairs of two builds (N4 run 15; since run 24 the scripts in scratch
+  native/n4r24/scripts, which carry the plain run's copy of each program, `<program>.plain`): after a speed run,
+  snapshot.sh <name> <label> copies the signed test binary, the inside and the programs into n4r24/ab/<name>; then `RAW=<file> python3 -I scripts/pairs.py <dir A> - <dir B> - <pairs> fib sieve hash sort
   interpret matrix walk search calls` (the re-measurement's script: a plain run beside each pair, the compute part of
   each side by the geometric mean of the medians);
 - the dynamic register count (plan 3.3; no machine needed, but it builds the programs with zig):
@@ -3206,6 +3278,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 24: your ruling of 08:40 rested on figures that were wrong. The speed test's plain run did about 70 million
+  cycles of the test's own decoding, so every bar figure since run 2 flattered the native side. Measured fairly: the bar's
+  command passes, +19.10% [+18.57 .. +19.95] against +21.2%; by alternating pairs the build sits at +20.5% to +21.1%, and
+  one of four seeded layouts is over the line at +21.59%. So it passes by the bar's own words, inside the layout luck,
+  with no headroom, and N4 is reported complete on that by the general rule of 08:40. The one change that gives room is
+  the translator track's faster index of forms (scratch native/n4r19/forms-index.patch): +14.71% by pairs against
+  +21.13% in the same runs, since the index costs about 58 million cycles of every native run's start. Please have that
+  track land it soon, or let this track commit it.
 
 - N4 run 23: your four rulings of 2026-11-20 08:40 are in the plan (sections 3.2, 5.3, 8, 9 and 10) and N4 is reported
   complete for its independent check. For the owner, in plan section 10: 15 (a smaller jump table), 16 (loaded
