@@ -4,15 +4,27 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 12 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's,
-bgfx's and dEQP's GLSL, Godot's Compatibility renderer and Godot's RenderingDevice shaders;
-candidate B leads on every count (The choice, below). Run 12: every difference left unexplained in
-run 11 is explained. bgfx's two were a route fault, now fixed (a texel load's offset was dropped:
-`texelFetchOffset` read the texel at the coordinate alone); Godot's five are undefined behaviour on
-the seeded inputs, each confirmed by a probe. Subroutine uniforms are now compared (all 9 piglit
-programs match). Still to do (Next): the 15.4 rewrites and robustBufferAccess (both blocked on
-other tracks: checked again at the shaders tip f97bec1b and the shared line 3195d728), Dolphin, and
-reading the timed choice run 11 started (still running at the end of run 12).
+G8 run 13 (2026-11-20). Complete but for two items waiting on others, each named below; handed
+to G8's independent check. Both candidates are measured on the SPIR-V corpus, piglit's, bgfx's and
+dEQP's GLSL, Godot's Compatibility renderer and Godot's RenderingDevice shaders; candidate B leads
+on every count and on time, and is the route (The choice, below; final). Run 13: the timed choice
+over the whole corpus read and recorded; route B fixes for cubes (a cube array's size, storage
+cubes); the harness's limits closed where they could be (multisampled textures filled, a reference
+that does not end on the seeded inputs held on the next seeds), the rest explained (Harness
+limits). Dolphin is left out (below).
+
+Waiting on others (G8's bar, as the orchestrator ruled on 2026-11-19 night):
+- The rewrites of 15.4 on the route's output (formatless storage, gathers with offsets known only
+  at run time, arrays of textures, samplers and combined image samplers indexed at run time).
+  Cause: the shaders crate has no public entry point for them. Owner: the shaders track (asked in
+  the brief of 2026-11-19 night; its branch tip f97bec1b, unchanged at the start of run 13, has
+  only `convert` for DXBC and DXIL). Nothing else stands in the way: the route's output is a naga
+  module with its reflection, the form that entry point is to take.
+- robustBufferAccess's three steps (15.4). Cause: `HelperValue::BufferRange` is a proposed
+  interface change of 15.7 and one of the owner's open decisions of 15.9 (not on the shared line
+  at 3195d728 nor on any graphics branch at the start of run 13). Owner: the owner, then the
+  interface track. Step 2 (storage as runtime-sized arrays of words, 32-bit accesses) is already
+  what the bridge makes of OpenGL's buffers (Done); steps 1 and 3 need the helper value.
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -329,6 +341,34 @@ Done:
   words. Held by `tests/route.rs` (an array of two: one name, two words) and the corpus (the 9
   piglit programs match; with every index's low bit flipped on the route's side, temporarily, 7
   of 9 differed).
+- Cubes in route B (run 13): a cube's size has two components (the faces' width and height; a
+  cube array's layers after them), where route B took three and failed naga's validation on a cube
+  array's `textureSize` (dEQP `android_extension_pack.test#extension_directive.ext_texture_cube_map_array`).
+  A storage cube or cube array is a 2D array of its faces in the common form, which has no storage
+  cubes (`storage_dimension`; Vulkan and OpenGL address a storage cube's faces as layers): its
+  coordinate's third component is the layer, its size the faces' size and, for a cube array,
+  the layers divided by `CUBE_FACES` (now the crate's one definition, `wcontainers_nir::CUBE_FACES`).
+  The driver (G9, G10) binds a 2D array view of the cube's faces, as the interface already does
+  for a cube read by integer loads. The GLSL comparison makes the storage image a cube on
+  llvmpipe's side (by OpenGL's reflected type) and the route's 2D array of the same faces. Both
+  dEQP programs match (`implementation_limits.max_fragment_image_uniforms` was the storage cube).
+- Multisampled textures in the comparison (run 13): lavapipe gets each by a draw a layer
+  (`Lavapipe::fill_samples`: a covering triangle, a fragment program written in WGSL and run a
+  sample at a time that reads its own sample's texel from a storage buffer), every sample of
+  every texel seeded on its own, 4 samples. All 6 programs that read one match on route B (Godot's
+  `resolve` 3 and `resolve_raster`, Sascha Willems' `deferredmultisampling/deferred.frag`, and its
+  vertex program). Checked to see differences: with every sample read as sample 0 (temporary, on
+  the x86 machine's copy) `deferred.frag` differed; with samples 0 and 1, 2 and 3 swapped none did
+  (each program averages over its samples); Godot's read a seeded sample count, at most 1 on the
+  seed (expected, not confirmed). The GLSL side (the one dEQP item) and multisampled depth
+  textures are not filled (Harness limits).
+- A reference that does not end on the seeded inputs (run 13; `corpus/run.rs`): a child writes
+  `REFERENCE_ENDED` to its errors once the reference has run, so a child stopped at the time limit
+  is told apart. Stopped before it: the reference did not end (a loop whose bound or step comes from
+  the seeded inputs); the route is run again on the next seed, up to `REFERENCE_SEEDS` (4) seeds,
+  and the seed used is recorded with the route's result (`inputs_seed`). Stopped after it: the
+  route's module did not end where the reference did, a difference. The six `irradiancecube.frag`
+  and Godot's `canvas_sdf.glsl#MODE_LOAD_SHRINK` now match on route B, on a later seed.
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -543,6 +583,18 @@ timed choice), load 6.0 at the start and 13.3 at the end, 251 s):
   lowering, fixed before this run: it is again not compared, as the harness does not fill
   multisampled textures).
 
+Run 13, the same 18,222 items after run 13's changes (`results/run13/nir-results-r13a.jsonl`;
+x86-64 machine, 172 children on cores 10-95 and 106-191 beside the timed choice, load 14.3 at the
+start and 3.7 at the end, 732 s, most of it the references that do not end, held on further seeds):
+- In all: route B converts 11,813 of 12,234 (up from 11,811) and matches 11,651 (up from 11,637),
+  153 differ (the same, with the same reasons), 9 not compared (down from 21; each named in
+  Harness limits, with the bindless program llvmpipe refuses); route A matches 1,000 (up from 993),
+  7 differ, 147 not compared.
+- The 14 new matches on route B: the 2 dEQP cube programs (route faults, fixed), the 5 programs
+  reading multisampled textures, and the 7 whose reference did not end on the run's seed: the six
+  `irradiancecube.frag` on seed 0x5eed + 1 or + 3, `canvas_sdf.glsl#MODE_LOAD_SHRINK` on + 3. No
+  outcome changed in any other way (`scripts/outcome_changes.py`).
+
 The choice, on this corpus (not final until Dolphin is in; the GLSL gives the same order: B
 matches 1341 piglit, 316 bgfx, 8574 dEQP and 231 Godot programs, A 3, 21, 0 and 0; Godot's
 RenderingDevice SPIR-V B 387, A 237). Run 11 started `corpus/choose` over all 18,222 items,
@@ -557,34 +609,43 @@ shaders both match, time per shader (to the common form, validated) A median 219
 median 107 us, mean 125 us. B has more matching shaders and less time per shader: the route is B
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
-Next, in this order:
-1. Read the timed choice run 11 started (above; still running at the end of run 12, started
-   06:43 UTC): each route's counts and times on the programs both match; the choice follows from
-   the counts (B far ahead), the times only on equal counts. It runs run 11's code (before run
-   12's fixes, which only add route B matches). Do not rebuild `--release` in
-   `/work/target/graphics-nir` while it runs: its children are the release binary.
-2. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
-   `corpus/cts-programs`' groups, and lower those programs before both runs.
-3. Dolphin (GPL: test data only). Its shaders are made at run time by its C++ generators, and the
-   GLSL header each backend puts before them is in its OpenGL and Vulkan backends, so they cannot
-   be written here without paraphrasing GPL code. The route that keeps to the rules: run Dolphin
-   itself on llvmpipe (headless, `MESA_SHADER_DUMP_PATH` set: Mesa writes every source the program
-   hands it) with its ubershaders compiled at start; what it boots is still to find (a FIFO log or
-   homebrew under a permissive licence, never a commercial game or Nintendo's IPL). Then the final
-   choice over everything.
-4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
-   samplers and combined image samplers indexed at run time), which need an entry point in the
-   shaders crate (Requests; still not there at the shaders branch's tip f97bec1b, run 12: only
-   `convert` for DXBC and DXIL, `variant` private); robustBufferAccess's three steps (needs
-   `HelperValue::BufferRange`, not in the interface at 3195d728 nor on any graphics branch, run
-   12). Godot's RenderingDevice programs then give corpus programs for arrays of textures (21) and
-   formatless storage (2).
-5. The harness's own limits: multisampled textures (5 programs: filling one on lavapipe needs a
-   draw or a storage write, as Vulkan copies no buffer into one), block inputs, programs whose
-   reference does not end on the seeded inputs; the cube map array program naga refuses (dEQP
-   `android_extension_pack.test#extension_directive.ext_texture_cube_map_array`, "Index 2 is out of
-   bounds").
-6. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
+Harness limits left, each with why it is not closed (run 13; programs route B converts but the
+comparison does not hold, of 18,222 items):
+- A fragment input that is a block (1: `meshshader/meshshader.frag`, fed by a mesh shader, a stage
+  the common form lacks). The feeder is written from the program's inputs and writes no block;
+  splitting a block into its members' locations is the way to close it, left because its one
+  program can only be fed by a stage the corpus counts as absent.
+- A multisampled texture on OpenGL's side (1: dEQP `es32/android_extension_pack.test#extension_directive.oes_texture_storage_multisample_2d_array`)
+  and multisampled depth textures (0 programs): OpenGL also copies no texels into one, so it needs
+  a draw like lavapipe's on llvmpipe; left for its one program.
+- Fixed-function state values (2 piglit: `glsl-fs-normalmatrix`, `glsl-vs-ff-frag`, which read
+  `gl_NormalMatrix` and its kin): their values are what st/mesa computes from OpenGL's matrices
+  (an inverse transpose), which is G9's state tracking; the bridge also names them with an empty
+  name (a fault to fix in G9, which reports them). Not compared until then.
+- A uniform llvmpipe's linker removes and the route's program reads (2 dEQP: `linkage.test#varying_7`,
+  `varying.rules.vertex_use_fragment_use`, `u_false`): OpenGL has no value for it, and inventing one
+  would compare nothing. Left not compared.
+- A drawn program past llvmpipe's 128 output components once the harness's position output is
+  added (1 piglit: `vs-fs-max-in-out-components`): the reference refuses it; left.
+- `alpha_to_one`'s fragment program: held by G10's CTS cases (lavapipe does not run
+  `demote_samples`).
+
+Next (after G8's check):
+1. G9, the OpenGL driver (15.8). It hands the route NIR made with the bridge's compiler options and
+   st/mesa's variants; its own corpus run holds those variants, the fixed-function state values
+   above among them.
+2. When the shaders track has its entry point: the 15.4 rewrites on route B's output; Godot's
+   RenderingDevice programs then give corpus programs for arrays of textures (21) and formatless
+   storage (2).
+3. When `HelperValue::BufferRange` is decided: robustBufferAccess's steps 1 and 3; add
+   `dEQP-VK.robustness.buffer_access` to `corpus/cts-programs`' groups and lower those programs
+   before both runs.
+4. Dolphin (GPL: run as a test input only, never copied or paraphrased) is left out of G8's corpus:
+   its shaders exist only when Dolphin runs, and no permissively licensed FIFO log or homebrew to
+   boot was found. One clean way is recorded for later: a boot image written here (a few
+   instructions of our own, so its licence is ours) makes Dolphin compile its ubershaders at start
+   on llvmpipe with `MESA_SHADER_DUMP_PATH` set. Not done in G8.
+5. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
 
 ## How to run
 
@@ -683,6 +744,15 @@ Next, in this order:
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- The whole corpus run (run 13, 18,222 items, 172 children on cores 10-95 and 106-191, x86-64
+  machine, load 14.3 at the start and 3.7 at the end, the timed choice on cores 0-9 beside it):
+  732 s, up from 251 s: the references that do not end are now run on up to four seeds, two
+  minutes each, one after another. Time per shader to the validated common form at 172 at once on
+  the 998 shaders both routes match: A median 542 us, mean 831 us; B median 429 us, mean 519 us.
+- The whole suite of wcontainers-nir (run 13, x86-64 machine, load about 14): without Mesa every
+  test target builds and passes (no tests run without it); with Mesa `glsl_buffers` 1,
+  `glsl_reference` 7, `narrow` 1, `route` 11 passed.
 
 - The whole corpus run (run 12, 18,222 items, 172 children on cores 10-95 and 106-191, x86-64
   machine, load 6.0 at the start and 13.3 at the end, the timed choice running on cores 0-9 and
@@ -922,6 +992,14 @@ Next, in this order:
   driver (G10) lower them to their one-invocation meaning before the route, so the corpus, which
   hands over NIR as spirv_to_nir makes it, counts them as failures until G10's step exists.
 
+- A storage cube is a 2D array of its faces in the common form (run 13): the plan does not say;
+  WGSL has no storage cubes, and Vulkan and OpenGL address a storage cube's faces as layers.
+- A reference that does not end on the seeded inputs is held on the next seeds, up to four (run
+  13), rather than counted not compared: the program is the same and the inputs are as seeded as
+  before; the seed used is in the results.
+- Dolphin is left out of G8's corpus (run 13): no permissively licensed boot image was found, as
+  the orchestrator's ruling of 2026-11-19 night requires; the choice is final without it.
+
 ## Interface changes
 
 None.
@@ -959,11 +1037,16 @@ None.
   by the front for each view of a `MultiviewSerial` draw), so a program reading `gl_ViewIndex`
   (Vulkan 1.1 requires `multiview`) has it in the common form; route B refuses `load_view_index`
   by name until then (66 of Godot's RenderingDevice programs).
+- Interface track: a public `CUBE_FACES` (the layers of one cube) beside `ViewDimension`;
+  `resource.rs` writes it as a literal, and `wcontainers_nir::CUBE_FACES` defines it until the
+  interface has it, and will import it then.
 - Literals track: `CARGO_OUT_DIR` public (in a public module), so a build script can name `OUT_DIR`
   through it.
 
 ## Literal check
 
+Run 13: exit 0 at the run's last code commit, 86cefeb2 (x86-64 machine, from a git bundle;
+marks 0). wcontainers-nir still has no baseline lines.
 Run 12: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0).
 wcontainers-nir still has no baseline lines.
 Run 11: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0). A first
