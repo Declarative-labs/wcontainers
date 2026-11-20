@@ -157,7 +157,13 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   `dequeue_signal`). It is on the thread's way back to its program: after the call it was in has
   answered (after `intercept_system_call_response`, and before a call interrupted by a handler is
   set to restart or answer EINTR), or after the CPU side stopped it between instructions (a
-  fault, the end of its time). So for a signal taken at a system call, the call is the position.
+  fault, the end of its time), or when a change of the watches lets go a thread whose own load or
+  store met a watch outside a call and a signal came for it while it waited: it acts on the
+  signal then, before it runs that instruction again and before any call (the test
+  `a_thread_alone_acts_on_a_signal_sent_during_its_watch_wait_once_the_watches_change`). Linux
+  interrupts a thread waiting in a fault at once; here the wait ends only when the watches
+  change, since the embedder decides when the access may go on. So for a signal taken at a system
+  call, the call is the position.
   `signal` is the record the handler will be given. Signals that are not acted on by a thread are
   not announced: one taken by `sigwaitinfo`, `sigtimedwait` or a read of a `signalfd` (the call's
   result), one dropped when sent because it is ignored, and one that ends its process from the
@@ -181,15 +187,22 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   `SHM_REMAP`), shmdt, a new program (every one, in the process that runs it), and the process's
   end. Pieces of one mapping that `mprotect`, `mlock` or `madvise` split are still one piece of
   the source, and nothing is announced for them; a call that maps the same part of the same
-  source at the same place again announces nothing either. Every end names exactly a range
-  announced before with the same source and offset, ends first: a change that ends one mapping and
-  starts another announces the ending first. What the kernel counts as told is kept piece by
+  source at the same place again announces nothing either. Every end lies inside one range
+  announced before, with the same source and the same offsets: the whole of that range, or the
+  part taken away (one start is never ended together with another; two mappings made side by
+  side, or a mapping and the part `mremap` grew it by, end as two). Ends come first: a change that
+  ends one mapping and starts another announces the ending first. The test
+  `every_end_of_shared_memory_lies_in_one_start_and_each_step_matches_proc_maps` cuts and joins
+  file and memory file mappings in each of these ways. What the kernel counts as told is kept piece by
   piece, as each hook fires: a process a hook takes off the kernel (from any hook, its own sharing
   hook included) carries in its context exactly the pieces it was told, is announced nothing
   more while it is away, and is told the rest (starts and ends) at the kernel's next hook after
   `resume_process`.
 - Only sources some process may write through a mapping are announced: a shared mapping whose
-  file was opened for writing (Linux's `VM_MAYWRITE`, whatever `mprotect` allows now). When a
+  file was opened for writing (Linux's `VM_MAYWRITE`, whatever `mprotect` allows now), by a
+  process on the kernel or one whose context is off it and still held (a writer taken off the
+  kernel may write there; the test
+  `a_read_only_mapper_is_announced_while_the_only_writer_is_away`). When a
   source that no mapping could write through gets one that can, every process already mapping
   it is announced then, before the new mapping, in each process's own hook. A source once
   announced stays announced while any process maps it, even if the last mapping that could
@@ -328,7 +341,8 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
 
 - `memory_id` is the executor's `MemoryId` of the memory the process runs in: the same for
   processes that run in one memory (a vfork child until it lets go, a clone with `CLONE_VM`),
-  and a new one when the process runs a new program, which replaces its memory.
+  and a new one when the process runs a new program, which replaces its memory; a forked child
+  has its own (the test `a_child_shares_its_parents_memory_id_only_while_it_shares_the_memory`).
 - `send_signal` sends a signal to one thread of the process, as `rt_tgsigqueueinfo` would with
   `signal` as its record (the number is the record's `si_signo`; the sender is whoever the
   record names, for example none with `SI_QUEUE` for a signal from outside the container). It
@@ -624,10 +638,12 @@ pub enum ContextOrigin { Suspended, Copied }
   semaphore operation done or told EINTR, a message handed over) stay there keyed by its number
   and are found when it comes back to the same kernel; a wake that reaches nobody there is not
   passed on. Locks across kernels (`wake_waiters`, `move_waiters`) are not built.
-- A second kernel value in the same embedder can take a context and tasks from another, run on the
-  same executor (the memory ids are the executor's); its clock and its tables (ends, futexes,
-  System V objects, file systems) are its own. A process brought to a kernel whose parent is not
-  on it is not yet given a reaper: the test moves a process there and back without letting it end.
+- A second kernel value in the same embedder, on the same executor (the memory ids are the
+  executor's), accepts a context and tasks from another; its clock and its tables (ends, futexes,
+  System V objects, file systems) are its own. The ruled milestone is one kernel: no test runs a
+  task on the second kernel, only checks its state there (memory id, size, what `resume_tasks`
+  hands back) and brings it back. A process brought to a kernel whose parent is not on it is not
+  yet given a reaper.
 
 ## Not built, and where it attaches
 
