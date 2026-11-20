@@ -1,0 +1,11 @@
+# The case lists G9 is measured on (plan 15.2), paths under the suite's
+# external/openglcts/data/gl_cts/data/mustpass. Each runs with its mustpass.xml's first configuration.
+gles/aosp_mustpass/main/gles2-main.txt
+gles/aosp_mustpass/main/gles3-main.txt
+gles/aosp_mustpass/main/gles31-main.txt
+gles/khronos_mustpass/main/gles2-khr-main.txt
+gles/khronos_mustpass/main/gles3-khr-main.txt
+gles/khronos_mustpass/main/gles31-khr-main.txt
+gles/khronos_mustpass/main/gles32-khr-main.txt
+gl/khronos_mustpass/main/gl33-main.txt
+gl/khronos_mustpass/main/gl46-main.txt
