@@ -30,6 +30,8 @@ pub const RUNTIME_ELEMENTS: u32 = 64;
 /// The size of each dimension of a texture, and its layers when it is an array.
 const TEXTURE_SIZE: u32 = 4;
 const TEXTURE_LAYERS: u32 = 2;
+/// The samples of a multisampled texture.
+const MULTISAMPLE_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
 /// Where in its pixel a point is drawn, and the depth of every point.
 const PIXEL_CENTRE: f32 = 0.5;
 const POINT_DEPTH: f32 = 0.5;
@@ -322,7 +324,20 @@ fn image(
         },
         layers,
         depth,
+        samples: vk::SampleCountFlags::TYPE_1,
         bytes,
+    }
+}
+
+/// `single` made multisampled, every sample of every texel seeded on its own.
+fn multisampled(rng: &mut ChaCha8Rng, single: Image, kind: Kind) -> Image {
+    let words = single.bytes.len() * MULTISAMPLE_SAMPLES.as_raw() as usize / size_of::<u32>();
+    Image {
+        samples: MULTISAMPLE_SAMPLES,
+        bytes: (0..words)
+            .flat_map(|_| fill_scalar(rng, kind).to_le_bytes())
+            .collect(),
+        ..single
     }
 }
 
@@ -382,10 +397,10 @@ pub fn resources(
                     },
                     _,
                 ) => match class {
-                    ImageClass::Sampled { multi: true, .. } | ImageClass::Depth { multi: true } => {
-                        return Err("multisampled textures are not filled here".into());
+                    ImageClass::Depth { multi: true } => {
+                        return Err("multisampled depth textures are not filled here".into());
                     }
-                    ImageClass::Sampled { kind, .. } => {
+                    ImageClass::Sampled { kind, multi } => {
                         resource.kind = vk::DescriptorType::SAMPLED_IMAGE;
                         let kind = kind_of(kind).ok_or("an abstract texture")?;
                         let format = match kind {
@@ -394,7 +409,12 @@ pub fn resources(
                             Kind::Uint => vk::Format::R32G32B32A32_UINT,
                         };
                         let texel = lavapipe::texel_bytes(format);
-                        Element::Image(image(rng, dim, arrayed, format, texel, Some(kind), false))
+                        let single = image(rng, dim, arrayed, format, texel, Some(kind), false);
+                        Element::Image(if multi {
+                            multisampled(rng, single, kind)
+                        } else {
+                            single
+                        })
                     }
                     ImageClass::Depth { .. } => {
                         resource.kind = vk::DescriptorType::SAMPLED_IMAGE;

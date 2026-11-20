@@ -37,8 +37,32 @@ pub struct Image {
     pub extent: vk::Extent3D,
     pub layers: u32,
     pub depth: bool,
+    /// Samples a texel; a multisampled image's bytes are laid out layer, sample, row, column.
+    pub samples: vk::SampleCountFlags,
     pub bytes: Vec<u8>,
 }
+
+/// The program that fills a multisampled colour image (`Lavapipe::fill_samples`), its texels'
+/// component type spliced in at `TEXEL_KIND`: a triangle covering the target, and a fragment
+/// program run a sample at a time that reads its sample's texel.
+const FILL_SAMPLES: &str = r"
+struct Place { layer: u32, samples: u32, width: u32, height: u32 }
+var<immediate> place: Place;
+@group(0) @binding(0) var<storage, read> texels: array<vec4<TEXEL_KIND>>;
+@vertex fn cover(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let corner = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fill(@builtin(position) p: vec4<f32>, @builtin(sample_index) s: u32) -> @location(0) vec4<TEXEL_KIND> {
+    let row = (place.layer * place.samples + s) * place.height + u32(p.y);
+    return texels[row * place.width + u32(p.x)];
+}
+";
+const TEXEL_KIND: &str = "TEXEL_KIND";
+const FILL_VERTEX: &str = "cover";
+const FILL_FRAGMENT: &str = "fill";
+/// The vertices of the covering triangle.
+const FILL_VERTICES: u32 = 3;
 
 /// One array element of a descriptor.
 #[derive(Clone, Debug)]
@@ -364,6 +388,11 @@ impl Lavapipe {
             vk::ImageViewType::TYPE_3D => vk::ImageType::TYPE_3D,
             _ => vk::ImageType::TYPE_2D,
         };
+        let multisampled = if image.samples == vk::SampleCountFlags::TYPE_1 {
+            vk::ImageUsageFlags::empty()
+        } else {
+            vk::ImageUsageFlags::COLOR_ATTACHMENT
+        };
         // SAFETY: plain Vulkan calls on objects made here; `cmd` is recording.
         unsafe {
             let handle = d
@@ -379,12 +408,13 @@ impl Lavapipe {
                         .extent(image.extent)
                         .mip_levels(1)
                         .array_layers(image.layers)
-                        .samples(vk::SampleCountFlags::TYPE_1)
+                        .samples(image.samples)
                         .tiling(vk::ImageTiling::OPTIMAL)
                         .usage(
                             usage
                                 | vk::ImageUsageFlags::TRANSFER_DST
-                                | vk::ImageUsageFlags::TRANSFER_SRC,
+                                | vk::ImageUsageFlags::TRANSFER_SRC
+                                | multisampled,
                         ),
                     None,
                 )
@@ -421,7 +451,10 @@ impl Lavapipe {
                 .map_err(vk_error("vkCreateImageView"))?;
             made.views.push(view);
             barrier(d, cmd, handle, range, vk::ImageLayout::UNDEFINED);
-            if !image.bytes.is_empty() {
+            if !multisampled.is_empty() {
+                self.fill_samples(made, cmd, handle, image)?;
+                barrier(d, cmd, handle, range, vk::ImageLayout::GENERAL);
+            } else if !image.bytes.is_empty() {
                 let staging = self.buffer(
                     made,
                     image.bytes.len() as u64,
@@ -439,6 +472,205 @@ impl Lavapipe {
             }
             Ok((handle, view))
         }
+    }
+
+    /// Writes `image.bytes` into the multisampled colour image `handle` (Vulkan copies no buffer
+    /// into one): a draw a layer, a sample at a time, each sample reading its own texel.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one draw, in the order Vulkan takes it"
+    )]
+    fn fill_samples(
+        &self,
+        made: &mut Made,
+        cmd: vk::CommandBuffer,
+        handle: vk::Image,
+        image: &Image,
+    ) -> Result<(), Error> {
+        use naga::common::wgsl::TryToWgsl;
+        let d = &self.device;
+        let scalar = match image.format {
+            vk::Format::R32G32B32A32_SFLOAT => naga::Scalar::F32,
+            vk::Format::R32G32B32A32_SINT => naga::Scalar::I32,
+            vk::Format::R32G32B32A32_UINT => naga::Scalar::U32,
+            other => return Err(format!("a multisampled image of format {other:?}")),
+        };
+        let kind = scalar.try_to_wgsl().ok_or("a texel kind WGSL names")?;
+        let source = FILL_SAMPLES.replace(TEXEL_KIND, kind);
+        let module =
+            naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
+        let flags = naga::back::spv::WriterFlags::empty();
+        let vertex =
+            crate::compare::write_spirv(&module, naga::ShaderStage::Vertex, FILL_VERTEX, flags)?;
+        let fragment = crate::compare::write_spirv(
+            &module,
+            naga::ShaderStage::Fragment,
+            FILL_FRAGMENT,
+            flags,
+        )?;
+        let vertex_entry = CString::new(FILL_VERTEX).map_err(|e| e.to_string())?;
+        let fragment_entry = CString::new(FILL_FRAGMENT).map_err(|e| e.to_string())?;
+        let samples = image.samples.as_raw();
+        let vk::Extent3D { width, height, .. } = image.extent;
+        // SAFETY: plain Vulkan calls on objects made here; `cmd` is recording.
+        unsafe {
+            let texels = self.buffer(
+                made,
+                image.bytes.len() as u64,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                &image.bytes,
+            )?;
+            let binding = [vk::DescriptorSetLayoutBinding::default()
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+            let set_layout = d
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&binding),
+                    None,
+                )
+                .map_err(vk_error("vkCreateDescriptorSetLayout"))?;
+            made.set_layouts.push(set_layout);
+            let place_bytes = size_of::<[u32; 4]>();
+            let ranges = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::ALL)
+                .size(u32::try_from(place_bytes).map_err(|e| e.to_string())?)];
+            let layout = d
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(&[set_layout])
+                        .push_constant_ranges(&ranges),
+                    None,
+                )
+                .map_err(vk_error("vkCreatePipelineLayout"))?;
+            made.layouts.push(layout);
+            let sizes = [vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)];
+            let pool = d
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .max_sets(1)
+                        .pool_sizes(&sizes),
+                    None,
+                )
+                .map_err(vk_error("vkCreateDescriptorPool"))?;
+            made.pools.push(pool);
+            let set = d
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(pool)
+                        .set_layouts(&[set_layout]),
+                )
+                .map_err(vk_error("vkAllocateDescriptorSets"))?;
+            let buffer_info = [vk::DescriptorBufferInfo::default()
+                .buffer(texels.buffer)
+                .range(vk::WHOLE_SIZE)];
+            d.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(set[0])
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&buffer_info)],
+                &[],
+            );
+            let vertex_module = self.module(made, &vertex)?;
+            let fragment_module = self.module(made, &fragment)?;
+            let stages = [
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::VERTEX)
+                    .module(vertex_module)
+                    .name(&vertex_entry),
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::FRAGMENT)
+                    .module(fragment_module)
+                    .name(&fragment_entry),
+            ];
+            let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+            let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+            let extent = vk::Extent2D { width, height };
+            let viewports = [vk::Viewport::default()
+                .width(width as f32)
+                .height(height as f32)
+                .max_depth(1.0)];
+            let scissors = [vk::Rect2D::default().extent(extent)];
+            let viewport = vk::PipelineViewportStateCreateInfo::default()
+                .viewports(&viewports)
+                .scissors(&scissors);
+            let raster = vk::PipelineRasterizationStateCreateInfo::default()
+                .polygon_mode(vk::PolygonMode::FILL)
+                .cull_mode(vk::CullModeFlags::NONE)
+                .line_width(1.0);
+            let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+                .rasterization_samples(image.samples)
+                .sample_shading_enable(true)
+                .min_sample_shading(1.0);
+            let blends = [vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)];
+            let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blends);
+            let formats = [image.format];
+            let mut rendering =
+                vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+            let info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&stages)
+                .vertex_input_state(&vertex_input)
+                .input_assembly_state(&assembly)
+                .viewport_state(&viewport)
+                .rasterization_state(&raster)
+                .multisample_state(&multisample)
+                .color_blend_state(&blend)
+                .layout(layout)
+                .push_next(&mut rendering);
+            let pipeline = d
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+                .map_err(|(_, e)| vk_error("vkCreateGraphicsPipelines")(e))?[0];
+            made.pipelines.push(pipeline);
+            for layer in 0..image.layers {
+                let view = d
+                    .create_image_view(
+                        &vk::ImageViewCreateInfo::default()
+                            .image(handle)
+                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .format(image.format)
+                            .subresource_range(
+                                vk::ImageSubresourceRange::default()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .base_array_layer(layer)
+                                    .layer_count(1)
+                                    .level_count(1),
+                            ),
+                        None,
+                    )
+                    .map_err(vk_error("vkCreateImageView"))?;
+                made.views.push(view);
+                let colour = [vk::RenderingAttachmentInfo::default()
+                    .image_view(view)
+                    .image_layout(vk::ImageLayout::GENERAL)
+                    .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                    .store_op(vk::AttachmentStoreOp::STORE)];
+                let rendering = vk::RenderingInfo::default()
+                    .render_area(vk::Rect2D::default().extent(extent))
+                    .layer_count(1)
+                    .color_attachments(&colour);
+                let place: Vec<u8> = [layer, samples, width, height]
+                    .iter()
+                    .flat_map(|w| w.to_le_bytes())
+                    .collect();
+                d.cmd_begin_rendering(cmd, &rendering);
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                bind(
+                    d,
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    layout,
+                    &set,
+                    &place,
+                );
+                d.cmd_draw(cmd, FILL_VERTICES, 1, 0, 0);
+                d.cmd_end_rendering(cmd);
+            }
+        }
+        Ok(())
     }
 
     fn sampler(&self, made: &mut Made, comparison: bool) -> Result<vk::Sampler, Error> {
@@ -816,6 +1048,7 @@ impl Lavapipe {
                         },
                         layers: 1,
                         depth,
+                        samples: vk::SampleCountFlags::TYPE_1,
                         bytes: Vec::new(),
                     };
                     let usage = if depth {

@@ -364,6 +364,9 @@ fn sampled_texture(
     let [Element::Image(image)] = elements else {
         return Err("an array of textures or images is not set up for GLSL here".into());
     };
+    if image.samples != vk::SampleCountFlags::TYPE_1 {
+        return Err("multisampled textures are not filled on OpenGL here".into());
+    }
     let kind = if storage {
         GlslNameKind::Image
     } else {
