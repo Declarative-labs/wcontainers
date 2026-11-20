@@ -392,6 +392,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "A semaphore set (`struct sem_array`)." = { answer = "noun_phrase", confidence = 0.9786740445733476, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A semaphore set's status (`struct semid64_ds`)." = { answer = "noun_phrase", confidence = 0.9781695110414024, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A sender waiting for room, with its message." = { answer = "noun_phrase", confidence = 0.8405137665783179, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A set of optional processor features, in one guest architecture's own form." = { answer = "noun_phrase", confidence = 0.9818725170854335, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A shared memory segment (Linux's `shmid_kernel`)." = { answer = "noun_phrase", confidence = 0.9835269342141142, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A short-lived view of what the kernel keeps for one process." = { answer = "noun_phrase", confidence = 0.9730398680284053, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A signal waiting to be acted on, with the `siginfo` a handler or `sigtimedwait` is given." = { answer = "noun_phrase", confidence = 0.8216028077775238, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -540,7 +541,6 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The network outside the container." = { answer = "noun_phrase", confidence = 0.9593680390119904, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The number of a file on its device." = { answer = "noun_phrase", confidence = 0.9697976742678656, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The one memory access of a load or store: where, how many bytes in all, and whether it writes." = { answer = "noun_phrase", confidence = 0.8631205442471835, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The optional processor features of one program, in its guest architecture's own form." = { answer = "noun_phrase", confidence = 0.9495612688523124, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The owner of processes, which suspends and resumes their tasks and their contexts." = { answer = "noun_phrase", confidence = 0.6755535548668101, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The parameter names of every function a file defines." = { answer = "noun_phrase", confidence = 0.959019900007934, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The permission bits, owner and time of a file added before the container starts." = { answer = "noun_phrase", confidence = 0.881353184683055, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -2249,7 +2249,6 @@ process_position = { answer = "first_word", confidence = 0.9803362847928264, mod
 process_vm = { answer = "first_word", confidence = 0.8385435215945374, model = "perplexity/pplx-decider-v1.2-20261016" }
 process_vm_readv = { answer = "later_word", confidence = 0.5633007796141288, model = "perplexity/pplx-decider-v1.2-20261016" }
 process_vm_writev = { answer = "later_word", confidence = 0.509937735468629, model = "perplexity/pplx-decider-v1.2-20261016" }
-processor_features = { answer = "no_verb", confidence = 0.9150570737105684, model = "perplexity/pplx-decider-v1.2-20261016" }
 product_sign = { answer = "no_verb", confidence = 0.537062550327536, model = "perplexity/pplx-decider-v1.2-20261016" }
 program = { answer = "no_verb", confidence = 0.289751802313145, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 program_headers = { answer = "first_word", confidence = 0.8372639835842581, model = "perplexity/pplx-decider-v1.2-20261016" }
