@@ -3830,6 +3830,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-opengl"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "pollster",
+ "serde",
+ "serde_json",
+ "wcontainers-gpu",
+ "wcontainers-gpu-webgpu",
+ "wgpu",
+]
+
+[[package]]
 name = "wcontainers-runtime"
 version = "0.1.0"
 dependencies = [
