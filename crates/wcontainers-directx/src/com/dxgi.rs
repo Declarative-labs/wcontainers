@@ -15,8 +15,8 @@ use super::*;
 pub struct Adapter {
     pub(super) private: Private,
     desc: AdapterDesc,
-    /// The adapter of a factory of DXGI 1.0 (`CreateDXGIFactory`'s, and Direct3D 10's devices
-    /// made without an adapter), which does not answer `IDXGIFactory1`.
+    /// The adapter of a factory of DXGI 1.0 (Direct3D 10's devices made without an adapter),
+    /// which does not answer `IDXGIFactory1`.
     dxgi10: bool,
     /// The factory that enumerated this adapter, its parent; none for a device's adapter.
     parent: Option<IDXGIFactory6>,
@@ -108,23 +108,17 @@ impl Adapter_Impl {
         }
         let factory: IDXGIFactory6 = Factory::new(self.to_interface()).into();
         if self.dxgi10 {
-            as_dxgi10(&factory)?;
+            // Microsoft's page on `CreateDXGIFactory`: DXGI 1.0's factory does not give
+            // `IDXGIFactory1` (DXGI 1.0 and 1.1 are not mixed); the later interfaces it gives.
+            unsafe {
+                restrict::<IDXGIFactory6_Vtbl, 0>(factory.as_raw());
+                restrict::<windows::core::IInspectable_Vtbl, 1>(
+                    factory.cast::<windows::core::IUnknown>()?.as_raw(),
+                );
+            }
         }
         unsafe { factory.query(riid, parent).ok() }
     }
-}
-
-/// Makes `factory` answer as DXGI 1.0's: Microsoft's page on `CreateDXGIFactory` says such a
-/// factory does not give `IDXGIFactory1` (DXGI 1.0 and 1.1 are not mixed); the later interfaces
-/// it still gives.
-pub(super) fn as_dxgi10(factory: &IDXGIFactory6) -> Result<()> {
-    unsafe {
-        restrict::<IDXGIFactory6_Vtbl, 0>(factory.as_raw());
-        restrict::<windows::core::IInspectable_Vtbl, 1>(
-            factory.cast::<windows::core::IUnknown>()?.as_raw(),
-        );
-    }
-    Ok(())
 }
 
 type QueryInterface =

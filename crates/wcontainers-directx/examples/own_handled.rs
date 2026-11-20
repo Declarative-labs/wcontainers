@@ -290,12 +290,12 @@ fn main() -> windows::core::Result<()> {
     unsafe {
         use windows::Win32::System::LibraryLoader::*;
         let d3d11 = GetModuleHandleW(&windows::core::HSTRING::from(
-            wcontainers_directx::com::D3D11_LIBRARY,
+            wcontainers_direct3d_11::runtime::D3D11_LIBRARY,
         ))?;
         let entry = GetProcAddress(
             d3d11,
             windows::core::PCSTR(
-                wcontainers_directx::com::entry::D3D11_CREATE_DEVICE
+                wcontainers_direct3d_11::runtime::entry::D3D11_CREATE_DEVICE
                     .as_ptr()
                     .cast(),
             ),
@@ -311,7 +311,7 @@ fn main() -> windows::core::Result<()> {
         let n = GetModuleFileNameW(Some(module), &mut path) as usize;
         println!(
             "{} in {}",
-            wcontainers_directx::com::entry::D3D11_CREATE_DEVICE.to_string_lossy(),
+            wcontainers_direct3d_11::runtime::entry::D3D11_CREATE_DEVICE.to_string_lossy(),
             String::from_utf16_lossy(&path[..n])
         );
     }

@@ -37,28 +37,9 @@ static DIRECTIVES: [u8; EXPORTS.len()] = {
     out
 };
 
-/// The system's libraries whose entry points this library serves, by file name (lower case, as
-/// [`called_by_program_or`] compares them).
-pub const DXGI_LIBRARY: &str = "dxgi.dll";
-pub const D3D11_LIBRARY: &str = "d3d11.dll";
-pub const D3D10_LIBRARY: &str = "d3d10.dll";
-pub const D3D10_1_LIBRARY: &str = "d3d10_1.dll";
-pub const D3D10CORE_LIBRARY: &str = "d3d10core.dll";
-
-/// The system's entry points this library calls on for callers that are not the program.
-pub mod entry {
-    use std::ffi::CStr;
-
-    pub const CREATE_DXGI_FACTORY: &CStr = c"CreateDXGIFactory";
-    pub const CREATE_DXGI_FACTORY1: &CStr = c"CreateDXGIFactory1";
-    pub const CREATE_DXGI_FACTORY2: &CStr = c"CreateDXGIFactory2";
-    pub const D3D11_CREATE_DEVICE: &CStr = c"D3D11CreateDevice";
-    pub const D3D11_CREATE_DEVICE_AND_SWAP_CHAIN: &CStr = c"D3D11CreateDeviceAndSwapChain";
-    pub const D3D10_CREATE_DEVICE: &CStr = c"D3D10CreateDevice";
-    pub const D3D10_CREATE_DEVICE1: &CStr = c"D3D10CreateDevice1";
-    pub const D3D10_CORE_CREATE_DEVICE: &CStr = c"D3D10CoreCreateDevice";
-    pub const D3D10_CORE_GET_VERSION: &CStr = c"D3D10CoreGetVersion";
-}
+pub use wcontainers_direct3d_11::runtime::{
+    D3D10_1_LIBRARY, D3D10_LIBRARY, D3D10CORE_LIBRARY, D3D11_LIBRARY, DXGI_LIBRARY, entry,
+};
 
 /// The module holding `address`.
 fn module_of(address: *const c_void) -> Option<HMODULE> {
@@ -146,11 +127,11 @@ pub(super) unsafe fn system<F: Copy>(library: &str, export: &std::ffi::CStr) -> 
     Some(unsafe { std::mem::transmute_copy(&f) })
 }
 
-/// Our factory, as interface `riid`; `dxgi10` makes it DXGI 1.0's (`CreateDXGIFactory`'s).
+/// Our factory, as interface `riid`.
 ///
 /// # Safety
 /// `riid` and `out` are the caller's, as COM passes them.
-unsafe fn ours(riid: *const GUID, out: *mut *mut c_void, dxgi10: bool) -> HRESULT {
+unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
     if out.is_null() || riid.is_null() {
         return E_POINTER;
     }
@@ -160,10 +141,7 @@ unsafe fn ours(riid: *const GUID, out: *mut *mut c_void, dxgi10: bool) -> HRESUL
     let Some(caps) = super::caps() else {
         return DXGI_ERROR_UNSUPPORTED;
     };
-    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps, dxgi10).into()).into();
-    if dxgi10 && let Err(e) = super::dxgi::as_dxgi10(&factory) {
-        return e.code();
-    }
+    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps, false).into()).into();
     // SAFETY: both pointers were checked and come from the caller.
     unsafe { factory.query(riid, out) }
 }
@@ -190,7 +168,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out, false) }
+    unsafe { ours(riid, out) }
 }
 
 /// `CreateDXGIFactory1`, as Microsoft documents it.
@@ -210,7 +188,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory1(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out, false) }
+    unsafe { ours(riid, out) }
 }
 
 /// `CreateDXGIFactory`, as Microsoft documents it.
@@ -230,5 +208,5 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out, true) }
+    unsafe { ours(riid, out) }
 }
