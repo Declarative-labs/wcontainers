@@ -1,5 +1,6 @@
 //! The thread module: one per guest thread. It owns the lookup table and the bottom loop.
 
+use crate::ProgressCount;
 use crate::contract::*;
 use crate::layout::Layout;
 use crate::state::Slot;
@@ -10,14 +11,15 @@ use wasm_encoder::{
 };
 use wcontainers_guest_cpu::Guest;
 
-/// The piece signature: the passed registers and the expected return address in; the passed registers out.
 /// The type index of a piece, the first type of every module.
 pub(crate) const T_PIECE: u32 = 0;
 
-pub(crate) fn piece_type<G: Guest>(types: &mut TypeSection) {
+/// The piece signature: the passed registers, the expected return address and the depth in, the passed
+/// registers out; with the progress count kept, the count last in and last out.
+pub(crate) fn piece_type<G: Guest>(types: &mut TypeSection, progress: ProgressCount) {
     types.ty().function(
-        vec![ValType::I64; G::PARAMETERS as usize],
-        vec![ValType::I64; G::RESULTS as usize],
+        vec![ValType::I64; crate::code::parameters::<G>(progress) as usize],
+        vec![ValType::I64; crate::code::results::<G>(progress) as usize],
     );
 }
 
@@ -52,15 +54,15 @@ pub(crate) fn memarg(memory: u32, offset: u64, align: u32) -> MemArg {
     }
 }
 
-/// Build the thread module. Its lookup table starts with [`EXACT_SLOT`] and the slot before it; the runner
-/// grows it for the pieces it adds.
-pub fn thread_module<G: Guest>() -> Vec<u8> {
+/// Build the thread module, for code modules translated with `progress`. Its lookup table starts with
+/// [`EXACT_SLOT`] and the slot before it; the runner grows it for the pieces it adds.
+pub fn thread_module<G: Guest>(progress: ProgressCount) -> Vec<u8> {
     const T_LOAD_CODE: u32 = T_PIECE + 1;
     const T_WARN_TRAP: u32 = T_LOAD_CODE + 1;
     const T_RUN: u32 = T_WARN_TRAP + 1;
     const T_UNWIND: u32 = T_RUN + 1;
     let mut types = TypeSection::new();
-    piece_type::<G>(&mut types);
+    piece_type::<G>(&mut types, progress);
     types
         .ty()
         .function([ValType::I64, ValType::I32], [ValType::I32]);
@@ -170,11 +172,23 @@ pub fn thread_module<G: Guest>() -> Vec<u8> {
         slot.load_from(&mut s, STATE_M);
     }
     s.i64_const(G::UNREACHABLE_RETURN | G::FLAGS_WANTED)
-        .i64_const(0)
-        .local_get(piece)
-        .ref_as_non_null()
-        .call_ref(T_PIECE);
+        .i64_const(0);
+    let count = memarg(
+        STATE_M,
+        progress_count_offset::<G>() as u64,
+        natural_align::<u64>(),
+    );
+    if progress == ProgressCount::Kept {
+        s.global_get(BLOCK).i64_load(count);
+    }
+    s.local_get(piece).ref_as_non_null().call_ref(T_PIECE);
     // The results, last first, go back to the block. `pc` is where the guest returned to.
+    if progress == ProgressCount::Kept {
+        s.local_set(offset)
+            .global_get(BLOCK)
+            .local_get(offset)
+            .i64_store(count);
+    }
     for slot in crate::code::result_slots::<G>().rev() {
         s.local_set(offset).global_get(BLOCK).local_get(offset);
         slot.store_to(&mut s, STATE_M);

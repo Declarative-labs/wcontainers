@@ -152,7 +152,14 @@ impl<G: Guest> Compiler<G> {
             .build()
             .expect("the back end's pool");
         let thread_module = pool
-            .install(|| Module::new(&engine, wcontainers_translator::thread_module::<G>()))
+            .install(|| {
+                Module::new(
+                    &engine,
+                    wcontainers_translator::thread_module::<G>(
+                        wcontainers_translator::ProgressCount::Absent,
+                    ),
+                )
+            })
             .expect("the thread module");
         let probe = pool
             .install(|| Module::new(&engine, G::probe_module()))

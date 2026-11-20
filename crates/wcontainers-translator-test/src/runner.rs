@@ -221,13 +221,21 @@ fn engine() -> Engine {
     ENGINE.get_or_init(new_engine).clone()
 }
 
-/// The thread module, compiled once.
-fn thread_module(engine: &Engine) -> Module {
-    static MODULE: OnceLock<Module> = OnceLock::new();
-    MODULE
+/// The thread module for code with or without the progress count, each compiled once.
+fn thread_module(engine: &Engine, progress: ProgressCount) -> Module {
+    static ABSENT: OnceLock<Module> = OnceLock::new();
+    static KEPT: OnceLock<Module> = OnceLock::new();
+    let module = match progress {
+        ProgressCount::Absent => &ABSENT,
+        ProgressCount::Kept => &KEPT,
+    };
+    module
         .get_or_init(|| {
-            Module::new(engine, wcontainers_translator::thread_module::<Arm64>())
-                .expect("thread module")
+            Module::new(
+                engine,
+                wcontainers_translator::thread_module::<Arm64>(progress),
+            )
+            .expect("thread module")
         })
         .clone()
 }
@@ -561,6 +569,7 @@ impl Machine {
     /// Translations made from now on keep the progress count, from 0, with no limit: call before any load.
     pub fn keep_progress_count(&mut self) {
         self.store.data_mut().progress = ProgressCount::Kept;
+        self.run = thread_instance(&mut self.store);
         let block = BLOCK_AT as usize;
         write_shared(
             &self.state,
@@ -1414,7 +1423,7 @@ fn instantiate(
 fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
     let engine = store.engine().clone();
     let host = store.data();
-    let module = thread_module(&engine);
+    let module = thread_module(&engine, host.progress);
     let state = host.state.clone().unwrap();
     let (table_base, slots_at, slots) = (host.table_base, host.slots_at, host.slots);
     let mut linker = Linker::new(&engine);

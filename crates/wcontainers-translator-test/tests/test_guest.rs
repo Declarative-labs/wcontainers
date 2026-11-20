@@ -852,7 +852,9 @@ fn program() -> Vec<u8> {
 fn every_translation_valid<const F: bool>() {
     let blob = program();
     let starts = [0, FUNCTION as u64];
-    validate(&thread_module::<Test<F>>());
+    validate(&thread_module::<Test<F>>(
+        wcontainers_translator::ProgressCount::Absent,
+    ));
     for look_ahead in LOOK_AHEADS {
         for optimise in [Optimise::Speed, Optimise::Size] {
             for offer in [false, true] {
@@ -1321,7 +1323,11 @@ fn run<const F: bool>(
         let global = constant(&mut store, value);
         linker.define(&store, contract::ENV, name, global).unwrap();
     }
-    let thread_module = Module::new(&engine, thread_module::<Test<F>>()).unwrap();
+    let thread_module = Module::new(
+        &engine,
+        thread_module::<Test<F>>(wcontainers_translator::ProgressCount::Absent),
+    )
+    .unwrap();
     let thread = linker.instantiate(&mut store, &thread_module).unwrap();
     store.data_mut().thread = Some(thread);
 

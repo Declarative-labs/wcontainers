@@ -6,7 +6,7 @@ use crate::code::*;
 use crate::contract::*;
 use crate::layout::Layout;
 use crate::state::{Slot, load_flag, push_word};
-use crate::thread::{memarg, natural_align};
+use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::DfsPostOrder;
@@ -1702,8 +1702,8 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             event: false,
         };
         e.depth = e.new_local(ValType::I64);
-        if code.progress == ProgressCount::Kept {
-            e.count = Some(e.new_local(ValType::I64));
+        if kept(code.progress) {
+            e.count = Some(G::L_COUNT);
         }
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
@@ -1753,18 +1753,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .i64_const(frame_bytes::<G>(&e.locals))
             .i64_add()
             .local_set(e.depth);
-        if let Some(count) = e.count {
-            Fixed::Global(G_THREAD_BLOCK).push(&mut s);
-            s.i64_load(memarg(
-                MEMORY_STATE,
-                progress_count_offset::<G>() as u64,
-                natural_align::<u64>(),
-            ))
-            .local_set(count);
-        }
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
-            depth_check::<G>(&mut s, G::L_DEPTH, function.entry);
+            depth_check::<G>(&mut s, G::L_DEPTH, function.entry, code.progress);
             e.sites[Reason::StackNearlyFull as usize] += 1;
         }
         let locals = e.locals.len();
@@ -1776,7 +1767,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
 
     fn new_local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        G::PARAMETERS + self.locals.len() as u32 - 1
+        parameters::<G>(self.code.progress) + self.locals.len() as u32 - 1
     }
 
     /// The locals a shape keeps, fresh ones: what else it needs can be worked out from them.
@@ -2063,13 +2054,17 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
     }
 
     /// Push the parameters of a tail call: the passed registers, the expected return address and the depth,
-    /// all as this piece was given them.
+    /// all as this piece was given them, and the progress count.
     fn arguments(&mut self) {
+        let count = self.count;
         let mut s = self.sink();
         for i in 0..G::PASSED {
             s.local_get(i);
         }
         s.local_get(G::L_RETURN).local_get(G::L_DEPTH);
+        if let Some(count) = count {
+            s.local_get(count);
+        }
     }
 
     /// Copy every register whose place in the thread block may be stale there, and the flags too.
@@ -2078,36 +2073,12 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         self.write_back_flags(false);
     }
 
-    /// Copy every tracked register that may be stale in the thread block there, and the progress count.
+    /// Copy every tracked register that may be stale in the thread block there.
     fn write_back_registers(&mut self) {
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in self.at.dirty.bits() {
             let local = self.register(bit);
             Slot::of_bit::<G>(bit).store_from(&mut self.sink(), block, local);
-        }
-        if let Some(count) = self.count {
-            let mut s = self.sink();
-            block.push(&mut s);
-            s.local_get(count).i64_store(memarg(
-                MEMORY_STATE,
-                progress_count_offset::<G>() as u64,
-                natural_align::<u64>(),
-            ));
-        }
-    }
-
-    /// Load the progress count from the thread block, after a call to another piece.
-    fn reload_count(&mut self) {
-        if let Some(count) = self.count {
-            let block = self.fixed(G_THREAD_BLOCK);
-            let mut s = self.sink();
-            block.push(&mut s);
-            s.i64_load(memarg(
-                MEMORY_STATE,
-                progress_count_offset::<G>() as u64,
-                natural_align::<u64>(),
-            ))
-            .local_set(count);
         }
     }
 
@@ -2116,7 +2087,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         if std::mem::take(&mut self.event)
             && let Some(count) = self.count
         {
-            CountIn::Local(count).add_event::<G>(&mut self.sink());
+            add_event(&mut self.sink(), count);
         }
     }
 
@@ -2223,10 +2194,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         self.write_back_registers();
         self.write_back_flags(out_of_line);
         let load = self.fixed(G_LOAD_ADDRESS);
+        let progress = self.code.progress;
         if !out_of_line {
             let block = self.fixed(G_THREAD_BLOCK);
             let mut s = self.sink();
-            save_passed::<G>(&mut s, block);
+            save_passed::<G>(&mut s, block, progress);
             set_pc::<G>(&mut s, block, |s| match pc {
                 Pc::Offset(offset) => {
                     load.push(s);
@@ -2238,7 +2210,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             });
             return;
         }
-        save::<G>(&mut self.sink(), |s| match pc {
+        save::<G>(&mut self.sink(), progress, |s| match pc {
             Pc::Offset(offset) => {
                 s.i64_const(offset as i64);
             }
@@ -2265,7 +2237,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
-        let count = self.count.map(CountIn::Local);
+        let (count, progress) = (self.count, self.code.progress);
         let mut s = self.sink();
         push_stop_wanted::<G>(&mut s, block, count);
         if let Some(entry) = deep {
@@ -2276,7 +2248,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 .i64_gt_u()
                 .i32_or()
                 .if_(BlockType::Empty);
-            depth_check::<G>(&mut s, G::L_DEPTH, entry);
+            depth_check::<G>(&mut s, G::L_DEPTH, entry, progress);
         } else {
             s.if_(BlockType::Empty);
         }
@@ -2986,8 +2958,11 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             0
         };
         self.address(next + wanted);
-        let depth = self.depth;
+        let (depth, count) = (self.depth, self.count);
         self.sink().local_get(depth);
+        if let Some(count) = count {
+            self.sink().local_get(count);
+        }
         match target {
             Target::Relative(by) => {
                 let to = offset.wrapping_add_signed(by);
@@ -3007,6 +2982,9 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             }
         }
         let returned_sp = self.temporary(ValType::I64);
+        if let Some(count) = count {
+            self.sink().local_set(count);
+        }
         let mut reload = self.plan.live_after[&offset];
         for &bit in G::PASSED_OUT.iter().rev() {
             let local = if bit == G::SP_BIT {
@@ -3020,7 +2998,6 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             };
             self.sink().local_set(local);
         }
-        self.reload_count();
         self.at.dirty = Registers::NONE;
         self.set_flag_state(FLAGS_IN_BLOCK);
         // What is known about the stack pointer (its frame, its alignment) holds after the call only if the
@@ -3070,9 +3047,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             }
         };
         let block = self.fixed(G_THREAD_BLOCK);
+        let progress = self.code.progress;
         if self.omit.returns {
             wanted(self);
-            push_results::<G>(&mut self.sink(), block);
+            push_results::<G>(&mut self.sink(), block, progress);
             self.sink().return_();
             return;
         }
@@ -3082,7 +3060,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         s.i64_eq().if_(BlockType::Empty);
         wanted(self);
         let mut s = self.sink();
-        push_results::<G>(&mut s, block);
+        push_results::<G>(&mut s, block, progress);
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
         self.write_back_flags(false);
@@ -3090,8 +3068,8 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         set_pc::<G>(&mut s, block, |s| {
             s.local_get(target);
         });
-        bottom_return::<G>(&mut s, block);
-        save_passed::<G>(&mut s, block);
+        bottom_return::<G>(&mut s, block, progress);
+        save_passed::<G>(&mut s, block, progress);
         s.i32_const(UNWIND_GO_TO).call(G::F_UNWIND).unreachable();
     }
 

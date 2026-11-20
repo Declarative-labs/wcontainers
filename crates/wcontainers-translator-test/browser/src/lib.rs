@@ -185,7 +185,7 @@ pub extern "C" fn cpu_hook_reason() -> i32 {
 /// The thread module. Returns its length.
 #[unsafe(no_mangle)]
 pub extern "C" fn thread_module() -> i32 {
-    answer(wcontainers_translator::thread_module::<Arm64>())
+    answer(wcontainers_translator::thread_module::<Arm64>(wcontainers_translator::ProgressCount::Absent))
 }
 
 /// The contract's name for where the word that keeps FPSR's flags exact is (runner.js reads it).

@@ -37,7 +37,9 @@ fn check(wasm: &[u8]) -> Result<(), String> {
 
 #[test]
 fn thread_module_is_valid() {
-    validate(&thread_module::<Arm64>());
+    validate(&thread_module::<Arm64>(
+        wcontainers_translator::ProgressCount::Absent,
+    ));
 }
 
 /// The environment's settings, with a fixed seed when none is given.

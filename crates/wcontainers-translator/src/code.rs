@@ -371,12 +371,17 @@ pub(crate) fn frame_bytes<G: Guest>(locals: &[ValType]) -> i64 {
 
 /// Leave to the bottom loop when the depth in i64 local `depth` is past the budget, with `pc` at the
 /// entry. Only the passed registers may be in locals.
-pub(crate) fn depth_check<G: Guest>(s: &mut InstructionSink<'_>, depth: u32, entry: u64) {
+pub(crate) fn depth_check<G: Guest>(
+    s: &mut InstructionSink<'_>,
+    depth: u32,
+    entry: u64,
+    progress: ProgressCount,
+) {
     s.local_get(depth)
         .i64_const(STACK_BUDGET)
         .i64_gt_u()
         .if_(BlockType::Empty);
-    save::<G>(s, |s| {
+    save::<G>(s, progress, |s| {
         s.i64_const(entry as i64);
     });
     s.i32_const(UNWIND_DEEP)
@@ -567,7 +572,7 @@ fn modules<G: Guest>(
 /// A code module holding these units, the table's pieces at `entries`.
 fn module<G: Guest>(blob: &[u8], how: How, entries: &[u64], units: Vec<Unit>) -> CodeModule {
     let mut module = Module::new();
-    module.section(&types::<G>());
+    module.section(&types::<G>(how.2));
     module.section(&imports::<G>());
     let mut functions = FunctionSection::new();
     let mut code_section = CodeSection::new();
@@ -576,13 +581,13 @@ fn module<G: Guest>(blob: &[u8], how: How, entries: &[u64], units: Vec<Unit>) ->
         add_sites(&mut sites, &unit.sites);
     }
     functions.function(T_DISPATCHER);
-    code_section.function(&dispatcher::<G>());
+    code_section.function(&dispatcher::<G>(how.2));
     functions.function(T_UNWIND);
     code_section.function(&unwinder());
     functions.function(T_DISPATCHER);
-    code_section.function(&exact::<G>());
+    code_section.function(&exact::<G>(how.2));
     functions.function(G::T_SAVE);
-    code_section.function(&saver::<G>());
+    code_section.function(&saver::<G>(how.2));
     functions.function(G::T_PERMISSION);
     code_section.function(&permission_checker());
     for (i, (_, function)) in crate::full::flags_word_functions::<G>().iter().enumerate() {
@@ -718,7 +723,7 @@ fn none_emit<G: Guest>(
                 body: Vec::new(),
                 locals: Vec::new(),
                 sites: [0; SITES],
-                count: (code.progress == ProgressCount::Kept).then_some(CountIn::Block(BLOCK)),
+                count: kept(code.progress).then_some(G::L_COUNT),
                 event: code.progress == ProgressCount::Kept
                     && progress_event::<G>(&decoded.instruction),
             };
@@ -832,54 +837,17 @@ pub(crate) fn progress_event<G: Guest>(instruction: &G::Instruction) -> bool {
     }
 }
 
-/// Where a piece keeps the progress count.
-#[derive(Clone, Copy)]
-pub(crate) enum CountIn {
-    /// The thread block, at every event.
-    Block(Fixed),
-    /// An i64 local, written to the thread block with the registers.
-    Local(u32),
-}
-
-impl CountIn {
-    fn push(self, s: &mut InstructionSink<'_>, count_at: u64) {
-        match self {
-            CountIn::Block(block) => {
-                block.push(s);
-                s.i64_load(memarg(MEMORY_STATE, count_at, natural_align::<u64>()));
-            }
-            CountIn::Local(local) => {
-                s.local_get(local);
-            }
-        }
-    }
-
-    /// Add one to the count.
-    pub(crate) fn add_event<G: Guest>(self, s: &mut InstructionSink<'_>) {
-        let count_at = progress_count_offset::<G>() as u64;
-        match self {
-            CountIn::Block(block) => {
-                block.push(s);
-                self.push(s, count_at);
-                s.i64_const(1).i64_add().i64_store(memarg(
-                    MEMORY_STATE,
-                    count_at,
-                    natural_align::<u64>(),
-                ));
-            }
-            CountIn::Local(local) => {
-                s.local_get(local).i64_const(1).i64_add().local_set(local);
-            }
-        }
-    }
+/// Add one to the progress count in i64 local `count`.
+pub(crate) fn add_event(s: &mut InstructionSink<'_>, count: u32) {
+    s.local_get(count).i64_const(1).i64_add().local_set(count);
 }
 
 /// Push an i32, not zero when the thread must call the stop hook: the stop flag, or with the progress count
-/// (kept in `count`) whether it has reached the limit.
+/// (in i64 local `count`) whether it has reached the limit.
 pub(crate) fn push_stop_wanted<G: Guest>(
     s: &mut InstructionSink<'_>,
     block: Fixed,
-    count: Option<CountIn>,
+    count: Option<u32>,
 ) {
     match count {
         None => {
@@ -891,7 +859,7 @@ pub(crate) fn push_stop_wanted<G: Guest>(
             ));
         }
         Some(count) => {
-            count.push(s, progress_count_offset::<G>() as u64);
+            s.local_get(count);
             block.push(s);
             s.i64_load(memarg(
                 MEMORY_STATE,
@@ -1170,9 +1138,9 @@ const T_WARN_TRAP: u32 = T_LOAD_CODE + 1;
 const T_DISPATCHER: u32 = T_WARN_TRAP + 1;
 pub(crate) const T_UNWIND: u32 = T_DISPATCHER + 1;
 
-pub(crate) fn types<G: Guest>() -> TypeSection {
+pub(crate) fn types<G: Guest>(progress: ProgressCount) -> TypeSection {
     let mut types = TypeSection::new();
-    piece_type::<G>(&mut types);
+    piece_type::<G>(&mut types, progress);
     // The number and the arguments.
     let syscall_values = 1 + G::SYSCALL.args.len();
     types
@@ -1185,8 +1153,8 @@ pub(crate) fn types<G: Guest>() -> TypeSection {
         .function([ValType::I64, ValType::I32], [ValType::I32]);
     types.ty().function([ValType::I32, ValType::I64], []);
     types.ty().function(
-        vec![ValType::I64; G::PARAMETERS as usize + 1],
-        vec![ValType::I64; G::RESULTS as usize],
+        vec![ValType::I64; parameters::<G>(progress) as usize + 1],
+        vec![ValType::I64; results::<G>(progress) as usize],
     );
     types.ty().function([ValType::I32], []);
     debug_assert_eq!(types.len(), G::T_HOOKS);
@@ -1195,9 +1163,10 @@ pub(crate) fn types<G: Guest>() -> TypeSection {
             .ty()
             .function(hook.params.iter().copied(), hook.results.iter().copied());
     }
-    types
-        .ty()
-        .function(vec![ValType::I64; G::PASSED as usize + 1], []); // save
+    types.ty().function(
+        vec![ValType::I64; G::PASSED as usize + 1 + usize::from(kept(progress))],
+        [],
+    ); // save
     types.ty().function(
         [ValType::I64, ValType::I32, ValType::I32],
         [ValType::I32, ValType::I64],
@@ -1300,7 +1269,11 @@ pub(crate) fn result_slots<G: Guest>() -> impl DoubleEndedIterator<Item = Slot> 
 
 /// Push a piece's results: each register passed out, from its parameter when it is passed in, else from the
 /// thread block, where every register is written back before a piece returns.
-pub(crate) fn push_results<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
+pub(crate) fn push_results<G: Guest>(
+    s: &mut InstructionSink<'_>,
+    block: Fixed,
+    progress: ProgressCount,
+) {
     for &bit in G::PASSED_OUT {
         match G::passed(bit) {
             Some(local) => {
@@ -1312,33 +1285,77 @@ pub(crate) fn push_results<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) 
             }
         }
     }
+    if kept(progress) {
+        s.local_get(G::L_COUNT);
+    }
 }
 
-/// Store the passed registers of a piece (or the dispatcher) into the thread block.
-pub(crate) fn save_passed<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
+/// Store the passed registers of a piece (or the dispatcher) into the thread block, and the progress count
+/// when it is kept.
+pub(crate) fn save_passed<G: Guest>(
+    s: &mut InstructionSink<'_>,
+    block: Fixed,
+    progress: ProgressCount,
+) {
     for (i, slot) in passed_slots::<G>().enumerate() {
         slot.store_from(s, block, i as u32);
     }
+    if kept(progress) {
+        store_count::<G>(s, block, G::L_COUNT);
+    }
+}
+
+/// Store the progress count in i64 local `local` into the thread block.
+fn store_count<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, local: u32) {
+    block.push(s);
+    s.local_get(local).i64_store(memarg(
+        MEMORY_STATE,
+        progress_count_offset::<G>() as u64,
+        natural_align::<u64>(),
+    ));
+}
+
+/// Whether the progress count is kept.
+pub(crate) fn kept(progress: ProgressCount) -> bool {
+    progress == ProgressCount::Kept
+}
+
+/// How many parameters a piece has: [`Layout::PARAMETERS`], then the count when it is kept.
+pub(crate) fn parameters<G: Guest>(progress: ProgressCount) -> u32 {
+    G::PARAMETERS + u32::from(kept(progress))
+}
+
+/// How many results a piece has: [`Layout::RESULTS`], then the count when it is kept.
+pub(crate) fn results<G: Guest>(progress: ProgressCount) -> u32 {
+    G::RESULTS + u32::from(kept(progress))
 }
 
 /// Store the passed registers, and `pc` at the blob offset `offset` pushes, in the thread block, through the
 /// module's function for it: every way to the runner does this.
 pub(crate) fn save<G: Guest>(
     s: &mut InstructionSink<'_>,
+    progress: ProgressCount,
     offset: impl FnOnce(&mut InstructionSink<'_>),
 ) {
     for i in 0..G::PASSED {
         s.local_get(i);
     }
     offset(s);
+    if kept(progress) {
+        s.local_get(G::L_COUNT);
+    }
     s.call(G::F_SAVE);
 }
 
-/// The function [`save`] calls. Parameters: the passed registers, then pc as a blob offset.
-fn saver<G: Guest>() -> wasm_encoder::Function {
+/// The function [`save`] calls. Parameters: the passed registers, pc as a blob offset, and the progress
+/// count when it is kept.
+fn saver<G: Guest>(progress: ProgressCount) -> wasm_encoder::Function {
     let mut f = wasm_encoder::Function::new([]);
     let mut s = f.instructions();
-    save_passed::<G>(&mut s, BLOCK);
+    save_passed::<G>(&mut s, BLOCK, ProgressCount::Absent);
+    if kept(progress) {
+        store_count::<G>(&mut s, BLOCK, G::PASSED + 1);
+    }
     set_pc::<G>(&mut s, BLOCK, |s| {
         BLOCK_LOAD_ADDRESS.push(s);
         s.local_get(G::PASSED).i64_add();
@@ -1360,10 +1377,10 @@ pub(crate) fn set_pc<G: Guest>(
 
 /// The dispatcher: go to the piece for a guest address through the lookup table, asking the runner for
 /// code when there is none. Parameters: the piece parameters, then the address.
-pub(crate) fn dispatcher<G: Guest>() -> wasm_encoder::Function {
-    let target = G::PARAMETERS;
-    let offset = G::PARAMETERS + 1;
-    let piece = G::PARAMETERS + 2;
+pub(crate) fn dispatcher<G: Guest>(progress: ProgressCount) -> wasm_encoder::Function {
+    let target = parameters::<G>(progress);
+    let offset = target + 1;
+    let piece = target + 2;
     let mut f = wasm_encoder::Function::new([(1, ValType::I64), (1, ValType::Ref(piece_ref()))]);
     let mut s = f.instructions();
     set_pc::<G>(&mut s, BLOCK, |s| {
@@ -1377,7 +1394,7 @@ pub(crate) fn dispatcher<G: Guest>() -> wasm_encoder::Function {
     );
     crate::thread::lookup::<G>(&mut s, target, slots, offset, piece);
     s.local_get(piece).ref_is_null().if_(BlockType::Empty);
-    save_passed::<G>(&mut s, BLOCK);
+    save_passed::<G>(&mut s, BLOCK, progress);
     crate::thread::misaligned_code::<G>(&mut s, target, F_TRAP, |s| {
         s.i32_const(UNWIND_LEAVE).call(G::F_UNWIND).unreachable();
     });
@@ -1393,7 +1410,7 @@ pub(crate) fn dispatcher<G: Guest>() -> wasm_encoder::Function {
         .br(1)
         .end()
         .end();
-    for i in 0..G::PARAMETERS {
+    for i in 0..target {
         s.local_get(i);
     }
     s.local_get(piece)
@@ -1406,14 +1423,14 @@ pub(crate) fn dispatcher<G: Guest>() -> wasm_encoder::Function {
 /// Run the instruction at a guest address from its piece of look-ahead none, which has every slow path in
 /// place, keeping the WebAssembly stack; it carries on through the table. Parameters: those of the
 /// dispatcher.
-pub(crate) fn exact<G: Guest>() -> wasm_encoder::Function {
-    let target = G::PARAMETERS;
+pub(crate) fn exact<G: Guest>(progress: ProgressCount) -> wasm_encoder::Function {
+    let target = parameters::<G>(progress);
     let mut f = wasm_encoder::Function::new([]);
     let mut s = f.instructions();
     set_pc::<G>(&mut s, BLOCK, |s| {
         s.local_get(target);
     });
-    save_passed::<G>(&mut s, BLOCK);
+    save_passed::<G>(&mut s, BLOCK, progress);
     s.i32_const(Reason::LeftToAddress as i32)
         .local_get(target)
         .call(F_WARN);
@@ -1426,7 +1443,7 @@ pub(crate) fn exact<G: Guest>() -> wasm_encoder::Function {
         .call(G::F_UNWIND)
         .unreachable()
         .end();
-    for i in 0..G::PARAMETERS {
+    for i in 0..target {
         s.local_get(i);
     }
     s.i32_const(EXACT_SLOT)
@@ -1492,8 +1509,8 @@ struct NoneEmitter<'a, G: Guest> {
     body: Vec<u8>,
     locals: Vec<ValType>,
     sites: Sites,
-    /// Where the progress count is, when it is kept.
-    count: Option<CountIn>,
+    /// The local holding the progress count, when it is kept.
+    count: Option<u32>,
     /// The instruction is an event of the progress count not yet counted.
     event: bool,
 }
@@ -1511,14 +1528,15 @@ impl<G: Guest> NoneEmitter<'_, G> {
         if std::mem::take(&mut self.event)
             && let Some(count) = self.count
         {
-            count.add_event::<G>(&mut self.sink());
+            add_event(&mut self.sink(), count);
         }
     }
 
     /// The checks every piece starts with: each one passes control on.
     fn entry(&mut self) {
         let offset = self.offset;
-        depth_check::<G>(&mut self.sink(), G::L_DEPTH, offset);
+        let progress = self.progress();
+        depth_check::<G>(&mut self.sink(), G::L_DEPTH, offset, progress);
         self.sites[Reason::StackNearlyFull as usize] += 1;
         self.stop_check(0);
     }
@@ -1532,11 +1550,11 @@ impl<G: Guest> NoneEmitter<'_, G> {
     fn stop_check(&mut self, step: u64) {
         self.sites[Reason::StoppedByFlag as usize] += 1;
         let pc = self.offset + step;
-        let count = self.count;
+        let (count, progress) = (self.count, self.progress());
         let mut s = self.sink();
         push_stop_wanted::<G>(&mut s, BLOCK, count);
         s.if_(BlockType::Empty);
-        save::<G>(&mut s, |s| {
+        save::<G>(&mut s, progress, |s| {
             s.i64_const(pc as i64);
         });
         s.call(F_STOP)
@@ -1551,13 +1569,15 @@ impl<G: Guest> NoneEmitter<'_, G> {
     /// Save registers with `pc` at this instruction plus `step`.
     fn save(&mut self, step: u64) {
         let pc = self.offset + step;
-        save::<G>(&mut self.sink(), |s| {
+        let progress = self.progress();
+        save::<G>(&mut self.sink(), progress, |s| {
             s.i64_const(pc as i64);
         });
     }
 
-    /// Push the passed registers, then the return address the caller expects and the depth.
+    /// Push the passed registers, then the return address the caller expects, the depth and the count.
     fn arguments(&mut self, ret: impl FnOnce(&mut InstructionSink<'_>), depth: i64) {
+        let count = self.count;
         let mut s = self.sink();
         for i in 0..G::PASSED {
             s.local_get(i);
@@ -1566,6 +1586,9 @@ impl<G: Guest> NoneEmitter<'_, G> {
         s.local_get(G::L_DEPTH);
         if depth != 0 {
             s.i64_const(depth).i64_add();
+        }
+        if let Some(count) = count {
+            s.local_get(count);
         }
     }
 
@@ -1620,12 +1643,16 @@ impl<G: Guest> NoneEmitter<'_, G> {
 
 /// After a return that does not go where its caller expects, with `pc` set to its target: return to the
 /// bottom loop if it is the caller.
-pub(crate) fn bottom_return<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
+pub(crate) fn bottom_return<G: Guest>(
+    s: &mut InstructionSink<'_>,
+    block: Fixed,
+    progress: ProgressCount,
+) {
     s.local_get(G::L_RETURN)
         .i64_const(G::UNREACHABLE_RETURN | G::FLAGS_WANTED)
         .i64_eq()
         .if_(BlockType::Empty);
-    push_results::<G>(s, block);
+    push_results::<G>(s, block, progress);
     s.return_().end();
 }
 
@@ -1670,7 +1697,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
 
     fn local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        G::PARAMETERS + self.locals.len() as u32 - 1
+        parameters::<G>(self.progress()) + self.locals.len() as u32 - 1
     }
 
     fn get(&mut self, r: G::Reg) {
@@ -1768,12 +1795,13 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         let (page, fault_at) = (self.local(ValType::I64), self.local(ValType::I64));
         self.sites[Reason::MemoryFault as usize] += 1;
         let pc = self.offset;
+        let progress = self.progress();
         let mut s = self.sink();
         G::data_address(&mut s, address);
         s.local_set(address);
         permission_fast(&mut s, Table::GLOBALS, address, this, page);
         permission_exact::<G>(&mut s, address, bytes, this, fault_at, Exact::Called);
-        save::<G>(&mut s, |s| {
+        save::<G>(&mut s, progress, |s| {
             s.i64_const(pc as i64);
         });
         s.local_get(fault_at)
@@ -1847,8 +1875,12 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
             frame,
         );
         self.transfer(target, false);
-        // A register passed out but not in is also in the thread block, where it lives here.
+        let count = self.count;
         let mut s = self.sink();
+        if let Some(count) = count {
+            s.local_set(count);
+        }
+        // A register passed out but not in is also in the thread block, where it lives here.
         for &bit in G::PASSED_OUT.iter().rev() {
             match G::passed(bit) {
                 Some(local) => s.local_set(local),
@@ -1859,19 +1891,20 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
 
     fn ret(&mut self, target: u32) {
         self.count_event();
+        let progress = self.progress();
         let mut s = self.sink();
         pop_return_address::<G>(&mut s);
         s.local_get(target);
         push_expected_return::<G>(&mut s);
         s.i64_eq().if_(BlockType::Empty);
-        push_results::<G>(&mut s, BLOCK);
+        push_results::<G>(&mut s, BLOCK, progress);
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
         set_pc::<G>(&mut s, BLOCK, |s| {
             s.local_get(target);
         });
-        bottom_return::<G>(&mut s, BLOCK);
-        save_passed::<G>(&mut s, BLOCK);
+        bottom_return::<G>(&mut s, BLOCK, progress);
+        save_passed::<G>(&mut s, BLOCK, progress);
         s.i32_const(UNWIND_GO_TO).call(G::F_UNWIND).unreachable();
     }
 

@@ -57,7 +57,9 @@ fn bench(out: &mut String) {
     line(
         out,
         "thread",
-        &wcontainers_translator::thread_module::<Arm64>(),
+        &wcontainers_translator::thread_module::<Arm64>(
+            wcontainers_translator::ProgressCount::Absent,
+        ),
     );
     let mut blobs = vec![build_with("bench", "-O2", Library::None, &["SCALE=1"])];
     for k in 1..=8 {

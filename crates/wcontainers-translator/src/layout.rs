@@ -48,8 +48,11 @@ pub(crate) trait Layout: Guest {
     const L_RETURN: u32 = Self::PASSED;
     /// i64 parameter: the bytes of the engine's stack the piece's callers use, as estimated.
     const L_DEPTH: u32 = Self::PASSED + 1;
-    /// How many parameters a piece has: the passed registers, the expected return address and the depth.
+    /// How many parameters a piece has: the passed registers, the expected return address and the depth;
+    /// with the progress count kept, one more follows (see [`crate::code::parameters`]).
     const PARAMETERS: u32 = Self::PASSED + 2;
+    /// i64 parameter, with the progress count kept: the count, also the piece's last result.
+    const L_COUNT: u32 = Self::PARAMETERS;
 
     // Function indices: the translator's six hooks, the guest's hooks, then the dispatcher and the module's
     // own functions, then the pieces.
