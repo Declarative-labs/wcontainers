@@ -6,10 +6,10 @@ use std::collections::hash_map::Entry;
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, DrawCall, DrawRange, FanOrLoop,
-    Features, FormatKind, FormatUse, IndexBinding, IndexFormat, IndexSource, MAX_BINDING_SETS,
-    Object, Program, ReflectedBinding, RingKind, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, StageSet, Topology, VertexBinding, Viewport, cut_scissors,
+    Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange, DrawCall,
+    DrawRange, FanOrLoop, Features, FormatKind, FormatUse, IndexBinding, IndexFormat, IndexSource,
+    MAX_BINDING_SETS, Object, Program, ReflectedBinding, RingKind, ScissorRect, ShaderModule,
+    ShaderStage, SlotKind, SlowPath, StageSet, Topology, VertexBinding, Viewport, cut_scissors,
 };
 use wcontainers_nir::mesa::{PositionTransform, TextureSwizzle};
 
@@ -231,16 +231,61 @@ fn viewport(v: &pipe_viewport_state, minus_one: bool) -> (Viewport, PositionTran
     )
 }
 
-/// The blend block of `desc` for the framebuffer's formats: no blending on targets that cannot
-/// blend (integer targets, as OpenGL defines).
+/// Every factor of a blend block, source and destination, colour and alpha.
+fn factors(desc: &mut BlendDesc) -> impl Iterator<Item = &mut BlendFactor> {
+    desc.targets
+        .iter_mut()
+        .filter_map(|t| t.blend.as_mut())
+        .flat_map(|(color, alpha)| {
+            [
+                &mut color.src,
+                &mut color.dst,
+                &mut alpha.src,
+                &mut alpha.dst,
+            ]
+        })
+}
+
+/// The blend block of `desc` for the framebuffer's formats (no blending on targets that cannot
+/// blend: integer targets, as OpenGL defines), and whether the block reads the blend constant's
+/// alpha in every channel: on a back end without constant alpha factors, a block that uses no
+/// constant colour takes the constant factors instead, given the alpha in all four channels.
 fn blend_for<B: Backend>(
     programs: &mut Programs<B>,
     backend: &mut B,
     desc: &BlendDesc,
     framebuffer: &pipe_framebuffer_state,
-) -> B::Blend {
+) -> (B::Blend, bool) {
     let mut desc = *desc;
     let caps = backend.caps().clone();
+    let mut alpha_constant = false;
+    if !caps.has(Features::BLEND_CONSTANT_ALPHA) {
+        let used: Vec<BlendFactor> = factors(&mut desc).map(|f| *f).collect();
+        let reads_alpha = used.iter().any(|f| {
+            matches!(
+                f,
+                BlendFactor::ConstantAlpha | BlendFactor::OneMinusConstantAlpha
+            )
+        });
+        if reads_alpha {
+            if used
+                .iter()
+                .any(|f| matches!(f, BlendFactor::Constant | BlendFactor::OneMinusConstant))
+            {
+                refuse(
+                    "the blend constant's colour and its alpha in one block (blending in the program is not built)",
+                );
+            }
+            for f in factors(&mut desc) {
+                *f = match *f {
+                    BlendFactor::ConstantAlpha => BlendFactor::Constant,
+                    BlendFactor::OneMinusConstantAlpha => BlendFactor::OneMinusConstant,
+                    other => other,
+                };
+            }
+            alpha_constant = true;
+        }
+    }
     for (i, target) in desc.targets.iter_mut().enumerate() {
         let format = framebuffer
             .cbufs
@@ -259,12 +304,12 @@ fn blend_for<B: Backend>(
         desc.same_for_all = false;
     }
     if let Some(block) = programs.blends.get(&desc) {
-        return block.clone();
+        return (block.clone(), alpha_constant);
     }
     match backend.create_blend(&desc) {
         Ok(block) => {
             programs.blends.insert(desc, block.clone());
-            block
+            (block, alpha_constant)
         }
         Err(error) => refuse(&format!("a blend state: {error:?}")),
     }
@@ -515,8 +560,15 @@ fn draw<B: Backend>(
     }
     let sets = binding_sets(backend, &context.stages, built)?;
     let program = programs.programs[&program_key].clone();
-    let blend = blend_for(programs, backend, &blend.desc, &context.framebuffer.state);
+    let (blend, alpha_constant) =
+        blend_for(programs, backend, &blend.desc, &context.framebuffer.state);
     let bound = &context.bound;
+    let [.., alpha] = bound.blend_color;
+    let blend_constant = if alpha_constant {
+        [alpha; 4]
+    } else {
+        bound.blend_color
+    };
     let mut streams = Vec::new();
     for i in 0..elements.streams as usize {
         let stream = bound
@@ -575,7 +627,7 @@ fn draw<B: Backend>(
         restart,
         viewports: std::slice::from_ref(&viewport),
         scissors: &scissors,
-        blend_constant: bound.blend_color,
+        blend_constant,
         stencil_reference: bound.stencil_ref,
         immediates: &[],
         range: DrawRange::Vertices {

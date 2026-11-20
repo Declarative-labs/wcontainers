@@ -459,7 +459,14 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         depth_bias_clamp: bias(state.offset_clamp),
         depth_clip: state.depth_clip_near() != 0,
         scissor: state.scissor() != 0,
-        line_width: state.line_width.to_bits(),
+        // Without wide lines the back end draws one width, to which the screen's range clamps
+        // OpenGL's; Mesa's own states for drawing triangles leave the width zero.
+        line_width: if caps.has(Features::WIDE_LINES) {
+            state.line_width
+        } else {
+            caps.limits.max_line_width
+        }
+        .to_bits(),
         provoking: host_provoking,
         depth_minus_one: false,
         sample_mask: u32::MAX,
