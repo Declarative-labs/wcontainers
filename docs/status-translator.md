@@ -425,6 +425,24 @@ Eighth run of T3 (2026-11-20 05:50 local on):
     in the browser test until the ARM64 runner could not start there ("exec format error"), as expected.
   - New dependency: serde 1.0.229 (MIT OR Apache-2.0) with `derive`, in wcontainers-translator-test (test
     tooling); it was already in Cargo.lock.
+- Against Linux on 07d7942a (the translator as at 40fd0c67), rented ARM64 machine, 12 jobs, one arm-run job
+  (`t3/r7/verify-arm.sh 12`, log `t3/r7/arm-job.log`):
+  - The three register jump tests (14:10 UTC, load 1 to 11): `jumps_to_their_function_beyond_what_was_explored_are_unrecognised`
+    and `switch_cases_in_other_parts_are_not_slow` passed; `only_jumps_inside_their_function_are_unrecognised`
+    FAILED, 3,600 counted against 2,400 expected: the whole function rule of 40fd0c67 takes `register_jumps.S`'s
+    tail call (to `step`, placed right after its caller and named by nothing but an address in data) as a jump
+    inside (see "Known gaps"). 94df45f7 moves `step` past a called function, as the test means it to be
+    outside; then all three passed (arm-run job translator-fix, load 24 to 29, `t3/r7/fix-jumps.log`).
+  - Layer 2, seed 600, 25,000 programs, every one on the real CPU, 5 in Chrome (14:12 UTC, load 11 to 17, 593
+    s): 0 failing (8,401 faulted, 1,783 left to an address at full).
+  - Layer 3, seed 600, 1,000 programs from case 0, 100 in Chrome (14:22 UTC, load 17 to 36, 845 s): 884
+    compared (90 also in Chrome), 116 did not end in time on Linux, 0 failing. 490 of the 1,000 read FPSR:
+    about every gcc build (cases alternate clang and gcc; the clang builds read none since 0b62e4ad). Not
+    looked into; expected cause, not checked: libgcc's 128 bit float routines, which musl's printf reaches,
+    raise flags through FPSR, so these programs really read it and rightly run their floating point exactly.
+- Layer 1 on the Mac (`verify-mac.sh`, 06:10:52 local): the Mac's Docker stopped starting containers again at
+  06:11:43 (the layer's sixth container stayed "Created", as did the kernel track's probe at 06:31); stopped
+  by hand at 06:37 with nothing compared (log `t3/r7/mac-layer1-r8-stuck.log`), container removed.
 
 T3, what is left:
 - Needs an ARM64 reference (the rented ARM64 machine or the Mac's Docker), on 6975d48c or later (scratch
