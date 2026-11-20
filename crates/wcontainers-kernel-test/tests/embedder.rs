@@ -115,14 +115,20 @@ impl Recorder {
     /// Enters a hook: none may be running already. Every operation of the handle runs, and
     /// none may announce another hook.
     fn enter(&self, process: &mut Process<'_>, seen: Seen) {
+        self.operate(process, &format!("{seen:?}"));
+        self.seen.lock().unwrap().push(seen);
+    }
+
+    /// Runs every operation of the handle inside a hook, which no other hook may surround.
+    fn operate(&self, process: &mut Process<'_>, seen: &str) {
         assert_eq!(
             *self.depth.lock().unwrap(),
             0,
-            "a hook nested in another: {seen:?}"
+            "a hook nested in another: {seen}"
         );
         *self.depth.lock().unwrap() += 1;
         let info = process.info();
-        assert!(info.memory_mapped() > 0, "{seen:?}: memory mapped");
+        assert!(info.memory_mapped() > 0, "{seen}: memory mapped");
         let _ = (info.ceiling_distance(), info.compute_used());
         let _ = process.execution_config();
         let changed = process.take_dirty_memory();
@@ -153,7 +159,6 @@ impl Recorder {
         );
         process.watch_memory(reversed, WatchesFor::All);
         process.watch_memory(u64::MAX - 1..u64::MAX, WatchesFor::All);
-        self.seen.lock().unwrap().push(seen);
         *self.depth.lock().unwrap() -= 1;
     }
 }
@@ -182,6 +187,36 @@ impl Hooks for Recorder {
             freed.push(id.0);
         }
         self.seen.lock().unwrap().push(Seen::Free(id.0));
+    }
+
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        self.operate(&mut process, &format!("request {request:?}"));
+        ControlFlow::Continue(request)
+    }
+
+    fn intercept_system_call_response(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        self.operate(&mut process, &format!("response {request:?}"));
+        response
+    }
+
+    fn on_memory_written_by_kernel(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        range: std::ops::Range<u64>,
+    ) {
+        self.operate(&mut process, &format!("written {range:?}"));
     }
 
     fn on_process_starting(&mut self, mut process: Process<'_>) {
