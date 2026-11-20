@@ -22,9 +22,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 K6c, fourteenth run: every finding of the thirteenth run's check is answered (see "K6c,
 fourteenth run"), and the runtime track's assertion (a call woken while it parks) is fixed with a
-test. K6c's bar is not met yet: ADSP038 has no verdict (its four-hour run was still going, a
-twelve-hour run follows it), and the whole LTP comparison at the final code is under that
-section.
+test. The whole LTP comparison at 2c06b713 and its reruns give the reference's verdict for 4210
+of 4211 tests, counting section 15's causes and the gap list as that section says. K6c's bar
+is not met yet: ADSP038 has no verdict (past four hours; a twelve-hour run ends by 17:14 UTC),
+and the gap list past section 15 waits for the owner (For the orchestrator).
 
 K6c, thirteenth run: the run called K6c's bar met, which was early: ADSP038 had no verdict.
 The whole LTP comparison at 684b15ec matches 4153 of
@@ -150,7 +151,7 @@ a thread on the backend as well. Test: outside `reads_woken_while_they_park_run_
 
 The thirteenth run's check, each finding:
 - ADSP038 had no verdict, so the bar was not met. Its four-hour run (job
-  kernel/20261120-024815-1653325, 684b15ec) was still going at this run's end with no row; a
+  kernel/20261120-024815-1653325, 684b15ec) ended as a timeout at 14408 s (06:48 UTC); a
   twelve-hour run (`LTP_LIMIT=43200`, job kernel/20261120-051348-471406, results
   target/ltp-k6c14/adsp038.tsv in the kernel folder there, followed into scratch
   k6c14/adsp038-12h-attach.log) started beside it at 05:13 UTC.
@@ -221,10 +222,15 @@ copy_file_range03 now passes; new are ADSP072 (a timeout at 900 s, the same caus
 neighbours), sched_football and uevent02 (stopped as hangs by the harness's watchdog, which saw
 no turn end while the host really waited for a far deadline: each step of such a wait now counts
 as progress, src/driver.rs) and getrusage04 (fail: system time rose 3.5 ms in one round, under
-the load of the suite beside it). RERUN_PLACEHOLDER
+the load of the suite beside it). Rerun at the final code (ARM machine; k6c14/rerun-attach.log, 07:23 to 08:11 UTC, limit
+7200, 10 side by side, load 15 to 26; k6c14/hangs-attach.log, 07:44 to 07:59 UTC, limit 900):
+getrusage04 passes (1.3 s), uevent02 and sched_football are broken as the reference's (uevent02
+in 291 s, sched_football in 871 s by the suite's own limit, which is scaled; the reference's
+took 4 and 34 s), copy_file_range03 passes again, shmget05 and msgget05 (both groups) are broken
+as the reference's.
 
 The LTP table at this run's end (4211 tests, verdicts of the ARM64 machine):
-- Matching: 4150.
+- Matching in the whole run: 4150 (4153 with the three reruns below).
 - A section 15 cause, 36: as the thirteenth run's list.
 - Excused by the gap list (Known gaps, first part), 12: page residency (mincore03, mlock201,
   mlock05, mmap12, vma01), IPV6_RTHDR (setsockopt11, cve-2026-53362), the test harness (fork09,
@@ -232,12 +238,17 @@ The LTP table at this run's end (4211 tests, verdicts of the ARM64 machine):
   orchestrator).
 - The reference host's timer precision, 3: clock_nanosleep02, select02 and prctl09 (Docker
   Desktop's reference fails them; ours and the ARM machine's reference pass).
-- Slower than 900 s on the stand-in, 7: dio30, fsx22, ADSP037, ADSP072, ADSP073 and ADSP074 run
-  again with a two-hour limit (job kernel-c/20261120-060823-1907998 from 06:08 UTC, results
-  target/ltp-k6c14/slow.tsv in the kernel-c folder there, followed into scratch
-  k6c14/slow-attach.log); ADSP038 ran past four hours (job kernel/20261120-024815-1653325,
-  14408 s, 684b15ec, alone, load 15 to 42) and runs again with twelve (above).
-- Rerun at the final code, 3: sched_football, uevent02, getrusage04 (above).
+- Slower than 900 s on the stand-in, 7. Six give the reference's verdict with a two-hour
+  limit (job kernel-c/20261120-060823-1907998 at 2c06b713, 06:08 to 07:23 UTC, 6 side by side,
+  load 9 to 42; scratch k6c14/arm/slow.tsv): dio30 passes in 1402 s, ADSP072 in 886 s, ADSP073
+  in 1844 s, ADSP074 in 1865 s, ADSP037 in 4467 s; fsx22 was broken there at 1524 s
+  (`msync ... failed: ENOSPC`, the machine's disk had 38 GB free then, cause not found) and
+  passed in 2870 s run again (rerun above). ADSP038 has no verdict: past two hours (twelfth
+  run) and past four (job kernel/20261120-024815-1653325 at 684b15ec, 14408 s, alone, ended
+  06:48 UTC); its twelve-hour run ends by 17:14 UTC.
+- Matching after the reruns: sched_football, uevent02, getrusage04 (above), so the table's
+  matching count is 4153 with them and the six slow ones that passed, 4210 of 4211 with ADSP038
+  the one without a verdict.
 
 Whole suite at 9eeb106e on the ARM machine (`cargo test -j 12 -p wcontainers-abi -p
 wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast -- --test-threads=4`, 05:52 to
@@ -4576,9 +4587,21 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-K6c, after the fourteenth run: NEXT_PLACEHOLDER
+K6c, after the fourteenth run: the bar waits only on ADSP038's verdict and the owner's
+ruling on the gap list (For the orchestrator).
+1. Read ADSP038's twelve-hour run (job kernel/20261120-051348-471406 at 684b15ec, results
+   target/ltp-k6c14/adsp038.tsv in the kernel folder; `arm-run --fetch kernel
+   target/ltp-k6c14/adsp038.tsv <scratch>/kernel/k6c14/` if the follower stopped; it ends by
+   17:14 UTC on the 20th). A pass is the reference's verdict, and the bar is met. A timeout
+   again: the cause is the scheduler's charge on the machine's clock (thirteenth run, Found);
+   then make the writer's turns not wait on 1000 spinning readers (the fair scheduler charging
+   kernel work in stand-in time) and run it again, rather than wait longer.
+2. Then say the bar is met; the independent check follows "For the independent check" and
+   scratch k6c14/mac3.sh (fresh layer 1 seeds from 9191120).
+3. Beyond K6c, the brief's asks: number the wait channels then the record-and-replay test;
+   low-first mapping placement and the memory ceiling; the runtime's start values.
 
-K6c, after the thirteenth run: the bar is met; the independent check is next ("For the
+K6c, after the thirteenth run (superseded by the fourteenth's list): the bar is met; the independent check is next ("For the
 independent check", the thirteenth run's table, scratch k6c13/mac.sh for the Mac's part). Read
 ADSP038's four-hour run (`arm-run --fetch kernel target/ltp-k6c13/adsp038.tsv
 <scratch>/kernel/k6c13/` if the follower stopped). Then the brief's asks, in this order: number
