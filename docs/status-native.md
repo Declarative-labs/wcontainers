@@ -119,10 +119,11 @@ measurements stand as they are and were not repeated. Files in scratch native/n4
 wait-docker.log, scripts/docker-suites.sh).
 
 Docker on the Mac: `docker ps` and `docker info` answer, and `docker create` makes a container in 2 s, but `docker start`
-of it never returns (killed after 30 s; the container removed after), from about 03:56 (run 18) to at least the last
-probe below. Other tracks' `docker run`s hang the same way (24 waiting at 05:02). The orchestrator's guard
-(orchestrator/docker-guard/guard.sh) restarts Docker only when `docker ps` or `docker info` fails, so it does not see
-this. This track does not restart Docker Desktop: it is shared, and other tracks' containers are in it. The three suites
+of it never returns (killed after 30 s; the container removed after), from about 03:56 (run 18). Other tracks' `docker
+run`s hung the same way (24 waiting at 05:02). Probes every 3 minutes from 05:03 to 06:58 (38, wait-docker.log, load 1.7
+to 5.5): none started a container. The orchestrator restarted Docker Desktop at 06:08 (its guard.log); every probe
+after that hung as before, and so did one by hand at about 06:28. This track does not restart Docker Desktop itself: it
+is shared. Every container the probes left was removed. The three suites
 that need the reference (the kernel test with the count at every counted event alike at none and 256, busybox, and both
 at whole page) are one command, `sh n4r19/scripts/docker-suites.sh`, run as soon as a probe succeeds.
 
@@ -3076,7 +3077,7 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ## For the orchestrator
 
 - N4 run 19: Docker Desktop on the Mac answers `docker ps` and `docker info` but starts no container (`docker start`
-  hangs) from about 03:56; the guard does not restart it, since it only probes those two. The kernel test, busybox and
+  hangs) from about 03:56 to at least 06:58, also after the restart at 06:08. The kernel test, busybox and
   whole page wait on it (`sh scratch native/n4r19/scripts/docker-suites.sh`). Run 18's asks stand: the bar, the forms
   index, the table's size, loaded translations shared between processes.
 
