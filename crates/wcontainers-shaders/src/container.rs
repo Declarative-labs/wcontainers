@@ -69,24 +69,28 @@ pub(crate) const OSG5: [u8; 4] = *b"OSG5";
 pub(crate) const ISG1: [u8; 4] = *b"ISG1";
 pub(crate) const OSG1: [u8; 4] = *b"OSG1";
 
-/// Each signature chunk's tag, its elements' size and where their common fields start.
-const SIGNATURE_FORMS: [([u8; 4], usize, usize); 5] = [
-    (ISGN, size_of::<SignatureElement>(), 0),
-    (OSGN, size_of::<SignatureElement>(), 0),
+/// Each signature chunk's tag, its elements' size, where their common fields start, and where their
+/// geometry stream is, in the forms that have one.
+const SIGNATURE_FORMS: [([u8; 4], usize, usize, Option<usize>); 5] = [
+    (ISGN, size_of::<SignatureElement>(), 0, None),
+    (OSGN, size_of::<SignatureElement>(), 0, None),
     (
         OSG5,
         size_of::<StreamElement>(),
         offset_of!(StreamElement, element),
+        Some(offset_of!(StreamElement, stream)),
     ),
     (
         ISG1,
         size_of::<PrecisionElement>(),
         offset_of!(PrecisionElement, element),
+        Some(offset_of!(PrecisionElement, stream)),
     ),
     (
         OSG1,
         size_of::<PrecisionElement>(),
         offset_of!(PrecisionElement, element),
+        Some(offset_of!(PrecisionElement, stream)),
     ),
 ];
 
@@ -253,19 +257,22 @@ pub(crate) struct Element {
     pub(crate) system: u32,
     pub(crate) register: u32,
     pub(crate) mask: u8,
+    /// The geometry stream it belongs to (0 in the forms without one).
+    pub(crate) stream: u32,
 }
 
 /// The elements of the container's signature chunk `tag` (one of [`SIGNATURE_FORMS`]).
 pub(crate) fn signature(container: &[u8], tag: &[u8; 4]) -> alloc::vec::Vec<Element> {
     let mut out = alloc::vec::Vec::new();
-    let Some(&(_, size, common)) = SIGNATURE_FORMS.iter().find(|f| f.0 == *tag) else {
+    let Some(&(_, size, common, stream)) = SIGNATURE_FORMS.iter().find(|f| f.0 == *tag) else {
         return out;
     };
     for chunk in chunks(container, tag) {
         let count = word(chunk, offset_of!(SignatureHeader, count)).unwrap_or(0);
         let first = word(chunk, offset_of!(SignatureHeader, first)).unwrap_or(0) as usize;
         for e in 0..count as usize {
-            let at = first + size * e + common;
+            let start = first + size * e;
+            let at = start + common;
             let field = |offset| word(chunk, at + offset);
             let (Some(name), Some(index), Some(system), Some(register), Some(&mask)) = (
                 field(offset_of!(SignatureElement, name)),
@@ -287,6 +294,9 @@ pub(crate) fn signature(container: &[u8], tag: &[u8; 4]) -> alloc::vec::Vec<Elem
                 system,
                 register,
                 mask,
+                stream: stream
+                    .and_then(|offset| word(chunk, start + offset))
+                    .unwrap_or(0),
             });
         }
     }

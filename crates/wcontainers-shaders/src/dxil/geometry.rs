@@ -4,10 +4,10 @@
 //! builds the compute or replay form around the program's own function.
 
 use super::staged::{self, Entry, Ids, Interface, Privatise};
-use crate::ConvertError;
 use crate::container::Element;
 use crate::ir::{builtin, primitive};
 use crate::lower::geometry::{CUT, EMIT, Geometry, GeometryPass, GeometryValue, Side};
+use crate::{ConvertError, stage};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -22,6 +22,7 @@ const STREAM_OPERAND: usize = 1;
 
 /// Why a DXIL geometry shader is malformed.
 const STREAM_NOT_CONSTANT: &str = "a geometry stream that is no constant";
+const LOCATION_BEFORE_STREAM: &str = "an output located before its stream's first row";
 
 /// What a geometry shader declares, read from its SPIR-V before the reader takes it.
 pub(crate) struct Declared {
@@ -146,6 +147,23 @@ fn emit_name(stream: usize) -> String {
     }
 }
 
+/// The location dxil-spirv gives each stream's first register: the rows of every stream before it
+/// (`build_geometry_stream_row_offsets`), so that an output's register is its location less its
+/// stream's.
+fn stream_first_rows(outputs: &[Element]) -> [u32; stage::STREAMS] {
+    let mut rows = [0; stage::STREAMS];
+    for e in outputs {
+        if let (Some(r), Some(end)) = (rows.get_mut(e.stream as usize), e.register.checked_add(1)) {
+            *r = (*r).max(end);
+        }
+    }
+    let mut first = [0; stage::STREAMS];
+    for s in 1..stage::STREAMS {
+        first[s] = first[s - 1] + rows[s - 1];
+    }
+    first
+}
+
 /// A SPIR-V built-in as `ir::builtin` numbers it, or the refusal naming it on `side`.
 fn builtin_of(b: u32, side: Side) -> Result<u64, ConvertError> {
     let unsupported = |name| Err(ConvertError::Unsupported(name));
@@ -184,14 +202,29 @@ pub(crate) fn finish(
         })
         .ok_or(ConvertError::Malformed(staged::NO_MAIN.into()))?;
     module.entry_points.clear();
+    let first_rows = stream_first_rows(signatures[1]);
     let mut values = Vec::new();
     for (k, v) in declared.entry.values.iter().enumerate() {
         let var = staged::value_variable(module, VALUE_NAME, k)?;
         let builtin = v.builtin.map(|b| builtin_of(b, v.side)).transpose()?;
+        let location = v
+            .location
+            .map(|encoded| {
+                let (register, component) = staged::location(encoded);
+                let first = match v.side {
+                    Side::Input => 0,
+                    Side::Output => first_rows.get(v.stream as usize).copied().unwrap_or(0),
+                };
+                register
+                    .checked_sub(first)
+                    .map(|register| (register, component))
+                    .ok_or_else(|| ConvertError::Malformed(LOCATION_BEFORE_STREAM.into()))
+            })
+            .transpose()?;
         values.push(GeometryValue {
             var,
             side: v.side,
-            location: v.location.map(staged::location),
+            location,
             builtin,
             stream: v.stream,
             ty: staged::ir_ty(

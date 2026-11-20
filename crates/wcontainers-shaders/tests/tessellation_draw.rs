@@ -1158,6 +1158,18 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
         }
     }
     cases.push(("hs_tri_odd_cw".into(), "ds_tri".into(), None, 3, 3));
+    // Three control points in and four out, each holding the position, numbers and rows, and patch
+    // constants read from both patches: the domain shader moves its location where one is not
+    // what the hull gave.
+    for (hs, gs, per) in [
+        ("hs_values_odd_ccw", None, 3),
+        ("hs_values_odd_ccw", Some("gs_tess_tri"), 3),
+        ("hs_values_even_cw", None, 3),
+        ("hs_values_integer_point", None, 1),
+        ("hs_values_integer_point", Some("gs_tess_point"), 1),
+    ] {
+        cases.push((hs.into(), "ds_values".into(), gs, per, 3));
+    }
     let mut failures = Vec::new();
     let mut known_cases = Vec::new();
     let mut compared = 0;

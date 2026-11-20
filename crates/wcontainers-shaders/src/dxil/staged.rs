@@ -427,18 +427,18 @@ pub(super) fn ir_ty(
     })
 }
 
-/// The signature element a value at `register` and `component` is, among `signature`'s user values.
-pub(super) fn element_at(signature: &[Element], register: u32, component: u32) -> Option<&Element> {
+/// The signature element a value of `stream` at `register` and `component` is, among `signature`'s
+/// user values.
+pub(super) fn element_at(
+    signature: &[Element],
+    register: u32,
+    component: u32,
+    stream: u32,
+) -> Option<&Element> {
     signature.iter().find(|e| {
-        e.register == register && e.system == sysval::NONE && e.mask.trailing_zeros() == component
-    })
-}
-
-/// Whether the value at `register` and `component` is `SV_Position` in `signature`.
-pub(super) fn is_position(signature: &[Element], register: u32, component: u32) -> bool {
-    signature.iter().any(|e| {
         e.register == register
-            && e.system == sysval::POSITION
+            && e.stream == stream
+            && e.system == sysval::NONE
             && e.mask.trailing_zeros() == component
     })
 }
@@ -456,9 +456,10 @@ pub(super) fn place(
             Side::Input => 0,
             Side::Output => 1,
         };
+        let stream = stream(r.value);
         let element = r
             .location
-            .and_then(|register| element_at(signatures[side], register, r.component));
+            .and_then(|register| element_at(signatures[side], register, r.component, stream));
         let (semantic, index) =
             element.map_or_else(Default::default, |e| (e.semantic.clone(), e.index));
         let place = Placed {
@@ -467,7 +468,7 @@ pub(super) fn place(
             member: r.member,
             modes: r.modes,
             system: r.system,
-            stream: stream(r.value) as u8,
+            stream: stream as u8,
         };
         placed[side].push(lower::stage_value(semantic, index, &place, false));
     }
