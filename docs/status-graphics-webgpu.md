@@ -279,6 +279,12 @@ Run 27 = G2d run 1, 2026-11-19:
   check at HEAD in the LF worktree: exit 0, 0 marks; this crate's baseline lines 192
   (unchanged); the check's first run found 8 new literals, named or derived before committing
   (lit1.log, lit2.log).
+- Last runs, at 5e2b5922 (the pushed head before this note; desktop shared, not alone): the
+  whole suite natively on Vulkan and Direct3D 12 with the interface's tests, 311 passed, 0
+  failed, 5 ignored (full2.log); web/check, every picture equal at tolerance 0 on both APIs and
+  in Chrome, the three new checks passing in Chrome, the shared suite in Chrome 44 passed, 0
+  failed (webcheck2.log). At the end the desktop's C:\wc\target\phase-2-graphics-webgpu (19.4
+  GB) was deleted; no build folder was made on the Mac or in scratch this run.
 
 Run 26 = G2c run 8, 2026-11-19:
 - Merged origin/phase-2-graphics-direct3d-11 (20 commits; it held -webgl's, -direct3d-12's
@@ -1556,6 +1562,26 @@ Run 27 (G2d):
   `begin_pass` (whole frame 0.73 to 0.78 ms), against 23 us a draw on the WebGL 2 back end. The
   native breakdowns above and below (0.01 to 0.04 ms a frame of the back end's own code) do not
   cover the browser.
+- The same frames replayed here alone in the queue, under V8's sampling profiler
+  (web/replay-profile.mjs at 7a6c2dde, 2026-11-19 15:53, `gpu-job --alone --desktop`, Chrome
+  157.0.8103.78, Dawn on Direct3D 12, RTX 3080; scratch g2d/profile1.log; load not taken): this
+  back end 31.2 us a draw, 37.7 us a `begin_pass`, 53.0 us `current_texture`, 52.1 us `submit`,
+  whole frame untimed median 0.225 ms; WebGL 2 16.5 us a draw, 0.130 ms a frame. So alone the
+  gap is smaller than in the WebGL track's run (53 us), still about twice. Where the time inside
+  this back end's replay goes (315 ms over both replays, 50 us samples, self time): 87 ms in
+  wasm-bindgen's JavaScript glue and 24 ms crossing from WebAssembly into it (Chrome's WebGPU
+  calls themselves are counted there: the profiler shows no native frames), then the calls by
+  name: `submit` 11.6 ms, `onSubmittedWorkDone` 10.8 (fences), `createBindGroup` 9.0,
+  `createCommandEncoder` 3.5, `drawIndexed` 2.8, `draw` 1.4; `performance.now` 12.3 (the timed
+  replay's own clock); allocation 9.5 (malloc and free); building JavaScript descriptor objects
+  (`Object::new` 3.5, wgpu's `begin_render_pass` 2.9 and its colour attachments 2.4); this back
+  end's own functions a few ms each (`begin_pass` 5.0, `draw` 2.6, `write_buffer` 2.2,
+  `set_group` 2.0, hashing about 3.7). So in the browser the cost is the calls into Chrome's
+  WebGPU and the objects wgpu builds for them, not the back end's own logic; cutting it means
+  fewer calls (bind groups and command encoders made less often, fewer fence queries), which is
+  this back end's to try next (Next 12). A second run with the profile grouped by interface call
+  (the grouping's pattern fixed after the first run missed the crate hashes in the names) got no
+  result from the page within 300 s (profile2.log), so that grouping is untested.
 - atg-simplecomputepc's division (the G2c check's finding; tests/direct3d.rs
   `divisions_match_direct3d`, 2026-11-19 15:18, desktop shared with other tracks' queued jobs,
   not alone, load not taken; scratch g2d/after2.log): 64 draws of 64 seeded pairs (seed 1, the
@@ -1567,6 +1593,18 @@ Run 27 (G2d):
   and the drivers divide exactly as Direct3D does; the sample's last texel comes from its
   converted program dividing at run time where its bytecode's arithmetic gives 4.0 (the
   converter's or the front's), not from this back end. Refused here by name: not this back end's.
+- atg-simpleinstancingpc's breakdown repeated after the merges (the G2c check's finding;
+  `frames/run atg-simpleinstancingpc` at bd160c74, Direct3D 11 front, wgpu on Direct3D 12; each
+  job alone in the queue; scratch g2d/frames-instancing.log; the rig's "frames differ" mark as in
+  runs 21 to 26, the frames drawn). Load: short run 20.5 % (4.2 to 74.9, over the 280 s its job
+  waited and ran), long run 4.9 % (2.4 to 9.1, 7 s). Per frame over 300 frames: wall 16.451 ms
+  (the display), CPU 79.527 ms: program 0.137, front 0.047, back end and naga under 0.01 (each
+  -0.003, the long run less the short), wgpu 0.023, driver 0.073, system 79.253. Under the back
+  end's own functions 0.133 ms (driver 0.063, system 0.077: present, submit, `memcpy` in
+  `write_buffer_impl`). Not ours: 65.710 ms in the Direct3D 12 driver's threads spinning, 13.950
+  in the program's. Counts a frame: 5 `MappedUploadWhole`, 935,856 bytes into buffers, 3
+  pipeline binds, the same as run 22. So run 22's picture stands: nothing of ours costs more
+  than 0.05 ms a frame there.
 
 Run 26 (G2c), frame breakdowns at bf7ddf71 (every graphics branch merged; no code of this
 crate changed). Desktop (i9-9900K, 16 threads, RTX 3080, driver 621.01), each job alone in the
@@ -1591,7 +1629,8 @@ chocolate-doom "frames differ", as in runs 21 to 25; both drew their frames.
   frame: MappedUploadWhole 3, bind_groups 1, buffer_bytes 496, pipeline_binds 3, renames 1,
   spares_reused 1, texture_bytes 256,000, the same as runs 21 to 25.
 - What is ours and cheap: nothing new. The back end's own code is 0.01 to 0.04 ms a frame in
-  both; atg-simpleinstancingpc's breakdown (the third program) stands from run 22.
+  both; atg-simpleinstancingpc's breakdown (the third program) stands from run 22 (repeated in
+  run 27, the same).
 
 Run 25 (G2c), chocolate-doom's frame breakdown at 5bdc9a93 (after this run's merges and the
 frame report through serde; Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16
@@ -2275,6 +2314,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
     infrastructure crate's `d3d` module with its Windows test; then this crate depends on that
     crate, imports it and deletes `DX12_PLACEMENT_ALIGNMENT` and its unit test, and the front
     imports it too (Departures).
+12. The browser's per-call cost (Measurements, run 27): fewer calls into Chrome's WebGPU per
+    frame, first `createBindGroup` (2 a frame on the replayed frames), `createCommandEncoder`
+    and the fence queries (`onSubmittedWorkDone`); measure with web/replay-profile.mjs, and get
+    its per-interface-call grouping to run once.
 
 ## Departures from the plan
 
