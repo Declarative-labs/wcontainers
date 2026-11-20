@@ -63,8 +63,7 @@ pub enum ThreadOrdering {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayDeterminism {
     Exact,
-    /// Consistent in everything the process does to the outside; no guarantee about its internal
-    /// state.
+    /// Consistent in everything the process does to the outside; no guarantee about its internal state.
     External,
     None,
 }
