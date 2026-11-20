@@ -95,6 +95,8 @@ wc_optimize(nir_shader *nir)
    do {
       progress = false;
       NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
+      /* What the options lower of single operations (the high halves of multiplications). */
+      NIR_PASS(_, nir, nir_lower_alu);
       NIR_PASS(progress, nir, nir_opt_copy_prop);
       NIR_PASS(progress, nir, nir_opt_deref);
       NIR_PASS(progress, nir, nir_opt_dce);

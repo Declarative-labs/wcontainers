@@ -1,8 +1,10 @@
-//! Route B's 16-bit integer operations, those of Mesa's alpha-to-coverage pass carried in 32-bit
-//! words (plan 15.4), held over every 16-bit value and every 32-bit shift count below 32 to
-//! lavapipe running the same program with native 16-bit arithmetic, and to Rust's 16-bit
-//! arithmetic. The second operand and the bits above each input's low 16 are seeded
-//! (`WC_NIR_SEED`); every value and count is run, so there is no count of cases to choose.
+//! Integer operations route B carries in other operations, held to lavapipe running the same
+//! program natively and to Rust's arithmetic. Mesa's alpha-to-coverage pass's 16-bit operations,
+//! carried in 32-bit words (plan 15.4), over every 16-bit value and every 32-bit shift count below
+//! 32: the second operand and the bits above each input's low 16 are seeded (`WC_NIR_SEED`), and
+//! every value and count is run, so there is no count of cases to choose. SPIR-V's extended
+//! multiplications, made of 32-bit ones by Mesa, on seeded operands (`WC_NIR_SEED`, and
+//! `WC_NIR_INPUT_SETS` cases) and the edges of both signs.
 #![cfg(mesa)]
 
 #[allow(
@@ -40,6 +42,22 @@ use wcontainers_shaders::ENTRY_POINT;
 const SHIFT_COUNTS: u32 = u32::BITS;
 /// One invocation a 16-bit value and shift count.
 const INVOCATIONS: u32 = (1 << u16::BITS) * SHIFT_COUNTS;
+/// The extended multiplications' cases when `WC_NIR_INPUT_SETS` is unset.
+const MULTIPLICATIONS: u32 = 1 << u16::BITS;
+/// A multiplication's input words (the two operands) and results (the unsigned product's low and
+/// high words, then the signed product's).
+const MULTIPLICATION_INPUTS: u32 = 2;
+const MULTIPLICATION_RESULTS: u32 = 4;
+/// Operands every multiplication run takes besides the seeded ones, as 32-bit words: the edges of
+/// both signs.
+const EDGES: [u32; 6] = [
+    0,
+    1,
+    u32::MAX,
+    i32::MAX as u32,
+    i32::MIN as u32,
+    1 << u16::BITS,
+];
 const WORKGROUP_SIZE: u32 = 64;
 /// An invocation's input words, in order: the value, the second operand (each with seeded upper
 /// bits) and the shift count.
@@ -106,15 +124,20 @@ fn string(text: &str) -> Vec<u32> {
         .collect()
 }
 
-/// The program: each invocation reads its value, operand and count from buffer 0 and writes its
-/// results, each a 16-bit operation widened to 32 bits, to buffer 1.
-fn program() -> Vec<u32> {
+/// A compute program in which each invocation reads `input_words` words from buffer 0 and writes
+/// the words `body` makes of them to buffer 1. `types` declares what `body` needs, given the
+/// 32-bit unsigned type.
+fn program<T: Copy>(
+    capabilities: &[Capability],
+    input_words: u32,
+    types: impl FnOnce(&mut Module, u32) -> T,
+    body: impl FnOnce(&mut Module, T, u32, &[u32]) -> Vec<u32>,
+) -> Vec<u32> {
     let mut m = Module::default();
     let [
         void,
         function,
         uint,
-        short,
         uvec3,
         input_pointer,
         invocation,
@@ -123,7 +146,9 @@ fn program() -> Vec<u32> {
     ] = std::array::from_fn(|_| m.id());
     let [block_pointer, inputs, outputs, word_pointer, main] = std::array::from_fn(|_| m.id());
     m.op(Op::Capability, &[Capability::Shader as u32]);
-    m.op(Op::Capability, &[Capability::Int16 as u32]);
+    for &c in capabilities {
+        m.op(Op::Capability, &[c as u32]);
+    }
     m.op(
         Op::MemoryModel,
         &[AddressingModel::Logical as u32, MemoryModel::GLSL450 as u32],
@@ -162,7 +187,7 @@ fn program() -> Vec<u32> {
     m.op(Op::TypeVoid, &[void]);
     m.op(Op::TypeFunction, &[function, void]);
     m.op(Op::TypeInt, &[uint, u32::BITS, 0]);
-    m.op(Op::TypeInt, &[short, u16::BITS, 0]);
+    let declared = types(&mut m, uint);
     m.op(Op::TypeVector, &[uvec3, uint, INVOCATION_ID_COMPONENTS]);
     m.op(
         Op::TypePointer,
@@ -188,42 +213,43 @@ fn program() -> Vec<u32> {
         Op::TypePointer,
         &[word_pointer, StorageClass::StorageBuffer as u32, uint],
     );
-    let constants: Vec<u32> = (0..=INPUT_WORDS.max(RESULTS))
+    // Enough constants to index every input word and every result; the results' count is known
+    // only after `body`, so the input words' constants are made first and the rest as needed.
+    let mut constants: Vec<u32> = (0..=input_words)
         .map(|value| m.value(Op::Constant, uint, &[value]))
         .collect();
 
-    m.op(Op::Function, &[void, main, 0, function]);
-    let label = m.id();
-    m.op(Op::Label, &[label]);
-    let id = m.value(Op::Load, uvec3, &[invocation]);
-    let id = m.value(Op::CompositeExtract, uint, &[id, 0]);
-    let first_input = m.value(Op::IMul, uint, &[id, constants[INPUT_WORDS as usize]]);
-    let input = |m: &mut Module, at: u32| {
-        let index = m.value(Op::IAdd, uint, &[first_input, constants[at as usize]]);
-        let pointer = m.value(
-            Op::AccessChain,
-            word_pointer,
-            &[inputs, constants[0], index],
-        );
-        m.value(Op::Load, uint, &[pointer])
+    let mut function_words = Module {
+        bound: m.bound,
+        words: Vec::new(),
     };
-    let value = input(&mut m, 0);
-    let other = input(&mut m, 1);
-    let count = input(&mut m, SHIFT_WORD);
-    let value = m.value(Op::UConvert, short, &[value]);
-    let other = m.value(Op::UConvert, short, &[other]);
-    let results = [
-        value,
-        m.value(Op::IMul, short, &[value, other]),
-        m.value(Op::IMul, short, &[value, value]),
-        m.value(Op::BitwiseAnd, short, &[value, other]),
-        m.value(Op::BitwiseOr, short, &[value, other]),
-        m.value(Op::ShiftLeftLogical, short, &[value, count]),
-        m.value(Op::ShiftRightLogical, short, &[value, count]),
-    ];
-    let first_result = m.value(Op::IMul, uint, &[id, constants[RESULTS as usize]]);
-    for (at, result) in results.into_iter().enumerate() {
-        let wide = m.value(Op::UConvert, uint, &[result]);
+    let f = &mut function_words;
+    f.op(Op::Function, &[void, main, 0, function]);
+    let label = f.id();
+    f.op(Op::Label, &[label]);
+    let id = f.value(Op::Load, uvec3, &[invocation]);
+    let id = f.value(Op::CompositeExtract, uint, &[id, 0]);
+    let first_input = f.value(Op::IMul, uint, &[id, constants[input_words as usize]]);
+    let loaded: Vec<u32> = (0..input_words)
+        .map(|at| {
+            let index = f.value(Op::IAdd, uint, &[first_input, constants[at as usize]]);
+            let pointer = f.value(
+                Op::AccessChain,
+                word_pointer,
+                &[inputs, constants[0], index],
+            );
+            f.value(Op::Load, uint, &[pointer])
+        })
+        .collect();
+    let results = body(f, declared, uint, &loaded);
+    let result_words = u32::try_from(results.len()).expect("a few results");
+    m.bound = f.bound;
+    for value in u32::try_from(constants.len()).expect("a few")..=result_words {
+        constants.push(m.value(Op::Constant, uint, &[value]));
+    }
+    m.words.append(&mut function_words.words);
+    let first_result = m.value(Op::IMul, uint, &[id, constants[result_words as usize]]);
+    for (at, wide) in results.into_iter().enumerate() {
         let index = m.value(Op::IAdd, uint, &[first_result, constants[at]]);
         let pointer = m.value(
             Op::AccessChain,
@@ -242,8 +268,64 @@ fn program() -> Vec<u32> {
     module
 }
 
-fn descriptors(inputs: &[u8], places: [(u32, u32); 2]) -> Vec<Descriptor> {
-    let results = vec![0; (INVOCATIONS * RESULTS) as usize * size_of::<u32>()];
+/// The 16-bit program: each invocation reads its value, operand and count and writes its results,
+/// each a 16-bit operation widened to 32 bits.
+fn sixteen_bit_program() -> Vec<u32> {
+    program(
+        &[Capability::Int16],
+        INPUT_WORDS,
+        |m, _| {
+            let short = m.id();
+            m.op(Op::TypeInt, &[short, u16::BITS, 0]);
+            short
+        },
+        |m, short, uint, inputs| {
+            let value = m.value(Op::UConvert, short, &[inputs[0]]);
+            let other = m.value(Op::UConvert, short, &[inputs[1]]);
+            let count = inputs[SHIFT_WORD as usize];
+            let results = [
+                value,
+                m.value(Op::IMul, short, &[value, other]),
+                m.value(Op::IMul, short, &[value, value]),
+                m.value(Op::BitwiseAnd, short, &[value, other]),
+                m.value(Op::BitwiseOr, short, &[value, other]),
+                m.value(Op::ShiftLeftLogical, short, &[value, count]),
+                m.value(Op::ShiftRightLogical, short, &[value, count]),
+            ];
+            results
+                .into_iter()
+                .map(|r| m.value(Op::UConvert, uint, &[r]))
+                .collect()
+        },
+    )
+}
+
+/// The extended multiplications' program: each invocation reads two operands and writes the low
+/// and high words of their unsigned product, then of their signed one.
+fn multiplication_program() -> Vec<u32> {
+    program(
+        &[],
+        MULTIPLICATION_INPUTS,
+        |m, uint| {
+            let pair = m.id();
+            m.op(Op::TypeStruct, &[pair, uint, uint]);
+            pair
+        },
+        |m, pair, uint, inputs| {
+            let mut results = Vec::new();
+            for op in [Op::UMulExtended, Op::SMulExtended] {
+                let product = m.value(op, pair, &[inputs[0], inputs[1]]);
+                for half in [0, 1] {
+                    results.push(m.value(Op::CompositeExtract, uint, &[product, half]));
+                }
+            }
+            results
+        },
+    )
+}
+
+fn descriptors(inputs: &[u8], result_bytes: usize, places: [(u32, u32); 2]) -> Vec<Descriptor> {
+    let results = vec![0; result_bytes];
     places
         .into_iter()
         .zip([inputs.to_vec(), results])
@@ -256,44 +338,17 @@ fn descriptors(inputs: &[u8], places: [(u32, u32); 2]) -> Vec<Descriptor> {
         .collect()
 }
 
-/// A word's low 16 bits.
-fn low(word: u32) -> u16 {
-    u16::try_from(word & u32::from(u16::MAX)).expect("16 bits")
-}
-
-fn words(bytes: &[u8]) -> Vec<u32> {
-    bytes
-        .chunks(size_of::<u32>())
-        .map(|c| u32::from_le_bytes(c.try_into().expect("a word")))
-        .collect()
-}
-
-#[test]
-fn sixteen_bit_operations_in_words_give_sixteen_bit_results() {
-    let seed = std::env::var(compare::SEED).map_or(compare::DEFAULT_SEED, |text| {
-        text.parse().expect("the seed is a number")
-    });
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let mut cases = Vec::new();
-    for value in 0..=u16::MAX {
-        for count in 0..SHIFT_COUNTS {
-            let upper = |rng: &mut ChaCha8Rng| rng.random::<u32>() << u16::BITS;
-            let other: u16 = rng.random();
-            cases.push([
-                u32::from(value) | upper(&mut rng),
-                u32::from(other) | upper(&mut rng),
-                count,
-            ]);
-        }
-    }
-    let inputs: Vec<u8> = cases
-        .iter()
-        .flatten()
-        .flat_map(|w| w.to_le_bytes())
-        .collect();
-
-    let program = program();
-    let mut nir = Nir::from_spirv(&program, Stage::Compute, ENTRY_POINT).expect("NIR");
+/// The program's output words run natively by lavapipe and through route B, on `inputs` of
+/// `invocations` invocations writing `result_words` words each.
+fn run_both(
+    program: &[u32],
+    inputs: &[u32],
+    invocations: u32,
+    result_words: u32,
+) -> (Vec<u32>, Vec<u32>) {
+    let inputs: Vec<u8> = inputs.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let result_bytes = (invocations * result_words) as usize * size_of::<u32>();
+    let mut nir = Nir::from_spirv(program, Stage::Compute, ENTRY_POINT).expect("NIR");
     let reflection = nir.to_common_form(Stage::Compute).expect("the common form");
     let module = wcontainers_nir::direct::module(&mut nir).expect("route B's module");
     validate(&module).expect("a module of the common form");
@@ -314,14 +369,14 @@ fn sixteen_bit_operations_in_words_give_sixteen_bit_results() {
     };
 
     let lavapipe = Lavapipe::open().expect("lavapipe");
-    let reference_descriptors = descriptors(&inputs, [(0, 0), (0, 1)]);
+    let reference_descriptors = descriptors(&inputs, result_bytes, [(0, 0), (0, 1)]);
     let job = Job {
         stage: lavapipe::Stage::Compute,
-        words: &program,
+        words: program,
         entry: ENTRY_POINT,
         descriptors: &reference_descriptors,
         immediates: &[],
-        groups: [INVOCATIONS / WORKGROUP_SIZE, 1, 1],
+        groups: [invocations / WORKGROUP_SIZE, 1, 1],
         vertices: 0,
         attributes: &[],
         feeder: None,
@@ -331,8 +386,8 @@ fn sixteen_bit_operations_in_words_give_sixteen_bit_results() {
         clear: [0; 4],
     };
     let native = lavapipe.run(&job).expect("the native program runs");
-    let route_descriptors = descriptors(&inputs, [place(0), place(1)]);
-    let widened = lavapipe
+    let route_descriptors = descriptors(&inputs, result_bytes, [place(0), place(1)]);
+    let carried = lavapipe
         .run(&Job {
             words: &route,
             entry,
@@ -340,7 +395,46 @@ fn sixteen_bit_operations_in_words_give_sixteen_bit_results() {
             ..job
         })
         .expect("route B's module runs");
-    let [native, widened] = [&native, &widened].map(|o| words(&o.storage[1]));
+    (words(&native.storage[1]), words(&carried.storage[1]))
+}
+
+/// The seed every case is drawn from.
+fn seed() -> u64 {
+    std::env::var(compare::SEED).map_or(compare::DEFAULT_SEED, |text| {
+        text.parse().expect("the seed is a number")
+    })
+}
+
+/// A word's low 16 bits.
+fn low(word: u32) -> u16 {
+    u16::try_from(word & u32::from(u16::MAX)).expect("16 bits")
+}
+
+fn words(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks(size_of::<u32>())
+        .map(|c| u32::from_le_bytes(c.try_into().expect("a word")))
+        .collect()
+}
+
+#[test]
+fn sixteen_bit_operations_in_words_give_sixteen_bit_results() {
+    let seed = seed();
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut cases = Vec::new();
+    for value in 0..=u16::MAX {
+        for count in 0..SHIFT_COUNTS {
+            let upper = |rng: &mut ChaCha8Rng| rng.random::<u32>() << u16::BITS;
+            let other: u16 = rng.random();
+            cases.push([
+                u32::from(value) | upper(&mut rng),
+                u32::from(other) | upper(&mut rng),
+                count,
+            ]);
+        }
+    }
+    let inputs: Vec<u32> = cases.iter().flatten().copied().collect();
+    let (native, widened) = run_both(&sixteen_bit_program(), &inputs, INVOCATIONS, RESULTS);
 
     let mut differences = Vec::new();
     for (case, [value, other, count]) in cases.iter().enumerate() {
@@ -361,6 +455,52 @@ fn sixteen_bit_operations_in_words_give_sixteen_bit_results() {
         "narrow: {} cases ({} results), seed {seed:#x}, {} differ",
         cases.len(),
         cases.len() * RESULTS as usize,
+        differences.len()
+    );
+    differences.truncate(NAMED_DIFFERENCES);
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+#[test]
+fn extended_multiplications_of_32_bit_words_give_64_bit_products() {
+    let seed = seed();
+    let asked: u32 = std::env::var(compare::INPUT_SETS).map_or(MULTIPLICATIONS, |text| {
+        text.parse().expect("the count is a number")
+    });
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut cases: Vec<[u32; MULTIPLICATION_INPUTS as usize]> =
+        EDGES.iter().flat_map(|&a| EDGES.map(|b| [a, b])).collect();
+    let invocations =
+        (u32::try_from(cases.len()).expect("a few edges") + asked).next_multiple_of(WORKGROUP_SIZE);
+    while cases.len() < invocations as usize {
+        cases.push(rng.random());
+    }
+    let inputs: Vec<u32> = cases.iter().flatten().copied().collect();
+    let (native, carried) = run_both(
+        &multiplication_program(),
+        &inputs,
+        invocations,
+        MULTIPLICATION_RESULTS,
+    );
+    let halves = |product: u64| [product as u32, (product >> u32::BITS) as u32];
+    let mut differences = Vec::new();
+    for (case, &[a, b]) in cases.iter().enumerate() {
+        let unsigned = halves(u64::from(a) * u64::from(b));
+        let signed = halves((i64::from(a as i32) * i64::from(b as i32)) as u64);
+        let at = case * MULTIPLICATION_RESULTS as usize;
+        for (result, want) in unsigned.into_iter().chain(signed).enumerate() {
+            let (n, c) = (native[at + result], carried[at + result]);
+            if n != want || c != want {
+                differences.push(format!(
+                    "{a:#x} times {b:#x} result {result}: Rust {want:#x}, lavapipe {n:#x}, route B {c:#x}"
+                ));
+            }
+        }
+    }
+    eprintln!(
+        "multiplications: {} cases ({} edge pairs), seed {seed:#x}, {} differ",
+        cases.len(),
+        EDGES.len() * EDGES.len(),
         differences.len()
     );
     differences.truncate(NAMED_DIFFERENCES);
