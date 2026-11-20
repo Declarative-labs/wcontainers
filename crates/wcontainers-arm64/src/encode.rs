@@ -597,43 +597,63 @@ pub struct FloatStatusMoves {
     pub write_fpcr: u32,
 }
 
-/// The one word of `form_name` with register `rt` that `wanted` picks out of all its system registers.
-fn only_move(
-    form_name: &str,
-    rt: Register,
-    wanted: impl Fn(&crate::instruction::Instruction) -> bool,
-) -> u32 {
-    let form = table()[form_name];
-    let (rt_low, rt_width) = field_of(form_name, field::RT);
-    let mut found = (0..=!form.mask)
+/// The moves with register x0: every system register an `msr` names, decoded by that form alone, once; the two
+/// writes the native routing singles out, the stops telling them apart; each read is the `mrs` of its write's
+/// register.
+fn moves_of_x0() -> FloatStatusMoves {
+    use wcontainers_guest_cpu::{Native, Route, Stopping};
+    let (mrs, msr) = (table()[form::MRS], table()[form::MSR]);
+    let (rt_low, rt_width) = field_of(form::MSR, field::RT);
+    let routed = |word| {
+        let instruction = crate::decode_forms::decode(word, msr)?;
+        (<Arm64 as Native>::route(&instruction) == Route::FloatStatus)
+            .then(|| <Arm64 as Native>::stopping(&instruction, 0) == Stopping::FloatStatusWrite)
+    };
+    let (mut status, mut control) = (Vec::new(), Vec::new());
+    for word in (0..=!msr.mask)
         .step_by(1 << (rt_low + rt_width))
-        .map(|free| form.word(free) | (u32::from(rt) << rt_low))
-        .filter(|&word| form.presented(word) && wanted(&crate::decode::decode(word)));
-    let word = found.next().expect("a move of the register");
-    assert_eq!(found.next(), None, "one move of the register");
-    word
+        .map(|free| msr.word(free))
+    {
+        match routed(word) {
+            Some(true) => status.push(word),
+            Some(false) => control.push(word),
+            None => {}
+        }
+    }
+    let (&[write_fpsr], &[write_fpcr]) = (status.as_slice(), control.as_slice()) else {
+        panic!("one routed move of each float status register: {status:x?} {control:x?}");
+    };
+    let read = |write: u32| mrs.word(write & !msr.mask);
+    let (read_fpsr, read_fpcr) = (read(write_fpsr), read(write_fpcr));
+    assert!(
+        msr.presented(write_fpsr) && msr.presented(write_fpcr),
+        "the writes are presented"
+    );
+    assert!(
+        mrs.presented(read_fpsr) && mrs.presented(read_fpcr),
+        "the reads of the registers the writes name are presented"
+    );
+    let read_routed = crate::decode_forms::decode(read_fpsr, mrs)
+        .is_some_and(|i| <Arm64 as Native>::route(&i) == Route::FloatStatus);
+    assert!(read_routed, "the read of the status register is routed");
+    FloatStatusMoves {
+        read_fpsr,
+        read_fpcr,
+        write_fpsr,
+        write_fpcr,
+    }
 }
 
 impl FloatStatusMoves {
     pub fn with(rt: Register) -> FloatStatusMoves {
-        use wcontainers_guest_cpu::{Native, Route, Stopping};
-        let float_status = |i: &_| <Arm64 as Native>::route(i) == Route::FloatStatus;
-        let status_write = |i: &_| <Arm64 as Native>::stopping(i, 0) == Stopping::FloatStatusWrite;
-        let write_fpsr = only_move(form::MSR, rt, status_write);
-        let write_fpcr = only_move(form::MSR, rt, |i| float_status(i) && !status_write(i));
-        let read_fpsr = only_move(form::MRS, rt, float_status);
-        let mrs = table()[form::MRS];
-        let msr = table()[form::MSR];
-        let read_fpcr = mrs.word(write_fpcr & !msr.mask);
-        assert!(
-            mrs.presented(read_fpcr),
-            "the read of the register FPCR's write names"
-        );
+        static OF_X0: OnceLock<FloatStatusMoves> = OnceLock::new();
+        let of_x0 = OF_X0.get_or_init(moves_of_x0);
+        let into = |name: &str, word: u32| word | (u32::from(rt) << field_of(name, field::RT).0);
         FloatStatusMoves {
-            read_fpsr,
-            read_fpcr,
-            write_fpsr,
-            write_fpcr,
+            read_fpsr: into(form::MRS, of_x0.read_fpsr),
+            read_fpcr: into(form::MRS, of_x0.read_fpcr),
+            write_fpsr: into(form::MSR, of_x0.write_fpsr),
+            write_fpcr: into(form::MSR, of_x0.write_fpcr),
         }
     }
 }
