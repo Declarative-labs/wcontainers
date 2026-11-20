@@ -315,9 +315,25 @@ WebAssembly targets only it brings wasix 0.13.2 and wasi 0.11.1 (Apache-2.0 WITH
 LLVM-exception OR Apache-2.0 OR MIT), wasm-bindgen 0.2.130 and its macro and shared crates and
 rustversion 1.0.23 (MIT OR Apache-2.0).
 
-Running at 91d85e31 on the ARM64 machine:
-- The whole LTP comparison again, job kernel-b/20261120-175937-1811146 (`LTP_JOBS=8
-  LTP_LIMIT=900`), results target/ltp-k6c21b/whole.tsv in the kernel-b folder there.
+At 91d85e31 on the ARM64 machine:
+- The whole LTP comparison (job kernel-b/20261120-175937-1811146, `LTP_JOBS=8 LTP_LIMIT=900`,
+  17:59 to 19:26 UTC, load 7 to 31; committed as ltp/ours-20260930-91d85e31.tsv; scratch
+  k6c21/b/whole.tsv, k6c21/b/differ.txt from k6c13/differ.py): of 4211 distinct tests 4154
+  match and 57 differ. Against 18eda16f no difference is new; the six fsx timeouts and
+  getrusage04 are gone. The table:
+  - Matching: 4154.
+  - A section 15 cause, 36, the same list as the thirteenth run's: af_alg07, cve-2017-2671,
+    cve-2017-7308, cve-2018-5803, cve-2019-8912, cve-2021-26708, irqbalance01, kallsyms,
+    asapi_01 to 03, sctp test_1_to_1_initmsg_connect, fork14, getcwd04, ptrace01, 02, 03, 05,
+    06 and 11, sendto02, setsockopt02, writev03 and the 13 sysfs tests.
+  - Waiting for the owner, 13 (that section): the 12 of the gap list past section 15, and
+    ADSP038 (a timeout at 900 s here).
+  - The reference host's timer precision, 3: clock_nanosleep02, select02, prctl09.
+  - Slower than 900 s on the stand-in, 5: dio30, ADSP037, ADSP073, ADSP074, fsx22; each gave
+    the reference's verdict with a two-hour limit at 2c06b713 (fourteenth run) and runs so again
+    at 91d85e31 (job kernel-c/20261120-192705-4065170, `LTP_JOBS=5 LTP_LIMIT=7200`, results
+    target/ltp-k6c21/slow.tsv in the kernel-c folder there).
+  - 36 + 13 + 3 + 5 = 57.
 - Reruns, job kernel-c/20261120-175947-1820040 (17:59 to 18:12 UTC, load 7 to 33; scratch
   k6c21/kernel-c/reruns-91d85e31.log): the six fsx tests, six at once, all pass (643.5 to
   741.5 s); getrusage04 and setrlimit06 pass 5 of 5 each.
