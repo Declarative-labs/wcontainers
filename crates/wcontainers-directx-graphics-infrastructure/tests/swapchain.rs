@@ -281,6 +281,24 @@ fn format_support_follows_the_back_ends_format_uses() {
         format_support(&generous, dxgi::BC1_UNORM).support1 & MULTISAMPLE_LOAD,
         0
     );
+    // Block-compressed formats are 2D, cube and 3D textures, never 1D; the two-pixel formats,
+    // whose blocks are one texel high, every shape (Direct3D's 11_0 tables require them all).
+    let shapes = TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP;
+    let mut sampled = caps.clone();
+    for f in [
+        wcontainers_gpu::Format::Bc1RgbaUnorm,
+        wcontainers_gpu::Format::Rgbg8Unorm,
+        wcontainers_gpu::Format::Grgb8Unorm,
+    ] {
+        sampled.formats.uses[f.index()] = wcontainers_gpu::FormatUse::SAMPLE;
+    }
+    assert_eq!(
+        format_support(&sampled, dxgi::BC1_UNORM).support1 & shapes,
+        TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP
+    );
+    for packed in [dxgi::R8G8_B8G8_UNORM, dxgi::G8R8_G8B8_UNORM] {
+        assert_eq!(format_support(&sampled, packed).support1 & shapes, shapes);
+    }
     // R32_FLOAT views depth stored as D32_FLOAT, so it compares.
     assert_ne!(
         format_support(&caps, dxgi::R32_FLOAT).support1 & SHADER_SAMPLE_COMPARISON,
