@@ -26,7 +26,9 @@ SECTIONS {
   .gnu.hash : { *(.gnu.hash) }
   .rela.dyn : { *(.rela.*) }
   .relr.dyn : { *(.relr.*) }
-  . = ALIGN(16);
+  /* What the program writes starts on a page of its own, as a linker's writable segment does, so no page
+     holds both code and data the program writes. */
+  . = ALIGN(CONSTANT(COMMONPAGESIZE));
   .dynamic : { *(.dynamic) }
   .tdata : { *(.tdata .tdata.*) }
   .tbss : { *(.tbss .tbss.*) }

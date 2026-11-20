@@ -16,6 +16,7 @@ use wcontainers_translator_test::guest::{Change, GuestTest};
 use wcontainers_translator_test::layer2::program;
 use wcontainers_translator_test::programs::{Library, build, ready};
 use wcontainers_translator_test::runner::{Pause, Stopped, fields};
+use wcontainers_x86::X86_64;
 
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -190,4 +191,19 @@ fn programs_with_changes_match_none_arm64() {
 #[test]
 fn hand_made_changes_match_none_arm64() {
     hand_made_changes_match_none::<Arm64>();
+}
+
+#[test]
+fn random_programs_with_changes_match_none_x86_64() {
+    random_programs_with_changes_match_none::<X86_64>();
+}
+
+#[test]
+fn programs_with_changes_match_none_x86_64() {
+    programs_with_changes_match_none::<X86_64>();
+}
+
+#[test]
+fn hand_made_changes_match_none_x86_64() {
+    hand_made_changes_match_none::<X86_64>();
 }

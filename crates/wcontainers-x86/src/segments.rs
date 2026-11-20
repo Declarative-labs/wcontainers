@@ -92,6 +92,9 @@ fn operand_bytes(i: &Instruction) -> u32 {
 pub fn frame_slots(i: &Instruction) -> Option<Vec<(i64, u32)>> {
     use Mnemonic::*;
     use Slot::*;
+    if !matches!(i.iced.mnemonic(), Retf | Iret | Iretd | Iretq) && !is_far(i) {
+        return None;
+    }
     let s = operand_bytes(i);
     let selector = size_of::<u16>() as u32;
     let read = |slot: Slot| {

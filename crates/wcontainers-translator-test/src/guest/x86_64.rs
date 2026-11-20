@@ -2,6 +2,7 @@
 //! sides compare, and what a reference signal means.
 
 mod assemble;
+mod changes;
 mod loops;
 mod segments;
 mod smoke;
@@ -527,7 +528,7 @@ impl GuestTest for X86_64 {
     }
 
     fn changes() -> Vec<Change> {
-        panic!("x86-64's changes programs are milestone X6's")
+        changes::changes()
     }
 }
 
