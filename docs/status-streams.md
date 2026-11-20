@@ -14,16 +14,78 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   the ninth run (see "S2 sixth check findings"); its seventh check's findings settled in the
   tenth run (see "S2 seventh check findings"); its eighth check's findings settled in the
   eleventh run (see "S2 eighth check findings").
-- What comes next: S2's ninth independent check. After S2 passes, the next milestone (to be
-  specified) builds the interface crates of origin/phase-1-interfaces; not started here. Not built and left open on purpose: export of
-  a process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
-  docs/embedder-interface.md), the watch put on shared pages when one sharer leaves (it comes with
-  `suspend`), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made by connect,
-  accept, export or import; `/dev/console` under `-t`. Ruled on 2026-11-19 but not part of S2 (in
-  the document's "Not built"): `type ProcessState` (to wait for the reviewable-rust layout, as
-  ruled), signals as an input (`on_signal_delivering`, `Process::send_signal`), the shared-memory
-  hooks `on_shared_memory_mapping` and `on_shared_memory_unmapped` with `MemoryObject` and its
-  branded ids, and a getter for a process's memory id (for `WorkloadPlacement`).
+- S2 passed its ninth check and is merged (origin/phase-1 at cefb66ab); its four carried findings
+  are settled in S3's first run (see "S3").
+- S3 (the orchestrator's 2026-11-20 section of the brief): parts 1 (signals as an input) and 2
+  (shared memory announced per process, and the memory id) are built and tested; part 3
+  (suspend and resume by task, with a process context) is NOT started. See "S3" for exactly
+  what comes next.
+- Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
+  `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
+  scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
+  Also still open: any wire form (export, import), `set_thread_ordering`, the inspection hooks,
+  `StopReason`; ends made by connect, accept, export or import; `/dev/console` under `-t`.
+
+## S3
+
+Run 1 (this run) did:
+- The carried findings: the interface document says only `/proc/<pid>/cmdline` is open to anyone
+  and `environ` needs Linux's `PTRACE_MODE_READ`; a new test,
+  `an_environment_read_through_proc_meets_the_watches_of_the_process_it_names` (embedder.c
+  `environ`, which runs itself again with a 3-page variable and reads its environment through
+  /proc, from itself and from a child), passes beside the command line's; the eleventh run's
+  wall times are stated in "Measurements"; the generic kernel is recorded as waiting; the ARM
+  machine's full disk is under "For the orchestrator".
+- Part 1, signals as an input: `SignalInformation` (the generated `siginfo`),
+  `System::on_signal_delivering`, `Process::send_signal`, the counter `signal from the embedder
+  not sent`. Firing point and guarantees: docs/embedder-interface.md. A thread now keeps the
+  signal it took while it waits on a watch over the signal's frame (`Thread::signal_taken`), so
+  the hook fires once per signal. Tests: `every_signal_a_thread_takes_to_act_on_is_announced_first_with_its_record`
+  (embedder.c `signals`: queued, blocked then let through, sent by another thread during a read
+  with `SA_RESTART`, a fault; one taken by sigwaitinfo and one ignored are not announced; the
+  hook's records equal what the handlers saw, and the output equals the reference's) and
+  `a_signal_the_embedder_sends_interrupts_a_read_as_one_another_process_sends` (embedder.c
+  `interrupted`: the reference's child is interrupted by its parent's sigqueue; ours by the
+  embedder at the read's request, while the read waits on a watch the hook left unmet, and
+  between steps; same output, one announcement, and a signal to another process's thread and
+  one with number 0 counted as not sent).
+- Part 2: `MemoryObject` and its four ids, `on_shared_memory_mapping`,
+  `on_shared_memory_unmapped`, `Process::memory_id` (sharing.rs; address maps note shared
+  mappings going in or out through `MapNotes`, which replaced the shared `outgrown` cell; the
+  kernel compares what live processes map with what it announced). Tests:
+  `shared_memory_is_announced_per_process_as_it_starts_and_ends_as_proc_maps_shows_it`
+  (embedder.c `sharing`: a file mapped read-only by a process and by its forked child, then
+  writable by the parent, which announces both earlier mappings then; shared anonymous memory
+  cut in two; a System V segment attached and detached; a memory file split by mprotect and
+  moved by mremap; a shared mapping replaced by a private one; a child running a program; at
+  each step the announced pages and offsets of the process equal its /proc/self/maps in the
+  reference, step by step, each end names what was announced, and all end),
+  `processes_in_one_memory_have_one_memory_id_and_a_new_program_a_new_one`, and a unit test of
+  the piece arithmetic.
+- Every hook test's recorder also runs every handle operation inside `on_signal_delivering`.
+
+What comes next (part 3, not started; read the brief's S3 section and the last ruled section
+of next-embedder-interface.md first):
+- `Kernel::suspend_tasks(&mut self, cpu, &[TaskId]) -> impl Iterator<Item = (TaskId,
+  SuspendedTask)>`, `suspend_process`, `copy_process_context`, `resume_process(context,
+  ExecutionConfig) -> Option<ProcessContext>`, `resume_tasks(iter) -> impl Iterator<Item =
+  SuspendedTask>`, and the handle's `suspend_tasks`, `suspend_process(self)`,
+  `copy_process_context`. The kernel calls need the `Cpu` (registers, threads), as
+  `Kernel::process` takes it.
+- A planned shape, from reading the code: `SuspendedTask` holds the `Thread` record (its
+  `signal_taken`, `call`, `futex` wait and restart record included), its `RegisterBlock` read
+  from the executor (then `thread_drop`), and the channel and deadline it was parked on (taken
+  out of `Kernel::parked`, the run queue, `woken` and `signalled`); a futex waiter is taken off
+  its futex's list. `ProcessContext` holds the `process::Process` record (memory id and address
+  map, handlers, limits, credentials of the first thread are per thread) plus the threads'
+  shared tables reached by `Rc` (files, fs). `resume_tasks` makes a new executor thread in the
+  process's memory, sets the registers and parks the task on its channel again, so a wait goes
+  on as it was. Open points to settle and write down: a task suspended inside a hook while it
+  is the thread in the kernel (the hook's own thread) needs a defined stop point; a wake that
+  arrives while a waiter is suspended is lost today (locks across machines are not in S3: say
+  so); resuming on a second kernel value needs the same executor for the memory id.
+
+How S3's tests were run: see "Measurements" (S3 run 1).
 
 ## How to run
 
