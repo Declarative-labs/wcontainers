@@ -389,6 +389,25 @@ through a register not recognised; software fused multiply-add; unsupported inst
 system call not implemented; exact floating point requested; address above the host's cap; stopped by
 the flag; memory fault; fault without exact registers.
 
+### Two workarounds for what WebAssembly lacks
+
+Both are large costs that a future WebAssembly could remove. Each stays behind a small set of named functions
+in the emitters, so taking it out is a local change.
+
+- **The inline stop check**, because nothing can interrupt running WebAssembly code from outside. If the
+  platform gains a way to interrupt it (as native code already has, with a signal), the check goes. Where
+  the code changes: `stop_check` in `code.rs` (look-ahead none) and `stop_check` / `stop_check_or_deep` in
+  `full.rs` (full and bounded), whose entry check is chosen by `FullEmitter::entry_check`. With the
+  progress count of `ReplayDeterminism::Exact`, the count is merged into this same check ("count; if count
+  >= limit, leave"), so the count would stay where the flag test goes. Where nothing else can run while
+  the guest runs (one thread, no shared memory), the count is always emitted, as the only bound.
+- **The per-page permission check**, because WebAssembly memory has no page protection with catchable
+  faults. If the platform gains it (the "memory control" proposal is the one to watch), the check goes.
+  Where the code changes: `permission_fast`, `permission_exact`, `permission_range` and
+  `permission_checker` in `code.rs`, called from both emitters, and the reasoning in `full.rs` that drops
+  checks (kept pages, frame checks and proven loops), which would go with them. `Omit::permissions`
+  already builds the output without the checks, for measuring.
+
 ## 8. Where ARM64 and WebAssembly differ
 
 Each item needs its own tests.
