@@ -287,161 +287,198 @@ What is logged, and where, is the embedder's, through the proxy and the hooks ab
 - (`Parallel`, `Exact`): code with the count. Every stop the kernel or the executor causes is at a
   position. The order of memory accesses is the embedder's, through per-thread watches (section 8).
 
-## 3. Groups
+## 3. Memory that tasks overlap in, and the one scheduling rule
 
-**What a group is.** A guest memory is one address space (`MemoryId`, abi/cpu.rs:5-7). The threads of a
-process share one, and so do processes made with `CLONE_VM` (kernel/process.rs:70-72). Beyond that,
-memories are joined through blocks:
+The owner's rule ("threads plan decision 1 reworked", made a ruling in "shared memory is announced per
+process"): **a task whose code is `Serial` is given a processor only while no task that overlaps its
+memory has one. `Parallel` tasks may run beside their overlappers.** It is kept inside the kernel, with
+nothing on the interface. It replaces this plan's groups in force, the config in force and "the
+strictest wins", and with them the hook `on_execution_config_in_force_changing`: no config changes
+inside a kernel, and the embedder learns of each overlap from `on_shared_memory_mapping`, fired per
+process in the entry that makes it. The rule below is the one the mixed-ordering check found sound
+once corrected, with its corrections in. Its protocol has not been modelled (known fault 1).
+
+**Which memories overlap.** A guest memory is one address space (`MemoryId`, abi/cpu.rs:5-7). The threads
+of a process share one, and so do processes made with `CLONE_VM` (kernel/process.rs:70-72). Beyond
+that, memories overlap through blocks:
 
 - A block is **writable through a mapping** when some memory has a shared mapping of it (`mmap` with
   `MAP_SHARED`, System V shared memory, a shared memory file) that may write. "May write" means what
   `mprotect` may later give the mapping, Linux's `VM_MAYWRITE` (`Mapping::allowed`,
-  kernel/memory.rs:74-75), not the permission it has now. So `mprotect` never changes a group.
-- **Every memory that shows a page of such a block is joined to every other**, whether its own mapping of
+  kernel/memory.rs:74-75), not the permission it has now. So `mprotect` never changes an overlap.
+- **Every memory that shows a page of such a block overlaps every other**, whether its own mapping of
   it is shared or private. A private file mapping shows the file's live bytes until the page is first
   written (kernel/memory.rs:44-50; `map_shown` maps the block where `mapping.shared || !own`,
-  kernel/shared.rs:476-487). So a writer's stores reach it with no kernel entry in between, and it must
-  be in the writer's group.
-- A block that no mapping may write joins nobody. This is the common case: the kernel shows every file
-  mapping through a block, the program's own code and its C library included (kernel/shared.rs:1-5,
+  kernel/shared.rs:476-487). So a writer's stores reach it with no kernel entry in between.
+- A block that no mapping may write makes no overlap. This is the common case: the kernel shows every
+  file mapping through a block, the program's own code and its C library included (kernel/shared.rs:1-5,
   kernel/loader.rs:901-905). Its bytes can still change through `write` to the file. That is a kernel
   entry, and 4.5 says who is called in for it.
 
-A group is all threads of memories joined this way, directly or through others.
+Two tasks overlap when their memories are one memory or overlap directly. Overlap is not followed
+further: if A overlaps B and B overlaps C, A and C may run at once. Nothing they share can carry a store
+between them without B's memory, and the rule keeps a `Serial` task alone with each of its own
+overlappers. (The form before joined such memories into one group. The mixed-ordering check reasoned
+about one set of sharers, and did not look at chains; that the direct rule is enough for them is this
+revision's reading, unchecked.)
 
-Joining is by block, not by page. Two processes that map different parts of one file, one of them
-writable, are joined although they share no page. That is rare, and a group left too large is slower,
-never wrong. Rejected: joining by page. It makes every `mmap`, `munmap` and first private write a
-question about pages, to save a case that hardly occurs.
+Overlap is by block, not by page. Two processes that map different parts of one file, one of them
+writable, overlap although they share no page. That is rare, and a task that overlaps too much waits
+more, never wrongly. Rejected: overlap by page. It makes every `mmap`, `munmap` and first private write
+a question about pages, to save a case that hardly occurs.
 
 **Who keeps it.** The kernel. It already knows every mapping, which are shared and what each may be given
-(`Backing` and `Mapping`, kernel/memory.rs:34, :69). It keeps, for each memory, the group it is in, and
-for each block the memories that show it. Memories join inside the kernel entry that makes the mapping,
-or the fork that inherits it. Where the group that results is in force `Serial`, that entry makes the
-join only once no other thread of the groups it joins is running ("How a change takes effect", below).
-A group is split again when the mapping that joined it has gone, worked out at a later entry of the
-group.
+(`Backing` and `Mapping`, kernel/memory.rs:34, :69). It keeps, for each block, the memories that show it,
+and so for each memory the memories it overlaps. An overlap starts inside the kernel entry that makes
+the mapping, or the fork that inherits it, and ends in the entry where the mapping has gone. The same
+entries fire `on_shared_memory_mapping` and `on_shared_memory_unmapped` for each process, which is how
+the embedder builds its own view.
 
-**A new group has one thread.** A group is born at the container's start, at a fork whose child shows no
+**A new memory has one task.** A memory is born at the container's start, at a fork whose child shows no
 block that is writable through a mapping, and at exec, which makes a new memory (kernel/loader.rs:292)
-after ending the process's other threads (kernel/task.rs:648). For a group with one thread `Serial` and
-`Parallel` are the same run. The ordering only starts to matter at the group's second thread.
+after ending the process's other threads (kernel/task.rs:648). For a task that overlaps nobody,
+`Serial` and `Parallel` are the same run. The ordering starts to matter at the second task that
+overlaps it.
 
-**A group ends at the kernel's edge.** Processes that share memory may be on different kernels (section
-2). A group is the threads this kernel holds. When a process of a group is suspended and leaves, the
-kernel marks the pages it shared watched (the embedder interface's work), the embedder hands those pages
-over from then on, and the group here is what is left. Nothing in this plan needs the other kernel.
+**Overlap ends at the kernel's edge.** Processes, and since the ruling single tasks, may be on another
+kernel than those they share memory with (section 2). The rule counts the tasks this kernel holds. What
+crosses to a task elsewhere is the embedder's, through the shared-memory hooks and watches. Nothing in
+this plan needs the other kernel.
 
-**The config in force.** A config is given to a process (at the container's start and at `resume`). A
-child inherits its parent's at fork and keeps it across exec. But threads are run per group, and groups
-merge at any `mmap`. So two processes with different configs can come to share memory, and one rule must
-say what is in force then. This plan's rule, for each of the two fields by itself:
+**What runs as `Serial`.** The rule names a task's code. A task runs as `Serial`:
+- **when its code is `Serial` code.** A memory has one form of code (7.2). It is `Serial` code when any
+  process that owns the memory was given `Serial`. Processes that own one memory (`CLONE_VM`) therefore
+  take turns when any of them was given `Serial` (the mixed-ordering check: a second form on one
+  memory is not possible). Counted "Parallel process runs Serial code: it owns a memory with a Serial
+  one", warned once per process. This is the one place where a neighbour's ordering reaches a process,
+  and it is the ordering only; a guarantee never does;
+- **when the executor cannot run it beside others**, which the executor says of itself
+  (`Cpu::parallel_limits()`, 7.4): on the WebAssembly executor a writable block shown in two places
+  of one memory, or in two memories that both have `Parallel` code (7.4); on that executor too, a
+  `Serial` task beside `Parallel` ones that share a block with it, until the copy at each switch is
+  built (7.4); an x86 guest on a host that orders memory more weakly (section 9); and (`Parallel`,
+  `External`) until its form of code is built (4.6, decision 3). Each is counted and warned once per
+  process.
+This is a fact about one task, worked out from its own process's config and the executor, inside the
+entry that changes it. It is not a config of anything, and no hook announces it. (The mixed-ordering
+check says "the ordering half of the config in force stays" for these limits. The ruling replaces the
+config in force. The plan keeps the limits as this per-task fact and keeps nothing else of it.)
 
-- **The strictest wins.** The ordering in force of a group is `Serial` if any of its processes was given
-  `Serial`, or if the executor can only run this group `Serial` (7.4, section 9, and (`Parallel`,
-  `External`) until it is built). The guarantee in force is the strongest any of its processes was
-  given: `Exact`, else `External`, else `None`. In a recorded kernel it is never below `External`
-  (below, "A kernel is recorded whole, or not at all").
-- It is worked out again whenever the group's members change, which is always inside a kernel entry.
-- `Process::execution_config()` answers what the process was given. What it runs under is read beside it
-  (suggested `ProcessInfo::execution_config_in_force()`).
+**The rule, as the mixed-ordering check corrects it.** For a task S that runs as `Serial`:
+1. **Exclusion is by "handed out", not by "in guest code".** S is handed out only when no task that
+   overlaps it is handed out. While S is handed out, no overlapper is handed out, no overlapper's
+   waiter is chosen, and any other kernel write into S's memory calls S in (4.5).
+   - Why. Worded as "in guest code", the rule is unsound. A (`Serial`, one thread) and B (`Parallel`,
+     four threads) map one file with `MAP_SHARED`; on the native executor these are the same frames.
+     B's thread b1 enters the kernel for `FUTEX_WAKE_OP` on word w and waits for the kernel's lock: it
+     is not in guest code. A runs `lock xadd [w],1`, which the native `Serial` form makes a plain read
+     and a plain write (section 10). b1's kernel write lands between them, and both additions give
+     w = 1, which x86 never produces. ARM64 has the same hole through the barriers the `Serial` form
+     leaves out, and the WebAssembly executor through A's inline 128 bit compare and swap (7.3). A
+     woken call of B's that runs again and writes a shared buffer does the same.
+   - Overlappers then run only while S is parked or not on a processor. None can be handed out while
+     S is inside a system call answered in place: a hand-out needs the kernel's lock, which S holds
+     for the whole call (4.2).
+2. **Overlappers are called in, never held.** Holding them in place with a group stop for S's turn
+   hangs. They would still count as running, so S, handed out with nobody ready, gets no slice
+   (kernel/task.rs:43) and, if it only computes, nobody else gets a processor (section 5). And the
+   stop lock kept across S's turn would have S ask for the kernel's lock under a stop lock at its next
+   system call, against the lock order (4.5).
+3. **A `Serial` task that is due a turn stops hand-outs to its overlappers.** S is due a turn when it is
+   ready and no ready task that overlaps it has less weighted time (ties by task id). While S is due,
+   the memories of its handed-out overlappers carry a call-in mark (4.5), so they put forward only
+   their waiters. Why: with S ready behind B's four threads, section 5 asks one of B's threads in, and
+   its processor would go straight back to B, which puts forward every ready thread; S would never run.
+   Basing "due" on the least weighted time is how fairness between S and its overlappers follows the
+   kernel's fair scheduler. That is this plan's choice, not ruled (decision 15).
+4. **The kernel's rules follow the phase.** While S is handed out, S's memory and every block it shows
+   are under the `Serial` rules of 4.5: a kernel write into them from outside calls S in. While only
+   `Parallel` tasks are handed out, they are under the `Parallel` rules: the compare and exchange for
+   the words the kernel changes, a group stop or nothing. `next` chooses an overlapper's waiter, and
+   does what is pending for it (a woken call run again, a signal frame written), only while no task
+   that runs as `Serial` and overlaps it is handed out.
 
-Why the strictest: a process then never gets less than it was promised. `Serial` keeps every promise
-`Parallel` makes, and code with the count is correct for every guarantee. The cost falls on the
-neighbour: a process told `Parallel` can run `Serial`, and a process told `None` can be made to carry the
-count, which means its code is translated again (the count is in the cache key, 7.2). Each is counted
-("ordering in force stricter than given", "guarantee in force stricter than given") and warned once per
-process. It is the owner's to confirm (decision 1), with the alternatives there. Whatever he rules, the
-kernel needs "the config in force of a group can change while it runs", because groups merge.
+**Among tasks that run as `Serial`.** Two such tasks that overlap take turns, as two `Serial` groups did.
+The threads of one `Serial` process are such tasks (one memory), so they run one at a time, as today.
+Rule 3's "due a turn" is also what keeps a pinned task from starving: a ready `Serial` task is put
+forward only when it is due a turn, so a task that gave way for an overlapper pinned to another
+processor is not handed back at once while the overlapper has less weighted time. This is the form
+before's "the group's next thread", said for overlaps (known fault 5, 4.3).
 
-How a change takes effect:
-- **Groups joined, or stricter in either field**: every running thread the change binds is called in
-  first (4.5), and the change is made in the first entry in which none of them runs.
-  - Whom it binds. When the group that results is in force `Serial`: every running thread of the groups
-    involved, other than the caller. When it is in force `Parallel`: only the running threads whose
-    guarantee in force changes.
-  - **Two `Serial` groups that join are the plain case, and no config changes in it.** Each may have a
-    thread running, and a `Serial` group has one. The plan's earlier form called threads in only when
-    a config became stricter. Its fifth check showed what that left: process P1 runs on one processor
-    with a file mapped privately; P2, on another, maps the same file shared and writable; the two
-    groups become one, both threads carry on, and a `Serial` group has two threads in guest code. That
-    breaks 4.4 items 3 and 7, exact replay, and the executor's lock rule (7.2).
-  - Until the threads are in, the call that caused the change is parked before it has had any effect:
-    the `mmap` or `shmat` that makes the mapping (kernel/syscall/memory.rs:109, ipc.rs:356), or the
-    exec whose program files are mapped so (kernel/loader.rs:901-905). For a `resume`, the resumed
-    process's threads are not handed out. `mremap` and `mprotect` change a mapping inside one memory
-    and join nothing. A fork's child joins its parent's group, and it is new: it has no running
-    thread.
-  - A thread whose guarantee in force became `Exact` is handed out next from code with the count. Its
-    count starts at zero there: its positions are counted from the change.
-- **Looser**: at the group's next entry. Nobody is stopped. A process already runs the form of code for
-  the ordering it was given (7.2), so a looser ordering needs no new code. A thread whose guarantee in
-  force is no longer `Exact` is handed out next from code without the count, so that no process carries
-  the count longer than somebody asks for it.
+**The three ways a mixed pair runs.** For a `Serial` task A and `Parallel` tasks B that overlap it, the
+embedder chooses by the orderings it gives, and nothing else is needed (the ruling: "the three ways to
+run a mixed pair are exactly the three combinations of orderings the embedder gives"):
+- both `Serial`: one task of the pair at a time, on every executor, with O(1) switching and the hook
+  guarantee whole (4.4 item 7). Wins on any WebAssembly executor under `CLONE_VM`, when A rarely
+  blocks, and when B has many threads and A blocks only briefly;
+- mixed (the rule above): B's threads run at once while A is parked or off its processor, with no new
+  translation and no slowdown of A's own code. Wins on the native executor with a mostly blocked A
+  beside a compute-heavy B, sharing through `MAP_SHARED` or `shmat`; on the WebAssembly executor only
+  when the copy at each switch costs less than it gains;
+- both `Parallel`: A and B at once. A pays the `Parallel` form all the time (7.2, 7.6, section 10, all
+  measured), and if A is `Exact` it needs the per-thread watches of section 8 (about 1 µs a page
+  hand-over, expected). Wins under `CLONE_VM`, when A runs often, and on any executor with one memory.
+Which wins depends on how often A blocks, how many threads B has, and the executor. There is no single
+answer, and the plan gives none.
 
-**A change of the config in force is announced.** A hook, suggested
-`on_execution_config_in_force_changing(process, config)`, fires once for each process whose config in
-force is about to change, inside the entry that makes the change and before it.
-- Why. A guarantee that becomes `Exact` starts a promise, and a replay needs the process's whole state
-  where the promise starts. Section 6 says the same of `resume`, which hands that state over. A join
-  hands over nothing: a process that was not `Exact` before it has no state a replay could start
-  from (its entries were logged at most, and its inside may differ, section 2), and a hook about one
-  process cannot read another (interface notes lines 76-77). The plan's earlier form started the count at
-  zero and told nobody. Its fifth check showed that such a process could then not be replayed at all,
-  and neither could the neighbour whose promise the stricter config was meant to keep.
-- For a join or a stricter change, every thread of the process's group is at a kernel entry of its own
-  when the hook fires: the caller in its call, the others called in. The process is whole and stopped,
-  and every operation on it is legal (4.4 item 7). The embedder takes its starting point there: it
-  reads the memory, or suspends the process and resumes it on the same kernel, or asks for a container
-  stop and saves the container.
-- An embedder that does nothing in the hook gets that process's entries with positions from the join
-  on, and no state to replay them from. The neighbour that was promised `Exact` then replays exactly up
-  to the join and not beyond it. This is the embedder's choice, and decision 1 says so.
-- For a looser change the same hook fires in the entry that makes it, so that an embedder knows where a
-  process's record ends. Nobody is stopped for it.
+**What each executor needs for the mixed case** (the mixed-ordering check, section 2 of its report):
+- the kernel: overlaps as above, the four corrections, and rule 3's marks; the model of call-ins redone
+  for them (known fault 1);
+- the native executor: nothing new beyond the per-thread interrupt and the two forms (section 10). The
+  hand-over between A and B is ordered by the kernel's lock and the exception return, so the `Serial`
+  form may keep emitting no barriers. The interrupt from one virtual CPU to another must be measured;
+- the WebAssembly executor, for `MAP_SHARED` and `shmat` only: at each switch to A, all of B's threads
+  come in, and B's written shared pages are copied from B's memory to the block and on to A's memory
+  (7.4); B's `runs_in_parallel` byte follows B's own threads (7.3); `Cpu::parallel_limits()` says "can
+  alternate", distinct from "Serial only". Expected to work, not built (known fault 8);
+- a browser: as the WebAssembly executor, untested;
+- `CLONE_VM`, any executor: one form on one memory, so the owners take turns (above).
 
-**A kernel is recorded whole, or not at all.** A guarantee is given to one process. But one kernel is
-one state, and every process's entries change it.
-- Each entry of any thread moves the scheduler that all share: the time the thread is charged and its
-  weighted time (`account`, kernel/task.rs:77-86), the least weighted time that woken threads are
-  placed against (kernel/task.rs:555-560), the queue's length that sets a slice and the tick
-  (kernel/task.rs:43-53, :88-104), the comparison at a wake-up (kernel/task.rs:577-584), and which
-  processors are busy. It takes ids from one source, and it reaches the same files and pipes.
-- A replay follows its recording only while the kernel is handed the same entries in the same order
-  (4.6). So a log cannot leave one process's entries out while another process's replay stands on it.
-- The plan's earlier form did that: the system was never asked about a thread in force `None`. Its
-  sixth check showed what follows. One processor; threads T1 and T2 of two `Exact` processes; a thread
-  N of a `None` process. In the recording `next` chose T1. In the replay N's turns were charged other
-  times, so T2 had the least weighted time and `next` chose T2. The log wanted T1, the answer was
-  `Later`, and the same wrong choice came out for ever.
+**What it costs.** Measured, each cited where this plan measured or quotes it: leaving `Execution::run`,
+300.8 ns a thread (docs/runtime.md section 10); noticing a stop, 230 ns on average and 30 µs at worst
+in Chrome (4.5); an interrupt from the host into the machine, 2.4 to 4.1 µs (section 10); the kernel's
+share of `getppid`, 116 to 120 ns, and the kernel's lock, 0 to 11.4 ns (4.2). Expected, not measured:
+- each block and wake of A costs N call-ins and N hand-outs for B's N handed-out threads, each a kernel
+  entry on the one lock, while every other entry waits (4.4 item 6). A's wake waits for the slowest of
+  B's threads to reach a stop check, a thread that is compiling included. Both `Serial` pays one thread
+  out and one in;
+- the interrupt from one virtual CPU to another: not measured;
+- on the WebAssembly executor, a copy of the dirty shared pages at every switch;
+- nothing on a system call answered in place: it pays only the lock, so "`Serial` must not get slower"
+  holds;
+- no gain when B is (`Parallel`, `External`): it runs as `Serial` until its form is built.
 
-So the rule:
-- **Whether a kernel is recorded is one fact**, said by its system when the kernel starts: it orders
-  kernel entries, or it does not (4.6).
-- **In a kernel that is not recorded** nothing is asked and nothing is logged, whatever the configs say.
-  `None` there is exactly the ruling's "nothing is recorded". A process given `Exact` there still has
-  its count in its code, for whoever reads positions (section 8), and no log. Counted "guarantee given
-  in a kernel that is not recorded", warned once per container.
-- **In a recorded kernel every entry of every thread is asked about and logged**, and the guarantee in
-  force of each process is at least `External`. A process given `None` there runs as `External`: its
-  entries are put in order and each has its digest (4.6). Its code does not change, since `External`
-  has no count. Counted "guarantee in force stricter than given: the kernel is recorded", warned once
-  per container.
-- **The ordering follows.** (`Parallel`, `External`) runs `Serial` until its own form of code is built
-  (above, and decision 3). So in a recorded kernel a group's threads run at the same time only as
-  (`Parallel`, `Exact`), with the embedder's watches (section 8). A group that ran in parallel with
-  nothing ordered would make its entries in another order each time, and every replay of that kernel
-  would be thrown away.
-- An embedder that wants some processes unrecorded, in parallel and at full speed, beside recorded
-  ones, keeps them in a kernel of their own.
+**How a new overlap takes effect.** A mapping, an exec whose program files are mapped so, or a `resume`
+can make two memories overlap where one side runs as `Serial`. Then every handed-out task of the other
+side, other than the caller, is called in first (4.5), and the change is made in the first entry in
+which the rule holds.
+- Until they are in, the call that caused it is parked before it has had any effect: the `mmap` or
+  `shmat` that makes the mapping (kernel/syscall/memory.rs:109, ipc.rs:356), or the exec. For a
+  `resume`, the resumed tasks are not handed out. `mremap` and `mprotect` change a mapping inside one
+  memory and make no overlap. A fork's child inherits its parent's overlaps, and it is new: it has no
+  running thread.
+- Why. The form before's fifth check: process P1 runs on one processor with a file mapped privately; P2,
+  on another, maps the same file shared and writable; both carry on, and two tasks that run as `Serial`
+  and overlap are in guest code at once. That breaks 4.4 items 3 and 7 and the executor's lock rule
+  (7.2).
+- Where both sides have `Parallel` code and no limit applies, nobody is stopped. An overlap that ends
+  stops nobody either.
+Counted "tasks called in for a new overlap".
 
-What it costs: a process given `None` in a recorded kernel pays the question and the digest at each
-entry (T8 measures both), and runs `Serial`. What it buys: the promise made to an `Exact` or `External`
-process holds whatever its neighbours were given, and a replay cannot get stuck on a neighbour.
+**Withdrawn with the rulings.** "A kernel is recorded whole, or not at all", and with it the kernel's
+order of entries, are withdrawn ("where replay is recorded"): replay is per process (4.6), so no
+process's entries need to be logged for another's sake. The sixth check's case that the rule was made
+for (an unlogged process moving the scheduler under a replay of the whole kernel) cannot arise, because
+the kernel is no longer replayed whole.
 
-The owner ruled that "with `None` nothing is recorded". This rule keeps that for a kernel that is not
-recorded and changes it for one that is, so it is his to rule on (decision 1), with the other answers
-there. Until T8 builds `External`, a recorded kernel accepts only `Exact` (section 13).
+**What stays for the embedder.** Which of the three ways to use, by the orderings it gives; its own view
+of tasks and memory, from the shared-memory hooks and the process and thread hooks; fairness between A
+and B if it does not take the plan's choice (decision 15); and, for an `Exact` A, A's inputs from shared
+memory. No hook fires when A is handed out, and on the native executor B's writes set B's dirty marks,
+not A's. So it needs either a moment before A's turn with the shared ranges others changed since A last
+ran, or a way to take dirty memory across every place that shows a page (decision 16). Changes that land
+at A's own stops also need A's progress count, which exists only under `Exact`; under `External` the
+embedder takes a snapshot there, as for signals.
 
 ## 4. The kernel entered by several host threads
 
