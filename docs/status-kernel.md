@@ -4608,12 +4608,11 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
   second cat runs first, it reads the line and copies it (twice). If the first cat runs first,
   its next splice takes the lock again and waits for a line that never comes, and the second cat
   waits for the lock (once). Ours decides that by wake preemption on vruntimes measured on the
-  machine's clock, so load changes it; the reference's second cat runs on another CPU. Linux on
-  one CPU is expected to give once (`wakeup_pipe_readers` is a sync wake, so the first cat goes
-  on). To confirm: run guest ttylock in the reference with `--cpuset-cpus=0` (`run_one_cpu`)
-  several times; if Linux on one CPU gives once, the test compares one CPU with many (section
-  15's "more than one CPU") and belongs with the one-CPU reference, with ours following Linux's
-  sync wake.
+  machine's clock, so load changes it; the reference's second cat runs on another CPU. What Linux
+  does on one CPU is not known. To find out: run guest ttylock in the reference with
+  `--cpuset-cpus=0` (`run_one_cpu`) several times. If it gives once, or either, the test
+  compares one CPU with many (section 15's "more than one CPU") and belongs with the one-CPU
+  reference, with ours following whatever decides Linux's order there.
 - timers `timers_match_reference` failed once on the Mac in the thirteenth run's check (its
   output was not kept) and passed 33 runs since. If it fails again, keep the whole output: it
   says which side's line differs.
