@@ -71,7 +71,10 @@ bytecode operation and measured decision 14's page test again (left out, interpr
 known change, nor any ruling asked for so far, brings interpret under the +29.5% that would let the compute part pass
 (below, "N4 run 14"). Run 15 built the ruled option (b), a jump table's known targets, fixed the older forced-interrupt
 fault, and the bar's command passes: +18.85% [+18.23 .. +19.21] against +21.2%, the system-call part 80.0 ns; by
-alternating pairs the compute part is +20.53%, inside the layout luck (below, "N4 run 15").
+alternating pairs the compute part is +20.53%, inside the layout luck (below, "N4 run 15"). Run 16 tested a loop's
+aligned bases once before it (matrix -10.8% cycles; by pairs the compute part +20.96% to +19.19%) and measured the bar
+and the layout luck again: the bar's command gives +17.24% [+16.32 .. +17.43] and the system-call part 74.4 ns, and by
+pairs every one of five layouts of the build is under +21.2% (+18.06% to +20.12%) (below, "N4 run 16").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -98,6 +101,80 @@ alternating pairs the compute part is +20.53%, inside the layout luck (below, "N
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 16 (2026-11-20): a loop's aligned bases tested once; the layout luck measured again
+
+Start: origin/main and origin/phase-1-literals had nothing new; no new ruling in the brief since run 15. Files in
+scratch native/n4r17 (logs, scripts, the A/B builds, the two scratch patches). Every timing here is on the Mac (it
+needs Hypervisor.framework), alternating pairs by n4r17/scripts/pairs.py (run 15's), A the build of run 15's head
+(n4r16/ab/known), a plain run beside each pair; "P-share" in the logs is the share of cycles on performance cores.
+
+Measured first, nothing kept:
+- Run 15's one layout over the line (seed 3) again, 10 pairs, load 2.5 to 4.4 (pad3-again.log): +21.35% against the
+  unpadded build's +20.32%; search 1.098 times the unpadded build's cycles again. So that layout is really over, not
+  an artefact of efficiency cores.
+- Loop heads and piece starts aligned to 64 bytes with `nop`s (align.patch), 10 pairs, load 2.2 to 5.3
+  (align64.log): +21.25% against +20.41%, matrix 1.037 and interpret 1.010 times, nothing better. Not kept.
+- An upper bound: no test at all of an aligned access's base (nobasetest.patch, unsound, measurement only), 8
+  pairs, load 2.9 to 6.3 (nobasetest.log): +18.54% against +20.35%; matrix 0.894, sort 0.979, the rest within 1.3%.
+
+Built (plan 3.1, the page test; no knob): a straight-line part that loops to its own start tests once, at its start,
+the bases of its accesses of one element at their base's alignment that no instruction of the part writes
+(`Native::loop_invariant` and `test_loop_invariant` in wcontainers-guest-cpu, arm64 `carry::aligned_bases` and
+`test_aligned_bases`, `and t, xB, #(size - 1)` and a branch per base). When all are aligned the code goes to a copy
+of the part placed after the piece, made without those tests, which loops to itself; when one is not, it goes on
+into the part as before, whose way back reaches the test again. Every entry from elsewhere (another part, another
+piece, a stop's resumption) comes in through the test. Nothing a guest can see changes and no add moves.
+Sites, counted statically with each one-part loop translated at full look-ahead (scratch zz_loops.rs, loops.log, on
+the rented ARM64 machine): bench 2 of 42 one-part loops (matrix's two), 480 bytes of their pieces; calls.c 0;
+busybox 41 of 205, 9364 bytes; musl's loader 66 of 351, 17284 bytes. The bytes are the whole pieces (the part as
+before, the test and the copy); the copy alone is not counted separately.
+
+Results:
+- Alternating pairs against run 15's build, 10 pairs, load 2.9 to 5.3 (hoisted.log): compute part +20.96% to
+  +19.19%; matrix 0.892 times the cycles (instructions 0.756, native/plain 1.482 to 1.326), every other workload
+  within 0.6%. (The calls row of the pair runs in this run and run 15's layout runs compares two different calls
+  images and means nothing: plain always runs side A's image and the snapshots' calls differ. The eight workloads'
+  images are identical, checked by digest.)
+- Speed bar, the test's own command (15 pairs, look-ahead 256, seed 1, 2000 resamples, speed.log and speed.jsonl,
+  02:12 to 02:16, load 2.4 to 5.9, every run 100% on performance cores): compute part +17.24% [+16.32 .. +17.43],
+  PASSES against +21.2% (run 15: +18.85%). Native against plain, cycles (instructions): fib +25.7 (+65.6), sieve
+  +18.2 (+31.8), hash +3.0 (+27.2), sort +23.6 (+129.5), interpret +0.3 (+76.0), matrix +26.5 (+28.5), walk +17.6
+  (+81.4), search +26.4 (+26.6); calls +48.0 (+91.9). System-call part: 165.2 ns a call, the kernel's share 90.9, the
+  back end's 74.4 ns [72.7 .. 77.7], PASSES against 100 ns.
+- The same build over seeded layouts, by pairs (scripts/layouts.sh: a scratch patch to the inside's `place`, restored
+  after, putting a seeded number of words, 0 to 15, before each piece; each seed's build against the unpadded one, 6
+  pairs a program, layouts.log and layouts.jsonl, 02:16 to 02:56, load 1.9 to 6.3): compute part with seeds 1 to 4
+  +18.64%, +18.06%, +19.07%, +20.12%; the unpadded build in the same runs +18.98%, +18.42%, +18.83%, +18.89% (and
+  +19.19% above). So every one of the nine figures of this build is under +21.2% by pairs, the worst layout by 1.08
+  points and the unpadded build by about 2.3; the spread over layouts is about 2.1 points (seed 4: fib 1.061 and
+  matrix 1.042 times the unpadded build's cycles).
+- Suites (all on the Mac, scripts/mac.sh, suite/*.log, 02:05 to 02:11, load 2 to 10): the kernel test, alike with the
+  reference and the WebAssembly side, and with a stop at every counted event alike at none and 256: bench 177,072
+  stops, hash 10937141521840235265, the same as run 15's, calls.c 3,004, jumptables 5,484; the differential test with
+  new seeds, 0 failing each: none 32,323 cases (seed 0x71a95e1171), bounded 16 32,417 (0x71a95e11716), bounded 256
+  32,393 (0x71a95e117256); busybox's 56 commands as the reference at none and 256 (the first run differed in one
+  command only by the minute in `ls -la`'s dates, the reference made at 10:07 and the native run at 10:08; run again,
+  56 of 56) and at whole page with the kernel test alike there too; forced interrupts 8483 stops over 13 functions, 0
+  failed (the new function "invariant bases": aligned, misaligned, and crossing a page; at full look-ahead 73 landing
+  points aligned against 173 misaligned, so both ways ran); floor (21 cases and 1 measurement, 0 failed), probe (0
+  forms of 16 bytes or fewer differ, 44 larger as before), registers, exits (4 programs, 0 failed), carry, kept, the
+  inside's and the policy crate's tests, the literal check's tests; the literal check exits 0. Lint with warnings
+  denied on the rented ARM64 machine (arm1.log: arm64, guest-cpu with and without default features, the inside on
+  both targets, the monitor, the translator's native feature; arm64, guest-cpu, inside and translator native tests
+  pass) and the monitor's macOS tests on the Mac. Literals: the baseline is unchanged at 8148 lines (the inside 25,
+  the monitor 1).
+
+Headroom, plainly: by the bar's command 3.96 points (its interval's top 3.77 under the line); by alternating pairs
+about 2.3 points for the build as it is, and 1.08 points for the worst of the four other layouts measured, which is
+about half the spread measured over layouts (2.1 points). So by pairs it now passes in every layout measured; the
+build's own headroom (about 2.3 points) is about the spread over layouts (2.1 points here, 3.4 in run 15), not clearly
+more.
+
+What N4 still needs: the orchestrator's word on the bar ("For the orchestrator"), on the table's size
+(run 15), and on loaded translations shared between processes (run 12); then the independent check (the bar as
+alternating pairs again, the differential test at each look-ahead with a new seed, the count across look-aheads on
+the benchmark set).
 
 ## N4 run 15 (2026-11-20): a jump table's known targets; the older interrupt fault; the bar
 
@@ -2616,6 +2693,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 16: plan 3.1 put the page test in front of every access that may cross a page. As built, a straight-line
+  part that loops to its own start tests the alignment of the bases no instruction of it writes once, at its start,
+  and loops in a copy made without those tests; the part as made before is the way when a base is not aligned. It
+  trades nothing of run speed (matrix -10.8% cycles, the rest within 0.6%) for code size (a copy of each such loop).
+  Plan 3.1 says so.
+
 - N4 run 15: the brief's ruling of 2026-11-20 asks for the known jump's table to be sized by the guest's own bound check
   where there is one. Not done: the bound check (`cmp` and `b.hi` before the guest's table load) bounds which entry of
   the guest's table is read, not the byte read, and the table is indexed by that byte, so a table of the bound's size
@@ -2819,6 +2902,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 16: (1) A loop's aligned bases are now tested once before it, in a copy of the loop (nothing a guest can see
+  changes; it costs code size, a copy of each such loop: busybox has 41 such loops, musl's loader 66, bench 2), and
+  matrix runs 10.8% fewer cycles. (2) The bar: its command passes at +17.24% [+16.32 .. +17.43] against +21.2%, the
+  system-call part at 74.4 ns; by alternating pairs the build is at +18.4% to +19.2% (five runs) and four seeded
+  layouts of it at +18.06%, +18.64%, +19.07% and +20.12%, so every layout measured passes, the worst by 1.08 points.
+  Please rule whether that is a pass. (3) Still open from
+  run 15: the table's size, and from run 12: loaded translations shared between processes.
 
 - N4 run 15: (1) Option (b) is built with the re-measurement's faults fixed and its programs made tests; the older
   forced-interrupt fault is fixed (a direct branch's stop before its exit). The bar passes by its own command, +18.85%
