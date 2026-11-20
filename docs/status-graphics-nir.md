@@ -4,15 +4,15 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 10 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's,
-bgfx's and dEQP's GLSL and, since run 10, Godot's Compatibility renderer (241 variants); candidate
-B leads on every count (The choice, below). Run 10: Godot's Compatibility shaders in the corpus
-(route B 231 match, 2 differ and 1 not compared, all from undefined behaviour on the seeded
-inputs; route A none); a vertex program that writes no position gets one outside every clip
-volume, as the shaders crate gives a Direct3D one (SPIR-V route B 776 match, up from 773; route A
-731, up from 728; piglit 1341, up from 1338). Still to do (Next): the 15.4 rewrites and
-robustBufferAccess (both blocked on other tracks: checked again at the shaders tip 49f22b30 and the
-shared line 3195d728), Godot Forward+ (studied, Next 2), Dolphin.
+G8 run 11 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's,
+bgfx's and dEQP's GLSL, Godot's Compatibility renderer and, since run 11, Godot's RenderingDevice
+shaders (Forward+, Mobile and their effects: 572 SPIR-V programs); candidate B leads on every count
+(The choice, below). Run 11: Godot's RenderingDevice shaders in the corpus by one command
+(`corpus/godot-forward-plus`; route B 387 match, A 237); route B takes every storage image format
+naga has and NIR's `imod`; the comparison makes those formats on both sides (bgfx route B 316
+match, up from 307). Still to do (Next): the 15.4 rewrites and robustBufferAccess (both blocked on
+other tracks: checked again at the shaders tip 74932c84 and the shared line 3195d728), Dolphin, and
+reading the timed choice started at the end of run 11.
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -285,6 +285,30 @@ Done:
   whichever the NIR has. The comparison captures the outputs the program writes, so the added
   position is not compared. Held by `tests/route.rs` (a GLSL program writing only a varying: its
   module has a position and validates).
+- Godot's RenderingDevice shaders in the corpus (run 11; `corpus/godot-forward-plus`,
+  `tests/corpus/godot_rd.rs`): `servers/rendering/renderer_rd/shaders` and the AMD FSR and FSR2
+  folders it includes are fetched with Godot's other paths. Each file is read as Godot's build
+  reads it (`include_file_in_rd_header`: GLSL comments cut, `#[vertex]`, `#[fragment]`,
+  `#[compute]`, includes beside the file or, under `thirdparty/`, from Godot's root, once a stage),
+  and each variant written as `ShaderRD::_build_variant_code` makes it for Vulkan (the general
+  defines, the variant's, `RENDER_DRIVER_VULKAN`, external textures as `sampler2D`, no material;
+  compute alone where there is a compute stage), then compiled by glslang as Godot's
+  `compile_glslang_shader` does (Vulkan rules, client Vulkan 1.1, SPIR-V 1.3) into
+  `nir-corpus/godot-forward-plus`, which the corpus run takes as SPIR-V. The variants are in
+  `corpus/godot-rd-variants` (387 variants of 81 files; each list copied from its `initialize`
+  call, those built in loops written out as the loops make them; every variant of the list,
+  those Godot enables only on some devices or settings included), the general defines in
+  `corpus/godot-rd-defines` at Godot's default desktop settings, each with where it comes from.
+  The tables were drafted by a scratch script reading the C++ (`scripts/rd_variants.py`,
+  `rd_table.py` in scratch) and the loops written by hand; glslang compiles all 572 stages (0
+  refused). `voxel_gi_sdf.glsl` and `giprobe_write.glsl` are not taken: no `initialize` call at
+  the pinned commit builds them. Held by `tests/glsl_reference.rs` (a two-stage file with an
+  include, a comment and material lines: both stages' text exactly as `ShaderRD` makes it).
+- Route B takes every storage image format naga has (run 11; the bridge's `wc_storage_format`
+  mirrors naga's `StorageFormat`, 64-bit apart, which route B refuses anyway), and NIR's `imod`
+  (the remainder, plus the divisor where the signs differ and the remainder is not zero). The
+  comparison makes those formats on both sides (lavapipe and llvmpipe); 32-bit float texels are
+  compared as floats, every narrower format by its bits.
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -451,9 +475,36 @@ Run 10, with Godot's Compatibility shaders beside the rest (17,650 items;
   loops `1 << shift` squared times with the seeded `shift` negative (undefined; the reference does
   not end), the class of `irradiancecube.frag`.
 
-The choice, on this corpus (not final: Godot Forward+ and Dolphin are still to come; the GLSL
-gives the same order: B matches 1341 piglit, 307 bgfx, 8574 dEQP and 231 Godot programs, A 3, 15,
-0 and 0):
+Run 11, with Godot's RenderingDevice shaders beside the rest (18,222 items;
+`results/run11/nir-results-r11b.jsonl`; x86-64 machine, 192 children, load 26.7 at the end (another
+run of ours had just ended), 250 s):
+- In all: route B converts 11,811 of 12,234 programs that reach a route and matches 11,626 (155
+  differ, 30 not compared); route A converts 1,154 and matches 993 (7 differ, 154 not compared).
+- SPIR-V samples, piglit, dEQP, Godot's Compatibility shaders: as run 10.
+- bgfx: route B 316 match (up from 307), 5 differ, 0 not compared; all 321 convert. The 2 new
+  differences were not compared before (`r16f` and `rg16f` storage images were not made):
+  `cs_assao_prepare_depths_and_normals` and its `_half` variant write storage images whose values
+  differ well past rounding (e.g. 0.000039 against 0.00083). Not yet explained: to look at (Next).
+- Godot RenderingDevice (572 programs): 54 need what our Vulkan 1.1 does not report (16-bit floats
+  and the like, counted apart). Of the other 518: route B 387 match, 5 differ, 4 not compared, 122
+  fail by name; route A 237 match, 7 differ, 274 fail (Zink's compiler aborts on `bany_inequal`,
+  `ball_iequal` and on derefs of some variable modes; multiview refused by validation). Route B's
+  failures: `load_view_index` 66 (multiview: needs a helper value, Requests), arrays of textures
+  and samplers 21 and of storage images 3 (15.4's rewrites, blocked), `reduce` 16 (subgroups,
+  which the Vulkan driver lowers to one invocation before the route, 15.4: G10), a subpass input 4,
+  `image_deref_atomic` 3, `load_helper_invocation` 2, a storage image without a format 2 (15.4,
+  blocked), a structure member crossing the structure's end 2 (FSR2, naga validation), a texture
+  operand of another kind 2, `quad_swap_horizontal` 1. Not compared: multisampled textures 4.
+  Differences: `sdfgi_debug_probes` vertex programs (4; route A differs on the same ones, so the
+  harness or undefined behaviour is suspected, not yet confirmed) and `fsr2_tcr_autogen` (1).
+
+The choice, on this corpus (not final until Dolphin is in; the GLSL gives the same order: B
+matches 1341 piglit, 316 bgfx, 8574 dEQP and 231 Godot programs, A 3, 21, 0 and 0; Godot's
+RenderingDevice SPIR-V B 387, A 237). Run 11 started `corpus/choose` over all 18,222 items,
+detached on the x86-64 machine (job `graphics-nir-choice/20261120-064354-2508593`, results in
+`/work/target/graphics-nir/nir-choice-r11.jsonl`, its last twelve lines the job's output, which
+`x86-run --attach graphics-nir-choice` shows); at about a second a program for both routes it is
+expected to take hours (expected, not measured: run 4 took 1781 s for 1005 programs). Run 4's timed choice, on the SPIR-V corpus:
 `corpus/choose`, both routes optimised (`--release`), one shader and route at a time in a child of
 its own, on ten cores (`taskset -c 0-9`), x86-64 machine, load 5.5 at the start and 3.2 at the end
 (another track's tests ran beside it), before the Zink patch: A 726 match, B 773 match; on the 725
@@ -462,37 +513,27 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
+1. Read the timed choice run 11 started (above): each route's counts and times on the programs both
+   match; the choice follows from the counts (B far ahead), the times only on equal counts.
+2. The two new bgfx differences (`cs_assao_prepare_depths_and_normals`, `_half`: `r16f` and `rg16f`
+   storage images): find whether the route, the harness's new formats or the program's inputs
+   cause them. Godot's `sdfgi_debug_probes` (4, both routes) and `fsr2_tcr_autogen` likewise.
+3. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
    `corpus/cts-programs`' groups, and lower those programs before both runs.
-2. Godot Forward+ as SPIR-V, studied in run 10 (same pinned commit; a sparse clone for reading is
-   kept in scratch `downloads/godot`): `servers/rendering/renderer_rd/shaders/**/*.glsl` (105
-   files, about half compute) in the RD format (`glsl_builders.py`'s `include_file_in_rd_header`:
-   `#[compute]`, `#[vertex]`, `#[fragment]` sections, each starting `#version 450`, `#include`
-   as in the GLES3 format, and a `#VERSION_DEFINES` line). `ShaderRD::_build_variant_code`
-   (`shader_rd.cpp`) puts there: a newline, the general defines, the variant's defines, then
-   `#define RENDER_DRIVER_VULKAN`, `#define samplerExternalOES sampler2D`, `#define
-   textureExternalOES texture2D`; material lines as in GLES3. Unlike GLES3, the variants are not in
-   the file: each C++ user passes them to `ShaderRD::initialize(variant_defines, general_defines)`
-   (e.g. `effects/copy_effects.cpp` 89-: `copy_modes.push_back("\n#define MODE_GAUSSIAN_BLUR\n")`
-   and so on; `forward_clustered/scene_shader_forward_clustered.cpp` 695). Godot compiles each
-   stage with glslang to SPIR-V. So: a data file like `godot-defines` listing each RD shader's
-   variants and general defines from its C++ user (one command adding nothing to the repository's
-   build: glslang from nixpkgs, writing `.spv` files into `nir-corpus/godot-forward-plus`, which the
-   corpus run already takes); compile failures from a missing define found that way. Then
-   `corpus/choose` again over everything for the final choice.
-3. Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
+4. Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
    `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names);
-   `rgba16f` storage images in the harness (6 bgfx); `pack_*_split` (64-bit, so refused) stays.
-4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
+   `pack_*_split` (64-bit, so refused) stays.
+5. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
-   shaders crate (Requests; still not there at the shaders branch's tip 2ddd69b3, run 9: only
+   shaders crate (Requests; still not there at the shaders branch's tip 74932c84, run 11: only
    `convert` for DXBC and DXIL, `variant` private); robustBufferAccess's three steps (needs
-   `HelperValue::BufferRange`, not in the interface at run 9).
-5. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
+   `HelperValue::BufferRange`, not in the interface at 3195d728, run 11). Godot's RenderingDevice
+   programs then give corpus programs for arrays of textures (21) and formatless storage (2).
+6. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
    end on the seeded inputs; the cube map array program naga refuses (dEQP
    `android_extension_pack.test#extension_directive.ext_texture_cube_map_array`, "Index 2 is out of
    bounds").
-6. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
+7. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
 
 ## How to run
 
@@ -560,6 +601,13 @@ Next, in this order:
   C++ users (`pyro-parked/wcontainers-scratch/graphics-nir/downloads/godot`, 12 MB, blobs fetched
   on demand: never `git grep` its history there, which fetches every blob; add paths with `git
   sparse-checkout add /<path>`).
+- Godot's RenderingDevice shaders, one command after the fetch's sources: `crates/wcontainers-nir/corpus/godot-forward-plus [flake]`
+  (from the Mac: `x86-run <checkout> --name graphics-nir --jobs 64 --
+  'crates/wcontainers-nir/corpus/godot-forward-plus path:/work/flake/graphics-nir'`; 9 s). It
+  fetches, writes the variants' sources (the corpus binary's `--godot-rd`, no Mesa needed) and
+  compiles them with Nixpkgs' glslang into `nir-corpus/godot-forward-plus`, listing what glslang
+  refuses in `glslang-refused`. Run it (and `corpus/cts-programs`) before `corpus/choose`, which
+  fetches only `corpus/sources`. Alone: `WC_NIR_CORPUS=$CARGO_TARGET_DIR/nir-corpus/godot-forward-plus`.
 - Godot's shaders come with the same `corpus/fetch` and run in the same corpus run (any `.glsl`
   under `drivers/gles3/shaders`); alone: `WC_NIR_CORPUS=$CARGO_TARGET_DIR/nir-corpus/godot`.
 - Kept between runs: a sparse clone of VK-GL-CTS at 5bb4c7e8 for reading dEQP's formats
@@ -575,6 +623,12 @@ Next, in this order:
 
 ## Measurements
 
+- The whole corpus run (run 11, 18,222 items, 192 children, x86-64 machine, load 10.0 at the
+  start and 26.7 at the end, another run of ours just before): 250 s. Time per shader to the
+  validated common form at 192 at once on the 991 shaders both routes match: A median 488 us, mean
+  767 us; B median 381 us, mean 481 us (busy machine; the choice's times are the ten-core ones).
+  `corpus/godot-forward-plus` (fetch, the sources, 572 glslang compilations at 192 at once): 9 s,
+  load 1.0. Godot's RenderingDevice programs alone: 16 s, load 0.8 to 1.7.
 - The whole corpus run (run 10, 17,650 items, 192 children, x86-64 machine, load 8.4 at the start
   and 10.8 at the end): 248 s. Time per shader to the validated common form at 192 at once on the
   748 shaders both routes match: A median 421 us, mean 607 us; B median 346 us, mean 406 us (busy
@@ -671,6 +725,11 @@ Next, in this order:
   Godot at 73ca6be2 (since run 10; MIT, its `LICENSE.txt`; only `drivers/gles3/shaders`,
   `LICENSE.txt` and `COPYRIGHT.txt` are fetched; `COPYRIGHT.txt` names no other licence for those
   files, and `tonemap_inc.glsl` notes an ACES fit adapted from MJP's BakingLab, MIT);
+  since run 11 also Godot's `servers/rendering/renderer_rd/shaders` (MIT) and the AMD FSR and FSR2
+  code it includes (`thirdparty/amd-fsr`, `thirdparty/amd-fsr2`: Expat, that is MIT, by Godot's
+  `COPYRIGHT.txt`; their own `license.txt` and `LICENSE.txt` fetched beside them), compiled by
+  glslang (Nixpkgs' `glslang`, BSD-3-Clause and others; a tool run by `corpus/godot-forward-plus`,
+  never linked);
   Sascha Willems' Vulkan samples at d2d49bf7 (MIT, `LICENSE.md`); piglit at 92510281 (since run 7;
   its `COPYING`: MIT for most of it, with some test shaders under their projects' own licences,
   e.g. GStreamer's in `glslparsertest`; piglit is for testing only, as the routed decision says,
@@ -782,6 +841,18 @@ Next, in this order:
   shaders crate's `stage::clip_unpositioned` (crate-private, and on naga); the same rule, the same
   value. It moves to the shaders crate's entry point when there is one (Requests).
 
+- Godot's RenderingDevice variants are every variant each `initialize` call lists, at Godot's
+  default desktop settings, with no material (as the Compatibility shaders are taken), compiled for
+  a Vulkan 1.1 device (SPIR-V 1.3); Godot would compile only the groups a device and project
+  enable. Texture streaming (a module the default build leaves out) adds nothing to the scene
+  defines.
+- The GLSL comment marker Godot's reader cuts is named `GLSL_COMMENT_START`, not imported from the
+  literal check's `LINE_COMMENT` (Rust's, private there): the same two characters, another
+  language's fact.
+- Subgroup operations (`reduce` and the like) are refused by name by route B: 15.4 has the Vulkan
+  driver (G10) lower them to their one-invocation meaning before the route, so the corpus, which
+  hands over NIR as spirv_to_nir makes it, counts them as failures until G10's step exists.
+
 ## Interface changes
 
 None.
@@ -815,11 +886,18 @@ None.
   route rounds in NIR first; dxil-spirv's and dxbc-spirv's output reaches the same reader.
 - Interface or shaders track (later, when the Vulkan driver reports `vkCmdDispatchBase`): a helper
   value for the base workgroup; the routes now count dispatches from workgroup 0.
+- Interface track: a helper value for the view index (e.g. `HelperValue::ViewIndex`, u32, written
+  by the front for each view of a `MultiviewSerial` draw), so a program reading `gl_ViewIndex`
+  (Vulkan 1.1 requires `multiview`) has it in the common form; route B refuses `load_view_index`
+  by name until then (66 of Godot's RenderingDevice programs).
 - Literals track: `CARGO_OUT_DIR` public (in a public module), so a build script can name `OUT_DIR`
   through it.
 
 ## Literal check
 
+Run 11: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0). A first
+try found the Godot reader's `LINE_COMMENT` ("//") named like the check's own (Rust's comment, private
+there): renamed for what it is, GLSL's (Departures). wcontainers-nir still has no baseline lines.
 Run 10: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0). A
 first try found the new reader's comment marker defined beside dEQP's (`COMMENT`, '#'): Godot's
 reader now imports dEQP's. wcontainers-nir still has no baseline lines.
