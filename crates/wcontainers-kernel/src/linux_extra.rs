@@ -27,6 +27,28 @@ pub(crate) const RWF_NOSIGNAL: u32 = 0x100;
 pub(crate) const CLOSE_RANGE_UNSHARE: u32 = 1 << 1;
 pub(crate) const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
 
+// Values from Linux's uapi headers linux-raw-sys does not generate (`linux/sockios.h`,
+// `linux/ipv6_route.h`).
+
+/// The kind (`_IOC_TYPE`) of every socket request, `SOCK_IOC_TYPE`.
+pub(crate) const SOCK_IOC_TYPE: u32 = 0x89;
+
+/// `struct in6_rtmsg`, an IPv6 route request.
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub(crate) struct in6_rtmsg {
+    pub rtmsg_dst: crate::linux::net::in6_addr,
+    pub rtmsg_src: crate::linux::net::in6_addr,
+    pub rtmsg_gateway: crate::linux::net::in6_addr,
+    pub rtmsg_type: u32,
+    pub rtmsg_dst_len: u16,
+    pub rtmsg_src_len: u16,
+    pub rtmsg_metric: u32,
+    pub rtmsg_info: core::ffi::c_ulong,
+    pub rtmsg_flags: u32,
+    pub rtmsg_ifindex: i32,
+}
+
 // Values from Linux's uapi headers linux-raw-sys does not generate (`linux/posix_acl.h`,
 // `linux/posix_acl_xattr.h`).
 

@@ -550,6 +550,9 @@ fn unix_kind(kind: u32, protocol: u32) -> Result<u32, Errno> {
 /// mtu, window and irtt).
 const IFREQ_SIZE: u64 = size_of::<crate::linux::net::ifreq>() as u64;
 const RTENTRY_SIZE: u64 = 120;
+const IN6_IFREQ_SIZE: u64 = size_of::<crate::linux::net::in6_ifreq>() as u64;
+const IN6_RTMSG_SIZE: u64 = size_of::<crate::linux_extra::in6_rtmsg>() as u64;
+const ARPREQ_SIZE: u64 = size_of::<crate::linux::if_arp::arpreq>() as u64;
 
 /// AF_ALG, which is not built: the reference's host (Docker Desktop's virtual machine, measured
 /// even in a privileged container) refuses to make such sockets with EPERM, at `socket`'s entry and
@@ -4176,12 +4179,17 @@ pub(super) fn ioctl(
             _ => {}
         }
     }
+    // `sock_ioctl`'s timestamps, from the families that keep them (`gettstamp`).
+    let stamp = matches!(
+        request,
+        SIOCGSTAMP | crate::linux::net::SIOCGSTAMPNS_OLD | SIOCGSTAMP_NEW | SIOCGSTAMPNS_NEW
+    );
+    if stamp && family != AF_INET && family != AF_INET6 {
+        return Err(Errno::ENOTTY);
+    }
     if family == AF_INET || family == AF_INET6 {
         match request {
-            SIOCGSTAMP
-            | crate::linux::net::SIOCGSTAMPNS_OLD
-            | SIOCGSTAMP_NEW
-            | SIOCGSTAMPNS_NEW => {
+            _ if stamp => {
                 return Err(kernel.counters.refuse(
                     cx.host,
                     crate::reason::IOCTL_NOT_BUILT,
@@ -4196,51 +4204,106 @@ pub(super) fn ioctl(
             _ => {}
         }
     }
+    // `inet_ioctl`: routes, ARP entries and addresses (`ip_rt_ioctl`, `arp_ioctl`,
+    // `devinet_ioctl`).
+    if family == AF_INET {
+        match request {
+            SIOCADDRT | SIOCDELRT => {
+                copy_request(kernel, cx, tid, argument, RTENTRY_SIZE)?;
+                return network_change(kernel, cx, tid, request);
+            }
+            SIOCDARP | SIOCSARP => {
+                admin(kernel, tid)?;
+                copy_request(kernel, cx, tid, argument, ARPREQ_SIZE)?;
+                return network_change(kernel, cx, tid, request);
+            }
+            SIOCSIFPFLAGS => {
+                copy_request(kernel, cx, tid, argument, IFREQ_SIZE)?;
+                return Err(Errno::EINVAL);
+            }
+            SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFFLAGS => {
+                copy_request(kernel, cx, tid, argument, IFREQ_SIZE)?;
+                return network_change(kernel, cx, tid, request);
+            }
+            _ => {}
+        }
+    }
+    // `inet6_ioctl`: routes (`ipv6_route_ioctl`) and addresses (`addrconf_*_ifaddr`, which check
+    // the power before they copy).
+    if family == AF_INET6 {
+        match request {
+            SIOCADDRT | SIOCDELRT => {
+                copy_request(kernel, cx, tid, argument, IN6_RTMSG_SIZE)?;
+                return network_change(kernel, cx, tid, request);
+            }
+            SIOCSIFADDR | SIOCDIFADDR | SIOCSIFDSTADDR => {
+                admin(kernel, tid)?;
+                copy_request(kernel, cx, tid, argument, IN6_IFREQ_SIZE)?;
+                return network_change(kernel, cx, tid, request);
+            }
+            _ => {}
+        }
+    }
+    // `sock_do_ioctl`: a socket request no family answered copies its `ifreq` and goes to the
+    // devices (`dev_ioctl`); any other request is not a socket's.
+    if (request >> _IOC_TYPESHIFT) & _IOC_TYPEMASK != crate::linux_extra::SOCK_IOC_TYPE {
+        return Err(Errno::ENOTTY);
+    }
     match request {
         SIOCGIFNAME | SIOCGIFFLAGS | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR | SIOCGIFSLAVE
         | SIOCGIFMAP | SIOCGIFINDEX | SIOCGIFTXQLEN => {
-            interface_question(kernel, cx, tid, request, argument)
+            return interface_question(kernel, cx, tid, request, argument);
         }
-        // Requests that change the network need CAP_NET_ADMIN, which Docker does not give; all
-        // but the ARP ones copy their structure in first (`get_user_ifreq`, `inet_ioctl`).
-        SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU | SIOCSIFNAME | SIOCSIFHWADDR | SIOCSIFSLAVE
-        | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST | SIOCSIFMAP | SIOCSIFTXQLEN
-        | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFPFLAGS
-        | SIOCSIFLINK | SIOCDIFADDR | SIOCADDRT | SIOCDELRT
-            if guest(kernel, cx, tid)
-                .read(
-                    argument,
-                    if matches!(request, SIOCADDRT | SIOCDELRT) {
-                        RTENTRY_SIZE
-                    } else {
-                        IFREQ_SIZE
-                    },
-                )
-                .is_err() =>
-        {
-            Err(Errno::EFAULT)
-        }
-        SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU | SIOCSIFNAME | SIOCSIFHWADDR | SIOCSIFSLAVE
-        | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST | SIOCSIFMAP | SIOCSIFTXQLEN
-        | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFPFLAGS
-        | SIOCADDRT | SIOCDELRT | SIOCDARP | SIOCSARP | SIOCSIFLINK | SIOCDIFADDR
-            if !kernel.credentials(tid).has(CAP_NET_ADMIN) =>
-        {
-            Err(Errno::EPERM)
-        }
-        SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU | SIOCSIFNAME | SIOCSIFHWADDR | SIOCSIFSLAVE
-        | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST | SIOCSIFMAP | SIOCSIFTXQLEN
-        | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFPFLAGS
-        | SIOCADDRT | SIOCDELRT | SIOCDARP | SIOCSARP | SIOCSIFLINK | SIOCDIFADDR => {
-            Err(kernel.counters.refuse(
-                cx.host,
-                crate::reason::IOCTL_NOT_BUILT,
-                request.into(),
-                Errno::EOPNOTSUPP,
-            ))
+        _ => {}
+    }
+    copy_request(kernel, cx, tid, argument, IFREQ_SIZE)?;
+    match request {
+        SIOCSIFNAME | SIOCSIFMAP | SIOCSIFTXQLEN | SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU
+        | SIOCSIFHWADDR | SIOCSIFSLAVE | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST => {
+            network_change(kernel, cx, tid, request)
         }
         _ => Err(Errno::ENOTTY),
     }
+}
+
+/// Copies in a request's structure of `size` bytes, as Linux's handlers do before they look at it.
+fn copy_request(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    argument: u64,
+    size: u64,
+) -> Result<(), Errno> {
+    guest(kernel, cx, tid)
+        .read(argument, size)
+        .map(|_| ())
+        .map_err(|_| Errno::EFAULT)
+}
+
+/// Requests that change the network need CAP_NET_ADMIN, which Docker does not give.
+fn admin(kernel: &Kernel, tid: Tid) -> Result<(), Errno> {
+    if kernel.credentials(tid).has(CAP_NET_ADMIN) {
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
+}
+
+/// A request that changes the network: refused without the power, and not built with it
+/// (counted).
+fn network_change(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    request: u32,
+) -> Result<u64, Errno> {
+    admin(kernel, tid)?;
+    Err(kernel.counters.refuse(
+        cx.host,
+        crate::reason::IOCTL_NOT_BUILT,
+        request.into(),
+        Errno::EOPNOTSUPP,
+    ))
 }
 
 /// The interface an `ifreq` names, by name with any `:label` cut off.
