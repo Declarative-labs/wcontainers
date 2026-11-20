@@ -492,17 +492,39 @@ pub struct ProcessContext { /* the kernel's records */ } // id()
   can be taken from, and the batch is simply the tasks taken in turn with nothing running between
   them. When threads run at once, a batch naming a running task will have to wait for it to stop;
   inside a hook that wait could not end, and that batch is not built.
-- Where a task goes on from: a task waiting for its turn (or holding it) goes back in line with
-  how it continues; a task parked in a call keeps the call (its deadline, its progress, its
-  restart record) and the call runs again when it is put back, so it goes on waiting, finds what
-  it waited for, or times out; a task whose wait had ended runs its call again first; a task with a
-  signal to act on still acts on it first. A call waiting in a line the kernel keeps outside the
-  task (a futex's, a System V semaphore set's, a POSIX message queue's) leaves the line and the
-  task is put back at the call's own instruction, so the call is made again when it is resumed,
-  as Linux restarts a call a stop interrupted (`restart_syscall` for a futex wait with a timeout,
-  which waits on to the same deadline). A wake given while it is away therefore cannot be lost:
-  the call reads the futex word again. The locks a waiting call held (a pipe's, a file
-  position's) are let go and taken again by its next run.
+- Where a task goes on from: a task waiting for its turn (or holding it) goes back in line as it
+  was, and a task with a signal to act on still acts on it first. A task taken in a call, parked in
+  it or woken and not yet run, is treated exactly as Linux treats a signal with no handler arriving
+  during that call (a stop, or the freezer's wake, `fake_signal_wake_up`): the call's next run, when
+  the task is put back, finds a signal pending (`signal_pending`), and the call answers as Linux's
+  code for it answers; with no handler, the restart codes then run the call again. A waiter in a
+  line a wake chooses from leaves it when it is taken, so no wake chooses it while it is away: a
+  futex wait (it answers as interrupted, not timed out), a System V semaphore operation (told EINTR
+  at once) and a POSIX message queue send or receive. Every other call sees the interruption when
+  the task is put back: nothing of the task runs in between, so this is Linux's stop arriving then.
+  A task taken at `intercept_system_call_request` has not begun its call and makes it again (the
+  request is announced again). Per call, from the restart codes in Linux's source and signal(7),
+  "Interruption of system calls by signal handlers" and "by stop signals":
+  - Run again from the start, having had no effect (`ERESTARTSYS`, `ERESTARTNOINTR`,
+    `ERESTARTNOHAND` with no handler): a read or write that has moved nothing (pipes, sockets,
+    terminals, eventfd, signalfd, inotify, splice), the open of a named pipe, `wait4` and
+    `waitid`, `accept`, `connect`, `flock` and `F_SETLKW`, a futex wait with no timeout (it checks
+    the number again, and answers EAGAIN if it changed) and the priority-inheritance lock, a message
+    queue send or receive (their times are absolute), `pause`, `rt_sigsuspend`,
+    `clock_nanosleep` with `TIMER_ABSTIME`.
+  - Go on with the time that was left: `nanosleep` and a relative `clock_nanosleep`, and a futex
+    wait with a timeout, through `restart_syscall` (`ERESTART_RESTARTBLOCK`, to the same deadline);
+    `ppoll` and `pselect6` write the time left into their timeout and run again (`ERESTARTNOHAND`).
+  - Answer what they already did: a read or write that has moved bytes answers the count, and
+    `sendmmsg` and `recvmmsg` the messages done; a futex waiter a wake had already chosen answers
+    0; a semaphore operation already done and a message already handed over answer as done.
+  - Answer EINTR, as Linux does after a stop even with no handler: `epoll_wait` and
+    `epoll_pwait`, `semop` and `semtimedop`, `rt_sigtimedwait`.
+  The test `a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer`
+  (stopped.c) takes a process's threads in a futex wait, a futex wait already woken, a sleep, a
+  write half done, a semaphore operation, `epoll_wait` and a pipe read, changes and wakes the futex
+  while they are away, and compares every answer with the reference, where the same program is
+  stopped and continued with SIGSTOP and SIGCONT.
 - Inside a hook the kernel is in the middle of a step for one thread (the system call, signal or
   fault it is handling), or of starting a program or ending a process. That thread, the process
   being started by an exec and every task of a process being ended cannot be taken there: they are
@@ -528,10 +550,11 @@ pub struct ProcessContext { /* the kernel's records */ } // id()
   cannot do this` when it cannot at all) are handed back. Putting a task back ends nothing and
   announces nothing.
 - What a task leaves on the kernel it came from while away: results already given to it (a
-  semaphore operation done, a message handed over) stay there keyed by its number and are found
-  when it comes back to the same kernel; a wake that reaches nobody there is not passed on. Locks
-  across kernels (`wake_waiters`, `move_waiters`) are not built. A thread that ends while its
-  siblings are away is, to the kernel, the last thread of its process and ends the process.
+  semaphore operation done or told EINTR, a message handed over) stay there keyed by its number
+  and are found when it comes back to the same kernel; a wake that reaches nobody there is not
+  passed on. Locks across kernels (`wake_waiters`, `move_waiters`) are not built. A thread that
+  ends while its siblings are away is, to the kernel, the last thread of its process and ends the
+  process.
 - A second kernel value in the same embedder can take a context and tasks from another, run on the
   same executor (the memory ids are the executor's); its clock and its tables (ends, futexes,
   System V objects, file systems) are its own. A process brought to a kernel whose parent is not
