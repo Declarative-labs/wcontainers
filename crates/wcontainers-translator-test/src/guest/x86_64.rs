@@ -1930,6 +1930,26 @@ pub fn plain(code: &[u8]) -> Case {
 /// The hand-made case of F3 0F 09.
 const WBNOINVD_AS_WBINVD: &str = "wbnoinvd as wbinvd with an ignored prefix";
 
+/// The hand-made cases of `movbe` with both 66 and REX.W.
+const MOVBE_LOAD_WITH_66: &str = "movbe load with 66 and REX.W";
+const MOVBE_STORE_WITH_66: &str = "movbe store with 66 and REX.W";
+
+/// A 64-bit `movbe` between rax and [rax], with an operand-size prefix put before it.
+fn movbe_with_operand_size(code: Code) -> Vec<u8> {
+    let memory = MemoryOperand::with_base(Register::RAX);
+    let instruction = if code == Code::Movbe_r64_m64 {
+        Instruction::with2(code, Register::RAX, memory)
+    } else {
+        Instruction::with2(code, memory, Register::RAX)
+    }
+    .expect("a movbe");
+    let mut encoder = Encoder::new(wcontainers_x86::MODE_BITS);
+    encoder.encode(&instruction, CODE).expect("encodable");
+    let mut bytes = vec![OPERAND_SIZE];
+    bytes.extend(encoder.take_buffer());
+    bytes
+}
+
 /// The hand-made cases: the 32-bit system call gates, which this phase answers by design with general
 /// protection at the instruction (plan 5.2), and a few stops compared with the reference.
 fn hand_cases() -> Vec<Designed> {
@@ -1950,6 +1970,19 @@ fn hand_cases() -> Vec<Designed> {
             WBNOINVD_AS_WBINVD,
             &[REP, ESCAPE, Code::Wbinvd.op_code().op_code() as u8],
             Stop::GeneralProtection,
+            true,
+        ),
+        // `movbe` with 66 and REX.W, either way: illegal on the reference.
+        designed(
+            MOVBE_LOAD_WITH_66,
+            &movbe_with_operand_size(Code::Movbe_r64_m64),
+            Stop::Illegal,
+            true,
+        ),
+        designed(
+            MOVBE_STORE_WITH_66,
+            &movbe_with_operand_size(Code::Movbe_m64_r64),
+            Stop::Illegal,
             true,
         ),
         Designed {

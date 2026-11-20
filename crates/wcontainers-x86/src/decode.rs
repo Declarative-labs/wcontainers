@@ -47,6 +47,12 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     if iced.code() == Code::Wbnoinvd {
         iced.set_code(Code::Wbinvd);
     }
+    // `movbe` with both 66 and REX.W is illegal on the CPU presented, where iced takes the 64-bit form.
+    if matches!(iced.code(), Code::Movbe_r64_m64 | Code::Movbe_m64_r64)
+        && code[..prefixes].contains(&OPERAND_SIZE)
+    {
+        iced.set_code(Code::INVALID);
+    }
     // iced stops reading at 15 bytes and at what makes an encoding invalid; the CPU counts the whole
     // encoding, and its limit wins over every other rule. An instruction of a feature never presented is
     // counted as the reference CPU counts it too, which for other makers' instructions (3DNow, XOP, SSE4a) is
