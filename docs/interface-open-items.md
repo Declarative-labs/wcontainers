@@ -315,10 +315,15 @@ were added.
     `resume_process` twice is handed back the second time; tasks handed to `resume_tasks` without their
     context come back, after `suspend_process` took the context) all need the `TaskId` of a process
     that is on the kernel. `Kernel` has no operation that gives one: none lists its processes or starts
-    one. The ruled `kernel.process(id)` would not help either, as it also takes an id.
+    one. The ruled `kernel.process(id)` would not help either, as it also takes an id. Checks on fixed
+    ids (`TaskId(u32::MIN)` and `TaskId(u32::MAX)`, each run only if a process is there) do compile, a
+    check found, but on a kernel with no process at those ids they check nothing, so none were written.
+  - The iterator `suspend_process` returns keeps the kernel borrowed, so a check must collect or drop it
+    before any resume call. That follows from the ruled signature.
   - `resume_process` also needs an `ExecutionConfig<Self::Executor>`, and nothing makes its
     `translator: E::TranslatorConfig`: the type has no bound (no `Clone`, no `Default`), and the only
-    config the traits show is lent by `Process::execution_config`, which a `Kernel` cannot reach.
+    config the traits show is lent by `Process::execution_config`, which a `Kernel` cannot reach. A suite function can get one only
+    as a second argument, and `tests!` passes one value.
   - So the missing operations are: one on `Kernel` that gives a process on it (its id or its handle),
     and one that gives an owned `TranslatorConfig` (for example `Clone` on it, with the getter).
 - `Process` (and `ProcessInfo`, reached through it): as a root, a suite can be written on one process,
