@@ -504,6 +504,70 @@ fn a_fresh_start_fast_forwarded_onto_the_track_fails() {
     started_twice(&root);
 }
 
+/// Two tracks that each brought the checker with a baseline of their own, merged: the two starts
+/// count as one when the merge holds no line that neither side's baseline held, and the merge is
+/// listed. A merge that adds a line keeps them two.
+#[test]
+fn two_adoptions_joined_by_a_merge_without_growth_count_as_one_start() {
+    let root = repository("two-adoptions", FILES);
+    let checker = with_checker(&["first"]);
+    let adopt = |branch: &str, item: &str, value: &str| {
+        git(&root, &["checkout", "-q", "-b", branch, "main"]);
+        append(
+            &root,
+            LIB,
+            &format!("\npub fn {item}(x: u64) -> u64 {{ x * {value} }}\n"),
+        );
+        for (path, text) in checker
+            .iter()
+            .filter(|(p, _)| !FILES.iter().any(|(f, _)| f == p))
+        {
+            std::fs::create_dir_all(root.join(path).parent().expect("a folder"))
+                .expect("make the folder");
+            std::fs::write(root.join(path), text).expect("write the checker");
+        }
+        wcontainers_literals::init(&root).expect("init at adoption");
+        commit_all(&root, "brought the check with this track's baseline");
+    };
+    adopt("streams", "five", "5151");
+    adopt("kernel", "six", "6161");
+    let kernel = baseline(&root);
+    let merge = common::git_output(&root, &["merge", "-q", "--no-edit", "streams"]);
+    assert!(!merge.status.success());
+    let both = with(&kernel, &key("five", "5151"));
+    std::fs::write(
+        root.join(LIB),
+        format!(
+            "{CODE}\npub fn six(x: u64) -> u64 {{ x * 6161 }}\n\npub fn five(x: u64) -> u64 {{ x * 5151 }}\n"
+        ),
+    )
+    .expect("settle the code");
+    set_baseline(&root, &both);
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+    commit_all(&root, "merged streams");
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+    assert!(
+        out.summary.iter().any(|l| l.contains("joins starts")),
+        "{}",
+        out.report()
+    );
+
+    git(&root, &["reset", "-q", "--hard", "HEAD~1"]);
+    let _ = common::git_output(&root, &["merge", "-q", "--no-edit", "streams"]);
+    std::fs::write(
+        root.join(LIB),
+        format!(
+            "{CODE}\npub fn six(x: u64) -> u64 {{ x * 6161 }}\n\npub fn five(x: u64) -> u64 {{ x * 5151 }}\n\npub fn seven(x: u64) -> u64 {{ x * 7171 }}\n"
+        ),
+    )
+    .expect("settle the code");
+    set_baseline(&root, &with(&both, &key("seven", "7171")));
+    commit_all(&root, "merged streams with a line of its own");
+    started_twice(&root);
+}
+
 /// Marking the baseline binary would hide its diffs; the history is read as text and the attribute
 /// itself fails.
 #[test]

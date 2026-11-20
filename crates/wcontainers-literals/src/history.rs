@@ -8,7 +8,7 @@
 //! one of its parents (for the commit after a merge, of one of that merge's parents). Every such
 //! change, on every side, is listed by every run, so that none passes unseen.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -81,6 +81,13 @@ const AFTER_ARRIVAL: &str = "the init after the baseline arrived by a merge";
 const NEW_RULES: &str = "new rules, for literals already in the tree";
 /// Why a line added at a change of the rules is still growth.
 const NOT_THERE_BEFORE: &str = "new rules, but the literal was not in the tree before the change";
+/// Why a merge may join two starts.
+const JOINED: &str = "joins starts made where tracks adopted the check, without growth";
+const NO_CHECKER: &str =
+    "the checker is not in the tree, so no start can be shown to be a track adopting it";
+const REV_LIST: &str = "rev-list";
+const MERGES: &str = "--merges";
+const ANCESTRY_PATH: &str = "--ancestry-path";
 const SHALLOW: &str = "the git history is shallow, so the baseline's growth cannot be checked: fetch the whole history (git fetch --unshallow)";
 
 /// The keys of the literals in a file's text, given its path relative to the root.
@@ -382,6 +389,142 @@ impl Walker<'_> {
             }
         }
         Ok(out)
+    }
+
+    /// Why several starts of the file do not count as one, or none. They count as one when each
+    /// brought the checker's crate with it (a track adopting the check), and every merge where starts from
+    /// different parents meet holds no line that none of its parents held, so the baseline cannot
+    /// have grown through it. `pending` is a merge being made: its two tips and the baselines of
+    /// the working tree and of each tip. The merges that join starts go to `additions`.
+    fn starts_apart(
+        &mut self,
+        origins: &BTreeSet<String>,
+        tips: &[&str],
+        pending: Option<(&Keys, [&Keys; 2])>,
+    ) -> Result<Option<String>, String> {
+        let Some(checker) = self
+            .literals
+            .rules
+            .as_deref()
+            .and_then(|rules| Path::new(rules).parent()?.parent())
+            .map(|folder| folder.to_string_lossy().into_owned())
+        else {
+            return Ok(Some(NO_CHECKER.to_string()));
+        };
+        let has_checker = |revision: &str| -> Result<bool, String> {
+            let at = format!("{revision}{IN_REVISION}{checker}");
+            Ok(run(self.root, &[CAT_FILE, EXISTS, &at])?.status.success())
+        };
+        for origin in origins {
+            let mut brought = has_checker(origin)?;
+            for parent in self.parents(origin)? {
+                brought &= !has_checker(&parent)?;
+            }
+            if !brought {
+                return Ok(Some(format!(
+                    "{} did not bring the checker with it",
+                    short(origin)
+                )));
+            }
+        }
+        // Each merge reachable from the tips that descends from at least two starts.
+        let mut descends: BTreeMap<String, usize> = BTreeMap::new();
+        for origin in origins {
+            let mut args = vec![REV_LIST, MERGES, ANCESTRY_PATH];
+            args.extend(tips);
+            let exclude = format!("{EXCLUDE_PREFIX}{origin}");
+            args.push(&exclude);
+            for merge in text(self.root, &args)?.split_whitespace() {
+                *descends.entry(merge.to_string()).or_default() += 1;
+            }
+        }
+        let mut joins: Vec<(String, Vec<String>)> = Vec::new();
+        for (merge, _) in descends.into_iter().filter(|(_, n)| *n > 1) {
+            let parents = self.parents(&merge)?;
+            joins.push((merge, parents));
+        }
+        if pending.is_some() {
+            joins.push((
+                WORKING_TREE.to_string(),
+                tips.iter().map(|t| t.to_string()).collect(),
+            ));
+        }
+        let all: Vec<&String> = origins.iter().collect();
+        let mut met = HashSet::new();
+        for (merge, parents) in joins {
+            let mut sides = Vec::new();
+            for parent in &parents {
+                let mut side = BTreeSet::new();
+                for origin in &all {
+                    if self.is_ancestor(origin, parent)? {
+                        side.insert(*origin);
+                    }
+                }
+                sides.push(side);
+            }
+            let union: BTreeSet<&String> = sides.iter().flatten().copied().collect();
+            if sides.contains(&union) {
+                continue;
+            }
+            for (i, a) in all.iter().enumerate() {
+                for b in all.iter().skip(i + 1) {
+                    if union.contains(a) && union.contains(b) {
+                        met.insert((*a, *b));
+                    }
+                }
+            }
+            let (merged, theirs) = match (&pending, merge == WORKING_TREE) {
+                (Some((working, tips)), true) => {
+                    ((*working).clone(), tips.map(Clone::clone).to_vec())
+                }
+                _ => {
+                    let keys = |r: &str| -> Result<Keys, String> {
+                        Ok(self
+                            .version(r)?
+                            .map(|t| baseline::parse(&t))
+                            .unwrap_or_default())
+                    };
+                    let mut theirs = Vec::new();
+                    for parent in &parents {
+                        theirs.push(keys(parent)?);
+                    }
+                    (keys(&merge)?, theirs)
+                }
+            };
+            let grown: Vec<&String> = merged
+                .iter()
+                .filter(|(key, n)| {
+                    theirs
+                        .iter()
+                        .all(|t| t.get(*key).copied().unwrap_or_default() < **n)
+                })
+                .map(|(key, _)| key)
+                .collect();
+            if let Some(first) = grown.first() {
+                return Ok(Some(format!(
+                    "{} joins them with {} lines none of its parents held, such as {first}",
+                    if merge == WORKING_TREE {
+                        merge.clone()
+                    } else {
+                        short(&merge)
+                    },
+                    grown.len()
+                )));
+            }
+            self.additions.push(format!("{} {JOINED}", short(&merge)));
+        }
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                if !met.contains(&(*a, *b)) {
+                    return Ok(Some(format!(
+                        "{} and {} meet at no merge",
+                        short(a),
+                        short(b)
+                    )));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>, String> {
@@ -718,11 +861,14 @@ pub fn read(
         true => BTreeSet::new(),
         false => walker.origins(&tips)?,
     };
-    if origins.len() > 1 {
+    let pending = merging.then_some((working, [&committed, &from_merge]));
+    if origins.len() > 1
+        && let Some(why) = walker.starts_apart(&origins, &tips, pending)?
+    {
         let all: Vec<String> = origins.iter().map(|c| short(c)).collect();
         problems.push((
             format!(
-                "{rel} was started more than once, by {}: lines a second start brings are not checked",
+                "{rel} was started more than once, by {} ({why}): lines a second start brings are not checked",
                 all.join(crate::NOTE_LIST_SEPARATOR)
             ),
             STARTED_TWICE,
