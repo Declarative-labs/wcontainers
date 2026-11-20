@@ -1626,8 +1626,10 @@ What changes with it:
 - `Host` and `System` methods take `&self`, so a system keeps what it changes in atomics or behind its
   own locks. The shipped system needs no lock on a system call (4.2).
 
-**Two proposals of the embedding project, and what each would mean here.** The owner has ruled on
-neither (the brief's last section). The plan builds on neither.
+**Two proposals of the embedding project, and what each would mean here.** When the form before was
+written the owner had ruled on neither. Both now appear in the signatures he ruled on 2026-11-19:
+every hook there takes `&self`, and the hooks' `Process` has a `State`. The plan takes both as part of
+the interface. That `System` is also `Sync` does not follow from them, and stays decision 9.
 
 - **Hooks and services on `System` take `&self`, so that two hooks can run at once.** This plan asks for
   the same (decision 9), and needs it earlier than two hooks at once. From T1 on, several workers call
