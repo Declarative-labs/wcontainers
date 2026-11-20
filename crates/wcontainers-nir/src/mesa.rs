@@ -401,10 +401,13 @@ impl Drop for Nir {
     }
 }
 
-/// The converter's version in the cache's key: this crate's version and the Mesa it links (commit and
-/// build options, from `mesa/build`'s record).
+/// The converter's version in the cache's key: this crate's version, a hash of its sources and of
+/// the naga it writes, and the Mesa it links (commit and build options, from `mesa/build`'s
+/// record).
 pub const CONVERTER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("WCONTAINERS_NIR_SOURCES"),
     "+mesa.",
     env!("WCONTAINERS_MESA_MADE_FROM")
 );

@@ -91,6 +91,10 @@ const INTROSPECTED_TARGETS: &str = "meson-info/intro-targets.json";
 /// Between a variable and its value in `RUSTC_ENV`, and between the parts of the version.
 const ASSIGN: &str = "=";
 const VERSION_PARTS: &str = "+";
+/// The converter's own sources (this crate's Rust and bridge, and the naga whose module it makes),
+/// hashed into the converter's version, and the variable that hands the hash to the crate.
+const CONVERTER_SOURCES: &[&str] = &["src", "bridge", "../../third_party/naga/src"];
+const SOURCES_VARIABLE: &str = "WCONTAINERS_NIR_SOURCES";
 const SEARCH_FLAG: &str = "-L";
 const LIBRARY_FLAG: &str = "-l";
 const LIBRARY_PREFIX: &str = "lib";
@@ -154,6 +158,13 @@ fn main() {
         .expect("the record starts with the commit");
     let options = blake3::hash(recorded.as_bytes()).to_hex();
     println!("{RUSTC_ENV}{MESA_BUILD_VARIABLE}{ASSIGN}{commit}{VERSION_PARTS}{options}");
+    for folder in CONVERTER_SOURCES {
+        println!("{RERUN_IF_CHANGED}{folder}");
+    }
+    println!(
+        "{RUSTC_ENV}{SOURCES_VARIABLE}{ASSIGN}{}",
+        converter_sources_hash()
+    );
     println!(
         "{RUSTC_ENV}{LAVAPIPE_VARIABLE}{ASSIGN}{}",
         target_file(build, LAVAPIPE_TARGET).display()
@@ -163,6 +174,29 @@ fn main() {
         target_file(build, EGL_TARGET).display()
     );
     println!("{CFG}");
+}
+
+/// BLAKE3 of every file under `CONVERTER_SOURCES`, each path then its bytes, in path order.
+fn converter_sources_hash() -> String {
+    let mut files = Vec::new();
+    let mut folders: Vec<PathBuf> = CONVERTER_SOURCES.iter().map(PathBuf::from).collect();
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).expect("a converter source folder") {
+            let path = entry.expect("a folder entry").path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut hasher = blake3::Hasher::new();
+    for file in files {
+        hasher.update(file.to_string_lossy().as_bytes());
+        hasher.update(&std::fs::read(&file).expect("a converter source file"));
+    }
+    hasher.finalize().to_hex().to_string()
 }
 
 /// The file Meson builds for a target, from its introspection of the build.
