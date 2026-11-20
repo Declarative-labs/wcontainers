@@ -172,10 +172,31 @@ piece that does not fit its region's half placed far (a counted slow path); a ju
 still far. Expected (not measured): returns, calls through a register and jumps the table does not cover lose their
 far jumps, as the near-placement build showed for interpret (2.006 to 1.059), less the three instructions.
 
+The benchmark set with a stop after every counted event (kept in the kernel test since this run, kernel-every.log):
+bench 177,072 stops, hash 10937141521840235265, and calls.c 3,004 stops, each alike at none and 256 and with the same
+output as without the stops (0.9 s and 0.05 s). So the count at every counted event, interpret's known jump included,
+is the same across look-aheads.
+
+Suites after the change, all on the Mac (they need Hypervisor.framework or Docker; scripts/mac2.sh, suite/*.log, 01:27
+to 01:33, load 9 to 17): the kernel test; the differential test at three look-aheads with new seeds, 0 failing each:
+none 32,548 cases (seed 0x6e34161601), bounded 16 32,256 (0x6e341616016), bounded 256 32,598 (0x6e3416160256); busybox's
+56 commands as the reference at none and 256, and at none and whole page with the kernel test alike there too; floor (21
+cases and 1 measurement, 0 failed), probe (0 forms of 16 bytes or fewer differ, 44 larger as before), registers, exits
+(4 programs, 0 failed), carry, kept, interrupts (6449, 0 failed), the inside's and the policy crate's tests and the
+literal check's tests pass; the literal check exits 0. Lint with warnings denied: arm64 and guest-cpu (with and without
+default features), the translator's native feature, the inside (all targets and its softfloat target) and the policy
+crate on the rented ARM64 machine (arm1.log, arm2.log, which also ran the arm64, guest-cpu, inside and translator
+native tests: pass); the monitor's tests, which are macOS code, on the Mac. Literals: the baseline is unchanged at 8148
+lines (this track's own crates: the inside 25, the monitor 1); no new literal (one test value the check took for a
+kernel constant is written as its bytes).
+
 What N4 still needs, in order:
-1. The suites of this run on the Mac (below, when they end) and the push.
-2. The orchestrator's word on the table's size (Departures, For the orchestrator) and on the headroom.
-3. Loaded translations shared between processes: a question for the orchestrator (Departures, run 12).
+1. The orchestrator's word on the headroom (a pass by the bar's command, inside the layout luck by pairs) and on the
+   table's size (Departures, For the orchestrator).
+2. Loaded translations shared between processes: a question for the orchestrator (Departures, run 12).
+3. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none, 256 and whole
+   page; it now stops at every counted event too).
 
 ## N4 run 14 (2026-11-19): interpret's instructions itemized; the page test measured again
 
