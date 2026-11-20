@@ -64,7 +64,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   there gives) and kept translations in the monitor, in memory and in files of a directory (below, "N4 run 11"). Run 12
 wrote how the kernel's own writes meet the dirty marks and watches, and built a return's last target compared in line
 (run 7's option (b)): fib -16% and sort -10% cycles, the compute part +33.67% [+33.21 .. +34.68], still failing
-against +21.2%; the system-call part passes at 89.2 ns (below, "N4 run 12").
+against +21.2%; the system-call part passes at 89.2 ns (below, "N4 run 12"). Run 13 gave a call through a register
+the same last target (sort -22% cycles): the compute part is +27.94% [+27.41 .. +28.81], still failing against +21.2%;
+the system-call part passes at 89.5 ns (below, "N4 run 13").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -91,6 +93,67 @@ against +21.2%; the system-call part passes at 89.2 ns (below, "N4 run 12").
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 13 (2026-11-19): a call's last target
+
+Start: origin/main and origin/phase-1-literals had nothing new; no answer in the brief or the orchestrator's notes to
+the asks of run 12. Logs are in scratch native/n4r14. Lint and the platform-free tests ran on the rented ARM64 machine
+(arm1.log: clippy with warnings denied for arm64, guest-cpu with and without default features, the translator's native
+feature, the inside for all targets and its softfloat target, the monitor; the arm64, guest-cpu and inside tests pass;
+the literal check there stops because the copy is not a git checkout, so it ran on the Mac: exit 0, literals.log).
+What needs Hypervisor.framework, Docker or a git checkout ran on the Mac (-j 4).
+
+Built (plan 3.2, "A return's or call's last target", a departure like run 12's): a `blr xN` (xN neither x30 nor
+withheld) builds x30 first, its first move the call's commit point, then compares its target with its last target in
+line as a return does, and on a hit takes the direct branch the inside links; the slot is the miss's way. The inside
+needed no change (the words keep their places from the call into the inside). Changes: arm64 carry.rs `jump`; the
+carry test now expects the call into the inside after the commit point for `blr` and before it for `ret`; the
+interrupt test has a new function, a `blr` in a loop whose callee returns to one place, so both last targets are
+made and then hit under forced interrupts.
+
+Measured against run 12's build in alternating pairs (ab/ab.py, 6 pairs, load 15 to 20, n4r14/ab-blr.log; calls.c with
+one image for both): cycles sort 0.778, fib 1.012, calls.c 0.978, interpret 0.999, hash 0.998; instructions sort 0.930,
+the others within 0.1%.
+
+Tests after the change, on the Mac: carry passes (1,100,823 words, seed 11507291218515648293); forced interrupts 4255
+over 9 functions at 3 look-aheads, 0 failed (seed 0x14057b7ef767814f); the kernel test alike with the reference and the
+WebAssembly side at none and 256, the benchmark set's count at every stop the same at both (kernel.log). Then, all on
+the Mac (mac1.sh, mac1.log, 18:00 to 18:06, load 13 to 34): the kernel test again; the differential test at three
+look-aheads with new seeds, 0 failing each: none 32,448 cases (seed 0x6e34141401), bounded 16 32,507 (0x6e341414016),
+bounded 256 32,285 (0x6e3414140256); busybox's 56 commands as the reference at none and 256, and at none and whole page
+with the kernel test alike there too; floor (21 cases and 1 measurement, 0 failed), probe (0 forms of 16 bytes or fewer
+differ, 44 larger as before), registers, exits (4 programs, 0 failed, 426 pieces), the inside's and the policy crate's
+tests and the literal check's tests pass; the literal check exits 0.
+
+Speed bar after (n4r14/speed.log and speed.jsonl, 17:41 to 17:56, load 9 to 17, 15 pairs, look-ahead 256, seed 1, 2000
+resamples): compute part +27.94% [+27.41 .. +28.81], FAILS against +21.2% (run 12: +33.67%). Native against plain,
+cycles (instructions): fib +25.9 (+65.6), sieve +18.1 (+31.8), hash +3.1 (+27.2), sort +21.2 (+129.5), interpret +99.7
+(+105.1), matrix +28.1 (+66.0), walk +19.1 (+81.4), search +26.9 (+26.6); calls +47.7 (+92.0). Untranslated against
+plain, cycles: fib -3.1, sieve +7.6, hash -2.1, sort -5.6, interpret -6.5, matrix -13.1, walk +18.6, search -9.5, calls
+-18.6. Interpret ran on performance cores 29 to 30% of its cycles on every side (the Mac's other tracks), matrix 54 to
+74%, the rest near 100%. System-call part: 185.2 ns a call, the kernel's share 95.7 ns, the back end's 89.5 ns [89.2 ..
+91.0], PASSES against 100 ns; run again on its own (speed-syscalls.log, load 8 to 13): 90.3 ns [89.5 .. 91.2].
+
+Looked at, on the host (wall time only, alternating, load 8 to 14, a suite of this track running beside the second):
+- matrix's inner loop (n4r14/loop.c, loop.log): plain 7.96 ms, the native loop with only the count's add 8.56 (+7.5%),
+  the native loop as built (two page tests) 10.03 to 10.37 with its head 0, 16, 32 or 56 bytes into a 128-byte line and
+  8.88 to 8.93 (+12%) at 48. So in a loop this tight the page test costs +4 to +21% over the count's add alone, by
+  where the loop's head falls; run 11's A/B, which saw no change, had matrix's native side on efficiency cores
+  for 60% of its cycles and interpret 14% slower without the test, so it measured layout as much as the test.
+- an interpreter's dispatch (n4r14/dispatch.c, dispatch.log and dispatch2.log, 10^8 dispatches): the jump through the
+  slot as built +11 to +15% over a plain `br` through a table of host addresses; a jump through a table of host
+  addresses read with one load (range and alignment tests, `ldr`, `br`) +5 to +14%; with the dispatch copied into every
+  case, as native pieces have it, the slot +14 to +31%. So the slot's second indirect branch is a part of interpret's +100%, not
+  most of it; what the rest is has not been found.
+
+What N4 still needs, in order:
+1. The compute part of the bar (+27.94% against +21.2%): interpret (+99.7%) is most of what is left; without it the
+   other seven's geometric mean is about +20%. Beyond the slot (above) this track has not found where interpret's
+   cycles go; the bar needs a ruling (see "For the orchestrator").
+2. Loaded translations shared between processes: a question for the orchestrator (Departures).
+3. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none, 256 and whole
+   page).
 
 ## N4 run 12 (2026-11-19): a return's last target
 
@@ -2369,6 +2432,9 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 13: the same last target for a call through a register (`blr xN`, xN neither x30 nor withheld), x30 built
+  first so that a hit is one direct branch (sort -22.2% cycles, nothing slower beyond the noise). Plan 3.2 says so.
+
 - N4 run 12: plan 3.2 makes every return the jump through its target's slot. As built, a return through a register
   that is not withheld first compares its target with its last target in line and goes there by a direct branch the
   inside links (run 7's option (b), asked of the orchestrator since run 7 with no answer); the slot is the miss's way.
@@ -2563,6 +2629,16 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 13: (1) The last target is now also made for a call through a register (sort -22% cycles in alternating
+  pairs, nothing slower); please confirm it with run 12's for returns (Departures). (2) The compute part is +27.94%
+  [+27.41 .. +28.81] against +21.2%. Without interpret (+99.7%) the other seven's geometric mean is about +20%. A host
+  toy puts the slot's share of an interpreter's dispatch at +11 to +31% (a table of host addresses read with one load
+  would be +5 to +14%, but it is one more region of ours the guest's level can read, a decision 4 kind of difference),
+  so most of interpret's cost is still not found. (3) Correcting run 11's reading: in matrix's own inner loop on the
+  host the page test (decision 14's routing) costs +4 to +21% over the count's add alone, by where the loop's head
+  falls; run 11's A/B, which saw no change, ran matrix's native side mostly on efficiency cores. So the bar now
+  waits on decision 14, a ruling on the bar, or a different design for jumps through a register; which?
 
 - N4 run 12: (1) Run 7's option (a) is not sound as written: every slot address is what some guest jump computes, so a
   piece placed in the slot pages of guest addresses that cannot run code would be run by a guest jump to such an
