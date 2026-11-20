@@ -350,7 +350,6 @@ const CULL_VALUES_BINDING: u32 = 0;
 const CULL_DATA_BINDING: u32 = 1;
 /// Refusals by name, and what is malformed in a call.
 const WITHOUT_WORK: &str = "the stage helper without work";
-const GEOMETRY_TRIANGLE_STRIP_ADJACENCY: &str = "GeometryTriangleStripAdjacency";
 const STAGE_INDEX_U8: &str = "StageIndexU8";
 const STAGE_INDIRECT: &str = "StageIndirect";
 const DOMAIN_SETS: &str = "the sets of the stages after a domain stage";
@@ -997,9 +996,7 @@ impl<B: Backend> Stages<B> {
             T::LineListAdjacency => (LINE_ADJACENCY_VERTICES, false),
             T::LineStripAdjacency => (LINE_ADJACENCY_VERTICES, true),
             T::TriangleListAdjacency => (TRIANGLE_ADJACENCY_VERTICES, false),
-            T::TriangleStripAdjacency => {
-                return Err(StageError::Unsupported(GEOMETRY_TRIANGLE_STRIP_ADJACENCY));
-            }
+            T::TriangleStripAdjacency => (TRIANGLE_ADJACENCY_VERTICES, true),
             T::PatchList(n) => (u32::from(n), false),
         };
         let patches = matches!(draw.topology, T::PatchList(_));
@@ -1025,9 +1022,12 @@ impl<B: Backend> Stages<B> {
             }
             _ => {}
         }
-        let primitives = match strip {
-            false => count / n,
-            true => (count + 1).saturating_sub(n),
+        // A triangle strip with adjacency steps by two places, its first triangle taking six.
+        let adjacent_strip = draw.topology == T::TriangleStripAdjacency;
+        let primitives = match (strip, adjacent_strip) {
+            (false, _) => count / n,
+            (true, false) => (count + 1).saturating_sub(n),
+            (true, true) => (count / 2).saturating_sub(TRIANGLE_VERTICES - 1),
         };
         let streamed = self.stream.is_some() && draw.stream_output.is_some();
         let drawn = self.geometry.is_some()
@@ -1039,18 +1039,19 @@ impl<B: Backend> Stages<B> {
             return Ok(None);
         }
         let limits = backend.caps().limits;
-        // An indexed strip is first listed as an indexed list of its primitives (a restart index
-        // ending a strip, odd triangles taking their last two vertices swapped), which the stages
-        // then take as any list, with a place for every primitive the strip could have: those past
-        // the listed ones hold none.
-        let listed_total = strip && draw.index.is_some();
-        let (count, first, strip) = match &draw.index {
-            Some(index) if strip => {
+        // An indexed strip, and a triangle strip with adjacency, is first listed as an indexed list
+        // of its primitives (a restart index ending a strip, odd triangles taking their last two
+        // vertices swapped), which the stages then take as any list, with a place for every
+        // primitive the strip could have: those past the listed ones hold none.
+        let listed_total = strip && (draw.index.is_some() || adjacent_strip);
+        let (count, first, strip) = match listed_total {
+            true => {
                 let listed = primitives.checked_mul(n).ok_or(GpuError::OutOfMemory)?;
+                let index = draw.index.as_ref();
                 self.list_strip(backend, index, (first, count), n, listed)?;
                 (listed, 0, false)
             }
-            _ => (count, first, strip),
+            false => (count, first, strip),
         };
         let record_count = u64::from(count) * u64::from(instances);
         let record_bytes = record_count * u64::from(self.in_words) * u64::from(WORD);
@@ -1154,7 +1155,7 @@ impl<B: Backend> Stages<B> {
             _ => None,
         };
         let (index_bytes, index_offset, indices) = match (&draw.index, strip_list) {
-            (Some(_), Some(list)) => (WORD, tess::INDEX_HEADER * WORD, list),
+            (_, Some(list)) => (WORD, tess::INDEX_HEADER * WORD, list),
             (Some(index), None) => index_words(index, limits.min_storage_offset_alignment)?,
             (None, _) => (0, 0, self.unused_range(0)),
         };
@@ -1682,18 +1683,30 @@ impl<B: Backend> Stages<B> {
     }
 
     /// Records the strip program's dispatch listing the primitives of `vertices` each that the
-    /// draw's indices (`first` and `count` of them) make, into a list of `listed` places.
+    /// draw's places (`first` and `count` of its indices, or of its vertices without `index`) make,
+    /// into a list of `listed` places.
     fn list_strip(
         &mut self,
         backend: &mut B,
-        index: &StageIndex<'_, B>,
+        index: Option<&StageIndex<'_, B>>,
         (first, count): (u32, u32),
         vertices: u32,
         listed: u32,
     ) -> Result<(), StageError> {
         let limits = backend.caps().limits;
-        let (index_bytes, index_offset, indices) =
-            index_words(index, limits.min_storage_offset_alignment)?;
+        let (index_bytes, index_offset, indices) = match index {
+            Some(index) => index_words(index, limits.min_storage_offset_alignment)?,
+            // The stand-in's first range, borrowed apart from the strip program.
+            None => (
+                0,
+                0,
+                BufferRange {
+                    buffer: &self.unused,
+                    offset: 0,
+                    size: UNUSED_RANGE_BYTES,
+                },
+            ),
+        };
         let strips = match &mut self.strips {
             Some(s) => s,
             None => {
@@ -1714,8 +1727,8 @@ impl<B: Backend> Stages<B> {
         sv[at(offset_of!(StripValues, index_bytes))] = index_bytes;
         sv[at(offset_of!(StripValues, index_offset))] = index_offset;
         sv[at(offset_of!(StripValues, vertices))] = vertices;
-        sv[at(offset_of!(StripValues, restart))] = match index.format {
-            IndexFormat::U16 => u32::from(u16::MAX),
+        sv[at(offset_of!(StripValues, restart))] = match index.map(|i| i.format) {
+            Some(IndexFormat::U16) => u32::from(u16::MAX),
             _ => u32::MAX,
         };
         sv[at(offset_of!(StripValues, header))] = tess::INDEX_HEADER;
