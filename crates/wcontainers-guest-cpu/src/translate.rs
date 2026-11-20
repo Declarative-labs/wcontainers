@@ -706,10 +706,12 @@ pub enum Reason {
     LoopNotProven = 12,
     /// The engine's stack was nearly used up, so the thread left to the bottom loop (the unwind payload for it).
     StackNearlyFull = 13,
+    /// A page holding translated code was written without an announcement, so its pieces were dropped.
+    CodeWrittenWithoutAnnouncement = 14,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 14] = [
+    pub const ALL: [Reason; 15] = [
         Reason::TranslatedAtRunTime,
         Reason::LeftToAddress,
         Reason::ContinuedAfterStackLoss,
@@ -724,6 +726,7 @@ impl Reason {
         Reason::FaultWithoutExactRegisters,
         Reason::LoopNotProven,
         Reason::StackNearlyFull,
+        Reason::CodeWrittenWithoutAnnouncement,
     ];
 
     pub fn from_i32(value: i32) -> Option<Self> {
@@ -759,6 +762,7 @@ impl Reason {
             Reason::FaultWithoutExactRegisters => "fault without exact registers",
             Reason::LoopNotProven => "loop not proven",
             Reason::StackNearlyFull => "engine stack nearly full",
+            Reason::CodeWrittenWithoutAnnouncement => "code written without announcement",
         }
     }
 }

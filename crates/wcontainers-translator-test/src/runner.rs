@@ -13,7 +13,7 @@ use wasmtime::{
     SharedMemory, Store, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{Access, CounterReading, Exit, PAGE_SIZE, Permissions, Syscall, Warning};
-use wcontainers_guest_cpu::{HookBody, HookType, MemoryFault};
+use wcontainers_guest_cpu::{CodeChanges, HookBody, HookType, MemoryFault};
 pub use wcontainers_translator::contract::thread_state_size;
 use wcontainers_translator::contract::{self, Reason};
 use wcontainers_translator::{
@@ -167,8 +167,16 @@ pub struct Host<G: GuestTest> {
     table_base: u64,
     /// The stop hook raises the flag again before it says carry on, so the thread stops at every check.
     stop_everywhere: bool,
-    /// What each page allows, as the permission table says.
+    /// What each page allows, as the kernel last said; the table leaves out what the locks hold back.
     permissions: Vec<Permissions>,
+    /// The write locks the CPU side holds on each page, a bit for each reason (`LOCK_CODE`).
+    locks: Vec<u8>,
+    /// Translate the instruction at this address without locking its page, at the thread's next exact
+    /// `load_code` there: the write it faulted on runs once on the unlocked page.
+    exact_mark: Option<u64>,
+    /// Code translated at run time: the guest bytes each translation was made from, and the addresses it
+    /// gave its pieces.
+    run_time_loads: Vec<(Vec<Range<u64>>, Vec<u64>)>,
     pause: Option<PauseFunction<G>>,
     /// No limit on instances and tables: each piece made at run time and each fresh thread instance is one.
     limits: wasmtime::StoreLimits,
@@ -335,6 +343,9 @@ impl<G: GuestTest> Machine<G> {
                 table_base,
                 stop_everywhere: false,
                 permissions: vec![Permissions::empty(); permission_pages as usize],
+                locks: vec![0; permission_pages as usize],
+                exact_mark: None,
+                run_time_loads: Vec::new(),
                 pause: None,
                 limits: wasmtime::StoreLimitsBuilder::new()
                     .instances(usize::MAX)
@@ -372,6 +383,7 @@ impl<G: GuestTest> Machine<G> {
         let host = self.store.data_mut();
         host.exact_pieces.clear();
         host.placed.clear();
+        host.run_time_loads.clear();
         host.next_slot = contract::EXACT_SLOT as u32 + 1;
         let entries = host.slots as usize * 4;
         write_shared(
@@ -382,7 +394,11 @@ impl<G: GuestTest> Machine<G> {
         let loads = std::mem::take(&mut host.loads);
         let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
         for load in &loads {
-            pieces.push(instantiate(&mut self.store, load, false));
+            pieces.push(if load.dropped {
+                HashMap::new()
+            } else {
+                instantiate(&mut self.store, load, false)
+            });
         }
         let picks = self.store.data().picks.clone();
         apply_picks(&mut self.store, &pieces, &picks);
@@ -436,7 +452,21 @@ impl<G: GuestTest> Machine<G> {
         self.store.data_mut().picks.extend(picks);
     }
 
+    /// Write guest memory as the kernel does, past the page permissions; a page locked for code drops its
+    /// pieces first.
     pub fn write(&mut self, address: u64, bytes: &[u8]) {
+        let pages = address / PAGE_SIZE..(address + bytes.len() as u64).div_ceil(PAGE_SIZE);
+        for page in pages {
+            if self
+                .store
+                .data()
+                .locks
+                .get(page as usize)
+                .is_some_and(|l| l & LOCK_CODE != 0)
+            {
+                code_written(self.store.data_mut(), page);
+            }
+        }
         self.memory
             .write(&mut self.store, address as usize, bytes)
             .expect("write inside guest memory");
@@ -743,14 +773,97 @@ fn set_permissions<G: GuestTest>(host: &mut Host<G>, range: Range<u64>, permissi
     let state = host.state.as_ref().unwrap();
     // Each byte also says what the page after it allows, so rewrite the one before the range too.
     for page in pages.start.saturating_sub(1)..pages.end.min(host.permissions.len() as u64) {
-        let next = host
-            .permissions
-            .get(page as usize + 1)
-            .copied()
-            .unwrap_or(Permissions::empty());
-        let byte = contract::permission_byte(host.permissions[page as usize], next);
-        write_shared(state, (u64::from(PERMISSIONS_AT) + page) as usize, &[byte]);
+        write_permission_byte(host, state, page);
     }
+}
+
+/// A write lock the CPU side holds on a page: the page holds code it translated.
+const LOCK_CODE: u8 = 1;
+
+/// What the table says a page allows: what the kernel said, without writing while a lock is held.
+fn allowed<G: GuestTest>(host: &Host<G>, page: u64) -> Permissions {
+    let Some(&permissions) = host.permissions.get(page as usize) else {
+        return Permissions::empty();
+    };
+    if host.locks[page as usize] != 0 {
+        permissions - Permissions::WRITE
+    } else {
+        permissions
+    }
+}
+
+/// Write the permission table's byte for a page from what it and the next page allow.
+fn write_permission_byte<G: GuestTest>(host: &Host<G>, state: &SharedMemory, page: u64) {
+    let byte = contract::permission_byte(allowed(host, page), allowed(host, page + 1));
+    write_shared(state, (u64::from(PERMISSIONS_AT) + page) as usize, &[byte]);
+}
+
+/// Take or give back a write lock on a page, and write the table's bytes that show it.
+fn set_lock<G: GuestTest>(host: &mut Host<G>, page: u64, lock: u8, held: bool) {
+    let locks = &mut host.locks[page as usize];
+    let before = *locks;
+    if held {
+        *locks |= lock;
+    } else {
+        *locks &= !lock;
+    }
+    if (before == 0) != (*locks == 0) {
+        let state = host.state.clone().unwrap();
+        write_permission_byte(host, &state, page);
+        if let Some(previous) = page.checked_sub(1) {
+            write_permission_byte(host, &state, previous);
+        }
+    }
+}
+
+/// Lock for code every page a translation was made from (guest addresses), where code changes are detected
+/// by such writes.
+fn lock_code<G: GuestTest>(host: &mut Host<G>, read: &[Range<u64>]) {
+    if G::CODE_CHANGES != CodeChanges::Detected {
+        return;
+    }
+    for range in read {
+        for page in range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE) {
+            if (page as usize) < host.locks.len() {
+                set_lock(host, page, LOCK_CODE, true);
+            }
+        }
+    }
+}
+
+/// Code was written on a page locked for code: every piece translated from the page is dropped (the lookup
+/// forgets the addresses of every translation made from it), and the lock is given back. Counted.
+fn code_written<G: GuestTest>(host: &mut Host<G>, page: u64) {
+    let bytes = page * PAGE_SIZE..(page + 1) * PAGE_SIZE;
+    let touches = |read: &[Range<u64>]| {
+        read.iter()
+            .any(|r| r.start < bytes.end && bytes.start < r.end)
+    };
+    let mut forget: Vec<u64> = Vec::new();
+    for load in &mut host.loads {
+        if !load.dropped && touches(&load.read) {
+            load.dropped = true;
+            forget.extend(load.pieces.iter().map(|o| load.load_address + o));
+        }
+    }
+    host.run_time_loads.retain(|(read, addresses)| {
+        let stale = touches(read);
+        if stale {
+            forget.extend(addresses);
+        }
+        !stale
+    });
+    for address in forget {
+        set_slot(host, address, 0);
+    }
+    host.exact_pieces.clear();
+    set_lock(host, page, LOCK_CODE, false);
+    slow_path(
+        host,
+        Reason::CodeWrittenWithoutAnnouncement.number(),
+        page * PAGE_SIZE,
+        Duration::ZERO,
+    );
 }
 
 /// Run the pause function, if there is one.
@@ -943,6 +1056,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
              a4: i64,
              a5: i64|
              -> i64 {
+                caller.data_mut().exact_mark = None;
                 let call = Syscall {
                     number: number as u64,
                     arguments: [a0, a1, a2, a3, a4, a5].map(|a| a as u64),
@@ -962,6 +1076,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
         .unwrap();
     linker
         .func_wrap(HOOKS, HOOK_STOP, |mut caller: Caller<'_, Host<G>>| -> i32 {
+            caller.data_mut().exact_mark = None;
             let state = caller.data().state.clone().unwrap();
             write_shared(
                 &state,
@@ -998,6 +1113,21 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
             HOOKS,
             HOOK_MEMORY_FAULT,
             |mut caller: Caller<'_, Host<G>>, address: i64, access: i32| -> i32 {
+                let page = address as u64 / PAGE_SIZE;
+                let host = caller.data_mut();
+                host.exact_mark = None;
+                let locked_write = access == 1
+                    && host
+                        .locks
+                        .get(page as usize)
+                        .is_some_and(|l| l & LOCK_CODE != 0)
+                    && host.permissions[page as usize].contains(Permissions::WRITE);
+                if locked_write {
+                    code_written(host, page);
+                    let pc = pc_of::<G>(&snapshot(&mut caller));
+                    caller.data_mut().exact_mark = Some(pc);
+                    return UNWIND_GO_TO_EXACT;
+                }
                 slow_path(
                     caller.data_mut(),
                     Reason::MemoryFault.number(),
@@ -1034,7 +1164,9 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 let address = address as u64;
                 let table = lookup_table(&mut caller);
                 let exact_slot = contract::EXACT_SLOT as u64;
+                let unlocked = caller.data_mut().exact_mark.take() == Some(address) && exact == 1;
                 if exact == 1
+                    && !unlocked
                     && let Some(&piece) = caller.data().exact_pieces.get(&address)
                 {
                     table
@@ -1084,12 +1216,15 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 if exact == 1 {
                     let one = LookAhead::Bounded(1);
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, one, true);
+                    instantiate_code(&mut caller, code, offset, one, (true, unlocked));
                     let Some(wasmtime::Ref::Func(Some(piece))) = table.get(&mut caller, exact_slot)
                     else {
                         panic!("the piece is in the exact slot");
                     };
-                    caller.data_mut().exact_pieces.insert(address, piece);
+                    // A piece of an unlocked page may be written over unseen, so it is not kept.
+                    if !unlocked {
+                        caller.data_mut().exact_pieces.insert(address, piece);
+                    }
                 } else {
                     // Code made at run time never takes the place of a piece the lookup finds.
                     assert_eq!(
@@ -1099,7 +1234,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                     );
                     let look_ahead = (caller.data_mut().run_time)();
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, look_ahead, false);
+                    instantiate_code(&mut caller, code, offset, look_ahead, (false, false));
                 }
                 let time = start.elapsed();
                 slow_path(
@@ -1157,6 +1292,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
             HOOKS,
             HOOK_TRAP,
             |mut caller: Caller<'_, Host<G>>, kind: i32, detail: i64| {
+                caller.data_mut().exact_mark = None;
                 let kind = TrapKind::from_i32(kind).expect("known trap");
                 let stopped = match kind {
                     TrapKind::Undefined | TrapKind::Unsupported => {
@@ -1261,6 +1397,10 @@ fn set_slot<G: GuestTest>(host: &Host<G>, address: u64, slot: u32) {
 /// table.
 struct Load {
     load_address: u64,
+    /// The guest bytes the translation was made from.
+    read: Vec<Range<u64>>,
+    /// Code was written over what it was made from, so its pieces are gone.
+    dropped: bool,
     modules: Vec<Module>,
     /// The blob offsets of each module's pieces, in slot order.
     module_pieces: Vec<Vec<u64>>,
@@ -1295,6 +1435,12 @@ fn translate_load<G: GuestTest>(
 fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load {
     Load {
         load_address,
+        read: translation
+            .read
+            .iter()
+            .map(|r| load_address + r.start..load_address + r.end)
+            .collect(),
+        dropped: false,
         pieces: translation.pieces().collect(),
         module_pieces: translation
             .modules
@@ -1310,17 +1456,27 @@ fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load
 }
 
 /// Translate and instantiate code reached at run time: the code bytes at a load address, from one start.
+/// With `exact`, the one piece goes in the exact slot; with `unlocked` too, its page is not locked for code.
 fn instantiate_code<G: GuestTest>(
     store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
     code: (&[u8], u64),
     start: u64,
     look_ahead: LookAhead,
-    exact: bool,
+    (exact, unlocked): (bool, bool),
 ) {
     let range = 0..code.0.len() as u64;
     let how = (look_ahead, store.as_context().data().optimise);
     let load = translate_load(store, code, range, &[start], how, Omit::default());
-    instantiate(store, &load, exact);
+    let mut store = store.as_context_mut();
+    // `instantiate` locks the pages of every load but an exact one.
+    if exact && !unlocked {
+        lock_code(store.data_mut(), &load.read);
+    }
+    let slots = instantiate(&mut store, &load, exact);
+    if !exact {
+        let addresses = slots.into_keys().collect();
+        store.data_mut().run_time_loads.push((load.read, addresses));
+    }
 }
 
 /// Give each address picked the piece of the load picked for it, from each load's pieces by address and
@@ -1332,7 +1488,9 @@ fn apply_picks<G: GuestTest>(
 ) {
     let host = store.as_context().data();
     for &(address, load) in picks {
-        set_slot(host, address, pieces[load][&address]);
+        if let Some(&slot) = pieces[load].get(&address) {
+            set_slot(host, address, slot);
+        }
     }
 }
 
@@ -1345,6 +1503,9 @@ fn instantiate<G: GuestTest>(
     exact: bool,
 ) -> HashMap<u64, u32> {
     let mut store = store.as_context_mut();
+    if !exact {
+        lock_code(store.data_mut(), &load.read);
+    }
     let table = lookup_table(&mut store);
     let host = store.data();
     let thread = host.thread.unwrap();

@@ -119,6 +119,11 @@ impl<G: Guest> Planned<'_, G> {
         self.functions.iter().map(|f| f.entry).collect()
     }
 
+    /// Every instruction decoded while finding and planning, by offset and length.
+    pub(crate) fn decoded(&self) -> impl Iterator<Item = (u64, u8)> + '_ {
+        self.finder.decoded.iter().map(|(&o, d)| (o, d.length))
+    }
+
     /// What made an entry one: [`Means::Given`] for every start of the plan.
     pub(crate) fn means(&self, entry: u64) -> Means {
         self.finder

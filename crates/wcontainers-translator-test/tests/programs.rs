@@ -758,3 +758,37 @@ fn cut_functions_and_split_translations_match_linux_x86_64() {
 fn stops_at_every_check_change_nothing_x86_64() {
     stops_at_every_check_change_nothing::<X86_64>(&[("strings", &[])]);
 }
+
+#[test]
+fn unwinding_matches_linux_x86_64() {
+    unwinding_matches_linux::<X86_64>();
+}
+
+#[test]
+fn stacks_switched_by_the_program_match_linux_x86_64() {
+    stacks_switched_by_the_program_match_linux::<X86_64>();
+}
+
+/// x86's written code has no announcement: the second write is seen by the write lock on its page.
+#[test]
+fn written_code_and_null_calls_match_linux_x86_64() {
+    written_code_and_null_calls_match_linux::<X86_64>();
+}
+
+/// Code that writes the page it runs from: the next instruction's immediate on every pass of a loop, and an
+/// instruction's own first byte, which it runs as it was read. Every look-ahead as on Linux, each write
+/// to a page of translated code counted, and in Chrome.
+#[test]
+fn self_written_code_matches_linux_x86_64() {
+    for optimisation in ["-O0", "-O2"] {
+        let blob = build::<X86_64>("self_written", optimisation, Library::C);
+        let theirs = native::<X86_64>(&blob);
+        assert_eq!(theirs.status, 0, "{}", blob.name);
+        every_look_ahead_matches::<X86_64>(&blob, &theirs, |what, machine| {
+            let written = machine.count(Reason::CodeWrittenWithoutAnnouncement);
+            eprintln!("{what}: code written without announcement {written} times");
+            assert!(written >= 200, "{what}");
+        });
+        full_matches_in_chrome::<X86_64>(&blob, &theirs);
+    }
+}
