@@ -24,9 +24,9 @@ use wcontainers_translator::{
 use zerocopy::{FromBytes, IntoBytes};
 
 /// Where the thread block sits in the state memory.
-const BLOCK_AT: u32 = 0;
+pub const BLOCK_AT: u32 = 0;
 /// Where the permission table starts in the state memory.
-const PERMISSIONS_AT: u32 = 4096;
+pub const PERMISSIONS_AT: u32 = 4096;
 
 /// What a system call does in this runner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

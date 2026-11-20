@@ -28,6 +28,7 @@ use wcontainers_guest_cpu::{
 };
 use wcontainers_translator::contract::{self, permission_byte};
 use wcontainers_translator::{LookAhead, Optimise, Sites, Translation, thread_module, translate};
+use wcontainers_translator_test::runner;
 
 /// The test CPU, with flags or without.
 #[derive(Clone, Copy, Debug)]
@@ -909,8 +910,8 @@ const DATA: u64 = 0x40000;
 /// The stack pointer at the start, the top of readable and writable pages from 0x70000.
 const STACK: u64 = 0x80000;
 const MEMORY_BYTES: u64 = 0x100000;
-const BLOCK_AT: usize = 0;
-const PERMISSIONS_AT: usize = 4096;
+const BLOCK_AT: usize = runner::BLOCK_AT as usize;
+const PERMISSIONS_AT: usize = runner::PERMISSIONS_AT as usize;
 const SLOTS_AT: usize = 8192;
 
 /// A hook call.
