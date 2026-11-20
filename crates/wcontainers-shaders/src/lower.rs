@@ -317,9 +317,9 @@ impl<'a> Lowering<'a> {
                 })
                 .map(|(kind, space, register, op)| {
                     let length = declared_length(variant, kind, op)?;
-                    let end = register.checked_add(length).ok_or_else(|| {
-                        malformed("a resource array past the last register".into())
-                    })?;
+                    let end = register
+                        .checked_add(length)
+                        .ok_or_else(|| malformed(ARRAY_PAST_LAST_REGISTER.into()))?;
                     Ok((register..end).map(move |r| (rank(kind), space, r)))
                 })
                 .collect::<Result<Vec<_>>>()?
@@ -5071,6 +5071,9 @@ fn non_finite(ty: &Ty, lits: &[u64]) -> bool {
     ty.members.iter().all(|m| m.scalar == scalar::F32)
         && lits.iter().any(|&l| !f32::from_bits(l as u32).is_finite())
 }
+
+/// A resource array whose last register is past the largest a register number holds.
+const ARRAY_PAST_LAST_REGISTER: &str = "a resource array past the last register";
 
 /// The element count of resource declaration `op` of `kind`: its own, or for an array declared
 /// without a length (a count of zero), the rest of the layout's register range holding its first

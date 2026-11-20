@@ -235,7 +235,7 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
 /// Direct3D's opcode of a sampler declaration, an instruction's length in words (bits 24 to 30 of its
 /// first word), and the word of a declaration holding its last register (after the opcode, operand,
 /// id and first register).
-const DCL_SAMPLER: u32 = 0x5a;
+const SAMPLER_DECLARATION: u32 = 0x5a;
 const OPCODE_BITS: u32 = 0x7ff;
 const LENGTH_SHIFT: u32 = 24;
 const LENGTH_BITS: u32 = 0x7f;
@@ -244,7 +244,6 @@ const LAST_REGISTER_WORD: usize = 4;
 const PROGRAM_HEADER_WORDS: usize = 4;
 /// A last register far past any binding range.
 const FAR_REGISTER: u32 = 0x3fff_ffff;
-const WORD: usize = size_of::<u32>();
 
 /// A signed shader (model 5.1) declaring a sampler array whose last register is far past any
 /// binding: refused by name, where its register list once asked for gigabytes (past
@@ -253,18 +252,21 @@ const WORD: usize = size_of::<u32>();
 fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/ps_spaces.dxbc");
     let mut b = std::fs::read(path).unwrap();
-    let word =
-        |b: &[u8], i: usize| u32::from_le_bytes(b[WORD * i..WORD * (i + 1)].try_into().unwrap());
+    let words: Vec<u32> = b
+        .chunks_exact(size_of::<u32>())
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .collect();
     let tag = u32::from_le_bytes(*b"SHEX");
-    let mut at = (0..b.len() / WORD)
-        .find(|&i| word(&b, i) == tag)
+    let mut at = words
+        .iter()
+        .position(|&w| w == tag)
         .expect("the program chunk")
         + PROGRAM_HEADER_WORDS;
-    while word(&b, at) & OPCODE_BITS != DCL_SAMPLER {
-        at += ((word(&b, at) >> LENGTH_SHIFT) & LENGTH_BITS) as usize;
+    while words[at] & OPCODE_BITS != SAMPLER_DECLARATION {
+        at += ((words[at] >> LENGTH_SHIFT) & LENGTH_BITS) as usize;
     }
-    let last = WORD * (at + LAST_REGISTER_WORD);
-    b[last..last + WORD].copy_from_slice(&FAR_REGISTER.to_le_bytes());
+    let last = size_of::<u32>() * (at + LAST_REGISTER_WORD);
+    b[last..last + size_of::<u32>()].copy_from_slice(&FAR_REGISTER.to_le_bytes());
     sign(&mut b);
     assert_eq!(
         convert(Source::Dxbc(&b), &VariantKey::default(), None).map(|_| ()),
