@@ -1691,9 +1691,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::format_support	16
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::format_support	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::format_support	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::write_texels	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	24
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	4
@@ -2408,7 +2405,6 @@ code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	"WEBGL_AN
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	r"C:\wc\tools\angle-mozangle-0.7.1"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::make	"wcontainers direct3d 11: no WebGL 2 back end: {e}"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::own_directory	"\\"
-code	crates/wcontainers-directx/src/com/chosen.rs	str	webgpu::add_window	"wcontainers direct3d 11: no surface for the window: {e}"
 code	crates/wcontainers-directx/src/com/context.rs	int	<Bound as Default>::default	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_render_target_view	4

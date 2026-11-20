@@ -12,6 +12,10 @@ use std::process::Command;
 
 use common::{fresh, place_libraries, profile};
 use wcontainers_directx::com::FEATURES_OFF;
+use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_SINT, DXGI_FORMAT_R32_UINT,
+};
 
 /// Runs example `name` from `dir` (copying it there) with `args`, returning its exit code and output.
 fn run_with(name: &str, dir: &Path, args: &[&str]) -> (i32, String) {
@@ -262,6 +266,212 @@ fn typed_storage_stores_as_direct3d_does() {
 }
 
 /// `ClearView` clears a target's rectangles, clipped to the target, and a whole storage view.
+/// The format support bits compared with real Direct3D: all but the multisampling bits (sample
+/// counts per format are a listed shortfall, plan section 9), monochrome text, and video's (no
+/// video device), which are the bits from `DECODER_OUTPUT` up; of the second word, atomics and
+/// typed stores, typed loads where Direct3D requires them (the 32-bit single-component formats),
+/// and no tiling, sharing or logic operations, which are absent.
+const COMPARED_SUPPORT1: i32 = !(D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET.0
+    | D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD.0
+    | D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE.0
+    | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE_MONO_TEXT.0)
+    & (D3D11_FORMAT_SUPPORT_DECODER_OUTPUT.0 - 1);
+const COMPARED_SUPPORT2: i32 = D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD.0
+    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS.0
+    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE.0
+    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE.0
+    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX.0
+    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX.0
+    | D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0;
+
+/// Video formats Microsoft's tables leave optional at 11_0, which ours reports absent altogether.
+const OPTIONAL_FORMATS_ABSENT: &[DXGI_FORMAT] = {
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    &[
+        DXGI_FORMAT_AYUV,
+        DXGI_FORMAT_Y410,
+        DXGI_FORMAT_Y416,
+        DXGI_FORMAT_P010,
+        DXGI_FORMAT_P016,
+        DXGI_FORMAT_Y210,
+        DXGI_FORMAT_Y216,
+        DXGI_FORMAT_NV11,
+        DXGI_FORMAT_AI44,
+        DXGI_FORMAT_IA44,
+        DXGI_FORMAT_P8,
+        DXGI_FORMAT_A8P8,
+    ]
+};
+
+/// Formats whose compared support differs from the RTX 3080's: each with the bits of both words
+/// that differ and why (the status file's Departures name each shortfall).
+const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    const THREE_D: i32 = D3D11_FORMAT_SUPPORT_TEXTURE3D.0;
+    const BLOCK_3D: &str = "3D textures of block-compressed formats (Caps has no sliced 3D)";
+    const TARGET: i32 = D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
+        | D3D11_FORMAT_SUPPORT_BLENDABLE.0
+        | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN.0;
+    const VIDEO_STORAGE: i32 =
+        D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0 | D3D11_FORMAT_SUPPORT_SHADER_GATHER.0;
+    &[
+        (
+            DXGI_FORMAT_R32G32B32_FLOAT,
+            D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | D3D11_FORMAT_SUPPORT_SHADER_GATHER.0,
+            0,
+            "sampling, optional, served where the back end filters it",
+        ),
+        (
+            DXGI_FORMAT_R10G10B10A2_UNORM,
+            D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
+            0,
+            "back buffer views of other formats than the sRGB twin",
+        ),
+        (
+            DXGI_FORMAT_R8G8_B8G8_UNORM,
+            D3D11_FORMAT_SUPPORT_TEXTURE1D.0 | THREE_D,
+            0,
+            "1D and 3D textures of packed pairs",
+        ),
+        (
+            DXGI_FORMAT_G8R8_G8B8_UNORM,
+            D3D11_FORMAT_SUPPORT_TEXTURE1D.0 | THREE_D,
+            0,
+            "1D and 3D textures of packed pairs",
+        ),
+        (DXGI_FORMAT_BC1_TYPELESS, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC1_UNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC1_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC2_TYPELESS, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC2_UNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC2_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC3_TYPELESS, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC3_UNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC3_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC4_TYPELESS, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC4_UNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC4_SNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC5_TYPELESS, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC5_UNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC5_SNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC6H_TYPELESS, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC6H_UF16, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC6H_SF16, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC7_TYPELESS, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC7_UNORM, THREE_D, 0, BLOCK_3D),
+        (DXGI_FORMAT_BC7_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
+        (
+            DXGI_FORMAT_B5G6R5_UNORM,
+            TARGET,
+            0,
+            "B5G6R5 targets: the back end has no such target",
+        ),
+        (
+            DXGI_FORMAT_B5G5R5A1_UNORM,
+            TARGET,
+            0,
+            "B5G5R5A1 targets: the back end has no such target",
+        ),
+        (
+            DXGI_FORMAT_B8G8R8X8_UNORM,
+            D3D11_FORMAT_SUPPORT_BUFFER.0 | D3D11_FORMAT_SUPPORT_IA_VERTEX_BUFFER.0,
+            0,
+            "B8G8R8X8 elements: the interface has no vertex format giving X as 1",
+        ),
+        (
+            DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
+            D3D11_FORMAT_SUPPORT_TEXTURE2D.0
+                | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE.0
+                | D3D11_FORMAT_SUPPORT_DISPLAY.0
+                | D3D11_FORMAT_SUPPORT_CAST_WITHIN_BIT_LAYOUT.0
+                | D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
+            0,
+            "extended-range back buffers: the interface has no such format",
+        ),
+        (
+            DXGI_FORMAT_NV12,
+            VIDEO_STORAGE | D3D11_FORMAT_SUPPORT_BLENDABLE.0,
+            D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
+            "NV12 storage views, gathers and blending",
+        ),
+        (
+            DXGI_FORMAT_420_OPAQUE,
+            D3D11_FORMAT_SUPPORT_TEXTURE2D.0,
+            0,
+            "420_OPAQUE textures",
+        ),
+        (
+            DXGI_FORMAT_YUY2,
+            VIDEO_STORAGE,
+            D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
+            "YUY2 storage views and gathers",
+        ),
+    ]
+};
+
+#[test]
+fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
+    let (code, want) = run_with(
+        "own_cases",
+        &place("format_support-system", false),
+        &["format_support"],
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run_with(
+        "own_cases",
+        &place("format_support-ours", true),
+        &["format_support"],
+    );
+    assert_eq!(code, 0, "{got}");
+    let words = |l: &str| -> (i32, [i32; 3]) {
+        let mut w = l.split(' ').skip(1);
+        let format = w.next().unwrap().parse().unwrap();
+        let mut hex =
+            w.map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap() as i32);
+        (format, std::array::from_fn(|_| hex.next().unwrap()))
+    };
+    let mut differing = Vec::new();
+    let formats = |t: &str| {
+        t.lines()
+            .filter(|l| l.starts_with("format "))
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let (want, got) = (formats(&want), formats(&got));
+    for (w, g) in want.iter().zip(&got) {
+        let (format, [_, want1, want2]) = words(w);
+        let (_, [_, got1, got2]) = words(g);
+        let mut compared2 = COMPARED_SUPPORT2;
+        if [
+            DXGI_FORMAT_R32_FLOAT,
+            DXGI_FORMAT_R32_UINT,
+            DXGI_FORMAT_R32_SINT,
+        ]
+        .contains(&DXGI_FORMAT(format))
+        {
+            compared2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0;
+        }
+        if OPTIONAL_FORMATS_ABSENT.contains(&DXGI_FORMAT(format)) {
+            assert_eq!((got1, got2), (0, 0), "format {format}");
+            continue;
+        }
+        let diff1 = (want1 ^ got1) & COMPARED_SUPPORT1;
+        let diff2 = (want2 ^ got2) & compared2;
+        let named = SUPPORT_DIFFERENCES
+            .iter()
+            .find(|s| s.0 == DXGI_FORMAT(format))
+            .map_or((0, 0), |s| (s.1, s.2));
+        if (diff1, diff2) != named {
+            differing.push(format!(
+                "format {format}: support {want1:#010x} ours {got1:#010x} (differing {diff1:#x}), \
+                 support2 {want2:#010x} ours {got2:#010x} (differing {diff2:#x})"
+            ));
+        }
+    }
+    assert_eq!(want.len(), got.len());
+    assert!(differing.is_empty(), "{}", differing.join("\n"));
+}
+
 #[test]
 fn clear_view_of_rectangles_and_storage_as_direct3d_does() {
     case("clear_view");

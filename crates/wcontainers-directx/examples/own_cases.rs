@@ -13,7 +13,8 @@
 //! `aliased_msaa_lines` (the same lines without it),
 //! `biased_lines` (a constant depth bias on a line and points), `staged_bias` (the same bias on
 //! what geometry and tessellation stages rasterise), `aa_lines` (alpha-antialiased lines
-//! blended by their coverage) and `aa_strip_indexed` (the same as an indexed strip). Shaders are compiled by
+//! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip) and
+//! `format_support` (both words of every format's support). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -276,6 +277,28 @@ fn main() -> windows::core::Result<()> {
     unsafe { context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
 
     match case.as_str() {
+        "format_support" => {
+            for format in 0..=DXGI_FORMAT_B4G4R4A4_UNORM.0 {
+                let mut support2 = D3D11_FEATURE_DATA_FORMAT_SUPPORT2 {
+                    InFormat: DXGI_FORMAT(format),
+                    OutFormatSupport2: 0,
+                };
+                let r = unsafe {
+                    device.CheckFeatureSupport(
+                        D3D11_FEATURE_FORMAT_SUPPORT2,
+                        (&raw mut support2).cast(),
+                        size_of_val(&support2) as u32,
+                    )
+                };
+                let support1 = unsafe { device.CheckFormatSupport(DXGI_FORMAT(format)) };
+                println!(
+                    "format {format} {:#010x} {:#010x} {:#010x}",
+                    code(r),
+                    support1.unwrap_or(0),
+                    support2.OutFormatSupport2
+                );
+            }
+        }
         "atomics" => {
             // Each texel gets four threads' operations, which commute, so the result is fixed.
             let shader = cs("RWTexture2D<uint> u : register(u0);

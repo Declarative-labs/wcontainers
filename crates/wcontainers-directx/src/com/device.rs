@@ -1197,11 +1197,20 @@ impl Device_Impl {
     }
 
     pub(super) fn check_format_support(&self, format: DXGI_FORMAT) -> Result<u32> {
-        match self.front.borrow().format_support(format.0 as u32) {
-            // Direct3D's answer for a format the device does not support at all.
-            0 => Err(windows::Win32::Foundation::E_FAIL.into()),
-            bits => Ok(bits),
+        self.format_support_words(format).map(|s| s.support1)
+    }
+
+    /// Both words of a format's support; Direct3D's failure for a format the device does not
+    /// support at all.
+    fn format_support_words(
+        &self,
+        format: DXGI_FORMAT,
+    ) -> Result<wcontainers_direct3d_11::FormatSupport> {
+        let s = self.front.borrow().format_support(format.0 as u32);
+        if s.is_empty() {
+            return Err(windows::Win32::Foundation::E_FAIL.into());
         }
+        Ok(s)
     }
 
     /// `CheckMultisampleQualityLevels1`: tiled resources are not reported, so none of their
@@ -1294,8 +1303,11 @@ impl Device_Impl {
         }
         if feature == D3D11_FEATURE_FORMAT_SUPPORT2 {
             let d = unsafe { &mut *data.cast::<D3D11_FEATURE_DATA_FORMAT_SUPPORT2>() };
-            self.check_format_support(d.InFormat)?;
-            d.OutFormatSupport2 = 0;
+            // Direct3D fails a format with none of these uses.
+            d.OutFormatSupport2 = self.format_support_words(d.InFormat)?.support2;
+            if d.OutFormatSupport2 == 0 {
+                return Err(windows::Win32::Foundation::E_FAIL.into());
+            }
             return Ok(());
         }
         unsafe { std::ptr::write_bytes(data.cast::<u8>(), 0, want) };
