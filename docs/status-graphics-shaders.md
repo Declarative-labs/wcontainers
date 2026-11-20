@@ -2330,7 +2330,10 @@ at 9_3):
 - x86 machine (load 7 to 48 on 192 at the start): the crate's whole suite with every corpus
   (suite.log, 224 s): every test passes but `runner_shaders_give_their_recorded_verdicts` (A1,
   left failing as before). Clippy with warnings denied on Linux and on the desktop.
-- Literal check on the desktop (check.txt): passes; no line added.
+- Literal check on the desktop (check.txt): passes; no line added. This crate's baseline lines
+  (paths under src, build.rs, tests/*.rs and examples): 585.
+- Clean-up: the desktop's `C:\wc\target\phase-2-graphics-shaders` and the x86 machine's
+  `/work/target/graphics-shaders` deleted; scratch keeps the logs in `run58`.
 
 Run 57 (the NIR track's request of 2026-11-19: a public entry point for 15.4's rewrites):
 - Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the other branches
