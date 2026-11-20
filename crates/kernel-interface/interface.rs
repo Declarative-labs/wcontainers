@@ -53,7 +53,6 @@ pub trait Process {
     fn execution_config(&self) -> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>;
     fn state(&mut self) -> &mut Self::State;
     fn memory_id(&self) -> MemoryId;
-    fn processor_features(&self) -> &ProcessorFeatures;
 
     fn read_memory(
         &mut self,
@@ -171,7 +170,7 @@ pub struct SystemVSegmentId(pub i32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AnonymousMemoryId(pub u64);
 
-/// The optional processor features of one program, in its guest architecture's own form.
+/// A set of optional processor features, in one guest architecture's own form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessorFeatures {
     Arm64 { hwcap: u64, hwcap2: u64 },
