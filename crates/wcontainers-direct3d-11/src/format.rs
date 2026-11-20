@@ -178,13 +178,21 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
         (dxgi::R32G32B32_TYPELESS, _) => Rgb32Float,
         (dxgi::R16G16B16A16_TYPELESS, _) => Rgba16Float,
         (dxgi::R32G32_TYPELESS, _) => Rg32Float,
-        (dxgi::R32G8X24_TYPELESS, _) => Depth32FloatStencil8,
+        // The depth and stencil aspects' view formats name their group's textures too.
+        (
+            dxgi::R32G8X24_TYPELESS
+            | dxgi::R32_FLOAT_X8X24_TYPELESS
+            | dxgi::X32_TYPELESS_G8X24_UINT,
+            _,
+        ) => Depth32FloatStencil8,
         (dxgi::R10G10B10A2_TYPELESS, _) => Rgb10a2Unorm,
         (dxgi::R8G8B8A8_TYPELESS, _) => Rgba8Unorm,
         (dxgi::R16G16_TYPELESS, _) => Rg16Float,
         (dxgi::R32_TYPELESS, true) => Depth32Float,
         (dxgi::R32_TYPELESS, false) => R32Float,
-        (dxgi::R24G8_TYPELESS, _) => Depth24PlusStencil8,
+        (dxgi::R24G8_TYPELESS | dxgi::R24_UNORM_X8_TYPELESS | dxgi::X24_TYPELESS_G8_UINT, _) => {
+            Depth24PlusStencil8
+        }
         (dxgi::R8G8_TYPELESS, _) => Rg8Unorm,
         (dxgi::R16_TYPELESS, true) => Depth16Unorm,
         (dxgi::R16_TYPELESS, false) => R16Float,
