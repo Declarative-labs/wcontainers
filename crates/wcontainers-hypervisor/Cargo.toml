@@ -82,6 +82,10 @@ name = "interrupts"
 harness = false
 
 [[test]]
+name = "host_branches"
+harness = false
+
+[[test]]
 name = "probe"
 harness = false
 
