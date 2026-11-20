@@ -94,6 +94,9 @@ impl Personality for Arm64 {
     }
 }
 
+/// The bytes of every A64 instruction: one 32 bit word.
+pub const INSTRUCTION_BYTES: usize = size_of::<u32>();
+
 /// ARM64's words of the thread state after the block, which the kernel never sees.
 #[repr(C)]
 pub struct PrivateState {

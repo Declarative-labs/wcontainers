@@ -8,6 +8,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::process::Command;
+use wcontainers_arm64::Arm64;
+use wcontainers_guest_cpu::Guest;
 
 /// A binary to measure: its name, the image it comes from, the Alpine packages to add first, and its path
 /// there.
@@ -197,7 +199,8 @@ impl Binary {
             let start = instructions.iter().map(|r| r.start).min().unwrap();
             start..instructions.iter().map(|r| r.end).max().unwrap()
         };
-        let code = code.start.next_multiple_of(4)..code.end / 4 * 4;
+        let code =
+            code.start.next_multiple_of(Arm64::ALIGN)..code.end / Arm64::ALIGN * Arm64::ALIGN;
         let mut binary = Binary {
             name: name.to_string(),
             image,
@@ -212,7 +215,7 @@ impl Binary {
     /// An image offset for a guest address, if it is a whole instruction in the code.
     fn in_code(&self, base: u64, address: u64) -> Option<u64> {
         let offset = address.checked_sub(base)?;
-        (self.code.contains(&offset) && offset.is_multiple_of(4)).then_some(offset)
+        (self.code.contains(&offset) && offset.is_multiple_of(Arm64::ALIGN)).then_some(offset)
     }
 
     fn word(&self, base: u64, address: u64) -> Option<u64> {

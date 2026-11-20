@@ -363,7 +363,7 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
                 let mut registers = [0u64; 34];
                 registers[..31].copy_from_slice(&x);
                 registers[31] = sp;
-                registers[32] = flags << 28;
+                registers[32] = flags << wcontainers_abi::pstate::V.trailing_zeros();
                 registers[33] = thread_pointer;
                 // Loads and stores mostly reach the data area: the base points into it and an index is small.
                 // Elsewhere Rn and Rm may name general or vector registers.

@@ -9,6 +9,7 @@
 use crate::instruction::Rounding;
 use rustc_apfloat::ieee::{Double, Half, Single};
 use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
+use wcontainers_abi::pstate;
 
 /// One operation on elements of `size` bytes, as the meaning passes it to the hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -561,16 +562,16 @@ impl Context {
                 if (signaling && nan) || x.is_signaling() || y.is_signaling() {
                     self.flags |= IOC;
                 }
-                let nzcv: u64 = if nan {
-                    0b0011
+                // Arm's FPCompare.
+                return if nan {
+                    pstate::C | pstate::V
                 } else if x == y {
-                    0b0110
+                    pstate::Z | pstate::C
                 } else if x < y {
-                    0b1000
+                    pstate::N
                 } else {
-                    0b0010
+                    pstate::C
                 };
-                return nzcv << 28;
             }
             O::ToInteger {
                 signed,

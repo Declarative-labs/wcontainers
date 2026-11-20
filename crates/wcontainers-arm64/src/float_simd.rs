@@ -7,7 +7,7 @@ use crate::float::{
     step_fast, to_integer_fast,
 };
 use crate::instruction::*;
-use crate::meaning::Emitter;
+use crate::meaning::{Emitter, Flag};
 use crate::simd::{Input, map, replace, split_pairs};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 
@@ -55,13 +55,13 @@ fn compare<E: Emitter<Arm64> + ?Sized>(
     let finish = move |e: &mut E| {
         let mut s = e.sink();
         let (shift, mask, want, equal) = match holds {
-            Holds::Equal => (30, 1, 1, true),
-            Holds::GreaterOrEqual => (28, 3, 2, true),
-            Holds::Greater => (28, 7, 2, true),
-            Holds::LessOrEqual => (30, 3, 0, false),
-            Holds::Less => (31, 1, 1, true),
+            Holds::Equal => (Flag::Z.bit(), 1, 1, true),
+            Holds::GreaterOrEqual => (Flag::V.bit(), 3, 2, true),
+            Holds::Greater => (Flag::V.bit(), 7, 2, true),
+            Holds::LessOrEqual => (Flag::Z.bit(), 3, 0, false),
+            Holds::Less => (Flag::N.bit(), 1, 1, true),
         };
-        s.i64_const(shift)
+        s.i64_const(i64::from(shift))
             .i64_shr_u()
             .i64_const(mask)
             .i64_and()

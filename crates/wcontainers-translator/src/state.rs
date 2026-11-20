@@ -107,7 +107,7 @@ pub(crate) fn load_flag<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, fla
     block.push(s);
     Slot::flags::<G>().load(s);
     s.i32_const(bit as i32).i32_shr_u();
-    if bit != 31 {
+    if bit != u32::BITS - 1 {
         s.i32_const(1).i32_and();
     }
 }

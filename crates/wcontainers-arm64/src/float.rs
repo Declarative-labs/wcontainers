@@ -10,7 +10,7 @@
 use crate::Arm64;
 use crate::exact::Operation;
 use crate::instruction::*;
-use crate::meaning::{Emitter, Flags, Hook};
+use crate::meaning::{Emitter, Flag, Flags, Hook};
 use crate::simd::{extract, replace};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 
@@ -597,7 +597,10 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             e.condition(cond);
             e.sink().if_(BlockType::Result(ValType::I64));
             compare(e, signaling, size, a, b);
-            e.sink().else_().i64_const(i64::from(nzcv) << 28).end();
+            e.sink()
+                .else_()
+                .i64_const(i64::from(nzcv) << Flag::V.bit())
+                .end();
             let packed = e.local(ValType::I64);
             e.sink().local_set(packed);
             e.set_flags(Flags::Packed(packed));
@@ -726,16 +729,23 @@ fn compare_fast<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32)
         };
     };
     cmp(&mut s, Op::Lt);
-    s.i32_const(31).i32_shl();
+    s.i32_const(Flag::N.bit() as i32).i32_shl();
     cmp(&mut s, Op::Eq);
-    s.i32_const(30).i32_shl().i32_or();
+    s.i32_const(Flag::Z.bit() as i32).i32_shl().i32_or();
     // C is clear only when less.
     cmp(&mut s, Op::Lt);
-    s.i32_eqz().i32_const(29).i32_shl().i32_or();
+    s.i32_eqz()
+        .i32_const(Flag::C.bit() as i32)
+        .i32_shl()
+        .i32_or();
     // V: neither less nor greater or equal.
     cmp(&mut s, Op::Lt);
     cmp(&mut s, Op::Ge);
-    s.i32_or().i32_eqz().i32_const(28).i32_shl().i32_or();
+    s.i32_or()
+        .i32_eqz()
+        .i32_const(Flag::V.bit() as i32)
+        .i32_shl()
+        .i32_or();
     s.i64_extend_i32_u();
 }
 

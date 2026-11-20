@@ -6,7 +6,10 @@ use crate::meaning::{
     Carry, Control, Emitter, Flag, Flags, Hook, Host, Trap, condition_direct, condition_from_flags,
     emit, flag_value, untag,
 };
-use crate::{Arm64, EXCLUSIVE_ADDRESS, EXCLUSIVE_BYTES, EXCLUSIVE_VALUE, FLOAT_TRACKING, habits};
+use crate::{
+    Arm64, EXCLUSIVE_ADDRESS, EXCLUSIVE_BYTES, EXCLUSIVE_VALUE, FLOAT_TRACKING, INSTRUCTION_BYTES,
+    habits,
+};
 use core::mem::offset_of;
 use core::ops::Range;
 use wasm_encoder::{InstructionSink, ValType};
@@ -138,29 +141,33 @@ fn width_bits(width: Width) -> u8 {
 
 /// Whether a whole instruction sits at this offset of the code.
 fn inside(code: &Range<u64>, offset: u64) -> bool {
-    offset.is_multiple_of(4) && code.contains(&offset) && code.end - offset >= 4
+    offset.is_multiple_of(Arm64::ALIGN)
+        && code.contains(&offset)
+        && code.end - offset >= Arm64::MAX_LENGTH
 }
 
 fn word(blob: &[u8], offset: u64) -> u32 {
     let at = offset as usize;
-    u32::from_le_bytes(blob[at..at + 4].try_into().unwrap())
+    u32::from_le_bytes(blob[at..][..INSTRUCTION_BYTES].try_into().unwrap())
 }
 
 impl Guest for Arm64 {
     const ID: GuestId = GuestId::Arm64;
-    const ALIGN: u64 = 4;
-    const MAX_LENGTH: u64 = 4;
+    const ALIGN: u64 = INSTRUCTION_BYTES as u64;
+    const MAX_LENGTH: u64 = INSTRUCTION_BYTES as u64;
     type Instruction = Instruction;
 
     #[inline]
     fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
-        let word = u32::from_le_bytes(code.get(..4)?.try_into().unwrap());
-        Some((crate::decode(word), 4))
+        let word = u32::from_le_bytes(code.get(..INSTRUCTION_BYTES)?.try_into().unwrap());
+        Some((crate::decode(word), INSTRUCTION_BYTES as u8))
     }
 
     #[inline]
     fn trap_detail(code: &[u8]) -> i64 {
-        i64::from(u32::from_le_bytes(code[..4].try_into().unwrap()))
+        i64::from(u32::from_le_bytes(
+            code[..INSTRUCTION_BYTES].try_into().unwrap(),
+        ))
     }
 
     type Reg = Reg;
@@ -196,10 +203,10 @@ impl Guest for Arm64 {
 
     type Flag = Flag;
     const FLAGS: &'static [(Flag, u32, u32)] = &[
-        (Flag::N, 31, 32),
-        (Flag::Z, 30, 33),
-        (Flag::C, 29, 34),
-        (Flag::V, 28, 35),
+        (Flag::N, Flag::N.bit(), 32),
+        (Flag::Z, Flag::Z.bit(), 33),
+        (Flag::C, Flag::C.bit(), 34),
+        (Flag::V, Flag::V.bit(), 35),
     ];
     const FLAGS_WORD_OFFSET: usize = offset_of!(B, pstate);
     type Flags = Flags;
@@ -659,18 +666,20 @@ impl Guest for Arm64 {
                 rn,
                 operand: Operand::Imm(value),
                 ..
-            } if at >= 4 && inside(&code, at - 4) => match crate::decode(word(blob, at - 4)) {
-                Instruction::PcRelative {
-                    rd,
-                    page: true,
-                    offset: by,
-                } if rd == rn => Some(
-                    ((at - 4) & !crate::ADRP_PAGE_MASK)
-                        .wrapping_add_signed(by)
-                        .wrapping_add(value),
-                ),
-                _ => None,
-            },
+            } if at >= Self::ALIGN && inside(&code, at - Self::ALIGN) => {
+                match crate::decode(word(blob, at - Self::ALIGN)) {
+                    Instruction::PcRelative {
+                        rd,
+                        page: true,
+                        offset: by,
+                    } if rd == rn => Some(
+                        ((at - Self::ALIGN) & !crate::ADRP_PAGE_MASK)
+                            .wrapping_add_signed(by)
+                            .wrapping_add(value),
+                    ),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -683,9 +692,9 @@ impl Guest for Arm64 {
         code: Range<u64>,
         _before: impl Fn(u64) -> Option<(u64, Instruction)>,
     ) -> Option<Vec<u64>> {
-        let first = at.saturating_sub(4 * 64).max(code.start);
+        let first = at.saturating_sub(Self::ALIGN * 64).max(code.start);
         let before: Vec<(u64, Instruction)> = (first..at)
-            .step_by(4)
+            .step_by(INSTRUCTION_BYTES)
             .filter(|&o| inside(&code, o))
             .map(|o| (o, crate::decode(word(blob, o))))
             .collect();
