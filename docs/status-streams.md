@@ -32,7 +32,9 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   run 8). The third check found two blocking and six minor problems; run 9 settled them (see
   "S3 third check findings"), with a new test program (guest/edges.c, tests/edges.rs), the whole
   suite and the Mac-only binaries (no test fails by our side) and the speed with no hook
-  implemented (see "Measurements", S3 run 9). Next: S3's next independent check.
+  implemented (see "Measurements", S3 run 9). The fourth check found two blocking and three
+  minor problems; run 10 settled them (see "S3 fourth check findings"), with a new test program
+  (guest/taskend.c, tests/taskend.rs). Next: S3's next independent check.
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -292,13 +294,59 @@ crate's changes stashed, scratch streams/run9/negative1.log): "end 0x0 36000000.
 no one start", "step reader ... left: {} right: {905986048: 0}", and "worker handled 0 capped
 1" with the delivery after the worker's next call.
 
+## S3 fourth check findings, settled in run 10
+
+The check (scratch streams/s3check4, its own program chk4task.c and test chk4.rs) found:
+- Blocking, `execve` left the process's tasks away alive: a worker away put back after the main
+  thread ran a new program was placed in the new memory with the old registers, and with the first
+  thread away a new program's `SYS_exit` did not end the process. Now `only_thread` (Linux's
+  `de_thread`) ends the tasks away too (`end_tasks_away`), and `resume_tasks` hands back any task
+  its process no longer counts as away (`place_task` asks `process.away`), so one ended this way,
+  or whose number names a new task, is never placed. Tests
+  `a_task_away_when_its_main_thread_runs_a_new_program_ends_and_is_handed_back` and
+  `a_main_thread_away_when_another_thread_runs_a_new_program_ends_and_the_program_ends_with_its_thread`
+  (taskend.c `exec-main`, `exec-worker`, the latter running /proc/self/exe with the first thread
+  away).
+- Blocking, the number of a task away whose process ended was never freed, and `carried` ignored
+  tasks away. Now each task away that ends goes to `ids_let_go`; `carried` counts tasks away, the
+  processes whose context is away and their groups; the container's end also frees the numbers of
+  contexts away. Test `the_number_of_a_task_away_is_freed_when_its_process_ends` (taskend.c
+  `exit`: the number must be freed before the parent goes on).
+- Minor, /proc did not show a task away. Now `Away` keeps what /proc shows (`shown`, a `Leader`)
+  and a weak reference to its file system context: the thread count, the `task` directory,
+  `/proc/<tid>`, the state `T (stopped)`, the credentials, and the `exe`, `cwd` and `root` links
+  (also the process's when the first thread is away) show it. Its `fd` and `fdinfo` directories
+  are empty while it is away (the descriptor table is not held, as holding it would change who
+  closes the files). Test `proc_shows_a_task_away_as_a_task_of_its_process` (taskend.c `proc`,
+  `leader-proc`). The state is not compared (the reference's thread is in its read, not stopped).
+- Minor, the speed against S2 as merged: measured again with 20 rounds (see "Measurements", S3
+  run 10).
+- Minor, the last stores of a task away at its process's end were not made. Now a task away ends
+  as a thread does: `futex::task_end` (split from `thread_end`, working from the process's memory
+  and the task's number, so it needs no thread on the kernel) marks its robust locks and clears
+  and wakes its `set_tid_address` word, its semaphore adjustments are made (`exit_sem` now takes
+  the process), and a `vfork` parent it kept waiting is woken. Test
+  `a_robust_lock_held_by_a_task_away_is_marked_as_its_owners_death_when_its_process_ends`
+  (taskend.c `robust`: the parent's lock answers EOWNERDEAD).
+Found while fixing them, and fixed: a `vfork` parent whose child was taken (or whose child's
+context was) was let go at its next look (`vfork_wait` found no thread); now `Away` and
+`ProcessAway` keep the `vfork` parent and it waits. Test
+`a_vfork_parent_goes_on_when_its_child_away_is_killed` (taskend.c `vfork`: another child kills the
+taken child). Tasks away also count against `RLIMIT_NPROC` now (not tested).
+All six new tests fail without the kernel changes (ARM machine, scratch streams/run10/negative.log:
+"the kernel is idle with nothing to wake it" for exec-main, robust and vfork, "exec failed No such
+file or directory" for exec-worker, "threads 1 task-dirs 1 worker: exe 0 cwd 0 status 0 found 0"
+for proc, and the freed-number assertion for exit) and pass with them.
+Not done: a `pidfd` for a thread away is not woken when its process ends with it away; a task away
+dropped by the embedder instead of put back lets go of its descriptor table outside the kernel.
+
 ## How to run
 
 - The embedder's tests: `RUST_TEST_THREADS=3 nix develop -c cargo test -j 4 -p
   wcontainers-kernel-test --test embedder` (Docker must be running for the lazy memory test).
   Our side runs under `SCHEDULE_SEEDS` seeds (3 if unset) from `SCHEDULE_SEED` (1 if unset).
 - The stream tests: the same with `--test streams`; S3's tests: `--test embedder --test away
-  --test edges`.
+  --test edges --test taskend`.
 - The literal check: `RAYON_NUM_THREADS=3 nix develop -c cargo run -q -p wcontainers-literals --
   check` (exit 0).
 - Everything: `RUST_TEST_THREADS=3 nix develop -c cargo test --no-fail-fast -j 4 -p wcontainers-abi
