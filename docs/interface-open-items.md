@@ -11,14 +11,31 @@ The crates follow who implements them, because an implementation sits under its 
 conformance suite runs on one value of one implementation.
 
 - `crates/executor` (wcontainers-executor): `Executor`, `PerThreadWatch`. Implemented by each executor
-  (wasmtime, native, the test stand-ins). The process interface needs it for `ExecutionConfig<E>`.
-- `crates/process` (wcontainers-process): `Process`, `ProcessInfo`, `SuspendedProcess` and the data the
-  kernel hands out (the kernel's interface file of "shared memory is announced per process"). Implemented
-  by the kernel. `Process` is the root: the view and the suspended process are reached from it.
+  (wasmtime, native, the test stand-ins). The process interface needs it for `Kernel::Executor` and
+  `ExecutionConfig<E>`.
+- `crates/process` (wcontainers-process): `Kernel`, `Process`, `ProcessInfo` and the data the kernel hands
+  out (the kernel's interface file of "shared memory is announced per process"). Implemented by the
+  kernel. `Kernel` is the root its conformance suite takes; `Process` is not yet reached from it (see e).
 - `crates/system` (wcontainers-system): `System`. Implemented by the embedder (LocalSystem, the test
   hosts). Depends on the process interface, since every hook is handed a process.
 - `crates/container` (wcontainers-container): `Container`, `Interrupter`, `StopReason`, `GuestMachine`.
   Implemented by the runtime.
+
+Where `Kernel` lives. In wcontainers-process, beside `Process`. `Process` names `Kernel` (`type Kernel:
+Kernel`) and `Kernel` names `ExecutionConfig` (`resume_process`), which is in this crate, so a `Kernel`
+in a crate of its own would need this crate and this crate would need it: a cycle. A crate of its own
+would work only if `ExecutionConfig`, `ThreadOrdering` and `ReplayDeterminism` moved into it with
+`Kernel` (wcontainers-process would then depend on it); that moves ruled items to another crate and needs
+a folder name no ruling gives. This crate is already the kernel's interface file (the ids ruling says
+so), and the ruling's "the kernel is a trait" puts the kernel's public surface in an interface, which
+this one is. The folder `crates/kernel` was not used: its package would be `wcontainers-kernel`, the
+existing kernel crate's name. For the later move: the existing crate becomes an implementation of this
+interface, so it goes to `crates/process/implementation/<name>` (package `wcontainers-process-<name>`);
+renaming this interface's folder to `kernel` would then be free, but that is your call, not done here.
+Before either, `TaskId`, `Errno`, `siginfo` and `task_id_after` must leave wcontainers-kernel: this crate
+depends on wcontainers-kernel for them, and the kernel, implementing this crate, would depend on it: a
+cycle (see d). The kernel's struct is also called `Kernel` (kernel lib.rs:137); it would implement
+`wcontainers_process::Kernel` by path, so the two names do not clash.
 
 ## (a) Items in the files that were never ruled
 
@@ -38,48 +55,49 @@ executor/interface.rs
   (see b).
 
 process/interface.rs
-- line 19: `type Executor: Executor`. Where the executor parameter goes once `Process` is a trait is not
-  ruled (`Process<'_, E>` in "Evening of 2026-11-18", `Process<State = ...>` with no `E` in "shared memory
-  is announced per process"). An associated type keeps the ruled hook bound `P: Process<State =
-  Self::ProcessState>` exact.
-- line 23: `execution_config(&self) -> &ExecutionConfig<Self::Executor>`. The getter is ruled ("Agreed
+- line 1: the crate doc now names the kernel; line 16: the doc comment of `Kernel`.
+- lines 17 to 43 (`Kernel`) and 48, 68 to 78 (on `Process`) are as ruled ("suspend and resume by task,
+  and the process context"). Only rustfmt's line breaks differ.
+- lines 52 and 64: the executor is reached through the kernel, as `<Self::Kernel as Kernel>::Executor`,
+  in `execution_config` and in the `where` of `watch_thread_memory`. The ruling gives `Kernel` its
+  `type Executor` and `Process` its `type Kernel: Kernel`, and so settles where the executor parameter
+  goes; the spelling of the path is mine.
+- line 52: `execution_config(&self) -> &ExecutionConfig<...>`. The getter is ruled ("Agreed
   2026-11-18 night"); that it lends a reference is mine. By value it cannot be written by a kernel generic
   over its executor: `E::TranslatorConfig` has no bound, so the kernel cannot copy it out of `&self`
   (today's `ExecutionConfig` is `Copy`, so this never came up). The runtime already hands translator
   settings by reference (R container.rs:35, 103). The other way is `type TranslatorConfig: Clone` and a
   return by value. Your choice.
-- line 24: `state(&mut self) -> &mut Self::State`: the behaviour is ruled ("per-process state": handed over
+- line 53: `state(&mut self) -> &mut Self::State`: the behaviour is ruled ("per-process state": handed over
   with the process, mutable, no lock), the name and signature are not.
-- line 25: `memory_id(&self) -> MemoryId`: the getter is ruled (WorkloadPlacement, evening), the name is
+- line 54: `memory_id(&self) -> MemoryId`: the getter is ruled (WorkloadPlacement, evening), the name is
   not. See (d) on what the id means across exec.
-- line 27: `read_memory` returns `Result<impl Iterator<Item = &[u8]>, MemoryError>`. "Pieces of borrowed
+- line 56: `read_memory` returns `Result<impl Iterator<Item = &[u8]>, MemoryError>`. "Pieces of borrowed
   bytes" is ruled; the iterator type, the `Result` and `MemoryError` are not.
-- line 31: `write_memory` returns `Result<(), MemoryError>`: not ruled.
-- line 33: `watch_thread_memory`: the verb-first spelling of the ruled `memory_watch_thread`, and the
-  `where Self::Executor: PerThreadWatch` form of "only where the executor implements the subtrait". See
+- line 60: `write_memory` returns `Result<(), MemoryError>`: not ruled.
+- line 62: `watch_thread_memory`: the verb-first spelling of the ruled `memory_watch_thread`, and the
+  `where ...Executor: PerThreadWatch` form of "only where the executor implements the subtrait". See
   (e) for what that form does to a conformance suite.
-- line 36: `take_dirty_memory` returns `Vec<Range<u64>>` (today's type; not ruled).
-- line 39: `suspend` returns `impl SuspendedProcess<Self::Executor>`; line 52: `SuspendedProcess<E>` as
-  an empty trait (a kernel value cannot be plain data in an interface file).
-- lines 44 to 46: the accessor names `memory_mapped`, `ceiling_distance`, `compute_used` are today's;
+- line 65: `take_dirty_memory` returns `Vec<Range<u64>>` (today's type; not ruled).
+- lines 83 to 85: the accessor names `memory_mapped`, `ceiling_distance`, `compute_used` are today's;
   the ruling names the concepts ("memory mapped, distance to the ceiling, compute used").
-- line 47: `ProcessInfo::parent(&self) -> Option<TaskId>` (today's system.rs:256).
-- line 48: `ProcessInfo::is_inspected(&self) -> bool`. It is in the inspection proposal ("Proposed to the
+- line 86: `ProcessInfo::parent(&self) -> Option<TaskId>` (today's system.rs:256).
+- line 87: `ProcessInfo::is_inspected(&self) -> bool`. It is in the inspection proposal ("Proposed to the
   owner 2026-11-18 night, NOT ruled": "the kernel announces `on_inspection_starting` at the first and
   `on_inspection_ended` after the last; `ProcessInfo::is_inspected()`"), and that proposal was then
   "RULED" "as proposed above" ("Ruled and named by the owner, 2026-11-18 night"). The two hooks come from
   the same sentence, so all three are written. No later section names it again; strike it if your ruling
   covered only the line Linux draws.
-- lines 62, 69, 78, 86, 94: derives `Clone, Copy, Debug, PartialEq, Eq`, as today.
-- lines 93 to 101: `MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }`
+- lines 98, 105, 114, 122, 130: derives `Clone, Copy, Debug, PartialEq, Eq`, as today.
+- lines 129 to 137: `MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }`
   (today's system.rs:106).
-- line 107: `SignalInformation = siginfo`, the generated binding of Linux's `siginfo` (kernel
+- line 143: `SignalInformation = siginfo`, the generated binding of Linux's `siginfo` (kernel
   linux/general.rs:814). The ruling says "Linux's own record of a signal"; that it is this binding is
   my reading.
-- lines 110, 121, 125, 129, 133: derives `Clone, Copy, Debug, PartialEq, Eq, Hash` on `MemoryObject` and
+- lines 146, 157, 161, 165, 169: derives `Clone, Copy, Debug, PartialEq, Eq, Hash` on `MemoryObject` and
   its four ids, which distributed-everything's `MemoryShard` needs (workload-placement/interface.rs:5).
 - lines 13 and 14: `TaskId`, `Errno` and `siginfo` are imported from wcontainers-kernel (see d).
-- Every doc comment except the ruled one on `ReplayDeterminism::External` (line 72).
+- Every doc comment except the ruled one on `ReplayDeterminism::External` (line 109).
 
 system/interface.rs
 - line 4: `#![allow(unused_variables)]` (see f).
@@ -114,20 +132,25 @@ Kernel, crates/wcontainers-kernel/src/system.rs
       `P: Process<State = Self::ProcessState>`; default bodies `let _ = (...);` become `{}`.
 - [ ] New hooks `on_signal_delivering`, `on_shared_memory_mapping`, `on_shared_memory_unmapped`,
       `on_inspection_starting`, `on_inspection_ended`.
-- [ ] `pub struct Process<'a>` (227) becomes the trait `Process` (process 17), with `type State` and
-      `type Executor`.
-- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (process 43);
+- [ ] `pub struct Process<'a>` (227) becomes the trait `Process` (process 46), with `type State` and
+      `type Kernel`.
+- [ ] `pub struct Kernel` (lib.rs:137) implements the trait `Kernel` (process 17): `type Executor`,
+      `type SuspendedTask`, `type ProcessContext` and the five calls. Today's kernel has no suspend or
+      resume at all.
+- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (process 82);
       `info` returns `impl ProcessInfo` instead of `ProcessInfo<'_>`. New on it: `is_inspected`.
 - [ ] `execution_config(&self) -> ExecutionConfig` (284, by value) becomes
-      `-> &ExecutionConfig<Self::Executor>`.
+      `-> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>`.
 - [ ] `read_memory(&mut self, range) -> Result<Vec<u8>, MemoryError>` (289) becomes
       `-> Result<impl Iterator<Item = &[u8]>, MemoryError>`. Today the executor copies (`Cpu::read`,
       abi/cpu.rs:45); lending bytes needs a new executor operation.
 - [ ] `write_memory(&mut self, address: u64, bytes: &[u8])` (306) becomes
       `write_memory(&mut self, range: Range<u64>, bytes: &[u8])`.
 - [ ] `watch_thread_memory(...) -> Result<(), Unsupported>` (348), refused on every executor, becomes a
-      method that returns nothing and exists only `where Self::Executor: PerThreadWatch`.
-- [ ] New on `Process`: `state`, `memory_id`, `send_signal`, `suspend`.
+      method that returns nothing and exists only `where <Self::Kernel as Kernel>::Executor:
+      PerThreadWatch`.
+- [ ] New on `Process`: `state`, `memory_id`, `send_signal`, `suspend_tasks`, `suspend_process`,
+      `copy_process_context`.
 - [ ] `ExecutionConfig` (68): non-generic, two fields, `#[derive(Clone, Copy, Debug, PartialEq, Eq)]`,
       `impl Default` (73, Serial and Exact) and `supported()` (93). In the file: `ExecutionConfig<E:
       Executor>` with the ruled `translator: E::TranslatorConfig`, and no derives, no `Default`, no
@@ -171,7 +194,9 @@ Distributed Everything
 
 - Crate folders `executor`, `process`, `system`, `container` (packages `wcontainers-` and the folder).
   `kernel`, `abi` and `runtime` would give the names of existing packages.
-- `Process::Executor`, the associated type for the executor.
+- That `Kernel` is in wcontainers-process (see "Where `Kernel` lives").
+- The doc comment of `Kernel`: "A kernel, which suspends and resumes the tasks of its processes and their
+  contexts."
 - `Process::state` and `Process::memory_id`.
 - `Interrupter`.
 - The field types of `StopReason`: `until: Option<Duration>`, `status: i32`.
@@ -183,12 +208,16 @@ Distributed Everything
 
 ## (d) Ruled, but not written yet, and why
 
-- `kernel.process(id)` ("Evening of 2026-11-18"), `resume` taking `ExecutionConfig<E>`, and
-  `SuspendedProcess`'s `export` and `import` ("Ruled and named by the owner, 2026-11-18 night"; "Agreed
-  2026-11-18 night"). All need the kernel, and which value stands for the kernel in the interface is not
-  ruled (`Kernel` today; after "interrupting a running container", `run` holds the container and so the
-  kernel exclusively). That value also fixes the `State` and `Executor` of the handles it gives out.
-- `ExportedProcess`: its wire form is still open (rkyv with a patch, `unaligned` only, or hand-laid).
+- `kernel.process(id)` ("Evening of 2026-11-18"). The kernel is now the trait `Kernel`, but the ruling
+  lists only its five suspend and resume calls (with `// ...` for the rest), and how `process` is spelled
+  is not ruled: `Kernel` has no `State`, so what `State` the handle it returns has is open. `resume`
+  taking `ExecutionConfig<E>` is now written, as `resume_process`; `SuspendedProcess`, `export` and
+  `import` are replaced (below).
+- The wire form. It is now two forms, a task and a context, the context sent once for several tasks
+  (open in "suspend and resume by task"). `ExportedProcess` and its one form are replaced.
+- Whether the per-process state ("per-process state": handed over with the process) travels in the
+  `ProcessContext`: `resume_process` takes a context and a config only, and nothing says where the state
+  goes.
 - `let (mut container, interrupter) = runtime.container(...)`: its parameters' types (`Spec`, `Image`,
   `Error`, the executor's offer) exist only on phase-1-runtime, and its per-container translator settings
   conflict with the ruled per-process `ExecutionConfig<E>`. Without it nothing links an interrupter to
@@ -198,10 +227,6 @@ Distributed Everything
 - The memory id across exec. "the memory's id (true across vfork and exec)" (WorkloadPlacement, evening).
   The getter is written, but today exec makes a new memory and so a new `MemoryId` (loader.rs:292). The
   interface cannot say this; the kernel must keep the id, or the ruling must change.
-- Per-thread distribution. "Per-thread distribution is CORE ... So the kernel must be able to move one
-  task apart from its siblings" (WorkloadPlacement, evening). The late-evening section replaces that
-  section's trait, and may or may not replace this sentence. No operation for it was named, so none is
-  written; it would be a kernel operation, which waits on the kernel's value like `kernel.process(id)`.
 - `TaskId` "carries a generation" (first section): no later ruling withdraws it, the code has none, and a
   pid-sized id cannot hold one. `TaskId` is kept as today.
 - Where `TaskId` lives: the embedder hands it out, the process interface needs it, and the system
@@ -214,11 +239,21 @@ Distributed Everything
   wcontainers-abi, which this stage may not change.
 - The stream services as services of `System` (naming rule, "Later on 2026-11-18"): they stay on abi's
   `Host`; whether `Host` folds into `System` is not ruled.
-- How `import` and the container's first process are given a `ProcessState` value.
+- How a resumed process and the container's first process are given a `ProcessState` value.
 - `run` returning `StopReason` when the executor fails: today's run returns `Result<_, E::Failure>`;
   `run` is written exactly as ruled.
 
+Ruled before, and written now
+- Per-thread distribution ("Per-thread distribution is CORE ... the kernel must be able to move one task
+  apart from its siblings", WorkloadPlacement, evening). "The unit that moves is the TASK (per-thread
+  distribution is core)": a task is suspended and resumed apart from its siblings by `suspend_tasks` and
+  `resume_tasks` on `Kernel`, and by `suspend_tasks` on a hook's `Process`.
+
 Ruled once and replaced by a later ruling, so not written
+- `Process::suspend(self)` and `SuspendedProcess<E>`, with its `export` and `import`: replaced by
+  `suspend_tasks`, `suspend_process`, `copy_process_context` on `Process` and on `Kernel`, and
+  `resume_process` and `resume_tasks` on `Kernel` ("suspend and resume by task, and the process
+  context"). Removed from the files.
 - `Process::thread_ordering()`. "Build `ThreadOrdering`, `ReplayDeterminism` and the getter
   `Process::thread_ordering()` only" ("Correction, 2026-11-18 night"). Later the same night: "Getter
   `Process::execution_config()`" ("Agreed 2026-11-18 night"), and `ExecutionConfig` holds the
@@ -229,16 +264,67 @@ Ruled once and replaced by a later ruling, so not written
   that followed, and replaced by `resume` taking `ExecutionConfig<E>`.
 - `ThreadOrdering::replay_determinism`: "The getter on `ThreadOrdering` is gone".
 
+## (d2) What "suspend and resume by task, and the process context" settles, and what it leaves open
+
+Settled or changed by it
+- Where the executor parameter goes (a, process line 52): on `Kernel` as `type Executor: Executor`, and
+  `Process` reaches it through `type Kernel: Kernel`. The hook bound `P: Process<State =
+  Self::ProcessState>` stays exact. `Process::Executor` is gone.
+- Which value stands for the kernel (d): the trait `Kernel`.
+- `SuspendedProcess<E>` as an empty trait: gone, with `suspend`. The kernel's own types are now the
+  associated types `SuspendedTask` and `ProcessContext`.
+- `ExportedProcess` and its one wire form: replaced by two forms, still open (below).
+- `resume` taking `ExecutionConfig<E>`: written, as `resume_process`, and "given at resume, never stored
+  in the value".
+- The conformance root of the process interface (e): now the kernel, no longer the process.
+Not settled, and touched by it
+- `execution_config` lending a reference (a, line 52): unchanged, but `resume_process` takes the config
+  by value, so whoever resumes needs an owned `TranslatorConfig`; nothing in the traits gives one (e).
+- The per-container translator settings of `runtime.container(...)` (d): the ruling gives the config
+  per process at resume, which still conflicts with them.
+
+Open in the ruling itself
+
+- The wire form is two forms, a task and a context (context sent once for several tasks). Not written.
+- The batch that cannot wait inside a hook: a `suspend_tasks` from a hook that names other running tasks
+  of an exactly recorded process. The files say nothing about it.
+- Locks across machines: next with you, deferred. Nothing written.
+- A task can run only where a context for its process exists; the embedder coordinates. `resume_tasks`
+  hands such a task back, as ruled; nothing else is on the interface.
+- A consequence for the hooks, not resolved: a hook is generic over `P: Process<State =
+  Self::ProcessState>` and says nothing of `P::Kernel`, so a `System` cannot keep the `SuspendedTask`
+  or `ProcessContext` a hook's handle gives it except through `P`'s own types inside that call. Sending
+  them anywhere waits on the wire forms above. No ruled signature had to change for `Kernel` to exist.
+
 ## (e) Conformance: which state-building operations the traits lack
 
-Every suite is left empty. These are the operations each would need; none were added.
+Every suite but the process interface's is left empty. These are the operations each would need; none
+were added.
 
 - `Executor`: no methods, so there is nothing to test.
 - `PerThreadWatch`: `set_thread_permissions` can be called, but nothing it does can be checked. That needs
   a thread of the executor on a memory with mapped pages, and the trait has no way to make either (today
   `Cpu::memory_new` and `Cpu::thread_new` in abi).
-- `Process` (and `ProcessInfo` and `SuspendedProcess`, reached through it): a suite can be written on one
-  process, and every method can be called from it. A check found this, with a draft suite in
+- `Kernel`: the suite's one value is a kernel, the root of the crate. Written, with nothing from
+  outside: `suspend_no_tasks` (an empty batch takes no task: "it returns the tasks it took") and
+  `resume_no_tasks` (resuming no tasks hands none back: "both resume calls return what they did not
+  place"). Not written, and why:
+  - `suspend_process`, `copy_process_context` and the two checks you named (a context handed to
+    `resume_process` twice is handed back the second time; tasks handed to `resume_tasks` without their
+    context come back, after `suspend_process` took the context) all need the `TaskId` of a process
+    that is on the kernel. `Kernel` has no operation that gives one: none lists its processes or starts
+    one. The ruled `kernel.process(id)` would not help either, as it also takes an id.
+  - `resume_process` also needs an `ExecutionConfig<Self::Executor>`, and nothing makes its
+    `translator: E::TranslatorConfig`: the type has no bound (no `Clone`, no `Default`), and the only
+    config the traits show is lent by `Process::execution_config`, which a `Kernel` cannot reach.
+  - So the missing operations are: one on `Kernel` that gives a process on it (its id or its handle),
+    and one that gives an owned `TranslatorConfig` (for example `Clone` on it, with the getter).
+- `Process` (and `ProcessInfo`, reached through it): as a root, a suite can be written on one process,
+  and every method can be called from it. But the crate's one value is now a kernel, and `Kernel` gives
+  no `Process`; a process as the value instead would leave both resume calls unreachable, since `Process`
+  gives no way to its kernel. So `Process`'s methods are untested until `Kernel` hands out a process.
+  The checks below are what a process suite could hold once it is reached. A check found this, with a
+  draft suite in
   pyro-parked/wcontainers-scratch/orchestrator/interface-files/check-linter-and-code/wcontainers/crates/process/conformance/.
   - What can be checked now: the view, `id`, `memory_id` and `execution_config` read the same twice;
     a second `take_dirty_memory` in a row is empty; `state` gives the same place twice; bytes written read
@@ -248,8 +334,11 @@ Every suite is left empty. These are the operations each would need; none were a
   - A writable range for the write-and-read check comes only from the first `take_dirty_memory`, which
     today's code documents as "every page mapped writable" (system.rs:358). That meaning is not ruled.
     A ruled operation that maps memory into a process would remove the reliance.
-  - Missing: `resume`, so what `suspend` returns cannot be checked; and any way to observe `send_signal`.
-  - `watch_thread_memory` can be called from a suite function `where T::Executor: PerThreadWatch`, and the
+  - `suspend_tasks`, `suspend_process` and `copy_process_context` give tasks and a context, but only the
+    kernel resumes them, so what they return cannot be checked from a process alone. And nothing
+    observes `send_signal`.
+  - `watch_thread_memory` can be called from a suite function `where <T::Kernel as
+    Kernel>::Executor: PerThreadWatch`, and the
     linter counts it. But `tests!` calls every suite function on the one value, so an implementation
     whose executor lacks `PerThreadWatch` (today every executor) would fail to compile its conformance
     test. One conformance crate cannot serve a method that only some executors have. This needs your
@@ -266,16 +355,18 @@ Every suite is left empty. These are the operations each would need; none were a
 - `Interrupter`: `interrupt` can be seen only through the run of its container; the pair comes only from
   the creation call, which is in no trait.
 - One general point: `tests!` hands the same one value to every suite function of a crate. So a crate's
-  traits must hang from one root that the others are reached from (`Process` gives the view and the
-  suspended process). In `container` the root would be the creation call.
+  traits must hang from one root that the others are reached from. In `process` that is now `Kernel`,
+  which reaches nothing yet; `Process` reaches the view. In `container` the root would be the creation
+  call.
 
 ## (f) The linter, and the rules
 
 Run with the model check over the whole workspace (`cargo-reviewable reviewable check`). For the new
-crates there are 37 findings:
-- 36 `conformance-untested-method`: every method of every trait above, since the suites are empty. They
-  are kept as findings, as section (e) explains.
-- 1 `verb-not-first`: `memory_mapped` (process/interface.rs:44), read by the model as a verb in second
+crates there are 42 findings:
+- 41 `conformance-untested-method`: every method of every trait above but `Kernel::suspend_tasks` and
+  `Kernel::resume_tasks`, the two the process suite calls. They are kept as findings, as section (e)
+  explains.
+- 1 `verb-not-first`: `memory_mapped` (process/interface.rs:83), read by the model as a verb in second
   place. The name is today's and follows your words "memory mapped", so it is kept, not disputed;
   `mapped_memory` would pass.
 - `is_inspected` is disputed in reviewable-answers.toml. The model gave the right answer (first_word) at
@@ -283,7 +374,9 @@ crates there are 37 findings:
   one in the ruled proposal, so it is kept and the answer disputed: "its answer, first_word, is right: is_
   is the verb of a predicate, as in is_mapped and is_full". Remove the dispute if you would rather see it.
 
-The rest of the workspace, not yet in the layout, has 30,643 findings (30,680 in all).
+The rest of the workspace, not yet in the layout, has 30,643 findings (30,685 in all). The model's
+answers for the new names (`suspend_tasks`, `suspend_process`, `copy_process_context`, `resume_process`,
+`resume_tasks`, `suspend_no_tasks`, `resume_no_tasks`) are all first_word, at confidence 0.91 or more.
 
 Getters and the verb-first rule. "method names are verb first" ("Ruled by the owner, 2026-11-19
 afternoon"), and in the naming rules you agreed for the linter the same day, "getters stay noun phrases".
