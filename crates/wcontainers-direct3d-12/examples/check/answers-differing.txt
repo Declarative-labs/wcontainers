@@ -1,0 +1,9 @@
+# Every answer of ours at the edges of the API that differs from real Direct3D 12's on the RTX
+# 3080, as "key real ours" (see features-differing.txt for the rule).
+#
+# A writable buffer in a custom heap the CPU sees, write-back: refused by name ("unordered access
+# buffers in a custom heap the CPU sees", the front's own open part, status gap list).
+custom_buffer_write_back_uav ok notimpl
+#
+# A heap flag of shared heaps (D3D12_HEAP_FLAG_SHARED): shared resources are absent (section 9).
+heap_flag_0x1 ok notimpl

@@ -251,24 +251,31 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         }
     }
     if has(FormatUse::STORAGE_ATOMIC) {
-        s.support2 |= match value {
-            dxgi::R32_UINT | dxgi::R32_SINT => {
-                UAV_ATOMIC_ADD
-                    | UAV_ATOMIC_BITWISE_OPS
-                    | UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE
-                    | UAV_ATOMIC_EXCHANGE
-                    | UAV_ATOMIC_SIGNED_MIN_OR_MAX
-                    | UAV_ATOMIC_UNSIGNED_MIN_OR_MAX
-            }
-            dxgi::R32_FLOAT => UAV_ATOMIC_EXCHANGE,
-            _ => 0,
-        };
+        s.support2 |= atomic_operations(value);
     }
     if render && caps.has(Features::LOGIC_OP) && format.kind() == wcontainers_gpu::FormatKind::Uint
     {
         s.support2 |= OUTPUT_MERGER_LOGIC_OP;
     }
     s
+}
+
+/// The atomic operations Direct3D defines on typed unordered access views of DXGI format `value`:
+/// every one on `R32_UINT` and `R32_SINT`, exchange on `R32_FLOAT`.
+pub fn atomic_operations(value: u32) -> u32 {
+    use support2::*;
+    match value {
+        dxgi::R32_UINT | dxgi::R32_SINT => {
+            UAV_ATOMIC_ADD
+                | UAV_ATOMIC_BITWISE_OPS
+                | UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE
+                | UAV_ATOMIC_EXCHANGE
+                | UAV_ATOMIC_SIGNED_MIN_OR_MAX
+                | UAV_ATOMIC_UNSIGNED_MIN_OR_MAX
+        }
+        dxgi::R32_FLOAT => UAV_ATOMIC_EXCHANGE,
+        _ => 0,
+    }
 }
 
 /// Whether a resource of `value` may have `samples` samples: one for any format the back end holds,

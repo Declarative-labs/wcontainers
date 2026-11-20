@@ -252,6 +252,62 @@ fn webgpu_reports_11_0_and_tier_1() {
     assert!(!Architecture::default().uma);
 }
 
+/// The shared Direct3D 12 constants are the SDK's.
+#[cfg(windows)]
+#[test]
+fn shared_constants_are_the_sdks() {
+    use wcontainers_directx_graphics_infrastructure::d3d;
+    use windows::Win32::Graphics::Direct3D12 as sdk;
+    assert_eq!(
+        wcontainers_direct3d_12::resource::PLACEMENT_ALIGNMENT,
+        u64::from(sdk::D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT)
+    );
+    assert_eq!(
+        d3d::SMALL_RESOURCE_PLACEMENT_ALIGNMENT,
+        u64::from(sdk::D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT)
+    );
+    assert_eq!(
+        d3d::DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
+        u64::from(sdk::D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
+    );
+    assert_eq!(
+        d3d::DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT,
+        u64::from(sdk::D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT)
+    );
+}
+
+#[test]
+fn atomics_on_typed_storage_views_are_answered_through_a_buffer() {
+    use wcontainers_directx_graphics_infrastructure::{atomic_operations, dxgi, support2};
+    // The recorder stores into R32_UINT but has no atomics on storage textures.
+    let caps = record::webgpu_like_caps();
+    assert!(
+        !caps
+            .formats
+            .get(Format::R32Uint)
+            .contains(FormatUse::STORAGE_ATOMIC)
+    );
+    let uint = format_support(&caps, dxgi::R32_UINT).support2;
+    assert_eq!(
+        uint & atomic_operations(dxgi::R32_UINT),
+        atomic_operations(dxgi::R32_UINT)
+    );
+    assert_ne!(atomic_operations(dxgi::R32_UINT), 0);
+    assert_eq!(
+        atomic_operations(dxgi::R32_FLOAT),
+        support2::UAV_ATOMIC_EXCHANGE
+    );
+    // No atomics where no storage view is answered.
+    assert_eq!(format_support(&caps, dxgi::R32_FLOAT).support2, 0);
+    let mut stored = caps.clone();
+    stored.formats.uses[Format::R32Float.index()] |= FormatUse::STORAGE_WRITE;
+    assert_eq!(
+        format_support(&stored, dxgi::R32_FLOAT).support2 & support2::UAV_ATOMIC_EXCHANGE,
+        support2::UAV_ATOMIC_EXCHANGE
+    );
+    assert_eq!(atomic_operations(dxgi::R8G8B8A8_UINT), 0);
+}
+
 #[test]
 fn resource_tables_give_tier_3_but_not_11_1() {
     let mut caps = record::webgpu_like_caps();
