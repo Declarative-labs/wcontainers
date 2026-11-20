@@ -37,6 +37,12 @@ def body(sig, kind):
     # A plain value has no way to say "not implemented": objects.rs must answer it.
     raise SystemExit('%s returns %s: objects.rs must answer it' % (name, ret))
 
+# Interface out pointers: COM asks a call to set them to null before it can fail.
+OUT = re.compile(r'(\w+): \*mut \*mut core::ffi::c_void')
+
+def cleared(sig):
+    return ''.join('cleared(%s);\n        ' % n for n in OUT.findall(sig))
+
 def args(sig):
     inner = sig[sig.index('(') + 1: sig.index(')')]
     parts = [p.strip() for p in inner.split(',')][1:]
@@ -97,13 +103,14 @@ for spec in OBJECTS:
             sig = qualify(sig.rstrip(';'), mod)
             m = re.match(r'fn (\w+)', sig).group(1)
             if ty in BASED and m in BASE_METHODS:
-                out.append('    %s {\n        self.base().%s(%s)\n    }' % (sig, m, args(sig)))
+                out.append('    %s {\n        %sself.base().%s(%s)\n    }' % (sig, cleared(sig), m, args(sig)))
             elif m in hand:
-                out.append('    %s {\n        %s::%s(self, %s)\n    }' % (sig, ty, m, args(sig)))
+                out.append('    %s {\n        %s%s::%s(self, %s)\n    }' % (sig, cleared(sig), ty, m, args(sig)))
                 hand.discard(m)
             else:
-                stub = re.sub(r'([(,] )(\w+): ', lambda m: m.group(1) + '_' + m.group(2) + ': ', sig)
-                out.append('    %s {\n        %s\n    }' % (stub, body(sig, ty)))
+                outs = OUT.findall(sig)
+                stub = re.sub(r'([(,] )(\w+): ', lambda m: m.group(1) + ('' if m.group(2) in outs else '_') + m.group(2) + ': ', sig)
+                out.append('    %s {\n        %s%s\n    }' % (stub, cleared(sig), body(sig, ty)))
         out.append('}\n')
     if hand:
         raise SystemExit('not in %s: %s' % (iface, hand))
