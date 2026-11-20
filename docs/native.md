@@ -1909,9 +1909,10 @@ Handled, and proven by tests rather than assumed:
   once by zig's C compiler (`-O2 -ffreestanding`, x18 reserved since macOS owns it) as a static ARM64 Linux
   program placed at 1 TiB (macOS keeps addresses under 0x70_0000_0000 for itself) with every segment
   starting a page; the native run is that file in `native-kernel` at the monitor's look-ahead, and the plain
-  run maps the same file's segments at their own addresses in a host process and puts a breakpoint over each
-  `svc`, whose handler answers write and exit, so both sides run the workloads as the same bytes at the same
-  addresses. Every run is its own process, measured at its end with `proc_pid_rusage` (`RUSAGE_INFO_V6`:
+  run maps the same file's segments at their own addresses in a host process, with a breakpoint over each
+  `svc` put in a copy of the file before any run (since N4 run 24: until then the plain process found the `svc`
+  words itself through the shared decoder, about 70 million cycles of test work no plain program does), whose
+  handler answers write and exit, so both sides run the workloads as the same bytes at the same addresses. Every run is its own process, measured at its end with `proc_pid_rusage` (`RUSAGE_INFO_V6`:
   cycles, instructions, and cycles on performance cores for the share); both runs' output and exit code must
   be equal. The system-call part (N4 run 3) runs tests/guest/answered.c, a million `getppid` calls in a loop,
   against its build with a `nop` in each call's place, both in `native-kernel`, in alternating pairs; beside each
@@ -1920,9 +1921,13 @@ Handled, and proven by tests rather than assumed:
   (N4 run 5) runs the same file's own instructions at EL0 in the machine, recorded beside each pair and never
   part of the bar.
   What a run costs before the program's first instruction is part of every workload's figure, since each run is
-  a whole process. Measured on the M5 (N4 run 18, matrix's file with its rounds skipped, three runs each): native
-  162 to 182 million cycles and 1.08 billion instructions, plain 84 to 123 million and 0.58 billion, untranslated
-  15 to 22 million and 0.04 billion. Of the native start, 164 million cycles were the monitor's answer to the
+  a whole process. Measured on the M5 (N4 run 24, bench.c built with no workload, five runs each, load 8.4):
+  native 97 to 104 million cycles and 0.63 billion instructions, plain 14 to 18 million and 0.04 billion,
+  untranslated 18 to 19 million and 0.05 billion; native with the faster index of forms described below (a scratch
+  build, not committed) 40 to 42 million and 0.15 billion. So the decoder's index is about 58 million cycles of
+  every native run, 14% of matrix's plain run. Earlier (N4 run 18, three runs each): native 162 to 182 million
+  cycles and 1.08 billion instructions, plain 84 to 123 million and 0.58 billion (the plain process's own decoding,
+  since taken out). Of that native start, 164 million cycles were the monitor's answer to the
   inside's routines request: the float state moves were found by decoding all 2^15 system registers of `msr` and
   `mrs` through the whole decoder three times for each of two registers, and that first decode built the
   decoder's index of forms. As built since then, the moves are found in one pass over `msr`'s
@@ -1931,18 +1936,25 @@ Handled, and proven by tests rather than assumed:
   cost of the shared decoder, crates/wcontainers-arm64/src/forms.rs, which the WebAssembly output pays too;
   building it form by form instead of bucket by bucket gives the same index for about 0.1 million, measured
   with a scratch patch: put to the translator track).
-  The result (N4 run 18, at commit 1736f6a1, on the M5 under Hypervisor.framework, every run 99 to 100% on
-  performance cores; ruled a pass by the orchestrator on 2026-11-20). Compute part, against +21.2%: +11.08%
-  [+10.42 .. +11.52] by the bar's own command (15 pairs, look-ahead 256, seed 1, 2000 resamples, load 5.9 to
-  8.6); +12.51% by alternating pairs against the build before (10 pairs a program with a plain run beside each,
-  load 7.1 to 9.3); +13.05% on the worst of four seeded layouts of the same build by pairs (6 pairs a program,
-  load 3.2 to 5.3; the others +11.73%, +11.78%, +12.41%). So the worst layout measured is 8.15 points under the
-  line, against a spread over layouts of 1.3 to 3.4 points measured in runs 15 to 18. System-call part, against
-  100 ns: the back end's share 76.4 ns [74.7 .. 79.1] (a call 175.4 ns, the kernel's share 99.0 ns). Each
-  program against plain, cycles in percent, native (instructions) and untranslated: fib +20.3 (+60.2) and
-  -3.7, sieve +12.7 (+20.7) and +6.8, hash +0.8 (+13.8) and -2.5, sort +18.5 (+115.4) and -4.5, interpret -4.7
-  (+67.0) and -6.0, matrix +12.6 (+12.3) and -14.1, walk +16.7 (+60.0) and +16.2, search +14.2 (+13.5) and
-  -10.3, calls.c +30.4 (+65.3) and -19.5.
+  The result (N4 run 24, the native code of commit 1736f6a1 with the plain run's breakpoints put before the run,
+  on the M5 under Hypervisor.framework). Compute part, against +21.2%: +19.10% [+18.57 .. +19.95] by the bar's own
+  command (15 pairs, look-ahead 256, seed 1, 2000 resamples, load 7.6 to 10.2, every run 98 to 100% on
+  performance cores): it passes by the decision rule, 2.1 points under the line, the interval's top 1.25 under.
+  By alternating pairs (10 pairs a program with a plain run beside each, the build against itself, load 7.7 to
+  10.2): +20.97% and +21.05%, and as the first side of five more such runs +20.54%, +21.13%, +20.79%, +21.12% and
+  +21.13%: 0.07 to 0.66 points under the line. Over four new seeded layouts of the same build by pairs (6 pairs a
+  program, load 7.9 to 14.3): +19.38%, +21.59%, +20.84%, +20.94%, so one layout of four is over the line. So the
+  bar passes by its own command, but by pairs it sits on the line, inside the layout spread (1.3 to 3.4 points
+  measured in runs 15 to 18, 2.2 in run 24): no headroom can be claimed. With the faster index of forms of the
+  shared decoder (a scratch build, not committed; the translator track's file), by pairs +14.71% against this
+  build's +21.13% in the same runs (10 pairs, load 7.7 to 9.3). The figures ruled on before (+11.08% by the
+  command, +12.51% by pairs and +13.05% on the worst layout, N4 run 18) were wrong: the plain side carried the
+  harness's own decoding. System-call part, against 100 ns: the back end's share 78.6 ns [75.9 .. 83.9] (a
+  call 178.4 ns, the kernel's share 99.7 ns), unchanged by the plain run. Each program against plain, cycles in
+  percent, native (instructions) and untranslated, by the bar's command: fib +28.2 (+71.1) and +0.4, sieve
+  +20.2 (+38.2) and +11.9, hash +3.6 (+35.2) and +0.2, sort +24.1 (+157.5) and +0.4, interpret +0.3 (+86.7)
+  and +0.2, matrix +33.4 (+38.9) and +1.0, walk +18.1 (+113.7) and +17.6, search +29.4 (+30.0) and +1.4,
+  calls.c +65.0 (+142.9) and +1.0.
 
 ## 9. Milestones
 
