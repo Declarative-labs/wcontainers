@@ -231,17 +231,21 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         linked: _,
         samples: _,
         layout,
+        register_ranges: _,
     } = variant;
-    let unbuilt_flags = [(VariantFlags::PROVOKING_LAST, "ProvokingRewrite")];
+    let unbuilt_flags = [(
+        VariantFlags::PROVOKING_LAST,
+        crate::refusal::PROVOKING_REWRITE,
+    )];
     if let Some((_, name)) = unbuilt_flags.iter().find(|(f, _)| flags.contains(*f)) {
         return Err(ConvertError::Unsupported(name));
     }
     let asked = [
-        (*storage_packed != 0, "StoragePacked"),
+        (*storage_packed != 0, crate::refusal::STORAGE_PACKED),
         (!decoded.is_empty(), crate::refusal::NORM_AS_INTEGER),
         (
             *layout != [0; 32] || root_signature.is_some(),
-            "RootSignatureLayout",
+            crate::refusal::ROOT_SIGNATURE_LAYOUT,
         ),
     ];
     match asked.iter().find(|(on, _)| *on) {

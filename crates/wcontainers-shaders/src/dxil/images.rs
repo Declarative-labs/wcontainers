@@ -1439,7 +1439,9 @@ pub(super) fn finish(
             views.push((i, buffer, vec4, Some(image)));
         } else if uses[i].atomic {
             // WebGPU has no atomics on storage textures.
-            return Err(ConvertError::Unsupported("StorageImageAtomics"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::STORAGE_IMAGE_ATOMICS,
+            ));
         } else {
             // dxil-spirv's own format (R32 where the program reads) is not the view's.
             storage_image(module, variant, *var, d, uses[i])?;

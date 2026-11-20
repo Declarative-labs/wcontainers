@@ -16,6 +16,12 @@ pub mod platform;
 mod restart;
 mod shader;
 mod state;
+
+/// The GLSL ES 3.00 the back end writes for a shader and the features it needs, for checking
+/// shaders outside a context.
+pub mod glsl {
+    pub use crate::shader::{GlslSettings, ShaderText, needs, write};
+}
 #[cfg(feature = "trace")]
 pub mod trace;
 

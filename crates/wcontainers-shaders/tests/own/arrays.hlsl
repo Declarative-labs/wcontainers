@@ -20,3 +20,25 @@ void cs_image_array(uint3 id : SV_DispatchThreadID)
     images[i][id.xy] = before + id.x * 16 + id.y + 1;
     images[3 - i][id.xy] = before ^ 30001;
 }
+
+// Arrays of constant buffers and typed buffers, two declared without a length (sized by the root
+// signature's ranges), each element picked at run time: invocation i writes element i of the views
+// it picks, so every result is determined.
+struct Pick
+{
+    uint4 v;
+};
+ConstantBuffer<Pick> picks[2] : register(b0);
+Buffer<uint> sources[3] : register(t0);
+Buffer<uint> rest[] : register(t3);
+RWBuffer<uint> targets[2] : register(u0);
+RWBuffer<uint> more[] : register(u2);
+
+[numthreads(8, 1, 1)]
+void cs_buffer_array(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    uint4 p = picks[i % 2].v;
+    targets[(p.x + i) % 2][i] = sources[(p.y + i) % 3][i] + rest[(p.z + i) % 2][i];
+    more[(p.w + i) % 2][i] = sources[2][i] ^ rest[i % 2][i];
+}

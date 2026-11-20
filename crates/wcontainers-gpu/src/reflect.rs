@@ -639,6 +639,10 @@ pub struct VariantKey {
     /// A hash of the binding layout that numbers the slots, for APIs whose layout the program does not
     /// fix alone (a Direct3D 12 root signature); zero otherwise.
     pub layout: [u8; 32],
+    /// The register ranges of the binding layout, by kind and space (Direct3D 12's descriptor
+    /// ranges): an array the program declares without a length takes the rest of the range holding
+    /// its first register. Empty for programs that declare no such array.
+    pub register_ranges: Vec<(SlotKind, u32, core::ops::Range<u32>)>,
 }
 
 #[cfg(test)]

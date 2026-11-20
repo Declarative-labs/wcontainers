@@ -178,6 +178,13 @@ struct Resource {
     storage: bool,
 }
 
+/// One element of a resource declaration: the declaration's id and the element's place in its array.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ResourceElement {
+    dcl: u32,
+    element: u32,
+}
+
 /// One input or output declaration of the IR.
 struct Io {
     var: Handle<GlobalVariable>,
@@ -222,7 +229,11 @@ struct Lowering<'a> {
     stage: SourceStage,
     set: u32,
     reflection: Reflection,
-    resources: HashMap<u32, Resource>,
+    resources: HashMap<ResourceElement, Resource>,
+    /// The element count of every resource declaration, by declaring id.
+    lengths: HashMap<u32, u32>,
+    /// The element of the resource declaration being declared.
+    element: u32,
     io: Vec<(u32, Io)>,
     io_index: HashMap<u32, usize>,
     /// Private, workgroup and constant-array variables by declaring id.
@@ -246,8 +257,8 @@ struct Lowering<'a> {
     geometry: Option<geometry::Geometry>,
     /// What a hull or domain shader declares.
     tessellation: Option<hull::Tessellation>,
-    /// Typed buffers read through storage buffers, by declaring id.
-    texels: HashMap<u32, TexelBuffer>,
+    /// Typed buffers read through storage buffers, by element.
+    texels: HashMap<ResourceElement, TexelBuffer>,
     /// Under Direct3D 12's numbering (shader model 5.1), every resource's (kind rank, space,
     /// register), sorted: a resource's slot is its place among its kind's.
     spaces: Option<Vec<(u32, u32, u32)>>,
@@ -289,13 +300,21 @@ impl<'a> Lowering<'a> {
                 .filter_map(|op| {
                     let kind = declared_kind(op)?;
                     let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
-                    Some((rank(kind), space, register))
+                    Some((kind, space, register, op))
                 })
+                .map(|(kind, space, register, op)| {
+                    let length = declared_length(variant, kind, op)?;
+                    Ok((register..register + length).map(move |r| (rank(kind), space, r)))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
                 .collect();
             order.sort_unstable();
             order.dedup();
-            order
+            Ok::<_, ConvertError>(order)
         });
+        let spaces = spaces.transpose()?;
         Ok(Lowering {
             ir,
             variant,
@@ -314,6 +333,8 @@ impl<'a> Lowering<'a> {
                 slow_paths: Vec::new(),
             },
             resources: HashMap::default(),
+            lengths: HashMap::default(),
+            element: 0,
             io: Vec::new(),
             io_index: HashMap::default(),
             memory: HashMap::default(),
@@ -356,10 +377,23 @@ impl<'a> Lowering<'a> {
         Ok((order.partition_point(|o| *o < key) - first) as u32)
     }
 
-    /// The slot of the resource declaration `op` of `kind`.
+    /// The slot of the element being declared of the resource declaration `op` of `kind`.
     fn declared_slot(&self, kind: SlotKind, op: &Op) -> Result<u32> {
+        self.element_slot(kind, op, self.element)
+    }
+
+    /// The slot of element `element` of the resource declaration `op` of `kind`.
+    fn element_slot(&self, kind: SlotKind, op: &Op, element: u32) -> Result<u32> {
         let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
-        self.slot(kind, space, register)
+        self.slot(kind, space, register + element)
+    }
+
+    /// The place of the element being declared of declaration `id`.
+    fn place(&self, id: u32) -> ResourceElement {
+        ResourceElement {
+            dcl: id,
+            element: self.element,
+        }
     }
 
     // Types.
@@ -617,81 +651,15 @@ impl<'a> Lowering<'a> {
             code::SET_TESS_PRIMITIVE..=code::SET_TESS_CONTROL_POINTS => {
                 self.tessellation_declaration(op)?
             }
-            code::DCL_SAMPLER => {
-                let compare = self.compared.contains(&id);
-                let ty = self.ty(TypeInner::Sampler {
-                    comparison: compare,
-                });
-                self.resource(id, op, SlotKind::Sampler, ty, None, false)?;
-            }
-            code::DCL_CBV => {
-                let ty = self.ir_ty(&op.ty)?;
-                self.resource(id, op, SlotKind::Uniform, ty, None, false)?;
-            }
-            code::DCL_SRV | code::DCL_UAV => {
-                let storage = op.code == code::DCL_UAV;
-                let k = op.lits[3];
-                let slot = if storage {
-                    SlotKind::Storage
-                } else {
-                    SlotKind::Texture
-                };
-                match k {
-                    kind::BUFFER_TYPED => self.texel_buffer(id, op, storage)?,
-                    kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
-                        let ty = self.declared_ty(id)?;
-                        let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
-                        let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
-                        let access = if read_only {
-                            naga::StorageAccess::LOAD
-                        } else {
-                            naga::StorageAccess::LOAD | naga::StorageAccess::STORE
-                        };
-                        let space = AddressSpace::Storage { access };
-                        self.resource_in(id, op, slot, ty, space, None, false)?;
-                    }
-                    _ if storage
-                        && self.declared_slot(SlotKind::Storage, op).is_ok_and(|r| {
-                            r < 64 && self.variant.texels_through_buffer >> r & 1 != 0
-                        }) =>
-                    {
-                        self.texel_image(id, op, k)?
-                    }
-                    _ if storage => {
-                        let (dim, arrayed, multi) = image_dim(k)?;
-                        if multi {
-                            return Err(unsupported(crate::refusal::MULTISAMPLED_STORAGE));
-                        }
-                        let ty = self.storage_image(op, dim, arrayed)?;
-                        self.resource(id, op, slot, ty, Some((k, arrayed)), false)?;
-                    }
-                    _ => {
-                        let (dim, arrayed, multi) = image_dim(k)?;
-                        let depth = self.compared.contains(&id);
-                        let member = op
-                            .ty
-                            .basic()
-                            .ok_or_else(|| malformed("image type".into()))?;
-                        let class = if depth {
-                            ImageClass::Depth { multi }
-                        } else {
-                            ImageClass::Sampled {
-                                kind: Self::scalar(member.scalar)?.kind,
-                                multi,
-                            }
-                        };
-                        let ty = self.ty(TypeInner::Image {
-                            dim,
-                            arrayed,
-                            class,
-                        });
-                        self.resource(id, op, slot, ty, Some((k, arrayed)), depth)?;
-                    }
-                }
+            code::DCL_SAMPLER | code::DCL_CBV | code::DCL_SRV | code::DCL_UAV => {
+                self.declare_resource(id, op)?
             }
             code::DCL_UAV_COUNTER => {
                 // One atomic word of its own, at the counter binding of the view's slot.
                 let uav = self.ir.op(op.refs[1])?;
+                if self.lengths.get(&op.refs[1]) != Some(&1) {
+                    return Err(unsupported(crate::refusal::RESOURCE_ARRAY));
+                }
                 let ty = self.ty(TypeInner::Atomic(Scalar::U32));
                 let space = AddressSpace::Storage {
                     access: naga::StorageAccess::LOAD | naga::StorageAccess::STORE,
@@ -730,6 +698,102 @@ impl<'a> Lowering<'a> {
             | code::CONSTANT
             | code::UNDEF
             | code::SET_FP_MODE => {}
+            _ => return Err(malformed(format!("declaration {}", op.code))),
+        }
+        Ok(())
+    }
+
+    /// Declares every element of resource declaration `id`, each a binding of its own at its register.
+    fn declare_resource(&mut self, id: u32, op: &Op) -> Result<()> {
+        let kind = declared_kind(op)
+            .ok_or_else(|| malformed(format!("declaration {id} is not a resource")))?;
+        let length = declared_length(self.variant, kind, op)?;
+        self.lengths.insert(id, length);
+        for element in 0..length {
+            self.element = element;
+            self.declare_element(id, op)?;
+        }
+        self.element = 0;
+        Ok(())
+    }
+
+    fn declare_element(&mut self, id: u32, op: &Op) -> Result<()> {
+        match op.code {
+            code::DCL_SAMPLER => {
+                let compare = self.compared.contains(&id);
+                let ty = self.ty(TypeInner::Sampler {
+                    comparison: compare,
+                });
+                self.resource(id, op, SlotKind::Sampler, ty, None, false)?;
+            }
+            code::DCL_CBV => {
+                let ty = self.ir_ty(&op.ty)?;
+                self.resource(id, op, SlotKind::Uniform, ty, None, false)?;
+            }
+            code::DCL_SRV | code::DCL_UAV => {
+                let storage = op.code == code::DCL_UAV;
+                let k = op.lits[ir::resource_literal::KIND];
+                let slot = if storage {
+                    SlotKind::Storage
+                } else {
+                    SlotKind::Texture
+                };
+                match k {
+                    kind::BUFFER_TYPED => self.texel_buffer(id, op, storage)?,
+                    kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
+                        let ty = self.declared_ty(id)?;
+                        let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
+                        let read_only = !storage
+                            || op
+                                .lits
+                                .get(ir::resource_literal::UAV_FLAGS)
+                                .is_some_and(|f| f & ir::uav::READ_ONLY != 0);
+                        let access = if read_only {
+                            naga::StorageAccess::LOAD
+                        } else {
+                            naga::StorageAccess::LOAD | naga::StorageAccess::STORE
+                        };
+                        let space = AddressSpace::Storage { access };
+                        self.resource_in(id, op, slot, ty, space, None, false)?;
+                    }
+                    _ if storage
+                        && self.declared_slot(SlotKind::Storage, op).is_ok_and(|r| {
+                            r < u64::BITS && self.variant.texels_through_buffer >> r & 1 != 0
+                        }) =>
+                    {
+                        self.texel_image(id, op, k)?
+                    }
+                    _ if storage => {
+                        let (dim, arrayed, multi) = image_dim(k)?;
+                        if multi {
+                            return Err(unsupported(crate::refusal::MULTISAMPLED_STORAGE));
+                        }
+                        let ty = self.storage_image(op, dim, arrayed)?;
+                        self.resource(id, op, slot, ty, Some((k, arrayed)), false)?;
+                    }
+                    _ => {
+                        let (dim, arrayed, multi) = image_dim(k)?;
+                        let depth = self.compared.contains(&id);
+                        let member = op.ty.basic().ok_or_else(|| {
+                            malformed(format!("image declaration {id} without its type"))
+                        })?;
+                        let class = if depth {
+                            ImageClass::Depth { multi }
+                        } else {
+                            ImageClass::Sampled {
+                                kind: Self::scalar(member.scalar)?.kind,
+                                multi,
+                            }
+                        };
+                        let ty = self.ty(TypeInner::Image {
+                            dim,
+                            arrayed,
+                            class,
+                        });
+                        self.resource(id, op, slot, ty, Some((k, arrayed)), depth)?;
+                    }
+                }
+            }
             _ => return Err(malformed(format!("declaration {}", op.code))),
         }
         Ok(())
@@ -790,7 +854,11 @@ impl<'a> Lowering<'a> {
         } else {
             TexelBuffer::words(&mut self.module, atomic)
         };
-        let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
+        let read_only = !storage
+            || op
+                .lits
+                .get(ir::resource_literal::UAV_FLAGS)
+                .is_some_and(|f| f & ir::uav::READ_ONLY != 0);
         let access = if read_only {
             naga::StorageAccess::LOAD
         } else {
@@ -807,7 +875,7 @@ impl<'a> Lowering<'a> {
             AddressSpace::Storage { access }
         };
         self.resource_in(id, op, slot, ty, space, None, false)?;
-        let var = self.resources[&id].var;
+        let var = self.resources[&self.place(id)].var;
         let binding = self.module.global_variables[var].binding.unwrap().binding;
         let stage = match self.stage {
             SourceStage::Vertex => ShaderStage::Vertex,
@@ -820,7 +888,7 @@ impl<'a> Lowering<'a> {
             TexelPlace::Words
         };
         let buffer = TexelBuffer::declared(var, layout, atomic, place, stage, self.set, binding);
-        self.texels.insert(id, buffer);
+        self.texels.insert(self.place(id), buffer);
         Ok(())
     }
 
@@ -876,7 +944,11 @@ impl<'a> Lowering<'a> {
         });
         let atomic = self.texel_atomic(id, declared, written, layout.2);
         let words = TexelBuffer::words(&mut self.module, atomic);
-        let access = if op.lits.get(4).is_some_and(|f| f & 2 != 0) {
+        let access = if op
+            .lits
+            .get(ir::resource_literal::UAV_FLAGS)
+            .is_some_and(|f| f & ir::uav::READ_ONLY != 0)
+        {
             naga::StorageAccess::LOAD
         } else {
             naga::StorageAccess::LOAD | naga::StorageAccess::STORE
@@ -891,7 +963,7 @@ impl<'a> Lowering<'a> {
             Some((k, arrayed)),
             false,
         )?;
-        let var = self.resources[&id].var;
+        let var = self.resources[&self.place(id)].var;
         let binding = self.module.global_variables[var].binding.unwrap().binding;
         let stage = match self.stage {
             SourceStage::Vertex => ShaderStage::Vertex,
@@ -900,7 +972,7 @@ impl<'a> Lowering<'a> {
         };
         let place = TexelPlace::Image(register);
         let buffer = TexelBuffer::declared(var, layout, atomic, place, stage, self.set, binding);
-        self.texels.insert(id, buffer);
+        self.texels.insert(self.place(id), buffer);
         Ok(())
     }
 
@@ -929,7 +1001,11 @@ impl<'a> Lowering<'a> {
         if Self::scalar(member.scalar)?.kind != storage_kind(format) {
             return Err(unsupported(crate::refusal::STORAGE_FORMAT_KIND));
         }
-        let flags = op.lits.get(4).copied().unwrap_or(0);
+        let flags = op
+            .lits
+            .get(ir::resource_literal::UAV_FLAGS)
+            .copied()
+            .unwrap_or(0);
         let access = if flags & ir::uav::READ_ONLY != 0 {
             naga::StorageAccess::LOAD
         } else if flags & ir::uav::WRITE_ONLY != 0 {
@@ -975,16 +1051,13 @@ impl<'a> Lowering<'a> {
         image: Option<(u64, bool)>,
         depth: bool,
     ) -> Result<()> {
-        let [space_index, register, count] = [0, 1, 2].map(|i| op.lits.get(i).map(|&l| l as u32));
-        let (Some(space_index), Some(register), Some(count)) = (space_index, register, count)
-        else {
+        let [space_index, register] = [0, 1].map(|i| op.lits.get(i).map(|&l| l as u32));
+        let (Some(space_index), Some(register)) = (space_index, register) else {
             return Err(malformed(
                 "a resource declaration without its register".into(),
             ));
         };
-        if count != 1 {
-            return Err(unsupported(crate::refusal::RESOURCE_ARRAY));
-        }
+        let register = register + self.element;
         let binding = slot
             .binding(self.slot(slot, space_index, register)?)
             .ok_or(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT))?;
@@ -1011,7 +1084,7 @@ impl<'a> Lowering<'a> {
         );
         let storage = slot == SlotKind::Storage;
         self.resources.insert(
-            id,
+            self.place(id),
             Resource {
                 var,
                 image,
@@ -1023,7 +1096,7 @@ impl<'a> Lowering<'a> {
             kind: slot,
             space: space_index,
             register,
-            count,
+            count: 1,
             set: self.set,
             binding,
             added: None,
@@ -1143,13 +1216,13 @@ impl<'a> Lowering<'a> {
             builtin::CLIP_DISTANCE => crate::refusal::CLIP_DISTANCE,
             builtin::CULL_DISTANCE => crate::refusal::CULL_DISTANCE,
             builtin::PRIMITIVE_ID => crate::refusal::PRIMITIVE_ID,
-            builtin::LAYER_INDEX => "RenderTargetArrayIndex",
-            builtin::VIEWPORT_INDEX => "ViewportArrayIndex",
-            builtin::SAMPLE_COUNT => "SampleCount",
-            builtin::SAMPLE_POSITION => "SamplePosition",
-            builtin::STENCIL_REF => "StencilRef",
-            builtin::IS_FULLY_COVERED => "InnerCoverage",
-            _ => "BuiltIn",
+            builtin::LAYER_INDEX => crate::refusal::RENDER_TARGET_ARRAY_INDEX,
+            builtin::VIEWPORT_INDEX => crate::refusal::VIEWPORT_ARRAY_INDEX,
+            builtin::SAMPLE_COUNT => crate::refusal::SAMPLE_COUNT,
+            builtin::SAMPLE_POSITION => crate::refusal::SAMPLE_POSITION,
+            builtin::STENCIL_REF => crate::refusal::STENCIL_REF,
+            builtin::IS_FULLY_COVERED => crate::refusal::INNER_COVERAGE,
+            _ => crate::refusal::BUILT_IN,
         }))
     }
 
@@ -2112,6 +2185,8 @@ struct FunctionLowering<'l, 'a> {
     cur: u32,
     /// The switch exit flags (`Targets::switch_exit`) some case has set.
     switch_exits: Vec<Handle<LocalVariable>>,
+    /// The element each descriptor picking one at run time names in the switch case being lowered.
+    picked: HashMap<u32, u32>,
 }
 
 /// Where branches go inside a construct.
@@ -2163,6 +2238,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             params: fop.refs.clone(),
             cur: 0,
             switch_exits: Vec::new(),
+            picked: HashMap::default(),
         };
         let entry = fl.scan(id)?;
         let mut body = Block::new();
@@ -2879,18 +2955,14 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         use code as c;
         let ir = self.l.ir;
         let op = ir.op(id)?;
+        if let Some(desc) = self.picked_later(op)? {
+            return self.picked_at_run_time(id, desc, b);
+        }
         let r = &op.refs;
         let v: Handle<Expression> = match op.code {
             c::DEBUG_NAME | c::DEBUG_MEMBER_NAME | c::SEMANTIC => return Ok(()),
-            c::DESCRIPTOR_LOAD => {
-                if let Some(&i) = r.get(1)
-                    && let o = ir.op(i)?
-                    && !(o.code == c::CONSTANT && o.lits.first() == Some(&0))
-                {
-                    return Err(unsupported(crate::refusal::RESOURCE_ARRAY));
-                }
-                return Ok(());
-            }
+            // Each use finds its element (`place_of`).
+            c::DESCRIPTOR_LOAD => return Ok(()),
             c::PARAM_LOAD => {
                 let index = self
                     .params
@@ -3201,7 +3273,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 return Ok(());
             }
             c::IMAGE_ATOMIC if self.texel(r[0])?.is_none() => {
-                return Err(unsupported("StorageImageAtomics"));
+                return Err(unsupported(crate::refusal::STORAGE_IMAGE_ATOMICS));
             }
             c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::IMAGE_ATOMIC | c::COUNTER_ATOMIC => {
                 match self.atomic(b, op)? {
@@ -3589,10 +3661,143 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Ok((var, self.l.declared_ty(dcl)?))
     }
 
-    /// The declaration a descriptor loads, where it is a typed buffer.
-    fn texel(&self, desc: u32) -> Result<Option<u32>> {
-        let dcl = self.l.ir.op(desc)?.refs[0];
-        Ok(self.l.texels.contains_key(&dcl).then_some(dcl))
+    /// The element a descriptor loads: the one its constant index names, or the one the switch
+    /// lowering this instruction picked ([`Self::picked_at_run_time`]).
+    fn place_of(&self, desc: u32) -> Result<ResourceElement> {
+        let op = self.l.ir.op(desc)?;
+        let dcl = op.refs[0];
+        let element = match self.picked.get(&desc) {
+            Some(&element) => element,
+            None => self.constant_index(op)?,
+        };
+        if element >= self.l.lengths.get(&dcl).copied().unwrap_or(1) {
+            return Err(malformed(format!("descriptor {desc} past its array")));
+        }
+        Ok(ResourceElement { dcl, element })
+    }
+
+    /// A descriptor load's index, where it is a constant (zero where it has none).
+    fn constant_index(&self, op: &Op) -> Result<u32> {
+        let Some(&i) = op.refs.get(1) else {
+            return Ok(0);
+        };
+        let index = self.l.ir.op(i)?;
+        match (index.code, index.lits.first()) {
+            (code::CONSTANT, Some(&l)) => Ok(l as u32),
+            _ => Err(malformed(format!("descriptor index {i} not constant"))),
+        }
+    }
+
+    /// A descriptor `op` uses that picks an element of an array at run time and that no enclosing
+    /// switch has picked yet.
+    fn picked_later(&self, op: &Op) -> Result<Option<u32>> {
+        let ir = self.l.ir;
+        for &r in &op.refs {
+            let Ok(d) = ir.op(r) else { continue };
+            if d.code == code::DESCRIPTOR_LOAD
+                && !self.picked.contains_key(&r)
+                && let Some(&i) = d.refs.get(1)
+                && ir.op(i)?.code != code::CONSTANT
+            {
+                return Ok(Some(r));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Lowers instruction `id`, whose descriptor `desc` picks an element of an array at run time: a
+    /// switch on the index with a case per element, each lowering the instruction with its element,
+    /// the result carried out through locals. An index past the array takes the last element
+    /// (Direct3D leaves it undefined).
+    fn picked_at_run_time(&mut self, id: u32, desc: u32, b: &mut Block) -> Result<()> {
+        let ir = self.l.ir;
+        let d = ir.op(desc)?;
+        let length = self.l.lengths.get(&d.refs[0]).copied().unwrap_or(1);
+        let selector = self.get_as(b, d.refs[1], Scalar::U32)?;
+        self.e.flush(&self.f, b);
+        let mut cases = Vec::new();
+        let mut carried: Option<Vec<Handle<LocalVariable>>> = None;
+        for element in 0..length {
+            let mut body = Block::new();
+            self.picked.insert(desc, element);
+            let lowered = self.instruction(id, &mut body);
+            self.picked.remove(&desc);
+            lowered?;
+            if let Some(v) = self.vals.remove(&id) {
+                let parts = match v {
+                    Val::Expr(h) => vec![h],
+                    Val::Tuple(parts) => parts,
+                };
+                let locals = match carried.take() {
+                    Some(locals) => locals,
+                    None => self.carriers(id, parts.len())?,
+                };
+                for (&value, &local) in parts.iter().zip(&locals) {
+                    let pointer = self.add(&mut body, Expression::LocalVariable(local));
+                    self.stmt(&mut body, Statement::Store { pointer, value });
+                }
+                carried = Some(locals);
+            }
+            self.e.flush(&self.f, &mut body);
+            let value = match element + 1 == length {
+                true => SwitchValue::Default,
+                false => SwitchValue::U32(element),
+            };
+            cases.push(SwitchCase {
+                value,
+                body,
+                fall_through: false,
+            });
+        }
+        self.stmt(b, Statement::Switch { selector, cases });
+        if let Some(locals) = carried {
+            let mut parts = Vec::new();
+            for local in locals {
+                let pointer = self.add(b, Expression::LocalVariable(local));
+                parts.push(self.add(b, Expression::Load { pointer }));
+            }
+            let v = match parts[..] {
+                [h] => Val::Expr(h),
+                _ => Val::Tuple(parts),
+            };
+            self.define(b, id, v);
+        }
+        Ok(())
+    }
+
+    /// Locals carrying the `n` parts of value `id` out of a switch's cases.
+    fn carriers(&mut self, id: u32, n: usize) -> Result<Vec<Handle<LocalVariable>>> {
+        let ty = &self.l.ir.op(id)?.ty;
+        let types: Vec<Handle<Type>> = match n {
+            1 => vec![self.l.ir_ty(ty)?],
+            _ => {
+                let mut types = Vec::new();
+                for &m in &ty.members {
+                    let inner = Lowering::basic_inner(m)?;
+                    types.push(self.l.ty(inner));
+                }
+                types
+            }
+        };
+        Ok(types
+            .into_iter()
+            .map(|ty| {
+                self.f.local_variables.append(
+                    LocalVariable {
+                        name: None,
+                        ty,
+                        init: None,
+                    },
+                    Span::UNDEFINED,
+                )
+            })
+            .collect())
+    }
+
+    /// The element a descriptor loads, where it is a typed buffer.
+    fn texel(&self, desc: u32) -> Result<Option<ResourceElement>> {
+        let place = self.place_of(desc)?;
+        Ok(self.l.texels.contains_key(&place).then_some(place))
     }
 
     /// The index of a texel of storage texture `dcl` read through a buffer, from an image operation's
@@ -3600,7 +3805,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn texel_at(
         &mut self,
         b: &mut Block,
-        dcl: u32,
+        dcl: ResourceElement,
         layer: u32,
         coord: u32,
     ) -> Result<Handle<Expression>> {
@@ -3650,7 +3855,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn texel_load(
         &mut self,
         b: &mut Block,
-        dcl: u32,
+        dcl: ResourceElement,
         index: Handle<Expression>,
     ) -> Result<Handle<Expression>> {
         let l = &mut *self.l;
@@ -3672,7 +3877,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn texel_store(
         &mut self,
         b: &mut Block,
-        dcl: u32,
+        dcl: ResourceElement,
         index: Handle<Expression>,
         v: Handle<Expression>,
         n: u8,
@@ -3715,13 +3920,13 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     fn buffer(&self, desc: u32) -> Result<(Resource, Ty)> {
-        let dcl = self.l.ir.op(desc)?.refs[0];
+        let place = self.place_of(desc)?;
         let res = *self
             .l
             .resources
-            .get(&dcl)
+            .get(&place)
             .ok_or_else(|| malformed(format!("descriptor {desc}")))?;
-        Ok((res, self.l.declared_ty(dcl)?))
+        Ok((res, self.l.declared_ty(place.dcl)?))
     }
 
     fn image(&self, desc: u32) -> Result<Resource> {
@@ -4272,10 +4477,11 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     fn slot_of(&self, desc: u32) -> Result<u32> {
-        let dcl = self.l.ir.op(self.l.ir.op(desc)?.refs[0])?;
+        let place = self.place_of(desc)?;
+        let dcl = self.l.ir.op(place.dcl)?;
         let kind =
             declared_kind(dcl).ok_or_else(|| malformed("a descriptor of no resource".into()))?;
-        self.l.declared_slot(kind, dcl)
+        self.l.element_slot(kind, dcl, place.element)
     }
 
     fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
@@ -4825,6 +5031,22 @@ fn non_finite(ty: &Ty, lits: &[u64]) -> bool {
 }
 
 /// The kind of slot a resource declaration takes, if `op` is one.
+/// The element count of resource declaration `op` of `kind`: its own, or for an array declared
+/// without a length (a count of zero), the rest of the layout's register range holding its first
+/// register.
+fn declared_length(variant: &VariantKey, kind: SlotKind, op: &Op) -> Result<u32> {
+    let [space, register, count] = [0, 1, 2].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
+    if count != 0 {
+        return Ok(count);
+    }
+    variant
+        .register_ranges
+        .iter()
+        .find(|(k, s, range)| *k == kind && *s == space && range.contains(&register))
+        .map(|(_, _, range)| range.end - register)
+        .ok_or(unsupported(crate::refusal::UNBOUNDED_RESOURCE_ARRAY))
+}
+
 fn declared_kind(op: &Op) -> Option<SlotKind> {
     Some(match op.code {
         code::DCL_SAMPLER => SlotKind::Sampler,

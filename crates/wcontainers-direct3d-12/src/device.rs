@@ -1635,8 +1635,11 @@ impl<B: Backend> Device<B> {
         let linked = render.linked;
         let fragment = if pixel.is_empty() {
             ShaderModule::from_wgsl(
-                "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }",
-                "main",
+                &format!(
+                    "@fragment fn {}() -> @location(0) vec4f {{ return vec4f(1.0); }}",
+                    wcontainers_shaders::ENTRY_POINT
+                ),
+                wcontainers_shaders::ENTRY_POINT,
                 ShaderStage::Fragment,
             )?
         } else {
@@ -2650,6 +2653,28 @@ impl<B: Backend> Device<B> {
 }
 
 /// Resources standing for the back buffers of `chain`, whose textures the swap chain keeps.
+/// `D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF`.
+const STRIP_CUT_0XFFFF: u32 = 1;
+
+/// The interface's index format of an index buffer view's DXGI format.
+pub(super) fn index_format(format: u32) -> Option<IndexFormat> {
+    match format {
+        wcontainers_directx_graphics_infrastructure::dxgi::R16_UINT => Some(IndexFormat::U16),
+        wcontainers_directx_graphics_infrastructure::dxgi::R32_UINT => Some(IndexFormat::U32),
+        _ => None,
+    }
+}
+
+/// Whether strips of `format` indices drawn with the pipeline's `strip_cut` restart at another value
+/// than WebGPU's, which restarts at the format's largest value always (`RestartRewrite`).
+pub(super) fn restart_rewritten(format: IndexFormat, strip_cut: u32) -> bool {
+    match format {
+        IndexFormat::U16 => strip_cut != STRIP_CUT_0XFFFF,
+        IndexFormat::U32 => strip_cut == STRIP_CUT_0XFFFF,
+        IndexFormat::U8 => false,
+    }
+}
+
 fn adopt_buffers<B: Backend>(
     resources: &mut Slab<Resource<B>>,
     chain: &SwapChain<B>,
@@ -3966,11 +3991,7 @@ impl<B: Backend> Replay<B> {
                     .addresses
                     .find(v.address)
                     .ok_or(Error::Invalid("an index buffer view of no buffer"))?;
-                let format = match v.format {
-                    wcontainers_directx_graphics_infrastructure::dxgi::R16_UINT => IndexFormat::U16,
-                    wcontainers_directx_graphics_infrastructure::dxgi::R32_UINT => IndexFormat::U32,
-                    _ => return Err(Error::Invalid("index format")),
-                };
+                let format = index_format(v.format).ok_or(Error::Invalid("index format"))?;
                 Some((d.buffer(id)?.0.clone(), offset, format, Some(id)))
             }
             (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, None) => {
@@ -3985,8 +4006,7 @@ impl<B: Backend> Replay<B> {
         let strip_cut = d.render_mut(pid).strip_cut;
         let strips = matches!(self.topology, Topology::LineStrip | Topology::TriangleStrip);
         let rewrite = match &index {
-            Some((.., IndexFormat::U16, Some(_))) => strips && strip_cut != 1,
-            Some((.., IndexFormat::U32, Some(_))) => strips && strip_cut == 1,
+            Some((.., format, Some(_))) => strips && restart_rewritten(*format, strip_cut),
             Some(_) | None => false,
         };
         let (index, range) = match (index, range) {
@@ -4002,11 +4022,16 @@ impl<B: Backend> Replay<B> {
             ) if rewrite && count > 0 => {
                 self.end_pass(d)?;
                 d.backend.slow_paths().hit(SlowPath::RestartRewrite);
-                let (size, wide, cut) = match format {
-                    IndexFormat::U16 => (2, 0, 0),
-                    IndexFormat::U32 => (4, 1, 0xffff),
-                    IndexFormat::U8 => unreachable!("Direct3D 12 has no 8-bit indices"),
+                // 16-bit indices are widened and keep every value; 32-bit ones restart at the
+                // largest 16-bit value.
+                let wide = format == IndexFormat::U32;
+                let cut = if wide {
+                    IndexFormat::U16.restart_value()
+                } else {
+                    0
                 };
+                let size = u64::from(format.size());
+                let out_index = u64::from(IndexFormat::U32.size());
                 if !offset.is_multiple_of(size) {
                     return Err(Error::Invalid(
                         "an index buffer view not aligned to its format",
@@ -4017,7 +4042,7 @@ impl<B: Backend> Replay<B> {
                     .width
                     .next_multiple_of(STORAGE_WORD);
                 let out = d.scratch(
-                    u64::from(count) * 4,
+                    u64::from(count) * out_index,
                     BufferUsage::STORAGE | BufferUsage::INDEX,
                 )?;
                 let start = u32::try_from(offset / size)
@@ -4026,10 +4051,10 @@ impl<B: Backend> Replay<B> {
                     .ok_or(Error::Invalid("an index past 4 GiB"))?;
                 d.run_own(
                     query::Own::Restart,
-                    &[start, count, wide, cut],
+                    &[start, count, u32::from(wide), cut],
                     &[
-                        (32, &buffer, held, false),
-                        (160, &out, u64::from(count) * 4, true),
+                        (query::OWN_SOURCE, &buffer, held, false),
+                        (query::OWN_RESULT, &out, u64::from(count) * out_index, true),
                     ],
                     count,
                 )?;

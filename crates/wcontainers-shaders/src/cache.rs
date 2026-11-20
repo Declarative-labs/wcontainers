@@ -1,12 +1,14 @@
 //! The cache file (plan section 8): entries keyed by 32-byte BLAKE3 hashes of their content, appended
 //! to one file that loads into an index, merges by union and survives a cut-off last entry.
 //!
-//! The file is a 16-byte header (`WCGPUCACHE`, the format version as a little-endian u16, four zero
-//! bytes) and then entries: kind (1 byte), key (32), payload length (u32), CRC-32 of the kind, key,
-//! length and payload (u32), payload. Integers are little-endian.
+//! The file is a header (`Header`: the magic, the format version, reserved zero bytes) and then
+//! entries, each a head (`EntryHead`: kind, key, payload length, CRC-32 of the head before it and of
+//! the payload) and the payload. Integers are little-endian.
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::mem::{offset_of, size_of};
+use core::ops::Range;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
@@ -18,8 +20,43 @@ use crate::{CONVERTER_VERSION, ConvertError, Converted, Source, convert};
 pub const MAGIC: [u8; 10] = *b"WCGPUCACHE";
 /// The format version: a file of another version is not read.
 pub const VERSION: u16 = 1;
-const HEADER: usize = 16;
-const ENTRY_HEAD: usize = 1 + 32 + 4 + 4;
+
+/// The file's header, as laid out at its start.
+#[allow(
+    dead_code,
+    reason = "a layout only: its sizes and offsets place the bytes"
+)]
+#[repr(C)]
+struct Header {
+    magic: [u8; MAGIC.len()],
+    version: [u8; size_of::<u16>()],
+    reserved: [u8; size_of::<u32>()],
+}
+
+/// An entry's head, as laid out before its payload.
+#[allow(
+    dead_code,
+    reason = "a layout only: its sizes and offsets place the bytes"
+)]
+#[repr(C)]
+struct EntryHead {
+    kind: u8,
+    key: [u8; KEY_BYTES],
+    length: [u8; size_of::<u32>()],
+    crc: [u8; size_of::<u32>()],
+}
+
+/// The length of a key, a BLAKE3 hash.
+const KEY_BYTES: usize = blake3::OUT_LEN;
+const HEADER: usize = size_of::<Header>();
+const ENTRY_HEAD: usize = size_of::<EntryHead>();
+const VERSION_FIELD: Range<usize> = offset_of!(Header, version)..offset_of!(Header, reserved);
+const KIND_FIELD: usize = offset_of!(EntryHead, kind);
+const KEY_FIELD: Range<usize> = offset_of!(EntryHead, key)..offset_of!(EntryHead, length);
+const LENGTH_FIELD: Range<usize> = offset_of!(EntryHead, length)..offset_of!(EntryHead, crc);
+/// What an entry's CRC-32 covers of its head: everything before the CRC.
+const CHECKED_HEAD: usize = offset_of!(EntryHead, crc);
+const CRC_FIELD: Range<usize> = CHECKED_HEAD..ENTRY_HEAD;
 
 /// What an entry holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,7 +82,7 @@ pub enum LoadError {
 #[derive(Clone, Debug)]
 pub struct Cache {
     bytes: Vec<u8>,
-    index: HashMap<(u8, [u8; 32]), (usize, usize)>,
+    index: HashMap<(u8, [u8; KEY_BYTES]), (usize, usize)>,
     disagreements: u64,
 }
 
@@ -54,7 +91,7 @@ impl Default for Cache {
         let mut bytes = Vec::with_capacity(HEADER);
         bytes.extend_from_slice(&MAGIC);
         bytes.extend_from_slice(&VERSION.to_le_bytes());
-        bytes.extend_from_slice(&[0; 4]);
+        bytes.resize(HEADER, 0);
         Cache {
             bytes,
             index: HashMap::new(),
@@ -64,17 +101,19 @@ impl Default for Cache {
 }
 
 impl Cache {
-    /// Reads a cache file. An empty file is an empty cache. Reading stops at the first entry that is
-    /// cut short or fails its check, and the bytes from there are dropped, so appending continues a
-    /// well-formed file. Returns the cache and how many bytes were dropped.
+    /// Reads a cache file. An empty file, or one cut inside this version's header, is an empty cache
+    /// (the cut header's bytes dropped: write the cache's bytes out whole). Reading stops at the first
+    /// entry that is cut short or fails its check, and the bytes from there are dropped, so appending
+    /// continues a well-formed file. Returns the cache and how many bytes were dropped.
     pub fn load(mut bytes: Vec<u8>) -> Result<(Cache, usize), LoadError> {
-        if bytes.is_empty() {
-            return Ok((Cache::default(), 0));
+        let empty = Cache::default();
+        if bytes.len() < HEADER && empty.bytes.starts_with(&bytes) {
+            return Ok((empty, bytes.len()));
         }
         if bytes.len() < HEADER || bytes[..MAGIC.len()] != MAGIC {
             return Err(LoadError::NotACache);
         }
-        let version = u16::from_le_bytes([bytes[10], bytes[11]]);
+        let version = u16::from_le_bytes(bytes[VERSION_FIELD].try_into().expect("a u16's bytes"));
         if version != VERSION {
             return Err(LoadError::Version(version));
         }
@@ -111,14 +150,14 @@ impl Cache {
         self.disagreements
     }
 
-    pub fn get(&self, kind: Kind, key: &[u8; 32]) -> Option<&[u8]> {
+    pub fn get(&self, kind: Kind, key: &[u8; KEY_BYTES]) -> Option<&[u8]> {
         self.index
             .get(&(kind as u8, *key))
             .map(|&(start, end)| &self.bytes[start..end])
     }
 
     /// Every entry as kind, key and payload, in the file's order, the first of each key only.
-    pub fn entries(&self) -> impl Iterator<Item = (u8, [u8; 32], &[u8])> {
+    pub fn entries(&self) -> impl Iterator<Item = (u8, [u8; KEY_BYTES], &[u8])> {
         let mut at = HEADER;
         core::iter::from_fn(move || {
             let (kind, key, payload) = entry(&self.bytes, at)?;
@@ -134,7 +173,7 @@ impl Cache {
     /// Adds an entry. Returns the bytes appended to the file (empty when the key is already present),
     /// so a host keeping the file on disk appends them; a payload differing from the one present is
     /// counted in `disagreements` and dropped.
-    pub fn insert(&mut self, kind: Kind, key: [u8; 32], payload: &[u8]) -> &[u8] {
+    pub fn insert(&mut self, kind: Kind, key: [u8; KEY_BYTES], payload: &[u8]) -> &[u8] {
         self.insert_raw(kind as u8, key, payload)
     }
 
@@ -145,7 +184,7 @@ impl Cache {
         }
     }
 
-    fn insert_raw(&mut self, kind: u8, key: [u8; 32], payload: &[u8]) -> &[u8] {
+    fn insert_raw(&mut self, kind: u8, key: [u8; KEY_BYTES], payload: &[u8]) -> &[u8] {
         if let Some(&(start, end)) = self.index.get(&(kind, key)) {
             if self.bytes[start..end] != *payload {
                 self.disagreements += 1;
@@ -172,7 +211,7 @@ impl Cache {
         &mut self,
         bytes: &[u8],
         kind: u8,
-        key: [u8; 32],
+        key: [u8; KEY_BYTES],
         payload: core::ops::Range<usize>,
     ) {
         match self.index.entry((kind, key)) {
@@ -190,23 +229,23 @@ impl Cache {
 }
 
 /// The whole, checked entry at `at`: kind, key and the payload's range.
-fn entry(bytes: &[u8], at: usize) -> Option<(u8, [u8; 32], core::ops::Range<usize>)> {
+fn entry(bytes: &[u8], at: usize) -> Option<(u8, [u8; KEY_BYTES], core::ops::Range<usize>)> {
     let head = bytes.get(at..at.checked_add(ENTRY_HEAD)?)?;
-    let length = u32::from_le_bytes(head[33..37].try_into().ok()?) as usize;
-    let stored = u32::from_le_bytes(head[37..41].try_into().ok()?);
+    let length = u32::from_le_bytes(head[LENGTH_FIELD].try_into().ok()?) as usize;
+    let stored = u32::from_le_bytes(head[CRC_FIELD].try_into().ok()?);
     let start = at + ENTRY_HEAD;
     let payload = bytes.get(start..start.checked_add(length)?)?;
     let mut crc = crc32fast::Hasher::new();
-    crc.update(&head[..37]);
+    crc.update(&head[..CHECKED_HEAD]);
     crc.update(payload);
     (crc.finalize() == stored).then(|| {
-        let key = head[1..33].try_into().expect("32 bytes");
-        (head[0], key, start..start + length)
+        let key = head[KEY_FIELD].try_into().expect("a key's bytes");
+        (head[KIND_FIELD], key, start..start + length)
     })
 }
 
 /// The content key of a converted shader: the source bytes, the converter version and the variant.
-pub fn shader_key(source: Source<'_>, variant: &VariantKey) -> [u8; 32] {
+pub fn shader_key(source: Source<'_>, variant: &VariantKey) -> [u8; KEY_BYTES] {
     let (tag, bytes): (u8, &[u8]) = match source {
         Source::Dxbc(b) => (0, b),
         Source::Dxil(b) => (1, b),
@@ -249,7 +288,7 @@ pub fn encode(converted: &Converted) -> Vec<u8> {
 }
 
 /// A converted shader from its record, its modules validated again and given `key`.
-pub fn decode(key: [u8; 32], payload: &[u8]) -> Result<Converted, ConvertError> {
+pub fn decode(key: [u8; KEY_BYTES], payload: &[u8]) -> Result<Converted, ConvertError> {
     let record: ShaderRecord = postcard::from_bytes(payload)
         .map_err(|e| ConvertError::Malformed(alloc::format!("cache record: {e}")))?;
     let modules = record
@@ -274,7 +313,7 @@ pub fn decode(key: [u8; 32], payload: &[u8]) -> Result<Converted, ConvertError> 
 
 /// The content key of module `index` of a conversion whose key is `key`: the key itself for the first,
 /// so each module a back end builds from has its own.
-pub(crate) fn module_key(key: [u8; 32], index: usize) -> [u8; 32] {
+pub(crate) fn module_key(key: [u8; KEY_BYTES], index: usize) -> [u8; KEY_BYTES] {
     if index == 0 {
         return key;
     }

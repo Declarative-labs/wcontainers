@@ -64,21 +64,21 @@ fn unbuilt_variants_are_refused_by_name() {
                 flags: VariantFlags::PROVOKING_LAST,
                 ..Default::default()
             },
-            "ProvokingRewrite",
+            wcontainers_shaders::refusal::PROVOKING_REWRITE,
         ),
         (
             VariantKey {
                 storage_packed: 1,
                 ..Default::default()
             },
-            "StoragePacked",
+            wcontainers_shaders::refusal::STORAGE_PACKED,
         ),
         (
             VariantKey {
                 layout: [1; 32],
                 ..Default::default()
             },
-            "RootSignatureLayout",
+            wcontainers_shaders::refusal::ROOT_SIGNATURE_LAYOUT,
         ),
     ];
     for (key, name) in cases {
@@ -88,7 +88,12 @@ fn unbuilt_variants_are_refused_by_name() {
         }
     }
     let got = convert(Source::Dxbc(&dxbc), &VariantKey::default(), Some(&[0; 4])).map(|_| ());
-    assert_eq!(got, Err(ConvertError::Unsupported("RootSignatureLayout")));
+    assert_eq!(
+        got,
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::ROOT_SIGNATURE_LAYOUT
+        ))
+    );
     assert!(convert(Source::Dxbc(&dxbc), &VariantKey::default(), None).is_ok());
     assert!(convert(Source::Dxil(&dxil), &VariantKey::default(), None).is_ok());
 }
@@ -296,7 +301,7 @@ fn early_tests_read_the_attachment_before_the_program() {
         );
     }
     for (samples, name) in [
-        (0, "SampleCount"),
+        (0, wcontainers_shaders::refusal::SAMPLE_COUNT),
         (2, wcontainers_shaders::refusal::EARLY_TESTS_SAMPLES),
     ] {
         for source in [Source::Dxbc(&textured[0]), Source::Dxil(&textured[1])] {
@@ -660,7 +665,9 @@ fn the_sample_count_comes_from_the_variant() {
     ] {
         assert_eq!(
             convert(source, &VariantKey::default(), None).map(|_| ()),
-            Err(ConvertError::Unsupported("SampleCount"))
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::SAMPLE_COUNT
+            ))
         );
         let text = wgsl(&convert(fixed, &key, None).unwrap());
         assert!(text.contains("4u"), "{text}");
@@ -805,7 +812,7 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
         linked,
         ..Default::default()
     };
-    refused(key.clone(), &ps, "SampleCount");
+    refused(key.clone(), &ps, wcontainers_shaders::refusal::SAMPLE_COUNT);
     refused(
         VariantKey {
             samples: 2,
@@ -1058,61 +1065,166 @@ fn read_written_four_channel_storage_goes_through_a_buffer() {
 }
 
 /// An array of textures is one texture per element, at the registers Direct3D 12 gives the range,
-/// and an element picked at run time is chosen by a switch.
+/// and an element picked at run time is chosen by a switch, by both routes.
 #[test]
 fn texture_arrays_are_a_texture_per_element() {
-    let c = convert(
-        Source::Dxil(&read("tests/own/ps_array.dxil")),
-        &VariantKey::default(),
-        None,
-    )
-    .unwrap();
-    let mut textures: Vec<_> = c
-        .reflection
-        .bindings
-        .iter()
-        .filter(|b| b.kind == SlotKind::Texture)
-        .map(|b| (b.register, b.slot()))
-        .collect();
-    textures.sort_unstable();
-    assert_eq!(textures, [(0, 0), (1, 1), (2, 2), (3, 3)]);
-    let text = wgsl(&c);
-    assert!(text.contains("switch"), "{text}");
-    assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
+    for path in ["tests/own/ps_array.dxil", "tests/own/ps_array.dxbc"] {
+        let code = read(path);
+        let source = match path.ends_with(".dxil") {
+            true => Source::Dxil(&code),
+            false => Source::Dxbc(&code),
+        };
+        let c = convert(source, &VariantKey::default(), None).unwrap();
+        let mut textures: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Texture)
+            .map(|b| (b.register, b.slot()))
+            .collect();
+        textures.sort_unstable();
+        assert_eq!(textures, [(0, 0), (1, 1), (2, 2), (3, 3)], "{path}");
+        let text = wgsl(&c);
+        assert!(text.contains("switch"), "{path}: {text}");
+        assert_eq!(
+            text.matches("texture_2d<f32>;").count(),
+            4,
+            "{path}: {text}"
+        );
+    }
 }
 
 /// An array of storage textures is one storage texture per element, each of its view's format; a
-/// read after a pick at run time is a switch in a function and a store to one is a switch in place.
+/// read or store after a pick at run time is a switch, by both routes.
 #[test]
 fn storage_texture_arrays_are_a_storage_texture_per_element() {
     const ELEMENTS: u32 = 4;
-    let code = read("tests/own/cs_image_array.dxil");
     let key = VariantKey {
         storage_formats: (0..ELEMENTS).map(|s| (s, Format::R32Uint)).collect(),
         ..Default::default()
     };
-    let c = convert(Source::Dxil(&code), &key, None).unwrap();
-    let mut storage: Vec<_> = c
-        .reflection
-        .bindings
-        .iter()
-        .filter(|b| b.kind == SlotKind::Storage)
-        .map(|b| (b.register, b.slot()))
-        .collect();
-    storage.sort_unstable();
-    assert_eq!(storage, (0..ELEMENTS).map(|r| (r, r)).collect::<Vec<_>>());
+    for path in [
+        "tests/own/cs_image_array.dxil",
+        "tests/own/cs_image_array.dxbc",
+    ] {
+        let code = read(path);
+        let source = || match path.ends_with(".dxil") {
+            true => Source::Dxil(&code),
+            false => Source::Dxbc(&code),
+        };
+        let c = convert(source(), &key, None).unwrap();
+        let mut storage: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Storage)
+            .map(|b| (b.register, b.slot()))
+            .collect();
+        storage.sort_unstable();
+        assert_eq!(
+            storage,
+            (0..ELEMENTS).map(|r| (r, r)).collect::<Vec<_>>(),
+            "{path}"
+        );
+        let text = wgsl(&c);
+        assert_eq!(
+            text.matches("texture_storage_2d<r32uint,read_write>;")
+                .count(),
+            ELEMENTS as usize,
+            "{path}: {text}"
+        );
+        assert!(text.matches("switch").count() >= 3, "{path}: {text}");
+        assert_eq!(
+            convert(source(), &VariantKey::default(), None).err(),
+            Some(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::STORAGE_FORMAT
+            )),
+            "{path}"
+        );
+    }
+}
+
+/// `cs_buffer_array`'s arrays as declared (kind, register, elements), the unbounded ones sized
+/// by [`BUFFER_ARRAY_RANGES`].
+const BUFFER_ARRAYS: [(SlotKind, u32, u32); 5] = [
+    (SlotKind::Uniform, 0, 2),
+    (SlotKind::Texture, 0, 3),
+    (SlotKind::Texture, 3, 2),
+    (SlotKind::Storage, 0, 2),
+    (SlotKind::Storage, 2, 2),
+];
+
+/// The root signature ranges `cs_buffer_array` is converted under: the unbounded `rest` and `more`
+/// take the two registers past their first.
+fn buffer_array_ranges() -> Vec<(SlotKind, u32, std::ops::Range<u32>)> {
+    let end = |kind| {
+        BUFFER_ARRAYS
+            .iter()
+            .filter(|a| a.0 == kind)
+            .map(|a| a.1 + a.2)
+            .max()
+            .unwrap()
+    };
+    [SlotKind::Texture, SlotKind::Storage]
+        .into_iter()
+        .map(|kind| (kind, 0, 0..end(kind)))
+        .collect()
+}
+
+/// Arrays of constant buffers and typed buffers (DXBC shader model 5.1), two declared without a
+/// length: every element a binding at its register, sized by the root signature's ranges, and
+/// refused by name without them. The DXIL route refuses arrays of typed buffers by name.
+#[test]
+fn buffer_arrays_are_a_binding_per_element() {
+    let code = read("tests/own/cs_buffer_array.dxbc");
+    let formats = |kind| {
+        BUFFER_ARRAYS
+            .iter()
+            .filter(|a| a.0 == kind)
+            .flat_map(|a| a.1..a.1 + a.2)
+            .map(|r| (r, Format::R32Uint))
+            .collect()
+    };
+    let key = VariantKey {
+        texel_buffers: wcontainers_gpu::TexelBufferRoute::Storage,
+        texel_formats: formats(SlotKind::Texture),
+        storage_formats: formats(SlotKind::Storage),
+        register_ranges: buffer_array_ranges(),
+        ..Default::default()
+    };
+    let c = convert(Source::Dxbc(&code), &key, None).unwrap();
+    for (kind, first, elements) in BUFFER_ARRAYS {
+        for register in first..first + elements {
+            let b = c
+                .reflection
+                .bindings
+                .iter()
+                .find(|b| b.kind == kind && b.register == register)
+                .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
+            assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+        }
+    }
     let text = wgsl(&c);
+    assert!(text.matches("switch").count() >= 5, "{text}");
+    let without_ranges = VariantKey {
+        register_ranges: Vec::new(),
+        ..key.clone()
+    };
     assert_eq!(
-        text.matches("texture_storage_2d<r32uint,read_write>;")
-            .count(),
-        ELEMENTS as usize,
-        "{text}"
-    );
-    assert!(text.matches("switch").count() >= 3, "{text}");
-    assert_eq!(
-        convert(Source::Dxil(&code), &VariantKey::default(), None).err(),
+        convert(Source::Dxbc(&code), &without_ranges, None).err(),
         Some(ConvertError::Unsupported(
-            wcontainers_shaders::refusal::STORAGE_FORMAT
+            wcontainers_shaders::refusal::UNBOUNDED_RESOURCE_ARRAY
+        ))
+    );
+    assert_eq!(
+        convert(
+            Source::Dxil(&read("tests/own/cs_buffer_array.dxil")),
+            &key,
+            None
+        )
+        .err(),
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::RESOURCE_ARRAY
         ))
     );
 }

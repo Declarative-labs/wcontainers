@@ -32,7 +32,16 @@ use windows::core::Interface;
 
 const TEX: u32 = 16;
 const LEVELS: u32 = 5;
-const MODES: [&str; 6] = ["implicit", "bias", "level", "gradients", "offset", "gather"];
+const LEVEL_MODE: &str = "level";
+const GATHER_MODE: &str = "gather";
+const MODES: [&str; 6] = [
+    "implicit",
+    "bias",
+    LEVEL_MODE,
+    "gradients",
+    "offset",
+    GATHER_MODE,
+];
 
 /// One sampler state and how `ps_filter` is asked to sample.
 #[derive(Clone, Debug)]
@@ -75,6 +84,12 @@ impl Case {
                 pick(&mut rng, &[1.0, 2.0, 0.5]),
             ],
         }
+    }
+
+    /// Whether sampling in mode `name` filters over an anisotropic footprint: the modes that take
+    /// the level of detail from derivatives, with anisotropy above 1.
+    fn anisotropic_footprint(&self, name: &str) -> bool {
+        self.anisotropy > 1 && !matches!(name, LEVEL_MODE | GATHER_MODE)
     }
 
     fn params(&self, mode: u32) -> Vec<u8> {
@@ -627,7 +642,8 @@ fn filtering_in_the_program_matches_direct3d() {
                             // Known failure: the anisotropic footprint is the implementation's own
                             // (the GPU's and warp's differ from each other), and the program's
                             // taps along the major axis are a third (docs/status-graphics-shaders.md).
-                            if case.anisotropy > 1 {
+                            // An explicit level or a gather takes no footprint and must match.
+                            if case.anisotropic_footprint(name) {
                                 known.push(what);
                             } else {
                                 failed.push(what);
@@ -669,7 +685,7 @@ fn filtering_in_the_program_matches_direct3d() {
                             let what = format!(
                                 "{case_seed} {format:?} {name} {route} webgpu's own sampler"
                             );
-                            if case.anisotropy > 1 {
+                            if case.anisotropic_footprint(name) {
                                 known.push(what);
                             } else {
                                 failed.push(what);

@@ -152,12 +152,21 @@ fn a_cut_file_keeps_every_whole_entry_before_the_cut() {
         so_far.insert(kind, key, payload);
         ends.push(so_far.bytes().len());
     }
+    let header = Cache::default().bytes().len();
+    // A file cut inside its header is an empty cache, the cut bytes dropped.
+    for at in 0..header {
+        let (c, dropped) = Cache::load(bytes[..at].to_vec()).unwrap();
+        assert_eq!(
+            (c.len(), dropped, c.bytes()),
+            (0, at, Cache::default().bytes())
+        );
+    }
     let mut rng = fastrand::Rng::with_seed(seed);
     for cut in 0..cuts {
-        let at = rng.usize(16..bytes.len());
+        let at = rng.usize(header..bytes.len());
         let (mut c, dropped) = Cache::load(bytes[..at].to_vec()).unwrap();
         let whole = ends.iter().filter(|&&e| e <= at).count();
-        let kept = ends[..whole].last().copied().unwrap_or(16);
+        let kept = ends[..whole].last().copied().unwrap_or(header);
         eprintln!(
             "seed {seed} cut {cut}: at {at} of {}, {whole} entries kept",
             bytes.len()
@@ -184,10 +193,14 @@ fn other_files_are_not_read_as_caches() {
         LoadError::NotACache
     );
     let mut bytes = Cache::default().bytes().to_vec();
-    bytes[10] = 9;
-    assert_eq!(Cache::load(bytes).unwrap_err(), LoadError::Version(9));
+    let other = cache::VERSION + 1;
+    bytes[cache::MAGIC.len()..][..size_of::<u16>()].copy_from_slice(&other.to_le_bytes());
+    assert_eq!(Cache::load(bytes).unwrap_err(), LoadError::Version(other));
     let (c, dropped) = Cache::load(Vec::new()).unwrap();
-    assert_eq!((c.len(), dropped, c.bytes().len()), (0, 0, 16));
+    assert_eq!(
+        (c.len(), dropped, c.bytes()),
+        (0, 0, Cache::default().bytes())
+    );
 }
 
 /// A front's state combination, in part: a block, the targets, the topology and the program's
