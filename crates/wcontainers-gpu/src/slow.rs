@@ -14,6 +14,9 @@ const FLOAT_BITS_CLEAR_BY_DRAW: &str = "float colour clear made by a draw keepin
 const STREAM_OUT_AFTER_REPLAY: &str =
     "stream output after a replayed geometry shader written on the host";
 
+/// The reason [`SlowPath::FrameStretched`] shows.
+const FRAME_STRETCHED: &str = "frame stretched to its window against the swap chain's scaling";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -547,9 +550,7 @@ impl SlowPath {
             SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
             SlowPath::FloatBitsClearByDraw => FLOAT_BITS_CLEAR_BY_DRAW,
             SlowPath::StreamOutAfterReplay => STREAM_OUT_AFTER_REPLAY,
-            SlowPath::FrameStretched => {
-                "frame stretched to its window against the swap chain's scaling"
-            }
+            SlowPath::FrameStretched => FRAME_STRETCHED,
         }
     }
 }
