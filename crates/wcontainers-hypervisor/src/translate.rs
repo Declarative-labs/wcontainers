@@ -455,8 +455,8 @@ mod tests {
         assert_eq!(exits, BTreeSet::from([at + PAGE_SIZE]));
     }
 
-    /// The code after a branch back before the piece's start is held when it comes back into the piece, and
-    /// starts a piece of its own when it only leaves.
+    /// The code after a branch back, before the piece's start or into it, is held when it comes back into the
+    /// piece, and starts a piece of its own when it only leaves.
     #[test]
     fn pieces_hold_the_rest_of_a_turn() {
         let at = 0x40_1000;
@@ -481,6 +481,19 @@ mod tests {
         let (held, exits) = shape(&leaving, at);
         assert_eq!(held, (0..3).map(|k| at + k * step).collect());
         assert_eq!(exits, BTreeSet::from([at - 2 * step, at + 3 * step]));
+        let matching = [
+            0xf100_05efu32, // subs x15, x15, #1
+            0x54ff_fea0,    // b.eq . - 0x2c
+            0x385f_f1d0,    // ldurb w16, [x14, #-1]
+            0x6b10_01bf,    // cmp w13, w16
+            0x54ff_ff81,    // b.ne . - 16
+            0x8b08_0208,    // add x8, x16, x8
+            0x17ff_fffa,    // b . - 24
+            0xd65f_03c0,    // ret
+        ];
+        let (held, exits) = shape(&matching, at);
+        assert_eq!(held, (0..7).map(|k| at + k * step).collect());
+        assert_eq!(exits, BTreeSet::from([at + step - 0x2c]));
     }
 
     /// An answer whose position map does not decode fails loudly, never as the guest's illegal instruction.
