@@ -2306,7 +2306,9 @@ Run 48 (the gap list in the fronts' order, item 1: the Direct3D 12 front's two n
     job, 4 min 40 s): every WGSL file compiles (own 127, three more than run 47; the rest as
     run 47). WebGL 2 compiles 3,576 GLSL files and refuses the same 40 as run 47, each of a
     shader whose record names a need the back end declares absent.
-- Clean-up: below, at the end of the run.
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.6 GB) and the
+  desktop's `C:\wc\target\phase-2-graphics-shaders` (8.3 GB) deleted; scratch keeps the logs and
+  `run48/out` (the files Chrome compiled).
 
 Run 47 (the check of run 46's report: every finding fixed or recorded):
 - Merged nothing new: every branch named in the task was already in this branch.
