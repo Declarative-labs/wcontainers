@@ -48,6 +48,10 @@ Runs at the tip:
   baseline lines (src, build.rs, tests/*.rs, examples): 584 (585 before; the `[0; 32]` in
   `unbuilt` is now `VariantKey::default().layout`).
 
+- Clean-up at the end: the build folders on the laptop (6.2 GB), the x86 machine and the desktop
+  deleted; nothing built on the Mac (only `cargo fmt`). Scratch keeps the logs and `g6a2/out`
+  (50 MB, the files Chrome compiled, with glslang's `.log` files).
+
 The check's findings, each against the tip:
 1. Sample mask on WebGL 2 (blocking): the two statements are corrected ("How the Direct3D fronts
    call `convert`" and Known gaps): `SAMPLE_MASK` is the `SampleMaskInShader` route on WebGL 2
