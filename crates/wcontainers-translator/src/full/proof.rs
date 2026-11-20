@@ -763,7 +763,10 @@ impl<G: Guest> FullEmitter<'_, G> {
             .i64_add()
             .local_tee(high);
         Table::GLOBALS.pages.push(&mut s);
-        s.i64_const(12).i64_shl().i64_ge_s().br_if(0);
+        s.i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
+            .i64_shl()
+            .i64_ge_s()
+            .br_if(0);
         pages_allow(&mut s, low, high, r.this, a0);
     }
 
@@ -826,11 +829,11 @@ fn within(s: &mut InstructionSink<'_>, v: u32, min: i64, max: i64, depth: u32) {
 fn pages_allow(s: &mut InstructionSink<'_>, low: u32, high: u32, this: u8, page: u32) {
     let every = i64::from(this) * 0x0101_0101_0101_0101;
     s.local_get(low)
-        .i64_const(12)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shr_u()
         .local_set(page)
         .local_get(high)
-        .i64_const(12)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shr_u()
         .local_set(high)
         .loop_(BlockType::Empty)

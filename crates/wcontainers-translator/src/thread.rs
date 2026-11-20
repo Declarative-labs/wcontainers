@@ -28,7 +28,7 @@ pub(crate) fn piece_ref() -> RefType {
 pub(crate) fn state_memory() -> wasm_encoder::MemoryType {
     wasm_encoder::MemoryType {
         minimum: 1,
-        maximum: Some(65536),
+        maximum: Some((1u64 << u32::BITS) / crate::contract::WASM_PAGE_BYTES),
         memory64: false,
         shared: true,
         page_size_log2: None,

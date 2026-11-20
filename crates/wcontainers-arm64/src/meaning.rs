@@ -987,7 +987,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
         I::PcRelative { rd, page, offset } => {
             if page {
                 e.this_address(0);
-                e.sink().i64_const(!0xfff).i64_and();
+                e.sink().i64_const(!crate::ADRP_PAGE_MASK as i64).i64_and();
                 e.sink().i64_const(offset).i64_add();
             } else {
                 e.this_address(offset);

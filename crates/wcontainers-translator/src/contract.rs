@@ -127,10 +127,14 @@ pub const fn thread_state_size<G: Guest>() -> usize {
 pub const PAGE_READ: u8 = 1;
 /// Permission table byte: the page may be written.
 pub const PAGE_WRITE: u8 = 2;
+/// How far above a page's bits in a permission table byte the next page's are.
+pub const NEXT_PAGE_SHIFT: u32 = 2;
 /// Permission table byte: the next page may be read.
-pub const NEXT_PAGE_READ: u8 = 4;
+pub const NEXT_PAGE_READ: u8 = PAGE_READ << NEXT_PAGE_SHIFT;
 /// Permission table byte: the next page may be written.
-pub const NEXT_PAGE_WRITE: u8 = 8;
+pub const NEXT_PAGE_WRITE: u8 = PAGE_WRITE << NEXT_PAGE_SHIFT;
+/// A WebAssembly page (WebAssembly Core Specification, memory instances).
+pub const WASM_PAGE_BYTES: u64 = 1 << 16;
 
 /// The permission table byte for a page, given what it and the page after it allow.
 pub fn permission_byte(

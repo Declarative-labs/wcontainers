@@ -35,6 +35,7 @@ function run({
   memoryBytes,
   regions,
   sp,
+  keepFloatFlags,
   stack,
   lookAhead,
   bound,
@@ -526,6 +527,7 @@ function run({
     for (let i = 0; i < contract.threadStateSize; i++) block.setUint8(i, 0);
     block.setBigUint64(contract.registerPc, BigInt(load), true);
     block.setBigUint64(contract.registerSp, BigInt(sp), true);
+    if (keepFloatFlags) block.setUint32(contract.floatTracking, 1, true);
 
     const started = performance.now();
     try {

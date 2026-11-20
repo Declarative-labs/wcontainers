@@ -96,7 +96,7 @@ fn constant(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<u64> {
         } => Some(at.wrapping_add_signed(offset)),
         Instruction::PcRelative {
             page: true, offset, ..
-        } => Some((at & !0xfff).wrapping_add_signed(offset)),
+        } => Some((at & !crate::ADRP_PAGE_MASK).wrapping_add_signed(offset)),
         Instruction::AddSub {
             width: Width::X64,
             subtract: false,

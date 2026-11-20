@@ -665,7 +665,7 @@ impl Guest for Arm64 {
                     page: true,
                     offset: by,
                 } if rd == rn => Some(
-                    ((at - 4) & !0xfff)
+                    ((at - 4) & !crate::ADRP_PAGE_MASK)
                         .wrapping_add_signed(by)
                         .wrapping_add(value),
                 ),

@@ -339,7 +339,8 @@ fn structure_frames_off_the_stack() {
 /// last found allowed, so the fault must still land on the exact turn.
 #[test]
 fn loops_running_onto_a_forbidden_page() {
-    for step in [1u32, 8, 4095, 4096, 4097] {
+    let page = wcontainers_abi::PAGE_SIZE as u32;
+    for step in [1u32, 8, page - 1, page, page + 1] {
         for write in [false, true] {
             let mut ops: Ops = VecAssembler::new(0);
             zero(&mut ops);

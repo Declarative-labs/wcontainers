@@ -1401,7 +1401,8 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                         let key = (segment, register, access.kind != AccessKind::Read);
                         match open.get(&key).map(|&g| (g, groups[g])) {
                             Some((g, (first, first_start, lo, hi, count)))
-                                if hi.max(end) - lo.min(start) <= 4096 =>
+                                if hi.max(end) - lo.min(start)
+                                    <= wcontainers_abi::PAGE_SIZE as i64 =>
                             {
                                 groups[g] =
                                     (first, first_start, lo.min(start), hi.max(end), count + 1);
@@ -2213,8 +2214,8 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let table = self.table();
         let exact = self.exact(table, page);
-        for chunk in (0..len).step_by(4096) {
-            let piece = (len - chunk).min(4096);
+        for chunk in (0..len).step_by(wcontainers_abi::PAGE_SIZE as usize) {
+            let piece = (len - chunk).min(wcontainers_abi::PAGE_SIZE as _);
             self.sink()
                 .local_get(G::L_SP)
                 .i64_const(from + i64::from(chunk))

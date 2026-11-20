@@ -43,6 +43,11 @@ pub struct Blob {
 }
 
 impl Blob {
+    /// Whether the program's code reads FPSR, so that its flags are kept exact from its start.
+    pub fn reads_float_status(&self) -> bool {
+        wcontainers_arm64::reads_float_status(&self.bytes[..self.code_bytes as usize])
+    }
+
     /// Where the program headers are in guest memory, and how many.
     pub fn headers_in_memory(&self) -> Option<(u64, u64)> {
         self.program_headers
@@ -237,7 +242,7 @@ pub struct Placement {
 }
 
 pub fn placement(blob: &Blob) -> Placement {
-    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(4096);
+    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(wcontainers_abi::PAGE_SIZE);
     let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory());
     Placement {
         memory_bytes: STACK_TOP,
@@ -352,6 +357,9 @@ pub fn ready_with(
     load(&mut machine);
     machine.write(place.sp, &place.stack);
     machine.set_registers(&Arm64::initial_block(blob.load, place.sp));
+    if blob.reads_float_status() {
+        machine.track_float_flags();
+    }
     machine
 }
 

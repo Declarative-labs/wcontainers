@@ -196,6 +196,9 @@ pub extern "C" fn thread_module() -> i32 {
     answer(wcontainers_translator::thread_module::<Arm64>())
 }
 
+/// The contract's name for where the word that keeps FPSR's flags exact is (runner.js reads it).
+const FLOAT_TRACKING_KEY: &str = "floatTracking";
+
 /// Everything the runner must agree on with the translator and the shared crate, as JSON. Returns its
 /// length.
 #[unsafe(no_mangle)]
@@ -288,5 +291,10 @@ pub extern "C" fn contract() -> i32 {
         "registerSp": offset_of!(RegisterBlock, sp),
         "registerPc": offset_of!(RegisterBlock, pc),
     });
+    let mut description = description;
+    description.as_object_mut().expect("an object").insert(
+        FLOAT_TRACKING_KEY.into(),
+        wcontainers_arm64::FLOAT_TRACKING.into(),
+    );
     answer(description.to_string().into_bytes())
 }

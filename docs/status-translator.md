@@ -4,10 +4,21 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
-- P2 is done and ready for its independent check (2026-11-19 15:05): the long run's three layers reached the
-  plan's bars with 0 mismatches of the translator, every failed chunk explained and passed later; the
-  confirmation run (seed 200, 5 percent) passed; the whole suite passes where each verdict counts. Nothing
-  of this track runs now, on the Mac or on the rented machines. Details under "P2".
+- T3 (this milestone) is under way; see "T3" below for what is done and what is left.
+- FPSR (the P2 check's first finding): a program whose code reads FPSR now has its flags kept exact from its
+  start, decided by `wcontainers_arm64::reads_float_status(code)` and applied by whoever starts the thread
+  (`FLOAT_TRACKING` set to 1 before it runs). This track's runners do it; the runtime's CPU side
+  (wcontainers-wasmtime, not this track's) must call it for each program it starts, or a program that reads
+  FPSR first still gets 0 there. Musl's dynamic C library holds `fetestexcept`, so applied to every loaded
+  object it would make every dynamically linked musl program take the exact floating point path: the runtime
+  should decide on the main executable and what it imports, and the owner may want to rule on that trade.
+- No `...Settings` type is in this track's crates (`TranslatorSettings` is the runtime's, in
+  wcontainers-wasmtime), so the rename to `Config` has nothing to do here.
+- The literal check was adopted by merging origin/phase-1-literals (7668c010) directly, as the brief says,
+  not through main as docs/literals.md step 1 says; init ran once, in the commit right after the merge
+  (65ba8f8a). Changes that could add lines to the baseline, as the check lists them: fc5f55ca (the start),
+  65ba8f8a (the init after the baseline arrived by a merge), 68214b2e (the start), 89f88281, 7119e3f3,
+  c3bf56d4, 31ec396f, 0f187563 (new rules, for literals already in the tree).
 - Docker's VM stopping (brief, 2026-11-19 05:10): no test of this track can power off, reboot or kill the
   first process of Docker's VM. Every container it starts (`programs::run_container`, `reference.rs`,
   `layer3.rs`, `binaries.rs`) is a plain `docker run` with Docker's default capabilities, no
@@ -17,12 +28,68 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2's long run reached the plan's
-pass bars on 2026-11-19 13:52 (layer 1 12,150,000 cases, layer 2 1,000,000 programs, layer 3 100,261 Csmith
-programs compared with Linux; 0 mismatches of the translator; every chunk that failed once is explained
-under "Failures found by the run" and passed later). The driver has ended; nothing of it runs. See "P2" just
-below for the totals, the confirmation run and the whole suite. Refinements of M5 that remain are listed under
-"M5, fourth run, what comes next".
+M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
+T3 is under way: main merged (the translator on the shared guest interface), the literal check adopted, the
+P2 check's findings answered, the register jump slow path fixed; the reruns on the merged code and the speed
+pairs are recorded under "T3".
+
+## T3: main's refactor, the slow path, the literal sweep
+
+Done, in order (commits on phase-1-translator):
+- 6a981a30 merged origin/main (the translator generic over `wcontainers-guest-cpu`, arm64 behind it). Two
+  conflicts, both in the test crate: the runner's counters (main's reason numbers, kept in this branch's Fx
+  maps) and its pc-only read at a stop; `programs::ran`'s statuses (main's new x86 faults, written with this
+  branch's named signals). Nothing in the translator or arm64 crates conflicted.
+- 65ba8f8a merged origin/phase-1-literals and ran its init once (8159 to 8113 lines on the merged tree).
+- 97fff482 the P2 check's findings on the test harness:
+  - Layer 2 now compares every program with the real CPU (finding 5). `native` runs blobs through one
+    reference container per job (`wcontainers-reference blobs`: a request per blob on stdin, each blob in a
+    child of its own with an empty stdin and pipes for its output, as in a container of its own), instead of
+    a container per program. Measured on the rented ARM64 machine, 12 jobs, load 26 to 34: layer 2, 1,000
+    programs, seed 900, was 28 s with 8 on the CPU and 70 s with all 1,000 on the CPU through a container
+    each; through the server, all 1,000 on the CPU, 25 s. `WC_LAYER2_NATIVE` now defaults to every case and
+    the driver sets it to every case.
+  - Layer 3 replays exactly, apart from which programs end within Linux's 20 s alarm (finding 4): Chrome runs
+    the first of every `cases / WC_LAYER3_CHROME` cases (when it ends in time), not the first to finish; the
+    bounded N and mixing seed come from FxHash of the blob's bytes (rustc-hash, pinned by Cargo.lock), not
+    std's DefaultHasher. Which programs are compared still depends on how fast the reference runs (a 20.2 s
+    program on the Mac ended in time on the Graviton): that is the alarm's nature, recorded, not changed.
+  - The rented machine's P2 ledger lines say `WC_LAYER3_JOBS=6` in their knobs although they ran at 12 or
+    48 (their `ran=` field says so): those knobs were kept so the Mac's driver would skip the chunks.
+- b4384452 busybox `awk`'s "jump through a register not recognised" (below).
+- The FPSR fix and the literal steps 1 and 2 (below).
+
+Busybox `awk` (Alpine 3.22, ARM64, run by `wcon` at full look-ahead on the rented x86 machine, which only
+translates and runs WebAssembly; exact counts by target from a scratch counting patch on the job's copy,
+`translator/t3/detail/apply.py`; commands in `translator/t3/awk.sh`). What it did not recognise:
+- Calls through the procedure linkage table: each stub ends `br x17` into another module (`free`, `malloc`,
+  `memset` and so on in musl). A jump through a register to outside its own function is a tail call; it now
+  goes through the lookup like a call through a register, with no warning. Only a jump to inside its own
+  function (a switch table not recognised) is the slow path, counted and warned (a range check on the target).
+- awk's evaluator's switch, whose table address the function computes once and keeps in a stack slot
+  (`str x0, [sp, #0x30]`, later `ldr x1, [sp, #0x30]`): the switch habit now follows a 64 bit load from
+  `[sp, #n]` back to the nearest store to that slot with sp unchanged between (`habits::kept_in_frame`).
+- Cases of a recognised switch that lie in another piece of a function cut in parts: the jump goes to them as
+  a tail call through the lookup, with no warning; other targets still take the counted path.
+- Counts, before (97fff482) and after (both changes), by the exact count:
+  `seq 1 100000 | awk '{s+=$1} END {print s}'` 5,306,745 to 5; `awk 'BEGIN {for (i = 0; i < 100000; i++) s
+  += length(sprintf("%d", i)); print s}'` 8,601,492 to 0; `seq 1 20000 | awk '{a[$1 % 97] = a[$1 % 97] $1}
+  END {...}'` 2,621,222 to 4. Outputs unchanged. (wcon's own summary prints a counter's value when it last
+  warned, so it shows slightly different figures, such as 5,306,726.)
+- Test: `programs::only_jumps_inside_their_function_are_unrecognised` (`programs/register_jumps.S`: a tail
+  call through a register, a jump into its own function, and a switch whose table address is kept in the
+  frame, 1,200 rounds each): the count must equal the rounds of the jump inside. It failed on the code
+  before each of the two changes and passes after (rented ARM64 machine).
+
+FPSR read first (the P2 check's first finding): see "For the orchestrator". New test
+`programs::float_status_read_first_matches_linux` (`programs/float_status.c`: flags read through mrs and
+fetestexcept after 1/0, overflow, underflow and sqrt(-1), never cleared; every level, every look-ahead, and
+Chrome).
+
+The P2 check's other findings, answered here: the Graviton's DC ZVA fault address (finding 2) is under "Known
+gaps"; the square root forms at 7,000 cases on the final code (finding 3) are covered by this milestone's
+layer 1 rerun at 10,000 cases a form on the merged code, and P2's headline is now worded as mixing the two
+commits; the loosened layer 3 guard (finding 6) needs no change.
 
 ## P2: the long runs to the pass bars
 
@@ -169,7 +236,10 @@ Progress (from the ledger):
 - Layer 1 done, 2026-11-16 15:55 to 18:11: 10 of 10 chunks passed, 1,215 forms x 10,000 cases (12,150,000)
   and 100 a form in Chrome (121,500); chunks 1, 2 and 4 on c38b4ad, 3 and 5 to 10 on 92b0866; 7,253 s of
   chunks (576 to 881 s each), load 10 to 30 for most of it, up to 189 (another job on the machine) in chunks
-  9 and 10. Chunk 3 failed once on c38b4ad (failure 1 below) and passed on 92b0866.
+  9 and 10. Chunk 3 failed once on c38b4ad (failure 1 below) and passed on 92b0866. So on the final code the
+  ledger holds 7,000 cases a form, not 10,000, for the five square root forms 92b0866 changed (FSQRT_S, _D,
+  _H, _asimdmisc_R, _asimdmiscfp16_R): the layer's total mixes the two commits. T3's layer 1 rerun ran every
+  form at 10,000 cases on the merged code.
 - Layer 2 done, 2026-11-16 18:11 to 2026-11-17 02:37: 40 of 40 chunks passed, 1,000,000 programs, 1,000 also
   on the CPU and 200 in Chrome (at none, and full in both settings); chunks 1 to 21 and 23 on 92b0866, 22
   and 24 to 40 on 445e3cf; 29,589 s of chunks (628 to 1,230 s each), load mostly 8 to 35, peaks of 111 and
@@ -2703,9 +2773,11 @@ contract's bits, in both runners).
   loop pieces to carry on in after a stop), up to 9 times slower than speed on the benchmark set. That is the
   trade the size setting makes; measured under "M5, second run".
 
-- FPSR's cumulative exception flags are kept only once the program has written FPSR (or set FPCR); a
-  program that reads them without ever writing gets the flags it had, counted and warned as "exact
-  floating point requested". A thread made by the kernel (fork, a new thread) starts with them not kept.
+- FPSR's cumulative exception flags are kept from the start for a program whose code reads FPSR (see "For
+  the orchestrator": the runner decides, by `reads_float_status`), otherwise once it writes FPSR. Code that
+  reaches an FPSR read without that (a library loaded later, code written at run time) gets the flags kept so
+  far, counted and warned as "exact floating point requested". A thread made by the kernel (fork, a new
+  thread) starts with them as the runner sets them.
 - CASP of 64 bit pairs is a plain load, compare and store: exact with one thread, not atomic with more
   (WebAssembly has no 128 bit compare and exchange).
 - The "code changed" stand-in forgets the lookup table's pieces of the 64 byte line only; full pieces that
@@ -2736,7 +2808,12 @@ contract's bits, in both runners).
   bits 31 to 28 are reserved, and keeps only `FPSR_BITS` (reads zero, writes ignored, one of the two
   behaviours Arm allows a reserved bit, and the M5's); it has no `FEAT_SPECRES` (not in
   `OFFERED_FEATURES`), so `CPP RCTX` is an undefined instruction, as on the M5. The Graviton has
-  `FEAT_SPECRES` and keeps those bits, so layer 1 runs on the Mac. Read from the code, not run.
+  `FEAT_SPECRES` and keeps those bits, so layer 1 runs on the Mac. Read from the code, not run. The P2
+  check ran it there (seed 4244, 2,000 cases a form) and found a third: `DC ZVA` on an address that faults
+  reports the address in the register there, while the M5 and the translator report the start of the 64
+  byte block (shrunk case: x0 = 1, Linux `MemoryFault(1)`, ours `MemoryFault(0)`). Two Arm CPUs differ here,
+  so taken as a choice the architecture leaves open (not checked against the Arm ARM's text): a reference
+  difference, and the translator keeps the M5's answer.
 
 ## Departures from the plan
 

@@ -86,6 +86,9 @@ pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32
     run_in_chrome(blob, how, omit, repeat, None, 0)
 }
 
+/// The setup's name for whether the thread starts with FPSR's flags kept exact (runner.js reads it).
+const KEEP_FLOAT_FLAGS: &str = "keepFloatFlags";
+
 /// [`repeated`] at full look-ahead, the translation split into modules of at most `module_bytes` of code,
 /// only to measure calls between modules.
 pub fn repeated_split(blob: &Blob, optimise: Optimise, repeat: u32, module_bytes: u32) -> Report {
@@ -142,6 +145,11 @@ fn run_in_chrome(
             | (u8::from(omit.returns) << 2)
             | (u8::from(omit.depth) << 3),
     });
+    let mut setup = setup;
+    setup
+        .as_object_mut()
+        .expect("an object")
+        .insert(KEEP_FLOAT_FLAGS.into(), blob.reads_float_status().into());
     let result = launch(&directory, &setup, flags);
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
@@ -263,7 +271,8 @@ pub fn load_modules(
     for (i, module) in modules.iter().enumerate() {
         std::fs::write(directory.join(format!("module-{i}.wasm")), module).unwrap();
     }
-    let memory = (load + image.len() as u64).next_multiple_of(1 << 16);
+    let memory = (load + image.len() as u64)
+        .next_multiple_of(wcontainers_translator::contract::WASM_PAGE_BYTES);
     let setup = serde_json::json!({
         "codeBytes": code.end,
         "codeStart": code.start,

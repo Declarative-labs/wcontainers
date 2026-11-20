@@ -17,7 +17,7 @@ use wcontainers_abi::{
 };
 use wcontainers_arm64::Arm64;
 use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
-use wcontainers_translator::contract::{self, Reason};
+use wcontainers_translator::contract::{self, Reason, WASM_PAGE_BYTES};
 use wcontainers_translator::{
     LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
 };
@@ -250,7 +250,7 @@ impl Machine {
     pub fn new(memory_bytes: u64, table_base: u64, slots: u32, syscalls: Syscalls) -> Self {
         let engine = engine();
         // The table covers the whole memory, and one more byte, always zero, follows it.
-        let permission_pages = memory_bytes.div_ceil(65536) * 65536 / PAGE_SIZE;
+        let permission_pages = memory_bytes.div_ceil(WASM_PAGE_BYTES) * WASM_PAGE_BYTES / PAGE_SIZE;
         let mut store = Store::new(
             &engine,
             Host {
@@ -292,11 +292,11 @@ impl Machine {
             },
         );
         store.limiter(|host| &mut host.limits);
-        let pages = memory_bytes.div_ceil(65536);
+        let pages = memory_bytes.div_ceil(WASM_PAGE_BYTES);
         let memory =
             Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).expect("memory");
         let slots_at = (u64::from(PERMISSIONS_AT) + permission_pages + 1).next_multiple_of(4);
-        let state_pages = (slots_at + 4 * u64::from(slots)).div_ceil(65536) as u32;
+        let state_pages = (slots_at + 4 * u64::from(slots)).div_ceil(WASM_PAGE_BYTES) as u32;
         let state = SharedMemory::new(&engine, MemoryType::shared(state_pages, state_pages))
             .expect("state memory");
 
@@ -1282,7 +1282,7 @@ fn instantiate(
         (contract::PERMISSIONS, Val::I32(PERMISSIONS_AT as i32)),
         (
             contract::PERMISSION_PAGES,
-            Val::I64((pages * 65536 / PAGE_SIZE) as i64),
+            Val::I64((pages * WASM_PAGE_BYTES / PAGE_SIZE) as i64),
         ),
         (contract::SLOTS, Val::I32(store.data().slots_at as i32)),
         (

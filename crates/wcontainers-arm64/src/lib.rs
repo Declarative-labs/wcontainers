@@ -53,6 +53,26 @@ pub use meaning::{
     condition_from_flags, emit, flag_value, untag,
 };
 
+/// ADRP's page, whatever the guest's page size: it clears the low 12 bits (Arm ARM C6.2, ADRP).
+pub const ADRP_PAGE_SHIFT: u32 = 12;
+pub const ADRP_PAGE_MASK: u64 = (1 << ADRP_PAGE_SHIFT) - 1;
+
+/// Whether `code`, whole instructions from an aligned start, reads FPSR. A program that does has FPSR's flags
+/// kept exact from its start (`FLOAT_TRACKING` set before it runs): none can be worked out afterwards.
+#[cfg(feature = "translate")]
+pub fn reads_float_status(code: &[u8]) -> bool {
+    let (words, _) = code.as_chunks::<{ size_of::<u32>() }>();
+    words.iter().any(|&word| {
+        matches!(
+            decode(u32::from_le_bytes(word)),
+            Instruction::ReadSystem {
+                register: SystemRegister::Fpsr,
+                ..
+            }
+        )
+    })
+}
+
 /// The ARM64 guest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Arm64;
@@ -74,7 +94,8 @@ impl Personality for Arm64 {
 }
 
 // ARM64's words of the thread state after the block, which the kernel never sees.
-/// i32: not zero once the program wrote FPSR, so its flags are kept exact.
+/// i32: not zero once FPSR's flags are kept exact: from the start for a program that reads FPSR
+/// (`reads_float_status`), else from its first write of FPSR.
 pub const FLOAT_TRACKING: usize = THREAD_BLOCK_SIZE;
 /// i32: the size of the access a load exclusive remembered, 0 for none.
 pub const EXCLUSIVE_BYTES: usize = FLOAT_TRACKING + 4;

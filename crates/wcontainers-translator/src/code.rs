@@ -672,7 +672,10 @@ impl Table {
 /// Push the permission table byte of the page of the address in i64 local `at`, leaving the page number in
 /// i64 local `page`. Pages past the table read the byte after it, which allows nothing.
 fn permission_byte(s: &mut InstructionSink<'_>, table: Table, at: u32, page: u32) {
-    s.local_get(at).i64_const(12).i64_shr_u().local_tee(page);
+    s.local_get(at)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
+        .i64_shr_u()
+        .local_tee(page);
     table.pages.push(s);
     s.local_get(page);
     table.pages.push(s);
@@ -727,8 +730,14 @@ pub(crate) fn permission_range(
         .i32_const(0)
         .local_set(allowed)
         .else_();
-    s.local_get(last).i64_const(12).i64_shr_u().local_set(last);
-    s.local_get(at).i64_const(12).i64_shr_u().local_set(page);
+    s.local_get(last)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
+        .i64_shr_u()
+        .local_set(last);
+    s.local_get(at)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
+        .i64_shr_u()
+        .local_set(page);
     s.block(BlockType::Empty).loop_(BlockType::Empty);
     // Pages past the table read the byte after it, which allows nothing.
     s.local_get(page);
@@ -772,9 +781,9 @@ pub(crate) fn permission_fast(
     page: u32,
 ) {
     // The bits of the next page sit two above those of this one.
-    let both = this | (this << 2);
-    debug_assert_eq!(PAGE_READ << 2, NEXT_PAGE_READ);
-    debug_assert_eq!(PAGE_WRITE << 2, NEXT_PAGE_WRITE);
+    let both = this | (this << NEXT_PAGE_SHIFT);
+    debug_assert_eq!(PAGE_READ << NEXT_PAGE_SHIFT, NEXT_PAGE_READ);
+    debug_assert_eq!(PAGE_WRITE << NEXT_PAGE_SHIFT, NEXT_PAGE_WRITE);
     permission_byte(s, table, at, page);
     s.i32_const(both.into())
         .i32_and()
@@ -813,7 +822,7 @@ pub(crate) fn permission_exact<G: Guest>(
             .if_(BlockType::Empty);
         return;
     };
-    let next = this << 2;
+    let next = this << NEXT_PAGE_SHIFT;
     permission_byte(s, table, at, page);
     // Bits wanted and missing: this page's, and the next page's if the access runs onto it.
     s.local_tee(allowed)
@@ -822,11 +831,11 @@ pub(crate) fn permission_exact<G: Guest>(
         .i32_const((this | next).into())
         .i32_const(this.into())
         .local_get(at)
-        .i64_const(0xfff)
+        .i64_const(wcontainers_abi::PAGE_MASK as i64)
         .i64_and()
         .i64_const(len.into())
         .i64_add()
-        .i64_const(0x1000)
+        .i64_const(wcontainers_abi::PAGE_SIZE as i64)
         .i64_gt_u()
         .select()
         .i32_and()
@@ -834,7 +843,7 @@ pub(crate) fn permission_exact<G: Guest>(
     // The address itself if this page forbids it, otherwise the start of the next page.
     s.local_get(at)
         .local_get(at)
-        .i64_const(0xfff)
+        .i64_const(wcontainers_abi::PAGE_MASK as i64)
         .i64_or()
         .i64_const(1)
         .i64_add()
@@ -859,30 +868,30 @@ fn permission_checker() -> wasm_encoder::Function {
     let mut s = f.instructions();
     permission_byte(&mut s, Table::GLOBALS, AT, PAGE);
     // Bits wanted and missing: this page's, and the next page's (two above) if the access runs onto it.
-    debug_assert_eq!(PAGE_READ << 2, NEXT_PAGE_READ);
+    debug_assert_eq!(PAGE_READ << NEXT_PAGE_SHIFT, NEXT_PAGE_READ);
     s.local_tee(ALLOWED)
         .i32_const(-1)
         .i32_xor()
         .local_get(THIS)
         .local_get(THIS)
-        .i32_const(2)
+        .i32_const(NEXT_PAGE_SHIFT as i32)
         .i32_shl()
         .i32_or()
         .local_get(THIS)
         .local_get(AT)
-        .i64_const(0xfff)
+        .i64_const(wcontainers_abi::PAGE_MASK as i64)
         .i64_and()
         .local_get(LEN)
         .i64_extend_i32_u()
         .i64_add()
-        .i64_const(0x1000)
+        .i64_const(wcontainers_abi::PAGE_SIZE as i64)
         .i64_gt_u()
         .select()
         .i32_and();
     // The address itself if this page forbids it, otherwise the start of the next page.
     s.local_get(AT)
         .local_get(AT)
-        .i64_const(0xfff)
+        .i64_const(wcontainers_abi::PAGE_MASK as i64)
         .i64_or()
         .i64_const(1)
         .i64_add()
@@ -909,10 +918,10 @@ pub(crate) fn keep_pages(
     (low, room): (u32, u32),
 ) {
     s.local_get(at)
-        .i64_const(12)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shr_u()
         .local_tee(page)
-        .i64_const(12)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shl()
         .local_set(low);
     // The table bytes of the page and the seven after it, when they are all in the table.
@@ -933,10 +942,10 @@ pub(crate) fn keep_pages(
         .i64_ctz()
         .i64_const(3)
         .i64_shr_u()
-        .i64_const(12)
+        .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shl()
         .else_()
-        .i64_const(4096)
+        .i64_const(wcontainers_abi::PAGE_SIZE as i64)
         .end()
         .i64_const(i64::from(longest) - 1)
         .i64_sub()

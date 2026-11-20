@@ -69,6 +69,14 @@ fn stack_moved_by_a_callee_matches_linux() {
     ]);
 }
 
+/// FPSR's flags read without the program clearing or setting them first, as on Linux; and in Chrome.
+#[test]
+fn float_status_read_first_matches_linux() {
+    match_linux(&[("float_status", Library::C)]);
+    let blob = build("float_status", "-O2", Library::C);
+    full_matches_in_chrome(&blob, &native(&blob));
+}
+
 #[test]
 fn benchmarks_match_linux() {
     match_linux(&[("bench", Library::None)]);
@@ -334,10 +342,10 @@ fn differences_match_linux_on_other_hosts() {
                 "output of {what}"
             );
             assert_eq!(ours.status, theirs.status, "exit status of {what}");
-            assert!(
-                machine.count(Reason::SoftwareFusedMultiplyAdd) > 0,
-                "{what}"
-            );
+            // The program reads FPSR, so its flags are kept from its start and every operation done in
+            // software, the fused multiply-adds included, is counted as exact floating point.
+            assert!(blob.reads_float_status(), "{what}");
+            assert_eq!(machine.count(Reason::SoftwareFusedMultiplyAdd), 0, "{what}");
             assert!(
                 machine.count(Reason::ExactFloatingPointRequested) > 0,
                 "{what}"
