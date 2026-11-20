@@ -65,6 +65,10 @@ fn main() -> windows::core::Result<()> {
          o[i.xy] = float4((i.x + 1) / 9.0, (i.y + 1) / 7.0, (i.x + i.y + 1) / 11.0, 1.0); }",
         s!("cs_5_0"),
     );
+    // With the argument `10_0` the device is made at 10_0, without gathers (10_1's) and storage
+    // views (11_0's).
+    let level10 = std::env::args().nth(1).as_deref() == Some("10_0");
+    let levels = [D3D_FEATURE_LEVEL_10_0];
     let (mut device, mut context) = (None, None);
     unsafe {
         D3D11CreateDevice(
@@ -72,7 +76,7 @@ fn main() -> windows::core::Result<()> {
             D3D_DRIVER_TYPE_HARDWARE,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_FLAG(0),
-            None,
+            level10.then_some(&levels[..]),
             D3D11_SDK_VERSION,
             Some(&mut device),
             None,
@@ -231,7 +235,9 @@ fn main() -> windows::core::Result<()> {
         device.CreateVertexShader(VS, None, Some(&mut vs))?;
         device.CreatePixelShader(SAMPLE, None, Some(&mut sample))?;
         device.CreatePixelShader(LOAD, None, Some(&mut load))?;
-        device.CreatePixelShader(&gather_ps, None, Some(&mut gather))?;
+        if !level10 {
+            device.CreatePixelShader(&gather_ps, None, Some(&mut gather))?;
+        }
         context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context.VSSetShader(vs.as_ref(), None);
         context.PSSetSamplers(0, Some(&[sampler.clone()]));
@@ -257,11 +263,12 @@ fn main() -> windows::core::Result<()> {
     let mut rtv = None;
     unsafe { device.CreateRenderTargetView(&target, None, Some(&mut rtv))? };
     for (plane, view, w, h) in [("luma", &luma, W, H), ("chroma", &chroma, W / 2, H / 2)] {
-        for (how, ps) in [
+        let shaders = [
             ("loaded", &load),
             ("sampled", &sample),
             ("gathered", &gather),
-        ] {
+        ];
+        for (how, ps) in shaders.into_iter().filter(|(_, ps)| ps.is_some()) {
             unsafe {
                 context.OMSetRenderTargets(Some(&[rtv.clone()]), None);
                 context.RSSetViewports(Some(&[D3D11_VIEWPORT {
@@ -350,15 +357,19 @@ fn main() -> windows::core::Result<()> {
     }
 
     // Each plane written through a storage view of its format by a compute shader.
-    let stored = texture(
-        W,
-        H,
-        DXGI_FORMAT_NV12,
-        D3D11_USAGE_DEFAULT,
-        (D3D11_BIND_UNORDERED_ACCESS.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
-        0,
-        None,
-    );
+    let stored = if level10 {
+        Err(windows::core::Error::empty())
+    } else {
+        texture(
+            W,
+            H,
+            DXGI_FORMAT_NV12,
+            D3D11_USAGE_DEFAULT,
+            (D3D11_BIND_UNORDERED_ACCESS.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            0,
+            None,
+        )
+    };
     println!(
         "CreateTexture2D(unordered access) {:#010x}",
         code(stored.as_ref().map(|_| ()).map_err(|e| e.clone()))
