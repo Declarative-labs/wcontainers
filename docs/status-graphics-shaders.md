@@ -2323,15 +2323,32 @@ Run 57 (the NIR track's request of 2026-11-19: a public entry point for 15.4's r
   bindings and pairs expected, the two-index sample and a buffer array refused by name, a gather at
   a run-time offset leaving no offset, storage textures given the named format and keeping their
   own otherwise, the key's parts, and a variant rewrite (`min_lod_clamped`) adding the helper
-  block. Each result validates and its WGSL reads back. Not yet drawn: no test runs the rewritten
-  programs on a GPU against the native feature (binding arrays on wgpu's Vulkan path, a constant
-  gather offset); the NIR track's corpus against llvmpipe is the other check (its G8).
+  block. Each result validates and its WGSL reads back.
+- Drawn (`tests/rewrite_draw.rs`, Windows, RTX 3080, wgpu's Vulkan path, one GPU job of about 2 s;
+  `WCONTAINERS_REWRITE_SEED`, `WCONTAINERS_REWRITE_CASES`, default 1 and 16): a compute program
+  sampling, gathering and loading from arrays of four textures and four samplers (each its own
+  filter and address mode) picked at a run-time index, its gather's offset at run time, rewritten,
+  against the same program run with wgpu's native binding arrays and the offset as a constant;
+  random texels, offsets in Vulkan's guaranteed -8 to 7, coordinates a quarter texel off every
+  edge. Every output word equal: seed 1, 16 cases (gpu6.log, gpu7.log at the final code); seed 57,
+  64 cases (gpu5.log). Desktop shared with other tracks' queued jobs. The inputs sit in a
+  read-only storage buffer and the layout is explicit: wgpu binds no uniform buffer beside a
+  binding array, and derives binding arrays as single items. Command:
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test
+  rewrite_draw --no-run" -- "set WCONTAINERS_REWRITE_SEED=1&& set WCONTAINERS_REWRITE_CASES=16&&
+  cargo test -j 3 -p wcontainers-shaders --test rewrite_draw -- --nocapture --test-threads 1"`.
+  Not drawn: storage textures in a named format through `rewrite` (the same `images::finish` as
+  the DXIL route's drawn tests); the NIR track's corpus against llvmpipe is the other check.
 - Results (rented x86 machine, load 12 to 55 on 192 processors while these ran): clippy with
   warnings denied clean; the whole suite with every corpus
   (`cargo test --no-fail-fast -p wcontainers-shaders -- --include-ignored --skip mutated`, 234 s):
   every binary passes but `runner_shaders_give_their_recorded_verdicts`, which fails only on A1's
   `hlsl+distance-4-ps.dxil` as before; no verdict changed. Literal check (desktop, check2.txt):
-  passes; this crate's baseline lines (src, build.rs, tests, examples) 589, from 590.
+  passes; this crate's baseline lines (src, build.rs, tests, examples) 589, from 590. Windows
+  clippy (all targets, warnings denied) clean (clippy-win3.log); the literal check after the
+  drawn test passes (check4.txt).
+- Clean-up: the desktop's `C:\wc\target\phase-2-graphics-shaders` and the x86 machine's
+  `/work/target/graphics-shaders` deleted; scratch keeps the logs in `run57`.
 
 Run 56 (the gap list in the fronts' order: the Direct3D 12 front's three asks):
 - Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the other branches
@@ -2893,9 +2910,7 @@ Since run 56 the Direct3D 12 front's three asks are built (its texture-load line
 program for a variant alone, depth clamped behind a geometry stage); since run 55 its srv-buffers,
 tgsm, uav-rwbuffer, wave-ops-float and unbounded-array-5.1 (shader model 6.0) runner files should
 pass the converter after a merge. Since run 57 the NIR track's entry point is there (below). Left
-first, in order: a drawn test of `rewrite` on the RTX 3080 (its split arrays against wgpu's
-native binding arrays on the Vulkan path, its moved gathers against constant offsets, seeded);
-arrays of constant and structured
+first, in order: arrays of constant and structured
 buffers on the DXIL route (each element its own buffer, the reader's one buffer split); the
 Direct3D 11 front's aliased lines into multisampled targets (a stage helper route drawing each
 line as the whole pixels the diamond rule picks, and the interface's word for it); DXIL
