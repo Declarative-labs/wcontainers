@@ -448,13 +448,13 @@ share of `getppid`, 116 to 120 ns, and the kernel's lock, 0 to 11.4 ns (4.2). Ex
   holds;
 - no gain when B is (`Parallel`, `External`): it runs as `Serial` until its form is built.
 
-**How a new overlap takes effect.** A mapping, an exec whose program files are mapped so, or a `resume`
-can make two memories overlap where one side runs as `Serial`. Then every handed-out task of the other
-side, other than the caller, is called in first (4.5), and the change is made in the first entry in
+**How a new overlap takes effect.** A mapping, an exec whose program files are mapped so, or a resume
+call can make two memories overlap where one side runs as `Serial`. Then every handed-out task of the
+other side, other than the caller, is called in first (4.5), and the change is made in the first entry in
 which the rule holds.
 - Until they are in, the call that caused it is parked before it has had any effect: the `mmap` or
   `shmat` that makes the mapping (kernel/syscall/memory.rs:109, ipc.rs:356), or the exec. For a
-  `resume`, the resumed tasks are not handed out. `mremap` and `mprotect` change a mapping inside one
+  resume call, the resumed tasks are not handed out. `mremap` and `mprotect` change a mapping inside one
   memory and make no overlap. A fork's child inherits its parent's overlaps, and it is new: it has no
   running thread.
 - Why. The form before's fifth check: process P1 runs on one processor with a file mapped privately; P2,
@@ -505,8 +505,8 @@ embedder takes a snapshot there, as for signals.
 ### 4.2 The first form: one lock, behind an interface that does not need it
 
 **The interface changes now, the locking later.** The kernel's entry points take `&self`. `Cpu` and
-`Host` methods take `&self`, and both traits require `Sync`. The lock is inside the kernel. So when the lock
-is later split (4.7), nothing outside the kernel changes.
+`Host` methods take `&self`, and both traits require `Sync`. The lock is inside the kernel. So when the
+lock is later split (4.7), nothing outside the kernel changes.
 
 Rejected: a lock around the kernel in the runtime, with the kernel's methods left `&mut self`. It is less
 work now, and it writes "one caller at a time" into the interface, which the brief forbids. Every `System`
@@ -569,8 +569,8 @@ memory with `Parallel` code its thread still counts as in guest code (its mark i
   under `Serial` as it would under `Parallel`.
 - Every way into the kernel but the loop's own looks at the calling worker's mark, and panics with the
   call's name when it is set: `run`, `kernel.process(id)`, the `Kernel` calls that suspend and resume
-  tasks (section 6), `kill`, an event handed in. The kernel finds the mark through the same piece of the build that names the calling
-  host thread.
+  tasks (section 6), `kill`, an event handed in. The kernel finds the mark through the same piece of the
+  build that names the calling host thread.
 - The loop's own entries do not look. `run` looked when it was called, and hands `Kernel::enter` a
   value that says so (suggested `Kernel::enter(checked)`, the value made only by a check). So a system
   call pays nothing for this. Measured for this choice (section 14): the same test made at every take
@@ -1351,10 +1351,10 @@ shared scheduler for that; with no order of entries it is not needed.)
 
 **What this needs of other tracks.** `Exact` at full speed needs the translator's progress count
 (docs/runtime.md section 9, not built), in the form of code a process given `Exact` runs. Until then a
-process given `Exact` runs counted turns in which stop checks stand in for the count (wt/lib.rs:1792-1818),
-which costs a hook call a check and repeats only at one look-ahead, as the kernel tests' `repeats` does
-today. That is for tests. The two kernel primitives are the embedder interface track's to design;
-decisions 12 and 17 are what this plan asks of them.
+process given `Exact` runs counted turns in which stop checks stand in for the count
+(wt/lib.rs:1792-1818), which costs a hook call a check and repeats only at one look-ahead, as the kernel
+tests' `repeats` does today. That is for tests. The two kernel primitives are the embedder interface
+track's to design; decisions 12 and 17 are what this plan asks of them.
 
 Rejected: comparing only a system call's arguments for `External`. The bytes of a `write` would then go
 unchecked, and a process given `Exact` that read them would differ with nobody told.
@@ -1379,8 +1379,8 @@ single-thread system call cost before it lands. Nothing outside the kernel chang
 
 **Today.** `Stepper::step` runs one thread and returns; `drive` repeats it (rt/lib.rs:197-243). The owner
 has named the first `run` and the second `run_until_finished` (section 2), and this plan uses his names.
-The executor is `&mut`, and one `StopFlag` raises "whichever thread is running" (rt/lib.rs:33-57). The local
-system has one timer thread with one deadline (rt/system.rs:41-55).
+The executor is `&mut`, and one `StopFlag` raises "whichever thread is running" (rt/lib.rs:33-57). The
+local system has one timer thread with one deadline (rt/system.rs:41-55).
 
 **The change: the same `run`, called by one host thread for each processor, each naming its
 processor.** `run` and `run_until_finished` take the kernel, the executor and the system by `&`, and a
@@ -1437,9 +1437,9 @@ What changes with it:
     of events will miss the next one. A condition cannot.
   - How it is checked. The kernel walks the idle processors from the lowest number and asks, for
     each, what `next` would hand it, counting each thread once and, for tasks that run as `Serial`
-    and overlap, one running place between them. Each processor that would get a thread has its mark taken off and is announced
-    (suggested: a hook `on_processor_needed(processor)`). This is after the entry's own hand-out,
-    so a thread the entering worker took for itself wakes nobody.
+    and overlap, one running place between them. Each processor that would get a thread has its mark
+    taken off and is announced (suggested: a hook `on_processor_needed(processor)`). This is after the
+    entry's own hand-out, so a thread the entering worker took for itself wakes nobody.
   - The system's `idle(processor, until)` returns at the time, at an event from outside, or at that
     announcement. The announcement must be kept if it comes before the worker has reached `idle`:
     `idle` then returns at once. This is the rule of `std::thread::park` and `unpark`, and the local
@@ -1562,10 +1562,10 @@ What changes with it:
   service and its timer thread call it. The timer thread keeps one slice's end and one thread per
   processor, as `turn` told it, and the container's one deadline, as the hook above told it.
 - **A thread never leaves without its exit**, with two exceptions: the thread whose own entry ended it,
-  and a thread taken out of the kernel under it by `suspend_tasks` or `suspend_process` (section 6). Today a thread the kernel dropped
-  breaks out of `Execution::run` with no `Kernel::exit` (wt/lib.rs:2303-2306). By 4.4 a thread ends only
-  in its own entry, so the processor's running thread is always cleared by that thread's own `exit`, and
-  `next` finds it so.
+  and a thread taken out of the kernel under it by `suspend_tasks` or `suspend_process` (section 6).
+  Today a thread the kernel dropped breaks out of `Execution::run` with no `Kernel::exit`
+  (wt/lib.rs:2303-2306). By 4.4 a thread ends only in its own entry, so the processor's running thread is
+  always cleared by that thread's own `exit`, and `next` finds it so.
 - **A container stop.** `System::stopped` runs when no thread is in `Execution::run`
   (rt/lib.rs:156-158), which a save needs. With several workers the loop first asks every running thread
   in, waits until every worker is out of `Execution::run` and no entry is in progress, then calls it
@@ -1857,10 +1857,11 @@ a process never changes form while it is in a kernel, which was the main cost of
 
 What two forms mean elsewhere:
 - **Which form a process runs.** The Parallel form if it was given `Parallel`, else the Serial form. It
-  is fixed while the process is in a kernel. `resume` makes the instances again in any case.
+  is fixed while the process is in a kernel. `resume_process` makes the instances again in any case.
 - **A process that runs as `Serial` with `Parallel` code** (the executor's limits of 7.4 and section 9,
-  or (`Parallel`, `External`) until its form is built; section 3) keeps running the Parallel form. That is correct: the Parallel form is right under
-  both orderings, and only pays for it. Counted "Parallel form run under Serial".
+  or (`Parallel`, `External`) until its form is built; section 3) keeps running the Parallel form. That
+  is correct: the Parallel form is right under both orderings, and only pays for it. Counted "Parallel
+  form run under Serial".
 - **A process with one thread, given `Parallel`**, runs the Parallel form from its start. Its byte is
   zero (7.3), so a barrier or a 128 bit atomic costs it one test, and the compiler setting costs it the
   0.0% to 1.8% above. Rejected: the Serial form until the process's second thread, then the Parallel
@@ -1878,8 +1879,9 @@ What two forms mean elsewhere:
 through `OUTPUT_FORM`, and gains two fields:
 - the form by ordering, Serial or Parallel;
 - whether the code holds the progress count, which is exactly "the process was given `Exact`" (section
-  2). A neighbour's guarantee never changes it, so no process is translated again for a neighbour. The count is the translator track's to build and measure; this plan only fixes
-  that it is a field of the key and never a switch of its own.
+  2). A neighbour's guarantee never changes it, so no process is translated again for a neighbour. The
+  count is the translator track's to build and measure; this plan only fixes that it is a field of the
+  key and never a switch of its own.
 So a program has up to four entries at one look-ahead. Two more values would join the first field if
 they are ever built: the form that orders atomic instructions for (`Parallel`, `External`) (4.6), and
 x86's ordered form for weaker hosts (section 9).
@@ -1984,8 +1986,8 @@ What follows from a shared import:
       - so on a worker that does not have it, taking a `Serial` process's lock is a try-lock. A
         failure is a bug, and it panics, naming both threads. The stress schedule of section 12 runs
         with it, and one test there asks a thread in while it waits for the kernel's lock.
-    - For a thread that runs as `Parallel` each hook takes it for as long as it needs it, and never asks for
-      the kernel's lock while it has it.
+    - For a thread that runs as `Parallel` each hook takes it for as long as it needs it, and never asks
+      for the kernel's lock while it has it.
   - A block's bytes go behind that block's own lock. `block_write` finds who shows a block by going
     through every process (wt/lib.rs:1413-1414). It may no longer read the records of other processes,
     so each block keeps the list of the memories that show it.
@@ -2001,9 +2003,9 @@ these instructions.
 (suggested name `runs_in_parallel`). It is 1 when the process's memory runs as `Parallel` and has more
 than one thread, else 0. It follows the memory's own threads, not its overlappers (the mixed-ordering
 check: in the form before it followed the group): a `Serial` task beside it never runs at the same
-time, and its code does not read the byte. The Parallel form reads it with a plain load, as it reads its stop word
-(tr/code.rs:1300). It is what lets a process that has one thread, or was forced to `Serial`, run the
-Parallel form at nearly the Serial form's speed.
+time, and its code does not read the byte. The Parallel form reads it with a plain load, as it reads its
+stop word (tr/code.rs:1300). It is what lets a process that has one thread, or was forced to `Serial`,
+run the Parallel form at nearly the Serial form's speed.
 
 The kernel tells the executor each memory's form of code, whether it runs as `Serial`, whether a
 process that owns it was given `Exact`, and whether it has more than one thread (suggested
@@ -2061,7 +2063,7 @@ about to start.
     The inline form is a load, a compare and a store, and takes no lock. Against the memory's own
     threads that is exact: there is one. But a `Parallel` memory takes the kernel's writes from other
     processes with nobody called in (4.5): a `write` to a file it maps, `process_vm_writev`, a
-    tracer, and the embedder's own `memory_write` (section 5). One that landed between the load and
+    tracer, and the embedder's own `write_memory` (section 5). One that landed between the load and
     the store would be lost while the instruction reported success. Linux forbids that: the
     instruction is atomic against the kernel's copy too. So such a write into a memory whose byte is
     0 is made under a group stop of that memory. Its one thread is then held at a stop point, and
@@ -2107,8 +2109,8 @@ learned from it holds until its thread's next stop (tr/contract.rs:17-27). So:
 - lowering one stops the memory's other threads by 4.5's rule, then the write, then carry on. The
   executor's own write locks (wt/lib.rs:486-489) follow the same two rules: placing a lock lowers,
   lifting one raises;
-- bytes are written with atomic stores, one byte or one aligned word at a time, so a reader never sees half
-  a value.
+- bytes are written with atomic stores, one byte or one aligned word at a time, so a reader never sees
+  half a value.
 
 **Blocks are shown by copying.** Each memory holds its own copy of a block's pages. A page that shows a
 block carries a write lock; the first write lifts it and marks the page written; and before the kernel
@@ -2138,12 +2140,13 @@ is exact only while one thread of everything that shows the page runs at a time.
   section 8: this Mac's are 16 KiB); it is not in this plan.
 - **In a memory that runs as `Parallel`, a written shared page is not locked again at a turn's end.**
   Such a memory has every such page in one place, and no other place is in use while its threads run,
-  so the memory's own bytes are the only ones a guest thread can see. Locking the page again would lower a permission, which is a group stop, at every system call
-  of every thread that had written a shared page (SQLite's shared index, a shared memory file, shared
-  anonymous memory). Instead the page stays written, and the executor copies it to the block when the
-  block's bytes are asked for: `shared_read` (a `read` of the file, kernel/fs/mod.rs:585), a new
-  `shared_map` of the page, `shared_unmap`, `memory_duplicate`. The copy is taken while threads may be
-  writing the page, as a `read` of a file being written through a mapping is on Linux.
+  so the memory's own bytes are the only ones a guest thread can see. Locking the page again would lower
+  a permission, which is a group stop, at every system call of every thread that had written a shared
+  page (SQLite's shared index, a shared memory file, shared anonymous memory). Instead the page stays
+  written, and the executor copies it to the block when the block's bytes are asked for: `shared_read` (a
+  `read` of the file, kernel/fs/mod.rs:585), a new `shared_map` of the page, `shared_unmap`,
+  `memory_duplicate`. The copy is taken while threads may be writing the page, as a `read` of a file
+  being written through a mapping is on Linux.
   - **That copy goes one way, from the memory to the block's own bytes.** Today's `flush` ends in
     `block_write` (wt/lib.rs:1376), which also writes the bytes into every memory that shows the block,
     the writer's own included (wt/lib.rs:1409-1433, with the comment "no guest runs"). Used here it
@@ -2161,8 +2164,8 @@ is exact only while one thread of everything that shows the page runs at a time.
 ### 7.5 Code a program writes while another thread runs it
 
 - **Dropping code** stops the memory's other threads by 4.5's rule (a group stop, or a call-in where a
-  process that owns the memory was given `Exact`), and every other thread of the memory gives up its frames before it
-  carries on. ARM64 announces a change with `ic ivau`, which is already a hook
+  process that owns the memory was given `Exact`), and every other thread of the memory gives up its
+  frames before it carries on. ARM64 announces a change with `ic ivau`, which is already a hook
   (arm64/memory.rs:375-383); it is made a stop point (4.5). x86 does not announce; its code pages carry
   a write lock, and the x86 plan already says the other threads are stopped first (x86 plan lines
   1884-1894, 1941). This plan gives that the same rule.
@@ -2343,10 +2346,10 @@ call-ins of 4.5. This section is what the embedder's part needs. On the WebAssem
 - **A watch is one more reason in the executor's lock layer** (docs/runtime.md section 8): a thread's
   table byte is the kernel's permissions, less what the process's locks take, less what that thread's
   watches take. One function makes it, as today (`effective`, wt/lib.rs:790).
-- **Setting a watch stops one thread, not the memory's others.** Only the watched thread's table changes, and the
-  rule is that the thread whose table loses a permission must be stopped. It is done with the memory's
-  stop lock, with one thread's held bit set, and the thread is held only at a stop point (4.5). So a
-  thread that reads the clock in a loop is not taken for stopped while its loop still relies on the
+- **Setting a watch stops one thread, not the memory's others.** Only the watched thread's table changes,
+  and the rule is that the thread whose table loses a permission must be stopped. It is done with the
+  memory's stop lock, with one thread's held bit set, and the thread is held only at a stop point (4.5).
+  So a thread that reads the clock in a loop is not taken for stopped while its loop still relies on the
   old table, and no access is missed.
 - **The held thread's position can be read.** It is at a stop point, so its registers are saved, and in
   an `Exact` process so is its count. The embedder reads both through the handle (suggested, on a
@@ -2393,8 +2396,8 @@ call-ins of 4.5. This section is what the embedder's part needs. On the WebAssem
     recommendation (decision 18). Without an answer an embedder's record of hand-overs cannot say who
     wrote.
 - **Space.** Each table is one byte per page under the ceiling: 1020 KiB for ARM64's 4080 MiB, of which
-  untouched pages cost nothing. They share the state memory's 4 GiB with the array of slots (docs/runtime.md
-  section 8), so the ceiling's formula gains the number of watched threads.
+  untouched pages cost nothing. They share the state memory's 4 GiB with the array of slots
+  (docs/runtime.md section 8), so the ceiling's formula gains the number of watched threads.
 
 **What it costs** (expected, from parts measured apart): a hand-over of a page from one thread to another
 is one watched access (leaving `Execution::run` and coming back, 300 ns, docs/runtime.md section 10), one
@@ -2506,8 +2509,8 @@ builds, in the native track's own milestones after its single-thread suites pass
     overlappers are called in for its turn (section 3).
 - **A table root per thread, only once it is watched.** A thread without per-thread watches uses its
   process's root. One with watches has its own root and address-space identifier, sharing every lower
-  table that is the same for all (native.md section 5.3; its N1 builds and tests the per-thread root). This
-  is `PerThreadWatch` there.
+  table that is the same for all (native.md section 5.3; its N1 builds and tests the per-thread root).
+  This is `PerThreadWatch` there.
 - **Atomic instructions need nothing.** The native output copies the guest's single-instruction atomics,
   compare and swap, load-acquire and store-release, with an alignment test in front (native.md lines
   363-366). The hardware does them, the 128 bit pair included. No hook and no byte.
@@ -2585,8 +2588,8 @@ on which side each falls. Its sixth check faulted that. They fall so:
   make them, and cannot borrow a `Process` or a `ProcessInfo`: "with the kernel inside a virtual
   machine, a host program cannot borrow its data" (native.md lines 1368-1371; its decision 11
   recommends building whatever reads kernel state into the inside). A host program that wants a
-  process read or its tasks taken out sends a request through the link to the system's code inside and gets a
-  copy back, for one crossing.
+  process read or its tasks taken out sends a request through the link to the system's code inside and
+  gets a copy back, for one crossing.
 - **Stopping a thread** through the executor's handle (section 5): from inside, the interrupt between
   virtual CPUs; from a host thread, an interrupt raised into the machine (2.4 to 4.1 µs, above).
 - **A worker** is a virtual CPU with its pool thread. `run_until_finished` hands each one call that
@@ -2608,14 +2611,14 @@ written in its section 5.3.
 
 - **How many processors the container is told.** A value of the container, the same on every machine,
   because the guest sees it and a copy or a move must see the same: suggested
-  `GuestMachine::processors` (rt/container.rs:39-44), given to the kernel in `Start`. Suggested default: 1,
-  so every existing test and every existing user sees what they see today; the command line program passes
-  the host's count unless told otherwise (decision 2).
+  `GuestMachine::processors` (rt/container.rs:39-44), given to the kernel in `Start`. Suggested default:
+  1, so every existing test and every existing user sees what they see today; the command line program
+  passes the host's count unless told otherwise (decision 2).
 - **How many run at once.** As many guest threads as the container has processors, and never a task that
-  runs as `Serial` beside one that overlaps it (section 3). The embedder's limit is the count of processors it gives
-  the container. A live run has one worker for each processor, also on a host with fewer cores
-  (section 5): a container told 16 processors and brought to a host with 8 cores runs 16 workers,
-  which that host shares its cores among. The plan has no count of workers below the processors
+  runs as `Serial` beside one that overlaps it (section 3). The embedder's limit is the count of
+  processors it gives the container. A live run has one worker for each processor, also on a host with
+  fewer cores (section 5): a container told 16 processors and brought to a host with 8 cores runs 16
+  workers, which that host shares its cores among. The plan has no count of workers below the processors
   (known fault 3).
 - **Which host thread runs which guest thread.** Any. A guest thread is its register block and its memory;
   on the WebAssembly executor its store moves between host threads (a wasmtime store may be sent, not
@@ -2836,7 +2839,7 @@ replays a recording; the tests that did in the form before are moved to T8 and r
   timer, is sent `SIGKILL` from another process, over many seeds. A build of the executor for tests pauses
   the target's worker, by the seed, at each place where today's loop writes over the stop word: after
   the hand-out, after a fault is settled, after a rerun, after each answer to carry on, and in the stop
-  hook (wt/lib.rs:2283, :1786). The process always dies. The same test with a group called in for its
+  hook (wt/lib.rs:2283, :1786). The process always dies. The same test with a memory called in for its
   pages, and with `sched_setaffinity` moving the thread. The translator's own test of `raise_stop`
   (tests/test_guest.rs) runs with another host thread setting the asked-in bit at the same time, and
   neither bit is lost.
@@ -3319,8 +3322,8 @@ docs/status-threads.md.
   such state exists (106 states).
 - **The corrected call-in rules, as a model** (run7/callin/callin_model2.py and callin_model2.log;
   Python 3.15, this Mac, load 117 to 154; each search takes seconds). The rules of 4.3 and 4.5 as
-  they are now: a mark for each call, a group called in while any mark names it, a waiter put
-  forward whatever is called in but never beside a running sibling of its `Serial` group, back to
+  they were in the form before: a mark for each call, a group called in while any mark names it, a waiter
+  put forward whatever is called in but never beside a running sibling of its `Serial` group, back to
   guest code only when its own group is not called in, and a thread in a waiter's way asked in.
   - The sixth check's case: 156 states. With the earlier rule the search finds its two waiters left
     with nothing the kernel forces to move them; with the rule now, none.
@@ -3383,8 +3386,8 @@ docs/status-threads.md.
   `run` already returns at every exec: 20,001 returns for 20,000 execs, with and without a suspend in
   the hook. Suspending in the hook and resuming after the return, against changing the process
   inside the hook, differed by +4 with a spread of 27 instructions in the re-run and +23 with a
-  spread of 34 in the first run, of about 6.3 million instructions a program start. A real `suspend`
-  and `resume` and the native executor were not measured.
+  spread of 34 in the first run, of about 6.3 million instructions a program start. Real suspend and
+  resume calls and the native executor were not measured.
 - **The one scheduling rule's costs, by the mixed-ordering check**: it measured nothing new. Every
   figure it gives is one of this section's or one this plan quotes (leaving `Execution::run`, a stop
   noticed in Chrome, an interrupt from the host into the machine, the kernel's share of `getppid`, the
@@ -3396,8 +3399,8 @@ docs/status-threads.md.
   memories, in wasmtime 49, Node and Chrome (ordering-cost/result.json); the stop flag's latency in Chrome
   (docs/phase-1-translator.md); the cost of recording page hand-overs in a 2008 system
   (dsm-survey/results.json); what ordering only atomics and kernel entries would miss
-  (optimistic-replay-results.json); system call, fork and instantiation costs (docs/runtime.md section 18);
-  the native executor's interrupts (native.md section 5.5).
+  (optimistic-replay-results.json); system call, fork and instantiation costs (docs/runtime.md section
+  18); the native executor's interrupts (native.md section 5.5).
 
 ## 15. Not yet measured
 
