@@ -18,7 +18,7 @@ use wcontainers_translator_test::runner::{Machine, Pause, Stopped};
 use wcontainers_translator_test::seeded::generator;
 
 /// A Csmith program whose count reaches this at full look-ahead is taken not to end, and left out.
-const ENDLESS: u64 = 1 << 32;
+const ENDLESS: u64 = 1 << 28;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))

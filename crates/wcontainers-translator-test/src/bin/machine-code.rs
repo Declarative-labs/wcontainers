@@ -5,7 +5,7 @@
 //!
 //! Usage: `machine-code <program> <optimisation> <out directory> [define ...]`, such as
 //! `machine-code bench -O2 out SCALE=1 WORKLOAD=2`. `WC_OMIT` (a list of stop, permissions, returns) leaves
-//! checks out, as the benchmarks do.
+//! checks out, as the benchmarks do; `WC_PROGRESS_COUNT=kept` keeps the progress count.
 
 use std::process::Command;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
@@ -25,6 +25,10 @@ fn main() {
         returns: omitted.contains("returns"),
         depth: omitted.contains("depth"),
     };
+    let progress = match std::env::var("WC_PROGRESS_COUNT").as_deref() {
+        Ok("kept") => wcontainers_translator::ProgressCount::Kept,
+        _ => wcontainers_translator::ProgressCount::Absent,
+    };
     let blob = build_with(program, optimisation, Library::None, &defines);
     let mut translation = translate_omitting::<wcontainers_arm64::Arm64>(
         &blob.bytes,
@@ -32,7 +36,7 @@ fn main() {
         &[0],
         LookAhead::Full,
         Optimise::Speed,
-        wcontainers_translator::ProgressCount::Absent,
+        progress,
         wcontainers_translator_test::runner::probe(),
         (),
         omit,
