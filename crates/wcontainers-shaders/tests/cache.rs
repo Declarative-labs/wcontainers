@@ -1,6 +1,7 @@
-//! The cache file (plan section 8): it round-trips, merges by union in either order, and loads every
-//! whole entry before a cut or a damaged entry. Cuts are seeded: `WCONTAINERS_CACHE_SEED` (default 1)
-//! and `WCONTAINERS_CACHE_CUTS` (how many places, default 10).
+//! The cache file (plan section 8): it round-trips, merges by union in either order, loads every
+//! whole entry before a cut or a damaged entry, and a damaged record decodes without a panic. Cuts and
+//! damage are seeded: `WCONTAINERS_CACHE_SEED` (default 1), `WCONTAINERS_CACHE_CUTS` (how many places,
+//! default 10) and `WCONTAINERS_CACHE_DAMAGES` (damaged copies of each record, default 20).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -184,6 +185,58 @@ fn a_cut_file_keeps_every_whole_entry_before_the_cut() {
     damaged[ends[9] + 50] ^= 1;
     let (c, dropped) = Cache::load(damaged).unwrap();
     assert_eq!((c.len(), dropped), (10, bytes.len() - ends[9]));
+}
+
+/// A record whose bytes were changed after its checksum was made (a foreign or damaged file) decodes to
+/// a conversion or an error, never a panic.
+#[test]
+#[cfg_attr(
+    target_arch = "wasm32",
+    ignore = "a panic aborts there, ending the instance as the host's failed conversion"
+)]
+fn damaged_records_decode_to_a_conversion_or_an_error() {
+    let seed = number("WCONTAINERS_CACHE_SEED", 1);
+    let damages = number("WCONTAINERS_CACHE_DAMAGES", 20);
+    let most_bytes_changed = 4;
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".dxbc") || n.ends_with(".dxil"))
+        .collect();
+    names.sort();
+    let (mut records, mut decoded, mut refused) = (0, 0, 0);
+    for name in &names {
+        let bytes = own(name);
+        let source = if name.ends_with("dxil") {
+            Source::Dxil(&bytes)
+        } else {
+            Source::Dxbc(&bytes)
+        };
+        let Ok(converted) = wcontainers_shaders::convert(source, &VariantKey::default(), None)
+        else {
+            continue;
+        };
+        records += 1;
+        let record = cache::encode(&converted);
+        for case in 0..damages {
+            let mut damaged = record.clone();
+            for _ in 0..rng.usize(1..=most_bytes_changed) {
+                let at = rng.usize(0..damaged.len());
+                damaged[at] = rng.u8(..);
+            }
+            let result = std::panic::catch_unwind(|| cache::decode(key(0), &damaged));
+            match result {
+                Ok(Ok(_)) => decoded += 1,
+                Ok(Err(_)) => refused += 1,
+                Err(_) => panic!("seed {seed} {name} case {case}: decode panicked"),
+            }
+        }
+    }
+    eprintln!(
+        "seed {seed}: {records} records x {damages} damaged copies: {decoded} decoded, {refused} refused"
+    );
 }
 
 #[test]

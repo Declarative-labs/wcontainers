@@ -143,4 +143,5 @@ pub const TYPE_64_BIT_INTEGER: &str = "Type64BitInteger";
 pub const UNBOUNDED_RESOURCE_ARRAY: &str = "UnboundedResourceArray";
 pub const VECTOR_LOAD_ACROSS_ELEMENTS: &str = "VectorLoadAcrossElements";
 pub const VECTOR_STORE_ACROSS_ELEMENTS: &str = "VectorStoreAcrossElements";
+pub const VERTEX_STORAGE_WRITE: &str = "VertexStorageWrite";
 pub const VIEWPORT_ARRAY_INDEX: &str = "ViewportArrayIndex";

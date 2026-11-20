@@ -13224,7 +13224,6 @@ code	crates/wcontainers-shaders/src/ir.rs	int	first_literal	96
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	str	(file)	"/ir_codes.rs"
-code	crates/wcontainers-shaders/src/lib.rs	int	unbuilt	32
 code	crates/wcontainers-shaders/src/lower.rs	float	FunctionLowering<'l,'a>::coords	0.5
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	4
