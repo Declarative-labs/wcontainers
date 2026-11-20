@@ -4,7 +4,9 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
-- T3 (this milestone) is under way; see "T3" below for what is done and what is left.
+- T3 (this milestone) is under way; see "T3" below for what is done and what is left. Not met yet: the speed
+  bar in Chrome (fib, sort and walk 0.5 to 1 percent slower, from runner.js, not from the translator, whose
+  output is byte for byte the same) and layer 3's rerun, still running at 4,401 of 5,000 compared.
 - FPSR (the P2 check's first finding): a program whose code reads FPSR now has its flags kept exact from its
   start, decided by `wcontainers_arm64::reads_float_status(code)` and applied by whoever starts the thread
   (`FLOAT_TRACKING` set to 1 before it runs). This track's runners do it; the runtime's CPU side
@@ -31,8 +33,9 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
 T3 is under way: main merged (the translator on the shared guest interface), the literal check adopted, the
 P2 check's findings answered, the register jump slow path fixed (busybox awk: millions to single figures),
-FPSR read first fixed; reruns on the merged code passing so far; one speed pair (interpret in Chrome) 4.8
-percent slower from a test runner change. See "T3" and "T3, what is left".
+FPSR read first fixed; layers 1 and 2 rerun in full on the merged code with no mismatch, layer 3 at 4,401 of
+5,000 with none; interpret in Chrome back to its speed, but fib, sort and walk in Chrome 0.5 to 1 percent
+slower from the same test runner function's shape. See "T3" and "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
 
@@ -91,15 +94,15 @@ Reruns on the merged code (commit 97fff482, whose translator and arm64 crates ar
 - Layer 2, rented ARM64 machine, 12 jobs, load 26 to 32: 100,000 programs, seed 300 (four runs of 25,000 from
   cases 0, 25,000, 50,000 and 75,000), every one also on the real CPU, 5 a run in Chrome: 0 failing; 34,217
   faulted, 7,450 left to an address at full; 580 to 638 s a run. Same as before the merge: no mismatch.
-- Layer 3, same machine and job, seed 300, chunks of 500 from case 0, 5 a chunk in Chrome: at the time of
-  writing chunks 0 to 4 had passed, 2,200 compared, 0 failing (403 to 563 s a chunk); it runs on to 5,000
-  compared. Log: arm-run job translator/20261120-010956-2486238 (`arm-run --fetch translator
+- Layer 3, same machine and job, seed 300, chunks of 500 from case 0, 5 a chunk in Chrome: chunks 0 to 9
+  passed, 4,401 compared (49 also in Chrome), 0 failing (403 to 1,121 s a chunk, load 7 to 42); it runs on to
+  5,000 compared (where it ended: "T3, what is left"). Log: arm-run job translator/20261120-010956-2486238 (`arm-run --fetch translator
   /work/jobs/translator/20261120-010956-2486238/log <dir>`), each chunk's output in the build directory's
   `t3/layer3-<k>.log`.
-- Layer 1, the Mac, full bar (10,000 cases a form, 100 a form in Chrome), seed 300, 4 jobs, load 5 to 13: the
+- Layer 1, the Mac, full bar (10,000 cases a form, 100 a form in Chrome), seed 300, 4 jobs, load 5 to 20: the
   driver (`WC_LONG_DIR=.../translator/t3/layer1 WC_LONG_SEED=300 WC_LONG_LAYERS=1 WC_LONG_JOBS=4
-  WC_LONG_LIMIT=180`, on 65ba8f8a) had passed chunks 1 to 8 of 10 (9,720,000 cases, 0 mismatches, 872 to 970 s
-  a chunk) at the time of writing; ledger `translator/t3/layer1/ledger.txt`.
+  WC_LONG_LIMIT=180`, on 65ba8f8a) passed all 10 chunks: 12,150,000 cases (121,500 in Chrome), 0 mismatches,
+  854 to 970 s a chunk; ledger `translator/t3/layer1/ledger.txt`. Same verdicts as before the merge.
 
 Speed pairs (benchmark set, full look-ahead, every check, best of 3, wasmtime and Chrome; 97fff482's test
 binary against this branch's, alternating, order flipped each round, 4 rounds; rented ARM64 machine, load 22
@@ -112,13 +115,62 @@ cause is the two-line change to the test runner's `runner.js` in 06187cfd (the `
 its store at the thread's start), which runs once. Why V8 runs the translated interpreter slower for it is not
 known; keeping the flag outside `run`'s scope did not help.
 
+Second run of T3 (2026-11-19 19:36 to 20:30 local):
+- The Chrome interpret regression: 4fe2dd6e gives `run` the thread's start as one object (`start.sp`,
+  `start.keepFloatFlags`), so its destructured parameter list has its old length. Why V8 cared is still not
+  known (runner.js variants with one binary, `t3/js-variants-2.log`: swapping two parameters, or passing the
+  flag through a wrapper, were as fast as before; only the added parameter was slow).
+- Speed pairs again, 55fc5e54 (the start object and this run's literal edits) against 97fff482 (whose old
+  side was rebuilt from a clean copy, `t3/old-97fff482`, with only 7f8df4cf's load reading added so it runs on
+  Linux), 4 alternating rounds, rented ARM64 machine, load 10 to 39, `t3/pairs-4.log`; translator output for
+  the benchmark set and thread module byte for byte the same as before (`OUTPUT SAME` in that log). New over
+  old: wasmtime 0.999 to 1.004 on every workload; Chrome 0.998 to 1.002 on sieve, hash, interpret (2.352 s
+  against 2.354 s: fixed), matrix, search; but fib 1.007 (slower in all 4 rounds, 4.886 to 4.901 s against
+  4.852 to 4.859 s), sort 1.010 (slower in 3 of 4) and walk 1.005 (slower in 3 of 4) in Chrome.
+  With one binary (55fc5e54's) and runner.js as committed or without the store of the starting flag
+  (`t3/js-variants3.sh`, 4 alternating rounds, load 9 to 16, `t3/js-variants-3.log`), fib, sort and walk in
+  Chrome take the same time (fib 4.880 to 4.887 s against 4.881 to 4.896 s; sort 3.261 to 3.267 against
+  3.263 to 3.264): the store costs nothing, and what is slower than 97fff482 is the new shape of `run`'s
+  parameters, as with interpret before. So the speed bar is not met in Chrome by 0.5 to 1 percent on three
+  workloads. Next to try: leave `run`'s parameter list exactly as at 97fff482 (with `sp`) and read the flag
+  in a wrapper, `function run(setup) { return runWith(setup, setup.keepFloatFlags); }` (with the old binary
+  that wrapper kept interpret at its old speed, `t3/js-variants-2.log`, variant "late"), then pair all eight
+  workloads again.
+- busybox awk on the final code (47cb2450), `wcon` at full look-ahead on the rented x86 machine, load 25 to 27,
+  `t3/awk-final.log`: outputs as before; wcon's summary (the counter when it last warned) 4, none and 3 for
+  the three commands, as at b4384452.
+- Literals: 55fc5e54 (look-ahead codes and the description's version named once in the translator and used by
+  the test side; the frame and per-function estimates named as tuning numbers; the permission table's eight
+  pages a load and repeated byte derived; the thread module's labels and locals derived; the register set's
+  bit count from `Registers`), 47cb2450 (the stand-in's error numbers, `UIO_MAXIOV` and `iovec` and layer
+  1's signals from linux-raw-sys; see "Departures"). 4fe2dd6e had removed three "sp" literals without their
+  baseline lines; they went with 55fc5e54. Baseline 7,944 lines at the start of this run, 7,906 now (arm64
+  1,375, translator-test 1,360, translator 7: its six `Means::name` texts, which the fix list rules are not
+  violations, and the stack alignment; guest-cpu 28, shared, left as it is). The check passes (rented x86 machine,
+  `t3/lint.sh`).
+- Layer 1's tests on the Mac on 47cb2450 (`cargo test -j 4 -p wcontainers-translator-test --test layer1 --
+  --test-threads 3`, load 5 to 6, 210 s, `t3/suite/mac-layer1.log`): 7 passed.
+- The whole suite of the four crates on 47cb2450, debug, `cargo test -j 12 --no-fail-fast -p wcontainers-arm64
+  -p wcontainers-translator -p wcontainers-translator-test -p wcontainers-guest-cpu`, rented ARM64 machine
+  (arm-run name translator-suite, 04:05 to 04:31 UTC, load 10 to 22 on 96 cores,
+  `t3/suite/arm-suite-47cb2450.log`): 97 passed, 10 ignored (marked so in the code), 2 failed, both layer 1's
+  and both `MSR_SR_systemmove` (the Graviton's FPSR keeps bits 28 and 29: the known reference difference;
+  layer 1's verdict is the Mac's, above: 7 passed). So every test passes where its verdict counts.
+
 T3, what is left:
-- Let layer 3's rerun reach 5,000 compared and layer 1's reach chunk 10; record both.
-- The Chrome interpret regression from `runner.js` (above): find the cause or give the starting FPSR
-  tracking to the Chrome runner another way, and pair again.
-- The whole suite of the four crates once on the final code (ARM64 machine, layer 1's tests on the Mac).
-- The literal fix list from step 5 on. Baseline: 8,159 lines on the merged tree, 8,113 after init, 8,037 now
-  (this track's crates 2,873 lines plus wcontainers-guest-cpu's 28).
+- Layer 3's rerun reaching 5,000 compared: arm-run job translator/20261120-010956-2486238 was in chunk 10 at
+  the end of this run (4,401 compared, 0 failing). Fetch its log (`arm-run --fetch translator
+  /work/jobs/translator/20261120-010956-2486238/log <scratch>/t3/logs/l3run`) and record the last chunks; if
+  the machine went away, rerun from case 5,000 on (`WC_LAYER3_SEED=300 WC_LAYER3_FROM=5000`).
+- Chrome's 0.5 to 1 percent on fib, sort and walk (above): try the wrapper and pair all workloads again
+  (`t3/pairs.sh`, run from the copy named translator-dev after building its benchmarks test; the old side is
+  `t3/old-97fff482` synced as translator-old and built there).
+- The literal fix list goes on from step 6 (core type sizes), with the open homes named under "Departures":
+  ARM64 system call and auxiliary vector numbers, the stack alignment, runner.js's look-ahead codes.
+- For the independent check: layers 1 and 2 and layer 3 with a new seed (layer 1 on the Mac: `WC_LAYER1_CASES
+  WC_LAYER1_CHROME WC_LAYER1_SEED`; layers 2 and 3 on the ARM64 machine, as in "How to run"), the awk counts
+  (`t3/awk.sh` on the x86 machine after building `wcon`; exact counts need the counting patch
+  `t3/detail/apply.py`), and the pairs (`t3/pairs.sh`).
 
 The P2 check's other findings, answered here: the Graviton's DC ZVA fault address (finding 2) is under "Known
 gaps"; the square root forms at 7,000 cases on the final code (finding 3) are covered by this milestone's
@@ -2861,6 +2913,23 @@ contract's bits, in both runners).
 - T3: busybox awk's counts were measured with `wcon` (the runtime track's command line program) on the rented
   x86 machine: the translator's output does not depend on the host, and that program is what runs a real
   container; this track's own binaries test only translates and loads.
+- T3: the test harness's stand-in kernel and layer 1 take Linux's error numbers, `UIO_MAXIOV`, `iovec`'s
+  layout, the signals and `BUS_ADRALN` from linux-raw-sys, already a dependency of the test crate, although
+  the fix list says to use the kernel's generated ARM64 copy: these values are the same on the x86-64 and
+  ARM64 hosts the harness runs on. Depending on wcontainers-kernel was tried and dropped: the literal check
+  then reads every test literal against the kernel's constants too, and nine unrelated test values (300,
+  8192, 0x80000, ...) became new findings. The stand-in's ARM64 system call numbers and the starting stack's
+  auxiliary vector numbers (`layout.rs`, also compiled into the native reference runner, which has only
+  libc) stay in the baseline until there is a home both sides can import (orchestrator's call: a small
+  crate for the kernel's generated Linux module, as the fix list suggests).
+- T3: the stack alignment (16) is still a literal in full.rs and layout.rs: its named home is a new constant
+  on the shared `Guest` trait in wcontainers-guest-cpu, which the x86 track also implements; left for a
+  change agreed on main.
+- T3: the look-ahead codes and the description section's version are named in the translator
+  (`LookAhead::code`, `LookAhead::from_code`) and used by browser.rs and the browser translator; runner.js
+  still writes 0 for look-ahead none in two places and skips the description's 3 header bytes by number,
+  left alone in this run because V8's speed on interpret moved with a two-line runner.js change (see
+  "Speed pairs").
 
 - P2: layer 3's bar of 100,000 Csmith programs is read as 100,000 compared with Linux; programs that do not
   end on Linux in time are made and counted apart, not compared, so more than 100,000 are made.
