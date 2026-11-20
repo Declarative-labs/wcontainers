@@ -4,12 +4,12 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 6 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and candidate
-B leads on both counts (The choice, below). Run 6: GLSL reaches the bridge (Mesa's GLSL compiler
-and linker, then st/mesa's steps after a link) and route B takes what comes out, OpenGL's buffers
-as arrays of words; held by a run on lavapipe against GLSL's own layout and arithmetic. The GLSL
-reference on llvmpipe and the GLSL corpus, the rest of the corpus, the 15.4 rewrites and
-robustBufferAccess remain (Next).
+G8 run 7 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and candidate
+B leads on both counts (The choice, below). Run 7: the GLSL reference is in for compute programs
+(llvmpipe through Mesa's EGL, the program's uniforms and blocks filled from OpenGL's own reflection
+and the bridge's names), and piglit's shader tests are in the corpus (compute programs compared,
+vertex and fragment programs converted only). GLSL vertex and fragment comparison, the other GLSL
+sources, the rest of the SPIR-V corpus, the 15.4 rewrites and robustBufferAccess remain (Next).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -119,6 +119,39 @@ Done:
   through route B and naga's SPIR-V writer and matches what GLSL's layout rules and arithmetic give,
   computed in the test (exact values). Checked to see differences: with the word's component within
   its vector forced to 0 (temporary), 10 of 17 values differed.
+- Each GLSL stage's names (`GlslStage::names`, `wc_glsl_names` in `glsl.cpp`): every default-block
+  uniform with its first word in uniform buffer 0 and its words (Mesa makes one parameter a
+  column or element; the bridge joins them into one name), the state values
+  (`FragCoordYTransform`, `PointCoordYTransform`, any other by Mesa's state string), each uniform
+  and storage block's and each sampler's and image's program binding, and each stage input and
+  output with its location in the common form, GLSL type and interpolation. Held by
+  `tests/route.rs`. Stage values between two stages are what the linker leaves: varyings are packed
+  (`packed:a,b`) and `nir_opt_varyings` reworks them across the stages; a vertex program linked alone
+  loses its outputs. Attributes and fragment outputs keep their names.
+- Route B takes `b2b1` (a 32-bit boolean word as a boolean: not zero), which OpenGL's default-block
+  booleans need; casts to a boolean are made at naga's boolean width.
+- The GLSL reference (`tests/corpus/llvmpipe.rs`, `glsl.rs`): llvmpipe through the pinned build's
+  `libEGL` (`mesa::EGL`, from Meson's target `EGL`), on EGL's software device
+  (`EGL_MESA_device_software` through `EGL_EXT_platform_device`), an OpenGL 4.5 compatibility
+  context with no surface. The program is compiled and linked by llvmpipe; OpenGL's reflection
+  (`glGetProgramResourceiv`, called directly: glow's asks for the count with no room and gets
+  nothing) gives every uniform, block and storage-block member with its type, offset and strides.
+  Default-block uniforms are filled from the seed by type, set with `glUniform*` and written into
+  uniform buffer 0 at the bridge's words (booleans as the driver's true, all ones); each block is
+  filled member by member by type (runtime-sized arrays 64 elements) and the same bytes are bound
+  on both sides, the route's at the binding the bridge names for the block's name. Compute: the
+  program dispatched twice on llvmpipe (they must agree), the route's module once on lavapipe;
+  storage blocks compared word by word by the member's type (padding not compared). Held by
+  `tests/glsl_reference.rs` (a compute program with float, ivec3, mat2, uint array and bool
+  uniforms, a std140 block of an array of structures and a mat3, a std430 block with an atomic and
+  a runtime array of structures: matched). Checked to see differences: with route B's `fmul` made
+  an add (temporary, on the x86 machine's copy) 32 values differed; with `iadd` made a subtract, 49.
+- piglit's shader tests in the corpus (`corpus/sources`, `glsl::shader_test_sources`): each
+  `.shader_test` file's `[vertex shader]`, `[fragment shader]` and `[compute shader]` sections
+  through `Nir::from_glsl` and each stage through the route; `[vertex shader passthrough]` is no
+  stage of the file's; geometry, tessellation and assembly programs, two sources of one stage and a
+  compute stage beside others are refused by name. A compute program is held to llvmpipe; vertex
+  and fragment programs are converted and validated and counted "not yet held to llvmpipe".
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -196,36 +229,43 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. The GLSL reference on llvmpipe and the GLSL corpus mode. The corpus run takes GLSL programs
-   (vertex and fragment pairs, compute alone) through `Nir::from_glsl` to both routes; the
-   reference is llvmpipe running the same GLSL through EGL surfaceless (`libEGL` and
-   `libgallium` of the pinned build, a GL 4.6 compatibility context), on the same seeded inputs:
-   default uniforms set with `glUniform*` from the seed and, on the route's side, written into
-   uniform buffer 0 at each parameter's word (the bridge must hand the parameter list's layout out:
-   name, type, `ValueOffset`, and the state values, `STATE_FB_WPOS_Y_TRANSFORM` and
-   `STATE_FB_PNTC_Y_TRANSFORM`, which the route's side fills as st/mesa does for the target's
-   height); blocks bound with the same bytes; vertex outputs by transform feedback, fragment
-   outputs into the same targets. Then pin the GLSL sources (piglit's `.shader_test` files and
-   dEQP's GLES programs, Godot Compatibility, bgfx, Dolphin) in `corpus/sources`. Legacy varyings
-   (`gl_TexCoord`, `gl_FrontColor`: `VARYING_SLOT_TEX0`, `COL0`) reach `builtin_at` as "another
-   built-in" and are refused; decide (locations past the generic ones) when the corpus shows how
-   many.
-2. The rest of the corpus (piglit and dEQP GLSL, Godot Compatibility, bgfx, Dolphin; Godot Forward+
-   SPIR-V; the shaders of `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and
-   `dEQP-VK.robustness.buffer_access.*`), each pinned in `corpus/sources`. Then `corpus/choose` again
-   over all of it for the final choice.
-3. The alpha_to_one programs into the corpus: the fragment programs of
+1. GLSL vertex and fragment programs held to llvmpipe. The plan, from what run 7 found (names between
+   stages do not survive the linker): a vertex program is wrapped in its own source, not changed:
+   after the `#version` line `#define main wc_program_main`, and at the end `#undef main`, a `main`
+   that calls it, copies `gl_Position` into a flat output and puts the vertex on a pixel of its own
+   (`gl_Position` from `gl_VertexID`, point size 1); a catcher fragment program, written from
+   OpenGL's reflection of the vertex program's outputs (`GL_PROGRAM_OUTPUT`: names, types), reads
+   each by name and writes it to a storage block at the vertex's index, so that the comparison is
+   the storage comparison compute already has. A fragment program gets a feeder vertex program
+   written from OpenGL's reflection of its inputs (names, types; interpolation from the bridge's
+   names of the fragment program linked alone), one attribute an input; both stages go through
+   `Nir::from_glsl` and the route, and lavapipe runs the route's two modules (attributes by the
+   bridge's attribute names). Targets one pixel a vertex in a row; `glClipControl(GL_LOWER_LEFT,
+   GL_ZERO_TO_ONE)` on llvmpipe so window depth agrees with Vulkan's; the state values filled as
+   st/mesa does for a framebuffer object (`FragCoordYTransform` 1, 0, -1, height;
+   `PointCoordYTransform` 1, 0, 0, 0; `prog_statevars.c`). ES programs (`#version 300 es`) need
+   the catcher in the same version (no storage blocks before 3.10): targets instead. Textures,
+   images and atomic counter buffers are also still to be filled on the GLSL side (named "not set
+   up for GLSL here" today).
+2. The other GLSL sources pinned in `corpus/sources`: dEQP's GLES programs, Godot Compatibility,
+   bgfx, Dolphin. Legacy varyings (`gl_TexCoord`, `gl_FrontColor`: `VARYING_SLOT_TEX0`, `COL0`)
+   reach `builtin_at` as "another built-in" and are refused; decide (locations past the generic
+   ones) when the corpus shows how many.
+3. The rest of the SPIR-V corpus (Godot Forward+; the shaders of
+   `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and `dEQP-VK.robustness.buffer_access.*`),
+   each pinned in `corpus/sources`. Then `corpus/choose` again over all of it for the final choice.
+4. The alpha_to_one programs into the corpus: the fragment programs of
    `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` (VK-GL-CTS makes them in its C++;
    take them from a CTS build's shader dump, pinned), each through `Nir::alpha_to_one` then the
    routes, converted and validated, and listed as held by G10's CTS cases (lavapipe does not run
    `demote_samples`).
-4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
+5. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
    shaders crate (Requests; not there at shaders' tip 2e8abb3e, run 6); robustBufferAccess's three steps
    (needs `HelperValue::BufferRange`).
-5. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
+6. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
    end on the seeded inputs.
-6. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
+7. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
 
 ## How to run
 
@@ -258,8 +298,9 @@ Next, in this order:
   commit is not the pinned one, makes the build folder again when the commit or the options change
   (Meson reads a machine file only when a folder is made), and fails unless llvmpipe and lavapipe were
   built.
-- GLSL tests: `cargo test -p wcontainers-nir --test route --test glsl_buffers` (with
-  `WCONTAINERS_MESA`, on the x86 machine).
+- GLSL tests: `cargo test -p wcontainers-nir --test route --test glsl_buffers --test
+  glsl_reference` (with `WCONTAINERS_MESA`, on the x86 machine). The corpus run takes piglit's
+  `.shader_test` files beside the `.spv` files, from the same `WC_NIR_CORPUS`.
 - Test with Mesa (on the x86 machine, after the build):
   `export WCONTAINERS_MESA=$CARGO_TARGET_DIR/mesa/build; cargo test -p wcontainers-nir` and
   `cargo clippy -p wcontainers-nir --all-targets -- -D warnings`; and both again without the variable.
@@ -342,6 +383,9 @@ Next, in this order:
 - `blake3` 1 (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception, already in the workspace), a
   dependency and build-dependency (the cache key and the converter's version).
 - `wcontainers-gpu` (ours), a dependency (`SlotKind`, `ReflectedBinding`, `ShaderStage`).
+- `glow` 0.18 (MIT OR Apache-2.0) and `khronos-egl` 6 with `dynamic` (MIT OR Apache-2.0),
+  dev-dependencies since run 7 (llvmpipe in the corpus run); both already in the workspace through
+  the WebGL back end.
 - `ash` 0.38 (MIT OR Apache-2.0) and `libloading` 0.8 (ISC), dev-dependencies (lavapipe in the
   corpus run); both already in the lock file through wgpu.
 - `spirv` 0.4 (Apache-2.0; the SPIR-V grammar's names, already in the workspace through naga), a
@@ -415,6 +459,15 @@ Next, in this order:
   Program binding for OpenGL: uniform block index, storage block index after them.
 - Vulkan capability classes: a program needing what our Vulkan 1.1 will not report is counted apart,
   not as a route failure (the pass bar's "named reason").
+
+- llvmpipe is reached through EGL's software device (`EGL_EXT_platform_device`), not the surfaceless
+  platform 15.2's options name: the rented machine has no render node, and surfaceless takes software
+  only when told by an environment variable (`LIBGL_ALWAYS_SOFTWARE`), which a test process should
+  not set for itself. The context is OpenGL 4.5 compatibility, llvmpipe's; the bridge reports 4.6
+  (G9's), so a program needing 4.6 is refused by the reference and counted not compared.
+- The GLSL comparison fills its inputs from OpenGL's reflection of the program on llvmpipe (names,
+  types, offsets, strides) and the bridge's names for where each lands in the route's module; the
+  SPIR-V comparison fills from the route's module alone.
 
 ## Interface changes
 
