@@ -21,7 +21,10 @@ use wcontainers_abi::{
     RegisterBlock, Resume, SharedId, Syscall, ThreadId, Warning,
 };
 use wcontainers_arm64::CACHE_TYPE;
-use wcontainers_arm64::mirror::{self, MIRROR, REACH_BITS, SLOT_MOVE_BITS, SLOT_MOVES};
+use wcontainers_arm64::mirror::{
+    self, LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_TEST, MIRROR, REACH_BITS,
+    SLOT_MOVE_BITS, SLOT_MOVES,
+};
 use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage};
 use wcontainers_guest_cpu::position::{NativeReason, Span};
 use wcontainers_runtime::{Answer, Carry, Execution, Turn};
@@ -1092,6 +1095,49 @@ impl NativeCpu {
         branch.fits(offset).then(|| branch.with(offset as u64))
     }
 
+    /// Makes guest `target` the last target of the return whose call into the inside is at host address `call`:
+    /// its moves and test are written, and its direct branch is an exit to `target`, linked while a piece is
+    /// loaded there. A target no piece can be at is not made one, so the call comes again at the next miss.
+    fn make_last_target(&mut self, memory: MemoryId, call: u64, target: u64) {
+        if target >> REACH_BITS != 0 || !target.is_multiple_of(size_of::<u32>() as u64) {
+            return;
+        }
+        let word = |index: usize| call - ((LAST_TARGET_CALL - index) * size_of::<u32>()) as u64;
+        let site = Site {
+            at: word(LAST_TARGET_BRANCH),
+            word: self.words.last_target_branch,
+            retarget: None,
+        };
+        let m = &self.memories[&memory];
+        let link = m
+            .pieces
+            .get(&target)
+            .and_then(|piece| self.link_word(&site, piece.base));
+        let holder = m
+            .hosts
+            .range(..=call)
+            .next_back()
+            .map(|(_, &guest)| guest)
+            .expect("a call into the inside is in a loaded piece");
+        let mut moves = [0; SLOT_MOVES];
+        let fields = core::iter::once(&self.words.last_target_first).chain(&self.words.moves[1..]);
+        for (k, (move_word, field)) in moves.iter_mut().zip(fields).enumerate() {
+            *move_word = field.with(target >> (k as u32 * SLOT_MOVE_BITS));
+        }
+        write_code(word(0), &moves);
+        write_code(word(LAST_TARGET_TEST), &[self.words.last_target_test]);
+        if let Some(linked) = link {
+            write_code(site.at, &[linked]);
+        }
+        let m = self.memories.get_mut(&memory).expect("the memory is there");
+        m.pieces
+            .get_mut(&holder)
+            .expect("the holder is loaded")
+            .exits
+            .push((target, site.at));
+        m.exits_to.entry(target).or_default().push(site);
+    }
+
     /// Fills the entry slot of guest address `guest` in `memory` with a jump to the piece at `base`, mapping the
     /// slot's page at its first use; leaves `memory`'s address space switched to.
     fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) -> Result<(), Full> {
@@ -1235,16 +1281,24 @@ impl NativeCpu {
             SPSR_EL1::SS::CLEAR.value
         };
         let reached = |state: &GuestState| until.is_some_and(|until| state.count >= until);
+        // Where the guest's level goes on in host code, when the inside answered a call without a stop.
+        let mut carried: Option<(Interrupted, RegisterPage)> = None;
         loop {
             let pc = t.state.pc;
-            if let Err(exit) = self.load(memory, pc) {
+            let resumed = carried.take();
+            if resumed.is_none()
+                && let Err(exit) = self.load(memory, pc)
+            {
                 return exit;
             }
             let m = &self.memories[&memory];
             let blocks = &self.shared;
-            let (mut hardware, mut page) =
-                stop::rejoin(&t.state, t.page.clone(), &t.float, t.register_page);
-            hardware.pc = m.pieces[&pc].base;
+            let (mut hardware, mut page) = resumed.unwrap_or_else(|| {
+                let (mut hardware, page) =
+                    stop::rejoin(&t.state, t.page.clone(), &t.float, t.register_page);
+                hardware.pc = m.pieces[&pc].base;
+                (hardware, page)
+            });
             let ended = loop {
                 write_page(t.page_frame, &page);
                 let mut user = UserRegisters {
@@ -1339,6 +1393,15 @@ impl NativeCpu {
                                 t.page = then_page;
                                 break Ended::CodeChanged(address);
                             }
+                            Ok(Resolved::LastTarget {
+                                call,
+                                target,
+                                then,
+                                page: then_page,
+                            }) => {
+                                carried = Some((then, then_page));
+                                break Ended::LastTarget { call, target };
+                            }
                             Ok(Resolved::Stop(stop, state)) => {
                                 t.state = state;
                                 t.page = held;
@@ -1370,6 +1433,10 @@ impl NativeCpu {
                     if reached(&t.state) {
                         return Exit::Stop;
                     }
+                    continue;
+                }
+                Ended::LastTarget { call, target } => {
+                    self.make_last_target(memory, call, target);
                     continue;
                 }
                 Ended::Stopped(stop) => stop,
@@ -1415,6 +1482,11 @@ enum Ended {
     TurnOver,
     /// The guest announced that the code at this address changed.
     CodeChanged(u64),
+    /// A return's first miss: its last target is to be made, and the guest's level goes on where it was carried.
+    LastTarget {
+        call: u64,
+        target: u64,
+    },
     Stopped(Stop),
 }
 

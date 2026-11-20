@@ -9,8 +9,8 @@ use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
 use wcontainers_arm64::mirror::{MIRROR, SLOT_BYTES, SLOT_SHIFT};
 use wcontainers_arm64::thread_state::{
-    COUNT, Exclusive, FPCR_BITS, FPSR_BITS, PAGE, RegisterPage, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
-    untag_address,
+    COUNT, Exclusive, FPCR_BITS, FPSR_BITS, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW,
+    WITHHELD, untag_address,
 };
 use wcontainers_guest_cpu::position::{
     Base, Fixup, Held, InsideCall, Operand, Relocated, Resume, Side, Span, Stopping, span_at,
@@ -131,6 +131,14 @@ pub enum Resolved {
     /// `into` (none: nowhere), through [`set_register`].
     Clock {
         into: Option<u8>,
+        then: Interrupted,
+        page: RegisterPage,
+    },
+    /// A return's first miss, at its call into the inside at host address `call`: the guest's level goes on
+    /// from `then` once `target` is made the return's last target.
+    LastTarget {
+        call: u64,
+        target: u64,
         then: Interrupted,
         page: RegisterPage,
     },
@@ -400,6 +408,15 @@ pub fn resolve(
                 }
                 return Ok(Resolved::Again(after_call(h), page.clone()));
             }
+            InsideCall::LastTarget => {
+                return Ok(Resolved::LastTarget {
+                    call: h.pc,
+                    // While no target is made, the compare left the target itself in t.
+                    target: h.x[usize::from(SCRATCH)],
+                    then: after_call(h),
+                    page: page.clone(),
+                });
+            }
             _ => {}
         }
         float.enter(h.fpsr);
@@ -453,7 +470,9 @@ pub fn resolve(
                     Stop::Alignment(to)
                 }
             }
-            InsideCall::FloatBefore | InsideCall::FloatAfter => return Err(unexpected),
+            InsideCall::FloatBefore | InsideCall::FloatAfter | InsideCall::LastTarget => {
+                return Err(unexpected);
+            }
         };
         return Ok(Resolved::Stop(stop, state));
     }

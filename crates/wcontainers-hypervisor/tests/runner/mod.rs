@@ -828,11 +828,14 @@ fn resolve(
             };
             Resolved::Stop(stop, Box::new(whole(state, &trapped.hardware, float)))
         }
-        // One instruction alone has no translations of its own to drop.
+        // One instruction alone has no translations of its own to drop, and its return no last target to keep.
         Ok(
             stop::Resolved::Again(next, page)
             | stop::Resolved::FloatStatusNotKept(next, page)
             | stop::Resolved::CodeChanged {
+                then: next, page, ..
+            }
+            | stop::Resolved::LastTarget {
                 then: next, page, ..
             },
         ) => Resolved::Again(Box::new(hardware_of(next, &trapped.hardware)), page),

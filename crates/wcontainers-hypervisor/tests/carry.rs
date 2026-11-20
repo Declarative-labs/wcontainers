@@ -118,7 +118,8 @@ fn fault(word: u32) -> Option<String> {
                 InsideCall::Answer
                 | InsideCall::FloatBefore
                 | InsideCall::Trap
-                | InsideCall::Misaligned => Side::Before,
+                | InsideCall::Misaligned
+                | InsideCall::LastTarget => Side::Before,
             };
             if span.side != side {
                 return Some(format!("{call:?} at {offset} on {:?}", span.side));

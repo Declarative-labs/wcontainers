@@ -106,6 +106,9 @@ impl Translator {
                     jump: words.jump,
                     branch: field(words.branch),
                     empty: words.empty,
+                    last_target_first: field(words.last_target_first),
+                    last_target_test: words.last_target_test,
+                    last_target_branch: words.last_target_branch,
                 });
             }
         }
