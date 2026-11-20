@@ -92,8 +92,11 @@ this cause and no other. 13 tests:
 K6c, twenty-first run: the whole LTP comparison at 000f95e8 showed two new differences, both
 fixed with a test that failed before: fs_di never ended (a copy_file_range of many backend
 messages asked forever, from f84695a7), and setrlimit06 got SIGKILL without SIGXCPU (a turn of
-the stand-in on the machine's clock ran past its slice). The bar's ARM64 part and a fresh whole
-comparison run at 18eda16f; the Mac's part waits for Docker Desktop. See "K6c, twenty-first run".
+the stand-in on the machine's clock ran past its slice). At 18eda16f the whole suite gives only
+the ARM list and the whole comparison only new differences from the stand-in's clock reads
+(six fsx timeouts, now cheaper at 91d85e31) and getrusage04's timing. A whole comparison and
+reruns at 91d85e31 are running; the Mac's part waits for Docker Desktop. See "K6c, twenty-first
+run".
 
 K6c, nineteenth and twentieth runs: the orchestrator's three rulings are built or recorded (the
 literal check passes; the gap list past section 15 and ADSP038 are under "Waiting for the
@@ -282,12 +285,43 @@ Fixed, each with a test that failed before:
 Literal check at 18eda16f (Mac, load 2.3; scratch k6c21/lit4.txt): passes; the baseline went
 from 8448 to 8446 lines (the cpulimit tests import the core dump warning's name).
 
-Running at 18eda16f:
-- The bar's ARM64 part, scratch k6c18/arm-final.sh (terminal five times, then fmt, clippy and the
-  whole suite under the name kernel); logs k6c18/terminal-18eda16f.log and
-  k6c18/suite-18eda16f.log, run log k6c21/arm-final-run.log.
-- The whole LTP comparison, job kernel-b/20261120-160232-2771036 (`LTP_JOBS=8 LTP_LIMIT=900`,
-  image tar reused), results target/ltp-k6c21/whole.tsv in the kernel-b folder there.
+The bar's ARM64 part at 18eda16f (scratch k6c18/arm-final.sh; logs k6c18/terminal-18eda16f.log,
+k6c18/suite-18eda16f.log):
+- terminal five times (16:02 to 16:04 UTC, load 5 to 9): 9 passed each time; `making_pairs`
+  failed each time, which is on the ARM list.
+- The whole suite (16:04 to 17:35 UTC, load 8.6 to 33): fmt and clippy with warnings denied
+  clean; 275 passed, 36 failed, 6 ignored; the 36 are exactly k6c14/fail14.txt (the ARM list),
+  none other (k6c21/fail-18eda16f.txt).
+
+The whole LTP comparison at 18eda16f (job kernel-b/20261120-160232-2771036, 16:02 to 17:44 UTC,
+load 5 to 33; committed as ltp/ours-20260930-18eda16f.tsv): 4162 of 4226 match, 64 differ.
+Against 000f95e8 fs_di and setrlimit06 now match; seven newly differ:
+- fsx03, fsx16, fsx17, fsx19, fsx20 and fsx21 (aiodio part 3) ran past 900 s (525 to 612 s
+  before): reading the precise clock at every block of the stand-in cost that much. Measured
+  alone on the ARM64 machine with `LTP_JOBS=1`: fsx01 took 549.3 s with the stand-in of
+  a3ea7a6f (no deadline; load 21 to 27), 916.8 s reading `std::time::Instant` at every block
+  (load 12 to 22) and 630.1 s reading the coarse clock (load 7 to 11). So the deadline is now read
+  on the clock at the machine's tick (91d85e31, the `coarsetime` crate; Linux too looks at CPU
+  limits at its tick). The cpulimit tests passed with it (2 of 2). What is left of the cost (630
+  against 549 s, one run each) is the clock read at every block; a tick thread raising
+  Unicorn's stop would cost nothing per block, not built.
+- getrusage04 failed: two of its getrusage calls in a row were 3.5 ms of system time apart
+  where it allows 2 ms (k6c21/getrusage04.log). System time here is the kernel's own work, timed
+  on the machine's clock, so one slow call fails it; it failed the same way at 2c06b713 and
+  passed at 000f95e8. Being rerun.
+
+New dependency of the kernel test crate (not shipped): coarsetime 0.1.38, BSD-2-Clause; for
+WebAssembly targets only it brings wasix 0.13.2 and wasi 0.11.1 (Apache-2.0 WITH
+LLVM-exception OR Apache-2.0 OR MIT), wasm-bindgen 0.2.130 and its macro and shared crates and
+rustversion 1.0.23 (MIT OR Apache-2.0).
+
+Running at 91d85e31 on the ARM64 machine:
+- The whole LTP comparison again, job kernel-b/20261120-175937-1811146 (`LTP_JOBS=8
+  LTP_LIMIT=900`), results target/ltp-k6c21b/whole.tsv in the kernel-b folder there.
+- Reruns, job kernel-c/20261120-175947-1820040: the six fsx tests together, then getrusage04
+  and setrlimit06 five times; results target/ltp-k6c21/re-*.tsv in the kernel-c folder there.
+- The whole suite at 18eda16f stands for 91d85e31 but for the stand-in on the machine's clock,
+  which only the LTP and cpulimit use; cpulimit passed at 91d85e31.
 
 ## K6c, nineteenth and twentieth runs
 
@@ -4983,17 +5017,17 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 ## Next
 
 K6c, after the twenty-first run (A is the orchestrator's cloud/arm-run, S the scratch folder
-kernel; the code to judge is 18eda16f):
-1. The whole suite: S/k6c18/suite-18eda16f.log (or `A --fetch kernel /work/jobs/kernel/<id>/log`
-   for the newest kernel job). Every failure must be on S/k6c14/fail14.txt. If the run on the Mac
-   ended before the suite started (S/k6c18/terminal-18eda16f.log exists without a suite log),
-   run `bash S/k6c18/arm-final.sh` again.
-2. The LTP comparison: `A --fetch kernel-b target/ltp-k6c21/whole.tsv S/k6c21/` once job
-   kernel-b/20261120-160232-2771036 ends (`A --status kernel-b`). Compare with
-   ltp/reference-20260930.tsv and ltp/ours-20260930-000f95e8.tsv; commit it as
-   ltp/ours-20260930-18eda16f.tsv; write the table as the fourteenth run's, the 13 under
+kernel; the code to judge is 91d85e31):
+1. The whole suite at 18eda16f met the bar (all failures on the ARM list); nothing it runs
+   changed since but the stand-in on the machine's clock (cpulimit passed at 91d85e31).
+2. The reruns: `A --fetch kernel-c target/ltp-k6c21 S/k6c21/kernel-c/` (re-fsx.tsv, re-1 to
+   re-5.tsv). The fsx tests must pass; getrusage04 and setrlimit06 how often they pass.
+3. The LTP comparison at 91d85e31: `A --fetch kernel-b target/ltp-k6c21b/whole.tsv
+   S/k6c21/b/` once job kernel-b/20261120-175937-1811146 ends (`A --status kernel-b`). Compare
+   with ltp/reference-20260930.tsv and ltp/ours-20260930-18eda16f.tsv; commit it as
+   ltp/ours-20260930-91d85e31.tsv; write the table as the fourteenth run's, the 13 under
    "Waiting for the owner" counted apart; rerun any new difference; then delete
-   /work/target/kernel-b and /work/target/kernel-d there.
+   /work/target/kernel-b, kernel-c and kernel-d there.
 3. When Docker Desktop starts containers: `bash S/k6c19/mac5.sh > S/k6c19/mac5.log 2>&1`.
 4. If all three hold, say K6c's bar is met; the independent check follows "For the independent check".
 
