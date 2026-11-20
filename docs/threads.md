@@ -2321,10 +2321,15 @@ case where it is weaker.
 
 ## 8. Per-thread watches on the WebAssembly executor
 
-The owner ruled that exact replay of a parallel group is composed by the embedder from
-`memory_watch_thread`, where the executor implements `PerThreadWatch`. That is the pair (`Parallel`,
-`Exact`). The kernel's own part of it is the count and the call-ins of 4.5. This section is what the
-embedder's part needs. On the WebAssembly executor:
+The owner ruled that exact replay of a process whose threads run at once is composed by the embedder
+from `memory_watch_thread`, where the executor implements `PerThreadWatch`. That is the pair
+(`Parallel`, `Exact`). Since then he has ruled the process-wide watch as
+`Process::watch_memory(&mut self, range, watches: WatchesFor)`, the hook as
+`on_watched_memory_accessing(&self, process, thread, address, kind: AccessKind)`, and method names verb
+first (section 2). The per-thread call keeps its earlier name here; its verb-first name is not ruled
+(decision 10). Replay being per process changes nothing in this section: a hand-over between two
+threads of one process is inside that process's log. The kernel's own part is the count and the
+call-ins of 4.5. This section is what the embedder's part needs. On the WebAssembly executor:
 
 - **A thread's own page table.** Translated code takes the table's place as an imported value, per
   instance (`PERMISSIONS`, tr/contract.rs:62-64). So a thread's instances can be given a table of their
@@ -2337,15 +2342,16 @@ embedder's part needs. On the WebAssembly executor:
 - **A watch is one more reason in the executor's lock layer** (docs/runtime.md section 8): a thread's
   table byte is the kernel's permissions, less what the process's locks take, less what that thread's
   watches take. One function makes it, as today (`effective`, wt/lib.rs:790).
-- **Setting a watch stops one thread, not the group.** Only the watched thread's table changes, and the
+- **Setting a watch stops one thread, not the memory's others.** Only the watched thread's table changes, and the
   rule is that the thread whose table loses a permission must be stopped. It is done with the memory's
   stop lock, with one thread's held bit set, and the thread is held only at a stop point (4.5). So a
   thread that reads the clock in a loop is not taken for stopped while its loop still relies on the
   old table, and no access is missed.
 - **The held thread's position can be read.** It is at a stop point, so its registers are saved, and in
-  a group in force `Exact` so is its count. The embedder reads both through the handle (suggested, on a
-  thread's info, `position()`), which is what its record of a hand-over needs. Holding a thread in
-  place is allowed here although the group is `Exact` (4.5): the watch only orders memory accesses,
+  an `Exact` process so is its count. The embedder reads both through the handle (suggested, on a
+  thread's info, `position()`; decision 12 asks for the same read in general), which is what its
+  record of a hand-over needs. Holding a thread in place is allowed here although the process is
+  `Exact` (4.5): the watch only orders memory accesses,
   which is the embedder's part, and in a replay the embedder brings the thread to that position with a
   counted turn before it sets the watch again.
 - **A watch on a page a frame could cover.** This is 4.5's rule for a page that loses a permission,
@@ -2355,7 +2361,7 @@ embedder's part needs. On the WebAssembly executor:
   for such a page would miss that thread's accesses to its own frame, and the embedder's record would
   miss writes. So when a watch takes a permission from a page that allowed reading and writing, each
   thread it is set on gives up its frames when it is let go. A piece entered from the bottom loop
-  knows nothing about its frame and checks every access. It holds for `memory_watch` as for
+  knows nothing about its frame and checks every access. It holds for `watch_memory` as for
   `memory_watch_thread`. Counted "left run: a watch was set on a page it could have a frame on".
   - The test is by the page, not by where the thread's stack pointer is. The plan's earlier form
     asked whether the page lay at or above the stack pointer in the same mapping. A thread can have
@@ -2366,23 +2372,25 @@ embedder's part needs. On the WebAssembly executor:
     page away from a thread that could write it.
 - **A watched access** comes to the memory fault hook, and the thread leaves `Execution::run`. The
   executor finds the watch and hands the kernel an exit for it, and the kernel, inside that entry of the
-  thread's own, calls `on_memory_accessing`. If the watch is gone when the hook returns, the thread
-  carries on.
+  thread's own, calls `on_watched_memory_accessing` with the address and the kind of access (`Read`,
+  `Write` or `Execute`). If the watch is gone when the hook returns, the thread carries on.
 - **The kernel's own accesses.** `Cpu::read` and `Cpu::write` ignore page permissions (abi/cpu.rs:30-31),
-  so no table byte catches a `read` system call filling a page another thread holds. The kernel checks
-  these itself, and for that it keeps each process's watched ranges (given to it through
-  `memory_watch` and `memory_watch_thread` in any case). A process with none pays one test a call.
+  so no table byte catches a `read` system call filling a page another thread holds. The owner ruled
+  that the kernel's own accesses to watched memory fire `on_watched_memory_accessing` too, and that
+  watches and dirty marks treat the kernel's writes exactly like the program's own (section 2). So the
+  kernel checks these itself, and for that it keeps each process's watched ranges (given to it through
+  `watch_memory` and `memory_watch_thread` in any case). A process with none pays one test a call.
   - An access the kernel makes for a thread of the process (a system call's buffers, a signal frame on
     its stack, the words cleared at its exit) is that thread's access. It is checked against that
     thread's watches and the process's before the call has any effect, and the hook fires with that
-    thread. The interface already promises this moment for process-wide watches (interface notes lines
-    57-59). If the watch stays, the call parks.
+    thread. If the watch stays, the call parks. After the write, `on_memory_written_by_kernel` fires
+    with the exact range.
   - A write that reaches the memory from outside the process (a `write` to a file it maps, reaching
-    pages it still shows; `process_vm_writev`; a tracer) has no thread of the process behind it. The
-    ruled hook cannot say that. Recommended: its thread is optional, none meaning "the kernel, for
-    another process"; it fires when the process's watch or any of its threads' covers the range; and the
-    write is made when the hook returns (decision 9). Without it an embedder's record of hand-overs
-    misses these writes.
+    pages it still shows; `process_vm_writev`; a tracer) has no thread of the process behind it. Both
+    ruled hooks take a thread, and which thread they name then is not ruled. The form before
+    recommended making it optional, none meaning "the kernel, for another process". That stays a
+    recommendation (decision 18). Without an answer an embedder's record of hand-overs cannot say who
+    wrote.
 - **Space.** Each table is one byte per page under the ceiling: 1020 KiB for ARM64's 4080 MiB, of which
   untouched pages cost nothing. They share the state memory's 4 GiB with the array of slots (docs/runtime.md
   section 8), so the ceiling's formula gains the number of watched threads.
@@ -2409,7 +2417,7 @@ two loads, or two stores, to different addresses may take effect in either order
 Reference Manual, the memory model). WebAssembly's own rules promise nothing at all for plain accesses
 that race.
 
-**Where it matters.** Only for an x86-64 guest, in a group in force `Parallel`, on the WebAssembly
+**Where it matters.** Only for an x86-64 guest whose threads run as `Parallel`, on the WebAssembly
 executor. The native executor runs only guests of the host's own architecture (native.md section 11), so
 the hardware gives the right order. On the WebAssembly executor there are two cases, by the host.
 
@@ -2443,8 +2451,9 @@ store-release. On an x86 host the same code costs 12 to 17 times, since each ato
 barrier, so this form must never be used there. It is therefore a form of its own, used only for x86
 guests in parallel on weaker hosts, and a value of the cache key's form field (7.2).
 
-**What is done until it is built.** On such a host the executor reports that it can run an x86 group only
-`Serial` (section 3). The group runs `Serial`, counted "x86 group kept Serial: the host orders memory more
+**What is done until it is built.** On such a host the executor reports that it can run an x86 process
+only as `Serial` (section 3). Its threads, and its overlappers toward it, run by the rule for a `Serial`
+task, counted "x86 process kept Serial: the host orders memory more
 weakly", warned once per container.
 
 Whether the ordered form is built at all is the owner's (decision 5). Recommended: not now.
@@ -2475,7 +2484,7 @@ builds, in the native track's own milestones after its single-thread suites pass
   `hv_gic_set_spi` took 2.4 to 4.1 µs to reach the inside's handler (native.md section 5.5). From one
   virtual CPU to another inside, through the interrupt controller, is not measured; the native track
   measures it with this work.
-- **Group stop** is that interrupt to each virtual CPU running a thread of the group. Each lands at an
+- **Group stop** is that interrupt to each virtual CPU running a thread of the memory. Each lands at an
   instruction boundary and waits in the inside. The hardware checks each access of the native output
   as it is made, so every instruction boundary is a stop point there, once the next item is done.
   Nothing there relies on a frame checked earlier, so no thread has frames to give up (4.5).
@@ -2491,8 +2500,9 @@ builds, in the native track's own milestones after its single-thread suites pass
   - One stop lock per memory and the count of drops per code range (4.5 rule 1, 7.5) hold there as on
     the WebAssembly executor. Rule 2 is needed only for the page tables and the code lists: the
     hardware makes the 128 bit atomics, so no hook reads and writes guest bytes under a group stop.
-  - Which primitive is used for which group is 4.5's rule there too: a group in force `Serial` or
-    `Exact` is called in for a change of the kernel's.
+  - Which primitive is used for which memory is 4.5's rule there too: a memory that runs as `Serial`,
+    or of an `Exact` process, is called in for a change of the kernel's, and a `Serial` task's
+    overlappers are called in for its turn (section 3).
 - **A table root per thread, only once it is watched.** A thread without per-thread watches uses its
   process's root. One with watches has its own root and address-space identifier, sharing every lower
   table that is the same for all (native.md section 5.3; its N1 builds and tests the per-thread root). This
@@ -2504,9 +2514,11 @@ builds, in the native track's own milestones after its single-thread suites pass
   instruction at all for what the decoder calls nothing, `dmb`, `dsb` and `isb` among them, and leaves
   their route "decided with the WebAssembly output's" (native.md lines 350-362). Decided here: the
   native output has the same two forms of code, under the same field of the cache key (7.2).
-  - **The Serial form emits nothing for `dmb`, `dsb` and `isb`**, as native.md has it today. One
-    thread of the group runs at a time, and the hand-over between two of them goes through the
-    kernel's lock and an exception return, which order everything. So a `Serial` run pays nothing,
+  - **The Serial form emits nothing for `dmb`, `dsb` and `isb`**, as native.md has it today. A task
+    that runs as `Serial` is never handed out beside an overlapper (section 3, rule 1), and every
+    hand-over between it and an overlapper, its own siblings included, goes through the kernel's lock
+    and an exception return, which order everything. The mixed-ordering check confirms this holds for
+    the mixed case too. So a `Serial` run pays nothing,
     as on the WebAssembly output.
   - **The Parallel form copies them as written**, each of the kind the guest wrote. The guest then
     pays what the reference pays. There is no byte to test. The other forms decoded as nothing stay
@@ -2536,9 +2548,9 @@ builds, in the native track's own milestones after its single-thread suites pass
   container's threads" (lines 492-496). With threads in parallel another thread can have changed it, and
   the store would then succeed against a value the guest never loaded. Asked of the native track: in
   the Parallel form, take the value from the registers the load filled, or run the load again.
-- **Shared pages between processes** are the same frames, so a group that shows a page in several places
-  runs in parallel there.
-- **Replay** is the same recording point (4.6), asked inside (below).
+- **Shared pages between processes** are the same frames, so memories that show a page in several places
+  run in parallel there, and the mixed case of section 3 needs nothing new.
+- **Replay** is the same proxy and hooks (4.6), called inside (below).
 
 **This plan's calls, on the native executor.** There the kernel, the loop and the embedder's system run
 inside the virtual machine, as plain function calls. Only the system's services that need the host
@@ -2549,27 +2561,30 @@ link (native.md at its head, lines 1092-1095, the owner's word on its decision 1
 form promised calls "from any host thread" and added methods to `System` and `Host` without saying
 on which side each falls. Its sixth check faulted that. They fall so:
 - **Inside, with no crossing: everything the kernel calls at an entry.**
-  - `kernel_entry_admit` and `on_kernel_entry_ended`. A recorded kernel asks at every entry. A
-    crossing there would add microseconds to each system call, against 21 to 32 ns for a call
-    answered inside (native.md section 6.1). So a system that records keeps its log inside and
-    sends it out in batches, as the inside sends warnings (native.md section 5.4).
+  - The proxy's two hooks, `on_memory_written_by_kernel` and `on_signal_delivering`. A system that
+    records is called at every system call. A crossing there would add microseconds to each system
+    call, against 21 to 32 ns for a call answered inside (native.md section 6.1). So a system that
+    records keeps each process's log inside and sends it out in batches, as the inside sends
+    warnings (native.md section 5.4). (The form before put `kernel_entry_admit` and
+    `on_kernel_entry_ended` here; both are withdrawn, 4.6.)
   - `thread_stop`: an interrupt from one virtual CPU to another through the interrupt controller
     (above; not measured).
   - `on_deadline_changed`: arms the inside's timer (section 5).
   - `on_processor_needed`: wakes a virtual CPU that waits inside. When that processor's stack is
     parked and its virtual CPU has gone back to the pool (native.md section 5.1), it is one message
     to the monitor, which is the cost of waking a worker there.
-  - `on_execution_config_in_force_changing` and `on_process_called_in`: hooks handed a `Process`,
-    run inside.
+  - `on_shared_memory_mapping`, `on_shared_memory_unmapped` and `on_watched_memory_accessing`: hooks
+    handed a `Process`, run inside.
   - `turn`, `ran`, `arrived`, `stopped` and the deciding half of `idle`, with the arguments decision
     9 adds: the policy's, inside, as R3 has them.
 - **Calls into the kernel are made by the system's code inside, on any virtual CPU**: `run` for a
-  processor, `kernel.process(id)`, `Kernel::process_call_in(id)`, `resume`. Where sections 5 and 6 say
+  processor, `kernel.process(id)`, the `Kernel` trait's suspend and resume calls, `wake_waiters` and
+  `move_waiters`. Where sections 5 and 6 say
   "any thread that can call the kernel", that is what it means there. A program on the host cannot
   make them, and cannot borrow a `Process` or a `ProcessInfo`: "with the kernel inside a virtual
   machine, a host program cannot borrow its data" (native.md lines 1368-1371; its decision 11
   recommends building whatever reads kernel state into the inside). A host program that wants a
-  process read or called in sends a request through the link to the system's code inside and gets a
+  process read or its tasks taken out sends a request through the link to the system's code inside and gets a
   copy back, for one crossing.
 - **Stopping a thread** through the executor's handle (section 5): from inside, the interrupt between
   virtual CPUs; from a host thread, an interrupt raised into the machine (2.4 to 4.1 µs, above).
@@ -2591,26 +2606,28 @@ written in its section 5.3.
 ## 11. Scheduling
 
 - **How many processors the container is told.** A value of the container, the same on every machine,
-  because the guest sees it and a replay or a move must see the same: suggested
+  because the guest sees it and a copy or a move must see the same: suggested
   `GuestMachine::processors` (rt/container.rs:39-44), given to the kernel in `Start`. Suggested default: 1,
   so every existing test and every existing user sees what they see today; the command line program passes
   the host's count unless told otherwise (decision 2).
-- **How many run at once.** As many guest threads as the container has processors, and never more than
-  one thread of a group in force `Serial`. The embedder's limit is the count of processors it gives
+- **How many run at once.** As many guest threads as the container has processors, and never a task that
+  runs as `Serial` beside one that overlaps it (section 3). The embedder's limit is the count of processors it gives
   the container. A live run has one worker for each processor, also on a host with fewer cores
   (section 5): a container told 16 processors and brought to a host with 8 cores runs 16 workers,
   which that host shares its cores among. The plan has no count of workers below the processors
-  (known fault 2).
+  (known fault 3).
 - **Which host thread runs which guest thread.** Any. A guest thread is its register block and its memory;
   on the WebAssembly executor its store moves between host threads (a wasmtime store may be sent, not
   shared). In a live run a worker keeps its processor, and the kernel puts a thread on whichever
   processor asks. Keeping a thread on the processor it last ran on is added only if measured to matter.
 - **Fairness.** Linux's fair scheduler as built (kernel/schedule.rs), with one run queue for all
-  processors: each takes the thread with the least weighted time that may run there (4.3: its group
-  puts it forward, and its mask holds the processor). One queue is fair by construction and costs
-  nothing extra under one lock. Inside a `Serial` group the order is the one-processor scheduler's:
-  the group puts forward its ready thread with the least weighted time, and no other (4.3). The one
-  exception is a waiter, which goes first (4.5).
+  processors: each takes the thread with the least weighted time that may run there (4.3: it is put
+  forward by section 3's rule, and its mask holds the processor). One queue is fair by construction and
+  costs nothing extra under one lock. Among tasks that run as `Serial` and overlap, the order is the
+  one-processor scheduler's: only the one due a turn is put forward (4.3). The one exception is a
+  waiter, which goes first (4.5). Between a `Serial` task and its `Parallel` overlappers, "due a turn"
+  is also by the least weighted time, so fairness between the two phases follows the same scheduler.
+  That is this plan's choice and not ruled (decision 15).
   - **A woken thread that should run before a running one takes the place of a thread in its way.**
     Today the comparison is with the one running thread (`check_preempt`, kernel/task.rs:577-584,
     called at :561 and :574; `preempts`, kernel/schedule.rs:224-238). With several processors, and
@@ -2618,7 +2635,7 @@ written in its section 5.3.
     has the most weighted time (section 5). If it should run first, that thread's processor is
     marked to give way and the thread is asked in with `thread_stop`. The plan's earlier form
     compared it with the running thread with the most weighted time in the whole container. That
-    may be a thread of another group while the woken thread waits behind its own sibling, or a
+    may be a thread of another process while the woken thread waits behind its own sibling, or a
     thread on a processor outside the woken thread's mask, and stopping it gains nothing.
   - **The comparison is not what keeps a thread from waiting for ever.** It says no for a batch or
     idle thread, and inside the wake-up granularity (kernel/schedule.rs:233-237). What keeps it is
@@ -2631,7 +2648,7 @@ written in its section 5.3.
 - **Timers.** The kernel's deadline is in nobody's slice. The system hands the kernel one
   `Event::Timer` for the container at the deadline the kernel last announced, and that entry stops
   nobody by itself (section 5). A thread's slice holds its fair share and its own CPU timers only.
-- **Told many, running one.** A threaded program in a `Serial` group is told the processors but runs one
+- **Told many, running one.** A threaded program run `Serial` is told the processors but runs one
   thread at a time. A program that spins on a lock because "there are other CPUs" wastes its turns. It is
   correct, and it is what `Serial` means; the cost shows in T2's measurements.
 - **Charging CPU time.** Each thread is charged from its own "handed out at" time to its return, on the
@@ -2643,23 +2660,25 @@ written in its section 5.3.
   progress each thread reports (docs/runtime.md section 9).
   - With one worker a run still repeats, with any number of processors, and it is built on the same
     `run`. One worker for several processors is allowed here, where it is not in a live run (section
-    5), because the system says which processor is served next. `run(processor)` returns only for one of
-    the owner's four reasons (section 5), and none of them is "this turn is over, serve another
-    processor". So the test system makes its order the way a replay follows one (4.6). It says at the
-    start that it orders entries, and it draws from the seed which processor is served next. A choice
-    for any other processor it answers `Later`; `next` then answers `Idle`, `run` returns, and the
-    driver calls `run` for the processor drawn. It is a log made up as the run goes. Every turn is
-    counted, so the order of entries, and of clock reads, is the same each time. Rejected: a second
-    driver loop for tests that steps one turn at a time. It would be a path the shipped loop never
-    takes.
-    - This holds for processes in force `Exact`, which is what the test system gives (section 12).
-      Only code with the count takes a counted turn. A process in force `External` is asked about
-      like the rest but takes free turns, so a test that gives a process anything but `Exact` gives
-      up repeating it without a log.
-  - With several workers nothing repeats without a log. The order of entries is the host's timing. So is
-    a clock read made without a system call (`Answer::clock`, rt/lib.rs:291-293): it makes no kernel
-    entry, and takes whatever the other workers' threads had reported by that host moment. Such a run is
-    repeated from its recording (4.6), where each clock read is a recorded answer of its thread.
+    5), because the test system says which processor is served next. `run(processor)` returns only for
+    one of the owner's four reasons (section 5), and none of them is "this turn is over, serve another
+    processor". The form before made its order with the withdrawn `kernel_entry_admit`, answering
+    `Later` for any other processor. Now the test system uses the ruled interrupter: at the end of
+    each counted turn it interrupts the container from `arrived`, the loop looks at the container's
+    stop mark before it calls `next`, so the processor hands nobody out, and `run` returns
+    `Interrupted`. The driver then draws from the seed which processor is served next and calls `run`
+    for it. Every turn is counted, so the order of entries, and of clock reads, is the same each time.
+    It costs a container stop a turn, in tests only. This is this revision's design and unchecked.
+    Rejected: a second driver loop for tests that steps one turn at a time. It would be a path the
+    shipped loop never takes.
+    - This holds for processes given `Exact`, which is what the test system gives (section 12). Only
+      code with the count takes a counted turn. A process given anything else takes free turns, so a
+      test that gives a process anything but `Exact` gives up repeating it.
+  - With several workers nothing repeats. The order of entries is the host's timing. So is a clock read
+    made without a system call (`Answer::clock`, rt/lib.rs:291-293): it makes no kernel entry, and
+    takes whatever the other workers' threads had reported by that host moment. Such a run can be
+    replayed only per process, from each process's log (4.6), once the kernel's primitives for it
+    exist (known fault 2).
 
 ## 12. Tests and the bar
 
