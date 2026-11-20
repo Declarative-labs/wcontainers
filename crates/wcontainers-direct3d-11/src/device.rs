@@ -231,6 +231,7 @@ const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
     "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)";
 /// `Format::components` of a format holding a red channel alone.
 const RED: u32 = 0b0001;
+const MULTISAMPLED_DEPTH_READ: &str = "a multisampled depth texture read by shaders below 10_1";
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
 const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound to nothing";
 const TYPED_BUFFER_UNCLAIMED: &str =
@@ -1191,9 +1192,7 @@ impl<B: Backend> Device<B> {
             && self.level < level::L10_1
             && d.bind_flags & read_depth == read_depth
         {
-            return Err(Error::InvalidArg(
-                "a multisampled depth texture read by shaders below 10_1",
-            ));
+            return Err(Error::InvalidArg(MULTISAMPLED_DEPTH_READ));
         }
         // The back ends' multisampled textures are one layer; holding an array as a texture per
         // layer (plan 4.2) is not built here.
