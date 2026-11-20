@@ -37,8 +37,9 @@ K6c, fifteenth run: origin/phase-1 (the streams track's embedder trait, hooks, w
 ceiling) is merged, with the conflicts settled so both sides' tests keep working; a large write
 to the backend no longer redoes its earlier parts at each run of the call (a test); a ceiling
 smaller than the stack's random move is refused instead of underflowing. K6c's bar is still not
-met: ADSP038 has no verdict yet (a four-hour run at f84695a7 ends by 12:46 UTC, the twelve-hour
-run by 17:14 UTC), the gap list past section 15 waits for the owner, and the literal check fails
+met: ADSP038 has no verdict (both its runs, four hours at f84695a7 and twelve at 684b15ec, were
+lost when the spot ARM64 machine was taken away at about 12:35 UTC, 3 h 49 min and 7 h 20 min
+in, with no verdict yet), the gap list past section 15 waits for the owner, and the literal check fails
 on the second baseline start the merge brought (For the orchestrator). See "K6c, fifteenth run".
 
 K6c, fourteenth run: every finding of the thirteenth run's check is answered (see "K6c,
@@ -212,8 +213,10 @@ and the writer's next part waits behind every reader's. Expected, not measured: 
 unmapped backend files, or cheaper per-thread bookkeeping, is what would shorten it.
 ADSP038 at f84695a7 runs beside it with a four-hour limit (same job; results
 target/ltp-k6c15/adsp.tsv in the kernel-p folder there, followed into scratch
-k6c15/adsp-attach.log; ends by 12:46 UTC), and the twelve-hour run at 684b15ec goes on (ends by
-17:14 UTC).
+k6c15/adsp-attach.log), beside the twelve-hour run at 684b15ec. Both were lost with the spot
+machine (AWS's notice is the last line of adsp-attach.log, about 12:35 UTC): ADSP038 had no
+verdict after 3 h 49 min at f84695a7, nor after 7 h 20 min at 684b15ec. The machine's build
+folders (kernel, kernel-p) went with it.
 
 Whole suite at the merge, 8620f9be, on the ARM machine (`cargo test -j 12 -p wcontainers-abi -p
 wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast -- --test-threads=4`, 08:28 to 10:00
@@ -4693,15 +4696,13 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 ## Next
 
 K6c, after the fifteenth run: three things stand between the bar and the independent check.
-1. ADSP038: read the four-hour run at f84695a7 (`arm-run --attach kernel-p
-   20261120-084611-1359804`, or `arm-run --fetch kernel-p target/ltp-k6c15/adsp.tsv
-   <scratch>/kernel/k6c15/`; ends by 12:46 UTC on the 20th) and the twelve-hour run at 684b15ec
-   (item 1 below; ends by 17:14 UTC). A pass is the reference's verdict. Then delete the ARM
-   machine's /work/target/kernel-p and /work/target/kernel-m (build folders made for this run).
-   If neither passes: the time goes to the readers' backend reads (fifteenth run), so the next
-   step is Linux's page cache for unmapped backend files (FUSE without FOPEN_DIRECT_IO keeps
-   read pages; a direct write drops the range), measured on the probe image
-   (`aiodio_sparse -o 4 -w 18192k -n N`; the fifteenth run's numbers are the baseline).
+1. ADSP038 has no verdict and its runs were lost with the spot machine (fifteenth run). Its
+   time goes to the readers' backend reads, so the step is Linux's page cache for unmapped
+   backend files (FUSE without FOPEN_DIRECT_IO keeps the pages it read; a direct write drops its
+   range), measured first on the probe image (the suite's tar plus a runtest `probe` of
+   `aiodio_sparse -o 4 -w 18192k -n N` for N 1, 32, 128; before the write fix 82.6, 104.1 and
+   326.4 s), then ADSP037 (4282.6 s now) and ADSP038 with `LTP_LIMIT=14400`. On a new machine
+   the LTP image is built again first (item 1 of the tenth run's list below).
 2. The owner's ruling on the gap list past section 15 (For the orchestrator).
 3. The literal check's second baseline start (For the orchestrator); every other finding is
    settled. Then say the bar is met; the Mac's part is scratch k6c15/mac4.sh (fresh layer 1
