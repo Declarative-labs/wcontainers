@@ -684,7 +684,10 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
     let lod_range = if mip == PIPE_TEX_MIPFILTER_NONE as c_uint {
         [0, 0]
     } else {
-        [state.min_lod.to_bits(), state.max_lod.to_bits()]
+        // The host's levels of detail start at zero, where its magnifying filter takes over, as
+        // OpenGL's does at and below zero: a negative bound reads as zero, alike.
+        let min = state.min_lod.max(0.0);
+        [min.to_bits(), state.max_lod.max(min).to_bits()]
     };
     let desc = SamplerDesc {
         min: filter(state.min_img_filter()),

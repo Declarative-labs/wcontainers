@@ -24,7 +24,7 @@ use crate::resource::Resource;
 use crate::screen::Screen;
 use crate::state::{self, Shader, Stage, refuse};
 use crate::view::{IDENTITY, View};
-use crate::{indices, query, stream};
+use crate::{indices, outputs, query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
 struct Built<B: Backend> {
@@ -60,6 +60,8 @@ struct Variant {
     pulled: Vec<(u32, VertexFormat)>,
     /// A vertex program the stage helper runs, every input fetched in it.
     streamed: bool,
+    /// The kinds of the framebuffer's targets (fragment programs).
+    targets: outputs::Targets,
 }
 
 /// A value passed between stages at one location, and how it is interpolated.
@@ -275,6 +277,9 @@ fn convert<B: Backend>(
         let mut module = wcontainers_nir::direct::module(&mut nir).map_err(|e| e.to_string())?;
         if !variant.interpolation.is_empty() {
             meet_inputs(&mut module, &variant.interpolation);
+        }
+        if !variant.targets.is_empty() {
+            outputs::fit(&mut module, &variant.targets);
         }
         let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
         let entry_point = module
@@ -812,6 +817,7 @@ fn draw<B: Backend>(
     }
     let fragment = Variant {
         swizzles: swizzles(context.stages.get(Stage::Fragment)),
+        targets: target_kinds(&context.framebuffer.state),
         ..Variant::default()
     };
     let programs = &mut context.programs;
@@ -834,6 +840,7 @@ fn draw<B: Backend>(
             .filter_map(|&l| Some((l, elements.format(l)?)))
             .collect(),
         streamed: false,
+        targets: Vec::new(),
     };
     // SAFETY: as above.
     programs.built_for(backend, unsafe { &*vs }, &vertex)?;
@@ -1526,6 +1533,24 @@ fn pulled_inputs<B: Backend>(
     }
     pulled.sort_unstable();
     (pulled, paths)
+}
+
+/// The kind of each bound colour target, by location.
+fn target_kinds(framebuffer: &pipe_framebuffer_state) -> outputs::Targets {
+    framebuffer
+        .cbufs
+        .iter()
+        .take(usize::from(framebuffer.nr_cbufs))
+        .enumerate()
+        .filter_map(|(i, s)| {
+            let kind = match crate::format::format(s.format())?.kind() {
+                FormatKind::Uint => naga::ScalarKind::Uint,
+                FormatKind::Sint => naga::ScalarKind::Sint,
+                _ => naga::ScalarKind::Float,
+            };
+            Some((i as u32, kind))
+        })
+        .collect()
 }
 
 /// The swizzles of a stage's bound views that rearrange their results.
