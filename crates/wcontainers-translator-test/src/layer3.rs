@@ -67,7 +67,9 @@ fn gcc_image<G: GuestTest>() -> String {
     let recipe = format!("{:x}", sha2::Sha256::digest(&dockerfile));
     let image = format!("wc-x86-gcc-{}-{}", G::NAME, &recipe[..12]);
     // Another guest's failed build must not fail this one's.
-    let mut made = MADE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut made = MADE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if made.contains(&image) {
         return image;
     }
