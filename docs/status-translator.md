@@ -408,7 +408,9 @@ Eighth run of T3 (2026-11-20 05:50 local on):
     reference's 20 s limit (`BLOB_SECONDS`) moved to layout.rs, which the reference runner includes, so
     layer 3's `timeout` for ordinary programs takes it from there. The reference runner is now built with an
     explicit `--target aarch64-unknown-linux-musl` (the same as its `.cargo/config.toml`), and the Cargo that
-    builds it is the one in `CARGO`, with no fallback (Cargo always sets it for tests).
+    builds it is the one in `CARGO`, or `cargo` on the path when a test binary runs by itself (9fc51b47 had
+    dropped that fallback, so the benchmark binary that the speed pairs run directly panicked; restored in
+    the commit after the eighth run's pairs found it).
   - af9d9276: the browser runner's setup and answers are serde structs (`#[serde(rename_all =
     "camelCase")]`), so their keys come from the field names; the stop kinds map to Linux's signals from
     linux-raw-sys in one table; `omit`'s bits come from `Omit::bits`. The setup's JSON is byte for byte what

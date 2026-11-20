@@ -32,8 +32,10 @@ const OWN_COPIES: &str = "run";
 pub const GUEST_TRIPLE: &str = "aarch64-unknown-linux-musl";
 /// The workspace's folder of build output, from this crate's manifest folder.
 const WORKSPACE_TARGET: &str = "../../target";
-/// The environment variable in which Cargo gives a test the path of the Cargo that runs it.
+/// The environment variable in which Cargo gives a test the path of the Cargo that runs it, and the program
+/// to run when a test binary is run without Cargo.
 const CARGO_VARIABLE: &str = "CARGO";
+const CARGO_PROGRAM: &str = "cargo";
 /// Cargo's command for a quiet release build, its flags naming the target and the folder for its output, and
 /// the folder of a target's output that a release build writes.
 const QUIET_RELEASE_COMMAND: [&str; 3] = ["build", "--release", "--quiet"];
@@ -85,9 +87,9 @@ pub fn target_folder(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The Cargo that runs this test.
+/// The Cargo that runs this test, or the one on the path.
 pub fn cargo() -> Command {
-    Command::new(std::env::var_os(CARGO_VARIABLE).expect("run by Cargo"))
+    Command::new(std::env::var_os(CARGO_VARIABLE).unwrap_or_else(|| CARGO_PROGRAM.into()))
 }
 
 /// Build the package in the folder `package` quietly for release, for the target `triple`, with its output
