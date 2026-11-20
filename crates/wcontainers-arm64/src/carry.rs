@@ -7,14 +7,14 @@ use std::ops::Range;
 
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
-    AddressPlace, Fixup, Guest, Held, Holds, HostCode, InsideCall, Native, NativeReason, Registers,
-    Resume, Route, Span, effects,
+    AddressPlace, BranchTable, Fixup, Guest, Held, Holds, HostCode, InsideCall, Native,
+    NativeReason, Registers, Resume, Route, Span, effects,
 };
 
 use crate::encode::{self, Register, ZERO, field, form};
-use crate::forms;
 use crate::instruction::{
-    Address, BranchRegister, Instruction as I, MemoryAccess, Reg, SystemRegister,
+    Address, BranchRegister, Instruction as I, MemoryAccess, Operand, Reg, Shift, SystemRegister,
+    Width,
 };
 use crate::meaning::Host;
 use crate::mirror::{
@@ -25,6 +25,7 @@ pub use crate::thread_state::{
     BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
 use crate::{Arm64, FPCR_BITS, decode};
+use crate::{forms, habits};
 
 /// The bytes of a 64-bit, a 32-bit and a 128-bit register.
 const X_BYTES: u8 = size_of::<u64>() as u8;
@@ -853,23 +854,27 @@ fn rebase(out: &mut Out, i: &I) {
 }
 
 /// The exit to the direct guest `target` (section 3.2): its entry slot's address built in t and a jump there,
-/// the first word being the one a loader links. A target beyond the mirror goes to the inside, which reports
-/// it as its jump's would be.
-pub(crate) fn exit(code: &mut HostCode, target: u64) {
+/// the first word being the one a loader links. With `commit` that word is the current instruction's commit
+/// point, so that a stop before it is at the instruction. A target beyond the mirror goes to the inside, which
+/// reports it as its jump's would be.
+pub(crate) fn exit(code: &mut HostCode, target: u64, commit: Option<Resume>) {
     if target >> REACH_BITS != 0 {
+        if let Some(resume) = commit {
+            code.after(resume);
+        }
         Arm64::call(code, InsideCall::Exit);
         return;
     }
     let moves = address_words(SCRATCH, target, Holds::EntrySlot);
-    let lead = code.lead();
+    let lead = code.lead_after_commit();
     if lead > 0 {
         let settle = encode::add_immediate(COUNT, COUNT, -i64::from(lead)).expect("a lead fits");
-        code.settling_exit(&settle.to_le_bytes(), target);
+        code.settling_exit(&settle.to_le_bytes(), target, commit);
         note_place(code, SCRATCH, target, Holds::EntrySlot, 0);
         code.push(&moves[0].to_le_bytes());
     } else {
         note_place(code, SCRATCH, target, Holds::EntrySlot, 0);
-        code.exit(&moves[0].to_le_bytes(), target);
+        code.exit(&moves[0].to_le_bytes(), target, commit);
     }
     for (part, w) in moves.iter().enumerate().skip(1) {
         note_place(code, SCRATCH, target, Holds::EntrySlot, part);
@@ -975,10 +980,10 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
             let target = at.wrapping_add_signed(offset);
             if link {
                 out.build_address(Reg::X(LINK), return_address, Resume::At(target));
+                exit(out.code, target, None);
             } else {
-                out.code.after(Resume::At(target));
+                exit(out.code, target, Some(Resume::At(target)));
             }
-            exit(out.code, target);
         }
         I::BranchCond { offset, .. }
         | I::CompareBranch { offset, .. }
@@ -1008,7 +1013,7 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
                 code.restore(state);
                 land(code, taken);
                 code.after(Resume::At(target));
-                exit(code, target);
+                exit(code, target, None);
                 code.restore(after);
             });
         }
@@ -1083,6 +1088,132 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
             out.put(encode::branch_register(form::BR, SCRATCH));
         }
     }
+}
+
+/// The branch table a `br` goes through when the instructions before it in its straight-line part show its
+/// target to be a constant base plus a byte (section 3.2, "A jump table's known targets"): `br xN` where xN was
+/// last written by `add xN, xB, xE` (shifted left or extended), xB holding a constant guest address (`adr`, or
+/// `adrp` and `add`), and xE, no other register, last written by a one-byte load into xE itself, with nothing
+/// after the add writing xE. Gives xN, xE and the table, whose start is where it is written.
+fn known_targets(before: &[(u64, I)], i: &I) -> Option<(Register, Register, BranchTable)> {
+    let I::BranchRegister {
+        op: BranchRegister::Br,
+        rn: Reg::X(n),
+    } = *i
+    else {
+        return None;
+    };
+    let add = habits::last_def(before, Reg::X(n), before.len())?;
+    let I::AddSub {
+        width: Width::X64,
+        subtract: false,
+        set_flags: false,
+        rn: base_register,
+        operand,
+        ..
+    } = before[add].1
+    else {
+        return None;
+    };
+    let (index, shift, extend) = match operand {
+        Operand::Shifted {
+            rm,
+            shift: Shift::Lsl,
+            amount,
+        } => (rm, amount, None),
+        Operand::Extended { rm, extend, amount } => (rm, amount, Some(extend)),
+        _ => return None,
+    };
+    let Reg::X(e) = index else {
+        return None;
+    };
+    let written_after = |from: usize, r: Register| {
+        before[from..]
+            .iter()
+            .any(|(_, later)| touched(later).1.has_bit(bit(r)))
+    };
+    if e == n || [n, e].iter().any(|r| WITHHELD.contains(r)) || written_after(add + 1, e) {
+        return None;
+    }
+    let load = habits::last_def(before, index, add)?;
+    let I::Load {
+        bytes,
+        signed: None,
+        rt,
+        address,
+    } = before[load].1
+    else {
+        return None;
+    };
+    // The value added must be the byte itself, not a base the load writes back.
+    let writes_back_index = matches!(
+        address,
+        Address::PreIndex { base, .. } | Address::PostIndex { base, .. } if base == index
+    );
+    if rt != index || writes_back_index || usize::from(bytes) != size_of::<u8>() {
+        return None;
+    }
+    let base = habits::constant(before, base_register, add)?;
+    Some((
+        n,
+        e,
+        BranchTable {
+            start: 0,
+            base,
+            entries: 1 << u8::BITS,
+            shift,
+            // Only a sign extension from the byte's own bits gives it a sign.
+            signed: extend.is_some_and(|x| x.signed && u32::from(x.from_bits) <= u8::BITS),
+            retarget: {
+                let clear = encode::branch(false, 0).expect("a branch");
+                clear ^ encode::branch(false, -(INSTRUCTION as i64)).expect("a branch")
+            },
+        },
+    ))
+}
+
+/// A jump whose targets are known (see [`known_targets`]): `adr t, table; add t, t, xE, lsl #2; br t`, the `br`
+/// its commit point, then the table of one direct branch for each value of the byte, which the loader points at
+/// the target's piece and which until then goes to the jump through the target's slot written after it. Nothing
+/// is read from memory and only branches the translator wrote are taken. False, with nothing written, for any
+/// other jump.
+pub(crate) fn known_jump(before: &[(u64, I)], i: &I, address: u64, code: &mut HostCode) -> bool {
+    let Some((n, e, table)) = known_targets(before, i) else {
+        return false;
+    };
+    // The table's branches are exits, which leave with the count the guest's.
+    if code.lead_after_commit() != 0 {
+        return false;
+    }
+    let word = INSTRUCTION as i64;
+    let index = encode::add_extended(false, SCRATCH, SCRATCH, e, false, u64::BITS, ALIGNMENT_BITS)
+        .expect("a shift by the alignment fits");
+    let into_table = encode::branch_register(form::BR, SCRATCH);
+    // The table starts after the adr, the add and the br.
+    let lead_in = [index, into_table].len() as i64 + 1;
+    code.push(
+        &encode::adr(SCRATCH, lead_in * word)
+            .expect("the table is near")
+            .to_le_bytes(),
+    );
+    code.push(&index.to_le_bytes());
+    // Past the commit point the guest is at the target, which xN still holds.
+    code.commit(
+        &into_table.to_le_bytes(),
+        Resume::Through(Held::Register(n)),
+    );
+    code.branch_table(table);
+    for k in 0..table.entries {
+        let to_jump = i64::from(table.entries - k) * word;
+        code.push(
+            &encode::branch(false, to_jump)
+                .expect("the jump after the table is near")
+                .to_le_bytes(),
+        );
+    }
+    let mut out = Out { code, address };
+    jump(&mut out, BranchRegister::Br, Reg::X(n));
+    true
 }
 
 /// The bytes from word `from` of a return's start to word `to`.

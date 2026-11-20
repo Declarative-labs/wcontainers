@@ -8,8 +8,8 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 use crate::position::{
-    AddressPlace, DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span,
-    Stopping,
+    AddressPlace, BranchTable, DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated,
+    Resume, Side, Span, Stopping,
 };
 use crate::{Flow, FlowKind, Guest};
 
@@ -64,9 +64,16 @@ pub trait Native: Guest {
     fn hook_class(hook: Self::Hook, first: Option<i64>) -> NativeClass;
     /// The class of a control, read or written.
     fn control_class(control: Self::Control, write: bool) -> NativeClass;
-    /// Writes the host code of one decoded instruction, `bytes` at guest `address`, as its route says. Its
-    /// spans start at the instruction, before its commit point, with the count already placed.
-    fn carry(i: &Self::Instruction, bytes: &[u8], address: u64, code: &mut HostCode);
+    /// Writes the host code of one decoded instruction, `bytes` at guest `address`, as its route says, given the
+    /// instructions of its straight-line part before it (`before`, oldest first, with their guest addresses).
+    /// Its spans start at the instruction, before its commit point, with the count already placed.
+    fn carry(
+        before: &[(u64, Self::Instruction)],
+        i: &Self::Instruction,
+        bytes: &[u8],
+        address: u64,
+        code: &mut HostCode,
+    );
     /// Writes the count's add of `events` counted events.
     fn count(code: &mut HostCode, events: u32);
     /// Writes a call into the inside.
@@ -103,6 +110,8 @@ pub struct HostCode {
     pub exits: Vec<DirectExit>,
     /// The words that build guest addresses, in the order they were written.
     pub places: Vec<AddressPlace>,
+    /// The branch tables of jumps whose targets are known, in the order they were written.
+    pub tables: Vec<BranchTable>,
     /// Exits written while the count was ahead, by start: the bytes of their first words, which settle the
     /// count, or none for a branch only the code's own linking may point elsewhere.
     settling: BTreeMap<u32, Option<u32>>,
@@ -197,8 +206,9 @@ impl HostCode {
         self.bytes.extend_from_slice(bytes);
     }
 
-    /// Writes the first bytes of an exit to the direct guest `target`, which a loader may link.
-    pub fn exit(&mut self, bytes: &[u8], target: u64) {
+    /// Writes the first bytes of an exit to the direct guest `target`, which a loader may link; with `commit`,
+    /// they are the current instruction's commit point and the guest goes on there.
+    pub fn exit(&mut self, bytes: &[u8], target: u64, commit: Option<Resume>) {
         let start = u32::try_from(self.offset()).expect("host code fits in u32 offsets");
         self.exits.push(DirectExit {
             start,
@@ -206,16 +216,26 @@ impl HostCode {
             retarget: None,
         });
         self.push(bytes);
+        if let Some(resume) = commit {
+            self.after(resume);
+        }
     }
 
-    /// Writes the first bytes of an exit to the direct guest `target` that brings the count, ahead here, back
-    /// to the guest's: a loader links the exit after them, and linking within the code before them.
-    pub fn settling_exit(&mut self, settle: &[u8], target: u64) {
+    /// Writes the first bytes of an exit to the direct guest `target` that brings the count, ahead here once
+    /// any `commit` is made, back to the guest's: a loader links the exit after them, and linking within the code
+    /// before them.
+    pub fn settling_exit(&mut self, settle: &[u8], target: u64, commit: Option<Resume>) {
         let start = u32::try_from(self.offset()).expect("host code fits in u32 offsets");
         let length = u32::try_from(settle.len()).expect("a word fits u32");
-        self.exit(settle, target);
+        self.exit(settle, target, commit);
         self.state().lead = 0;
         self.settling.insert(start, Some(length));
+    }
+
+    /// Records the branch table about to be written here.
+    pub fn branch_table(&mut self, table: BranchTable) {
+        let start = u32::try_from(self.offset()).expect("host code fits in u32 offsets");
+        self.tables.push(BranchTable { start, ..table });
     }
 
     /// Records the branch written at `at` as one more exit to the direct guest `target`, which a loader may point
@@ -250,6 +270,11 @@ impl HostCode {
         self.now.as_ref().map_or(0, |s| s.lead)
     }
 
+    /// How far the count will be ahead of the guest's once the current instruction is committed.
+    pub fn lead_after_commit(&self) -> u32 {
+        self.lead() - u32::from(self.owed)
+    }
+
     /// Enters a straight-line part whose events an add before it already counted, `lead` of them still to come.
     pub fn enter_ahead(&mut self, lead: u32) {
         self.state().lead = lead;
@@ -269,6 +294,7 @@ impl HostCode {
             exits: self.exits,
             places: self.places,
             sites: self.sites,
+            tables: self.tables,
         }
     }
 
@@ -349,6 +375,7 @@ pub struct Translation {
     pub exits: Vec<DirectExit>,
     pub places: Vec<AddressPlace>,
     pub sites: [u64; NativeReason::ALL.len()],
+    pub tables: Vec<BranchTable>,
 }
 
 impl Translation {
@@ -373,6 +400,9 @@ impl Translation {
         }
         for exit in &mut self.exits {
             moved(&mut exit.target);
+        }
+        for table in &mut self.tables {
+            moved(&mut table.base);
         }
     }
 }

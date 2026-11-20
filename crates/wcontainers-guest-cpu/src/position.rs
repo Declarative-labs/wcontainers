@@ -146,6 +146,39 @@ pub struct DirectExit {
     pub retarget: Option<u32>,
 }
 
+/// The branch table of a jump through a register whose targets are known (docs/native.md section 3.2): one branch
+/// word for each value of the jump's index, from host byte `start`, the word for value k an exit to
+/// [`Self::target`] of k whose branch the loader points at that target's piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchTable {
+    pub start: u32,
+    /// The guest address of index 0.
+    pub base: u64,
+    /// How many values the index takes, a power of two.
+    pub entries: u32,
+    /// How far the index is shifted before it is added to the base.
+    pub shift: u8,
+    /// Whether the index is a signed number of its own bits.
+    pub signed: bool,
+    /// The bits of each branch that hold its offset in instructions.
+    pub retarget: u32,
+}
+
+impl BranchTable {
+    /// The guest address the jump goes to for index value `k`.
+    pub fn target(&self, k: u32) -> u64 {
+        let bits = self.entries.trailing_zeros();
+        let value = if self.signed && bits > 0 {
+            let unused = u64::BITS - bits;
+            ((u64::from(k) << unused) as i64 >> unused) as u64
+        } else {
+            u64::from(k)
+        };
+        self.base
+            .wrapping_add(value.wrapping_shl(u32::from(self.shift)))
+    }
+}
+
 /// What an address place builds in its register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Holds {

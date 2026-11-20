@@ -204,7 +204,10 @@ impl Native for Arm64 {
         }
     }
 
-    fn carry(i: &I, bytes: &[u8], address: u64, code: &mut HostCode) {
+    fn carry(before: &[(u64, I)], i: &I, bytes: &[u8], address: u64, code: &mut HostCode) {
+        if carry::known_jump(before, i, address, code) {
+            return;
+        }
         let word = u32::from_le_bytes(bytes.try_into().expect("an instruction is one word"));
         carry::carry(i, word, address, code);
     }
@@ -219,7 +222,7 @@ impl Native for Arm64 {
     }
 
     fn exit(code: &mut HostCode, target: u64) {
-        carry::exit(code, target);
+        carry::exit(code, target, None);
     }
 
     fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool {

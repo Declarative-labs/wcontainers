@@ -62,9 +62,10 @@ pub mod form {
     pub const MSR: &str = "MSR_SR_systemmove";
     pub const SYS: &str = "SYS_CR_systeminstrs";
     pub const ADRP: &str = "ADRP_only_pcreladdr";
+    pub const ADR: &str = "ADR_only_pcreladdr";
 
     /// Every form above.
-    pub const ALL: [&str; 50] = [
+    pub const ALL: [&str; 51] = [
         MOVZ,
         MOVK,
         MOVN,
@@ -115,6 +116,7 @@ pub mod form {
         MSR,
         SYS,
         ADRP,
+        ADR,
     ];
 }
 
@@ -466,6 +468,20 @@ pub fn retarget(word: u32, offset: i64) -> Result<u32, DoesNotFit> {
 fn option(signed: bool, from_bits: u32) -> u32 {
     let sign = width(form::ADD_EXTENDED, field::OPTION) - 1;
     u32::from(signed) << sign | (from_bits / u8::BITS).trailing_zeros()
+}
+
+/// `adr rd, #offset`: the address `offset` bytes from the instruction's own.
+pub fn adr(rd: Register, offset: i64) -> Result<u32, DoesNotFit> {
+    let low = width(form::ADR, field::IMMLO);
+    let value = signed(offset, 1, low + width(form::ADR, field::IMMHI))?;
+    word(
+        form::ADR,
+        &[
+            (field::RD, rd.into()),
+            (field::IMMLO, value & ((1 << low) - 1)),
+            (field::IMMHI, value >> low),
+        ],
+    )
 }
 
 /// `add rd, rn, rm, extend #shift` (`subtract`: `sub`), where `rn` 31 is the stack pointer.
