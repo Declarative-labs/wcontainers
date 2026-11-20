@@ -6,7 +6,7 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 - T3 (this milestone) is under way; see "T3" below for what is done and what is left. Not met yet: the speed
   bar in Chrome (fib, sort and walk 0.5 to 1 percent slower, from runner.js, not from the translator, whose
-  output is byte for byte the same) and layer 3's rerun, still running at 4,401 of 5,000 compared.
+  output is byte for byte the same) only; layers 1, 2 and 3 reran on the merged code with no mismatch.
 - FPSR (the P2 check's first finding): a program whose code reads FPSR now has its flags kept exact from its
   start, decided by `wcontainers_arm64::reads_float_status(code)` and applied by whoever starts the thread
   (`FLOAT_TRACKING` set to 1 before it runs). This track's runners do it; the runtime's CPU side
@@ -33,8 +33,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
 T3 is under way: main merged (the translator on the shared guest interface), the literal check adopted, the
 P2 check's findings answered, the register jump slow path fixed (busybox awk: millions to single figures),
-FPSR read first fixed; layers 1 and 2 rerun in full on the merged code with no mismatch, layer 3 at 4,401 of
-5,000 with none; interpret in Chrome back to its speed, but fib, sort and walk in Chrome 0.5 to 1 percent
+FPSR read first fixed; layers 1 and 2 rerun in full on the merged code with no mismatch, layer 3 to 5,287
+compared with none; interpret in Chrome back to its speed, but fib, sort and walk in Chrome 0.5 to 1 percent
 slower from the same test runner function's shape. See "T3" and "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
@@ -94,9 +94,9 @@ Reruns on the merged code (commit 97fff482, whose translator and arm64 crates ar
 - Layer 2, rented ARM64 machine, 12 jobs, load 26 to 32: 100,000 programs, seed 300 (four runs of 25,000 from
   cases 0, 25,000, 50,000 and 75,000), every one also on the real CPU, 5 a run in Chrome: 0 failing; 34,217
   faulted, 7,450 left to an address at full; 580 to 638 s a run. Same as before the merge: no mismatch.
-- Layer 3, same machine and job, seed 300, chunks of 500 from case 0, 5 a chunk in Chrome: chunks 0 to 9
-  passed, 4,401 compared (49 also in Chrome), 0 failing (403 to 1,121 s a chunk, load 7 to 42); it runs on to
-  5,000 compared (where it ended: "T3, what is left"). Log: arm-run job translator/20261120-010956-2486238 (`arm-run --fetch translator
+- Layer 3, same machine and job, seed 300, chunks of 500 from case 0, 5 a chunk in Chrome: chunks 0 to
+  11 (cases 0 to 5,999) passed: 5,287 compared (52 also in Chrome), 713 did not end within Linux's 20 s alarm,
+  0 failing (392 to 3,270 s a chunk, load 7 to 42); ended 2026-11-20 04:28 UTC. Log: arm-run job translator/20261120-010956-2486238 (`arm-run --fetch translator
   /work/jobs/translator/20261120-010956-2486238/log <dir>`), each chunk's output in the build directory's
   `t3/layer3-<k>.log`.
 - Layer 1, the Mac, full bar (10,000 cases a form, 100 a form in Chrome), seed 300, 4 jobs, load 5 to 20: the
@@ -158,10 +158,6 @@ Second run of T3 (2026-11-19 19:36 to 20:30 local):
   layer 1's verdict is the Mac's, above: 7 passed). So every test passes where its verdict counts.
 
 T3, what is left:
-- Layer 3's rerun reaching 5,000 compared: arm-run job translator/20261120-010956-2486238 was in chunk 10 at
-  the end of this run (4,401 compared, 0 failing). Fetch its log (`arm-run --fetch translator
-  /work/jobs/translator/20261120-010956-2486238/log <scratch>/t3/logs/l3run`) and record the last chunks; if
-  the machine went away, rerun from case 5,000 on (`WC_LAYER3_SEED=300 WC_LAYER3_FROM=5000`).
 - Chrome's 0.5 to 1 percent on fib, sort and walk (above): try the wrapper and pair all workloads again
   (`t3/pairs.sh`, run from the copy named translator-dev after building its benchmarks test; the old side is
   `t3/old-97fff482` synced as translator-old and built there).
