@@ -96,7 +96,12 @@ itself (about 70 million cycles of test work in every plain run), so the bar's f
 native side; with the breakpoints put before the run the bar's command gives +19.10% [+18.57 .. +19.95], a pass by its
 decision rule, but by alternating pairs the build is at +20.5% to +21.1% and one of four seeded layouts over the line
 (+21.59%): no headroom. And the differential test's runner left a function's words in the code page for the cases after
-it; it now writes the whole page (below, "N4 run 24"). N4 is done by its bar's own words, for its independent check.
+it; it now writes the whole page (below, "N4 run 24"). Run 25 settled the next check's findings: the seeded encode test
+now checks constants a `movn` builds; the speed test's children no longer inherit the build shell's loader variables
+(about 85 million cycles of every child's start, which pulled every ratio toward 1), and the bar measured again gives
++20.09% [+19.89 .. +20.32], a pass by its decision rule with about one point of headroom; by alternating pairs the
+build sits on the line (+19.3% to +21.3%) and one of four seeded layouts is over it (+22.8%), so the pass rests on this
+build's layout (below, "N4 run 25"). N4 is done by its bar's own words, for its independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -125,6 +130,75 @@ it; it now writes the whole page (below, "N4 run 24"). N4 is done by its bar's o
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 25 (2026-11-20): the next check's six findings; the bar with clean child environments
+
+Start (10:01, load 3.4): origin/main and origin/phase-1-literals had nothing new. The independent check of run 24 found
+three blocking and three minor problems (orchestrator/cloud/logs/native-chk2). Files in scratch native/n4r25 (scripts/,
+logs/, suite/, arm/, ab/).
+
+- The seeded encode test failed with any seed that draws a constant `move_constant` builds with a `movn` (blocking).
+  Fixed (d5699843): the test reads a run of moves back through `movz`, `movn` and `movk` alike, builds each drawn
+  value and the same with its upper half all ones, so every case takes the `movn` path, and checks `move_address`
+  both sides of the address space; it fails if no case used a `movn`. On the rented ARM64 machine, 10,000 cases each:
+  the default seed and seeds 1, 2, 3, 9187, 42 and 77777 pass (10,000 to 10,002 of each built by a `movn`); seed 9187
+  with 200,000 cases passes.
+- The speed test's children inherited the nix shell's `DYLD_LIBRARY_PATH` (blocking): about 85 million cycles and
+  338 million instructions of loader work in every child's start, plain and native alike, which pulled every ratio
+  toward 1. Fixed (17bdc86c): the test removes every `DYLD_*` variable from its children. Scratch pairs.py does the
+  same. The plain fib run now takes 1706 million cycles (the checker: 1716 million without the variable, 1795 with).
+- The bar again (Mac, Hypervisor.framework, the native code of 1736f6a1; logs/speed.log, speed.jsonl, bar.log):
+  - The bar's command (15 pairs, look-ahead 256, seed 1, 1-minute load 2.7 to 3.1, 99 to 100% on performance
+    cores): compute part +20.09% [+19.89 .. +20.32], PASSES by the decision rule against +21.2%, 1.1 points under,
+    the interval's top 0.88 under. System-call part: a call 172.6 ns, the kernel's share 92.4 ns, the back end's
+    80.3 ns [79.7 .. 81.1], PASSES against 100 ns. Each program, native against plain, cycles (instructions),
+    untranslated: fib +28.0 (+74.3) +0.0, sieve +18.5 (+42.1) +12.0, hash +3.6 (+40.0) +0.3, sort +26.6 (+179.7)
+    -0.3, interpret +0.2 (+93.6) +0.3, matrix +40.9 (+45.8) +0.9, walk +17.9 (+144.1) +17.2, search +30.6 (+33.0)
+    +0.8, calls +87.5 (+200.6) +2.0.
+  - Alternating pairs, the build against itself (10 pairs a program, a plain run beside each, load 2.6 to 12.1):
+    +20.18% and +20.28%. As the first side of seven more runs: +21.29% (load 11.9 to 18.3, P-share down to 0.08),
+    +20.35%, +20.10%, +19.31%, +20.45%, +20.20%, +20.51% (load 3.3 to 11.9).
+  - Four new seeded layouts by pairs (layout seeds 17 to 20, 6 pairs a program; logs/bar.log, layouts-again.log):
+    seed 17 +22.27% at load 11.9 to 18.3 with most runs on efficiency cores, then +20.83% at load 4.7 to 7.3; seed
+    18 +22.81% (load 5.8 to 11.9) and +22.84% (load 3.3 to 4.7), where interpret takes +12% and fib +6% cycles
+    against the unpadded build; seed 19 +19.66%; seed 20 +18.67%. One layout of four is over the line in both its
+    runs; the spread over the four is 4.2 points.
+  - Plainly: the bar passes by its own command and decision rule with about one point of headroom. By pairs the
+    build sits on the line (0.9 under to 0.1 over), and the layout spread is larger than the headroom: the pass rests
+    on this build's layout. No headroom can be claimed by either method.
+  - Tried and not kept: every piece's start aligned to 64 bytes (scratch scripts/align.sh, patch restored): +20.45%
+    against +20.51% by pairs (8 pairs, load 3.5 to 6.3; matrix -4.4%, sieve +1.9%), no gain.
+- The plan's milestone list still said N4's bar was met at run 18 (blocking): now it says run 25, with the headroom by
+  each method, and section 8 withdraws the figures of runs 2 to 24 (commit 668e0b05).
+- Section 8 names busybox, python and git in the speed method (minor): not measured, recorded as a departure (below,
+  "Departures from the plan") and in plan section 8: their plain run needs a host Linux kernel, which the Mac has only
+  inside Docker Desktop's virtual machine; they join with N10.
+- The headroom (minor): as above, by both methods.
+- `ldapr` raises SIGILL natively while the reference on the M5 runs it (minor): the presented CPU's features are the
+  `AT_HWCAP` bits the kernel reports (crates/wcontainers-arm64/src/forms.rs, `wcontainers_abi::HWCAP`), and LRCPC is
+  not among them, so this is the defined machine, on both outputs. Whether to present LRCPC is a change to the shared
+  CPU crates and the ABI, not this track's: put to the orchestrator (For the orchestrator).
+
+Suites at 17bdc86c, new seeds, all exit 0 (Mac, Hypervisor.framework and Docker Desktop's reference, -j 4, 3 test
+threads, scripts/full.sh, logs/full.log, suite/*.log, 10:24 to 10:30, load 4.1 to 12.0):
+- The differential test against the WebAssembly output, 16 drawn cases a form, 0 failing each: none 32,400 cases (seed
+  0x25f7e5c1), bounded 16 32,561 (0x25f7e5c16), bounded 256 32,373 (0x25f7e5c256).
+- Forced interrupts: 12,257 stops over 14 functions (28 cases) at 3 look-aheads, 0 failed (seed 0x25c0ffee25). Probe:
+  0 forms of 16 bytes or fewer differ (44 larger, the Split route's). Floor: 21 cases and 1 measurement, 0 failed.
+- The kernel test as the reference; a stop at every counted event alike across look-aheads on the benchmark set:
+  bench 177,072 stops (hash 10937141521840235265), calls 3,004 (18260131204484228776), jumptables 5,484
+  (17339527552300285948), as runs 15 to 24. Busybox 56 of 56 (seed 0x6b65726e); whole page: busybox 56 of 56 and the
+  kernel test alike to the end.
+- Registers, exits (4 programs, 0 failed), carry, kept, the monitor's lib tests (9), the inside's and the policy
+  crate's tests, the literal check's tests pass. The literal check exits 0; its baseline is unchanged at 8148 lines.
+  Clippy with warnings denied for the monitor crate (all targets) on the Mac; format checked.
+- On the rented ARM64 machine (arm/log, 24 s, its load 23): format check of the whole tree; clippy with warnings
+  denied for arm64 and guest-cpu (all targets, and without default features), the translator with its native
+  feature, the inside and the policy crate (all targets) and the inside's softfloat target; the tests of arm64,
+  guest-cpu and the translator with native, all passing.
+
+What is left of N4: its independent check. Open for the orchestrator: the faster index of forms and LRCPC (For the
+orchestrator).
 
 ## N4 run 24 (2026-11-20): the independent check's two findings; the bar measured fairly
 
@@ -3052,6 +3126,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 25: plan section 8's speed method names real programs of the kernel's layer 2 (busybox, python, git) beside
+  the benchmark set. They are not measured. A plain run of them needs an ARM64 Linux kernel on the host, and on the
+  Mac the only one is Docker Desktop's, inside its own virtual machine, where macOS cannot count one process's cycles
+  and instructions (`proc_pid_rusage`); the speed test's plain process answers only `write` and `exit`, which is what
+  the benchmark programs need and is no kernel. Where the plain side is the host's own Linux (the rented ARM64
+  machine), the native side needs KVM on ARM64, which is N10. So these programs join the speed method with N10. The
+  bar's compute part is defined over the eight bench.c workloads only, so its verdict does not change.
+
 - N4 run 17: plan 3.2 had the walk leave the code after a branch back into the piece to a piece of its own, and
   section 4 (run 9) counted a part ahead only by the one part it is entered from when that part goes on only to it.
   As built, the code after any branch back is held when it comes back into the piece, and a part is counted ahead by
@@ -3278,6 +3360,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 25: with the speed test's children started clean, the bar's command gives +20.09% [+19.89 .. +20.32] against
+  +21.2% (a pass by its decision rule, about one point of headroom), the pairs +19.3% to +21.3%, and one seeded layout of
+  four is over the line (+22.8%, twice). So the pass rests on this build's layout. The faster index of forms (scratch
+  native/n4r19/forms-index.patch, run 24: +14.71% against +21.13% by pairs) is still the only known change of that size;
+  please have the translator track land it, or let this track commit it. Also: the presented CPU has no LRCPC (`ldapr`
+  is SIGILL on both outputs while the M5's reference runs it); compilers emit `ldapr` for acquire loads when they
+  target Armv8.3 or later, so you may want to put presenting LRCPC to the owner.
 
 - N4 run 24: your ruling of 08:40 rested on figures that were wrong. The speed test's plain run did about 70 million
   cycles of the test's own decoding, so every bar figure since run 2 flattered the native side. Measured fairly: the bar's
