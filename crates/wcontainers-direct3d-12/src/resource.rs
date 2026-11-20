@@ -71,12 +71,12 @@ const HEAP_FLAG_SHADER_ATOMICS: u32 = 0x400;
 
 /// `SHARED`, `ALLOW_DISPLAY`, `SHARED_CROSS_ADAPTER`, `HARDWARE_PROTECTED`, `ALLOW_WRITE_WATCH` and
 /// `TOOLS_USE_MANUAL_WRITE_TRACKING`.
-const HEAP_FLAG_SHARED: u32 = 0x1;
-const HEAP_FLAG_ALLOW_DISPLAY: u32 = 0x8;
-const HEAP_FLAG_SHARED_CROSS_ADAPTER: u32 = 0x20;
-const HEAP_FLAG_HARDWARE_PROTECTED: u32 = 0x100;
-const HEAP_FLAG_ALLOW_WRITE_WATCH: u32 = 0x200;
-const HEAP_FLAG_MANUAL_WRITE_TRACKING: u32 = 0x2000;
+pub const HEAP_FLAG_SHARED: u32 = 0x1;
+pub const HEAP_FLAG_ALLOW_DISPLAY: u32 = 0x8;
+pub const HEAP_FLAG_SHARED_CROSS_ADAPTER: u32 = 0x20;
+pub const HEAP_FLAG_HARDWARE_PROTECTED: u32 = 0x100;
+pub const HEAP_FLAG_ALLOW_WRITE_WATCH: u32 = 0x200;
+pub const HEAP_FLAG_MANUAL_WRITE_TRACKING: u32 = 0x2000;
 
 /// The heap flags asking for an ability the front lacks, each with its reason. The others are
 /// honoured as they are: resources are always resident and memory is zeroed anyway.
@@ -123,7 +123,7 @@ pub fn check_heap_flags(
         || has(HEAP_FLAG_ALLOW_DISPLAY)
             && committed.is_some_and(|d| d.dimension == DIMENSION_BUFFER)
     {
-        return Err(Error::Invalid("heap flags Direct3D 12 refuses here"));
+        return Err(Error::Invalid("heap flags refused where they are"));
     }
     match HEAP_FLAGS_REFUSED.iter().find(|(bit, _)| has(*bit)) {
         Some(&(_, reason)) => Err(Error::NotImplemented(reason)),

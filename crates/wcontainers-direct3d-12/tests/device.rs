@@ -13,6 +13,7 @@ use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error};
+use wcontainers_directx_graphics_infrastructure::dxgi::D32_FLOAT;
 use wcontainers_gpu::{Backend, Features};
 
 #[test]
@@ -130,9 +131,6 @@ fn scene_raster(depth_clip: bool, fill: u32) -> (Vec<InputElement>, Raster) {
     (inputs, raster)
 }
 
-/// `DXGI_FORMAT_D32_FLOAT`.
-const D32_FLOAT: u32 = 40;
-
 #[test]
 fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
     let mut device = Device::new(Recorder::with_caps(|c| {
@@ -228,16 +226,23 @@ fn heap_flags_direct3d_12_refuses_are_invalid() {
     };
     let check = |flags, heap, desc: Option<&ResourceDesc>| check_heap_flags(flags, heap, desc);
     // Measured by `check_d3d12 answers` on committed default-heap buffers.
-    for flags in [0x8, 0x20, 0x100, 0x200, 0x2000] {
+    for flags in [
+        HEAP_FLAG_ALLOW_DISPLAY,
+        HEAP_FLAG_SHARED_CROSS_ADAPTER,
+        HEAP_FLAG_HARDWARE_PROTECTED,
+        HEAP_FLAG_ALLOW_WRITE_WATCH,
+        HEAP_FLAG_MANUAL_WRITE_TRACKING,
+    ] {
         let answer = check(flags, HeapType::Default, Some(&buffer));
         assert!(matches!(answer, Err(Error::Invalid(_))), "{flags:#x}");
     }
     // Abilities the front lacks where Direct3D 12 may give them.
+    let shared_across = HEAP_FLAG_SHARED | HEAP_FLAG_SHARED_CROSS_ADAPTER;
     for (flags, heap, desc) in [
-        (0x1, HeapType::Default, Some(&buffer)),
-        (0x21, HeapType::Default, Some(&buffer)),
-        (0x8, HeapType::Default, Some(&texture)),
-        (0x200, HeapType::Upload, Some(&buffer)),
+        (HEAP_FLAG_SHARED, HeapType::Default, Some(&buffer)),
+        (shared_across, HeapType::Default, Some(&buffer)),
+        (HEAP_FLAG_ALLOW_DISPLAY, HeapType::Default, Some(&texture)),
+        (HEAP_FLAG_ALLOW_WRITE_WATCH, HeapType::Upload, Some(&buffer)),
     ] {
         let answer = check(flags, heap, desc);
         assert!(

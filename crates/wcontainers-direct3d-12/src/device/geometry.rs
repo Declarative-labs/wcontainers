@@ -100,7 +100,7 @@ pub(super) struct Made<B: Backend> {
 }
 
 /// `D3D12_SHADER_VISIBILITY_HULL` and `_DOMAIN`.
-const HULL: u32 = 2;
+pub(super) const HULL: u32 = 2;
 pub(super) const DOMAIN: u32 = 3;
 
 /// Whether converted vertex program `c` writes cull distances.
@@ -231,16 +231,16 @@ impl<B: Backend> Device<B> {
                 let hull = self.convert_staged(
                     hs,
                     SourceStage::Hull,
-                    formats::typed_key(hs, self.texel_route(), root, bind::HULL),
+                    formats::typed_key(hs, self.texel_route(), root, HULL),
                 )?;
                 // A domain stage the rasteriser follows writes its outputs as the pixel stage
                 // interpolates them.
                 let domain_key = match gs.is_empty() {
                     true => VariantKey {
                         output_interpolation: interpolation.to_vec(),
-                        ..formats::typed_key(ds, self.texel_route(), root, bind::DOMAIN)
+                        ..formats::typed_key(ds, self.texel_route(), root, DOMAIN)
                     },
-                    false => formats::typed_key(ds, self.texel_route(), root, bind::DOMAIN),
+                    false => formats::typed_key(ds, self.texel_route(), root, DOMAIN),
                 };
                 let domain = match gs.is_empty() {
                     true => {

@@ -178,7 +178,7 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
             0,
         )
         .unwrap();
-        let scene = triangle::record_with(&mut device, pso, &data, stride);
+        let scene = triangle::record_with(&mut device, pso, &data, stride, data.len() as u64);
         let picture = picture(&mut device, &scene);
         let in_programs = device
             .backend()

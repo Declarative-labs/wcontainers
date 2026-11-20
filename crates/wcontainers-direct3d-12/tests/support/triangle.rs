@@ -15,8 +15,6 @@ pub const VS: &[u8] =
 pub const PS: &[u8] =
     include_bytes!("../../../wcontainers-graphics-test/shaders/dxil/triangle.ps.dxil");
 pub const RGBA8: u32 = 28;
-/// The scene's vertex buffer size, as gt-d3d12 makes it.
-pub const VERTEX_BUFFER_BYTES: u64 = 256;
 pub const SIZE: u32 = 256;
 /// The scene's clear colour and vertices (crates/wcontainers-graphics-test/src/scene.rs).
 pub const CLEAR: [f32; 4] = [26.0 / 255.0, 26.0 / 255.0, 38.0 / 255.0, 1.0];
@@ -119,15 +117,18 @@ pub fn record<B: Backend>(device: &mut Device<B>) -> Scene {
         .flatten()
         .flat_map(|f| f.to_le_bytes())
         .collect();
-    record_with(device, pso, &data, size_of::<[f32; 5]>() as u32)
+    // The vertex buffer's size as gt-d3d12 makes it.
+    record_with(device, pso, &data, size_of::<[f32; 5]>() as u32, 256)
 }
 
-/// The scene drawn with pipeline `pso` from vertices `data`, `stride` bytes apart.
+/// The scene drawn with pipeline `pso` from vertices `data`, `stride` bytes apart, in an upload
+/// buffer of `buffer_bytes`.
 pub fn record_with<B: Backend>(
     device: &mut Device<B>,
     pso: PipelineId,
     data: &[u8],
     stride: u32,
+    buffer_bytes: u64,
 ) -> Scene {
     let target_desc = ResourceDesc {
         dimension: DIMENSION_TEXTURE2D,
@@ -144,10 +145,7 @@ pub fn record_with<B: Backend>(
         .create_committed(HeapType::Default, &target_desc)
         .unwrap();
     let vertices = device
-        .create_committed(
-            HeapType::Upload,
-            &buffer(VERTEX_BUFFER_BYTES.max(data.len() as u64)),
-        )
+        .create_committed(HeapType::Upload, &buffer(buffer_bytes))
         .unwrap();
     let address = device.address(vertices);
     assert_ne!(address, 0);

@@ -147,13 +147,12 @@ pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
         .collect()
 }
 
-/// `D3D10_SB_OPCODE_DCL_CONSTANT_BUFFER` and `D3D10_SB_OPCODE_DCL_SAMPLER`.
-const DCL_CONSTANT_BUFFER: u32 = 89;
+/// `D3D10_SB_OPCODE_DCL_SAMPLER`.
 const DCL_SAMPLER: u32 = 90;
 /// A shader model 5.1 range's upper bound when it has none.
 const UNBOUNDED_UPPER: u32 = u32::MAX;
 
-/// Whether `code` declares an array of views, samplers or constant buffers without a length
+/// Whether `code` declares an array of views or samplers without a length
 /// (a shader model 5.1 range with no upper bound), which the root signature's range sizes.
 pub fn declares_unbounded_array(code: &[u8]) -> bool {
     let mut found = false;
@@ -166,7 +165,6 @@ pub fn declares_unbounded_array(code: &[u8]) -> bool {
                 | DCL_UAV_TYPED
                 | DCL_UAV_RAW
                 | DCL_UAV_STRUCTURED
-                | DCL_CONSTANT_BUFFER
                 | DCL_SAMPLER
         );
         if declares && let Some((at, RANGE_INDICES)) = operand_indices(instruction) {
