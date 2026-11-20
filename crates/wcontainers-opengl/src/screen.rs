@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard};
 
-use wcontainers_gpu::{Backend, Caps, Object};
+use wcontainers_gpu::{Backend, Caps, Features, Object};
 
 use crate::device::HostWindows;
 use crate::format;
@@ -119,6 +119,17 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.glsl_feature_level_compatibility = GLSL_VERSION;
     caps.essl_feature_level = ESSL_VERSION;
     caps.npot_textures = true;
+    caps.blend_equation_separate = true;
+    let independent = ours.has(Features::INDEPENDENT_BLEND);
+    caps.indep_blend_enable = independent;
+    caps.indep_blend_func = independent;
+    // Attachments of different sizes are fitted by the pass tracker.
+    caps.mixed_framebuffer_sizes = true;
+    // The host's cube maps are always seamless, as OpenGL ES's are.
+    caps.seamless_cube_map = true;
+    caps.fragment_shader_texture_lod = true;
+    // The base instance is always zero (no `start_instance`), so the instance index is OpenGL's.
+    caps.vs_instanceid = true;
     // Maps are copies the driver writes back, never the device's own memory.
     caps.buffer_map_persistent_coherent = false;
     caps.allow_mapped_buffers_during_execution = false;
