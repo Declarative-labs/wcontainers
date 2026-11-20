@@ -25,11 +25,11 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   "S3 first check findings"). The second check found three blocking and five minor problems;
   run 5 settled them (see "S3 second check findings"). Run 6 changed no code: on the ARM
   machine the new tests equal the reference, the whole suite's verdicts are unchanged, and the
-  speed with no hook implemented is unchanged (see "Measurements", S3 run 6). Still owed: the
-  Mac's verdicts for the 25 tests the ARM manual keeps on the Mac (Docker Desktop there still
-  starts no container; run 7 changed no code and waited for it in vain, see "For the
-  orchestrator"); their failures on the ARM machine are word for word run 4's. Then the next
-  independent check.
+  speed with no hook implemented is unchanged (see "Measurements", S3 run 6). Run 8 changed no
+  code: Docker Desktop on the Mac started containers again at 08:08 Pacific, and the 20 binaries
+  holding the manual's 25 Mac-only tests passed there (94 tests, `splice_holds_the_pipe` among
+  them), so with the ARM machine's verdicts no test fails by our side (see "Measurements", S3
+  run 8). Next: S3's next independent check.
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -865,6 +865,15 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 8, the Mac-only verdicts (this Mac, tree 24f2b127, code as in run 6): Docker Desktop
+  started no container at 07:59, 08:02 and 08:05 Pacific and started one at 08:08 (scratch
+  streams/s3g/docker-probe.log). The 20 binaries of s3c/mac-tests.txt (built in run 7, nothing
+  rebuilt) ran with 3 test threads, 08:09 to 08:11 Pacific, load 3.8 rising to 13.4 (scratch
+  streams/s3h/mac-only.log): 94 passed, 0 failed, `splice_holds_the_pipe` among them, as in run
+  4. The literal check exits 0 here (7577 baseline lines, 0 marks) and its crate's tests pass,
+  the workspace test among them (s3h/literals-mac.log). With run 6's ARM verdicts (599 passed,
+  the 26 failures being these 25 tests and the literal workspace test, 7 ignored): 632 tests,
+  none failing by our side, 7 ignored (the known failure among them).
 - S3 run 6, tests (ARM machine, tree 8ea3508e, nothing changed since): fmt and clippy with
   warnings denied over the three crates passed; away (12 passed, the known failure ignored) and
   embedder (35 passed) at 3 seeds equal the reference (scratch streams/s3f-arm-away.log,
@@ -1239,6 +1248,10 @@ anything shipped.
   runs). The 20 binaries are built in this checkout's target (s3g/build.log); once containers
   start: `RUST_TEST_THREADS=3 CARGO_INCREMENTAL=0 nix develop -c cargo test --no-fail-fast -j 4
   -p wcontainers-kernel-test $(cat <scratch>/streams/s3c/mac-tests.txt)`.
+- Run 8: Docker Desktop started containers again at 08:08 Pacific (nobody in this track
+  restarted it); the Mac-only verdicts are given (all 94 passed). Containers of other tracks
+  were still in "Created" at 07:58 (wc-x86-reference-63762-0 and -1, wc-guard-probe and three
+  unnamed ones); they are not this track's and were left alone.
 
 - For the owner (S3 run 4): `ProcessContext::origin() -> ContextOrigin { Suspended, Copied }` is
   new (names suggested): through a hook's handle, a process whose own thread is in the middle of
