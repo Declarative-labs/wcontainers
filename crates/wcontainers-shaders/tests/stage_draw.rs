@@ -2,7 +2,8 @@
 //! alpha-antialiased lines (and WARP drawing them), both blending each line's colour over the target
 //! by its alpha; and the primitive's number for a pixel shader reading it. Seeded vertices:
 //! `WCONTAINERS_LINE_SEED` (default 1) and `WCONTAINERS_LINE_CASES` seeds from it (default 4); every
-//! case runs per seed.
+//! case runs per seed. An indexed list Direct3D draws nothing of is passed over for the seed's next
+//! (`scene`), and ours must draw nothing of it either.
 
 #![cfg(windows)]
 
@@ -147,15 +148,15 @@ const RESTART_ONE_IN: u32 = 6;
 
 /// Seeded 16-bit indices of an indexed case's strip, with restart indices: one in the middle of the
 /// draw and others at seeded places; an even number of them, as the stage helper reads whole words.
-/// Drawn again from the same generator until the draw holds a whole primitive.
-fn indices(seed: u64, case: &Case) -> Vec<u8> {
+/// Only lists holding a whole primitive are given; `attempt` picks one among them, in order.
+fn indices(seed: u64, case: &Case, attempt: u32) -> Vec<u8> {
     let mut rng = fastrand::Rng::with_seed(seed ^ 0x5eed);
     let first_primitive = if case.topology == InputTopology::LineStrip {
         2
     } else {
         3
     };
-    loop {
+    let mut list = || loop {
         let indices: Vec<u8> = (0..case.count.next_multiple_of(2))
             .flat_map(|i| {
                 let index = rng.u16(..VERTICES as u16);
@@ -166,7 +167,9 @@ fn indices(seed: u64, case: &Case) -> Vec<u8> {
         if whole_strip_primitive(&indices, 0..case.count, first_primitive) {
             return indices;
         }
-    }
+    };
+    (0..attempt).for_each(|_| drop(list()));
+    list()
 }
 
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
@@ -672,14 +675,42 @@ fn antialiased_lines_draw_as_direct3d_does() {
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
         for (i, case) in CASES.iter().enumerate() {
-            let indices = indices(seed, case);
-            let references: Vec<_> = gpus
-                .iter()
-                .map(|(d, gpu)| {
-                    let reference = direct3d(gpu, case, (&vertices, &indices), true, Route::Lines);
-                    (*d, reference)
-                })
-                .collect();
+            let name = format!(
+                "seed {seed} {:?}{}",
+                case.topology,
+                if case.indexed { " indexed" } else { "" }
+            );
+            let Ok((indices, references)) = scene(
+                case.indexed,
+                |attempt| indices(seed, case, attempt),
+                |indices| -> Vec<(Driver, Vec<u8>)> {
+                    gpus.iter()
+                        .map(|(d, gpu)| {
+                            (
+                                *d,
+                                direct3d(gpu, case, (&vertices, indices), true, Route::Lines),
+                            )
+                        })
+                        .collect()
+                },
+                |references| drawn_texels(&references[0].1) != 0,
+                |indices, _| {
+                    [false, true].into_iter().all(|dxil| {
+                        let picture = ours(
+                            &mut backend,
+                            case,
+                            (&vertices, indices),
+                            dxil,
+                            true,
+                            Route::Lines,
+                        );
+                        drawn_texels(&picture) == 0
+                    })
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
             let between = apart(&references[0].1, &references[1].1);
             eprintln!(
                 "seed {seed} {:?}: the RTX 3080 and WARP {} texels apart, largest {}",
@@ -699,16 +730,11 @@ fn antialiased_lines_draw_as_direct3d_does() {
                 );
                 for (driver, reference) in &references {
                     let name = format!(
-                        "seed {seed} {:?}{} {} against {driver:?}",
-                        case.topology,
-                        if case.indexed { " indexed" } else { "" },
+                        "{name} {} against {driver:?}",
                         if dxil { "dxil" } else { "dxbc" }
                     );
                     let d = apart(reference, &picture);
-                    let drawn = reference
-                        .chunks(4)
-                        .filter(|t| *t != &reference[..4])
-                        .count();
+                    let drawn = drawn_texels(reference);
                     let largest = *d.iter().max().unwrap();
                     compared += 1;
                     eprintln!(
@@ -783,13 +809,37 @@ fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
         for case in &NUMBERED {
-            let indices = indices(seed, case);
+            let name = format!(
+                "seed {seed} {:?} x{}{}",
+                case.topology,
+                case.instances,
+                if case.indexed { " indexed" } else { "" }
+            );
+            let Ok((indices, reference)) = scene(
+                case.indexed,
+                |attempt| indices(seed, case, attempt),
+                |indices| direct3d(&gpu, case, (&vertices, indices), false, Route::Primitives),
+                |reference| drawn_texels(reference) != 0,
+                |indices, _| {
+                    [false, true].into_iter().all(|dxil| {
+                        let drawn_from = (&vertices[..], indices);
+                        let picture = ours(
+                            &mut backend,
+                            case,
+                            drawn_from,
+                            dxil,
+                            false,
+                            Route::Primitives,
+                        );
+                        drawn_texels(&picture) == 0
+                    })
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
             let drawn_from = (&vertices[..], &indices[..]);
-            let reference = direct3d(&gpu, case, drawn_from, false, Route::Primitives);
-            let drawn = reference
-                .chunks(4)
-                .filter(|t| *t != &reference[..4])
-                .count();
+            let drawn = drawn_texels(&reference);
             for dxil in [false, true] {
                 let picture = ours(
                     &mut backend,
@@ -799,13 +849,7 @@ fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
                     false,
                     Route::Primitives,
                 );
-                let name = format!(
-                    "seed {seed} {:?} x{}{} {}",
-                    case.topology,
-                    case.instances,
-                    if case.indexed { " indexed" } else { "" },
-                    if dxil { "dxil" } else { "dxbc" }
-                );
+                let name = format!("{name} {}", if dxil { "dxil" } else { "dxbc" });
                 let d = apart(&reference, &picture);
                 let count = d.iter().filter(|x| **x != 0).count();
                 compared += 1;
