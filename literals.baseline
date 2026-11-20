@@ -1102,7 +1102,6 @@ code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::built_address	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::control_offset	8
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::decode	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::decode	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::induction	64
@@ -1114,8 +1113,6 @@ code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::loaded_max	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::loaded_max	8
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::reg_bit	31
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::run_hook	3
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::run_hook	4
-code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::run_hook	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::stack_move	24
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::trap_detail	4
 code	crates/wcontainers-arm64/src/guest.rs	int	<Arm64 as Guest>::vector_bit	64
@@ -7253,7 +7250,6 @@ code	crates/wcontainers-translator-test/src/programs.rs	char	build_with	'='
 code	crates/wcontainers-translator-test/src/programs.rs	int	flatten	8
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	0xff
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	4
-code	crates/wcontainers-translator-test/src/programs.rs	int	ready_with	4
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-D{d}"
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-Wl,--build-id=none"
 code	crates/wcontainers-translator-test/src/programs.rs	str	build_with	"-Wl,-T,{}"
@@ -7371,19 +7367,11 @@ code	crates/wcontainers-translator-test/src/reference.rs	str	build	"target/refer
 code	crates/wcontainers-translator-test/src/reference.rs	str	build	"wcontainers-reference"
 code	crates/wcontainers-translator-test/src/reference.rs	str	container_name	"wc-translator-{purpose}-{}-{n}"
 code	crates/wcontainers-translator-test/src/reference.rs	str	workspace	"../.."
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::fresh_thread	4
 code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::load_mixed	32
 code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::load_mixed	8
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::new	4
 code	crates/wcontainers-translator-test/src/runner.rs	int	code_at	16
-code	crates/wcontainers-translator-test/src/runner.rs	int	covered	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	4
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	63
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	64
-code	crates/wcontainers-translator-test/src/runner.rs	int	instantiate	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	slot	4
-code	crates/wcontainers-translator-test/src/runner.rs	int	slot_entry	4
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	214
@@ -7393,7 +7381,6 @@ code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	8
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	8
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	93
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	94
-code	crates/wcontainers-translator-test/src/runner.rs	int	thread_instance	4
 code	crates/wcontainers-translator/src/code.rs	int	Unit::bytes	8
 code	crates/wcontainers-translator/src/code.rs	int	description	3
 code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	16
@@ -7449,10 +7436,6 @@ code	crates/wcontainers-translator/src/full/proof.rs	int	versioned	32
 code	crates/wcontainers-translator/src/full/proof.rs	int	versioned	64
 code	crates/wcontainers-translator/src/layout.rs	int	bit_index	128
 code	crates/wcontainers-translator/src/layout.rs	int	bit_index	128
-code	crates/wcontainers-translator/src/state.rs	int	Slot::load_from	3
-code	crates/wcontainers-translator/src/state.rs	int	Slot::load_from	4
-code	crates/wcontainers-translator/src/state.rs	int	Slot::store_to	3
-code	crates/wcontainers-translator/src/state.rs	int	Slot::store_to	4
 code	crates/wcontainers-translator/src/state.rs	int	load_flag	31
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	3
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	3

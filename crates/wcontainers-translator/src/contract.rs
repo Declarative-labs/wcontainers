@@ -69,6 +69,12 @@ pub const PERMISSION_PAGES: &str = "permission_pages";
 /// The lookup table, exported by the thread module. Slot 0 is always empty, so an address with no piece finds
 /// none. Slot [`EXACT_SLOT`] holds a piece for no address. The runner grows the table for the pieces it adds.
 pub const LOOKUP: &str = "lookup";
+/// One entry of the array of slots: the lookup table slot of the piece for an address.
+pub type SlotEntry = i32;
+/// The bytes of one entry of the array of slots.
+pub const SLOT_BYTES: usize = size_of::<SlotEntry>();
+/// The log2 of [`SLOT_BYTES`].
+pub const SLOT_SHIFT: u32 = SLOT_BYTES.trailing_zeros();
 /// The lookup table slot where [`HOOK_LOAD_CODE`] puts the piece of one instruction a thread must carry on in
 /// exactly.
 pub const EXACT_SLOT: i32 = 1;

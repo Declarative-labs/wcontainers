@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(feature = "translate"), no_std)]
 
+use core::mem::offset_of;
 use wcontainers_abi::{RegisterBlock, THREAD_BLOCK_SIZE};
 use wcontainers_guest_cpu::Personality;
 
@@ -79,10 +80,10 @@ pub struct Arm64;
 
 impl Personality for Arm64 {
     type Block = RegisterBlock;
-    const PC_OFFSET: usize = core::mem::offset_of!(RegisterBlock, pc);
+    const PC_OFFSET: usize = offset_of!(RegisterBlock, pc);
     const STOP_FLAG_OFFSET: usize = wcontainers_abi::STOP_FLAG_OFFSET;
     const BLOCK_SIZE: usize = THREAD_BLOCK_SIZE;
-    const PRIVATE_BYTES: usize = 32;
+    const PRIVATE_BYTES: usize = size_of::<PrivateState>();
 
     fn initial_block(pc: u64, sp: u64) -> RegisterBlock {
         RegisterBlock {
@@ -93,13 +94,22 @@ impl Personality for Arm64 {
     }
 }
 
-// ARM64's words of the thread state after the block, which the kernel never sees.
-/// i32: not zero once FPSR's flags are kept exact: from the start for a program that reads FPSR
-/// (`reads_float_status`), else from its first write of FPSR.
-pub const FLOAT_TRACKING: usize = THREAD_BLOCK_SIZE;
-/// i32: the size of the access a load exclusive remembered, 0 for none.
-pub const EXCLUSIVE_BYTES: usize = FLOAT_TRACKING + 4;
-/// i64: the address it remembered.
-pub const EXCLUSIVE_ADDRESS: usize = FLOAT_TRACKING + 8;
-/// Two i64: the value it loaded.
-pub const EXCLUSIVE_VALUE: usize = FLOAT_TRACKING + 16;
+/// ARM64's words of the thread state after the block, which the kernel never sees.
+#[repr(C)]
+pub struct PrivateState {
+    /// Not zero once FPSR's flags are kept exact: from the start for a program that reads FPSR
+    /// (`reads_float_status`), else from its first write of FPSR.
+    pub float_tracking: u32,
+    /// The size of the access a load exclusive remembered, 0 for none.
+    pub exclusive_bytes: u32,
+    /// The address it remembered.
+    pub exclusive_address: u64,
+    /// The value it loaded, low then high.
+    pub exclusive_value: [u64; 2],
+}
+
+pub const FLOAT_TRACKING: usize = THREAD_BLOCK_SIZE + offset_of!(PrivateState, float_tracking);
+pub const EXCLUSIVE_BYTES: usize = THREAD_BLOCK_SIZE + offset_of!(PrivateState, exclusive_bytes);
+pub const EXCLUSIVE_ADDRESS: usize =
+    THREAD_BLOCK_SIZE + offset_of!(PrivateState, exclusive_address);
+pub const EXCLUSIVE_VALUE: usize = THREAD_BLOCK_SIZE + offset_of!(PrivateState, exclusive_value);

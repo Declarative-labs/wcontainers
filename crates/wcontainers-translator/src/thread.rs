@@ -35,6 +35,11 @@ pub(crate) fn state_memory() -> wasm_encoder::MemoryType {
     }
 }
 
+/// A memarg's alignment for an access of a `T`: the log2 of its size, its natural alignment.
+pub(crate) const fn natural_align<T>() -> u32 {
+    size_of::<T>().trailing_zeros()
+}
+
 pub(crate) fn memarg(memory: u32, offset: u64, align: u32) -> MemArg {
     MemArg {
         offset,
@@ -296,11 +301,11 @@ pub(crate) fn lookup<G: Guest>(
     s.if_(BlockType::Empty);
     slots.at.push(s);
     s.local_get(offset).i32_wrap_i64();
-    if G::ALIGN_SHIFT < 2 {
-        s.i32_const(2 - G::ALIGN_SHIFT as i32).i32_shl();
+    if G::ALIGN_SHIFT < SLOT_SHIFT {
+        s.i32_const((SLOT_SHIFT - G::ALIGN_SHIFT) as i32).i32_shl();
     }
     s.i32_add()
-        .i32_load(memarg(slots.memory, 0, 2))
+        .i32_load(memarg(slots.memory, 0, natural_align::<SlotEntry>()))
         .table_get(0)
         .local_set(piece)
         .end();

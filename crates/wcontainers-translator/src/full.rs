@@ -6,7 +6,7 @@ use crate::code::*;
 use crate::contract::*;
 use crate::layout::Layout;
 use crate::state::{Slot, load_flag, push_word};
-use crate::thread::memarg;
+use crate::thread::{memarg, natural_align};
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::DfsPostOrder;
@@ -2128,7 +2128,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
-        s.i32_load(memarg(MEMORY_STATE, G::STOP_FLAG_OFFSET as u64, 2));
+        s.i32_load(memarg(
+            MEMORY_STATE,
+            G::STOP_FLAG_OFFSET as u64,
+            natural_align::<u32>(),
+        ));
         if let Some(entry) = deep {
             // The callers' depth, not this piece's own frame, so a piece called from the bottom loop always
             // runs, however large its frame.

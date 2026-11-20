@@ -3,7 +3,7 @@
 use crate::contract::*;
 use crate::layout::Layout;
 use crate::state::{Slot, load_flag, store_flags};
-use crate::thread::{memarg, piece_ref, piece_type, state_memory};
+use crate::thread::{memarg, natural_align, piece_ref, piece_type, state_memory};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use wasm_encoder::{
@@ -697,7 +697,11 @@ pub(crate) fn raise_stop<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
     s.if_(BlockType::Empty);
     block.push(s);
     s.i32_const(1)
-        .i32_store(memarg(MEMORY_STATE, G::STOP_FLAG_OFFSET as u64, 2))
+        .i32_store(memarg(
+            MEMORY_STATE,
+            G::STOP_FLAG_OFFSET as u64,
+            natural_align::<u32>(),
+        ))
         .end();
 }
 
@@ -1306,8 +1310,12 @@ impl<G: Guest> NoneEmitter<'_, G> {
         let pc = self.offset + step;
         let mut s = self.sink();
         BLOCK.push(&mut s);
-        s.i32_load(memarg(MEMORY_STATE, G::STOP_FLAG_OFFSET as u64, 2))
-            .if_(BlockType::Empty);
+        s.i32_load(memarg(
+            MEMORY_STATE,
+            G::STOP_FLAG_OFFSET as u64,
+            natural_align::<u32>(),
+        ))
+        .if_(BlockType::Empty);
         save::<G>(&mut s, |s| {
             s.i64_const(pc as i64);
         });

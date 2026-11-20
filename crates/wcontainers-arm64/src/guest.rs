@@ -24,7 +24,7 @@ const FLOAT_STATE: StateBytes = {
     assert!(offset_of!(B, fpcr) > at && FLOAT_TRACKING > at);
     StateBytes {
         at: at as u16,
-        len: (FLOAT_TRACKING + 4 - at) as u16,
+        len: (FLOAT_TRACKING + size_of::<u32>() - at) as u16,
     }
 };
 
@@ -408,7 +408,7 @@ impl Guest for Arm64 {
             Control::ExclusiveBytes => EXCLUSIVE_BYTES,
             Control::ExclusiveAddress => EXCLUSIVE_ADDRESS,
             Control::ExclusiveLow => EXCLUSIVE_VALUE,
-            Control::ExclusiveHigh => EXCLUSIVE_VALUE + 8,
+            Control::ExclusiveHigh => EXCLUSIVE_VALUE + size_of::<u64>(),
         }
     }
 
@@ -465,7 +465,7 @@ impl Guest for Arm64 {
         assert_eq!(hook, 0, "the float hook is the only one of ARM64's own");
         let at = |offset: usize| offset - FLOAT_STATE.at as usize;
         let word = |state: &[u8], offset: usize| {
-            u32::from_le_bytes(state[at(offset)..at(offset) + 4].try_into().unwrap())
+            u32::from_le_bytes(state[at(offset)..][..size_of::<u32>()].try_into().unwrap())
         };
         let operation = args[0] as i32;
         let fpcr = word(state, offset_of!(B, fpcr));
@@ -473,7 +473,7 @@ impl Guest for Arm64 {
         let tracking = word(state, FLOAT_TRACKING);
         let (a, b, c) = (args[1] as u64, args[2] as u64, args[3] as u64);
         let result = crate::exact::run(operation, a, b, c, fpcr, &mut fpsr);
-        state[at(offset_of!(B, fpsr))..][..4].copy_from_slice(&fpsr.to_le_bytes());
+        state[at(offset_of!(B, fpsr))..][..size_of::<u32>()].copy_from_slice(&fpsr.to_le_bytes());
         let (kind, _) = Operation::decode(operation);
         let reason = if kind.fused() && fpcr == 0 && tracking == 0 {
             Reason::SoftwareFusedMultiplyAdd

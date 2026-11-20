@@ -7,8 +7,8 @@ use std::path::Path;
 
 /// The crates of this repository the translator may name.
 const ALLOWED: [&str; 2] = ["wcontainers_abi", "wcontainers_guest_cpu"];
-/// What it may name of the abi crate, always by its full path.
-const ABI_ALLOWED: [&str; 2] = ["PAGE_SIZE", "Permissions"];
+/// What it may name of the abi crate, always by its full path: the guest page and what it allows.
+const ABI_ALLOWED: [&str; 4] = ["PAGE_SIZE", "PAGE_SHIFT", "PAGE_MASK", "Permissions"];
 
 /// Every `wcontainers_*` crate name in `text` that is not allowed and, in Rust source, every use of the abi
 /// crate other than `wcontainers_abi::<an allowed item>`, so that it cannot be named under another name.

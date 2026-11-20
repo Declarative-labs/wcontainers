@@ -17,7 +17,7 @@ use wcontainers_abi::{
 };
 use wcontainers_arm64::Arm64;
 use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
-use wcontainers_translator::contract::{self, Reason, WASM_PAGE_BYTES};
+use wcontainers_translator::contract::{self, Reason, SLOT_BYTES, WASM_PAGE_BYTES};
 use wcontainers_translator::{
     LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
 };
@@ -295,8 +295,10 @@ impl Machine {
         let pages = memory_bytes.div_ceil(WASM_PAGE_BYTES);
         let memory =
             Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).expect("memory");
-        let slots_at = (u64::from(PERMISSIONS_AT) + permission_pages + 1).next_multiple_of(4);
-        let state_pages = (slots_at + 4 * u64::from(slots)).div_ceil(WASM_PAGE_BYTES) as u32;
+        let slots_at =
+            (u64::from(PERMISSIONS_AT) + permission_pages + 1).next_multiple_of(SLOT_BYTES as u64);
+        let state_pages =
+            (slots_at + SLOT_BYTES as u64 * u64::from(slots)).div_ceil(WASM_PAGE_BYTES) as u32;
         let state = SharedMemory::new(&engine, MemoryType::shared(state_pages, state_pages))
             .expect("state memory");
 
@@ -321,7 +323,7 @@ impl Machine {
         host.exact_pieces.clear();
         host.placed.clear();
         host.next_slot = contract::EXACT_SLOT as u32 + 1;
-        let entries = host.slots as usize * 4;
+        let entries = host.slots as usize * SLOT_BYTES;
         write_shared(
             host.state.as_ref().unwrap(),
             host.slots_at as usize,
@@ -1119,7 +1121,7 @@ fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtim
 /// translates the code again.
 fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
     let line = address & !63;
-    for at in (line..line + 64).step_by(4) {
+    for at in (line..line + 64).step_by(Arm64::ALIGN as usize) {
         caller.data_mut().exact_pieces.remove(&at);
         set_slot(caller.data(), at, 0);
     }
@@ -1127,19 +1129,20 @@ fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
 
 /// The guest addresses the array of slots covers.
 fn covered(host: &Host) -> Range<u64> {
-    host.table_base..host.table_base + 4 * u64::from(host.slots)
+    host.table_base..host.table_base + Arm64::ALIGN * u64::from(host.slots)
 }
 
 /// Where in the state memory the array holds the slot for an address, if it covers it.
 fn slot_entry(host: &Host, address: u64) -> Option<usize> {
-    (covered(host).contains(&address) && address.is_multiple_of(4))
-        .then(|| host.slots_at as usize + (address - host.table_base) as usize)
+    (covered(host).contains(&address) && address.is_multiple_of(Arm64::ALIGN)).then(|| {
+        host.slots_at as usize + ((address - host.table_base) / Arm64::ALIGN) as usize * SLOT_BYTES
+    })
 }
 
 /// The lookup table slot of the piece for an address, 0 for none.
 fn slot(host: &Host, address: u64) -> u32 {
     slot_entry(host, address).map_or(0, |at| {
-        let mut bytes = [0; 4];
+        let mut bytes = [0; SLOT_BYTES];
         read_shared(host.state.as_ref().unwrap(), at, &mut bytes);
         u32::from_le_bytes(bytes)
     })
@@ -1287,7 +1290,7 @@ fn instantiate(
         (contract::SLOTS, Val::I32(store.data().slots_at as i32)),
         (
             contract::SLOTS_COVER,
-            Val::I64(4 * i64::from(store.data().slots)),
+            Val::I64(Arm64::ALIGN as i64 * i64::from(store.data().slots)),
         ),
     ] {
         let ty = wasmtime::GlobalType::new(value.ty(&store).unwrap(), wasmtime::Mutability::Const);
@@ -1346,7 +1349,10 @@ fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
         (contract::TABLE_BASE, Val::I64(table_base as i64)),
         (contract::THREAD_BLOCK, Val::I32(BLOCK_AT as i32)),
         (contract::SLOTS, Val::I32(slots_at as i32)),
-        (contract::SLOTS_COVER, Val::I64(4 * i64::from(slots))),
+        (
+            contract::SLOTS_COVER,
+            Val::I64(Arm64::ALIGN as i64 * i64::from(slots)),
+        ),
     ] {
         let global = constant(store, value);
         linker.define(&*store, contract::ENV, name, global).unwrap();

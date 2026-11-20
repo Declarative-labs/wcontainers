@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
 use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::Personality;
+use wcontainers_guest_cpu::{Guest, Personality};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
@@ -347,7 +347,7 @@ pub fn ready_with(
     load: impl FnOnce(&mut Machine),
 ) -> Machine {
     // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
-    let slots = (blob.bytes.len() as u64).div_ceil(4) as u32;
+    let slots = (blob.bytes.len() as u64).div_ceil(Arm64::ALIGN) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
