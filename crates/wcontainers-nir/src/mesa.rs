@@ -86,7 +86,9 @@ pub enum GlslNameKind {
     FragCoordYTransform,
     /// `STATE_FB_PNTC_Y_TRANSFORM`'s four words at `at`.
     PointCoordYTransform,
-    /// Any other state value, by Mesa's state string.
+    /// Any other state value: a matrix's rows as `matrix.<matrix>.<form>.<index>.<first
+    /// row>.<last row>` (form `plain`, `inverse`, `transpose` or `invtrans`, as Mesa's state
+    /// tokens), anything else as `state.` and Mesa's five tokens.
     OtherState,
     /// `at` the program binding, `count` the bindings.
     UniformBlock,

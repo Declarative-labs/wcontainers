@@ -291,6 +291,37 @@ subroutine_uniform(struct gl_program *prog, const struct gl_program_parameter *p
 }
 
 /* Each default-block uniform's words and each state value's, from the stage's parameters. */
+/* The matrices a state value can name, in Mesa's order: each with its inverse, transpose and
+ * inverse transpose after it. */
+static const struct {
+   gl_state_index16 first;
+   const char *name;
+} state_matrices[] = {
+   {STATE_MODELVIEW_MATRIX, "modelview"},
+   {STATE_PROJECTION_MATRIX, "projection"},
+   {STATE_MVP_MATRIX, "mvp"},
+   {STATE_TEXTURE_MATRIX, "texture"},
+   {STATE_PROGRAM_MATRIX, "program"},
+};
+static const char *const state_matrix_forms[] = {"plain", "inverse", "transpose", "invtrans"};
+
+/* A state value's name, which the standalone compiler's state strings leave empty: a matrix's as
+ * "matrix.<matrix>.<form>.<index>.<first row>.<last row>" (Mesa's tokens: the rows of the matrix,
+ * or of its transpose), any other as "state.<tokens>". Freed by the caller. */
+static char *
+state_name(const gl_state_index16 state[STATE_LENGTH])
+{
+   char *name = NULL;
+   for (unsigned m = 0; m < ARRAY_SIZE(state_matrices); m++) {
+      int form = state[0] - state_matrices[m].first;
+      if (form >= 0 && form < (int)ARRAY_SIZE(state_matrix_forms))
+         return asprintf(&name, "matrix.%s.%s.%d.%d.%d", state_matrices[m].name,
+                         state_matrix_forms[form], state[1], state[2], state[3]) < 0 ? NULL : name;
+   }
+   return asprintf(&name, "state.%d.%d.%d.%d.%d", state[0], state[1], state[2], state[3],
+                   state[4]) < 0 ? NULL : name;
+}
+
 static bool
 name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
 {
@@ -313,6 +344,11 @@ name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
          kind = WC_GLSL_POINT_COORD_Y_TRANSFORM;
       else
          kind = WC_GLSL_OTHER_STATE;
+      char *state = kind == WC_GLSL_OTHER_STATE ? state_name(p->StateIndexes) : NULL;
+      if (kind == WC_GLSL_OTHER_STATE && !state)
+         return false;
+      if (state)
+         name = state;
       /* A matrix or an array has a parameter a column or element, one after another: one name. */
       struct wc_glsl_name *last = names->count ? &names->data[names->count - 1] : NULL;
       bool uniform = kind == WC_GLSL_UNIFORM || kind == WC_GLSL_SUBROUTINE_UNIFORM;
@@ -323,6 +359,7 @@ name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
       }
       added &= add_name(names, kind, name, NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED,
                         p->ValueOffset, p->Size);
+      free(state);
    }
    return added;
 }

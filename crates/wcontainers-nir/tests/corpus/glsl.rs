@@ -19,9 +19,9 @@ use crate::interface::{COMPONENT_BYTES, Kind, Ty};
 const BYTES_A_WORD: usize = COMPONENT_BYTES as usize;
 use crate::lavapipe::{self, Attribute, Element, Job, Lavapipe};
 use crate::llvmpipe::{
-    AttributeSlot, Block, CUBE_ARRAY_IMAGES, CUBE_IMAGES, ComputeInputs, DrawOptions, Llvmpipe,
-    Reflection, SampledTexture, StageValue, SubroutineChoice, UniformValue, Variable,
-    VertexAttribute,
+    AttributeSlot, Block, CUBE_ARRAY_IMAGES, CUBE_IMAGES, ComputeInputs, DrawOptions,
+    FixedMatrices, Llvmpipe, Reflection, SampledTexture, StageValue, SubroutineChoice,
+    UniformValue, Variable, VertexAttribute,
 };
 use ash::vk;
 use naga::Module;
@@ -37,6 +37,9 @@ const FIRST_ELEMENT: &str = "[0]";
 const INSIDE_ARRAY: [&str; 2] = ["[0].", "[0]["];
 /// The driver's true in a default-block boolean (the bridge's `UniformBooleanTrue`).
 const UNIFORM_TRUE: u32 = u32::MAX;
+/// The prefix GLSL keeps for its own names: a uniform with it is OpenGL's state (its matrices),
+/// which the program does not set.
+const BUILT_IN: &str = "gl_";
 /// The words a block's size is rounded up to: the common form's uniform arrays step by 16 bytes.
 const BLOCK_ALIGNMENT: usize = 4 * BYTES_A_WORD;
 /// The height of the row of pixels drawn into.
@@ -171,6 +174,81 @@ fn block_bytes(
     Ok((bytes, kinds))
 }
 
+/// The stream of the seed OpenGL's own matrices are drawn from, apart from the program's inputs.
+const MATRIX_STREAM: u64 = 1;
+/// The seeded model-view matrix's translation and scale, and the projection's field of view (in
+/// radians), aspect and depth range: a camera's, so that every inverse is well conditioned.
+const TRANSLATION: f32 = 4.0;
+const SCALES: std::ops::Range<f32> = 0.5..2.0;
+const FIELDS_OF_VIEW: std::ops::Range<f32> = 0.5..2.0;
+const ASPECTS: std::ops::Range<f32> = 0.5..2.0;
+const NEAR: std::ops::Range<f32> = 0.1..1.0;
+const FAR: std::ops::Range<f32> = 10.0..100.0;
+
+/// OpenGL's own model-view (a scale, a turn and a move) and projection (a perspective) matrices,
+/// from the seed's own stream so that the program's inputs stay as they are.
+fn fixed_matrices(rng: &ChaCha8Rng) -> FixedMatrices {
+    let mut rng = rng.clone();
+    rng.set_stream(MATRIX_STREAM);
+    let axis = glam::Vec3::new(rng.random(), rng.random(), rng.random()) + glam::Vec3::X;
+    let modelview = glam::Mat4::from_scale_rotation_translation(
+        glam::Vec3::splat(rng.random_range(SCALES)),
+        glam::Quat::from_axis_angle(
+            axis.normalize(),
+            rng.random_range(0.0..std::f32::consts::TAU),
+        ),
+        glam::Vec3::new(
+            rng.random_range(-TRANSLATION..TRANSLATION),
+            rng.random_range(-TRANSLATION..TRANSLATION),
+            rng.random_range(-TRANSLATION..TRANSLATION),
+        ),
+    );
+    let projection = glam::Mat4::perspective_rh_gl(
+        rng.random_range(FIELDS_OF_VIEW),
+        rng.random_range(ASPECTS),
+        rng.random_range(NEAR),
+        rng.random_range(FAR),
+    );
+    FixedMatrices {
+        modelview: modelview.to_cols_array(),
+        projection: projection.to_cols_array(),
+    }
+}
+
+/// The words of a matrix state value as Mesa's state tracker fills them (the bridge's name
+/// `matrix.<matrix>.<form>.<index>.<first row>.<last row>`): each row of the matrix (or of its
+/// transpose), `count` words in all; None for another state value, or a matrix OpenGL's
+/// model-view and projection do not make.
+fn matrix_state(name: &str, count: u32, matrices: &FixedMatrices) -> Option<Vec<f32>> {
+    let mut parts = name.strip_prefix("matrix.")?.split('.');
+    let (matrix, form) = (parts.next()?, parts.next()?);
+    let mut number = || parts.next()?.parse::<usize>().ok();
+    let (index, first, last) = (number()?, number()?, number()?);
+    let modelview = glam::Mat4::from_cols_array(&matrices.modelview);
+    let projection = glam::Mat4::from_cols_array(&matrices.projection);
+    let m = match (matrix, index) {
+        ("modelview", 0) => modelview,
+        ("projection", 0) => projection,
+        ("mvp", 0) => projection * modelview,
+        _ => return None,
+    };
+    let inverse = || m.as_dmat4().inverse().as_mat4();
+    let rows = match form {
+        "plain" => m.transpose(),
+        "inverse" => inverse().transpose(),
+        "transpose" => m,
+        "invtrans" => inverse(),
+        _ => return None,
+    };
+    let rows_taken = last.checked_sub(first)? + 1;
+    let each = usize::try_from(count).ok()? / rows_taken;
+    Some(
+        (first..=last)
+            .flat_map(|r| rows.col(r).to_array().into_iter().take(each))
+            .collect(),
+    )
+}
+
 fn named(names: &[GlslName], kind: GlslNameKind, at: u32) -> Option<&GlslName> {
     names.iter().find(|n| n.kind == kind && n.at == at)
 }
@@ -210,7 +288,16 @@ fn default_block(
             GlslNameKind::FragCoordYTransform => Some(FRAG_COORD_Y_TRANSFORM),
             GlslNameKind::PointCoordYTransform => Some(POINT_COORD_Y_TRANSFORM),
             GlslNameKind::OtherState => {
-                return Err(format!("the state value {} is not filled here", name.name));
+                let values = matrix_state(&name.name, name.count, &inputs.matrices)
+                    .ok_or_else(|| format!("the state value {} is not filled here", name.name))?;
+                for (i, value) in (0..).zip(values) {
+                    let at = (name.at as usize + i) * BYTES_A_WORD;
+                    bytes
+                        .get_mut(at..at + BYTES_A_WORD)
+                        .ok_or_else(|| format!("{} lies past uniform buffer 0", name.name))?
+                        .copy_from_slice(&value.to_bits().to_le_bytes());
+                }
+                continue;
             }
             _ => continue,
         };
@@ -259,6 +346,8 @@ struct GlInputs<'a> {
     storage_blocks: Vec<(Vec<u8>, Vec<Option<Kind>>)>,
     /// Each sampler's texture, made from the first route resource that reads it.
     sampled: Vec<SampledTexture>,
+    /// OpenGL's own matrices, which its matrix state values are made from.
+    matrices: FixedMatrices,
     /// Each stage's subroutine, chosen from the seed, for each subroutine uniform location.
     subroutines: Vec<SubroutineChoice>,
     /// The same choices by stage and subroutine uniform name, element after element.
@@ -289,11 +378,12 @@ fn gl_inputs<'a>(
     stages: &[&[GlslName]],
 ) -> Result<GlInputs<'a>, String> {
     let mut values = Vec::new();
-    for v in gl
-        .uniforms
-        .iter()
-        .filter(|v| v.block < 0 && v.ty != glow::UNSIGNED_INT_ATOMIC_COUNTER && !opaque(v, stages))
-    {
+    for v in gl.uniforms.iter().filter(|v| {
+        v.block < 0
+            && v.ty != glow::UNSIGNED_INT_ATOMIC_COUNTER
+            && !opaque(v, stages)
+            && !v.name.starts_with(BUILT_IN)
+    }) {
         let ty = typed(v)?;
         let count =
             usize::try_from(v.array_size.max(1)).unwrap_or(1) * (ty.columns * ty.rows) as usize;
@@ -340,6 +430,7 @@ fn gl_inputs<'a>(
     };
     Ok(GlInputs {
         values,
+        matrices: fixed_matrices(rng),
         uniform_blocks: block_contents(rng, &gl.uniform_blocks, &gl.uniforms)?,
         storage_blocks: block_contents(rng, &gl.storage_blocks, &gl.buffer_variables)?,
         sampled: Vec::new(),
@@ -599,6 +690,7 @@ pub fn compare_compute(
     let (uniform_bytes, storage_bytes) = (inputs.uniform_bytes(), inputs.storage_bytes());
     let dispatched = ComputeInputs {
         uniforms: &inputs.values,
+        matrices: inputs.matrices,
         subroutines: &inputs.subroutines,
         uniform_blocks: &uniform_bytes,
         storage_blocks: &storage_bytes,
@@ -1156,6 +1248,7 @@ pub fn compare_draw(
     let (uniform_bytes, storage_bytes) = (inputs.uniform_bytes(), inputs.storage_bytes());
     let draw = DrawOptions {
         uniforms: &inputs.values,
+        matrices: inputs.matrices,
         subroutines: &inputs.subroutines,
         uniform_blocks: &uniform_bytes,
         storage_blocks: &storage_bytes,

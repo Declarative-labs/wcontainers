@@ -155,9 +155,17 @@ pub struct Drawn {
     pub storage: Vec<Vec<u8>>,
 }
 
+/// OpenGL's own model-view and projection matrices (the compatibility profile), column by column.
+#[derive(Clone, Copy, Debug)]
+pub struct FixedMatrices {
+    pub modelview: [f32; 16],
+    pub projection: [f32; 16],
+}
+
 /// What a dispatch takes.
 pub struct ComputeInputs<'a> {
     pub uniforms: &'a [UniformValue<'a>],
+    pub matrices: FixedMatrices,
     pub subroutines: &'a [SubroutineChoice],
     pub uniform_blocks: &'a [Vec<u8>],
     pub storage_blocks: &'a [Vec<u8>],
@@ -167,6 +175,7 @@ pub struct ComputeInputs<'a> {
 /// What a draw takes.
 pub struct DrawOptions<'a> {
     pub uniforms: &'a [UniformValue<'a>],
+    pub matrices: FixedMatrices,
     pub subroutines: &'a [SubroutineChoice],
     pub uniform_blocks: &'a [Vec<u8>],
     pub storage_blocks: &'a [Vec<u8>],
@@ -330,6 +339,8 @@ void main() {
 type TexStorage3DMultisample = unsafe extern "C" fn(u32, i32, u32, i32, i32, i32, u8);
 /// `glClientActiveTexture` and `glEnableClientState`.
 type SetOne = unsafe extern "C" fn(u32);
+/// `glLoadMatrixf`.
+type LoadMatrix = unsafe extern "C" fn(*const f32);
 /// `glTexCoordPointer` and `glColorPointer`.
 type SizedPointer = unsafe extern "C" fn(i32, u32, i32, *const c_void);
 /// `glNormalPointer` and `glFogCoordPointer`.
@@ -340,6 +351,9 @@ const TEXTURE_COORD_ARRAY: u32 = 0x8078;
 const COLOR_ARRAY: u32 = 0x8076;
 const NORMAL_ARRAY: u32 = 0x8075;
 const FOG_COORD_ARRAY: u32 = 0x8457;
+/// `glMatrixMode`'s two matrices.
+const MODELVIEW: u32 = 0x1700;
+const PROJECTION: u32 = 0x1701;
 
 /// The functions feeding OpenGL's own vertex arrays.
 struct ConventionalArrays {
@@ -349,6 +363,9 @@ struct ConventionalArrays {
     color: SizedPointer,
     normal: TypedPointer,
     fog_coord: TypedPointer,
+    /// `glMatrixMode` and `glLoadMatrixf`, which set OpenGL's own matrices.
+    matrix_mode: SetOne,
+    load_matrix: LoadMatrix,
 }
 
 pub struct Llvmpipe {
@@ -500,6 +517,10 @@ impl Llvmpipe {
                 normal: std::mem::transmute::<*const c_void, TypedPointer>(raw("glNormalPointer")?),
                 fog_coord: std::mem::transmute::<*const c_void, TypedPointer>(raw(
                     "glFogCoordPointer",
+                )?),
+                matrix_mode: std::mem::transmute::<*const c_void, SetOne>(raw("glMatrixMode")?),
+                load_matrix: std::mem::transmute::<*const c_void, LoadMatrix>(raw(
+                    "glLoadMatrixf",
                 )?),
             }
         };
@@ -1180,6 +1201,21 @@ void main() {{
 
     /// Uses the program with its uniforms, blocks (block i bound at i) and textures (texture i
     /// at unit i); the buffers made, the storage blocks', and the textures.
+    /// Sets OpenGL's own model-view and projection matrices.
+    fn set_matrices(&self, matrices: &FixedMatrices) {
+        let c = &self.conventional;
+        for (mode, matrix) in [
+            (MODELVIEW, &matrices.modelview),
+            (PROJECTION, &matrices.projection),
+        ] {
+            // SAFETY: OpenGL 1.0 calls on the current context; the matrix holds its 16 floats.
+            unsafe {
+                (c.matrix_mode)(mode);
+                (c.load_matrix)(matrix.as_ptr());
+            }
+        }
+    }
+
     fn bind_program(
         &self,
         program: glow::Program,
@@ -1295,6 +1331,7 @@ void main() {{
             inputs.storage_blocks,
             inputs.sampled,
         )?;
+        self.set_matrices(&inputs.matrices);
         // SAFETY: a dispatch of the program in use.
         unsafe { self.gl.dispatch_compute(groups[0], groups[1], groups[2]) };
         self.finish(bound, inputs.storage_blocks)
@@ -1314,6 +1351,7 @@ void main() {{
             options.storage_blocks,
             options.sampled,
         )?;
+        self.set_matrices(&options.matrices);
         let width = i32::try_from(options.points).map_err(|e| e.to_string())?;
         // SAFETY: plain OpenGL calls on the current context, on objects made here.
         unsafe {
