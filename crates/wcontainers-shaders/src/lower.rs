@@ -317,7 +317,10 @@ impl<'a> Lowering<'a> {
                 })
                 .map(|(kind, space, register, op)| {
                     let length = declared_length(variant, kind, op)?;
-                    Ok((register..register + length).map(move |r| (rank(kind), space, r)))
+                    let end = register.checked_add(length).ok_or_else(|| {
+                        malformed("a resource array past the last register".into())
+                    })?;
+                    Ok((register..end).map(move |r| (rank(kind), space, r)))
                 })
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
@@ -5069,23 +5072,28 @@ fn non_finite(ty: &Ty, lits: &[u64]) -> bool {
         && lits.iter().any(|&l| !f32::from_bits(l as u32).is_finite())
 }
 
-/// The kind of slot a resource declaration takes, if `op` is one.
 /// The element count of resource declaration `op` of `kind`: its own, or for an array declared
 /// without a length (a count of zero), the rest of the layout's register range holding its first
-/// register.
+/// register; refused past the slots the kind binds.
 fn declared_length(variant: &VariantKey, kind: SlotKind, op: &Op) -> Result<u32> {
     let [space, register, count] = [0, 1, 2].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
-    if count != 0 {
-        return Ok(count);
+    let length = if count != 0 {
+        count
+    } else {
+        variant
+            .register_ranges
+            .iter()
+            .find(|(k, s, range)| *k == kind && *s == space && range.contains(&register))
+            .map(|(_, _, range)| range.end - register)
+            .ok_or(unsupported(crate::refusal::UNBOUNDED_RESOURCE_ARRAY))?
+    };
+    if length > kind.slots() {
+        return Err(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT));
     }
-    variant
-        .register_ranges
-        .iter()
-        .find(|(k, s, range)| *k == kind && *s == space && range.contains(&register))
-        .map(|(_, _, range)| range.end - register)
-        .ok_or(unsupported(crate::refusal::UNBOUNDED_RESOURCE_ARRAY))
+    Ok(length)
 }
 
+/// The kind of slot a resource declaration takes, if `op` is one.
 fn declared_kind(op: &Op) -> Option<SlotKind> {
     Some(match op.code {
         code::DCL_SAMPLER => SlotKind::Sampler,

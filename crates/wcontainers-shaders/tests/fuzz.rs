@@ -7,11 +7,37 @@
 //! the corpus in `WCONTAINERS_SHADER_CORPUS`. Each case is written to stderr before it runs, so a case
 //! that ends the process names itself; `WCONTAINERS_FUZZ_FIRST` starts at that case.
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use wcontainers_gpu::VariantKey;
 use wcontainers_shaders::{ConvertError, Source, convert};
+
+/// The largest single allocation the test's Rust code may make: a larger one is refused, as on a host
+/// short of memory, so a size taken unchecked from the bytecode ends the test on every machine.
+const LARGEST_ALLOCATION: usize = 1 << 30;
+
+struct Bounded;
+
+// SAFETY: every call is passed on to the system allocator unchanged, or refused with a null pointer.
+unsafe impl GlobalAlloc for Bounded {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if layout.size() > LARGEST_ALLOCATION {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: the caller's layout, as `GlobalAlloc::alloc` requires.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from `System.alloc` with this layout.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Bounded = Bounded;
 
 /// xorshift64, seeded.
 struct Rng(u64);
@@ -204,4 +230,46 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     for (class, n) in &counts {
         eprintln!("  {n:5} {class}");
     }
+}
+
+/// Direct3D's opcode of a sampler declaration, an instruction's length in words (bits 24 to 30 of its
+/// first word), and the word of a declaration holding its last register (after the opcode, operand,
+/// id and first register).
+const DCL_SAMPLER: u32 = 0x5a;
+const OPCODE_BITS: u32 = 0x7ff;
+const LENGTH_SHIFT: u32 = 24;
+const LENGTH_BITS: u32 = 0x7f;
+const LAST_REGISTER_WORD: usize = 4;
+/// The program chunk's words before its first instruction: tag, size, version, length.
+const PROGRAM_HEADER_WORDS: usize = 4;
+/// A last register far past any binding range.
+const FAR_REGISTER: u32 = 0x3fff_ffff;
+const WORD: usize = size_of::<u32>();
+
+/// A signed shader (model 5.1) declaring a sampler array whose last register is far past any
+/// binding: refused by name, where its register list once asked for gigabytes (past
+/// [`LARGEST_ALLOCATION`]) and ended the process.
+#[test]
+fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/ps_spaces.dxbc");
+    let mut b = std::fs::read(path).unwrap();
+    let word =
+        |b: &[u8], i: usize| u32::from_le_bytes(b[WORD * i..WORD * (i + 1)].try_into().unwrap());
+    let tag = u32::from_le_bytes(*b"SHEX");
+    let mut at = (0..b.len() / WORD)
+        .find(|&i| word(&b, i) == tag)
+        .expect("the program chunk")
+        + PROGRAM_HEADER_WORDS;
+    while word(&b, at) & OPCODE_BITS != DCL_SAMPLER {
+        at += ((word(&b, at) >> LENGTH_SHIFT) & LENGTH_BITS) as usize;
+    }
+    let last = WORD * (at + LAST_REGISTER_WORD);
+    b[last..last + WORD].copy_from_slice(&FAR_REGISTER.to_le_bytes());
+    sign(&mut b);
+    assert_eq!(
+        convert(Source::Dxbc(&b), &VariantKey::default(), None).map(|_| ()),
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::BINDINGS_BEYOND_LIMIT
+        ))
+    );
 }
