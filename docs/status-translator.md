@@ -4,17 +4,17 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
-- Eighth run: the rented ARM64 machine came back (13.59.176.235) and ran everything T3 needs there (see
-  "Eighth run of T3"). The Mac's Docker ran containers from 06:10:32 (after your restart) only until 06:11:43;
-  since then every new container stays "Created" again, and the guard has been stopped by its stop file
-  since 06:11:38, so nothing restarts it. Layer 1's verdict (the Mac's) is the one T3 check still waiting:
-  scratch `translator/t3/r7/verify-mac.sh` runs it in one command once the Mac's Docker starts containers.
-- T3 (this milestone) is NOT complete after the sixth run. The third independent check found that jumps
-  through a register to their own function's code past what was explored (a switch with no bound check, a
-  computed goto) went uncounted since b4384452; 40fd0c67 counts them (see "Sixth run of T3"). Its tests and
-  the reruns need an ARM64 Linux reference, and during the sixth run there was none: the rented ARM64 machine
-  was unreachable and Docker Desktop on the Mac stopped starting containers (`docker run` hung for over 20
-  minutes; `docker ps` still answered). What was checked without one is listed in the sixth run.
+- Eighth run: every T3 check against Linux passed on the rented ARM64 machine (13.59.176.235; see "Eighth run
+  of T3"), except layer 1, whose verdict is the Mac's. The Mac's Docker ran containers from 06:10:32 (after your
+  restart) only until 06:11:43; since then every new container stays "Created" (this track's probes at 06:37
+  and 07:16 too), and the guard has been stopped by its stop file since 06:11:38, so nothing restarts it. When
+  it starts containers again, scratch `translator/t3/r7/verify-mac.sh` runs layer 1 at seed 600 and layer 1's
+  tests in one command; that is the last check T3 waits for. On the Graviton the same layer 1 run differed
+  only on `MSR_SR_systemmove`, the known reference difference.
+- T3 (this milestone) is NOT complete. The third independent check found that jumps through a register to
+  their own function's code past what was explored (a switch with no bound check, a computed goto) went
+  uncounted since b4384452; 40fd0c67 counts them (see "Sixth run of T3"), and the eighth run checked it
+  against Linux.
 - Please rule how the speed bar is read. Measured over the whole milestone, against f6e760ae (the proof's code,
   before the merge), these are slower in 4 of 4 rounds: fib in Chrome by 1.6 to 1.7 percent, search in
   Chrome by 0.4 percent, and in wasmtime interpret by 0.3 to 0.4 percent and matrix by 0.3 percent. The fib
@@ -59,12 +59,13 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
-T3 is partly done: main merged (the translator on the shared guest interface), the literal check adopted and
-the baseline down to 7,646 lines, the P2 check's findings answered, the register jump slow path fixed (busybox
-awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in full on the merged code with
-no mismatch, layer 3 to 5,287 compared with none, and all three again with a new seed in the fourth and fifth
-runs. The sixth run counted the jumps the third independent check found uncounted (40fd0c67), and its tests
-and reruns against Linux wait for an ARM64 reference. See "Sixth run of T3" and "T3, what is left".
+T3 is done but for one check: main merged (the translator on the shared guest interface), the literal check
+adopted and the baseline down to 7,416 lines, the P2 check's findings answered, the register jump slow path
+fixed (busybox awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in full on the
+merged code with no mismatch, layer 3 to 5,287 compared with none, and all three again with a new seed in the
+fourth and fifth runs. The sixth run counted the jumps the third independent check found uncounted
+(40fd0c67); the eighth checked that against Linux (the register jump tests, layers 2 and 3 at seed 600, the
+speed pairs, the whole suite). Left: layer 1 on the Mac, waiting for its Docker. See "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
 
@@ -450,19 +451,42 @@ Eighth run of T3 (2026-11-20 05:50 local on):
   workload in both engines.
 - Layer 1 on the Mac (`verify-mac.sh`, 06:10:52 local): the Mac's Docker stopped starting containers again at
   06:11:43 (the layer's sixth container stayed "Created", as did the kernel track's probe at 06:31); stopped
-  by hand at 06:37 with nothing compared (log `t3/r7/mac-layer1-r8-stuck.log`), container removed.
+  by hand at 06:37 with nothing compared (log `t3/r7/mac-layer1-r8-stuck.log`). Its six `docker run` clients
+  were still waiting at 07:08 and were killed then (they ignore SIGTERM while their container cannot start);
+  a probe at 07:16 (`alpine:3.22 echo ok`, 45 s) still did not start. No container of this track is left.
+- The whole debug suite of the four crates on b946c531 (rented ARM64 machine, 12 jobs, 15:03 to 15:27 UTC, load
+  14 to 22, `t3/r7/arm-job-r8.log`): every test binary passed but layer 1's, where `sample_matches_the_cpu_in_chrome`
+  and `every_covered_form_matches_the_cpu` failed (the log's filter hid the failing forms; at seed 1 in the
+  second to fifth runs they were `MSR_SR_systemmove`). programs 22 passed (2 ignored), layer 3 3, layer 2 1,
+  changes 9, checks 12, browser 1, binaries 2, smoke 6, test_guest 16, valid 7, decoding 6.
+- Layer 1 on the Graviton at seed 600, for comparison only (1,000 cases a form, 10 in Chrome, same job, 15:27
+  UTC, load 22 to 27, 448 s): 1,215 forms, 1 failing, `MSR_SR_systemmove` (the Graviton's FPSR keeps bits 28 and 29); the
+  sample in Chrome passed. So nothing differs there but the known reference difference.
+- Literals, the test harness only again (what is translated did not change), baseline 7,451 to 7,416 lines:
+  - ec26399a: the harness's nine hand-made ChaCha keys are one function, `seeded::generator(seed, tag,
+    name)` (the key's length named once, `CHACHA_KEY_BYTES`), used by changes.rs, mixed.rs, runner.rs and the
+    decoding, layer 1, layer 2, changes and look-ahead tests; the key's bytes are the same as before for
+    every use, so recorded seeds replay (new test `tests/seeded.rs` compares it with the hand-made layouts).
+    mixed.rs's and changes.rs's odds, bounds and counts are named, the instruction size comes from
+    `INSTRUCTION_BYTES`, the case pool's thread stack is named, and the stand-in reads `Arm64::MAX_LENGTH`
+    bytes of code at a fault, which the ARM64 guest ignores.
+  - c6d94903: the browser runner's setup and cases files, `node`, `run.mjs`, the V8 flags variable and
+    Chrome's crash text named once in browser.rs.
+  - a62714d9: test_guest takes the thread block's and permission table's offsets from the runner instead of
+    restating them.
+  - Checked on the rented x86 machine (`t3/lint.sh`): format, clippy with warnings denied, the unit tests,
+    test_guest and smoke, the literal check (status 0); and the seeded, decoding and changes tests (16
+    passed).
+- The whole debug suite of the four crates on a62714d9 (rented ARM64 machine, 12 jobs, 15:35 to 15:59 UTC, load
+  5 to 25, `t3/r8/suite.log`, script `t3/r8/suite.sh`): every test binary passed but layer 1's, where
+  `every_covered_form_matches_the_cpu` failed on `MSR_SR_systemmove` alone (1,215 forms, 64 cases each, seed 1)
+  and `sample_matches_the_cpu_in_chrome` failed (its form hidden by the log's filter; `MSR_SR_systemmove` in
+  earlier runs). The new `seeded` test passed; programs 22 (2 ignored), layer 3 3, the rest as on b946c531.
+  So every test passes where its verdict counts, except layer 1, whose verdict waits for the Mac.
 
 T3, what is left:
-- Needs an ARM64 reference (the rented ARM64 machine or the Mac's Docker), on 6975d48c or later (scratch
-  `t3/r7/verify-arm.sh` and `verify-mac.sh` do all of this):
-  - `cargo test -p wcontainers-translator-test --test programs -- jumps_to_their_function switch_cases_in_other
-    only_jumps_inside` against Linux.
-  - The reruns with a new seed (600): layer 1 on the Mac (1,000 cases a form, 10 in Chrome), layer 2 (25,000)
-    and layer 3 (1,000 from case 0, 100 in Chrome) on the ARM64 machine; layer 3's summary will now say how
-    many programs read FPSR.
-  - Speed pairs, 0b62e4ad against 5d8dbc5a (`t3/r5/pairs.sh 4 old:<tree>:<target> new:<tree>:<target>`),
-    4 rounds; the translator's output changed only in the four full modules above.
-  - The whole suite of the four crates, debug, on the ARM64 machine, and layer 1's tests on the Mac.
+- Layer 1 on the Mac, once its Docker starts containers: scratch `t3/r7/verify-mac.sh` (layer 1 at seed 600,
+  1,000 cases a form, 10 in Chrome, then layer 1's tests).
 - For the independent check: layers 1 and 2 and layer 3 with a seed other than 300 to 600 (layer 1 on
   the Mac: `WC_LAYER1_CASES WC_LAYER1_CHROME WC_LAYER1_SEED`; layers 2 and 3 on the ARM64 machine, as in "How
   to run"), the awk counts (`t3/awk.sh` on the x86 machine after building `wcon`; exact counts need the
@@ -3055,6 +3079,10 @@ contract's bits, in both runners).
 - T3, third run: layer 1, the 12 estimate forms at 20,000 cases each (240,000), 20 each in Chrome, seed 301,
   the Mac; the scalar estimate functions new against old on 50,000,000 random inputs (rented x86 machine);
   the speed pairs 4 rounds of all eight workloads and 6 of fib.
+- T3, eighth run, rented ARM64 machine: the three register jump tests (default sizes); layer 2 seed 600, 25,000
+  programs, all on the CPU, 5 in Chrome; layer 3 seed 600, 1,000 programs (884 compared, 90 in Chrome); speed
+  pairs, 4 rounds of all eight workloads; layer 1 seed 600 on the Graviton, 1,215 forms at 1,000 cases each
+  (1,215,000), 10 each in Chrome (comparison only); the whole debug suite at default sizes, twice.
 
 ## Measurements
 
@@ -3149,7 +3177,7 @@ contract's bits, in both runners).
 
 ## Next
 
-1. T3's runs against Linux on 0b62e4ad, then its independent check (see "T3, what is left").
+1. T3's layer 1 on the Mac, then its independent check (see "T3, what is left").
 2. The progress count (definition E, the brief) as its own milestone.
 3. The literal fix list: arm64's decoders and forms (steps 17 to 20) and the test crate's remaining lines
    (orchestrator's `magic-literals/fix-translator.md`).
