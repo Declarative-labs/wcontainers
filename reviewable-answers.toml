@@ -540,6 +540,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The network outside the container." = { answer = "noun_phrase", confidence = 0.9593680390119904, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The number of a file on its device." = { answer = "noun_phrase", confidence = 0.9697976742678656, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The one memory access of a load or store: where, how many bytes in all, and whether it writes." = { answer = "noun_phrase", confidence = 0.8631205442471835, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The optional processor features of one program, in its guest architecture's own form." = { answer = "noun_phrase", confidence = 0.9495612688523124, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The owner of processes, which suspends and resumes their tasks and their contexts." = { answer = "noun_phrase", confidence = 0.6755535548668101, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The parameter names of every function a file defines." = { answer = "noun_phrase", confidence = 0.959019900007934, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The permission bits, owner and time of a file added before the container starts." = { answer = "noun_phrase", confidence = 0.881353184683055, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -945,6 +946,7 @@ child_usage = { answer = "no_verb", confidence = 0.917018210559142, model = "per
 children_made = { answer = "later_word", confidence = 0.9294084773027664, model = "perplexity/pplx-decider-v1.2-20261016" }
 choices = { answer = "no_verb", confidence = 0.9367054199351756, model = "perplexity/pplx-decider-v1.2-20261016" }
 choose = { answer = "first_word", confidence = 0.9835172800417724, model = "perplexity/pplx-decider-v1.2-20261016" }
+choose_processor_features = { answer = "first_word", confidence = 0.9928256153534084, model = "perplexity/pplx-decider-v1.2-20261016" }
 chroot = { answer = "no_verb", confidence = 0.3429257764224681, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 chunk = { answer = "no_verb", confidence = 0.517827825830026, model = "perplexity/pplx-decider-v1.2-20261016" }
 clamp = { answer = "first_word", confidence = 0.8709078816475788, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -2247,6 +2249,7 @@ process_position = { answer = "first_word", confidence = 0.9803362847928264, mod
 process_vm = { answer = "first_word", confidence = 0.8385435215945374, model = "perplexity/pplx-decider-v1.2-20261016" }
 process_vm_readv = { answer = "later_word", confidence = 0.5633007796141288, model = "perplexity/pplx-decider-v1.2-20261016" }
 process_vm_writev = { answer = "later_word", confidence = 0.509937735468629, model = "perplexity/pplx-decider-v1.2-20261016" }
+processor_features = { answer = "no_verb", confidence = 0.9150570737105684, model = "perplexity/pplx-decider-v1.2-20261016" }
 product_sign = { answer = "no_verb", confidence = 0.537062550327536, model = "perplexity/pplx-decider-v1.2-20261016" }
 program = { answer = "no_verb", confidence = 0.289751802313145, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 program_headers = { answer = "first_word", confidence = 0.8372639835842581, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -2329,12 +2332,14 @@ read_into = { answer = "first_word", confidence = 0.9855140976787224, model = "p
 read_limits = { answer = "first_word", confidence = 0.9894162376978772, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_memory = { answer = "first_word", confidence = 0.9943571621546357, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_monotonic_clock_forward = { answer = "first_word", confidence = 0.9583364720081508, model = "perplexity/pplx-decider-v1.2-20261016" }
+read_monotonic_nanoseconds = { answer = "first_word", confidence = 0.990056429129516, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_name = { answer = "first_word", confidence = 0.9954468475757196, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_only = { answer = "first_word", confidence = 0.7455253425082334, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_pages = { answer = "first_word", confidence = 0.9958320438151498, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_parts = { answer = "first_word", confidence = 0.9929446812126566, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_path_maybe_empty = { answer = "first_word", confidence = 0.9604849576825264, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_pointers = { answer = "first_word", confidence = 0.9872806155780638, model = "perplexity/pplx-decider-v1.2-20261016" }
+read_random_number = { answer = "first_word", confidence = 0.9938019416865556, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_results = { answer = "first_word", confidence = 0.9953954560950788, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_shared = { answer = "first_word", confidence = 0.968710181078191, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_string = { answer = "first_word", confidence = 0.9959891077095104, model = "perplexity/pplx-decider-v1.2-20261016" }
