@@ -5,6 +5,50 @@ G9).
 
 ## Where it stands
 
+G9 run 5 (2026-11-20). G9 is still far from its bar. This run found the heap corruption that
+crashed llvmpipe and our driver alike, and fixed the largest groups of our driver's crashes:
+- The heap corruption (exit 0xc0000374, every crash that compiled a program, on llvmpipe and on
+  our driver) is explained. LLVM's own Windows release is built with LLVM's integrated allocator:
+  its `LLVMSupport.lib` holds rpmalloc (checked: the library holds `rpmalloc_initialize`), which
+  replaces malloc and free in whatever DLL links it, here `libgallium_wgl.dll`, while the C
+  runtime's `_aligned_realloc` still grows a block in place in the Windows heap (`_expand`).
+  Mesa grows a program's parameter storage with `_aligned_realloc` on Windows
+  (`os_memory_stdc.h`), so the first program whose parameters outgrew their first block broke
+  the heap. Found by running one crashing case (dEQP-GLES2 `shaders.conversions.matrix_combine.
+  vec3_vec3_vec3_to_mat3_fragment`, which crashes alone on both drivers) under lldb with the
+  build's PDB files: the heap's check stopped in `_aligned_realloc` from
+  `_mesa_reserve_parameter_storage` (prog_parameter.c:237); and by two AddressSanitizer builds
+  (which take over every allocation): softpipe without LLVM and llvmpipe with it both pass the
+  case. Our driver uses no LLVM but crashed the same way because it shares the DLL. Fixed by
+  building LLVM 21.1.8 from its source on the desktop without the integrated allocator
+  (`build-windows.ps1`); llvmpipe links that (being built at the end of this run; result below if it finished).
+- `set_polygon_stipple` (every KHR-GLES2 case and most dEQP-GLES2 crashes in run 4: st/mesa sets
+  the pattern at every context's start) keeps nothing; a rasterizer state that stipples is
+  refused by name.
+- The provoking vertex: GL's default (last) was refused at the rasterizer state on the WebGPU
+  back end, which has only the first. The block now takes the convention the back end has, and a
+  draw is refused by name only when its fragment program reads a flat value
+  (`ProvokingRewrite` is not built). OpenGL ES 2.0 has no flat values.
+- Point sizes and line widths: the back end draws points and lines of one size (`max_point_size`
+  and `max_line_width` 1, no `POINT_SIZE` or `WIDE_LINES`). OpenGL clamps a size to the range the
+  driver reports, so the vertex program's point size output is removed in NIR
+  (`PositionTransform::fixed_point_size`, which wgpu's HLSL writer refused as "Unsupported builtin
+  PointSize"), and the screen reports the one line width as both ends of the range (st/mesa had
+  passed widths the back end refused).
+- Tools: `run-case-windows.ps1 -Debugger` (lldb with symbols), the Mesa build keeps PDB files.
+- 1% shard of dEQP-GLES2 and KHR-GLES2 on our driver before the LLVM fix (desktop, GPU queue,
+  12:01 to 12:04, beside other tracks' jobs), with the stipple and provoking fixes but before
+  the point size, line width and LLVM fixes: dEQP-GLES2 172 cases, Pass 21, Fail 71, Crash 79,
+  Skip 1: 21 of 171 run, 12.28% (run 4: 21 Pass, 150 Crash). KHR-GLES2 5 cases, all Crash (3D
+  textures, below). The crashes by reason (deqp-runner's logs, retries included): heap
+  corruption 84 logs; the wide-line refusal 18; wgpu's HLSL writer refusing PointSize 18; the
+  2D view of a 3D texture 10. Every Fail seen follows a pipeline wgpu found invalid (the
+  PointSize refusal), whose submit then failed and left the read back unfinished ("finish_read
+  of a read back that is not ready or failed").
+- Found, not yet traced: KHR-GLES2 `texture_3d` cases end on a 2D view of a 3D texture made in
+  wgpu (Requests, below), then route B's refusal of "a texture instruction without a texture
+  deref" (a program Mesa builds itself, likely the blitter's).
+
 G9 run 4 (2026-11-20). G9 is still far from its bar, but our driver now has a context and passes
 its first conformance cases. This run:
 - The context (`crates/wcontainers-opengl/src/`, all Rust on the Gallium bindings, generic over
@@ -1123,7 +1167,10 @@ Next (after G8's check):
   'powershell -NoProfile -ExecutionPolicy Bypass -File crates\wcontainers-nir\mesa\build-windows.ps1'`.
   Tools, source, build and install under `C:\wc\graphics-nir` (kept between runs; the tools'
   downloads with their SHA-256 printed); `opengl32.dll` and `libgallium_wgl.dll` in
-  `C:\wc\graphics-nir\mesa\install\bin`. Uses half the desktop's threads. A remote command waits
+  `C:\wc\graphics-nir\mesa\install\bin`. Uses half the desktop's threads. The first build
+  after G9 run 5 also builds llvmpipe's LLVM from the 21.1.8 source into
+  `tools\llvm-21.1.8-mt` (X86 only, static runtime, libraries, headers and llvm-config; the
+  source and build folders deleted after). A remote command waits
   while another track's hazard job holds the GPU slot. Kept between runs on the desktop for G9:
   `C:\wc\graphics-nir`, 4.8 GB at the end of G9 run 1 (the unpacked tools, LLVM most of it; the
   Mesa source, build and install); the downloaded archives were deleted (fetched again only if a
@@ -1141,7 +1188,12 @@ Next (after G8's check):
   'powershell -NoProfile -ExecutionPolicy Bypass -File
   crates\wcontainers-opengl\cts\run-case-windows.ps1 -Driver wcontainers -List gles2-khr-main
   -Case <case> [-Seconds 40]'` (glcts's output, exit code and log printed; killed and reported
-  as hung after the limit). Linting the driver on the desktop: `tools/graphics-rig/remote 'set
+  as hung after the limit). Add `-Debugger` to run it under the LLVM release's lldb (with Python
+  3.10 from NuGet, fetched once): every thread's stack and the stopped thread's stack words as
+  symbols, read from the PDB files the build keeps (`buildtype = 'debugoptimized'`, no
+  assertions). The release's folder had to be opened to the local Users group once
+  (`build-windows.ps1` now does it when it unpacks LLVM), as the hidden desktop's user could
+  not run lldb. Linting the driver on the desktop: `tools/graphics-rig/remote 'set
   WCONTAINERS_MESA=C:\wc\graphics-nir\mesa\build&& set RUSTFLAGS=-C target-feature=+crt-static&&
   set LIBCLANG_PATH=C:\wc\graphics-nir\tools\clang+llvm-21.1.8-x86_64-pc-windows-msvc\bin&& cargo
   clippy -q -p wcontainers-opengl --release --target-dir C:\wc\graphics-nir\opengl-target -- -D
@@ -1422,8 +1474,11 @@ Next (after G8's check):
   (MIT), PyYAML 6.0.2 (MIT), packaging 25.0 (Apache-2.0 OR BSD-2-Clause), win_flex_bison 2.5.25
   (flex BSD-2-Clause; bison GPL-3.0-or-later, a generator whose output carries Bison's exception,
   as GCC's Bison on Linux), LLVM 21.1.8 for the Visual C++ runtime (Apache-2.0 WITH
-  LLVM-exception; llvmpipe links it, the reference only), and Visual Studio 2022 Build Tools,
-  already on the desktop (Microsoft's licence).
+  LLVM-exception; since G9 run 5 its release only gives bindgen's libclang and lldb, and
+  llvmpipe links the same version built there from its source, the reference only; the
+  release's `LLVMSupport.lib` holds rpmalloc, public domain or MIT, never linked now), Python
+  3.10.11 from its NuGet package (PSF-2.0; only for lldb, which loads it, for debugging a
+  case), and Visual Studio 2022 Build Tools, already on the desktop (Microsoft's licence).
 - Build tools only, from the repository's locked nixpkgs: Meson 1.12.1 (Apache-2.0), Ninja (Apache-2.0),
   LLVM 21.1.8 (Apache-2.0 WITH LLVM-exception; llvmpipe and lavapipe use it, wcontainers-nir does not
   link it), GCC 16.2.0 (GPL-3.0 with the GCC runtime library exception).
@@ -1589,6 +1644,12 @@ Next (after G8's check):
 None.
 
 ## Requests to other tracks
+
+- WebGPU back end or interface track (G9 run 5): KHR-GLES2's `texture_3d.filtering` cases end with
+  wgpu's "Invalid texture view dimension `D2` with texture of dimension `D3`" in
+  `Texture::create_view`, and none of our driver's views of a 3D texture is 2D (sampler views
+  and surfaces take `D3`). Not yet traced to the call that makes it; the next run of this track
+  finds it first (it may be ours).
 
 - Literals track (G9 run 3): a lawful form for a build script's output folder. The check accepts
   `env!("OUT_DIR")` but not `env::var_os("OUT_DIR")`, the only way a build script can read it,
