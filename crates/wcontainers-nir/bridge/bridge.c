@@ -301,6 +301,21 @@ round_array_layer(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
+/* nir_lower_tex gives every size query a level; a multisampled texture's has none in the common
+ * form (it has one level). */
+static bool
+drop_multisampled_size_level(nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_tex)
+      return false;
+   nir_tex_instr *tex = nir_instr_as_tex(instr);
+   int at = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+   if (tex->op != nir_texop_txs || tex->sampler_dim != GLSL_SAMPLER_DIM_MS || at < 0)
+      return false;
+   nir_tex_instr_remove_src(tex, at);
+   return true;
+}
+
 /* A vertex program that writes no position (one feeding transform feedback) gets the position
  * (0, 0, 0, -1), outside every clip volume, as the shaders crate gives a Direct3D one: the common
  * form's vertex stage must write a position, and drawn it rasterises nothing. */
@@ -340,6 +355,7 @@ wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
    /* The common form's texel loads take no offset: it is added to the coordinate. */
    const nir_lower_tex_options load_offsets = {.lower_txf_offset = true};
    NIR_PASS(_, nir, nir_lower_tex, &load_offsets);
+   nir_shader_instructions_pass(nir, drop_multisampled_size_level, nir_metadata_control_flow, NULL);
    /* The common form's dispatches start at workgroup 0, and Vulkan has no global offset. */
    const nir_lower_compute_system_values_options from_zero = {0};
    NIR_PASS(_, nir, nir_lower_compute_system_values, &from_zero);
