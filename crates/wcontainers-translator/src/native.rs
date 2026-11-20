@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use wcontainers_guest_cpu::position::DirectExit;
 use wcontainers_guest_cpu::{FlowKind, HostCode, Native, Route, count_placement, counted};
 
 use crate::LookAhead;
@@ -36,6 +37,10 @@ struct Held<I> {
 /// (`counted_ahead`), and every exit leaves the count the guest's, so it is exact wherever the piece is entered
 /// or left. The position map keeps the count ahead by the events still to come from the add to each event's
 /// commit point.
+///
+/// A part that loops to its own start begins with the test of what one test can settle for all its turns
+/// (`Native::loop_invariant`); where it holds, the code goes to a copy of the part made with that settled, which
+/// loops to itself, and where it does not, it goes on into the part as made without it.
 pub fn translate_native<G: Native>(
     code: &[u8],
     address: u64,
@@ -105,38 +110,107 @@ pub fn translate_native<G: Native>(
             adds[starts[p] + placed[p].map_or(0, |(k, _)| k)] = Some(amount);
         }
     }
+    // What one test before each part that loops to its own start settles for every turn of it.
+    let invariants: Vec<G::LoopInvariant> = (0..starts.len())
+        .map(|p| {
+            if !successors[p].contains(&p) {
+                return G::LoopInvariant::default();
+            }
+            let end = starts.get(p + 1).copied().unwrap_or(held.len());
+            let part: Vec<(u64, G::Instruction)> = held[starts[p]..end]
+                .iter()
+                .map(|h| (guest(h.at), h.instruction))
+                .collect();
+            G::loop_invariant(&part)
+        })
+        .collect();
+    let settled_nothing = G::LoopInvariant::default();
+    // One instruction's add and code, after the current straight-line part's instructions so far (`part`).
+    let carry_one = |out: &mut HostCode,
+                     k: usize,
+                     part: &mut Vec<(u64, G::Instruction)>,
+                     invariant: &G::LoopInvariant| {
+        let h = &held[k];
+        let here = guest(h.at);
+        if let Some(total) = adds[k] {
+            G::count(out, total);
+        }
+        G::carry(
+            part,
+            &h.instruction,
+            &code[h.at..h.at + h.length],
+            here,
+            invariant,
+            out,
+        );
+        part.push((here, h.instruction));
+    };
     let mut out = HostCode::new();
     // The host offset of each part's start, by guest address.
     let mut entries = BTreeMap::new();
     // The current straight-line part's instructions so far, with their guest addresses.
     let mut part: Vec<(u64, G::Instruction)> = Vec::new();
+    // Each looping part whose test was written, with the offset of the test's branch to the part's copy.
+    let mut tested = Vec::new();
     for (k, h) in held.iter().enumerate() {
         let here = guest(h.at);
         out.start(here, events[k], G::stopping(&h.instruction, here));
         if part_starts[k] {
+            let p = part_of(k);
             entries.insert(here, out.offset());
-            out.enter_ahead(leads[part_of(k)]);
+            out.enter_ahead(leads[p]);
             part.clear();
+            if let Some(branch) = G::test_loop_invariant(&mut out, &invariants[p]) {
+                tested.push((p, branch));
+            }
         }
-        if let Some(total) = adds[k] {
-            G::count(&mut out, total);
-        }
-        G::carry(
-            &part,
-            &h.instruction,
-            &code[h.at..h.at + h.length],
-            here,
-            &mut out,
-        );
-        part.push((here, h.instruction));
+        carry_one(&mut out, k, &mut part, &settled_nothing);
         let next = h.at + h.length;
         if h.goes_on && held.get(k + 1).is_none_or(|n| n.at != next) {
             G::exit(&mut out, guest(next));
         }
     }
     out.finish();
-    for exit in std::mem::take(&mut out.exits) {
-        let within = entries.get(&exit.target).copied();
+    // Each tested part again, made with what its test settled and looping to itself: the exits it wrote, its
+    // start and its guest address.
+    let mut copies = Vec::new();
+    for (p, branch) in tested {
+        let (first, end) = (starts[p], starts.get(p + 1).copied().unwrap_or(held.len()));
+        let head = guest(held[first].at);
+        let start = out.offset();
+        let written = out.exits.len();
+        part.clear();
+        for k in first..end {
+            let here = guest(held[k].at);
+            out.start(here, events[k], G::stopping(&held[k].instruction, here));
+            if k == first {
+                out.enter_ahead(leads[p]);
+            }
+            carry_one(&mut out, k, &mut part, &invariants[p]);
+        }
+        let last = &held[end - 1];
+        if last.goes_on {
+            G::exit(&mut out, guest(last.at + last.length));
+        }
+        out.finish();
+        let test = DirectExit {
+            start: u32::try_from(branch).expect("host code fits in u32 offsets"),
+            target: head,
+            retarget: Some(0),
+        };
+        assert!(
+            G::link(&mut out, &test, start),
+            "a piece's own copy is near"
+        );
+        copies.push((written..out.exits.len(), start, head));
+    }
+    for (n, exit) in std::mem::take(&mut out.exits).into_iter().enumerate() {
+        // A copy's branch back to its start stays in the copy.
+        let within = copies
+            .iter()
+            .find(|(written, _, head)| written.contains(&n) && exit.target == *head)
+            .map(|&(_, start, _)| start)
+            .or_else(|| entries.get(&exit.target).copied());
         if within.is_some_and(|to| G::link(&mut out, &exit, to)) {
             // The word linked over no longer builds an address.
             out.places.retain(|place| place.start != exit.start);
