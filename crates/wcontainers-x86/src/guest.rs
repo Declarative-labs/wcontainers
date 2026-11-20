@@ -199,11 +199,8 @@ impl Guest for X86_64 {
     }
 
     const SP_BIT: u32 = RSP as u32;
-    const PASSED_IN: &'static [u32] = &[
-        RSP as u32, RDI as u32, RSI as u32, RDX as u32, RCX as u32, R8 as u32, R9 as u32,
-        RAX as u32,
-    ];
-    const PASSED_OUT: &'static [u32] = &[RSP as u32, RAX as u32, RDX as u32];
+    const PASSED_IN: &'static [u32] = &[RSP as u32, RDI as u32, RSI as u32];
+    const PASSED_OUT: &'static [u32] = &[RSP as u32, RAX as u32];
 
     type Flag = Flag;
     const FLAGS: &'static [(Flag, u32, u32)] = &[
@@ -981,6 +978,11 @@ impl Guest for X86_64 {
             Rdtsc | Rdtscp | Cpuid | Popf | Popfq => true,
             // Intel's approximations are its own (plan 5.8).
             m if crate::float::estimates(m) => true,
+            // Where an unmasked exception stops a dot product part way, the flags raised follow the
+            // reference's micro-operations; maskmovdqu with an all-zero mask may fault or not (Intel's
+            // manual: implementation dependent); ldmxcsr refuses MXCSR's bit 17, which AMD's misaligned
+            // SSE mode takes.
+            Dpps | Dppd | Maskmovdqu | Ldmxcsr => true,
             m if crate::descriptors::may_vary(m) => true,
             _ if crate::segments::may_vary(i) => true,
             // Intel leaves the result of 16 bits undefined.
