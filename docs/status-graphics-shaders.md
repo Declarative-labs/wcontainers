@@ -82,7 +82,11 @@ Runs at the tip:
 - Mutated copies (not committed; the commands in x86-mutants.sh): the stream ignored in
   `element_at` fails `dxil_geometry_outputs_match_dxbc_on_every_stream`; `dims.reverse` removed
   fails the own records (`hs_values_*.dxil` convert invalid).
-- Not run this run: the literal check, the check's seeds 6601 to 6612, the laptop's glslang suite
+- Literal check (x86 machine, a clone of the tip): passes; this crate's baseline unchanged (530
+  lines), no new literal outside it.
+- Clean-up: the desktop's build folder of this branch and the x86 machine's literal clone and its
+  build folder deleted; no build in the Mac checkout or scratch.
+- Not run this run: the check's seeds 6601 to 6612, the laptop's glslang suite
   (the new records' GLSL outcomes are the x86 machine's, which has no glslang: they read
   `absent compute` and a write refusal, neither compiled by glslang).
 
