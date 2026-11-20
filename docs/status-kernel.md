@@ -22,8 +22,9 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 K6c, fourteenth run: every finding of the thirteenth run's check is answered (see "K6c,
 fourteenth run"), and the runtime track's assertion (a call woken while it parks) is fixed with a
-test. The whole LTP comparison at 2c06b713 and its reruns give the reference's verdict for 4210
-of 4211 tests, counting section 15's causes and the gap list as that section says. K6c's bar
+test. Of 4211 LTP tests at 2c06b713 with its reruns: 4153 match, 51 differ for a section 15
+cause, the gap list or the reference host's timer precision, 6 give the reference's verdict
+with two hours, and ADSP038 has none. K6c's bar
 is not met yet: ADSP038 has no verdict (past four hours; a twelve-hour run ends by 17:14 UTC),
 and the gap list past section 15 waits for the owner (For the orchestrator).
 
@@ -246,9 +247,9 @@ The LTP table at this run's end (4211 tests, verdicts of the ARM64 machine):
   passed in 2870 s run again (rerun above). ADSP038 has no verdict: past two hours (twelfth
   run) and past four (job kernel/20261120-024815-1653325 at 684b15ec, 14408 s, alone, ended
   06:48 UTC); its twelve-hour run ends by 17:14 UTC.
-- Matching after the reruns: sched_football, uevent02, getrusage04 (above), so the table's
-  matching count is 4153 with them and the six slow ones that passed, 4210 of 4211 with ADSP038
-  the one without a verdict.
+- Matching after the reruns: sched_football, uevent02, getrusage04 (above). In all: 4153
+  match, 36 + 12 + 3 = 51 differ for a named cause, 6 give the reference's verdict with two
+  hours, and ADSP038 has no verdict.
 
 Whole suite at 9eeb106e on the ARM machine (`cargo test -j 12 -p wcontainers-abi -p
 wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast -- --test-threads=4`, 05:52 to
