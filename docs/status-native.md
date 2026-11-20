@@ -113,6 +113,20 @@ run 20").
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
 
+## N4 run 21 (2026-11-20): blocks against the Mac's last reference
+
+Start: origin/main and origin/phase-1-literals had nothing new; no new ruling in the brief since run 15 and no answer to
+run 18's asks. No code changed. Files in scratch native/n4r21.
+
+- Docker Desktop on the Mac still starts no container (probe at 07:55: created, `docker start` hung 30 s; removed).
+- Blocks without Docker: run 18's kernel log (scratch n4r18/suite/kernel.log, written at 02:45 against Docker Desktop on
+  the Mac while it still started containers) reports "blocks: the reference's output and exit code". Our blocks output
+  at head 693f60ff (run 20's log) is byte-identical to that log's, all 35 lines, the `dc cvau` lines included (diff of
+  n4r21/blocks-r18.txt and blocks-r20.txt: only the verdict line differs). So head's blocks output equals the Mac's
+  reference as Docker Desktop last gave it. This is a comparison with a recorded reference, not a fresh one; a fresh run
+  of the kernel test against Docker Desktop is still to do (`sh n4r21/scripts/wait-then-kernel.sh` probes every 3 minutes
+  and runs it once a container starts).
+
 ## N4 run 20 (2026-11-20): the reference's suites, with the reference on the rented ARM64 machine
 
 Start: origin/main and origin/phase-1-literals had nothing new; no new ruling in the brief since run 15 (its section of
