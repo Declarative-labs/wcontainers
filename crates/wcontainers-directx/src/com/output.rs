@@ -177,7 +177,7 @@ impl Output {
         &self,
         wanted: *const DXGI_MODE_DESC,
         closest: *mut DXGI_MODE_DESC,
-        _device: Ref<IUnknown>,
+        device: Ref<IUnknown>,
     ) -> Result<()> {
         // SAFETY: the API requires both.
         let (wanted, closest) = unsafe {
@@ -186,6 +186,13 @@ impl Output {
                 closest.as_mut().ok_or(DXGI_ERROR_INVALID_CALL)?,
             )
         };
+        // Microsoft's page: without a device the format is given, and the width and height are
+        // both given or both left out.
+        if (wanted.Format == DXGI_FORMAT_UNKNOWN && device.ok().is_err())
+            || ((wanted.Width == 0) != (wanted.Height == 0))
+        {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
         *closest = mode_desc(&self.desc.closest_mode(&DisplayMode {
             width: wanted.Width,
             height: wanted.Height,

@@ -146,11 +146,11 @@ pub(super) unsafe fn system<F: Copy>(library: &str, export: &std::ffi::CStr) -> 
     Some(unsafe { std::mem::transmute_copy(&f) })
 }
 
-/// Our factory, as interface `riid`.
+/// Our factory, as interface `riid`; `dxgi10` makes it DXGI 1.0's (`CreateDXGIFactory`'s).
 ///
 /// # Safety
 /// `riid` and `out` are the caller's, as COM passes them.
-unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
+unsafe fn ours(riid: *const GUID, out: *mut *mut c_void, dxgi10: bool) -> HRESULT {
     if out.is_null() || riid.is_null() {
         return E_POINTER;
     }
@@ -160,7 +160,10 @@ unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
     let Some(caps) = super::caps() else {
         return DXGI_ERROR_UNSUPPORTED;
     };
-    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps, false).into()).into();
+    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps, dxgi10).into()).into();
+    if dxgi10 && let Err(e) = super::dxgi::as_dxgi10(&factory) {
+        return e.code();
+    }
     // SAFETY: both pointers were checked and come from the caller.
     unsafe { factory.query(riid, out) }
 }
@@ -187,7 +190,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out) }
+    unsafe { ours(riid, out, false) }
 }
 
 /// `CreateDXGIFactory1`, as Microsoft documents it.
@@ -207,7 +210,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory1(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out) }
+    unsafe { ours(riid, out, false) }
 }
 
 /// `CreateDXGIFactory`, as Microsoft documents it.
@@ -227,5 +230,5 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out) }
+    unsafe { ours(riid, out, true) }
 }

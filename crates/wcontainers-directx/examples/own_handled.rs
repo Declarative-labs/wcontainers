@@ -310,7 +310,8 @@ fn main() -> windows::core::Result<()> {
         let mut path = [0u16; 512];
         let n = GetModuleFileNameW(Some(module), &mut path) as usize;
         println!(
-            "D3D11CreateDevice in {}",
+            "{} in {}",
+            wcontainers_directx::com::entry::D3D11_CREATE_DEVICE.to_string_lossy(),
             String::from_utf16_lossy(&path[..n])
         );
     }
