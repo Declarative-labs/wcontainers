@@ -30,10 +30,19 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   file writing taken from established crates (section "J5 run 7").
 - J5 run 8: nothing new on origin/phase-1 or origin/phase-1-literals again; wcon's options named once in the
   library (section "J5 run 8").
+- J5 run 9: nothing new on origin/phase-1 or origin/phase-1-literals again; the test driver's own literals named
+  (driver baseline 31 to 15); this track's 270 GB of stale build output on the ARM machine deleted; J5's bar
+  again from a clean build of the tip (section "J5 run 9").
 - Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
 
+- J5 run 9: the ARM machine's disk was at 96% (27 GB free of 581 GB; /work is on the root disk there, not a
+  larger stripe). This track's build folders held about 270 GB of it (runtime 207 GB, of which 123 GB were the
+  tests' translation cache of old build identities and 77 GB stale artifacts; runtime-check 63 GB, partly
+  root-owned files from Docker builds, removed with sudo). All deleted, with no job of this track running; 294 GB
+  free after. The translation cache grows by every build identity and nothing prunes it; other tracks' folders
+  were 14 to 43 GB each and were not touched.
 - J5 run 7, for the literals track: a fact named once in a `macro_rules!` that both a build script and its
   library include (`env!(name_macro!())`, which rustc accepts) is gated by the check as a code literal, so hard
   case 4 (the build identity's variable, written in build.rs and in lib.rs's `env!`) cannot close that way.
@@ -174,6 +183,25 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 9 (2026-11-20, the task's run 7, continued after a restart of the session; the rented ARM and x86 machines, and this Mac for git, edits and the literal check)
+
+- Merges: origin/phase-1 (eb515b7a) and origin/phase-1-literals (7668c010) had nothing new; no rulings on the
+  literal list's hard cases. The kernel track's branch (not merged here) still has the task.rs assertion (line
+  224) and 7579e667 (mappings below the heap); neither is on origin/phase-1.
+- Literal fix (4b1a71dd), the test driver's own items: the look-ahead's two variables, the translation cache's
+  folder, the injections' spacing, the kinds of notice a backend sends unasked (fuse_abi's codes, drawn with
+  `choose`), their nodes, name and how often one is cut short, `FUSE_ROOT_ID` for the root's parent, and a
+  copy's run read through std. Baseline lines deleted: 16 (the driver 31 to 15; runtime 265 and wasmtime 74
+  unchanged). The check exits 0 at 4b1a71dd; marks: none. The notices' random cases changed with it (a STORE
+  notice now writes the name's 12 bytes, not "data"); the backend tests' verdicts did not (below).
+- Lint at 4b1a71dd (x86 machine, load 5; j5run10/lint2-x86.out): fmt passes for the owned crates and the test
+  driver, clippy with warnings denied for the owned crates; the kernel test crate's only warning is the streams
+  track's at reference.rs:352, as before.
+- The surface program of run 6 (j5run10/surface_check.rs, the same file) at 4b1a71dd on the x86 machine (x86-64
+  Linux, which runs no ARM64 container: Docker there only pulls and saves alpine's arm64 image; load 0 to 9;
+  j5run10/surface-x86.out): as expected at full (2.2 s), none (14.0 s) and bound 7 (8.3 s), so the public
+  surface serves a TCP connection from the host and reads and writes a host directory on x86-64 hosts as well.
 
 ## J5 run 8 (2026-11-20, the task's run 6; the rented ARM and x86 machines, and this Mac for git, edits and the literal check)
 
