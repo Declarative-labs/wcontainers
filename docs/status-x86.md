@@ -176,6 +176,17 @@ On the i7-8750H at 4ad0ca98 (`batch5-laptop.log`, load 0.3 to 4, 4 at once):
 - `the_x86_64_reference_refuses_what_linux_refuses` passed on the laptop in the job above (`l1-all1-laptop.log`).
 The whole default list and the unoffered list once more after the last changes: running at the time of writing.
 
+The suite at 4ad0ca98 on the rented x86-64 machine (load 8 to 55, shared, 2,714 s, `suite-run5.log`; run 4's
+command with `wcontainers-arm64` linted too): clippy with warnings denied passes; 31 tests fail, all
+expected there but two: the 25 ARM64 tests that need an ARM64 reference, the four tests its 5-level paging
+changes, `unoffered_forms_are_illegal_x86_64` (that machine has the features), and
+`csmith_programs_match_linux_x86_64` and `hand_picked_programs_match_linux_x86_64`, which failed because the
+ARM64 layer 3 test in the same process could not build its arm64 gcc image there and poisoned the image
+lock both share. Fixed in 3d831324; then the whole layer 3 test file there (seed 9350, 96 programs): both x86
+tests pass (80 compared, 0 failing), the ARM64 ones fail there as before. On the rented ARM64 machine
+(`suite-arm.log`, load about 20, 1,169 s, the ARM64 tests of `wcontainers-arm64` and the test crate): 50
+passed, 2 failed, the two layer 1 tests its manual keeps on the Mac; not run on the Mac.
+
 Literals: the check exits 0 (the Mac). The test crate's baseline lost 12 lines (the starting state's numbers,
 now named, and the scales); no line was added. Baseline lines: x86 125, interface 28, translator 72, test crate
 2,094.
