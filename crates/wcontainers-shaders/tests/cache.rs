@@ -3,6 +3,7 @@
 //! damage are seeded: `WCONTAINERS_CACHE_SEED` (default 1), `WCONTAINERS_CACHE_CUTS` (how many places,
 //! default 10) and `WCONTAINERS_CACHE_DAMAGES` (damaged copies of each record, default 20).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
 use wcontainers_gpu::{CompareFn, DepthStencilDesc, Format, Topology, VariantKey};
@@ -187,14 +188,10 @@ fn a_cut_file_keeps_every_whole_entry_before_the_cut() {
     assert_eq!((c.len(), dropped), (10, bytes.len() - ends[9]));
 }
 
-/// A record whose bytes were changed after its checksum was made (a foreign or damaged file) decodes to
-/// a conversion or an error, never a panic.
-#[test]
-#[cfg_attr(
-    target_arch = "wasm32",
-    ignore = "a panic aborts there, ending the instance as the host's failed conversion"
-)]
-fn damaged_records_decode_to_a_conversion_or_an_error() {
+/// Each seeded damaged copy of the record of every own shader that converts (a record whose bytes
+/// were changed after its checksum was made: a foreign or damaged file), given to `decode` with its
+/// name and case. `WCONTAINERS_CACHE_SEED`, `WCONTAINERS_CACHE_DAMAGES` copies of each.
+fn damaged_records(mut decode: impl FnMut(&str, u64, &[u8]) -> bool) {
     let seed = number("WCONTAINERS_CACHE_SEED", 1);
     let damages = number("WCONTAINERS_CACHE_DAMAGES", 20);
     let most_bytes_changed = 4;
@@ -226,17 +223,52 @@ fn damaged_records_decode_to_a_conversion_or_an_error() {
                 let at = rng.usize(0..damaged.len());
                 damaged[at] = rng.u8(..);
             }
-            let result = std::panic::catch_unwind(|| cache::decode(key(0), &damaged));
-            match result {
-                Ok(Ok(_)) => decoded += 1,
-                Ok(Err(_)) => refused += 1,
-                Err(_) => panic!("seed {seed} {name} case {case}: decode panicked"),
+            if decode(name, case, &damaged) {
+                decoded += 1;
+            } else {
+                refused += 1;
             }
         }
     }
     eprintln!(
         "seed {seed}: {records} records x {damages} damaged copies: {decoded} decoded, {refused} refused"
     );
+}
+
+/// A damaged record decodes to a conversion or an error, never a panic that reaches the caller.
+#[test]
+#[cfg_attr(
+    target_arch = "wasm32",
+    ignore = "a panic aborts there: damaged_records_decode_without_a_panic, gap A16"
+)]
+fn damaged_records_decode_to_a_conversion_or_an_error() {
+    damaged_records(|name, case, damaged| {
+        std::panic::catch_unwind(|| cache::decode(key(0), damaged))
+            .unwrap_or_else(|_| panic!("{name} case {case}: decode panicked"))
+            .is_ok()
+    });
+}
+
+thread_local! {
+    /// The panics on this thread, contained or not.
+    static PANICS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// A damaged record decodes without any panic, even one the conversion contains: where panics abort
+/// (WebAssembly) a panic ends the instance.
+#[test]
+#[ignore = "known failure, gap A16: naga's validator indexes a damaged module unchecked"]
+fn damaged_records_decode_without_a_panic() {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICS.with(|p| p.set(p.get() + 1));
+        report(info);
+    }));
+    damaged_records(|name, case, damaged| {
+        let result = cache::decode(key(0), damaged);
+        assert_eq!(PANICS.get(), 0, "{name} case {case}: decode panicked");
+        result.is_ok()
+    });
 }
 
 #[test]

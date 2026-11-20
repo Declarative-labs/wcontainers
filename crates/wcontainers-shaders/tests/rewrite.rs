@@ -39,11 +39,17 @@ fn parse(source: &str) -> Module {
     naga::front::wgsl::parse_str(&source).expect("the test's WGSL parses")
 }
 
-/// The module written as WGSL, which must parse again.
-fn written(module: &Module, info: &naga::valid::ModuleInfo) -> String {
+/// The module written as WGSL, which must parse again; also written as `name`.wgsl into
+/// `WCONTAINERS_SHADERS_OUT`/rewrite when that is set, for Chrome to compile (`web/check`).
+fn written(name: &str, module: &Module, info: &naga::valid::ModuleInfo) -> String {
     let wgsl = naga::back::wgsl::write_string(module, info, naga::back::wgsl::WriterFlags::empty())
         .expect("the WGSL writer takes the module");
     naga::front::wgsl::parse_str(&wgsl).expect("the written WGSL parses");
+    if let Some(out) = std::env::var_os("WCONTAINERS_SHADERS_OUT") {
+        let dir = std::path::PathBuf::from(out).join("rewrite");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(name).with_extension("wgsl"), &wgsl).unwrap();
+    }
     wgsl
 }
 
@@ -102,7 +108,83 @@ fn arrays_of_textures_and_samplers_split_into_a_binding_per_element() {
             "texture 1 with sampler {k} in {pairs:?}"
         );
     }
-    written(&m.module, &m.info);
+    written("arrays", &m.module, &m.info);
+}
+
+/// A pixel program sampling an element of an array of textures picked by a flat input, as Vulkan
+/// programs pick materials.
+const PICKED_BY_AN_INPUT: &str = "
+enable wgpu_binding_array;
+@group(1) @binding(SAMPLER) var s: sampler;
+@group(1) @binding(TEXTURE) var t: binding_array<texture_2d<f32>, 4>;
+@fragment fn ENTRY(@location(0) @interpolate(flat) i: u32, @location(1) uv: vec2<f32>)
+    -> @location(0) vec4<f32> {
+    return textureSample(t[i], s, uv);
+}
+";
+
+/// Whether the module turns WGSL's derivative uniformity check off.
+fn derivatives_anywhere(module: &Module) -> bool {
+    use naga::diagnostic_filter as d;
+    let mut node = module.diagnostic_filter_leaf;
+    while let Some(n) = node {
+        let n = &module.diagnostic_filters[n];
+        if n.inner.triggering_rule
+            == d::FilterableTriggeringRule::Standard(
+                d::StandardFilterableTriggeringRule::DerivativeUniformity,
+            )
+        {
+            return n.inner.new_severity == d::Severity::Off;
+        }
+        node = n.parent;
+    }
+    false
+}
+
+/// The split puts an implicit-level sample inside a switch on the index, which WGSL's uniformity
+/// analysis (Chrome's, not naga's) refuses where the index may differ between lanes; Direct3D and
+/// Vulkan sample there with derivatives from the quad, so the rewrite turns that check off.
+#[test]
+fn a_texture_picked_by_an_input_is_sampled_in_any_control_flow() {
+    let module = parse(PICKED_BY_AN_INPUT);
+    assert!(!derivatives_anywhere(&module));
+    let reflection = Reflection {
+        stage: SourceStage::Pixel,
+        extras: StageExtras::Pixel {
+            early_tests: false,
+            side_effects: false,
+            discards: false,
+            per_sample: false,
+        },
+        ..compute_reflection(&module)
+    };
+    let converted =
+        rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY).expect("the array splits");
+    let m = &converted.modules[0];
+    assert!(derivatives_anywhere(&m.module));
+    assert_eq!(
+        converted.reflection.sampled_pairs,
+        [(0, 0), (1, 0), (2, 0), (3, 0)]
+    );
+    written("picked_by_an_input", &m.module, &m.info);
+}
+
+/// Immediates (Vulkan's push constants) in a program another route made validate, with the
+/// capability [`wcontainers_shaders::capabilities`] names for them.
+#[test]
+fn immediates_are_taken_and_named_as_a_capability() {
+    let source = ARRAYS.replace(
+        "@group(0) @binding(UNIFORM) var<uniform> u: U;",
+        "var<immediate> u: U;",
+    );
+    let module = parse(&source);
+    let reflection = compute_reflection(&module);
+    let converted =
+        rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY).expect("rewritten");
+    assert!(
+        wcontainers_shaders::capabilities(&converted.modules[0].module)
+            .contains(naga::valid::Capabilities::IMMEDIATES)
+    );
 }
 
 #[test]
@@ -276,7 +358,7 @@ fn gathers_with_run_time_offsets_gather_at_a_moved_coordinate() {
     }
     assert_eq!(gathers, 1);
     assert_eq!(m.module.entry_points[0].stage, NagaStage::Compute);
-    written(&m.module, &m.info);
+    written("gathers", &m.module, &m.info);
 }
 
 const STORAGE_TEXTURE: &str = "
