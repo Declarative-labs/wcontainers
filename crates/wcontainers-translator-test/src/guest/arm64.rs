@@ -161,6 +161,15 @@ impl GuestTest for Arm64 {
         })
     }
 
+    /// ARM64 draws no forms of features it does not offer yet.
+    fn unoffered_forms() -> &'static [Form] {
+        &[]
+    }
+
+    fn reference_has(_: &Form) -> bool {
+        false
+    }
+
     fn form_name(form: &Form) -> &str {
         &form.name
     }

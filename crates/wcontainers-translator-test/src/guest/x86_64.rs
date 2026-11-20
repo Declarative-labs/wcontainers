@@ -62,6 +62,8 @@ pub struct Form {
     pub code: Code,
     pub name: String,
     pub group: String,
+    /// Of a feature not offered by default.
+    pub unoffered: bool,
 }
 
 impl GuestTest for X86_64 {
@@ -140,9 +142,25 @@ impl GuestTest for X86_64 {
 
     fn cases(form: &Form) -> BoxedStrategy<Case> {
         let code = form.code;
+        let drawn = if form.unoffered { unoffered_case } else { case };
         any::<u64>()
-            .prop_filter_map("no case of this draw", move |draw| case(code, draw))
+            .prop_filter_map("no case of this draw", move |draw| drawn(code, draw))
             .boxed()
+    }
+
+    fn unoffered_forms() -> &'static [Form] {
+        static FORMS: OnceLock<Vec<Form>> = OnceLock::new();
+        FORMS.get_or_init(unoffered_forms)
+    }
+
+    fn reference_has(form: &Form) -> bool {
+        use wcontainers_x86::claims::{AVX_FEATURES, DEFAULT_FEATURES};
+        form.code.cpuid_features().iter().all(|feature| {
+            let name = format!("{feature:?}");
+            [DEFAULT_FEATURES, AVX_FEATURES, REFERENCE_HAS]
+                .iter()
+                .any(|list| list.contains(&name.as_str()))
+        })
     }
 
     fn no_form(seed: u64) -> BoxedStrategy<Case> {
@@ -355,6 +373,9 @@ impl GuestTest for X86_64 {
             Code::Rdtsc | Code::Rdtscp => Some(TIME_STAMP_BY_DESIGN),
             Code::Cpuid => Some(CPUID_BY_DESIGN),
             Code::Sgdt_m1664 | Code::Sidt_m1664 => Some(TABLES_BY_DESIGN),
+            code if code.cpuid_features().contains(&iced_x86::CpuidFeature::VMX) => {
+                Some(VMX_BY_HOST)
+            }
             _ => None,
         }
     }
@@ -441,6 +462,7 @@ fn forms() -> Vec<Form> {
             code,
             name: format!("{code:?}"),
             group: format!("{:?}", code.mnemonic()),
+            unoffered: false,
         })
         .collect()
 }
@@ -456,10 +478,388 @@ fn written(bytes: &[u8], code: Code) -> bool {
     })
 }
 
+/// The features of unoffered forms the reference CPU has, besides the AVX setting's (plan 7.4): its runs of
+/// them are recorded, not compared.
+const REFERENCE_HAS: &[&str] = &[
+    "AES",
+    "PCLMULQDQ",
+    "RDRAND",
+    "RDSEED",
+    "CLFLUSHOPT",
+    "XSAVEOPT",
+    "XSAVEC",
+];
+
+/// Whether the translator gives `code` the claim group of a feature not offered by default.
+fn is_unoffered(code: Code) -> bool {
+    use wcontainers_x86::claims::{GROUP_AVX, GROUP_NEVER};
+    matches!(wcontainers_x86::claim_group(code), GROUP_AVX | GROUP_NEVER)
+}
+
+/// Every `Code` valid in 64-bit mode of every encoding but MVEX (plan 7.4) whose claim group is not offered.
+fn unoffered_codes() -> impl Iterator<Item = Code> {
+    Code::values().filter(|&code| {
+        let info = code.op_code();
+        info.mode64()
+            && info.is_instruction()
+            && info.encoding() != iced_x86::EncodingKind::MVEX
+            && is_unoffered(code)
+    })
+}
+
+/// The forms not offered by default: the unoffered codes whose drawn bytes the translator decodes as the
+/// same code.
+fn unoffered_forms() -> Vec<Form> {
+    unoffered_codes()
+        .filter(|&code| (0..FORM_DRAWS).any(|draw| unoffered_case(code, draw).is_some()))
+        .map(|code| Form {
+            code,
+            name: format!("{code:?}"),
+            group: format!("{:?} {:?}", code.mnemonic(), code.op_code().encoding()),
+            unoffered: true,
+        })
+        .collect()
+}
+
+/// How many draws decide whether a code has cases.
+const FORM_DRAWS: u64 = 64;
+
+/// The unoffered codes with no case, and why: left out by design, decoded as another code, or not drawn.
+pub fn unoffered_left_out() -> Vec<(String, &'static str)> {
+    unoffered_codes()
+        .filter(|&code| (0..FORM_DRAWS).all(|draw| unoffered_case(code, draw).is_none()))
+        .map(|code| {
+            let why = (0..FORM_DRAWS)
+                .filter_map(|draw| unoffered_bytes(code, &mut Draw::of_case(code, draw)))
+                .map(|(bytes, _)| match X86_64::excluded(&bytes) {
+                    Some(reason) => reason,
+                    None => DECODED_ELSEWHERE,
+                })
+                .next()
+                .unwrap_or(NOT_DRAWN);
+            (format!("{code:?}"), why)
+        })
+        .collect()
+}
+
+/// Why an unoffered code has no form of its own.
+pub const DECODED_ELSEWHERE: &str = "decoded as another code, whose list it is in";
+pub const NOT_DRAWN: &str = "no case could be drawn";
+
+/// A case of an unoffered `code`: operands of every kind its encoding has, EVEX's masks, broadcast, rounding
+/// and exceptions suppressed drawn where it takes them, a memory operand aimed as `case` aims one.
+fn unoffered_case(code: Code, seed: u64) -> Option<Case> {
+    let mut draw = Draw::of_case(code, seed);
+    let (mut state, tracking) = start(&mut draw);
+    let (bytes, memory) = unoffered_bytes(code, &mut draw)?;
+    let decoded = wcontainers_x86::decode(&bytes)?.0;
+    if decoded.iced.code() != code || X86_64::excluded(&bytes).is_some() {
+        return None;
+    }
+    if let Some((m, lane_bytes, size)) = memory {
+        if m.index.is_vector_register() {
+            index_lanes_near(&mut draw, &mut state, m.index, lane_bytes);
+        }
+        let to = target(&mut draw, size);
+        aim(&mut draw, &mut state, &m, to, false);
+    }
+    if reaches_runner(&bytes, &state) || branches_into_itself(&bytes) {
+        return None;
+    }
+    Some(Case {
+        code: Encoded::new(&bytes),
+        state: State(state),
+        tracking,
+        seed: draw.next(),
+        placed: Default::default(),
+    })
+}
+
+/// The bytes of an instruction of `code` with drawn operands, and its memory operand with its VSIB element's
+/// size and its memory size.
+#[allow(clippy::type_complexity)]
+fn unoffered_bytes(
+    code: Code,
+    draw: &mut Draw,
+) -> Option<(Vec<u8>, Option<(MemoryOperand, u32, u64)>)> {
+    let info = code.op_code();
+    let evex = info.encoding() == iced_x86::EncodingKind::EVEX;
+    let mut instruction = Instruction::with(code);
+    let mut memory = None;
+    for n in 0..info.op_count() {
+        let kind = info.op_kind(n);
+        match unoffered_operand(draw, kind, evex)? {
+            Operand::R(r) => {
+                instruction.set_op_kind(n, OpKind::Register);
+                instruction.set_op_register(n, r);
+            }
+            Operand::M(m) => {
+                instruction.set_op_kind(n, OpKind::Memory);
+                instruction.set_memory_base(m.base);
+                instruction.set_memory_index(m.index);
+                instruction.set_memory_index_scale(m.scale);
+                instruction.set_memory_displacement64(m.displacement as u64);
+                instruction.set_memory_displ_size(m.displ_size);
+                instruction.set_segment_prefix(m.segment_prefix);
+                let lane_bytes = match kind {
+                    K::mem_vsib32x | K::mem_vsib32y | K::mem_vsib32z => size_of::<u32>(),
+                    _ => size_of::<u64>(),
+                } as u32;
+                memory = Some((m, lane_bytes));
+            }
+            Operand::Implicit(kind) => instruction.set_op_kind(n, kind),
+            Operand::Unsigned(v) => match kind {
+                K::imm16 => {
+                    instruction.set_op_kind(n, OpKind::Immediate16);
+                    instruction.set_immediate16(v as u16);
+                }
+                K::imm32 => {
+                    instruction.set_op_kind(n, OpKind::Immediate32);
+                    instruction.set_immediate32(v);
+                }
+                // The second of two (`extrq`, `insertq`).
+                _ if (0..n).any(|i| instruction.op_kind(i) == OpKind::Immediate8) => {
+                    instruction.set_op_kind(n, OpKind::Immediate8_2nd);
+                    instruction.set_immediate8_2nd(v as u8);
+                }
+                _ => {
+                    instruction.set_op_kind(n, OpKind::Immediate8);
+                    instruction.set_immediate8(v as u8);
+                }
+            },
+            Operand::Branch(to) => {
+                instruction.set_op_kind(n, OpKind::NearBranch64);
+                instruction.set_near_branch64(to);
+            }
+            Operand::Signed(_) | Operand::Wide(_) => return None,
+        }
+    }
+    if evex {
+        if info.can_use_op_mask_register()
+            && (info.require_op_mask_register() || draw.chance(MASKED))
+        {
+            let mask = register(Register::K1 as u32 + draw.below(OP_MASKS) as u32);
+            instruction.set_op_mask(mask);
+            if info.can_use_zeroing_masking() && draw.chance(ZEROED) {
+                instruction.set_zeroing_masking(true);
+            }
+        }
+        if memory.is_some() && info.can_broadcast() && draw.chance(BROADCAST) {
+            instruction.set_is_broadcast(true);
+        }
+        if memory.is_none() && info.can_use_rounding_control() && draw.chance(ROUNDED) {
+            use iced_x86::RoundingControl::*;
+            let modes = [RoundToNearest, RoundDown, RoundUp, RoundTowardZero];
+            instruction.set_rounding_control(modes[draw.below(modes.len() as u64) as usize]);
+        } else if memory.is_none() && info.can_suppress_all_exceptions() && draw.chance(ROUNDED) {
+            instruction.set_suppress_all_exceptions(true);
+        }
+    }
+    let mut encoder = Encoder::new(wcontainers_x86::MODE_BITS);
+    encoder.encode(&instruction, CODE).ok()?;
+    let bytes = encoder.take_buffer();
+    if bytes.len() as u64 > X86_64::MAX_LENGTH {
+        return None;
+    }
+    let memory =
+        memory.map(|(m, lane_bytes)| (m, lane_bytes, u64::from(memory_size(&instruction)).max(1)));
+    Some((bytes, memory))
+}
+
+/// In a hundred unoffered cases: an operand that may be a register or memory in a register, an EVEX form
+/// that may take a mask masked, a mask zeroing, a memory operand broadcast, a register form rounded or with
+/// exceptions suppressed.
+const IN_REGISTER: u64 = 40;
+const MASKED: u64 = 50;
+const ZEROED: u64 = 50;
+const BROADCAST: u64 = 30;
+const ROUNDED: u64 = 30;
+/// The op mask registers, and those but k0, which means no mask.
+const MASK_REGISTERS: u64 = 8;
+const OP_MASKS: u64 = MASK_REGISTERS - 1;
+/// Vector registers EVEX can name, and the others.
+const EVEX_VECTORS: u64 = 32;
+const VECTORS: u64 = 16;
+const MMX_REGISTERS: u64 = 8;
+const TILES: u64 = 8;
+const BOUNDS: u64 = 4;
+/// The registers of a group named by its first (`kp1_reg`'s pairs, `xmmp3_vvvv`'s fours).
+const MASK_PAIR: u32 = 2;
+const REGISTER_QUAD: u32 = 4;
+
+/// One operand of `kind` for an unoffered form.
+fn unoffered_operand(draw: &mut Draw, kind: K, evex: bool) -> Option<Operand> {
+    let vectors = if evex { EVEX_VECTORS } else { VECTORS };
+    let from = |draw: &mut Draw, first: Register, count: u64| {
+        Operand::R(register(first as u32 + draw.below(count) as u32))
+    };
+    let memory = |draw: &mut Draw| Operand::M(memory_operand(draw, false, false));
+    Some(match kind {
+        K::r8_reg | K::r8_opcode => Operand::R(general(draw, u8::BITS as u8)),
+        K::r16_reg | K::r16_rm | K::r16_opcode | K::r16_reg_mem => {
+            Operand::R(general(draw, u16::BITS as u8))
+        }
+        K::r32_reg | K::r32_rm | K::r32_opcode | K::r32_vvvv | K::r32_reg_mem => {
+            Operand::R(general(draw, u32::BITS as u8))
+        }
+        K::r64_reg | K::r64_rm | K::r64_opcode | K::r64_vvvv | K::r64_reg_mem => {
+            Operand::R(general(draw, u64::BITS as u8))
+        }
+        K::xmm_reg | K::xmm_rm | K::xmm_vvvv => from(draw, Register::XMM0, vectors),
+        K::xmm_is4 | K::xmm_is5 => from(draw, Register::XMM0, VECTORS),
+        K::ymm_reg | K::ymm_rm | K::ymm_vvvv => from(draw, Register::YMM0, vectors),
+        K::ymm_is4 | K::ymm_is5 => from(draw, Register::YMM0, VECTORS),
+        K::zmm_reg | K::zmm_rm | K::zmm_vvvv => from(draw, Register::ZMM0, vectors),
+        K::xmmp3_vvvv => Operand::R(register(
+            Register::XMM0 as u32
+                + REGISTER_QUAD * draw.below(vectors / u64::from(REGISTER_QUAD)) as u32,
+        )),
+        K::zmmp3_vvvv => Operand::R(register(
+            Register::ZMM0 as u32
+                + REGISTER_QUAD * draw.below(vectors / u64::from(REGISTER_QUAD)) as u32,
+        )),
+        K::k_reg | K::k_rm | K::k_vvvv => from(draw, Register::K0, MASK_REGISTERS),
+        K::kp1_reg => Operand::R(register(
+            Register::K0 as u32
+                + MASK_PAIR * draw.below(MASK_REGISTERS / u64::from(MASK_PAIR)) as u32,
+        )),
+        K::mm_reg | K::mm_rm => from(draw, Register::MM0, MMX_REGISTERS),
+        K::tmm_reg | K::tmm_rm | K::tmm_vvvv => from(draw, Register::TMM0, TILES),
+        K::bnd_reg => from(draw, Register::BND0, BOUNDS),
+        K::r8_or_mem if draw.chance(IN_REGISTER) => Operand::R(general(draw, u8::BITS as u8)),
+        K::r16_or_mem if draw.chance(IN_REGISTER) => Operand::R(general(draw, u16::BITS as u8)),
+        K::r32_or_mem | K::r32_or_mem_mpx if draw.chance(IN_REGISTER) => {
+            Operand::R(general(draw, u32::BITS as u8))
+        }
+        K::r64_or_mem | K::r64_or_mem_mpx if draw.chance(IN_REGISTER) => {
+            Operand::R(general(draw, u64::BITS as u8))
+        }
+        K::mm_or_mem if draw.chance(IN_REGISTER) => from(draw, Register::MM0, MMX_REGISTERS),
+        K::xmm_or_mem if draw.chance(IN_REGISTER) => from(draw, Register::XMM0, vectors),
+        K::ymm_or_mem if draw.chance(IN_REGISTER) => from(draw, Register::YMM0, vectors),
+        K::zmm_or_mem if draw.chance(IN_REGISTER) => from(draw, Register::ZMM0, vectors),
+        K::k_or_mem if draw.chance(IN_REGISTER) => from(draw, Register::K0, MASK_REGISTERS),
+        K::bnd_or_mem_mpx if draw.chance(IN_REGISTER) => from(draw, Register::BND0, BOUNDS),
+        K::r8_or_mem
+        | K::r16_or_mem
+        | K::r32_or_mem
+        | K::r32_or_mem_mpx
+        | K::r64_or_mem
+        | K::r64_or_mem_mpx
+        | K::mm_or_mem
+        | K::xmm_or_mem
+        | K::ymm_or_mem
+        | K::zmm_or_mem
+        | K::k_or_mem
+        | K::bnd_or_mem_mpx
+        | K::mem
+        | K::mem_mpx
+        | K::mem_mib => memory(draw),
+        // A base and an index, always.
+        K::sibmem => {
+            let index = general(draw, u64::BITS as u8);
+            let index = if index == Register::RSP {
+                Register::RAX
+            } else {
+                index
+            };
+            Operand::M(MemoryOperand::with_base_index(
+                general(draw, u64::BITS as u8),
+                index,
+            ))
+        }
+        K::mem_vsib32x | K::mem_vsib64x => vsib(draw, Register::XMM0, vectors),
+        K::mem_vsib32y | K::mem_vsib64y => vsib(draw, Register::YMM0, vectors),
+        K::mem_vsib32z | K::mem_vsib64z => vsib(draw, Register::ZMM0, vectors),
+        K::al => Operand::R(Register::AL),
+        K::cl => Operand::R(Register::CL),
+        K::ax => Operand::R(Register::AX),
+        K::dx => Operand::R(Register::DX),
+        K::eax => Operand::R(Register::EAX),
+        K::rax => Operand::R(Register::RAX),
+        K::es => Operand::R(Register::ES),
+        K::cs => Operand::R(Register::CS),
+        K::ss => Operand::R(Register::SS),
+        K::ds => Operand::R(Register::DS),
+        K::fs => Operand::R(Register::FS),
+        K::gs => Operand::R(Register::GS),
+        K::st0 => Operand::R(Register::ST0),
+        K::seg_rSI => Operand::Implicit(OpKind::MemorySegRSI),
+        K::seg_rDI => Operand::Implicit(OpKind::MemorySegRDI),
+        K::es_rDI => Operand::Implicit(OpKind::MemoryESRDI),
+        K::imm8 | K::imm16 | K::imm32 => Operand::Unsigned(draw.value() as u32),
+        K::imm4_m2z => Operand::Unsigned(draw.below(REGISTER_QUAD.into()) as u32),
+        K::xbegin_2 | K::xbegin_4 | K::br64_1 | K::br64_4 => {
+            // Past the instruction, so that it never branches into itself.
+            Operand::Branch(CODE + EDGE_BYTES + draw.below(EDGE_BYTES))
+        }
+        _ => return None,
+    })
+}
+
+/// A VSIB operand: a general base and an index of the vector registers from `first`.
+fn vsib(draw: &mut Draw, first: Register, vectors: u64) -> Operand {
+    let index = register(first as u32 + draw.below(vectors) as u32);
+    let scale = SCALES[draw.below(SCALES.len() as u64) as usize];
+    Operand::M(MemoryOperand::with_base_index_scale(
+        general(draw, u64::BITS as u8),
+        index,
+        scale,
+    ))
+}
+
+/// A VSIB index's elements made small, so that every element's address is near the operand's base.
+fn index_lanes_near(draw: &mut Draw, state: &mut [u128], index: Register, lane_bytes: u32) {
+    let n = index.number();
+    if n >= VECTORS as usize {
+        return;
+    }
+    let lane_bits = lane_bytes * u8::BITS;
+    for field in [XMM + n, YMMH + n] {
+        let mut value = 0u128;
+        for lane in 0..u128::BITS / lane_bits {
+            value |= u128::from(draw.below(EDGE_BYTES)) << (lane * lane_bits);
+        }
+        state[field] = value;
+    }
+}
+
+/// The elements of a VSIB index register, of `lane_bytes` each and sign-extended: those of the registers the
+/// state holds as held, the rest zero.
+fn index_lanes(index: Register, lane_bytes: u32, state: &[u128]) -> Vec<u64> {
+    let n = index.number();
+    let held = if n < VECTORS as usize {
+        [state[XMM + n], state[YMMH + n]]
+    } else {
+        [0, 0]
+    };
+    let lane_bits = lane_bytes * u8::BITS;
+    (0..index.size() as u32 / lane_bytes)
+        .map(|lane| {
+            let at = lane * lane_bits;
+            let word = held.get((at / u128::BITS) as usize).copied().unwrap_or(0);
+            let value = (word >> (at % u128::BITS)) as u64;
+            if lane_bytes == size_of::<u32>() as u32 {
+                value as u32 as i32 as u64
+            } else {
+                value
+            }
+        })
+        .collect()
+}
+
+/// The top 32 bits of the golden ratio's fraction, which mixes a code into its cases' seeds.
+const CASE_MIX: u64 = 0x9e37_79b9;
+
 /// splitmix64, for the draws of one case.
 struct Draw(u64);
 
 impl Draw {
+    /// The draws of case `seed` of `code`.
+    fn of_case(code: Code, seed: u64) -> Draw {
+        Draw(seed ^ (code as u64).wrapping_mul(CASE_MIX))
+    }
+
     fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
@@ -532,6 +932,8 @@ fn xmm(draw: &mut Draw) -> Register {
 #[derive(Clone, Copy)]
 enum Operand {
     R(Register),
+    /// A memory operand of fixed registers (rsi, rdi).
+    Implicit(OpKind),
     M(MemoryOperand),
     Signed(i32),
     Unsigned(u32),
@@ -629,8 +1031,12 @@ const OVERLAPPED: u64 = 8;
 const CPUID_BY_DESIGN: &str = "cpuid: the claims and designed leaves, not the CPU's";
 /// Why layer 1 leaves out `sgdt` and `sidt`.
 const TABLES_BY_DESIGN: &str = "sgdt and sidt: designed answers, not the kernel's addresses";
+/// Why layer 1 leaves out the VMX instructions (plan 5.2).
+const VMX_BY_HOST: &str = "VMX: the reference's answer depends on its KVM setting";
 /// Why layer 1 leaves out `rdtsc` and `rdtscp`.
 const TIME_STAMP_BY_DESIGN: &str = "the time stamp counter: answered by design";
+/// The scales of an index.
+const SCALES: [u32; 4] = [1, 2, 4, 8];
 /// How near an edge of the address space a memory operand drawn there points.
 const EDGE_BYTES: u64 = 64;
 /// In a hundred: bit offsets aimed with their operand, and reserved NOPs drawn with REX.W.
@@ -670,30 +1076,44 @@ fn rflags(draw: &mut Draw) -> u128 {
     u128::from(draw.next() & keep) | 0x202
 }
 
-/// One case of `code` from the draw `seed`, or none when the draw gives no encodable instruction.
-fn case(code: Code, seed: u64) -> Option<Case> {
-    let mut draw = Draw(seed ^ (code as u64).wrapping_mul(0x9e37_79b9));
-    let info = code.op_code();
+/// Of ten stack pointers: seven in the writable data area, at least this far from its ends, one at an edge,
+/// two anything.
+const STACK_POINTER_SHARES: u64 = 10;
+const STACK_POINTER_IN_DATA: u64 = 7;
+const STACK_MARGIN: u64 = 0x100;
+
+/// A case's starting state, with whether MXCSR's flags are kept: registers, flags, bases and vectors
+/// weighted toward edges, the stack pointer mostly in the data area.
+fn start(draw: &mut Draw) -> (Vec<u128>, bool) {
     let mut state = vec![0u128; FIELDS];
-    for r in state.iter_mut().take(16) {
+    for r in &mut state[<X86_64 as GuestTest>::GENERAL_FIELDS] {
         *r = draw.value().into();
     }
-    // The stack pointer: mostly in the data area, a share at the edges.
-    state[RSP] = match draw.below(10) {
-        0..=6 => (DATA + 0x100 + draw.below(DATA_WRITABLE - 0x200)).into(),
-        7 => target(&mut draw, 8).into(),
+    state[RSP] = match draw.below(STACK_POINTER_SHARES) {
+        share if share < STACK_POINTER_IN_DATA => {
+            (DATA + STACK_MARGIN + draw.below(DATA_WRITABLE - 2 * STACK_MARGIN)).into()
+        }
+        STACK_POINTER_IN_DATA => target(draw, size_of::<u64>() as u64).into(),
         _ => draw.value().into(),
     };
     state[RIP] = CODE.into();
-    state[RFLAGS] = rflags(&mut draw);
+    state[RFLAGS] = rflags(draw);
     state[FS] = (draw.next() % USER_TOP).into();
     state[GS] = (draw.next() % USER_TOP).into();
-    state[MXCSR] = mxcsr(&mut draw).into();
+    state[MXCSR] = mxcsr(draw).into();
     let tracking = draw.chance(TRACKED);
     state[FCW] = wcontainers_x86::FCW_AT_START.into();
-    for x in &mut state[XMM..XMM + 16] {
-        *x = vector(&mut draw);
+    for x in &mut state[XMM..YMMH] {
+        *x = vector(draw);
     }
+    (state, tracking)
+}
+
+/// One case of `code` from the draw `seed`, or none when the draw gives no encodable instruction.
+fn case(code: Code, seed: u64) -> Option<Case> {
+    let mut draw = Draw::of_case(code, seed);
+    let info = code.op_code();
+    let (mut state, tracking) = start(&mut draw);
     let address32 = draw.chance(10);
     let mut memory = None;
     let instruction = if let Some(i) = {
@@ -1252,22 +1672,29 @@ fn reaches_runner(bytes: &[u8], state: &[u128]) -> bool {
                 Register::RIP => Some(instruction.next_ip()),
                 r => register_value(r, state),
             };
-            let (Some(base), Some(index), Some(segment)) =
-                (value(m.base()), value(m.index()), value(m.segment()))
+            let indexes = if m.index().is_vector_register() {
+                index_lanes(m.index(), m.vsib_size(), state)
+            } else {
+                value(m.index()).into_iter().collect()
+            };
+            let (Some(base), Some(segment), false) =
+                (value(m.base()), value(m.segment()), indexes.is_empty())
             else {
                 return true;
             };
-            let mut effective = m
-                .displacement()
-                .wrapping_add(base)
-                .wrapping_add(index.wrapping_mul(u64::from(m.scale())))
-                .wrapping_add(moved);
-            if m.address_size() == iced_x86::CodeSize::Code32 {
-                effective &= u64::from(u32::MAX);
-            }
-            let start = effective.wrapping_add(segment);
-            let end = start.saturating_add(m.memory_size().size().max(1) as u64);
-            start < runner.end && end > runner.start
+            indexes.iter().any(|index| {
+                let mut effective = m
+                    .displacement()
+                    .wrapping_add(base)
+                    .wrapping_add(index.wrapping_mul(u64::from(m.scale())))
+                    .wrapping_add(moved);
+                if m.address_size() == iced_x86::CodeSize::Code32 {
+                    effective &= u64::from(u32::MAX);
+                }
+                let start = effective.wrapping_add(segment);
+                let end = start.saturating_add(m.memory_size().size().max(1) as u64);
+                start < runner.end && end > runner.start
+            })
         })
 }
 
@@ -1337,7 +1764,7 @@ fn memory_operand(draw: &mut Draw, offset_only: bool, address32: bool) -> Memory
     } else {
         Register::None
     };
-    let scale = [1, 2, 4, 8][draw.below(4) as usize];
+    let scale = SCALES[draw.below(SCALES.len() as u64) as usize];
     let displacement = match draw.below(4) {
         // With no register the displacement is the address: one the draw aims, as registers are aimed, so
         // nothing reaches the reference runner's own memory.

@@ -53,6 +53,11 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     fn cases(form: &Self::Form) -> BoxedStrategy<Case>;
     /// Cases of random bytes that are no instruction of any form, from a plain state, with data seed `seed`.
     fn no_form(seed: u64) -> BoxedStrategy<Case>;
+    /// The forms of features the CPU does not offer by default, in a fixed order, drawn by `cases`: each
+    /// must stop as illegal instruction.
+    fn unoffered_forms() -> &'static [Self::Form];
+    /// Whether the reference CPU has an unoffered form's feature, so that its run is recorded, not compared.
+    fn reference_has(form: &Self::Form) -> bool;
     /// Hand-made cases: each run on both sides and compared, unless it is answered by design, and checked
     /// against what it must do.
     fn hand_cases() -> Vec<Designed>;

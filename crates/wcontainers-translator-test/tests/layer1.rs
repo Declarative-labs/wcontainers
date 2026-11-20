@@ -12,10 +12,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use wcontainers_arm64::Arm64;
-use wcontainers_translator_test::guest::{Case, GuestTest};
+use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
-    compare, compare_outcome, translated, translated_in_chrome,
+    compare, compare_outcome, on_reference, translated, translated_in_chrome,
 };
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_x86::X86_64;
@@ -65,14 +65,21 @@ fn sample_matches_the_cpu_in_chrome<G: GuestTest>() {
     assert!(failures.is_empty());
 }
 
-fn every_form_matches_the_cpu<G: GuestTest>() {
-    let count = setting("WC_LAYER1_CASES", 64) as u32;
+/// Runs `count` cases of each form chosen by `WC_LAYER1_FORMS`, `WC_LAYER1_JOBS` forms at once, each case
+/// through `check` with a reference runner of its own; prints the summary, its first words `layer 1` and
+/// `list`, and returns the failing forms' names, sorted.
+fn run_forms<G: GuestTest>(
+    forms: &[G::Form],
+    count: u32,
+    list: &str,
+    check: impl Fn(&mut Reference, &G::Form, &Case) -> Result<(), String> + Sync,
+) -> Vec<String> {
     let seed = setting("WC_LAYER1_SEED", 1);
     let jobs = setting("WC_LAYER1_JOBS", 1).max(1);
     let only: Option<Vec<String>> = std::env::var("WC_LAYER1_FORMS")
         .ok()
         .map(|list| list.split(',').map(String::from).collect());
-    let chosen: Vec<_> = G::forms()
+    let chosen: Vec<_> = forms
         .iter()
         .filter(|f| {
             only.as_ref()
@@ -92,7 +99,7 @@ fn every_form_matches_the_cpu<G: GuestTest>() {
         config.max_global_rejects = 100 * count;
         let mut runner = generator(seed, name, config);
         let result = runner.run(&G::cases(form), |case| {
-            compare::<G>(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)
+            check(&mut reference.borrow_mut(), form, &case).map_err(TestCaseError::fail)
         });
         free.lock().unwrap().push(reference.into_inner());
         if let Err(error) = result {
@@ -108,19 +115,78 @@ fn every_form_matches_the_cpu<G: GuestTest>() {
     for (group, _) in &failing {
         *groups.entry(group).or_default() += 1;
     }
-    let mut failures: Vec<&String> = failing.iter().map(|(_, name)| name).collect();
+    let mut failures: Vec<String> = failing.iter().map(|(_, name)| name.clone()).collect();
     failures.sort();
     eprintln!(
-        "layer 1: {} forms, {count} cases each, seed {seed}, {jobs} at once, {} failing: {failures:?}",
+        "layer 1{list}: {} forms, {count} cases each, seed {seed}, {jobs} at once, {} failing: {failures:?}",
         chosen.len(),
         failures.len()
     );
     if !groups.is_empty() {
         eprintln!("layer 1 failing by group: {groups:?}");
     }
+    failures
+}
+
+fn every_form_matches_the_cpu<G: GuestTest>() {
+    let count = setting("WC_LAYER1_CASES", 64) as u32;
+    let failures = run_forms::<G>(G::forms(), count, "", |reference, _, case| {
+        compare::<G>(reference, case)
+    });
     assert!(
         failures.is_empty(),
         "{} forms differ from the CPU",
+        failures.len()
+    );
+}
+
+/// The forms of features not offered stop ours as illegal instruction; where the reference lacks the
+/// feature too it must stop the same, else what it did is recorded. `WC_LAYER1_UNOFFERED_CASES` cases a form
+/// (default 64), with the seed and the choice of forms as for the default forms.
+fn unoffered_forms_are_illegal<G: GuestTest>() {
+    let count = setting("WC_LAYER1_UNOFFERED_CASES", 64) as u32;
+    // What the reference did with the forms it has: each stop's kind, counted, and the forms it too refused.
+    let recorded = Mutex::new(BTreeMap::<String, u64>::new());
+    let refused_there = Mutex::new(BTreeMap::<String, u64>::new());
+    let failures = run_forms::<G>(
+        G::unoffered_forms(),
+        count,
+        " of the unoffered forms",
+        |reference, form, case| {
+            let actual = translated::<G>(case);
+            if !G::reference_has(form) {
+                return compare_outcome::<G>(reference, case, actual);
+            }
+            if actual.stop != Stop::Illegal {
+                return Err(format!(
+                    "code {:02x?} ({}): translated {:?}, not illegal instruction",
+                    case.code.code(),
+                    G::disassemble(case.code.code()),
+                    actual.stop
+                ));
+            }
+            let stop = on_reference::<G>(reference, case).stop;
+            let kind = format!("{stop:?}");
+            let kind = kind.split('(').next().unwrap_or_default().to_string();
+            *recorded.lock().unwrap().entry(kind).or_default() += 1;
+            if stop == Stop::Illegal {
+                *refused_there
+                    .lock()
+                    .unwrap()
+                    .entry(G::form_name(form).to_string())
+                    .or_default() += 1;
+            }
+            Ok(())
+        },
+    );
+    eprintln!(
+        "layer 1, the unoffered forms the reference has: its stops {:?}; forms it refused too, with cases: {:?}",
+        recorded.into_inner().unwrap(),
+        refused_there.into_inner().unwrap()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} unoffered forms are not illegal as they must be",
         failures.len()
     );
 }
@@ -217,6 +283,11 @@ fn every_form_matches_the_cpu_x86_64() {
 }
 
 #[test]
+fn unoffered_forms_are_illegal_x86_64() {
+    unoffered_forms_are_illegal::<X86_64>();
+}
+
+#[test]
 fn bytes_in_no_form_stop_as_on_the_cpu_x86_64() {
     bytes_in_no_form_stop_as_on_the_cpu::<X86_64>();
 }
@@ -229,4 +300,21 @@ fn sample_matches_the_cpu_in_chrome_x86_64() {
 #[test]
 fn hand_cases_do_what_they_must_x86_64() {
     hand_cases_do_what_they_must::<X86_64>();
+}
+
+/// Every x86-64 code of a feature not offered has cases, but those left out by design and those the
+/// translator decodes as another code, which are in that code's list.
+#[test]
+fn every_unoffered_code_is_drawn_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::{NOT_DRAWN, unoffered_left_out};
+    let left = unoffered_left_out();
+    for (code, why) in &left {
+        eprintln!("{code}: {why}");
+    }
+    let undrawn: Vec<_> = left.iter().filter(|(_, why)| *why == NOT_DRAWN).collect();
+    assert!(
+        undrawn.is_empty(),
+        "{} unoffered codes have no case: {undrawn:?}",
+        undrawn.len()
+    );
 }
