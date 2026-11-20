@@ -1,9 +1,12 @@
 //! The monitor's answer to the inside's translation requests: the native output's piece of the guest code the
-//! link carries, kept to be loaded again for another address by its address places (docs/native.md section 3.2),
-//! and the words the inside fills to link pieces.
+//! link carries, kept in memory and in files of a directory, to be loaded again for another address by its
+//! address places (docs/native.md section 3.2), and the words the inside fills to link pieces.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
+use serde::{Deserialize, Serialize};
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_arm64::Arm64;
 use wcontainers_arm64::carry::link_words;
@@ -13,6 +16,21 @@ use wcontainers_inside::translation::{
     self, Field, LinkWords, Piece, Request, TooLarge, Translate,
 };
 use wcontainers_translator::{LookAhead, translate_native};
+
+/// The slow paths of the directory of kept translations, as counted and warned.
+pub mod reason {
+    /// A file of the directory could not be read whole or did not read as a kept translation.
+    pub const FILE_REFUSED: &str = "native translation in the cache's directory refused";
+    /// A translation could not be written to the directory.
+    pub const FILE_NOT_KEPT: &str = "native translation not kept in the cache's directory";
+}
+
+/// The first bytes of a kept translation's file.
+const FILE_MAGIC: &[u8; 8] = b"wcnative";
+
+/// What a file being written has after its name, then the writing process's number, until it is renamed whole
+/// into place.
+const PARTIAL: &str = ".partial-";
 
 /// What a translation is kept under: the guest code it is made from, where in its page that starts, whether the
 /// count is written, and the page itself where the code's shape depends on its address.
@@ -25,25 +43,49 @@ struct Key {
 }
 
 /// A kept translation (none when no instruction starts there) and the page it was made for.
+#[derive(Clone, Serialize, Deserialize)]
 struct Kept {
     translation: Option<Translation>,
     page: u64,
+}
+
+/// The build of the code that translates: a hash of the running program, which holds the translator and its
+/// guests.
+fn build() -> &'static [u8; blake3::OUT_LEN] {
+    static BUILD: OnceLock<[u8; blake3::OUT_LEN]> = OnceLock::new();
+    BUILD.get_or_init(|| {
+        let program = std::env::current_exe()
+            .and_then(std::fs::read)
+            .expect("the running program reads");
+        *blake3::hash(&program).as_bytes()
+    })
 }
 
 /// The monitor's translations at one look-ahead.
 pub struct Translator {
     look_ahead: LookAhead,
     kept: HashMap<Key, Kept>,
+    /// Where translations are kept between runs, when anywhere.
+    directory: Option<PathBuf>,
     /// How many answers came from a kept translation.
     pub reused: u64,
+    /// How many of those were read from the directory.
+    pub read: u64,
+    /// Each slow path of the directory taken, by reason, with how often.
+    pub slow: BTreeMap<&'static str, u64>,
 }
 
 impl Translator {
-    pub fn new(look_ahead: LookAhead) -> Translator {
+    /// A translator at `look_ahead`, keeping translations in memory, and in `directory` between runs when given
+    /// one, which only translators write.
+    pub fn new(look_ahead: LookAhead, directory: Option<PathBuf>) -> Translator {
         Translator {
             look_ahead,
             kept: HashMap::new(),
+            directory,
             reused: 0,
+            read: 0,
+            slow: BTreeMap::new(),
         }
     }
 
@@ -69,6 +111,63 @@ impl Translator {
         }
     }
 
+    /// Counts and warns a slow path of the directory.
+    fn slow(&mut self, reason: &'static str, file: &Path) {
+        let times = self.slow.entry(reason).or_default();
+        *times += 1;
+        eprintln!(
+            "wcontainers warning: {reason}, {}, {times} so far",
+            file.display()
+        );
+    }
+
+    /// The file `key`'s translation is kept in.
+    fn file(&self, key: &Key) -> Option<PathBuf> {
+        let directory = self.directory.as_ref()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(build());
+        hasher.update(format!("{:?} {:?} {:?}", self.look_ahead, key.exact, key.page).as_bytes());
+        hasher.update(&key.offset.to_le_bytes());
+        hasher.update(&key.code);
+        Some(directory.join(hasher.finalize().to_hex().as_str()))
+    }
+
+    /// The translation kept in `file`: none when it is not there or does not read as one.
+    fn load(&mut self, file: &Path) -> Option<Kept> {
+        let bytes = match std::fs::read(file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(_) => {
+                self.slow(reason::FILE_REFUSED, file);
+                return None;
+            }
+        };
+        let kept = bytes
+            .strip_prefix(FILE_MAGIC)
+            .and_then(|rest| postcard::from_bytes(rest).ok());
+        if kept.is_none() {
+            self.slow(reason::FILE_REFUSED, file);
+        }
+        kept
+    }
+
+    /// Keeps a translation in `file`, written whole or not at all.
+    fn store(&mut self, file: &Path, kept: &Kept) {
+        let mut bytes = FILE_MAGIC.to_vec();
+        bytes.extend(postcard::to_allocvec(kept).expect("a translation serialises"));
+        let mut partial = file.as_os_str().to_owned();
+        partial.push(PARTIAL);
+        partial.push(std::process::id().to_string());
+        let partial = PathBuf::from(partial);
+        let written = std::fs::create_dir_all(file.parent().expect("a directory"))
+            .and_then(|()| std::fs::write(&partial, &bytes))
+            .and_then(|()| std::fs::rename(&partial, file));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+            self.slow(reason::FILE_NOT_KEPT, file);
+        }
+    }
+
     /// Answers a translate request with the piece at the look-ahead, cut shorter where its host code would not
     /// fit the link, from a kept translation when there is one.
     fn translate(&mut self, link: &mut Link) {
@@ -81,6 +180,13 @@ impl Translator {
             exact: request.exact != 0,
             page: (!Arm64::movable().contains(&page)).then_some(page),
         };
+        let file = self.file(&key);
+        if !self.kept.contains_key(&key)
+            && let Some(kept) = file.as_deref().and_then(|file| self.load(file))
+        {
+            self.read += 1;
+            self.kept.insert(key.clone(), kept);
+        }
         if let Some(kept) = self.kept.get(&key) {
             self.reused += 1;
             let mut translation = kept.translation.clone();
@@ -104,7 +210,11 @@ impl Translator {
             });
             match translation::answer(link, translation.clone().map(piece).as_ref()) {
                 Ok(()) => {
-                    self.kept.insert(key, Kept { translation, page });
+                    let kept = Kept { translation, page };
+                    if let Some(file) = &file {
+                        self.store(file, &kept);
+                    }
+                    self.kept.insert(key, kept);
                     return;
                 }
                 Err(TooLarge) if instructions > 1 => {
@@ -229,7 +339,7 @@ mod tests {
             0x17ff_fffd,    // b . - 12
         ];
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let mut translator = Translator::new(LookAhead::Bounded(u32::MAX));
+        let mut translator = Translator::new(LookAhead::Bounded(u32::MAX), None);
         for (k, at) in [
             movable.start,
             movable.start + PAGE_SIZE,
@@ -282,7 +392,7 @@ mod tests {
                     },
                     &word.to_le_bytes(),
                 );
-                Translator::new(LookAhead::None).answer(&mut link);
+                Translator::new(LookAhead::None, None).answer(&mut link);
                 let got = translation::piece(&link).expect("a piece");
                 let made =
                     translate_native::<Arm64>(&word.to_le_bytes(), at, LookAhead::None, exact)
@@ -301,7 +411,7 @@ mod tests {
             },
             &[0; Arm64::MAX_LENGTH as usize - 1],
         );
-        Translator::new(LookAhead::None).answer(&mut link);
+        Translator::new(LookAhead::None, None).answer(&mut link);
         assert_eq!(
             translation::piece(&link),
             None,
@@ -381,7 +491,7 @@ mod tests {
             },
             &0xd400_0001u32.to_le_bytes(),
         );
-        Translator::new(LookAhead::None).answer(&mut link);
+        Translator::new(LookAhead::None, None).answer(&mut link);
         let answer: translation::Translated = link.get();
         let code = usize::try_from(answer.code).expect("fits");
         link.bytes[code..].fill(u8::MAX);

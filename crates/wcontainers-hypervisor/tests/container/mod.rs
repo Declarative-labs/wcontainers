@@ -253,7 +253,7 @@ pub fn native_at(
     };
     let mut warnings = Vec::new();
     let mut exits = 0;
-    let mut translator = Translator::new(look_ahead);
+    let mut translator = Translator::new(look_ahead, None);
     loop {
         exits += 1;
         match cpu.run().expect("running") {

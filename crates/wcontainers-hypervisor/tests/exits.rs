@@ -174,7 +174,7 @@ mod macos {
                 loaded,
                 warnings: BTreeMap::new(),
                 translations: 0,
-                translator: Translator::new(look_ahead()),
+                translator: Translator::new(look_ahead(), None),
             };
             side.serve();
             side.begin(exact);
