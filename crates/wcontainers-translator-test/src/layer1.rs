@@ -1,11 +1,13 @@
 //! Layer 1: one instruction at a time, on the real CPU and through the translator at look-ahead none, with
 //! every register, flag and touched byte compared.
 
+use crate::browser::{MEMORY_FAULT, NO_CODE, STACK_FAULT, STOP_KIND_KEY, SYSCALL};
 use crate::guest::{Case, GuestTest, Outcome, Signal, State, Stop};
 use crate::layout::*;
 use crate::reference::Reference;
 use crate::runner::{Fault, Machine, Stopped, Syscalls, thread_state_size};
 use wcontainers_abi::{Access, Exit, Permissions};
+use wcontainers_guest_cpu::TrapKind;
 use wcontainers_translator::LookAhead;
 
 /// Memory size of the translator's machine: everything up to the end of the code region.
@@ -180,20 +182,23 @@ fn translated_in_one_page<G: GuestTest>(cases: &[Case]) -> Vec<Outcome> {
     .into_iter()
     .map(|run| {
         let stopped = &run.stopped;
-        let stop = match stopped["kind"].as_str() {
-            Some("no code") => Stop::Landed(address(&stopped["address"])),
-            Some("undefined" | "unsupported") => Stop::Illegal,
-            Some("breakpoint") => Stop::Breakpoint(G::breakpoint_code(detail(stopped) as u16)),
-            Some("syscall") => Stop::Syscall,
-            Some("memory fault") if stopped["execute"] == true => {
+        let kind = stopped[STOP_KIND_KEY].as_str().unwrap_or_default();
+        let stop = match (kind, TrapKind::from_name(kind)) {
+            (NO_CODE, _) => Stop::Landed(address(&stopped["address"])),
+            (SYSCALL, _) => Stop::Syscall,
+            (MEMORY_FAULT, _) if stopped["execute"] == true => {
                 Stop::Landed(address(&stopped["address"]))
             }
-            Some("memory fault") => Stop::MemoryFault(address(&stopped["address"])),
-            Some("alignment") => Stop::Alignment(address(&stopped["detail"])),
-            Some("general protection" | "overflow") => Stop::GeneralProtection,
-            Some("stack fault") => Stop::StackFault,
-            Some("divide error") => Stop::DivideError,
-            Some("float exception") => Stop::FloatException(detail(stopped) as u32),
+            (MEMORY_FAULT, _) => Stop::MemoryFault(address(&stopped["address"])),
+            (STACK_FAULT, _) => Stop::StackFault,
+            (_, Some(TrapKind::Undefined | TrapKind::Unsupported)) => Stop::Illegal,
+            (_, Some(TrapKind::Breakpoint)) => {
+                Stop::Breakpoint(G::breakpoint_code(detail(stopped) as u16))
+            }
+            (_, Some(TrapKind::Alignment)) => Stop::Alignment(address(&stopped["detail"])),
+            (_, Some(TrapKind::GeneralProtection | TrapKind::Overflow)) => Stop::GeneralProtection,
+            (_, Some(TrapKind::DivideError)) => Stop::DivideError,
+            (_, Some(TrapKind::FloatException)) => Stop::FloatException(detail(stopped) as u32),
             _ => panic!("no counterpart on the reference: {stopped}"),
         };
         Outcome {

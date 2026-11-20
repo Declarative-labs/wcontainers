@@ -23,6 +23,12 @@ const EXIT_GROUP: u64 = <X86_64 as GuestTest>::STAND_IN.exit_group;
 /// The descriptor the model's system call writes to.
 const STANDARD_OUTPUT: u32 = 1;
 
+/// One in this many of the model's moves of a constant writes an address in the code instead (`mov` of a
+/// 32-bit immediate, or `push` and `pop`), which the translator, given the link address, follows as an entry.
+const CODE_ADDRESS_EVERY: u16 = 4;
+/// What such an immediate holds until the code is placed: wide enough that iced encodes 32 bits.
+const PLACEHOLDER: u32 = i32::MAX as u32;
+
 /// A walk's string forms by its `rt` (`string_step`): one element; then with a repeat prefix `lods` or
 /// `stos`; `scas`, or `movs` onto the next element; and `cmps` against it, or `movs` from it.
 const STRING_FORMS: u8 = 4;
@@ -339,6 +345,9 @@ struct Emitter {
     last: Label,
     data: Label,
     tables: Vec<Table>,
+    /// Instructions whose 32-bit immediate becomes an address in the code once it is placed: the index of
+    /// each, and the drawn number that picks the address.
+    code_addresses: Vec<(usize, u64)>,
 }
 
 impl Emitter {
@@ -477,7 +486,19 @@ impl Emitter {
             }
             Op::Move { keep, rd, imm, hw } => {
                 let shift = u32::from(hw) * u16::BITS;
-                if !keep {
+                if !keep && imm % CODE_ADDRESS_EVERY == 0 {
+                    // A constant that only looks like an address, at any byte of the code.
+                    self.code_addresses.push((
+                        self.a.instructions().len(),
+                        u64::from(imm / CODE_ADDRESS_EVERY),
+                    ));
+                    if rd % 2 == 0 {
+                        self.a.mov(d(rd), PLACEHOLDER)?;
+                    } else {
+                        self.a.push(PLACEHOLDER as i32)?;
+                        self.a.pop(q(rd))?;
+                    }
+                } else if !keep {
                     let value = u64::from(imm) << shift;
                     match u32::try_from(value) {
                         Ok(small) => self.a.mov(d(rd), small)?,
@@ -1424,6 +1445,7 @@ fn emit(program: &Program, pad: usize) -> Result<(Vec<u8>, u64, u64), IcedError>
         last: Label(0),
         data: Label(0),
         tables: Vec::new(),
+        code_addresses: Vec::new(),
     };
     e.functions = program.functions.iter().map(|_| e.label()).collect();
     e.writer = e.label();
@@ -1499,7 +1521,21 @@ fn emit(program: &Program, pad: usize) -> Result<(Vec<u8>, u64, u64), IcedError>
             }
         }
     }
-    Ok((bytes, offset(e.data), offset(e.area)))
+    let code_end = offset(e.data);
+    for &(index, drawn) in &e.code_addresses {
+        let at = result.inner.new_instruction_offsets[index] as usize;
+        let mut decoder =
+            iced_x86::Decoder::new(u64::BITS, &bytes[at..], iced_x86::DecoderOptions::NONE);
+        let instruction = decoder.decode();
+        let immediate = at
+            + decoder
+                .get_constant_offsets(&instruction)
+                .immediate_offset();
+        let address =
+            u32::try_from(LOAD + drawn % code_end).expect("an address the immediate holds");
+        bytes[immediate..immediate + size_of::<u32>()].copy_from_slice(&address.to_le_bytes());
+    }
+    Ok((bytes, code_end, offset(e.area)))
 }
 
 /// Assemble a program into a flat blob that starts at its first byte: once to find where its area falls,

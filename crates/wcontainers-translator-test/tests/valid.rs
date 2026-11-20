@@ -5,7 +5,9 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
 use wasmparser::{Validator, WasmFeatures};
 use wcontainers_arm64::{Arm64, Host};
+use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::{LookAhead, Optimise, thread_module, translate};
+use wcontainers_translator_test::programs::LOAD;
 use wcontainers_x86::{Offer, X86_64};
 
 /// A host that needs every fix-up and the software fused multiply-add, so their code is checked too.
@@ -52,9 +54,56 @@ fn thread_module_is_valid_x86_64() {
 /// The most random bytes an x86 case translates, 255: many instructions of every length.
 const CASE_BYTES: usize = u8::MAX as usize;
 
+/// An instruction that writes out an absolute address: `mov r32, imm32` (`B8+r`), `push imm32` (`68`) or
+/// `movabs r64, imm64` (`REX.W B8+r`), of the register its draw names.
+enum Absolute {
+    Move(u8),
+    Push,
+    MoveWide(u8),
+}
+
+/// The opcodes, and REX.W.
+const MOVE_IMMEDIATE: u8 = 0xb8;
+const PUSH_IMMEDIATE: u8 = 0x68;
+const REX_W: u8 = 0x48;
+/// The registers `B8+r` names without REX.B.
+const OPCODE_REGISTERS: u8 = 8;
+
+impl Absolute {
+    const FORMS: &[fn(u8) -> Absolute] = &[Absolute::Move, |_| Absolute::Push, Absolute::MoveWide];
+
+    fn drawn(drawn: u8) -> Self {
+        let forms = Self::FORMS.len() as u8;
+        Self::FORMS[usize::from(drawn % forms)](drawn / forms % OPCODE_REGISTERS)
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Absolute::Move(_) | Absolute::Push => 1 + size_of::<u32>(),
+            Absolute::MoveWide(_) => 2 + size_of::<u64>(),
+        }
+    }
+
+    fn encode(&self, address: u64, code: &mut Vec<u8>) {
+        match *self {
+            Absolute::Move(r) => {
+                code.push(MOVE_IMMEDIATE + r);
+                code.extend((address as u32).to_le_bytes());
+            }
+            Absolute::Push => {
+                code.push(PUSH_IMMEDIATE);
+                code.extend((address as u32).to_le_bytes());
+            }
+            Absolute::MoveWide(r) => {
+                code.extend([REX_W, MOVE_IMMEDIATE + r]);
+                code.extend(address.to_le_bytes());
+            }
+        }
+    }
+}
+
 /// The starts (sorted) where a whole x86 instruction starts within the bytes.
 fn whole_x86_64(bytes: &[u8], starts: &[u64]) -> Vec<u64> {
-    use wcontainers_guest_cpu::Guest;
     starts
         .iter()
         .copied()
@@ -176,6 +225,34 @@ proptest! {
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
         validate(&translation.modules[0].wasm);
+    }
+
+    /// Random bytes after `mov` of a 32-bit immediate, `push` of one and `movabs`, each naming through the
+    /// link address a random byte of the code, the byte below it or the one past it: valid modules at full and
+    /// at bounded look-ahead, and at full a piece at each named byte where a whole instruction starts.
+    #[test]
+    fn absolute_entries_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), named in prop::collection::vec((any::<u8>(), any::<prop::sample::Index>()), 1..4), bound in 1..80u32) {
+        let forms: Vec<Absolute> = named.iter().map(|&(drawn, _)| Absolute::drawn(drawn)).collect();
+        let length = forms.iter().map(|f| f.length()).sum::<usize>() + bytes.len();
+        let targets: Vec<i64> = named.iter().map(|(_, at)| at.index(length + 2) as i64 - 1).collect();
+        let mut code = Vec::new();
+        for (form, &target) in forms.iter().zip(&targets) {
+            form.encode(LOAD.wrapping_add_signed(target), &mut code);
+        }
+        code.extend(&bytes);
+        let starts: Vec<u64> = (0..code.len() as u64).filter(|&t| X86_64::decode(&code[t as usize..]).is_some()).collect();
+        for look_ahead in [LookAhead::Full, LookAhead::Bounded(bound)] {
+            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, Optimise::Speed, HOST_X86_64, Offer::default()).unwrap();
+            for module in &translation.modules {
+                validate(&module.wasm);
+            }
+            if look_ahead == LookAhead::Full {
+                let pieces: Vec<u64> = translation.pieces().collect();
+                for target in targets.iter().filter_map(|&t| u64::try_from(t).ok()).filter(|t| starts.contains(t)) {
+                    prop_assert!(pieces.contains(&target), "no piece at {target} of {code:02x?}");
+                }
+            }
+        }
     }
 
     /// Random words at bounded look-ahead of random N, from a few starts: one piece in the table each.

@@ -158,19 +158,39 @@ pub enum TrapKind {
 }
 
 impl TrapKind {
+    pub const ALL: &'static [Self] = &[
+        Self::Undefined,
+        Self::Unsupported,
+        Self::Breakpoint,
+        Self::Alignment,
+        Self::DivideError,
+        Self::GeneralProtection,
+        Self::FloatException,
+        Self::Overflow,
+    ];
+
     pub fn from_i32(value: i32) -> Option<Self> {
-        [
-            Self::Undefined,
-            Self::Unsupported,
-            Self::Breakpoint,
-            Self::Alignment,
-            Self::DivideError,
-            Self::GeneralProtection,
-            Self::FloatException,
-            Self::Overflow,
-        ]
-        .into_iter()
-        .find(|kind| *kind as i32 == value)
+        Self::ALL.iter().copied().find(|kind| *kind as i32 == value)
+    }
+
+    /// Each kind's name where a runner reports it as text, in `ALL`'s order.
+    pub const NAMES: &'static [&'static str] = &[
+        "undefined",
+        "unsupported",
+        "breakpoint",
+        "alignment",
+        "divide error",
+        "general protection",
+        "float exception",
+        "overflow",
+    ];
+
+    pub const fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|kind| kind.name() == name)
     }
 }
 
@@ -182,4 +202,8 @@ pub enum MemoryFault {
     Page,
     GeneralProtection,
     Stack,
+}
+
+impl MemoryFault {
+    pub const ALL: &'static [Self] = &[Self::Page, Self::GeneralProtection, Self::Stack];
 }

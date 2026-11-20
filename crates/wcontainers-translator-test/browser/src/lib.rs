@@ -223,8 +223,8 @@ pub extern "C" fn cpu_hook(hook: u32, a: i64, b: i64, c: i64, d: i64) {
     DONE.set(done);
 }
 
-/// The fault a memory fault at `address` is (`Guest::memory_fault`), as its place in the contract's
-/// `memoryFaults`: worked out from the thread's state copied to [`cpu_state`] and the faulting instruction's
+/// The fault a memory fault at `address` is (`Guest::memory_fault`), as its place in `MemoryFault::ALL`:
+/// worked out from the thread's state copied to [`cpu_state`] and the faulting instruction's
 /// bytes, `length` of them, copied after it.
 #[unsafe(no_mangle)]
 pub extern "C" fn cpu_memory_fault(address: i64, length: u32) -> i32 {
@@ -314,19 +314,7 @@ pub extern "C" fn initial_block(pc: i64, sp: i64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn contract() -> i32 {
     use contract::*;
-    let trap_kinds: Vec<&str> = (0..)
-        .map_while(TrapKind::from_i32)
-        .map(|kind| match kind {
-            TrapKind::Undefined => "undefined",
-            TrapKind::Unsupported => "unsupported",
-            TrapKind::Breakpoint => "breakpoint",
-            TrapKind::Alignment => "alignment",
-            TrapKind::DivideError => "divide error",
-            TrapKind::GeneralProtection => "general protection",
-            TrapKind::FloatException => "float exception",
-            TrapKind::Overflow => "overflow",
-        })
-        .collect();
+    let trap_kinds: Vec<&str> = TrapKind::ALL.iter().map(|kind| kind.name()).collect();
     let guest_hooks: Vec<serde_json::Value> = G::HOOKS
         .iter()
         .map(|hook| {
@@ -381,7 +369,6 @@ pub extern "C" fn contract() -> i32 {
         "hookParams": HookType::MAX_PARAMS,
         "align": G::ALIGN,
         "maxLength": G::MAX_LENGTH,
-        "memoryFaults": ["page", "general protection", "stack fault"],
         "lookup": LOOKUP,
         "probe": PROBE,
         "threadStateSize": thread_state_size::<G>(),

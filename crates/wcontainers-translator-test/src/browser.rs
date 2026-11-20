@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use wcontainers_guest_cpu::{MemoryFault, TrapKind};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 fn package() -> PathBuf {
@@ -21,14 +22,65 @@ fn target() -> PathBuf {
 
 /// Where the page's runs keep their files, under the browser build.
 const CASES: &str = "cases";
-/// The kind of stop the browser runner reports for a single step of the trap flag.
+/// The kinds of stop the browser runner reports beside a trap's (`TrapKind::name`).
+pub const FINISHED: &str = "finished";
+pub const SYSCALL: &str = "system call";
 pub const SINGLE_STEP: &str = "single step";
+pub const MEMORY_FAULT: &str = "memory fault";
+pub const STACK_FAULT: &str = "stack fault";
+pub const NO_CODE: &str = "no code";
+const NO_EXACT_REGISTERS: &str = "fault without exact registers";
+const STOP_KINDS: &[&str] = &[
+    FINISHED,
+    SYSCALL,
+    SINGLE_STEP,
+    MEMORY_FAULT,
+    STACK_FAULT,
+    NO_CODE,
+    NO_EXACT_REGISTERS,
+];
+
+/// The stop a memory fault of each kind gives.
+pub fn memory_fault_stop(fault: MemoryFault) -> &'static str {
+    match fault {
+        MemoryFault::Page => MEMORY_FAULT,
+        MemoryFault::GeneralProtection => TrapKind::GeneralProtection.name(),
+        MemoryFault::Stack => STACK_FAULT,
+    }
+}
+
+/// The signal Linux sends for a trap of each kind.
+pub fn trap_signal(trap: TrapKind) -> u32 {
+    match trap {
+        TrapKind::Undefined | TrapKind::Unsupported => SIGILL,
+        TrapKind::Breakpoint => SIGTRAP,
+        TrapKind::Alignment => SIGBUS,
+        TrapKind::DivideError | TrapKind::FloatException => SIGFPE,
+        TrapKind::GeneralProtection | TrapKind::Overflow => SIGSEGV,
+    }
+}
+
+/// What parts the words of a stop kind's name.
+const WORD_SEPARATOR: char = ' ';
+
+/// A stop kind as the runner's script names its property: in lower camel case.
+fn script_name(kind: &str) -> String {
+    let mut words = kind.split(WORD_SEPARATOR);
+    let mut name = words.next().unwrap_or_default().to_string();
+    for word in words {
+        let mut letters = word.chars();
+        name.extend(letters.next().map(|first| first.to_ascii_uppercase()));
+        name.extend(letters);
+    }
+    name
+}
 
 /// Keys of the page's settings and answer.
 const RUNNER_KEY: &str = "runner";
 const LOCK_CODE_KEY: &str = "lockCode";
-const SINGLE_STEP_KEY: &str = "singleStep";
-const STOP_KIND_KEY: &str = "kind";
+const STOP_KINDS_KEY: &str = "stopKinds";
+const MEMORY_FAULT_STOPS_KEY: &str = "memoryFaultStops";
+pub(crate) const STOP_KIND_KEY: &str = "kind";
 const LINK_ADDRESS_KEY: &str = "linkAddress";
 const STOP_STATE_KEY: &str = "stateAtStop";
 
@@ -36,7 +88,24 @@ const STOP_STATE_KEY: &str = "stateAtStop";
 fn runner_names() -> Value {
     let mut names = serde_json::Map::new();
     names.insert(LOCK_CODE_KEY.into(), crate::runner::LOCK_CODE.into());
-    names.insert(SINGLE_STEP_KEY.into(), SINGLE_STEP.into());
+    names.insert(
+        STOP_KINDS_KEY.into(),
+        STOP_KINDS
+            .iter()
+            .copied()
+            .chain(TrapKind::ALL.iter().map(|trap| trap.name()))
+            .map(|kind| (script_name(kind), Value::from(kind)))
+            .collect::<serde_json::Map<_, _>>()
+            .into(),
+    );
+    names.insert(
+        MEMORY_FAULT_STOPS_KEY.into(),
+        MemoryFault::ALL
+            .iter()
+            .map(|fault| memory_fault_stop(*fault))
+            .collect::<Vec<_>>()
+            .into(),
+    );
     names.into()
 }
 
@@ -246,17 +315,13 @@ fn run_in_chrome<G: GuestTest>(
             .collect()
     };
     let stopped = &result["stopped"];
-    // A process killed by a signal is reported as a shell does, 128 plus Linux's number of the signal each
-    // stop raises (the same numbers on every guest).
-    let signal = match stopped[STOP_KIND_KEY].as_str() {
-        Some("finished") => None,
-        Some("memory fault") => Some(SIGSEGV),
-        Some("alignment") => Some(SIGBUS),
-        Some("undefined" | "unsupported") => Some(SIGILL),
-        Some("breakpoint" | SINGLE_STEP) => Some(SIGTRAP),
-        Some("divide error" | "float exception") => Some(SIGFPE),
-        Some("general protection" | "overflow") => Some(SIGSEGV),
-        Some("stack fault") => Some(SIGBUS),
+    let kind = stopped[STOP_KIND_KEY].as_str().unwrap_or_default();
+    let signal = match (kind, TrapKind::from_name(kind)) {
+        (FINISHED, _) => None,
+        (MEMORY_FAULT, _) => Some(SIGSEGV),
+        (STACK_FAULT, _) => Some(SIGBUS),
+        (SINGLE_STEP, _) => Some(SIGTRAP),
+        (_, Some(trap)) => Some(trap_signal(trap)),
         _ => panic!(
             "the program stopped without exiting in Chrome: {stopped} at {}",
             result["pc"]
@@ -265,6 +330,7 @@ fn run_in_chrome<G: GuestTest>(
     let status = match signal {
         // Linux reports the low 8 bits of the status.
         None => i32::from(stopped["status"].as_i64().unwrap() as u8),
+        // A process killed by a signal is reported as a shell does, 128 plus Linux's number of the signal.
         Some(signal) => 128 + signal as i32,
     };
     let counters = result["counters"]

@@ -4,7 +4,7 @@ use crate::guest::GuestTest;
 use crate::layout::initial_stack;
 use crate::reference::{BlobRan, BlobRequest, RUNNER_EXECUTABLE, with_reference};
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
-use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
+use linux_raw_sys::general::{SIGALRM, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -194,13 +194,13 @@ pub fn check_ordinary_programs(c_target: &str, mut run: impl FnMut(&[u8]) -> Ran
             "null",
             "int main(void) { *(volatile int *)0 = 1; return 0; }",
             b"",
-            128 + 11,
+            128 + SIGSEGV as i32,
         ),
         (
             "forever",
             "int main(void) { volatile int n = 0; for (;;) n++; }",
             b"",
-            128 + 14,
+            128 + SIGALRM as i32,
         ),
     ] {
         let ran = run(&executable(c_target, name, source));
@@ -355,7 +355,7 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         .find(|s| s.name() == Ok(MAIN))
         .map(|s| s.address() - text);
     let mut bytes = std::fs::read(&built).unwrap();
-    bytes.resize(bytes.len().next_multiple_of(8), 0);
+    bytes.resize(bytes.len().next_multiple_of(align_of_val(headers)), 0);
     let at = bytes.len() as u64;
     bytes.extend_from_slice(object::pod::bytes_of_slice(headers));
     let blob = Blob {
@@ -564,7 +564,7 @@ pub fn ran<G: GuestTest>(
         Stopped::Fault(Fault::Stack) => SIGBUS,
         other => {
             let pc = u64::from_le_bytes(
-                zerocopy::IntoBytes::as_bytes(registers)[G::PC_OFFSET..][..8]
+                zerocopy::IntoBytes::as_bytes(registers)[G::PC_OFFSET..][..size_of::<u64>()]
                     .try_into()
                     .unwrap(),
             );

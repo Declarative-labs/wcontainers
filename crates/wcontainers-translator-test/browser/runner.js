@@ -102,6 +102,8 @@ function run({
   const pagePermissions = new Uint8Array(permissionPages);
   // The write locks held on each page, a bit for each reason (`runner.lockCode`: the page holds translated code).
   const LOCK_CODE = runner.lockCode;
+  // The names of the kinds of stop, a trap's among them.
+  const stops = runner.stopKinds;
   const locks = new Uint8Array(permissionPages);
   // Translate the instruction at this address without locking its page, at the next exact load there.
   let exactMark = null;
@@ -304,7 +306,7 @@ function run({
       }
       case BigInt(calls.exit):
       case BigInt(calls.exitGroup):
-        stop({ kind: "finished", status: Number(BigInt.asIntN(32, a[0])) });
+        stop({ kind: stops.finished, status: Number(BigInt.asIntN(32, a[0])) });
         raiseStopFlag();
         return 0n;
       // brk: this stand-in never moves the break, and answers with the current one as Linux does when it
@@ -330,7 +332,7 @@ function run({
       exactMark = null;
       // Instruction cases end at a system call, as the reference's do.
       if (stopAtSyscall) {
-        stop({ kind: "syscall" });
+        stop({ kind: stops.systemCall });
         raiseStopFlag();
         return 0n;
       }
@@ -345,7 +347,7 @@ function run({
       if (stopped) return contract.unwindLeave;
       switch (step(contract.stepAt.stop, registers().pc)) {
         case "trap":
-          stop({ kind: runner.singleStep });
+          stop({ kind: stops.singleStep });
           return contract.unwindLeave;
         case "run":
           raiseStopFlag();
@@ -370,7 +372,7 @@ function run({
       }
       slowPath(reason.memoryFault, address, 0);
       const fault = memoryFault(address);
-      if (fault === "page") stop({ kind: "memory fault", address: address.toString(), write: access !== 0 });
+      if (fault === stops.memoryFault) stop({ kind: fault, address: address.toString(), write: access !== 0 });
       else stop({ kind: fault });
       return contract.unwindLeave;
     },
@@ -390,12 +392,12 @@ function run({
       const executable = (p) => p >= 0 && p < permissionPages && (pagePermissions[p] & contract.execute) !== 0;
       if (!executable(page)) {
         slowPath(reason.memoryFault, address, 0);
-        stop({ kind: "memory fault", address: address.toString(), write: false, execute: true });
+        stop({ kind: stops.memoryFault, address: address.toString(), write: false, execute: true });
         return 0;
       }
       const coveredEnd = tableBase + align * BigInt(slots);
       if (address < tableBase || address >= coveredEnd) {
-        stop({ kind: "no code", address: address.toString() });
+        stop({ kind: stops.noCode, address: address.toString() });
         return 0;
       }
       let first = page;
@@ -436,7 +438,7 @@ function run({
       exactMark = null;
       const name = contract.trapKinds[kind];
       stop({ kind: name, detail: BigInt.asUintN(64, detail).toString() });
-      if (name === "unsupported") slowPath(reason.unsupportedInstructionReached, snapshot.pc, 0);
+      if (name === stops.unsupported) slowPath(reason.unsupportedInstructionReached, snapshot.pc, 0);
     },
   };
   // The guest's own hooks, by who does their work.
@@ -451,7 +453,7 @@ function run({
     const memory = guest();
     const code = memory.subarray(pc, Math.min(pc + contract.maxLength, memory.length));
     new Uint8Array(translator.memory.buffer, cpuState + size, code.length).set(code);
-    return contract.memoryFaults[translator.cpu_memory_fault(address, code.length)];
+    return runner.memoryFaultStops[translator.cpu_memory_fault(address, code.length)];
   }
   // What single stepping does now (`cpu_step`, `kind` one of `contract.stepAt`), on a copy of the thread's
   // state that is copied back.
@@ -704,7 +706,7 @@ function run({
     } catch (error) {
       if (!(error instanceof WebAssembly.RuntimeError) || !/out of bounds/.test(error.message)) throw error;
       slowPath(reason.faultWithoutExactRegisters, 0, 0);
-      stopped = { kind: "fault without exact registers" };
+      stopped = { kind: stops.faultWithoutExactRegisters };
     }
     runs.push(performance.now() - started);
   }
