@@ -185,6 +185,7 @@ fn compile(
             let mut arguments = vec!["cc", "-target", "aarch64-linux-musl", optimisation];
             arguments.extend(code);
             arguments.extend(["-fno-sanitize=all", "-w", &include]);
+            arguments.push(crate::programs::LINK_ONLY_WHAT_IS_REACHED);
             if flat {
                 arguments.push(&script);
             }

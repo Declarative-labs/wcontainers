@@ -193,11 +193,16 @@ fn csmith_programs_match_linux() {
     let chrome_every = cases.div_ceil(chrome.max(1));
     let in_chrome = AtomicU64::new(0);
     let (ran, too_long, done) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+    // Programs whose floating point runs on the exact path: they read FPSR.
+    let exact = AtomicU64::new(0);
     let failures = Mutex::new(Vec::new());
     at_once(jobs, cases, |i| {
         let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
         let (source, compiler, level, position) = csmith_case(number);
         let blob = build(&source, compiler, level, position);
+        if blob.reads_float_status() {
+            exact.fetch_add(1, Ordering::Relaxed);
+        }
         let own = || ordinary(&source, compiler, level, position);
         let checked = compare(&blob, own).and_then(|theirs| match theirs {
             Some(theirs) if chrome > 0 && i.is_multiple_of(chrome_every) => {
@@ -224,10 +229,11 @@ fn csmith_programs_match_linux() {
     let mut failures = failures.into_inner().unwrap();
     failures.sort();
     eprintln!(
-        "layer 3: {cases} Csmith programs from case {from}, seed {seed}, {jobs} at once: {} compared ({} also in Chrome), {} did not end in time on Linux, {} failing: {failures:?}",
+        "layer 3: {cases} Csmith programs from case {from}, seed {seed}, {jobs} at once: {} compared ({} also in Chrome), {} did not end in time on Linux, {} read FPSR, {} failing: {failures:?}",
         ran.into_inner(),
         in_chrome.into_inner(),
         too_long.into_inner(),
+        exact.into_inner(),
         failures.len()
     );
     assert!(failures.is_empty());
