@@ -5386,9 +5386,7 @@ impl<B: Backend> Device<B> {
         }
         let t = &view.texture;
         // Direct3D generates mips of formats it filters only: integer views take none.
-        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0
-            || matches!(view.format.kind(), FormatKind::Uint | FormatKind::Sint)
-        {
+        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 || format::is_integer(view.format) {
             return;
         }
         let v = &view.desc;
