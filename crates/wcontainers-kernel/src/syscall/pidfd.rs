@@ -67,7 +67,7 @@ fn process_named(kernel: &Kernel, pid: Pid) -> &crate::process::Process {
 
 /// What pollers of a process's descriptors wait on.
 pub(crate) fn channel(node: &Node) -> Channel {
-    Channel::Object(Rc::as_ptr(node) as *const () as usize)
+    Channel::Object(crate::process::ObjectId::of_node(node))
 }
 
 /// `pidfd_poll`: readable once the process has ended, and hung up as well once it is reaped or the
@@ -275,9 +275,9 @@ pub(super) fn pidfd_send_signal(
     }
 }
 
-/// `process_mrelease`: frees a dying process's memory early. A fatal signal ends a process here at
-/// once, so there is never a dying one whose memory is left: an ended process has none (ESRCH), and
-/// a running one is not dying (EINVAL).
+/// `process_mrelease`: frees a dying process's memory early. An ended process has none (ESRCH), a
+/// running one is not dying (EINVAL), and a dying one's memory is not given back to the host (plan
+/// section 15) and never runs again.
 pub(super) fn process_mrelease(
     kernel: &mut Kernel,
     _: &mut Context<'_>,
@@ -291,6 +291,9 @@ pub(super) fn process_mrelease(
     let target = named(kernel, &file.borrow())?;
     if !target.exists || process_named(kernel, target.pid).ended.is_some() {
         return Err(Errno::ESRCH);
+    }
+    if kernel.is_dying(target.pid) {
+        return Ok(0);
     }
     Err(Errno::EINVAL)
 }

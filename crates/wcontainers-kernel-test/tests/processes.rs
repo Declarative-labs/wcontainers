@@ -19,6 +19,20 @@ fn killing_own_group_matches_reference() {
     assert_same_output(&out, "groupkill", &[]);
 }
 
+/// A fatal signal ends its target when the target next runs, so the sender's wait at once finds
+/// it still alive on one CPU.
+#[test]
+fn killed_children_end_when_they_next_run_as_on_linux() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = wcontainers_kernel_test::guest::build("killorder", &[], &out);
+    let theirs = wcontainers_kernel_test::reference::run_one_cpu(&program, &[]);
+    let path = "/wc/killorder";
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let ours = wcontainers_kernel_test::run_ours_saving(&out, path, &[path], seed, 0);
+        assert_eq!(ours.outcome, theirs, "seed {seed}");
+    }
+}
+
 /// Writers that find a pipe full wait together until its reader comes.
 #[test]
 fn writers_waiting_on_a_full_pipe_match_reference() {

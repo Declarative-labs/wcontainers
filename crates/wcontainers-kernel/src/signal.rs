@@ -447,7 +447,7 @@ impl Kernel {
             });
         }
         self.wake_readiness_of(pid);
-        self.complete(cx, pid, target, signal);
+        self.complete(pid, target, signal);
         Ok(())
     }
 
@@ -478,9 +478,9 @@ impl Kernel {
         Ok(None)
     }
 
-    /// Linux's `complete_signal`: a fatal signal that a thread does not block ends the process now;
-    /// otherwise a thread that does not block it is woken to act on it.
-    fn complete(&mut self, cx: &mut Context<'_>, pid: Pid, target: Target, signal: u32) {
+    /// Linux's `complete_signal`: a fatal signal that a thread does not block ends the process when
+    /// one of its threads next runs; otherwise a thread that does not block it is woken to act on it.
+    fn complete(&mut self, pid: Pid, target: Target, signal: u32) {
         let candidates: alloc::vec::Vec<Tid> = match target {
             Target::Thread(tid) => alloc::vec![tid],
             Target::Process(_) => self.processes[&pid].threads.clone(),
@@ -506,11 +506,7 @@ impl Kernel {
             && !self.dropped(pid, signal);
         if fatal || signal == SIGKILL {
             self.drop_pending(pid, bit(signal));
-            if self.watched(tid) {
-                self.die_when_met(pid, signal);
-            } else {
-                self.die_of(cx, pid, signal);
-            }
+            self.die_when_met(pid, signal);
             return;
         }
         let wait = self.threads[&tid].call.wait;
@@ -526,21 +522,27 @@ impl Kernel {
         }
     }
 
-    /// Leaves a fatal signal to the process's own threads, as Linux's threads end themselves: the
-    /// first to go back to its program meets the watches on what the kernel stores at the end,
-    /// then ends the process. None of them runs its program or a call again.
+    /// Whether a fatal signal is ending process `pid`.
+    pub(crate) fn is_dying(&self, pid: Pid) -> bool {
+        self.dying.contains_key(&pid)
+    }
+
+    /// Leaves a fatal signal to the process's own threads, as Linux's threads end themselves: each
+    /// is put in line, and the first whose turn comes meets the watches on what the kernel stores
+    /// at the end, then ends the process. None of them runs its program or a call again.
     fn die_when_met(&mut self, pid: Pid, signal: u32) {
         self.dying.insert(pid, signal);
         self.processes.get_mut(&pid).expect("process").stopped = false;
         for tid in self.processes[&pid].threads.clone() {
             match self.threads[&tid].call.wait {
                 // It goes on once the watches change.
-                Some(Channel::Watch(_)) => continue,
+                Some(Channel::Watch(_)) => {}
                 Some(_) => self.wake_thread(tid),
+                None if self.current != Some(tid) => {
+                    let resume = self.threads[&tid].resume;
+                    self.make_runnable(tid, resume);
+                }
                 None => {}
-            }
-            if self.running != Some(tid) && !self.signalled.contains(&tid) {
-                self.signalled.push_back(tid);
             }
         }
     }

@@ -612,12 +612,25 @@ impl Kernel {
                 self.announce_kernel_writes(cx);
                 continue;
             }
+            // A thread of a process a fatal signal is ending ends it when its turn comes.
+            if !self.dying.is_empty()
+                && let Some(tid) = self.next_to_run()
+                && self.dying.contains_key(&self.threads[&tid].process)
+            {
+                let resume = self.threads[&tid].resume;
+                self.take_out_of_line(tid);
+                self.return_to_user(cx, tid, resume);
+                continue;
+            }
             if let Some(tid) = self.signalled.pop_front() {
                 let Some(thread) = self.threads.get(&tid) else {
                     continue;
                 };
-                let stopped = self.processes[&thread.process].stopped;
-                if thread.call.wait.is_some() || stopped {
+                let process = thread.process;
+                if thread.call.wait.is_some()
+                    || self.processes[&process].stopped
+                    || self.dying.contains_key(&process)
+                {
                     continue;
                 }
                 // A woken thread of a process just continued goes back in line to run its call.
