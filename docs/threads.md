@@ -3000,68 +3000,69 @@ replays a recording; the tests that did in the form before are moved to T8 and r
 
 Each bar is checkable by the named tests. The cheapest large win is first.
 
-- **T1, groups in parallel, every group `Serial`.** No translated code changes. The config exists with
-  `Serial` and with `None` and `Exact`. A config with `Parallel` or `External` is refused where it is
-  given (the container's start), with an error that says it is not built yet: that is the embedder's
-  call failing, never a guest's. A recorded kernel needs every process at least `External` (section
-  3), and `External` is T8's. So in T1 a recorded kernel accepts only `Exact`, and a kernel that is
-  not recorded accepts `None` and `Exact`.
+- **T1, processes in parallel, every process `Serial`.** No translated code changes. The config exists
+  with `Serial` and with `None` and `Exact`. A config with `Parallel` or `External` is refused where it
+  is given (the container's start), with an error that says it is not built yet: that is the
+  embedder's call failing, never a guest's. (The form before also limited a "recorded kernel" to
+  `Exact`; that kernel is withdrawn, 4.6.)
   - abi: `Cpu` and `Host` by `&self` and `Sync`; the processor in `Kernel::next`; the thread in
-    `Kernel::exit`; the `Host` services `thread_stop` and `kernel_entry_admit`, asked only of a system
-    that orders entries, and then about every entry (4.6); the hooks
-    `on_processor_needed` and `on_deadline_changed` (5) and
-    `on_execution_config_in_force_changing` (3); the stop word as a set of reasons, with `raise_stop`
-    as an atomic or (4.5).
+    `Kernel::exit`; the `Host` service `thread_stop`; the hooks `on_processor_needed` and
+    `on_deadline_changed` (5); the stop word as a set of reasons, with `raise_stop` as an atomic or
+    (4.5). The proxy, the hook for the kernel's writes, the signal hook and the shared-memory hooks
+    are the interface track's; T1 fires each where its entry is, once that track has added it.
   - kernel: the lock with its holder's word, the handle that holds it and the `Send` reason (4.2);
     the check of the calling worker's mark at every way in but the loop's own (4.2);
     processors, masks and the scheduler, with one entry for each thread `next` chooses, a `Serial`
-    group putting forward its next thread only, and a thread's woken call and its signals acted on
-    only when it is chosen for a processor (4.3); groups with the joining rule, joined only with
-    their other running threads called in, and the config in force with its hook (3); the two rules
-    of 4.4 item 5, with calling a group in, a mark for each call, waiters chosen whatever is called
-    in, and threads ending in their own entry (4.5); a process's
-    signal picked again when its thread blocks it or ends, through one function that sets a mask
-    (4.5); entries kept aside when told `Later` (4.6); the scheduler's condition in both halves (no
+    task put forward only when it is due a turn, and a thread's woken call and its signals acted on
+    only when it is chosen for a processor (4.3); overlaps kept per memory, with a new overlap made
+    only once the other side's handed-out threads are called in (3); the rule of section 3 with its
+    four corrections, of which T1, where everything is `Serial`, uses exclusion by "handed out", the
+    call-in of overlappers and "due a turn"; the two rules of 4.4 item 5, with calling a memory in, a
+    mark for each call, waiters chosen whatever is called in, and threads ending in their own entry
+    (4.5); every call that runs again reading its arguments once (4.4, the gap that the mixed-ordering
+    check found in `Serial` processes); a process's signal picked again when its thread blocks it or
+    ends, through one function that sets a mask (4.5); the scheduler's condition in both halves (no
     processor idle with a thread it could run, no ready thread with nobody due in), with its mark and
-    its counts, the wake-up comparison aimed at a thread in the woken one's way, and the deadline
-    out of the slices (5, 11); charging per thread (11); the told count; `ExecutionConfig` at the
-    start, inherited at fork; `kernel.process(id)` at any time for reading (5, if decision 8 is
-    ruled so).
+    its counts, the wake-up comparison aimed at a thread in the woken one's way, and the deadline out
+    of the slices (5, 11); charging per thread (11); the told count; `ExecutionConfig` at the start,
+    inherited at fork; `kernel.process(id)` at any time for reading (5, if decision 8 is ruled so).
   - runtime: `run` and `run_until_finished` with a processor and `StopReason` per worker, one worker
-    started for each processor, the system told who, idle without a lost wake, the container stop,
-    the executor's stopping handle and its promise in place of `StopFlag`, the kernel's handle
-    carried by `Carry::Leave` (4.2), the local system by `&self` with a slice's end per processor and
-    one deadline for the container, sent by an idle worker or by the timer thread (5).
+    started for each processor, the system told who, idle without a lost wake, the container stop
+    reached through the ruled interrupter, the executor's stopping handle and its promise in place of
+    `StopFlag`, the kernel's handle carried by `Carry::Leave` (4.2), the local system by `&self` with a
+    slice's end per processor and one deadline for the container, sent by an idle worker or by the
+    timer thread (5).
   - WebAssembly executor: shareable, with the process's lock kept for a thread's whole stay in
     `Execution::run`, let go before the kernel's handle is dropped, and its try-lock rule (7.2); the
     asked-in bit, taken off only inside an entry (4.5); the worker's mark set around the system's
-    calls in the clock hook and `warn` (4.2); a code drop that reaches the caller's group only (7.5);
-    counted turns for a thread in force `Exact` and free turns for any other. Stores stay one per
-    process: one thread of a group runs at a time.
-  - kernel test crate: the recording and replaying test system with its replayer, which ends a
-    replay that has left its recording, and its seeded order for one worker made the same way (4.6,
-    11).
+    calls in the clock hook and `warn` (4.2); a code drop that reaches only the memories it must (7.5);
+    counted turns for a thread of an `Exact` process and free turns for any other. Stores stay one per
+    process: one thread of a `Serial` process runs at a time.
+  - kernel test crate: the test system's repeatable order with one worker, made with the interrupter
+    (11). (The form before had a recording and replaying test system here; replay is T8's now.)
   - the stand-in stays at one processor.
-  - Bar: section 12's "nothing changes with one processor", "groups in parallel", "exact replay", "a
-    replay that has left its recording ends" (three of its four changes), "the config in force" for
-    the guarantee (its parts marked T1), "groups joined while both run", "two call-ins that want each
-    other's groups", "reaching across groups", "no
-    request to stop is lost", "no processor idles with a thread it could run" (its first three
-    programs), "no thread waits behind its own sibling", "timers and slices", "a process's signal
-    finds a thread" (the `Serial` run), "a choice that hands nobody out", "the kernel called from
-    inside a hook", "the kernel called from inside guest code" (the `Serial` run), "the executor's
-    lock rule", "a worker for each processor", "one worker, several processors, no log" and
-    "processors and masks"; its `Serial` measurements, of which only the system call cost can move
-    here; and a scaling test: four processes that only compute, on four processors, finish in under
-    half the time they take on one (a quarter is the ideal; the margin is for this machine's load and
-    is the orchestrator's to set).
+  - Bar: section 12's "nothing changes with one processor", "processes in parallel", "repeatable with
+    one worker", "a neighbour's guarantee never reaches a process" (with both `Serial`), "a woken call
+    reads its arguments once" (the `Serial` run), "memories that come to overlap while both run" (its
+    `Serial` runs), "two call-ins that want each other's memories" (its `Serial` runs), "reaching
+    across processes", "no request to stop is lost", "no processor idles with a thread it could run"
+    (its first three programs), "no thread waits behind its own sibling", "timers and slices", "a
+    process's signal finds a thread" (the `Serial` run), "a choice that hands nobody out", "the kernel
+    called from inside a hook", "the kernel called from inside guest code" (the `Serial` run), "the
+    executor's lock rule", "a worker for each processor" and "processors and masks"; its `Serial`
+    measurements, of which only the system call cost can move here; and a scaling test: four processes
+    that only compute, on four processors, finish in under half the time they take on one (a quarter
+    is the ideal; the margin is for this machine's load and is the orchestrator's to set).
   - Measured: a real build with parallel jobs at 1 to 16 processors; the share of time waiting for the
-    kernel's lock; groups called in, by reason, and how long a mark stayed on; stops asked for
+    kernel's lock; memories called in, by reason, and how long a mark stayed on; stops asked for
     nothing; threads asked in for a timer, for a waiting thread or for a waiter; turns that ended for
     nobody; how often the scheduler's condition was walked and how long a walk took; the cost of the
-    lock and its holder's word in a system call, by the build without them; the same build with 16
-    processors on four and on eight cores, against 16 on 16 where a machine has them.
-- **T2, a group's threads in parallel on the WebAssembly executor, ARM64 guests.** After decision 4.
+    lock and its holder's word in a system call, by the build without them, and of the proxy's hooks
+    beside it; the same build with 16 processors on four and on eight cores, against 16 on 16 where a
+    machine has them.
+  - Before T1's mixed-free bar is trusted, the model of call-ins is redone for section 3's rule (known
+    fault 1). It is not a test of T1's code but of its rules, and costs seconds a search.
+- **T2, a process's threads in parallel on the WebAssembly executor, ARM64 guests.** After decision 4.
   - translator: the Parallel form (7.2): barriers and the 128 bit hook behind the byte (7.3), the mark
     for hooks that are stop points (4.5); the shared import and its declared maximum in both forms.
   - executor: the two engines, with the compiler setting and a test that it took effect (7.6); the
@@ -3069,18 +3070,27 @@ Each bar is checkable by the named tests. The cheapest large win is first.
     and the held bit, held only at a stop point (4.5); frames given up after a page that allowed
     reading and writing lost a permission (4.5); a write from outside into a memory with one thread
     made under a group stop (7.3); the table rules and the shared pages of 7.4, with the one-way
-    copy; code dropped and added, with the count of drops (7.5); table growth.
-  - kernel: `Parallel` in the config, its changes in force, the executor's limits, telling the executor
-    each memory's config, the compare and exchange for the words the kernel changes, `membarrier` with
-    its restartable-sequence command, the read of every call that runs again (4.4).
-  - Bar: the threaded suite, "the races this plan names", "a process's signal finds a thread" (the
-    `Parallel` run), the ordering tests and "the compiler setting" match the reference in `Parallel`
-    under the stress schedule at full, none and bounded look-ahead; T1's bars hold; the `Serial`
-    measurements of section 12 hold, the byte-for-byte one and the four of threaded programs run
-    `Serial` among them.
+    copy; the copy at each switch for a `Serial` task beside `Parallel` ones, and "can alternate" in
+    `Cpu::parallel_limits()` (7.4), or, if it is left for later, those tasks kept `Serial` and
+    counted; the byte following the memory's own threads (7.3); code dropped and added, with the
+    count of drops (7.5); table growth.
+  - kernel: `Parallel` in the config; the rule's mixed case, with rule 3's mark on the overlappers of a
+    `Serial` task due a turn and rule 4's phases (a `Parallel` waiter held back while a `Serial`
+    overlapper is handed out); one memory with one form under `CLONE_VM`; the executor's limits as a
+    fact about each task (3); telling the executor each memory's form and how it runs (7.3); the
+    compare and exchange for the words the kernel changes; `membarrier` with its restartable-sequence
+    command.
+  - Bar: the threaded suite, "the one scheduling rule" (its WebAssembly runs, with the copy at each
+    switch if built), "the races this plan names", the `Parallel` runs of "memories that come to
+    overlap", "two call-ins" and "a woken call reads its arguments once", "a process's signal finds a
+    thread" (the `Parallel` run), the ordering tests and "the compiler setting" match the reference in
+    `Parallel` under the stress schedule at full, none and bounded look-ahead; T1's bars hold; the
+    `Serial` measurements of section 12 hold, the byte-for-byte one and the four of threaded programs
+    run `Serial` among them.
   - Measured: group stops by reason and their length; threads that gave up their frames, by reason;
     translations thrown away; a store's memory; what the Parallel form costs a process with one
-    thread.
+    thread; for a `Serial` task beside `Parallel` ones, the call-ins and hand-outs at each switch and
+    the time a `Serial` wake waits for the slowest overlapper, and the copy at each switch if built.
 - **T3, the runtimes and real threaded programs.** Go, Java, Node and Python with threads, and code
   compiled while other threads run.
   - Bar: section 12's runtimes pass in `Parallel` under the stress schedule.
@@ -3088,19 +3098,21 @@ Each bar is checkable by the named tests. The cheapest large win is first.
     (by kind) and the 128 bit forms run, counted by a build of the translator made for this measurement
     only.
 - **T4, (`Parallel`, `Exact`) and per-thread watches on the WebAssembly executor** (section 8). After
-  the embedder interface's memory watches exist and the translator's count exists in the Parallel form
-  (other tracks). With it: a change of the kernel's in a group in force `Exact` is a call-in (4.5).
+  the embedder interface's memory watches exist, with the kernel's own accesses firing
+  `on_watched_memory_accessing`, and the translator's count exists in the Parallel form (other
+  tracks). With it: a change of the kernel's in an `Exact` process is a call-in (4.5).
   - Bar: a test embedder holds each page for one writer or several readers, records every hand-over with
-    both threads' positions, and replays a threaded program from that record with the same registers and
-    memory at every hand-over and at every kernel entry. The program's threads also fill each other's
-    pages through `read` system calls, so the kernel's own accesses are in the record; they write
-    objects on each other's stacks (a scoped thread filling its parent's array, a result joined into a
-    stack slot), one of them while it runs on a second stack, so the rule for frames is in it too; and
-    they `mprotect`, fork and rewrite code while the others run, so every call-in is in it. The
-    torn-permission and live-frame tests of section 12 pass with a watch in place of `mprotect`, and
-    the eight-thread program of "no processor idles" keeps all eight running. `suspend` in
-    `on_memory_accessing` with other threads running answers its error, and works in
-    `on_process_called_in` (if decision 8 is ruled so).
+    both threads' positions, and checks it against the run: each hand-over with the same registers and
+    memory as when it was recorded, by running the program again with the same hand-overs forced. The
+    program's threads also fill each other's pages through `read` system calls, so the kernel's own
+    accesses are in the record; they write objects on each other's stacks (a scoped thread filling its
+    parent's array, a result joined into a stack slot), one of them while it runs on a second stack,
+    so the rule for frames is in it too; and they `mprotect`, fork and rewrite code while the others
+    run, so every call-in is in it. The torn-permission and live-frame tests of section 12 pass with a
+    watch in place of `mprotect`, and the eight-thread program of "no processor idles" keeps all eight
+    running. `suspend_tasks` naming a running sibling in `on_watched_memory_accessing` does what
+    decision 11 rules, and `suspend_tasks` on the `Kernel` from outside any hook takes it.
+    A replay of the whole record through the kernel's replay primitives is T8's.
   - Measured: the cost of one hand-over; hand-overs per second in the threaded suite and the runtimes;
     frames given up for a watch; call-ins by reason.
 - **T5, the native executor** (section 10), in the native track, after its single-thread suites. With it:
@@ -3108,39 +3120,42 @@ Each bar is checkable by the named tests. The cheapest large win is first.
   Serial form and copied in the Parallel form; the exclusive's record made safe for threads in
   parallel; each held virtual CPU dropping its own cached translations; this plan's calls on the
   inside half (section 10).
-  - Bar: T1's and T2's bars on the native executor, the ordering tests with barriers among them; the
-    per-thread root under T4's test; the Serial form of the benchmark set and of busybox holds no
-    barrier instruction and is the same code as before the milestone, read from the output; the
-    question at an entry of a recorded kernel makes no crossing of its own: over a loop of `getppid`
-    the monitor counts no more exits than the log's batches sent out.
+  - Bar: T1's and T2's bars on the native executor, the ordering tests with barriers among them, and
+    "the one scheduling rule" with its first case on `lock xadd` (where the native `Serial` form drops
+    the prefix); the per-thread root under T4's test; the Serial form of the benchmark set and of
+    busybox holds no barrier instruction and is the same code as before the milestone, read from the
+    output; the proxy's hooks at a system call make no crossing of their own: over a loop of
+    `getppid` with a recording system, the monitor counts no more exits than the log's batches sent
+    out.
+  - Measured: the interrupt from one virtual CPU to another, which the mixed case pays at each switch.
 - **T6, x86-64 guests**, in the x86 track: the Parallel form for x86, with lock prefixes as atomic
   operations, the hook for a misaligned one and `mfence` as the tested fence (7.3); the executor's
   answer on a weaker host (section 9); frames given up by 4.5's test, by the page, where a code page
   is locked against writes.
   - Bar: the threaded suite and the ordering tests, the sequence lock and the store-back among them,
-    for an x86 guest in `Parallel` on the x86 laptop; on this Mac the same suite passes with the group
+    for an x86 guest in `Parallel` on the x86 laptop; on this Mac the same suite passes with the process
     kept `Serial`, its counter read by the test; the `Serial` measurements of section 12 for an x86
     guest.
 - **T7, splitting the kernel's lock**, only where T1's measurement points (4.7), one part at a time.
   - Bar per part: the single-thread system call cost is not above its figure before; the time waiting for
     locks on T1's build is lower; every earlier bar holds.
-- **T8, `External` for `Serial` groups** (4.6), any time after T1; it changes no translated code. The
-  digest of an entry, its hook, and the replaying test system's stops without positions. With it a
-  recorded kernel accepts every guarantee, and runs a process given `None` in force `External`
-  (section 3).
-  - Bar: section 12's "`External`", "a kernel is recorded whole" in it, the digest's change in "a
-    replay that has left its recording ends", and the recorded kernel's parts of "the config in
-    force".
-  - Measured: what the question and the digest cost a system call, a small one and one that reads
-    many bytes (a large `write`), which is what a process given `None` pays in a recorded kernel; and
-    the share of the kernel test crate's programs whose replays are never thrown away.
+- **T8, replay per process** (4.6), after the embedder interface track has designed the two kernel
+  primitives ("where replay is recorded": not yet designed) and the owner has ruled decisions 12 and
+  17. It changes no translated code. With it: `External` for processes that run as `Serial` (decision
+  3); the replaying test system, which answers a process's calls from its log through the proxy and
+  runs for real the calls that change the process's own records (4.6); reading a thread's count and
+  stopping a thread at a count; the order of a `Serial` process's threads' turns followed in a replay.
+  - Bar: section 12's "replay per process", with its `External` part and "a replay that has left its
+    recording ends"; T4's record replayed through the primitives where T4 is built.
+  - Measured: what the proxy's hooks cost a system call when a recording system logs results, a small
+    call and one that reads many bytes (a large `write`); and the share of the kernel test crate's
+    programs whose `External` replays are never thrown away.
 
 Not milestones here: the form that orders atomic instructions for (`Parallel`, `External`) (decision 3),
-the ordered x86 form (decision 5), a browser, `suspend` and `resume`, which are the embedder
-interface's, and section 5's call and hook for acting on a process from outside a hook (decision 8),
-which come with them. The group stop that `suspend` needs in a `Parallel` process is T2's. What
-`suspend` may hand out (4.2) is asked of the interface track. Fewer workers than processors (known
-fault 2) is not a milestone.
+the ordered x86 form (decision 5), a browser, the suspend and resume calls, which are the embedder
+interface's, and locks across machines (4.5; decisions 13 and 14). The group stop that taking tasks out
+needs in a `Parallel` process is T2's. What the values that leave the kernel may hold (4.2) is asked of
+the interface track. Fewer workers than processors (known fault 3) is not a milestone.
 
 ## 14. Measurements behind the decisions
 
