@@ -58,7 +58,7 @@ mod llvmpipe;
 #[path = "corpus/table.rs"]
 mod table;
 
-use compare::{CompareOptions, DEFAULT_SEED, Verdict};
+use compare::{CompareOptions, DEFAULT_SEED, INPUT_SETS, SEED, Verdict};
 use wcontainers_gpu::{Format, VariantKey};
 use wcontainers_nir::direct::Rewrites;
 use wcontainers_nir::mesa::{Nir, Stage};
@@ -216,6 +216,24 @@ void main() {
 }
 ";
 
+/// Both negations of one pair's ordered comparisons, each in its own `if`: on a NaN operand both
+/// hold, so neither may be folded into the other comparison.
+const NEGATED_PAIR: &str = "#version 430
+layout(local_size_x = 8) in;
+uniform float k;
+uniform int n;
+layout(std430, binding = 0) buffer Out { uint flags[16]; };
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    float x = (g % 3u == 0u) ? uintBitsToFloat(0x7fc00000u | g) : float(g) * k - 1.0;
+    float y = (g % 5u == 1u) ? uintBitsToFloat(0xffc00000u | g) : k * float(n);
+    uint f = 0u;
+    if (!(x < y)) f |= 1u;
+    if (!(x >= y)) f |= 2u;
+    flags[g] = f;
+}
+";
+
 const LIBRARY_FILE: &str = r#"# a comment
 group basic "Basic"
     case add
@@ -327,11 +345,31 @@ fn compute_verdict(source: &str) -> Verdict {
     let reflection = stage.nir.to_common_form(Stage::Compute).unwrap();
     let module = wcontainers_nir::direct::module(&mut stage.nir).unwrap();
     wcontainers_nir::spirv::validate(&module).unwrap();
-    let options = CompareOptions {
-        seed: DEFAULT_SEED,
-        input_sets: 1,
+    on_each_seed(|options| {
+        glsl::compare_compute(source, &stage.names, &module, &reflection, options)
+    })
+}
+
+/// The comparison on each seed the knobs name: `WC_NIR_SEED` (the first) and `WC_NIR_INPUT_SETS`
+/// (how many, one input set each), and the first verdict that is not a match.
+fn on_each_seed(compare: impl Fn(CompareOptions) -> Verdict) -> Verdict {
+    let knob = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|text| text.parse().expect("a number"))
     };
-    glsl::compare_compute(source, &stage.names, &module, &reflection, options)
+    let first: u64 = knob(SEED).unwrap_or(DEFAULT_SEED);
+    let seeds: u64 = knob(INPUT_SETS).unwrap_or(1);
+    eprintln!("glsl reference: {seeds} seeds from {first:#x}");
+    (0..seeds)
+        .map(|i| {
+            compare(CompareOptions {
+                seed: first.wrapping_add(i),
+                input_sets: 1,
+            })
+        })
+        .find(|v| *v != Verdict::Matched)
+        .unwrap_or(Verdict::Matched)
 }
 
 #[test]
@@ -366,11 +404,9 @@ fn rewritten_verdict(source: &str) -> (Verdict, Rewrites) {
     };
     let (module, bindings) =
         wcontainers_nir::direct::rewrite(routed, bindings, &variant, &key).unwrap();
-    let options = CompareOptions {
-        seed: DEFAULT_SEED,
-        input_sets: 1,
-    };
-    let verdict = glsl::compare_compute(source, &stage.names, &module.module, &bindings, options);
+    let verdict = on_each_seed(|options| {
+        glsl::compare_compute(source, &stage.names, &module.module, &bindings, options)
+    });
     (verdict, rewrites)
 }
 
@@ -391,6 +427,12 @@ fn a_glsl_program_reading_an_array_at_run_time_and_constant_indices_matches_llvm
 #[test]
 fn a_glsl_program_comparing_nans_matches_llvmpipe_on_route_b() {
     assert_eq!(compute_verdict(UNORDERED), Verdict::Matched);
+}
+
+#[test]
+#[ignore = "known difference: Mesa's linker folds `!(x < y)` into `x >= y` for this driver's options, which GLSL allows on NaN; llvmpipe's compile keeps both (status file)"]
+fn a_glsl_program_negating_both_comparisons_of_a_nan_matches_llvmpipe_on_route_b() {
+    assert_eq!(compute_verdict(NEGATED_PAIR), Verdict::Matched);
 }
 
 #[test]
