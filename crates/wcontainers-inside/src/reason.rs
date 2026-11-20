@@ -27,3 +27,7 @@ pub const GUEST_PHYSICAL_SPACE_FULL: &str = "guest-physical space full";
 
 /// Every block of memory broken into pages because one page of it changed.
 pub const LARGE_ENTRY_SPLIT: &str = "large entry split";
+
+/// Every reservation of a run of frames for a block-sized range broken to give its untaken frames back, because
+/// guest-physical memory ran out; the detail is how many frames came back.
+pub const RESERVATION_BROKEN: &str = "reservation broken";

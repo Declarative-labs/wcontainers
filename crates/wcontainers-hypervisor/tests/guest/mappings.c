@@ -1,7 +1,8 @@
 /* Asks for memory as programs do and checks what it holds: a private mapping larger than the test machine's
    memory, read and written at a few pages; mappings of several sizes, each touched at its ends and unmapped;
    a mapping written at every page, unmapped and mapped again until more than the machine's memory has been
-   written in all; contents kept while their pages allow nothing; and a shared mapping a child writes. With an
+   written in all; contents kept while their pages allow nothing; a mapping of block-sized ranges whose
+   permissions change in part and in whole; and a shared mapping a child writes. With an
    argument it writes every page of a mapping of that many MiB instead. */
 
 #include <stdio.h>
@@ -82,6 +83,23 @@ int main(int argc, char **argv) {
     mprotect(p, 4 * page, PROT_READ);
     printf("allowed nothing, then read: %s\n", p + page);
     munmap(p, 4 * page);
+
+    size_t blocks = 8 * MIB;
+    unsigned long total = 0;
+    p = map(blocks, MAP_PRIVATE);
+    for (size_t at = 0; at < blocks; at += page) p[at] = (char)(at / page);
+    mprotect(p + blocks / 2, page, PROT_READ);
+    for (size_t at = 0; at < blocks; at += page) total += (unsigned char)p[at];
+    p[blocks / 2 + page] = 1;
+    mprotect(p, blocks, PROT_READ);
+    for (size_t at = 0; at < blocks; at += page) total += (unsigned char)p[at];
+    munmap(p + blocks / 4, blocks / 4);
+    for (size_t at = blocks / 2; at < blocks; at += page) total += (unsigned char)p[at];
+    munmap(p, blocks);
+    p = map(blocks, MAP_PRIVATE);
+    for (size_t at = 0; at < blocks; at += page) total += (unsigned char)p[at];
+    printf("written at every page of block-sized ranges, read after their permissions changed: %lu\n", total);
+    munmap(p, blocks);
 
     size_t shared = 256 * MIB;
     p = map(shared, MAP_SHARED);

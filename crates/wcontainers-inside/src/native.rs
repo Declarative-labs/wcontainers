@@ -31,12 +31,12 @@ use crate::floor::{
     UserRegisters, code, enter_user, guest_no_access, guest_read_only, guest_read_write,
     inside_code, make_code_visible, process_code, with_frames,
 };
-use crate::layout::{Region, linear};
+use crate::layout::{BLOCK_SIZE, Region, linear};
 use crate::link::LINK_BYTES;
 use crate::reason::{
     ASKED_THE_HOST, CODE_AREA_EMPTIED, CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED,
     GUEST_PHYSICAL_SPACE_FULL, IDENTIFIERS_RAN_OUT, LARGE_ENTRY_SPLIT, MEMORY_COPIED_AT_FORK,
-    MEMORY_FAULT, NOT_YET_TRANSLATED, TURN_LIMIT_STEPPED,
+    MEMORY_FAULT, NOT_YET_TRANSLATED, RESERVATION_BROKEN, TURN_LIMIT_STEPPED,
 };
 use crate::routines::{FloatControl, Placed, Routines, Vectors};
 use crate::stop::{
@@ -122,6 +122,95 @@ struct Memory {
     slots: BTreeMap<u64, u64>,
     /// The direct exits of loaded pieces, by the guest address they go to: linked while a piece is loaded there.
     exits_to: BTreeMap<u64, Vec<Site>>,
+    /// The runs of frames reserved for block-sized ranges, by the range's address.
+    reserved: BTreeMap<u64, Reservation>,
+}
+
+/// The pages of a block-sized range.
+const BLOCK_PAGES: u64 = BLOCK_SIZE / PAGE_SIZE;
+
+/// The words of a reservation's bits, one for each page.
+const TAKEN_WORDS: usize = BLOCK_PAGES.div_ceil(u64::BITS as u64) as usize;
+
+const _: () = assert!(
+    BLOCK_PAGES.is_multiple_of(u64::BITS as u64),
+    "a complete reservation has every bit of every word set"
+);
+
+/// A run of frames held for one block-sized range of a memory, each page given the frame at its own offset, so
+/// that the range can be mapped by one block entry once every page has its frame (docs/native.md section 5.2).
+struct Reservation {
+    run: u64,
+    /// Which pages hold their frame, one bit each.
+    taken: [u64; TAKEN_WORDS],
+    /// When it was made, so that the oldest is broken first.
+    made: u64,
+}
+
+impl Reservation {
+    /// The word and bit of the page at `offset` in the range.
+    fn bit(offset: u64) -> (usize, u64) {
+        let page = offset / PAGE_SIZE;
+        (
+            (page / u64::from(u64::BITS)) as usize,
+            1 << (page % u64::from(u64::BITS)),
+        )
+    }
+
+    /// Gives the page at `offset` its frame.
+    fn take(&mut self, offset: u64) -> u64 {
+        let (word, bit) = Self::bit(offset);
+        assert_eq!(self.taken[word] & bit, 0, "a reserved frame taken twice");
+        self.taken[word] |= bit;
+        self.run + offset
+    }
+
+    /// Whether the page at `offset` holds `frame`, its frame of the run.
+    fn holds(&self, offset: u64, frame: u64) -> bool {
+        let (word, bit) = Self::bit(offset);
+        frame == self.run + offset && self.taken[word] & bit != 0
+    }
+
+    /// Takes the frame back from the page at `offset`.
+    fn give(&mut self, offset: u64) {
+        let (word, bit) = Self::bit(offset);
+        self.taken[word] &= !bit;
+    }
+
+    fn complete(&self) -> bool {
+        self.taken.iter().all(|&word| word == u64::MAX)
+    }
+
+    fn empty(&self) -> bool {
+        self.taken.iter().all(|&word| word == 0)
+    }
+
+    /// The frames no page holds.
+    fn untaken(&self) -> impl Iterator<Item = u64> + '_ {
+        (0..BLOCK_PAGES)
+            .map(|page| page * PAGE_SIZE)
+            .filter(|&offset| {
+                let (word, bit) = Self::bit(offset);
+                self.taken[word] & bit == 0
+            })
+            .map(|offset| self.run + offset)
+    }
+}
+
+/// The block-sized range `address` is in.
+fn block_of(address: u64) -> u64 {
+    address & !(BLOCK_SIZE - 1)
+}
+
+/// The block-sized ranges that lie wholly in `range`.
+fn whole_blocks(range: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
+    let first = range.start.next_multiple_of(BLOCK_SIZE);
+    (first..block_of(range.end)).step_by(BLOCK_SIZE as usize)
+}
+
+/// The block-sized ranges that overlap `range`.
+fn touched_blocks(range: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
+    (block_of(range.start)..range.end).step_by(BLOCK_SIZE as usize)
 }
 
 impl Memory {
@@ -135,7 +224,19 @@ impl Memory {
             hosts: BTreeMap::new(),
             slots: BTreeMap::new(),
             exits_to: BTreeMap::new(),
+            reserved: BTreeMap::new(),
         }
+    }
+
+    /// What every page of the block-sized range at `base` allows, when they allow the same and some access, and
+    /// none shows a shared block: a range one block entry can map.
+    fn alike(&self, base: u64) -> Option<Permissions> {
+        let range = base..base + BLOCK_SIZE;
+        if self.shown.overlaps(&range) {
+            return None;
+        }
+        let (whole, &allowed) = self.allowed.get_key_value(&base)?;
+        (whole.end >= range.end && !allowed.is_empty()).then_some(allowed)
     }
 
     /// What the page at `page` allows.
@@ -236,6 +337,10 @@ pub struct NativeCpu {
     asked_reported: u64,
     full_reported: u64,
     splits_reported: u64,
+    /// Runs of frames that no reservation holds, kept whole for the next one.
+    runs: Vec<u64>,
+    /// How many reservations were made.
+    reservations_made: u64,
     /// The code area's next free byte and the end of what is mapped of it.
     code_next: u64,
     code_mapped: u64,
@@ -354,6 +459,8 @@ impl NativeCpu {
             asked_reported: 0,
             full_reported: 0,
             splits_reported: 0,
+            runs: Vec::new(),
+            reservations_made: 0,
             code_next: Region::Code.base() + PAGE_SIZE,
             code_mapped: Region::Code.base() + PAGE_SIZE,
             exact_replay,
@@ -402,21 +509,150 @@ impl NativeCpu {
 
     /// The frame of a shared block's page at `offset`, taken at its first touch.
     fn block_frame(&mut self, block: SharedId, offset: u64) -> Result<u64, CpuError> {
-        let slot = self
+        let index = (offset / PAGE_SIZE) as usize;
+        let held = *self
             .shared
-            .get_mut(&block)
-            .and_then(|frames| frames.get_mut((offset / PAGE_SIZE) as usize))
+            .get(&block)
+            .and_then(|frames| frames.get(index))
             .ok_or(CpuError::BadAddress)?;
-        if let Some(frame) = *slot {
+        if let Some(frame) = held {
             return Ok(frame);
         }
-        let frame = with_frames(Frames::take_for_guest).map_err(out_of_memory)?;
-        *slot = Some(frame);
+        let frame = self.guest_frame()?;
+        self.shared.get_mut(&block).expect("looked up above")[index] = Some(frame);
         Ok(frame)
     }
 
-    /// Gives the page at `page`, which has no frame, its frame: the block's when it shows one, else a fresh one,
-    /// mapped with what the page allows.
+    /// A zeroed frame for the guest's memory, reservations broken for it when no other is left.
+    fn guest_frame(&mut self) -> Result<u64, CpuError> {
+        while !with_frames(|frames| frames.has_room_for_guest()) && self.reclaim() {}
+        with_frames(Frames::take_for_guest).map_err(out_of_memory)
+    }
+
+    /// Gives frames back from reservations: a whole run no reservation holds, else the untaken frames of the
+    /// oldest reservation that has any, which is broken. Whether any came back.
+    fn reclaim(&mut self) -> bool {
+        if let Some(run) = self.runs.pop() {
+            with_frames(|frames| {
+                (0..BLOCK_PAGES).for_each(|page| frames.give(run + page * PAGE_SIZE));
+            });
+            return true;
+        }
+        let oldest = self
+            .memories
+            .iter()
+            .flat_map(|(&id, m)| {
+                m.reserved
+                    .iter()
+                    .filter(|(_, r)| !r.complete())
+                    .map(move |(&base, r)| (r.made, id, base))
+            })
+            .min();
+        let Some((_, id, base)) = oldest else {
+            return false;
+        };
+        let broken = self
+            .memories
+            .get_mut(&id)
+            .and_then(|m| m.reserved.remove(&base));
+        let broken = broken.expect("found above");
+        let given =
+            with_frames(|frames| broken.untaken().map(|frame| frames.give(frame)).count() as u64);
+        self.slow(RESERVATION_BROKEN, 1, given);
+        true
+    }
+
+    /// A zeroed frame for the private page at `page`: the frame at its offset in the run reserved for its
+    /// block-sized range, where a run is reserved at the range's first touch when the whole range is alike, else
+    /// a frame of its own (docs/native.md section 5.2).
+    fn private_frame(&mut self, memory: MemoryId, page: u64) -> Result<u64, CpuError> {
+        let base = block_of(page);
+        let m = self.memory(memory)?;
+        let first_touch = !m.reserved.contains_key(&base)
+            && m.pages.range(base..base + BLOCK_SIZE).next().is_none()
+            && m.alike(base).is_some();
+        if first_touch
+            && let Some(run) = self
+                .runs
+                .pop()
+                .or_else(|| with_frames(Frames::take_run_for_guest))
+        {
+            self.reservations_made += 1;
+            let made = self.reservations_made;
+            self.memory(memory)?.reserved.insert(
+                base,
+                Reservation {
+                    run,
+                    taken: [0; TAKEN_WORDS],
+                    made,
+                },
+            );
+        }
+        match self.memory(memory)?.reserved.get_mut(&base) {
+            Some(reservation) => {
+                let frame = reservation.take(page - base);
+                floor::tables::clear(frame);
+                Ok(frame)
+            }
+            None => self.guest_frame(),
+        }
+    }
+
+    /// Takes back the frame a private page of `memory` no longer holds: into its reservation, whose run is kept
+    /// whole once no page holds a frame of it, else into the free frames.
+    fn release(&mut self, memory: MemoryId, page: u64, frame: u64) {
+        let base = block_of(page);
+        let reservation = self
+            .memories
+            .get_mut(&memory)
+            .and_then(|m| m.reserved.get_mut(&base))
+            .filter(|r| r.holds(page - base, frame));
+        let Some(reservation) = reservation else {
+            with_frames(|frames| frames.give(frame));
+            return;
+        };
+        reservation.give(page - base);
+        if reservation.empty() {
+            let run = reservation.run;
+            self.memories
+                .get_mut(&memory)
+                .expect("found above")
+                .reserved
+                .remove(&base);
+            self.runs.push(run);
+        }
+    }
+
+    /// Maps the block-sized range at `base` with one block entry when its reservation is complete and the range
+    /// still alike.
+    fn promote(&mut self, memory: MemoryId, base: u64) -> Result<(), CpuError> {
+        let m = self.memory(memory)?;
+        let (Some(reservation), Some(allowed)) = (m.reserved.get(&base), m.alike(base)) else {
+            return Ok(());
+        };
+        if !reservation.complete() || m.space.user.is_block(base) {
+            return Ok(());
+        }
+        let (table, run) = (m.space.user, reservation.run);
+        with_frames(|frames| table.promote(frames, base, run, attributes(allowed)));
+        Ok(())
+    }
+
+    /// Maps the page at `page`, which nothing maps, to `frame`, breaking reservations for the tables it needs.
+    fn map_page(&mut self, memory: MemoryId, page: u64, frame: u64) -> Result<(), CpuError> {
+        let m = self.memory(memory)?;
+        let (table, allowed) = (m.space.user, attributes(m.allows(page)));
+        loop {
+            match with_frames(|frames| table.map(frames, page, frame, allowed)) {
+                Ok(()) => return Ok(()),
+                Err(full) if !self.reclaim() => return Err(out_of_memory(full)),
+                Err(_) => {}
+            }
+        }
+    }
+
+    /// Gives the page at `page`, which has no frame, its frame: the block's when it shows one, else a private
+    /// one, mapped with what the page allows.
     fn back(&mut self, memory: MemoryId, page: u64) -> Result<u64, CpuError> {
         let shown = self.memory(memory)?.shown.get(&page).copied();
         let (frame, shared) = match shown {
@@ -424,20 +660,18 @@ impl NativeCpu {
                 self.block_frame(shown.block, shown.offset(page))?,
                 Some(shown.block),
             ),
-            None => (
-                with_frames(Frames::take_for_guest).map_err(out_of_memory)?,
-                None,
-            ),
+            None => (self.private_frame(memory, page)?, None),
         };
-        let m = self.memory(memory)?;
-        let (table, allowed) = (m.space.user, attributes(m.allows(page)));
-        if let Err(full) = with_frames(|frames| table.map(frames, page, frame, allowed)) {
+        if let Err(error) = self.map_page(memory, page, frame) {
             if shared.is_none() {
-                with_frames(|frames| frames.give(frame));
+                self.release(memory, page, frame);
             }
-            return Err(out_of_memory(full));
+            return Err(error);
         }
-        m.pages.insert(page, Page { frame, shared });
+        self.memory(memory)?
+            .pages
+            .insert(page, Page { frame, shared });
+        self.promote(memory, block_of(page))?;
         Ok(frame)
     }
 
@@ -491,16 +725,40 @@ impl NativeCpu {
         let Some(p) = m.pages.remove(&page) else {
             return Ok(());
         };
-        m.space.user.unmap(page);
+        let table = m.space.user;
+        let split = with_frames(|frames| table.split_block(frames, page));
+        if let Err(full) = split {
+            self.memory(memory)?.pages.insert(page, p);
+            return Err(out_of_memory(full));
+        }
+        table.unmap(page);
         if p.shared.is_none() {
-            with_frames(|frames| frames.give(p.frame));
+            self.release(memory, page, p.frame);
+        }
+        Ok(())
+    }
+
+    /// Unmaps every block entry of `memory` that lies wholly in `range`, its pages reading as zeros until their
+    /// next touch and its run kept whole.
+    fn unback_blocks(&mut self, memory: MemoryId, range: &Range<u64>) -> Result<(), CpuError> {
+        let m = self.memories.get_mut(&memory).ok_or(CpuError::BadAddress)?;
+        for base in whole_blocks(range).filter(|&base| m.space.user.is_block(base)) {
+            m.space.user.unmap_block(base);
+            let mut from_block = m.pages.split_off(&base);
+            let mut after = from_block.split_off(&(base + BLOCK_SIZE));
+            m.pages.append(&mut after);
+            let reservation = m
+                .reserved
+                .remove(&base)
+                .expect("a block maps a reserved run");
+            self.runs.push(reservation.run);
         }
         Ok(())
     }
 
     /// A private frame holding a copy of `frame`.
-    fn copy_of(frame: u64) -> Result<u64, CpuError> {
-        let copy = with_frames(Frames::take_for_guest).map_err(out_of_memory)?;
+    fn copy_of(&mut self, frame: u64) -> Result<u64, CpuError> {
+        let copy = self.guest_frame()?;
         frame_bytes(copy).copy_from_slice(frame_bytes(frame));
         Ok(copy)
     }
@@ -519,10 +777,19 @@ impl NativeCpu {
                 Some(_) => page.frame,
                 None => {
                     copied += 1;
-                    Self::copy_of(page.frame)?
+                    let frame = self.private_frame(copy, at)?;
+                    frame_bytes(frame).copy_from_slice(frame_bytes(page.frame));
+                    frame
                 }
             };
-            self.replace(copy, at, Page { frame, ..page })?;
+            if let Err(error) = self.map_page(copy, at, frame) {
+                if page.shared.is_none() {
+                    self.release(copy, at, frame);
+                }
+                return Err(error);
+            }
+            self.memory(copy)?.pages.insert(at, Page { frame, ..page });
+            self.promote(copy, block_of(at))?;
         }
         Ok(copied)
     }
@@ -551,7 +818,7 @@ impl NativeCpu {
                 let held = m.frame(&self.shared, at);
                 match held {
                     Some(frame) if !zeroed(at) => {
-                        let copy = Self::copy_of(frame)?;
+                        let copy = self.copy_of(frame)?;
                         self.replace(
                             memory,
                             at,
@@ -1245,9 +1512,18 @@ impl Cpu for NativeCpu {
         // Its tables may be the ones switched to; its identifier is not used again before a new generation.
         self.idle.switch();
         let global = self.global;
+        self.runs.extend(m.reserved.values().map(|r| r.run));
         with_frames(|frames| {
-            for page in m.pages.values().filter(|p| p.shared.is_none()) {
-                frames.give(page.frame);
+            let reserved = |at: u64, frame: u64| {
+                let base = block_of(at);
+                m.reserved
+                    .get(&base)
+                    .is_some_and(|r| r.holds(at - base, frame))
+            };
+            for (&at, page) in m.pages.iter().filter(|(_, p)| p.shared.is_none()) {
+                if !reserved(at, page.frame) {
+                    frames.give(page.frame);
+                }
             }
             for &frame in m.slots.values() {
                 frames.give(frame);
@@ -1288,6 +1564,7 @@ impl Cpu for NativeCpu {
         let whole = |page: u64| address <= page && page + PAGE_SIZE <= end;
         let touched = page_of(address)..end.next_multiple_of(PAGE_SIZE);
         self.unshare(memory, touched.clone(), whole)?;
+        self.unback_blocks(memory, &(address..end))?;
         let backed: Vec<(u64, u64)> = self
             .memory(memory)?
             .pages
@@ -1321,21 +1598,31 @@ impl Cpu for NativeCpu {
         }
         let range = address..address + length;
         let m = self.memory(memory)?;
+        let (table, now) = (m.space.user, attributes(permissions));
+        let blocks: Vec<u64> = whole_blocks(&range)
+            .filter(|&base| table.is_block(base))
+            .collect();
         let was: Vec<(u64, El1Attributes)> = m
             .pages
             .range(range.clone())
+            .filter(|&(&at, _)| !blocks.contains(&block_of(at)))
             .map(|(&at, _)| (at, attributes(m.allows(at))))
             .collect();
         if permissions.is_empty() {
-            m.allowed.remove(range);
+            m.allowed.remove(range.clone());
         } else {
-            m.allowed.insert(range, permissions);
+            m.allowed.insert(range.clone(), permissions);
         }
-        let (table, now) = (m.space.user, attributes(permissions));
+        for base in blocks {
+            table.protect_block(base, now);
+        }
         for (at, before) in was {
             if before != now {
                 with_frames(|frames| table.protect(frames, at, now)).map_err(out_of_memory)?;
             }
+        }
+        for base in touched_blocks(&range) {
+            self.promote(memory, base)?;
         }
         Ok(())
     }
@@ -1386,7 +1673,7 @@ impl Cpu for NativeCpu {
                         shared: None,
                     }) = own
                     {
-                        with_frames(|frames| frames.give(frame));
+                        self.release(memory, at, frame);
                     }
                 }
                 None => self.unback(memory, at)?,

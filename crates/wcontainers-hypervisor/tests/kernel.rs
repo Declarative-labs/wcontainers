@@ -41,7 +41,9 @@ mod macos {
 
     use linux_raw_sys::general::SIGSEGV;
     use wcontainers_guest_cpu::reason::{CODE_CHANGED_AFTER_IT_RAN, MEMORY_FAULT};
-    use wcontainers_inside::reason::GUEST_PHYSICAL_SPACE_FULL;
+    use wcontainers_inside::reason::{
+        GUEST_PHYSICAL_SPACE_FULL, LARGE_ENTRY_SPLIT, RESERVATION_BROKEN,
+    };
     use wcontainers_kernel_test::driver::exit_code;
     use wcontainers_kernel_test::reference;
 
@@ -255,12 +257,19 @@ mod macos {
             String::from_utf8_lossy(&native.host.stdout)
         );
         against_reference(MAPPINGS, &native);
+        let split = warned(&native, LARGE_ENTRY_SPLIT);
+        println!("{MAPPINGS}: \"{LARGE_ENTRY_SPLIT}\" {split} natively");
+        assert!(
+            split > 0,
+            "{MAPPINGS}: a block-sized range written at every page was mapped by a block entry, split when one page's permissions changed"
+        );
         let beyond = (MEMORY + MEMORY / 2) >> MIB_BITS;
         let (files, starting) = container(MAPPINGS, mappings, &[beyond.to_string()]);
         let killed = crate::container::native(seed, REALTIME_NANOSECONDS, &files, &starting);
         let full = warned(&killed, GUEST_PHYSICAL_SPACE_FULL);
+        let broken = warned(&killed, RESERVATION_BROKEN);
         println!(
-            "{MAPPINGS} writing {beyond} MiB natively: status {:#x}, \"{GUEST_PHYSICAL_SPACE_FULL}\" {full}",
+            "{MAPPINGS} writing {beyond} MiB natively: status {:#x}, \"{GUEST_PHYSICAL_SPACE_FULL}\" {full}, \"{RESERVATION_BROKEN}\" {broken}",
             killed.status
         );
         assert_eq!(
