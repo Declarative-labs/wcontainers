@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Fetches and builds the pinned Mesa (pin.toml) with the options of options.ini, in Nixpkgs' own Mesa
-# build environment taken from this repository's locked flake inputs.
+# Fetches and builds the pinned Mesa (pin.toml) with the patches of patches/ (applied in name order) and
+# the options of options.ini, in Nixpkgs' own Mesa build environment taken from this repository's locked
+# flake inputs.
 #
 #   crates/wcontainers-nir/mesa/build [flake]
 #
@@ -35,20 +36,34 @@ if [ "$(git -C "$mesa_dir/src" rev-parse HEAD 2>/dev/null)" != "$commit" ]; then
     [ "$fetched" = "$commit" ] || { echo "build: $tag is $fetched upstream, not the pinned $commit" >&2; exit 1; }
     git -C "$mesa_dir/src" checkout -q "$commit"
 fi
+# The patches, applied again from the pinned commit whenever they change.
+patches=("$here"/patches/*.patch)
+applied=$mesa_dir/src/.git/wcontainers-patches
+if ! cat "${patches[@]}" | cmp -s - "$applied"; then
+    git -C "$mesa_dir/src" checkout -q -f "$commit"
+    for patch in "${patches[@]}"; do
+        git -C "$mesa_dir/src" apply "$patch"
+    done
+    cat "${patches[@]}" >"$applied"
+fi
 
 jobs=()
 [ -z "${CARGO_BUILD_JOBS:-}" ] || jobs=(-j "$CARGO_BUILD_JOBS")
 echo "build: Mesa $tag ($commit), meson $(meson --version), $(llvm-config --version | sed 's/^/LLVM /'), $(cc --version | head -n 1)"
 # Meson reads a machine file's options only when a build folder is made, so a build made from other
-# options or another commit is made again from nothing.
+# options or another commit is made again from nothing (a patch needs only the build that follows).
+# The record of what was built names the patches too, so that the converter's version (build.rs)
+# follows them.
+configured_from=$mesa_dir/build/wcontainers-configured-from
 made_from=$mesa_dir/build/wcontainers-made-from
-if ! { echo "$commit"; cat "$here/options.ini"; } | cmp -s - "$made_from"; then
+if ! { echo "$commit"; cat "$here/options.ini"; } | cmp -s - "$configured_from"; then
     rm -rf "$mesa_dir/build" "$mesa_dir/install"
 fi
 [ -d "$mesa_dir/build" ] && setup=(--reconfigure) || setup=()
 meson setup "$mesa_dir/build" "$mesa_dir/src" --native-file "$here/options.ini" \
     --prefix "$mesa_dir/install" --libdir lib "${setup[@]}"
-{ echo "$commit"; cat "$here/options.ini"; } >"$made_from"
+{ echo "$commit"; cat "$here/options.ini"; } >"$configured_from"
+{ echo "$commit"; cat "$here/options.ini" "${patches[@]}"; } >"$made_from"
 meson compile -C "$mesa_dir/build" "${jobs[@]}"
 meson install -C "$mesa_dir/build" --quiet
 
