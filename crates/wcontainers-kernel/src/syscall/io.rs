@@ -1323,23 +1323,36 @@ fn write_parts(
     overlay_direct(file, parts, offset, true)?;
     let total = parts.iter().map(|(_, length)| length).sum();
     let count = write_limit(kernel, cx, tid, file, offset, total)?;
+    // A write to the backend goes on after what the backend took in the call's earlier runs,
+    // unless the page cache of a mapped file is to take the whole write.
+    let cached = node.borrow().content.block().is_some();
+    let (resumed, ended) = match &file.borrow().backend {
+        Some(handle) if !append && (handle.direct_io() || !cached) => {
+            handle.client.written_before(handle.nodeid, offset)
+        }
+        _ => (0, false),
+    };
+    let resumed = resumed.min(count);
     // As much of the buffers as can be read; where it stops, the write ends (`write_bytes`).
     let mut bytes = Vec::new();
-    let mut left = count;
+    let mut skip = resumed;
+    let mut left = if ended { 0 } else { count };
     let mut guest = guest(kernel, cx, tid);
     for &(base, length) in parts {
         let length = length.min(left);
         if length == 0 {
             continue;
         }
-        let readable = guest.accessible(base, length, Permissions::READ);
-        bytes.extend_from_slice(&guest.read(base, readable)?);
+        let taken = skip.min(length);
+        skip -= taken;
+        let readable = guest.accessible(base + taken, length - taken, Permissions::READ);
+        bytes.extend_from_slice(&guest.read(base + taken, readable)?);
         left -= length;
-        if readable < length || left == 0 {
+        if readable < length - taken || left == 0 {
             break;
         }
     }
-    write_bytes(kernel, cx, tid, file, &bytes, count, at, append)
+    write_bytes_after(kernel, cx, tid, file, &bytes, count, at, append, resumed)
 }
 
 /// `inode_lock` around a write to a backend file (`fuse_direct_write_iter` without
@@ -1636,6 +1649,23 @@ pub(super) fn write_bytes(
     at: Option<u64>,
     append: bool,
 ) -> Result<u64, Errno> {
+    write_bytes_after(kernel, cx, tid, file, bytes, wanted, at, append, 0)
+}
+
+/// As [`write_bytes`], with `bytes` what comes after the `resumed` bytes of the write a backend
+/// took in the call's earlier runs; what it returns counts those too.
+#[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
+fn write_bytes_after(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    bytes: &[u8],
+    wanted: u64,
+    at: Option<u64>,
+    append: bool,
+    resumed: u64,
+) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
     lock_backend_writes(kernel, tid, &node)?;
     let now = kernel.now(cx);
@@ -1652,7 +1682,7 @@ pub(super) fn write_bytes(
             };
             drop(inode);
             if offset
-                .checked_add(bytes.len() as u64)
+                .checked_add(resumed + bytes.len() as u64)
                 .is_none_or(|end| end > i64::MAX as u64)
             {
                 return Err(Errno::EFBIG);
@@ -1660,10 +1690,15 @@ pub(super) fn write_bytes(
             let written = {
                 let file = file.borrow();
                 let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
-                let written = crate::fs::backend::write(handle, offset, bytes)?;
+                let written = crate::fs::backend::write(handle, offset, resumed, bytes)?;
                 // Linux's page cache takes what a cached write wrote (`fuse_fill_write_pages`).
                 if !handle.direct_io() {
-                    crate::shared::backend_written(cx, &node, offset, &bytes[..written as usize]);
+                    crate::shared::backend_written(
+                        cx,
+                        &node,
+                        offset + resumed,
+                        &bytes[..(written - resumed) as usize],
+                    );
                 }
                 written
             };

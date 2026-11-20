@@ -200,6 +200,17 @@ fn transfers_match_reference() {
     }
 }
 
+/// Writes of many backend messages each, one at a time and submitted together, on both kinds of
+/// backend: each part the backend took is asked once.
+#[test]
+fn large_writes_match_reference() {
+    for cached in [false, true] {
+        for run in same_on("backendlargewrite", driver::Injections::default(), cached) {
+            assert_warned_only(&run, &[]);
+        }
+    }
+}
+
 /// Attributes and access control lists read as root and as another user, on both kinds of backend.
 #[test]
 fn attributes_read_as_a_user_match_reference() {

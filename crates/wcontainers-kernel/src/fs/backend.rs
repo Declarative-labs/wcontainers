@@ -97,6 +97,9 @@ struct Asked {
     /// be told to forget or release them.
     nodes: Vec<Node>,
     handles: BTreeMap<usize, Rc<Handle>>,
+    /// The write the call is in, as its node and where it starts, the bytes of it the backend
+    /// took in earlier runs, whose replies are gone, and whether a short answer ended it.
+    write: Option<(u64, u64, u64, bool)>,
 }
 
 /// Who asks, as the request header names them.
@@ -397,21 +400,21 @@ impl Client {
     /// The asking call finished a part of its work that a later run will not do again (a round
     /// of a large transfer whose progress the call keeps): the replies that part used go, so its
     /// next run's questions are matched from the part it is in. Nothing happens while an answer
-    /// is awaited or a reply gave a handle the call still holds.
-    pub fn checkpoint(&self) {
+    /// is awaited or a reply gave a handle the call still holds. Whether they went.
+    pub fn checkpoint(&self) -> bool {
         let ended = {
             let mut state = self.state.borrow_mut();
             let Some(asker) = state.asker else {
-                return;
+                return false;
             };
             let Some(asked) = state.calls.get_mut(&asker.tid) else {
-                return;
+                return false;
             };
             if asked.waiting.is_some()
                 || !asked.handles.is_empty()
                 || asked.used < asked.replies.len()
             {
-                return;
+                return false;
             }
             asked.used = 0;
             Asked {
@@ -420,6 +423,35 @@ impl Client {
             }
         };
         self.let_go(Some(ended));
+        true
+    }
+
+    /// The bytes of the asking call's write to `nodeid` at `offset` the backend took in its
+    /// earlier runs, and whether a short answer ended it.
+    pub fn written_before(&self, nodeid: u64, offset: u64) -> (u64, bool) {
+        let state = self.state.borrow();
+        state
+            .asker
+            .and_then(|asker| state.calls.get(&asker.tid))
+            .and_then(|asked| asked.write)
+            .filter(|&(node, at, ..)| node == nodeid && at == offset)
+            .map_or((0, false), |(.., done, ended)| (done, ended))
+    }
+
+    /// The backend has taken `done` bytes of the asking call's write to `nodeid` at `offset`,
+    /// `ended` by a short answer or not: at a checkpoint, a later run goes on from there instead of
+    /// asking every part again.
+    fn took_written(&self, nodeid: u64, offset: u64, done: u64, ended: bool) {
+        if !self.checkpoint() {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        let Some(asker) = state.asker else {
+            return;
+        };
+        if let Some(asked) = state.calls.get_mut(&asker.tid) {
+            asked.write = Some((nodeid, offset, done, ended));
+        }
     }
 
     /// The run ended; with `done`, so did the call, and its replies go.
@@ -1603,15 +1635,22 @@ pub(crate) fn read(handle: &Handle, offset: u64, count: u64) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
-/// Writes `bytes` at `offset`, in as many messages as the backend's largest takes; how many it took.
-pub(crate) fn write(handle: &Handle, offset: u64, bytes: &[u8]) -> Result<u64, Errno> {
+/// Writes a write's bytes at `offset`, in as many messages as the backend's largest takes, given
+/// the bytes from `resumed` on, which the backend took in earlier runs; how many it took in all.
+/// Each part taken is kept, so a later run of the call goes on after it.
+pub(crate) fn write(
+    handle: &Handle,
+    offset: u64,
+    resumed: u64,
+    bytes: &[u8],
+) -> Result<u64, Errno> {
     let chunk = handle.client.settled().max_write as usize;
     let mut done = 0;
     while done < bytes.len() {
         let part = &bytes[done..(done + chunk).min(bytes.len())];
         let input = fuse_write_in {
             fh: handle.fh,
-            offset: offset + done as u64,
+            offset: offset + resumed + done as u64,
             size: part.len() as u32,
             write_flags: 0,
             lock_owner: 0,
@@ -1624,16 +1663,22 @@ pub(crate) fn write(handle: &Handle, offset: u64, bytes: &[u8]) -> Result<u64, E
             &[input.as_bytes(), part],
         ) {
             Ok(body) => body,
-            Err(error) if done > 0 && error != Errno::PARKED => return Ok(done as u64),
+            Err(error) if resumed + done as u64 > 0 && error != Errno::PARKED => {
+                return Ok(resumed + done as u64);
+            }
             Err(error) => return Err(error),
         };
         let out: fuse_write_out = first(&body)?;
         done += (out.size as usize).min(part.len());
-        if (out.size as usize) < part.len() {
+        let short = (out.size as usize) < part.len();
+        handle
+            .client
+            .took_written(handle.nodeid, offset, resumed + done as u64, short);
+        if short {
             break;
         }
     }
-    Ok(done as u64)
+    Ok(resumed + done as u64)
 }
 
 /// Writes a mapped file's pages back (`fuse_writepages`), waiting for the answers or, with nothing
