@@ -839,6 +839,9 @@ fn resolve(
                 then: next, page, ..
             },
         ) => Resolved::Again(Box::new(hardware_of(next, &trapped.hardware)), page),
+        Ok(stop::Resolved::SlotPage { slot, .. }) => {
+            panic!("the runner keeps no readable slots (the study's knob), read at {slot:#x}")
+        }
         Ok(stop::Resolved::Clock {
             into,
             mut then,
