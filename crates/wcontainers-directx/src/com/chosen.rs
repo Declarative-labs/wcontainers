@@ -94,7 +94,7 @@ mod webgpu {
         })?;
         // DXGI's answer where it cannot present to the window. The back end's flip-model swap
         // chain presents only to the process's own windows.
-        let mut owner = 0;
+        let mut owner = Default::default();
         // SAFETY: reads which process made the window.
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
         let presents = owner == std::process::id()
