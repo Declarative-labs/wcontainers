@@ -296,6 +296,12 @@ enum Alu {
     U2u16,
     U2u32,
     B2b1,
+    Isign,
+    UbitfieldExtract,
+    IbitfieldExtract,
+    BitfieldInsert,
+    FrexpExp,
+    FrexpSig,
     Unsupported,
 }
 
@@ -342,6 +348,7 @@ enum Intrinsic {
     LoadStage,
     StoreStage,
     DemoteSamples,
+    LoadSampleMaskIn,
     Unsupported,
 }
 
@@ -1437,6 +1444,7 @@ fn alu_form(op: Alu) -> Option<(ScalarKind, AluForm)> {
         Alu::BitCount => (Uint, F::Math(M::CountOneBits)),
         Alu::UfindMsb => (Uint, F::Math(M::FirstLeadingBit)),
         Alu::IfindMsb => (Sint, F::Math(M::FirstLeadingBit)),
+        Alu::Isign => (Sint, F::Math(M::Sign)),
         Alu::FindLsb => (Uint, F::Math(M::FirstTrailingBit)),
         Alu::BitfieldReverse => (Uint, F::Math(M::ReverseBits)),
         Alu::PackHalf2x16 => (Float, F::Math(M::Pack2x16float)),
@@ -1734,6 +1742,47 @@ impl Builder<'_> {
                 });
                 (e, ScalarKind::Float)
             }
+            Alu::UbitfieldExtract | Alu::IbitfieldExtract | Alu::BitfieldInsert => {
+                let kind = if op == Alu::IbitfieldExtract {
+                    ScalarKind::Sint
+                } else {
+                    ScalarKind::Uint
+                };
+                // The common form's offset and count are scalars: one operation a component.
+                let parts = (0..n)
+                    .map(|c| self.bitfield(i, op, c, kind))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (self.composed(kind, parts)?, kind)
+            }
+            Alu::FrexpExp | Alu::FrexpSig => {
+                let x = self.src(i, 0, n, ScalarKind::Float)?;
+                let size = if n == 1 { None } else { Some(vector_size(n)?) };
+                self.module
+                    .generate_predeclared_type(naga::PredeclaredType::FrexpResult {
+                        size,
+                        scalar: Scalar::F32,
+                    });
+                let result = self.add(Expression::Math {
+                    fun: MathFunction::Frexp,
+                    arg: x,
+                    arg1: None,
+                    arg2: None,
+                    arg3: None,
+                });
+                // The result's members: the significand, then the exponent.
+                let (index, kind) = if op == Alu::FrexpSig {
+                    (0, ScalarKind::Float)
+                } else {
+                    (1, ScalarKind::Sint)
+                };
+                (
+                    self.add(Expression::AccessIndex {
+                        base: result,
+                        index,
+                    }),
+                    kind,
+                )
+            }
             Alu::Fdot2 | Alu::Fdot3 | Alu::Fdot4 => {
                 let count = source_count(op, n);
                 let a = self.src(i, 0, count, ScalarKind::Float)?;
@@ -1860,6 +1909,77 @@ impl Builder<'_> {
         };
         self.set(i, Value::Expr(e, kind));
         Ok(())
+    }
+
+    /// Component `c` of `op`'s result, a bitfield extract or insert of `kind`.
+    fn bitfield(
+        &mut self,
+        i: &FlatInstr,
+        op: Alu,
+        c: u32,
+        kind: ScalarKind,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let base = self.src_component(i, 0, c, kind)?;
+        let insert = op == Alu::BitfieldInsert;
+        let fun = if insert {
+            MathFunction::InsertBits
+        } else {
+            MathFunction::ExtractBits
+        };
+        // An insert's bits are of the base's kind; every offset and count is a u32.
+        let mut args = Vec::new();
+        for s in 1..i.sources as usize {
+            let k = if insert && s == 1 {
+                kind
+            } else {
+                ScalarKind::Uint
+            };
+            args.push(self.src_component(i, s, c, k)?);
+        }
+        let mut args = args.into_iter();
+        Ok(self.add(Expression::Math {
+            fun,
+            arg: base,
+            arg1: args.next(),
+            arg2: args.next(),
+            arg3: args.next(),
+        }))
+    }
+
+    /// Component `c` of source `s` of `instr` by its swizzle, as `kind`.
+    fn src_component(
+        &mut self,
+        instr: &FlatInstr,
+        s: usize,
+        c: u32,
+        kind: ScalarKind,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let src = instr.src[s];
+        let (e, have) = self.whole(src.def, kind)?;
+        Ok(if have == 1 {
+            e
+        } else {
+            self.add(Expression::AccessIndex {
+                base: e,
+                index: u32::from(src.swizzle[c as usize]),
+            })
+        })
+    }
+
+    /// One value of `kind` from its scalar components.
+    fn composed(
+        &mut self,
+        kind: ScalarKind,
+        parts: Vec<Handle<Expression>>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        if let [one] = parts[..] {
+            return Ok(one);
+        }
+        let ty = self.scalar_type(kind, parts.len() as u32)?;
+        Ok(self.add(Expression::Compose {
+            ty,
+            components: parts,
+        }))
     }
 
     /// The kind a value already has (constants and registers take the use's; u32 here).
@@ -2380,6 +2500,7 @@ impl Builder<'_> {
                 self.system_value(i, BuiltIn::Position { invariant: false }, Float)?;
             }
             Intrinsic::LoadSampleId => self.system_value(i, BuiltIn::SampleIndex, Uint)?,
+            Intrinsic::LoadSampleMaskIn => self.system_value(i, BuiltIn::SampleMask, Uint)?,
             Intrinsic::LoadLocalInvocationId => {
                 self.system_value(i, BuiltIn::LocalInvocationId, Uint)?;
             }

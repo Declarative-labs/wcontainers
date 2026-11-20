@@ -82,6 +82,29 @@ void main() {
 }
 ";
 
+const BITS: &str = "#version 430
+layout(local_size_x = 8) in;
+uniform uvec4 words;
+uniform ivec4 signed_words;
+uniform int width;
+uniform vec4 values;
+layout(std430) buffer Bits {
+    uvec4 u[16]; ivec4 s[16]; uvec4 inserted[16]; ivec4 signs[16]; vec4 significands[16];
+    ivec4 exponents[16];
+};
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    int offset = int(i % 8u) * 3;
+    int bits = int(i % 5u) + abs(width);
+    uvec4 mixed = words * 0x9e3779b9u + uvec4(i);
+    u[i] = bitfieldExtract(mixed, offset, bits);
+    s[i] = bitfieldExtract(ivec4(mixed), offset, bits);
+    inserted[i] = bitfieldInsert(mixed, uvec4(i * 0x5bd1e995u), offset, bits);
+    signs[i] = sign(signed_words - ivec4(int(i % 3u)));
+    significands[i] = frexp(values * float(i * 977u + 1u), exponents[i]);
+}
+";
+
 const TEST_FILE: &str = "[require]
 GLSL >= 4.30
 
@@ -117,6 +140,11 @@ fn a_glsl_compute_program_matches_llvmpipe_on_route_b() {
 #[test]
 fn a_glsl_program_sampling_textures_and_storing_images_matches_llvmpipe_on_route_b() {
     assert_eq!(compute_verdict(SAMPLING), Verdict::Matched);
+}
+
+#[test]
+fn a_glsl_program_of_bitfields_signs_and_exponents_matches_llvmpipe_on_route_b() {
+    assert_eq!(compute_verdict(BITS), Verdict::Matched);
 }
 
 #[test]

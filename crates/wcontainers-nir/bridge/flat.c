@@ -653,6 +653,8 @@ intrinsic_of(nir_intrinsic_op op)
       return WC_INTRINSIC_DEREF_ATOMIC_SWAP;
    case nir_intrinsic_demote_samples:
       return WC_INTRINSIC_DEMOTE_SAMPLES;
+   case nir_intrinsic_load_sample_mask_in:
+      return WC_INTRINSIC_LOAD_SAMPLE_MASK_IN;
    default:
       return WC_INTRINSIC_UNSUPPORTED;
    }
