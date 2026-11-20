@@ -79,7 +79,74 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   crc32), rep string instructions on both paths, rdtsc and rdtscp from the clock, cpuid from a designed
   table, and the integer, move and blend instructions of SSE2 to SSE4.2 (see "X5, run 2"). Not yet: the
   float instructions, MXCSR, the segment and far-transfer instructions, `enter`, `fxsave`, the string
-  compares of SSE4.2, and the rest of the bar. 864 of the 1,295 default legacy forms are written.
+  compares of SSE4.2, and the rest of the bar. 864 of the 1,295 default legacy forms are written. Run 3
+  (2026-11-19) wrote the float forms of SSE to SSE4.1 with MXCSR's fast and exact paths, `ldmxcsr`,
+  `stmxcsr`, the prefetches, the not-a-number probe and its fix-ups, and `rcpps`/`rsqrtps` by plan 5.8's
+  formula with its test over all 2^32 inputs (see "X5, run 3"): 944 of the 1,295 written.
+
+## X5, run 3 (2026-11-19)
+
+Machines: the rented x86-64 machine (load 1 to 3) for builds, lint and quick layer 1 runs; the i7-8750H
+(load 0 before, 4 to 6 during) for layer 1's verdict, built and run there (`x5/run3/laptop-bg.sh`); the Mac
+(load not measured, `mac-gate.sh` said "USE x86-run") only for git, `cargo fmt` and the literal check. Logs
+in scratch `x5/run3/`.
+
+Written (commit 2c315d46):
+- The float instructions of SSE to SSE4.1 on xmm registers (80 forms with `ldmxcsr`, `stmxcsr` and the
+  four prefetches; list in scratch `x5/run3/float-forms.txt`): add, sub, mul, div, sqrt, min, max of every
+  size and kind, `cmpps`/`cmpss`/`cmppd`/`cmpsd`, `comis`/`ucomis`, `addsub`, `hadd`, `hsub`, `round`,
+  `dpps`, `dppd`, and every conversion between the float sizes, from and to 32- and 64-bit integers.
+  `crates/wcontainers-x86/src/float.rs` is the meanings, `exact.rs` the exact path, `host.rs` the probe.
+- MXCSR (plan 5.8): controls `Mxcsr`, `MxcsrTracking` (a private word after the block) and
+  `FloatException`. The fast path runs when MXCSR's mode is 0x1F80's and tracking is off: WebAssembly vector
+  operations, min and max as `pmin`/`pmax` with the operands swapped, x86's integer indefinite where
+  WebAssembly saturates. Otherwise the exact path: one call of the float hook per instruction
+  (`exact::run`, rustc_apfloat in quadruple precision rounded to odd, then rounded once), with DAZ, FTZ,
+  the rounding control, all six flags in x86's order, tininess after rounding, and an unmasked exception
+  leaving the destination as it was and stopping with SIGFPE. `ldmxcsr` writes MXCSR (general protection
+  for bits above 15) and turns tracking on; `stmxcsr` counts "MXCSR's exception flags read while not kept"
+  when tracking is off.
+- Not-a-numbers: the probe (`host.rs`, 13 cases: first operand's NaN over a signaling second, default NaN,
+  sqrt, nearest, promote and demote keeping the payload) answers whether the engine already gives x86's;
+  when not, the fast path fixes every NaN lane up (first operand's quieted, then the second's, else
+  0xFFC00000; conversions keep the payload). `PROBE_ANSWERS` is [0, 1]. Which answer wasmtime and Chrome
+  give on x86 and on ARM hosts was not measured; I expect x86 hosts to answer 1 and ARM hosts 0.
+- `rcpps`, `rcpss`, `rsqrtps`, `rsqrtss` by plan 5.8's formula on every path, marked as varying between
+  CPUs (`may_vary`). `tests/reciprocals.rs` runs the emitted formula in wasmtime against the CPU's own
+  instructions over all 2^32 inputs of each (`WC_RECIPROCAL_INPUTS` for fewer): 0 differences on the
+  rented Sapphire Rapids machine (4,294,967,296 inputs of each, 192 threads, 0.31 s).
+- Layer 1 for x86 now draws MXCSR (40 in 100 the default mode, with or without flags; else any mode, 30 in
+  100 of those with exceptions unmasked), tracking (50 in 100), float edges in xmm lanes, and for
+  `ldmxcsr` a data seed whose operand holds a value it takes (70 in 100). The reference's SIGFPE is
+  compared as MXCSR's raised unmasked flags (see "Departures").
+
+Found by layer 1 against the CPU and fixed on the way: an exact zero's sign is the rounding mode's
+(x - x is -0 rounding down); DAZ also applies to the operand min and max return for a NaN; dividing a
+denormal by zero raises divide by zero alone; an unmasked overflow or underflow also raises precision when
+F's precision cannot hold the result, whatever PM says; `dpps`'s and `dppd`'s order of additions (see
+"Departures"); the sign of `rcp`'s result; the conversions' range test was inverted; `ldmxcsr` was checked
+as a write.
+
+Layer 1 on the float forms: on the rented machine, 1,000 a form, seeds 4404 and 5505 (`l1-float-4404.log`,
+`l1-float-5505.log`): every difference is the 5-level paging one (MemoryFault against GeneralProtection or
+StackFault), and none other; those forms stop at that first case there, so the verdict is the laptop's.
+On the i7-8750H, built and run there, 4 at once: seed 6606 at 1,000 a form, 80 forms, 0 failing, 222 s
+(`l1-float-laptop.log`, at the code before its last plumbing change); seed 7707 at 1,000 a form, 80
+forms, 0 failing, 281 s (`l1-float-laptop2.log`, at 2c315d46). Then `tests/reciprocals.rs` there: all
+4,294,967,296 inputs of `rcpss` and of `rsqrtss`, 0 differences, 11 s on 10 threads. So the float forms
+meet the bar at 1,000 a form on the reference. Not yet seen: the fix-up path for engines whose
+not-a-numbers are not x86's runs only where the probe answers 0 (expected on the Mac), and no layer 1
+float run was made from the Mac this run.
+
+Literals: the check exits 0 (the Mac); six baseline lines deleted (the x86 crate's old probe literal and
+hook message, the translator's own `PROBE`, now the interface's one constant, and three MXCSR values in
+`reference_x86_64.rs`). Lint: `cargo clippy -D warnings` on the x86, interface, translator and test
+crates, all targets, clean (rented machine); `cargo fmt --check` clean.
+
+What comes next, in this order: the SSE4.2 string compares; the segment, descriptor and far-transfer
+instructions with `iretq`'s reference cases; `enter`; `wait`; `maskmovdqu`; layer 1 of the never-claimed
+list at 100 a form; layer 3 Csmith at 1,000; the passed-register lists; the Chrome sample against the
+laptop; the whole bar (all default forms at 1,000 a form on the laptop, 100,000 random instructions).
 
 ## X5, run 2 (2026-11-19)
 
@@ -2519,6 +2586,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Licences of what this track uses
 
+- Added at X5 run 3: `rustc_apfloat` 0.2.3 (Apache-2.0 WITH LLVM-exception), already a dependency of the
+  ARM64 crate, now of `wcontainers-x86` (the exact path of SIMD floating point).
 - Added at X1, all already in the workspace: `blake3` (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH
   LLVM-exception) as a dev-dependency of the test crate; `wasm-encoder` (Apache-2.0 WITH LLVM-exception OR
   Apache-2.0 OR MIT) as a dependency of the test crate and of the interface crate; `zerocopy` 0.8
@@ -2563,6 +2632,22 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   (MIT), era2m_softfloat 0.2.1 (BSD-3-Clause-Clear). Nothing copied.
 
 ## Departures from the plan
+
+X5 run 3:
+- An unmasked SIMD floating point exception reports MXCSR's raised unmasked flags as its detail, not the
+  `si_code` (the interface's doc says so now). The CPU's part of #XM ends at MXCSR; Linux works the `si_code`
+  out from MXCSR (`fpu__exception_code`), and so will the kernel's x86 personality at X10. The x86 crate
+  cannot import Linux's `FPE_*` for the browser build (linux-raw-sys has no wasm32 module, and depending on
+  the kernel for its generated copy flipped the literal check's owner of an unrelated ARM64 constant).
+  Layer 1 maps the reference's SIGFPE to MXCSR's raised unmasked flags, which it compares in full anyway.
+- `stmxcsr` with the flags not kept counts "MXCSR's exception flags read while not kept" with `warn` in the
+  meaning, not through a `ReadStatus` call of the float hook: the same count with no hook call.
+- The float hook takes the destination xmm register from the block (its number in the operation word, all
+  xmm registers declared as the hook's registers), because a hook may have at most four parameters.
+- `dpps` and `dppd` add in the CPU's order, seen on the reference with not-a-numbers in several lanes: each
+  lane adds its neighbour (the neighbour first in `dpps`'s first step, its own first in `dppd`), then
+  `dpps` adds the other pair's sum to its own; not the manual's one sum broadcast.
+- The prefetches are written as hints with no access (never a fault), as on the CPU.
 
 X4 (each also written into the plan's text where the plan is wrong):
 - Run 6: the Mac's Docker verdicts (ARM64 layer 1 and the suite) came from Docker Engine in a Lima VM on the
