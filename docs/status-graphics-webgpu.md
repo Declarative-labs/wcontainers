@@ -1556,6 +1556,26 @@ Run 27 (G2d):
   `begin_pass` (whole frame 0.73 to 0.78 ms), against 23 us a draw on the WebGL 2 back end. The
   native breakdowns above and below (0.01 to 0.04 ms a frame of the back end's own code) do not
   cover the browser.
+- The same frames replayed here alone in the queue, under V8's sampling profiler
+  (web/replay-profile.mjs at 7a6c2dde, 2026-11-19 15:53, `gpu-job --alone --desktop`, Chrome
+  157.0.8103.78, Dawn on Direct3D 12, RTX 3080; scratch g2d/profile1.log; load not taken): this
+  back end 31.2 us a draw, 37.7 us a `begin_pass`, 53.0 us `current_texture`, 52.1 us `submit`,
+  whole frame untimed median 0.225 ms; WebGL 2 16.5 us a draw, 0.130 ms a frame. So alone the
+  gap is smaller than in the WebGL track's run (53 us), still about twice. Where the time inside
+  this back end's replay goes (315 ms over both replays, 50 us samples, self time): 87 ms in
+  wasm-bindgen's JavaScript glue and 24 ms crossing from WebAssembly into it (Chrome's WebGPU
+  calls themselves are counted there: the profiler shows no native frames), then the calls by
+  name: `submit` 11.6 ms, `onSubmittedWorkDone` 10.8 (fences), `createBindGroup` 9.0,
+  `createCommandEncoder` 3.5, `drawIndexed` 2.8, `draw` 1.4; `performance.now` 12.3 (the timed
+  replay's own clock); allocation 9.5 (malloc and free); building JavaScript descriptor objects
+  (`Object::new` 3.5, wgpu's `begin_render_pass` 2.9 and its colour attachments 2.4); this back
+  end's own functions a few ms each (`begin_pass` 5.0, `draw` 2.6, `write_buffer` 2.2,
+  `set_group` 2.0, hashing about 3.7). So in the browser the cost is the calls into Chrome's
+  WebGPU and the objects wgpu builds for them, not the back end's own logic; cutting it means
+  fewer calls (bind groups and command encoders made less often, fewer fence queries), which is
+  this back end's to try next (Next 12). A second run with the profile grouped by interface call
+  (the grouping's pattern fixed after the first run missed the crate hashes in the names) got no
+  result from the page within 300 s (profile2.log), so that grouping is untested.
 - atg-simplecomputepc's division (the G2c check's finding; tests/direct3d.rs
   `divisions_match_direct3d`, 2026-11-19 15:18, desktop shared with other tracks' queued jobs,
   not alone, load not taken; scratch g2d/after2.log): 64 draws of 64 seeded pairs (seed 1, the
@@ -2288,6 +2308,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
     infrastructure crate's `d3d` module with its Windows test; then this crate depends on that
     crate, imports it and deletes `DX12_PLACEMENT_ALIGNMENT` and its unit test, and the front
     imports it too (Departures).
+12. The browser's per-call cost (Measurements, run 27): fewer calls into Chrome's WebGPU per
+    frame, first `createBindGroup` (2 a frame on the replayed frames), `createCommandEncoder`
+    and the fence queries (`onSubmittedWorkDone`); measure with web/replay-profile.mjs, and get
+    its per-interface-call grouping to run once.
 
 ## Departures from the plan
 
