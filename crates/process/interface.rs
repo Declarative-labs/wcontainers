@@ -13,7 +13,7 @@ use wcontainers_executor::{Executor, PerThreadWatch};
 use wcontainers_kernel::linux::general::siginfo;
 use wcontainers_kernel::{Errno, TaskId};
 
-/// A kernel, which suspends and resumes the tasks of its processes and their contexts.
+/// The owner of processes, which suspends and resumes their tasks and their contexts.
 pub trait Kernel {
     type Executor: Executor;
     type SuspendedTask;

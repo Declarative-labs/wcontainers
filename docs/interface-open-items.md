@@ -197,7 +197,7 @@ Distributed Everything
 - Crate folders `executor`, `process`, `system`, `container` (packages `wcontainers-` and the folder).
   `kernel`, `abi` and `runtime` would give the names of existing packages.
 - That `Kernel` is in wcontainers-process (see "Where `Kernel` lives").
-- The doc comment of `Kernel`: "A kernel, which suspends and resumes the tasks of its processes and their
+- The doc comment of `Kernel`: "The owner of processes, which suspends and resumes their tasks and their
   contexts."
 - `Process::state` and `Process::memory_id`.
 - `Interrupter`.
