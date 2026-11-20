@@ -1106,26 +1106,11 @@ impl<B: Backend> Device<B> {
         if let Some(p) = self.programs.get(&key) {
             return Ok((p.program.handle.clone(), p.helpers[1].clone()));
         }
-        if let Some(p) = ps
-            && pk != StageVariant::default()
-            && !self.variants.contains_key(&(p.gpu.id, pk))
-        {
-            let key = self.variant_key(p, pk, SourceStage::Pixel);
-            let v = self.convert_kept(&p.bytecode, SourceStage::Pixel, &key)?;
-            self.variants.insert((p.gpu.id, pk), v);
-        }
-        let (fragment, ph) = match ps {
-            None => (None, Rc::default()),
-            Some(p) => self
-                .variants
-                .get(&(p.gpu.id, pk))
-                .map_or((Some(&p.gpu.handle), p.helpers.clone()), |v| {
-                    (Some(&v.shader.handle), v.helpers.clone())
-                }),
-        };
-        let program = self
-            .backend
-            .create_program(&Program::Render { vertex, fragment });
+        let (fragment, ph) = self.pixel_stage(ps, pk)?;
+        let program = self.backend.create_program(&Program::Render {
+            vertex,
+            fragment: fragment.as_ref(),
+        });
         let program = self.gpu(program)?;
         let id = self.id();
         let helpers = [Rc::default(), ph.clone()];

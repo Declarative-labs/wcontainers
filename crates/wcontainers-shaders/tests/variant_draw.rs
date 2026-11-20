@@ -556,8 +556,8 @@ fn variants_draw_as_the_native_feature_does() {
         }
 
         // The sample mask 0b0101 of four samples: natively on WebGPU, and written by the program on
-        // WebGPU; the resolved pictures compared. WebGL 2 cannot take this variant: its language writes
-        // no sample mask (no OES_sample_variables in WebGL).
+        // WebGPU; the resolved pictures compared. The ANGLE drawn on here lacks OES_sample_variables,
+        // which the variant needs on WebGL 2.
         {
             let mut native = plain.clone();
             native.setup.samples = 4;

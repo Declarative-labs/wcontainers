@@ -1,8 +1,98 @@
-# Shaders track (G6): the record of runs 1 to 58
+# Shaders track (G6): the record of runs 1 to 59
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
 superseded by the status file's.
+
+## G6a run 1 (run 59): the carried findings at the pushed tip
+
+Every figure here comes from runs of the code at 62ceccab (this run changed only this file and the
+history file). Logs in scratch `graphics-shaders/g6a1`. Merged nothing: origin/phase-2-graphics,
+-webgpu, -webgl, -direct3d-11, -direct3d-12, -rig and phase-1-literals had no commit this branch
+lacks.
+
+Runs at the tip:
+- Laptop (i7-8750H, idle besides ours: load 1.0 to 3.9; 4 cargo jobs under choom), the whole suite
+  with every corpus and glslang 8.13 (suite.log; `suite-run49.sh`, under "How to run"): every test
+  binary passes but `corpus`, which passes 10 of 11; the one failing,
+  `runner_shaders_give_their_recorded_verdicts`, differs only on `hlsl+distance-4-ps.dxil` (A1).
+  The `mutated` fuzz test is ignored by default and skipped there (A11).
+- Rented x86 machine (192 processors, load 0.4 to 7 from others): `cargo fmt --all -- --check`
+  clean, `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean, the whole suite
+  with every corpus (no glslang there) the same result as the laptop's (x86.log). The fuzz test,
+  seed 7: case 301 (`blend.vs.dxil` mutated) ends the process with SIGSEGV inside the converters
+  (fuzz.log; A11).
+- Desktop (RTX 3080, shared through the queue, 3 cargo jobs, load not taken), every test binary of
+  the crate at default seeds in one GPU job (gpu-all.log): 23 test binaries and the doc tests,
+  147 tests pass, 0 fail, 5 ignored (the 3 corpora, which need their folders, the fuzz test, and
+  `print_geometry_programs`, which only prints). Then
+  `geometry_shaders_draw_as_direct3d_does` at the check's seeds (4747, 12 cases): 336
+  comparisons, 8 failed (A10); and `filter_draw` at seed 4747, 12 cases: 2,044 comparisons, 0
+  failed, 288 known, every known one in a mode taking an anisotropic footprint (implicit, bias,
+  gradients, offset: 72 each), none in level, gather or load.
+- Laptop, WebAssembly build of the corpus test under wasmtime (wasm.log, 2 cargo jobs): every
+  corpus test passes as natively (the runner's is not run there: no corpus given); of the files
+  both builds write, 5 WGSL files differ, all by the order of one divide helper's two results (A8).
+  `converter-version.txt` is equal.
+- Chrome on the RTX 3080 (`web/check` on the laptop run's written files, one GPU job, chrome.log):
+  every WGSL file compiles (corpus 185, games 527, games DXIL 441, own 135, own DXIL 73, rig 79,
+  rig DXIL 56, runner 1438, runner DXIL 1386). WebGL 2 compiles 3,576 GLSL files and refuses 40
+  (corpus 1, games 6, games DXIL 1, own 5, own DXIL 3, rig 2, rig DXIL 2, runner 11, runner DXIL
+  9); every one of the 40 is a shader whose record names the need its error is about:
+  multisampled reads 23 (`sampler2DMS`), the primitive index 8 (`gl_PrimitiveID`), cull distances
+  9 (vertex programs; the writer's array size, Known gaps). The WebGL 2 back end declares all three
+  absent.
+- Literal check on the desktop (check.txt): passes, printing no line to add or delete. This
+  crate's baseline lines (src, build.rs, tests/*.rs, examples): 585, as at run 58.
+- Clean-up at the end: the build folders `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  on the laptop (6.2 GB), `/work/target/graphics-shaders` on the x86 machine and
+  `C:\wc\target\phase-2-graphics-shaders` on the desktop deleted; nothing built on the Mac (only
+  `cargo fmt --check`). Scratch keeps the logs and `g6a1/out` (50 MB, the files Chrome compiled).
+
+The check's findings, each against the tip:
+1. Corpus records (blocking): fixed in run 47. The records are whole verdicts under the WebGL 2 key;
+   the four corpus tests the check saw fail pass at the tip (suite.log): the check's examples now
+   read `020_ps_ld_code.dxbc ok ; glsl compiles`, `5c32b4c746957b52.dxbc ok ; glsl needs
+   MULTISAMPLE_READ compile`, `hlsl+getdimensions-3-ps.dxbc ok ; glsl needs MULTISAMPLE_READ
+   compile`. The games test checks its DXIL corpus before failing on either kind
+   (`game_shaders_give_their_recorded_verdicts`).
+2. Stale results (blocking): this section's figures are all from runs at the tip, listed above.
+3. Gap A3's cause (blocking): closed in run 47. The corpus test writes GLSL ES with the WebGL 2 back
+   end's own `wcontainers_gpu_webgl::glsl::write` (tests/corpus.rs, `glsl_verdict`), on a module
+   converted under the WebGL 2 key; Chrome compiles that output (above).
+4. GLSL refusals by reason (blocking): each record holds the whole GLSL ES part: the needs the back
+   end's `glsl::needs` names (plus a cube array view), then `compiles`, `compile` (glslang refused),
+   `absent compute` or `write` with the back end's error. `is_named` accepts a write or compile
+   failure only where a need is named, so a failure of a shader that needs nothing past GLSL ES 3.00
+   fails the test. The shaders the check named: `ps_shade` (noperspective) and `ps_shadow`,
+   `ps_shadow_wide` (depth loads) compile on both routes; `106_ps_code_ddy_fine`, `ps_deriv`,
+   `ps_helper` and ddxddy-4 are named `needs FINE_DERIVATIVES` (shader model 5's derivative
+   control, past WebGL 2's 10_0). What is left: the back end's write error is one fixed text
+   (`GpuError::Invalid` takes a static string; naga's own reason goes to its log), so two write
+   failures of one shader read alike; every such record names a need WebGL 2 lacks at 10_0
+   (fragment storage writes 160, vertex storage reads 23, fine derivatives 7, cube array views 5,
+   sample shading and subgroups beside them; 13 of the fragment storage ones end at the back end's
+   "sampled through two samplers (not built)"), so none of them is a shader WebGL 2 could run.
+5. Unbuilt parts (blocking): each is on the gap list below with its cause, the front waiting and
+   what it takes (A1, A4 to A11); by the task's direction the milestone goes to its check with
+   them listed.
+6. `VertexStorageAsCompute` (blocking): gap A9. At the tip the runner and runner DXIL refuse 1 each
+   (`hlsl+depth-bounds-1-vs`) as `VertexStorageWrite`.
+7. Clip edges at other seeds (minor): gap A10, with this run's seeds.
+8. The tessellator's notice (minor): `src/stage/tessellator.wgsl` lines 1 to 16 carry Microsoft's
+   copyright line and the MIT permission notice (since run 47).
+9. A header cut short (minor): `Cache::load` loads any prefix of an empty cache's header as an
+   empty cache with the cut bytes dropped (src/cache.rs); `a_cut_file_keeps_every_whole_entry_before_the_cut`
+   cuts at every header length and at seeded places (cache test, 6 pass, at the tip on all three
+   machines).
+10. Literals (minor): `StorageImageAtomics`, `ProvokingRewrite`, `StoragePacked` and
+   `RootSignatureLayout` are defined once, in `src/refusal.rs`, and imported; the cache's field
+   offsets and sizes come from `#[repr(C)]` layouts (`size_of`, `offset_of!`). Two refusal names of
+   `convert` are still defined in lib.rs rather than refusal.rs, each once (`VertexStorageWrite`,
+   and the public `SWIZZLED_DEPTH`); the literal check passes (above).
+11. Filter known failures (minor): `anisotropic_footprint` (tests/filter_draw.rs) counts a failure
+   as known only in a case with anisotropy above 1 and a mode taking its level of detail from
+   derivatives; a level, gather or load must match. Seed 4747's run above shows the split.
 
 ## Runs 1 to 58
 

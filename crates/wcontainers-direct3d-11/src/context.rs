@@ -67,6 +67,10 @@ type ConstantWindow<B> = (u32, Rc<Buffer<B>>, u64, u64, u64, ConstantsReadAs);
 /// Bytes of one constant: four 32-bit components.
 const CONSTANT_ROW_BYTES: u64 = size_of::<[u32; 4]>() as u64;
 
+/// The shader number standing for the pixel program a draw without a pixel shader takes for its
+/// variant (no object is numbered zero).
+const BUILT_IN_PIXEL: u64 = 0;
+
 /// Texels copied from a buffer into a texture's rows: their count, bytes each, and texels a row.
 #[derive(Clone, Copy)]
 struct TexelRows {
@@ -1314,7 +1318,12 @@ impl<B: Backend> Device<B> {
                 let mut c = crate::shader::convert_variant(&p.bytecode, SourceStage::Pixel, &key)?;
                 crate::counting::from_pixel_shader(&c.modules.pop().expect("one module"))?
             }
-            None => crate::counting::without_pixel_shader()?,
+            None if pk == StageVariant::default() => crate::counting::without_pixel_shader()?,
+            None => {
+                let key = pk.key(SourceStage::Pixel, &[], 0, &[]);
+                let mut c = crate::shader::pixel_program_for_variant(&key)?;
+                crate::counting::from_pixel_shader(&c.modules.pop().expect("one module"))?
+            }
         };
         let fragment = self.backend.create_shader(&module);
         let fragment = self.gpu(fragment)?;
@@ -1745,37 +1754,22 @@ impl<B: Backend> Device<B> {
             return Ok((p.program.handle.clone(), p.helpers.clone()));
         }
         self.vertex_variant(vs, vk, ps)?;
-        if let Some(p) = ps
-            && pk != StageVariant::default()
-            && !self.variants.contains_key(&(p.gpu.id, pk))
-        {
-            let key = self.variant_key(p, pk, SourceStage::Pixel);
-            let v = self.convert_kept(&p.bytecode, SourceStage::Pixel, &key)?;
-            self.variants.insert((p.gpu.id, pk), v);
-        }
+        let (fragment, ph) = self.pixel_stage(ps, pk)?;
         let (vertex, vh) = self
             .interpolated
             .get(&(key.0, vk, key.2))
             .map_or((&vs.gpu.handle, &vs.helpers), |v| {
                 (&v.shader.handle, &v.helpers)
             });
-        let (fragment, ph) = match ps {
-            None => (None, Rc::default()),
-            Some(p) => self
-                .variants
-                .get(&(p.gpu.id, pk))
-                .map_or((Some(&p.gpu.handle), p.helpers.clone()), |v| {
-                    (Some(&v.shader.handle), v.helpers.clone())
-                }),
-        };
         let helpers = [vh.clone(), ph];
         let keys = self.program_keys(vs, vk, ps, pk);
         let kept = match self.warm.programs.remove(&keys) {
             Some(warm) => warm,
             None => {
-                let program = self
-                    .backend
-                    .create_program(&Program::Render { vertex, fragment });
+                let program = self.backend.create_program(&Program::Render {
+                    vertex,
+                    fragment: fragment.as_ref(),
+                });
                 let program = self.gpu(program)?;
                 let id = self.id();
                 Kept::new(program, id, Object::Program, &self.graveyard)
@@ -1804,8 +1798,42 @@ impl<B: Backend> Device<B> {
             .interpolated
             .get(&(vs.gpu.id, vk, ps.map_or(0, |p| p.gpu.id)))
             .map_or(vs.key, |v| v.key);
-        let fragment = ps.map(|p| self.variants.get(&(p.gpu.id, pk)).map_or(p.key, |v| v.key));
+        let fragment = self
+            .variants
+            .get(&(ps.map_or(BUILT_IN_PIXEL, |p| p.gpu.id), pk))
+            .map(|v| v.key)
+            .or(ps.map(|p| p.key));
         (vertex, fragment)
+    }
+
+    /// The pixel stage of a program and its helpers: `ps` as the variant `pk`, or without a pixel
+    /// shader the shaders crate's program writing nothing with `pk`'s rewrites, where `pk` asks
+    /// for any (depth clamped or biased, clip distances); none otherwise.
+    pub(crate) fn pixel_stage(
+        &mut self,
+        ps: Option<&Rc<Shader<B>>>,
+        pk: StageVariant,
+    ) -> Result<(Option<B::Shader>, Rc<Helpers>)> {
+        let id = ps.map_or(BUILT_IN_PIXEL, |p| p.gpu.id);
+        if pk != StageVariant::default() && !self.variants.contains_key(&(id, pk)) {
+            let v = match ps {
+                Some(p) => {
+                    let key = self.variant_key(p, pk, SourceStage::Pixel);
+                    self.convert_kept(&p.bytecode, SourceStage::Pixel, &key)?
+                }
+                None => {
+                    let key = pk.key(SourceStage::Pixel, &[], 0, &[]);
+                    let c = crate::shader::pixel_program_for_variant(&key)?;
+                    self.kept_variant(c)?
+                }
+            };
+            self.variants.insert((id, pk), v);
+        }
+        Ok(match (self.variants.get(&(id, pk)), ps) {
+            (Some(v), _) => (Some(v.shader.handle.clone()), v.helpers.clone()),
+            (None, Some(p)) => (Some(p.gpu.handle.clone()), p.helpers.clone()),
+            (None, None) => (None, Rc::default()),
+        })
     }
 
     /// Converts `vs` again where the pixel shader interpolates its outputs other than by perspective
@@ -1849,7 +1877,12 @@ impl<B: Backend> Device<B> {
         stage: SourceStage,
         key: &VariantKey,
     ) -> Result<Variant<B>> {
-        let mut c = crate::shader::convert_variant(bytecode, stage, key)?;
+        let c = crate::shader::convert_variant(bytecode, stage, key)?;
+        self.kept_variant(c)
+    }
+
+    /// A converted program of one stage handed to the back end.
+    fn kept_variant(&mut self, mut c: wcontainers_shaders::Converted) -> Result<Variant<B>> {
         let helpers = Rc::new(Helpers::of(&c));
         let module = c.modules.pop().expect("one module");
         let shader = self.backend.create_shader(&module);
@@ -4312,11 +4345,6 @@ impl<B: Backend> Device<B> {
             }
         }
         let linked = if clamps || clip.is_some() || layer_named || aa_lines {
-            if ps.is_none() && (clamps || clip.is_some()) {
-                return not_implemented(
-                    "depth clamping or clip distances the back end lacks, without a pixel shader to apply them",
-                );
-            }
             let at = crate::shader::linked_location(
                 feeding
                     .reflection
@@ -4357,26 +4385,28 @@ impl<B: Backend> Device<B> {
             clip_distances: vertex_clip,
             ..self.stage_variant(VERTEX, &vs, target_samples)
         };
-        if depth_bias && ps.is_none() {
-            return not_implemented(
-                "a depth bias the back end cannot apply, without a pixel shader to apply it",
-            );
-        }
-        let pk = ps
-            .as_ref()
-            .map_or(StageVariant::default(), |p| StageVariant {
-                dual_source,
-                depth_bias,
-                linked,
-                depth_clamp: clamps,
-                clip_distances,
-                layer_from_stage: layer_named,
-                line_coverage: aa_lines,
-                early_tests: early,
-                retyped,
-                retyped_formats,
-                ..self.stage_variant(PIXEL, p, target_samples)
-            });
+        // Without a pixel shader, the pixel program writing nothing applies these
+        // (`Context::pixel_stage`).
+        let unshaded = StageVariant {
+            depth_bias,
+            linked: if clamps || clip.is_some() { linked } else { 0 },
+            depth_clamp: clamps,
+            clip_distances,
+            ..StageVariant::default()
+        };
+        let pk = ps.as_ref().map_or(unshaded, |p| StageVariant {
+            dual_source,
+            depth_bias,
+            linked,
+            depth_clamp: clamps,
+            clip_distances,
+            layer_from_stage: layer_named,
+            line_coverage: aa_lines,
+            early_tests: early,
+            retyped,
+            retyped_formats,
+            ..self.stage_variant(PIXEL, p, target_samples)
+        });
         if clip.is_some() {
             self.backend
                 .slow_paths()

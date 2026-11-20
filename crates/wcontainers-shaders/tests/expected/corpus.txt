@@ -177,9 +177,9 @@
 176_ps_sampleinfo_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 177_ps_sampleinfo_rasterizer_code.dxbc	unsupported SampleCount
 178_ps_sample_code_2.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-179_ps_color_code_2.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-180_ps_resolve_code.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-181_ps_code_25.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+179_ps_color_code_2.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+180_ps_resolve_code.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+181_ps_code_25.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
 182_ps_code_26.dxbc	ok ; glsl compiles
 183_ps_samplepos.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 184_ps_code_27.dxbc	ok ; glsl compiles

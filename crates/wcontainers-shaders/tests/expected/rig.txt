@@ -30,14 +30,14 @@ geometry.gs_layers.dxbc	ok ; glsl absent compute
 geometry.gs_points.dxbc	ok ; glsl absent compute
 geometry.gs_strips.dxbc	ok ; glsl absent compute
 geometry.ps.dxbc	ok ; glsl compiles
-geometry.ps_id.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile
+geometry.ps_id.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 geometry.ps_primitive.dxbc	ok ; glsl compiles
 geometry.vs.dxbc	ok ; glsl compiles
 instanced.ps.dxbc	ok ; glsl compiles
 instanced.vs.dxbc	ok ; glsl compiles
-msaa.ps_coverage.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-msaa.ps_load.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-msaa.ps_sample.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+msaa.ps_coverage.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
+msaa.ps_load.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+msaa.ps_sample.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 msaa.vs_full.dxbc	ok ; glsl compiles
 quads.ps.dxbc	ok ; glsl compiles
 quads.vs.dxbc	ok ; glsl compiles

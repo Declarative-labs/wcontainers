@@ -135,6 +135,29 @@ enable wgpu_binding_array;
     assert_eq!(refused, ConvertError::Unsupported(refusal::RESOURCE_ARRAY));
 }
 
+#[test]
+fn a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it() {
+    let source = "
+@group(0) @binding(STORAGE) var<storage, read_write> out: array<u32>;
+@vertex fn ENTRY(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    out[v] = v;
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+";
+    let module = parse(source);
+    let reflection = Reflection {
+        stage: SourceStage::Vertex,
+        extras: StageExtras::None,
+        ..compute_reflection(&module)
+    };
+    let refused = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
+        .expect_err("no back end runs it");
+    assert_eq!(
+        refused,
+        ConvertError::Unsupported(refusal::VERTEX_STORAGE_WRITE)
+    );
+}
+
 /// A gather whose offset the test then makes the run-time value `u.o`.
 const GATHER: &str = "
 struct U { o: vec2<i32> }
