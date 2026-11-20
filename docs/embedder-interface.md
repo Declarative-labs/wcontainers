@@ -256,6 +256,9 @@ impl Process<'_> {
     pub fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor) -> Result<(), Unsupported>;
     pub fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
     pub fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
+    pub fn suspend_tasks(&mut self, tasks: &[TaskId]) -> vec::IntoIter<(TaskId, SuspendedTask)>;
+    pub fn suspend_process(self) -> (ProcessContext, vec::IntoIter<(TaskId, SuspendedTask)>);
+    pub fn copy_process_context(&self) -> ProcessContext;
 }
 
 impl Kernel {
@@ -277,8 +280,8 @@ pub enum AccessKind { Read, Write, Execute }
 pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }
 ```
 
-- Hooks receive the handle by value (the owner's agreement of the night of 2026-11-18), so a later
-  `suspend(self)` can consume it.
+- Hooks receive the handle by value (the owner's agreement of the night of 2026-11-18), so
+  `suspend_process(self)` consumes it.
 - `info` reads only: `memory_mapped` sums the mapped ranges; `ceiling_distance` is what new mappings
   can still take below the ceiling (the gaps between the heap's end and the mmap base);
   `compute_used` is the CPU time of the live threads plus the ended ones; `parent` is the
@@ -456,12 +459,87 @@ pub enum Unsupported {
 - `translator: E::TranslatorConfig` is not a field: the kernel reaches its executor as `dyn Cpu`,
   with no executor type to name it from.
 
+## Suspending and resuming tasks
+
+```rust
+impl Kernel {
+    pub fn suspend_tasks(&mut self, cpu: &mut dyn Cpu, tasks: &[TaskId]) -> vec::IntoIter<(TaskId, SuspendedTask)>;
+    pub fn suspend_process(&mut self, cpu: &mut dyn Cpu, process: TaskId) -> Option<(ProcessContext, vec::IntoIter<(TaskId, SuspendedTask)>)>;
+    pub fn copy_process_context(&self, process: TaskId) -> Option<ProcessContext>;
+    pub fn resume_process(&mut self, context: ProcessContext, config: ExecutionConfig) -> Option<ProcessContext>;
+    pub fn resume_tasks(&mut self, cpu: &mut dyn Cpu, tasks: impl IntoIterator<Item = SuspendedTask>) -> vec::IntoIter<SuspendedTask>;
+}
+
+pub struct SuspendedTask { /* the kernel's records */ }  // id(), process()
+pub struct ProcessContext { /* the kernel's records */ } // id()
+```
+
+- The kernel's calls take the executor (`cpu`), as `Kernel::process` does: a task's registers live
+  there, and a task put back gets a new executor thread in its process's memory. They are made
+  between steps (no thread running); the handle's three are the same calls limited to its process.
+  Resuming is outside hooks only. The iterators are the concrete `vec::IntoIter`, which borrows
+  nothing of the kernel.
+- A `SuspendedTask` holds the task's whole record (its id, its registers, its signal mask and
+  pending signals, its call slot with what it waits on, its credentials, and its references to the
+  descriptor table and the filesystem information, which Linux's tasks also reach by reference)
+  and where it was in line. A `ProcessContext` holds the process's record: the memory (the
+  executor's `MemoryId`) and its address map with the embedder's watches, the signal handlers, the
+  limits, the process group and session, and what the embedder has been told the process maps of
+  shared memory, which moves with it so nothing is announced again or ended by the move.
+- `suspend_tasks` takes, as of one moment, every task named that is on the kernel; one not here (it
+  ended, it is on no process of this kernel, or it is already taken) is absent from the answer.
+  Today the kernel runs one thread at a time, so between steps every task is stopped at a point it
+  can be taken from, and the batch is simply the tasks taken in turn with nothing running between
+  them. When threads run at once, a batch naming a running task will have to wait for it to stop;
+  inside a hook that wait could not end, and that batch is not built.
+- Where a task goes on from: a task waiting for its turn (or holding it) goes back in line with
+  how it continues; a task parked in a call keeps the call (its deadline, its progress, its
+  restart record) and the call runs again when it is put back, so it goes on waiting, finds what
+  it waited for, or times out; a task whose wait had ended runs its call again first; a task with a
+  signal to act on still acts on it first. A call waiting in a line the kernel keeps outside the
+  task (a futex's, a System V semaphore set's, a POSIX message queue's) leaves the line and the
+  task is put back at the call's own instruction, so the call is made again when it is resumed,
+  as Linux restarts a call a stop interrupted (`restart_syscall` for a futex wait with a timeout,
+  which waits on to the same deadline). A wake given while it is away therefore cannot be lost:
+  the call reads the futex word again. The locks a waiting call held (a pipe's, a file
+  position's) are let go and taken again by its next run.
+- Inside a hook the kernel is in the middle of a step for one thread (the system call, signal or
+  fault it is handling), or of starting a program or ending a process. That thread, the process
+  being started by an exec and every task of a process being ended cannot be taken there: they are
+  left out of the answer and counted (`task in the middle of a kernel step not suspended`, detail
+  the task). The one exception is `intercept_system_call_request`: nothing of the call has
+  happened, so its thread is taken and makes the call again (the request is announced again) where
+  it is put back. A new thread or process announced by `on_thread_starting` or
+  `on_process_starting` after a clone can be taken: it has not run.
+- `suspend_process` takes the context and every task of the process; the process is then gone from
+  the kernel (`process` and `copy_process_context` answer none). Through the handle, when one of its
+  tasks cannot be taken in that hook, the process stays: the answer is a copy of its context and the
+  tasks that could be taken, and the rest are counted as above.
+- `copy_process_context` stops nothing. The copy shares the records the kernel reaches by reference
+  (the address map, the handler table) with the process it copies, as two kernel values in one
+  embedder share the executor's memories; keeping copies in step on several kernels is the
+  embedder's business. It holds no tasks.
+- `resume_process` puts the context on the kernel with `config` (given here, never kept in the
+  value: a fork's child takes its parent's as before). A context for a process already on the
+  kernel changes nothing and is handed back; so is one with a configuration the kernel cannot run
+  (see `ExecutionConfig::supported`).
+- `resume_tasks` puts each task on its process: tasks whose process context is not on the kernel,
+  whose number is already carried, or for which the executor refused a thread (counted as `host
+  cannot do this` when it cannot at all) are handed back. Putting a task back ends nothing and
+  announces nothing.
+- What a task leaves on the kernel it came from while away: results already given to it (a
+  semaphore operation done, a message handed over) stay there keyed by its number and are found
+  when it comes back to the same kernel; a wake that reaches nobody there is not passed on. Locks
+  across kernels (`wake_waiters`, `move_waiters`) are not built. A thread that ends while its
+  siblings are away is, to the kernel, the last thread of its process and ends the process.
+- A second kernel value in the same embedder can take a context and tasks from another, run on the
+  same executor (the memory ids are the executor's); its clock and its tables (ends, futexes,
+  System V objects, file systems) are its own. A process brought to a kernel whose parent is not
+  on it is not yet given a reaper: the test moves a process there and back without letting it end.
+
 ## Not built, and where it attaches
 
-- `suspend(self) -> SuspendedProcess<E>`, `resume`, `export` and `import`: `suspend` will be a
-  method of `Process` consuming the handle (hooks already receive it by value); `resume` a method
-  of `Kernel` taking the `SuspendedProcess` and an `ExecutionConfig`. The process's records are the
-  kernel's `Process` and `Thread` entries and its `AddressMap` (watches included); its memory is the
-  executor's `MemoryId`.
+- `export` and `import` (a wire form for a task and for a context), and anything for a second
+  machine.
 - `type ProcessState` (ruled; to wait for the reviewable-rust layout).
 - `set_thread_ordering`, the inspection hooks and `StopReason`: not ruled or not asked for yet.
