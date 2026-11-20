@@ -12,6 +12,8 @@ const COMPILE_COMMANDS: &str = "compile_commands.json";
 const DEFINE_FLAGS: &[&str] = &["-D", "/D"];
 const STANDARD_FLAGS: &[&str] = &["-std=", "/std:"];
 const QUOTE: char = '"';
+const QUOTE_TEXT: &str = "\"";
+const ESCAPED_QUOTE: &str = "\\\"";
 
 /// The source folder Meson made the build from.
 pub fn source_folder(build: &Path) -> PathBuf {
@@ -47,14 +49,24 @@ pub fn mesa_flags(build: &Path, file: &str) -> Vec<String> {
     command
         .command
         .split_whitespace()
-        // Meson quotes every argument of a Visual C++ command.
-        .map(|a| a.trim_matches(QUOTE))
+        .map(unquoted)
         .filter(|a| {
             DEFINE_FLAGS
                 .iter()
                 .chain(STANDARD_FLAGS)
                 .any(|f| a.starts_with(f))
         })
-        .map(String::from)
         .collect()
+}
+
+/// An argument of a Visual C++ command as the compiler receives it: Meson quotes every one and
+/// escapes the quotes inside.
+fn unquoted(argument: &str) -> String {
+    match argument
+        .strip_prefix(QUOTE)
+        .and_then(|a| a.strip_suffix(QUOTE))
+    {
+        Some(inner) => inner.replace(ESCAPED_QUOTE, QUOTE_TEXT),
+        None => argument.to_string(),
+    }
 }
