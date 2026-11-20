@@ -5,8 +5,16 @@ use std::path::{Path, PathBuf};
 
 pub const RERUN_IF_CHANGED: &str = "cargo::rerun-if-changed=";
 pub const RERUN_IF_ENV_CHANGED: &str = "cargo::rerun-if-env-changed=";
+#[allow(
+    dead_code,
+    reason = "only the build scripts that hand values to their crate use it"
+)]
 pub const RUSTC_ENV: &str = "cargo::rustc-env=";
 /// Between a variable and its value in `RUSTC_ENV`.
+#[allow(
+    dead_code,
+    reason = "only the build scripts that hand values to their crate use it"
+)]
 pub const ASSIGN: &str = "=";
 /// The variable naming the Mesa build folder, and the cfg set when it does.
 pub const MESA_VARIABLE: &str = "WCONTAINERS_MESA";
