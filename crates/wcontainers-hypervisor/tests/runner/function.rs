@@ -3,6 +3,10 @@
 //! found by software step and at every return from the inside (docs/native.md section 4).
 
 use wcontainers_abi::{Access, Permissions};
+use wcontainers_arm64::carry::{SCRATCH, link_words};
+use wcontainers_arm64::mirror::{
+    LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_TEST, SLOT_MOVE_BITS, SLOT_MOVES,
+};
 use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls};
 
 use super::*;
@@ -19,6 +23,29 @@ pub struct Function {
     pub entry: u64,
     words: Vec<u32>,
     pieces: Vec<Placed>,
+    /// Every piece's bytes, one after another from [`PIECES`], as loaded.
+    bytes: Vec<u8>,
+    links: Links,
+}
+
+/// Which of a function's branches go straight to their targets' pieces, as the inside's loader points them once
+/// both are loaded, and whether a return's or call's first miss makes its last target, as the inside does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Links {
+    pub exits: bool,
+    pub tables: bool,
+    pub last_targets: bool,
+}
+
+/// A host instruction the guest's level was about to run: its address, its word and the guest instruction whose
+/// host code it is when it is one of the pieces' (none at an entry slot, which this runner leaves unmapped), and the
+/// guest state the position map gives there.
+#[derive(Clone, Debug)]
+pub struct Landing {
+    pub host: u64,
+    pub word: Option<u32>,
+    pub owner: Option<u64>,
+    pub state: GuestState,
 }
 
 /// How a function ran.
@@ -33,6 +60,8 @@ pub struct Run {
     pub interrupted: Option<(GuestState, usize)>,
     /// The data area at the end.
     pub data: Vec<u8>,
+    /// Every landing point reached while stepping, in order.
+    pub landed: Vec<Landing>,
 }
 
 /// The guest's state carried back to the hardware and the register page, as the inside returns to it.
@@ -78,17 +107,124 @@ fn interrupted(
     whole(state, h, float)
 }
 
+impl Function {
+    /// The piece at guest address `guest`.
+    fn piece_at(&self, guest: u64) -> Option<usize> {
+        self.pieces.iter().position(|p| p.guest == guest)
+    }
+
+    /// The piece whose host bytes hold `host`.
+    fn piece_holding(&self, host: u64) -> Option<usize> {
+        self.pieces
+            .iter()
+            .position(|p| (p.va..p.va + p.code.bytes.len() as u64).contains(&host))
+    }
+
+    /// The word at host address `host`, when it is in the pieces.
+    fn word(&self, host: u64) -> Option<u32> {
+        let at = usize::try_from(host.checked_sub(PIECES)?).ok()?;
+        let bytes = self.bytes.get(at..at + size_of::<u32>())?;
+        Some(u32::from_le_bytes(bytes.try_into().expect("a word")))
+    }
+
+    /// Writes the word at host address `at` that branches to the piece at `to`: the word's own offset changed where
+    /// `retarget` is set, else a direct branch, as the inside's loader links a site.
+    fn link_site(&mut self, at: u64, to: u64, retarget: bool) {
+        let offset = to as i64 - at as i64;
+        let word = if retarget {
+            encode::retarget(self.word(at).expect("a site in the pieces"), offset)
+        } else {
+            encode::branch(false, offset)
+        }
+        .expect("the pieces are near each other");
+        let from = (at - PIECES) as usize;
+        self.bytes[from..from + size_of::<u32>()].copy_from_slice(&word.to_le_bytes());
+    }
+
+    /// Points the exits and tables [`Links`] names at their targets' pieces.
+    fn link(&mut self) {
+        let mut sites = Vec::new();
+        for p in &self.pieces {
+            if self.links.exits {
+                for exit in &p.code.exits {
+                    sites.push((
+                        p.va + u64::from(exit.start),
+                        exit.target,
+                        exit.retarget.is_some(),
+                    ));
+                }
+            }
+            if self.links.tables {
+                for table in &p.code.tables {
+                    for k in 0..table.entries {
+                        let at = p.va + u64::from(table.start + k * size_of::<u32>() as u32);
+                        sites.push((at, table.target(k), true));
+                    }
+                }
+            }
+        }
+        for (at, target, retarget) in sites {
+            if let Some(k) = self.piece_at(target) {
+                let to = self.pieces[k].va;
+                self.link_site(at, to, retarget);
+            }
+        }
+    }
+
+    /// Makes `target` the last target of the jump whose call into the inside is at host address `call`, as the
+    /// inside does: its moves and test written, its direct branch linked when exits are.
+    fn make_last_target(&mut self, call: u64, target: u64) {
+        let word = |index: usize| call - ((LAST_TARGET_CALL - index) as u64 * Arm64::MAX_LENGTH);
+        let words = link_words();
+        let mut written: Vec<(u64, u32)> = (0..SLOT_MOVES)
+            .map(|k| {
+                let half = k as u32;
+                let imm16 = (target >> (half * SLOT_MOVE_BITS)) as u16;
+                let word_k = if k == 0 {
+                    encode::movz(SCRATCH, imm16, half)
+                } else {
+                    encode::movk(SCRATCH, imm16, half)
+                };
+                (word(k), word_k)
+            })
+            .collect();
+        written.push((word(LAST_TARGET_TEST), words.last_target_test));
+        for (at, w) in written {
+            let from = (at - PIECES) as usize;
+            self.bytes[from..from + size_of::<u32>()].copy_from_slice(&w.to_le_bytes());
+        }
+        if self.links.exits
+            && let Some(k) = self.piece_at(target)
+        {
+            let to = self.pieces[k].va;
+            self.link_site(word(LAST_TARGET_BRANCH), to, false);
+        }
+    }
+}
+
 impl Runner {
     /// Writes `words` at the guest's code address and, at `look_ahead`, the piece of every instruction's address
     /// in the code area, and enters the gate.
     pub fn load_function(&mut self, words: &[u32], look_ahead: LookAhead) -> Function {
+        self.load_linked(words, look_ahead, true, Links::default())
+    }
+
+    /// As [`Self::load_function`], with the count when `exact_replay`, and the branches `links` names pointed at
+    /// their targets' pieces with the words the inside's loader writes.
+    pub fn load_linked(
+        &mut self,
+        words: &[u32],
+        look_ahead: LookAhead,
+        exact_replay: bool,
+        links: Links,
+    ) -> Function {
         let image: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut bytes = Vec::new();
         let mut pieces = Vec::new();
         for k in 0..words.len() {
             let from = k * Arm64::MAX_LENGTH as usize;
             let guest = CODE + from as u64;
-            let code = translate_native::<Arm64>(&image[from..], guest, look_ahead, true)
+            let code = translate_native::<Arm64>(&image[from..], guest, look_ahead, exact_replay)
                 .expect("a decoded word");
             pieces.push(Placed {
                 guest,
@@ -98,13 +234,17 @@ impl Runner {
             bytes.extend_from_slice(&code.bytes);
             pieces.last_mut().expect("just placed").code = code;
         }
-        self.write_code(words);
-        self.load(&bytes);
-        Function {
+        let mut function = Function {
             entry: CODE,
             words: words.to_vec(),
             pieces,
-        }
+            bytes,
+            links,
+        };
+        function.link();
+        self.write_code(words);
+        self.load(&function.bytes);
+        function
     }
 
     /// Runs `function` from the state of `case` (its word unused) until it returns to `returns` or stops. With a
@@ -113,7 +253,7 @@ impl Runner {
     /// the guest goes on from the state it resolved to, as the inside returns to it.
     pub fn run_function(
         &mut self,
-        function: &Function,
+        function: &mut Function,
         case: &Case,
         returns: u64,
         budget: Option<u64>,
@@ -127,12 +267,13 @@ impl Runner {
             fpcr: case.float[1],
             tracking: case.tracking,
         };
-        let at = |guest: u64| function.pieces.iter().position(|p| p.guest == guest);
-        let mut current = at(function.entry).expect("the entry has a piece");
+        let mut current = function
+            .piece_at(function.entry)
+            .expect("the entry has a piece");
         hardware.pc = function.pieces[current].va;
         let entry_span = &function.pieces[current].code.spans[0];
         let mut trace = vec![entry_state(entry_span, &hardware, &page, &block)];
-        let end = |runner: &Runner, trace, stop, landings, interrupted| {
+        let end = |runner: &Runner, trace, stop, landings, interrupted, landed| {
             let mut now = vec![0u8; DATA_BYTES as usize];
             runner.read(DATA, &mut now);
             Run {
@@ -141,8 +282,10 @@ impl Runner {
                 landings,
                 interrupted,
                 data: now,
+                landed,
             }
         };
+        let mut landed = Vec::new();
         let mut stepping = budget.is_some();
         let mut landings = 0;
         // Whether the hardware's pc is a landing point no step reached: the entry and every return from the
@@ -152,6 +295,7 @@ impl Runner {
         loop {
             let mut taken = None;
             if stepping && returned {
+                landed.push(landing(function, current, &hardware, &page, &block, self));
                 if Some(landings) == budget {
                     taken = Some((hardware.clone(), page.clone()));
                 }
@@ -161,7 +305,19 @@ impl Runner {
                 let trapped = self.enter(&hardware, &page, stepping);
                 returned = false;
                 let class = ESR_EL1::EC.read(trapped.syndrome);
+                // Linked code goes from piece to piece without coming back here.
+                if let Some(k) = function.piece_holding(trapped.hardware.pc) {
+                    current = k;
+                }
                 if class == ESR_EL1::EC::Value::SoftwareStepLowerEL as u64 {
+                    landed.push(landing(
+                        function,
+                        current,
+                        &trapped.hardware,
+                        &trapped.page,
+                        &block,
+                        self,
+                    ));
                     if Some(landings) == budget {
                         taken = Some((trapped.hardware, trapped.page));
                     } else {
@@ -179,9 +335,23 @@ impl Runner {
                             (hardware, page) = (*h, next);
                             returned = true;
                         }
+                        Resolved::LastTarget {
+                            call,
+                            target,
+                            then,
+                            page: next,
+                        } => {
+                            if function.links.last_targets {
+                                function.make_last_target(call, target);
+                                self.unload();
+                                self.load(&function.bytes);
+                            }
+                            (hardware, page) = (*then, next);
+                            returned = true;
+                        }
                         Resolved::Stop(Stop::Landed(to), state) => {
                             trace.push((*state).clone());
-                            match at(to).filter(|_| to != returns) {
+                            match function.piece_at(to).filter(|_| to != returns) {
                                 Some(k) => {
                                     current = k;
                                     (hardware, page) = rejoin(&state, trapped.page, &block);
@@ -189,13 +359,20 @@ impl Runner {
                                     returned = true;
                                 }
                                 None => {
-                                    return end(self, trace, Stop::Landed(to), landings, interrupt);
+                                    return end(
+                                        self,
+                                        trace,
+                                        Stop::Landed(to),
+                                        landings,
+                                        interrupt,
+                                        landed,
+                                    );
                                 }
                             }
                         }
                         Resolved::Stop(stop, state) => {
                             trace.push(*state);
-                            return end(self, trace, stop, landings, interrupt);
+                            return end(self, trace, stop, landings, interrupt, landed);
                         }
                     }
                 }
@@ -211,7 +388,7 @@ impl Runner {
             });
             stepping = false;
             interrupt = Some((state.clone(), trace.len() - 1));
-            match at(state.pc).filter(|_| state.pc != returns) {
+            match function.piece_at(state.pc).filter(|_| state.pc != returns) {
                 Some(k) => {
                     current = k;
                     (hardware, page) = rejoin(&state, interrupted_page, &block);
@@ -220,10 +397,46 @@ impl Runner {
                 None => {
                     let to = state.pc;
                     trace.push(state);
-                    return end(self, trace, Stop::Landed(to), landings, interrupt);
+                    return end(self, trace, Stop::Landed(to), landings, interrupt, landed);
                 }
             }
         }
+    }
+}
+
+/// The landing at the hardware's state `h` while piece `current` runs (or jumped from it to an entry slot).
+fn landing(
+    function: &Function,
+    current: usize,
+    h: &Hardware,
+    page: &RegisterPage,
+    block: &FloatStatus,
+    runner: &Runner,
+) -> Landing {
+    let mut float = *block;
+    let state = interrupted(
+        &function.pieces[current],
+        h,
+        page,
+        &mut float,
+        &mut |va, b| runner.read(va, b),
+    );
+    let piece = &function.pieces[current];
+    let owner = h.pc.checked_sub(piece.va).and_then(|offset| {
+        piece
+            .code
+            .spans
+            .iter()
+            .rev()
+            .find(|span| u64::from(span.start) <= offset)
+            .filter(|_| offset < piece.code.bytes.len() as u64)
+            .map(|span| span.guest)
+    });
+    Landing {
+        host: h.pc,
+        word: function.word(h.pc),
+        owner,
+        state,
     }
 }
 

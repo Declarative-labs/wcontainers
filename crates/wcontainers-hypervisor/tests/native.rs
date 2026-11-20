@@ -356,9 +356,9 @@ mod macos {
                 let native: Vec<_> = pairs
                     .iter()
                     .map(|(case, (words, _))| {
-                        let function = runner.load_function(words, look_ahead);
+                        let mut function = runner.load_function(words, look_ahead);
                         let end = CODE + words.len() as u64 * Arm64::MAX_LENGTH;
-                        let run = runner.run_function(&function, case, end, None);
+                        let run = runner.run_function(&mut function, case, end, None);
                         runner.unload();
                         run
                     })

@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 pub mod function;
+pub mod functions;
 
 use aarch64_cpu::registers::{ESR_EL1, MDSCR_EL1, SPSR_EL1};
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
@@ -488,7 +489,10 @@ impl Runner {
             let mut memory = |va, bytes: &mut [u8]| self.read(va, bytes);
             match resolve(&piece, PIECES, &trapped, &mut float, &mut memory) {
                 Resolved::Stop(stop, state) => break (stop, *state),
-                Resolved::Again(h, p) => (hardware, page) = (*h, p),
+                Resolved::Again(h, p)
+                | Resolved::LastTarget {
+                    then: h, page: p, ..
+                } => (hardware, page) = (*h, p),
             }
         };
         self.unload();
@@ -656,6 +660,14 @@ pub enum Resolved {
     Stop(Stop, Box<GuestState>),
     /// The inside answered; the guest's level goes on from this.
     Again(Box<Hardware>, RegisterPage),
+    /// A return's or call's first miss of its last target, whose call into the inside is at host address `call`,
+    /// with the target it missed: the guest's level goes on from `then`.
+    LastTarget {
+        call: u64,
+        target: u64,
+        then: Box<Hardware>,
+        page: RegisterPage,
+    },
 }
 
 /// The inside's view of the hardware: all but the vector registers and the thread pointer.
@@ -838,17 +850,25 @@ fn resolve(
             };
             Resolved::Stop(stop, Box::new(whole(state, &trapped.hardware, float)))
         }
-        // One instruction alone has no translations of its own to drop, and its return no last target to keep.
+        // One instruction alone has no translations of its own to drop.
         Ok(
             stop::Resolved::Again(next, page)
             | stop::Resolved::FloatStatusNotKept(next, page)
             | stop::Resolved::CodeChanged {
                 then: next, page, ..
-            }
-            | stop::Resolved::LastTarget {
-                then: next, page, ..
             },
         ) => Resolved::Again(Box::new(hardware_of(next, &trapped.hardware)), page),
+        Ok(stop::Resolved::LastTarget {
+            call,
+            target,
+            then,
+            page,
+        }) => Resolved::LastTarget {
+            call,
+            target,
+            then: Box::new(hardware_of(then, &trapped.hardware)),
+            page,
+        },
         Ok(stop::Resolved::Clock {
             into,
             mut then,
