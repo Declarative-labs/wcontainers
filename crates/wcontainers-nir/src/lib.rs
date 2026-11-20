@@ -11,6 +11,9 @@ pub mod direct;
 pub mod mesa;
 pub mod spirv;
 
+/// The layers of one cube: its faces.
+pub const CUBE_FACES: u32 = 6;
+
 /// Why a shader did not reach the common form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConvertError {

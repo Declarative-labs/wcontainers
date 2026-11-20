@@ -288,6 +288,17 @@ const RECTANGLE_SAMPLERS: [u32; 4] = [
     glow::INT_SAMPLER_2D_RECT,
     glow::UNSIGNED_INT_SAMPLER_2D_RECT,
 ];
+/// Storage cube and cube array image types, which the route holds as 2D arrays of their faces.
+pub const CUBE_IMAGES: [u32; 3] = [
+    glow::IMAGE_CUBE,
+    glow::INT_IMAGE_CUBE,
+    glow::UNSIGNED_INT_IMAGE_CUBE,
+];
+pub const CUBE_ARRAY_IMAGES: [u32; 3] = [
+    glow::IMAGE_CUBE_MAP_ARRAY,
+    glow::INT_IMAGE_CUBE_MAP_ARRAY,
+    glow::UNSIGNED_INT_IMAGE_CUBE_MAP_ARRAY,
+];
 
 /// The values of one default-block uniform: its words, element after element, column after column.
 pub struct UniformValue<'a> {
@@ -827,6 +838,8 @@ impl Llvmpipe {
             .ok_or_else(|| format!("a texture of format {:?} is not made here", image.format))?;
         let target = match image.view {
             _ if RECTANGLE_SAMPLERS.contains(&sampled.ty) => glow::TEXTURE_RECTANGLE,
+            _ if CUBE_IMAGES.contains(&sampled.ty) => glow::TEXTURE_CUBE_MAP,
+            _ if CUBE_ARRAY_IMAGES.contains(&sampled.ty) => glow::TEXTURE_CUBE_MAP_ARRAY,
             vk::ImageViewType::TYPE_1D => glow::TEXTURE_1D,
             vk::ImageViewType::TYPE_1D_ARRAY => glow::TEXTURE_1D_ARRAY,
             vk::ImageViewType::TYPE_2D => glow::TEXTURE_2D,

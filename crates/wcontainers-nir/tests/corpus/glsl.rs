@@ -19,14 +19,16 @@ use crate::interface::{COMPONENT_BYTES, Kind, Ty};
 const BYTES_A_WORD: usize = COMPONENT_BYTES as usize;
 use crate::lavapipe::{self, Attribute, Element, Job, Lavapipe};
 use crate::llvmpipe::{
-    AttributeSlot, Block, ComputeInputs, DrawOptions, Llvmpipe, Reflection, SampledTexture,
-    StageValue, SubroutineChoice, UniformValue, Variable, VertexAttribute,
+    AttributeSlot, Block, CUBE_ARRAY_IMAGES, CUBE_IMAGES, ComputeInputs, DrawOptions, Llvmpipe,
+    Reflection, SampledTexture, StageValue, SubroutineChoice, UniformValue, Variable,
+    VertexAttribute,
 };
 use ash::vk;
 use naga::Module;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use wcontainers_gpu::ReflectedBinding;
+use wcontainers_nir::CUBE_FACES;
 use wcontainers_nir::mesa::{GlslName, GlslNameKind, Stage};
 
 /// What OpenGL's reflection adds to an array's name.
@@ -374,6 +376,19 @@ fn sampled_texture(
         .iter()
         .find(|v| bare(&v.name) == name.name)
         .ok_or_else(|| format!("llvmpipe has no {kind:?} {}", name.name))?;
+    let cube_layers = if CUBE_IMAGES.contains(&variable.ty) {
+        Some(CUBE_FACES)
+    } else if CUBE_ARRAY_IMAGES.contains(&variable.ty) {
+        Some(CUBE_FACES * image.layers)
+    } else {
+        None
+    };
+    if let Some(layers) = cube_layers {
+        // The route's 2D array of faces gets a face a layer, the seeded layers repeated.
+        let bytes = image.bytes.len() / image.layers as usize * layers as usize;
+        image.bytes = image.bytes.iter().copied().cycle().take(bytes).collect();
+        image.layers = layers;
+    }
     match inputs
         .sampled
         .iter()

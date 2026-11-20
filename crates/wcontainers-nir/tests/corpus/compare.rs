@@ -13,6 +13,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use wcontainers_gpu::{ReflectedBinding, SlotKind};
+use wcontainers_nir::CUBE_FACES;
 
 /// The knob of the seed of every input filled in (and of the corpus's sample), and its value when
 /// unset.
@@ -26,10 +27,9 @@ const FLOAT_RANGE: f32 = 2.0;
 const INTEGER_RANGE: i32 = 4;
 /// Elements of a runtime-sized array in a storage buffer.
 pub const RUNTIME_ELEMENTS: u32 = 64;
-/// The size of each dimension of a texture, its layers when it is an array, and a cube's faces.
+/// The size of each dimension of a texture, and its layers when it is an array.
 const TEXTURE_SIZE: u32 = 4;
 const TEXTURE_LAYERS: u32 = 2;
-const CUBE_FACES: u32 = 6;
 /// Where in its pixel a point is drawn, and the depth of every point.
 const PIXEL_CENTRE: f32 = 0.5;
 const POINT_DEPTH: f32 = 0.5;

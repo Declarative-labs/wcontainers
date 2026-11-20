@@ -691,6 +691,24 @@ fn coordinate_size(dim: ImageDimension) -> u32 {
     }
 }
 
+/// The components of an image's size, its layers apart (a cube's is its faces' width and height).
+fn size_components(dim: ImageDimension) -> u32 {
+    match dim {
+        ImageDimension::Cube => VectorSize::Bi as u32,
+        other => coordinate_size(other),
+    }
+}
+
+/// The dimension and arrayedness a storage image takes in the common form: a cube or cube array
+/// is a 2D array of its faces (the common form has no storage cubes; Vulkan and OpenGL address a
+/// storage cube's faces as layers).
+fn storage_dimension(t: FlatType) -> Result<(ImageDimension, bool), ConvertError> {
+    Ok(match dimension(t.dim)? {
+        ImageDimension::Cube => (ImageDimension::D2, true),
+        other => (other, t.arrayed != 0),
+    })
+}
+
 fn storage_format(f: Format) -> Result<StorageFormat, ConvertError> {
     Ok(match f {
         Format::R8Unorm => StorageFormat::R8Unorm,
@@ -987,9 +1005,10 @@ impl Builder<'_> {
         let mut access = StorageAccess::empty();
         access.set(StorageAccess::LOAD, var.readable != 0);
         access.set(StorageAccess::STORE, var.writable != 0);
+        let (dim, arrayed) = storage_dimension(t)?;
         let image = self.add_type(TypeInner::Image {
-            dim: dimension(t.dim)?,
-            arrayed: t.arrayed != 0,
+            dim,
+            arrayed,
             class: ImageClass::Storage {
                 format: storage_format(var.format)?,
                 access,
@@ -2714,7 +2733,11 @@ impl Builder<'_> {
             }
             Intrinsic::ImageDerefSize => {
                 let (image, t) = self.image(i)?;
-                let e = self.image_size(image, dimension(t.dim)?, t.arrayed != 0, None)?;
+                let e = if dimension(t.dim)? == ImageDimension::Cube {
+                    self.storage_cube_size(image, t.arrayed != 0)?
+                } else {
+                    self.image_size(image, dimension(t.dim)?, t.arrayed != 0, None)?
+                };
                 self.set(i, Value::Expr(e, Uint));
             }
             Intrinsic::DerefAtomic | Intrinsic::DerefAtomicSwap => self.atomic(i)?,
@@ -2783,9 +2806,10 @@ impl Builder<'_> {
         i: &FlatInstr,
         t: FlatType,
     ) -> Result<(Handle<Expression>, Option<Handle<Expression>>), ConvertError> {
-        let space = coordinate_size(dimension(t.dim)?);
+        let (dim, arrayed) = storage_dimension(t)?;
+        let space = coordinate_size(dim);
         let position = self.src(i, 1, space, ScalarKind::Sint)?;
-        let layer = if t.arrayed != 0 {
+        let layer = if arrayed {
             let mut instr = *i;
             instr.src[1].swizzle[0] = u8::try_from(space).expect("a component");
             Some(self.src(&instr, 1, 1, ScalarKind::Sint)?)
@@ -2823,7 +2847,7 @@ impl Builder<'_> {
         arrayed: bool,
         level: Option<Handle<Expression>>,
     ) -> Result<Handle<Expression>, ConvertError> {
-        let space = coordinate_size(dim);
+        let space = size_components(dim);
         let size = self.add(Expression::ImageQuery {
             image,
             query: naga::ImageQuery::Size { level },
@@ -2849,6 +2873,47 @@ impl Builder<'_> {
             parts.push(layers);
             parts
         };
+        let ty = self.scalar_type(ScalarKind::Uint, space + 1)?;
+        Ok(self.add(Expression::Compose {
+            ty,
+            components: parts,
+        }))
+    }
+
+    /// A storage cube's size, held as a 2D array of its faces (`storage_dimension`): its faces'
+    /// size, and for a cube array the cubes after it.
+    fn storage_cube_size(
+        &mut self,
+        image: Handle<Expression>,
+        arrayed: bool,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let size = self.add(Expression::ImageQuery {
+            image,
+            query: naga::ImageQuery::Size { level: None },
+        });
+        if !arrayed {
+            return Ok(size);
+        }
+        let layers = self.add(Expression::ImageQuery {
+            image,
+            query: naga::ImageQuery::NumLayers,
+        });
+        let faces = self.add(Expression::Literal(Literal::U32(crate::CUBE_FACES)));
+        let cubes = self.add(Expression::Binary {
+            op: BinaryOperator::Divide,
+            left: layers,
+            right: faces,
+        });
+        let space = size_components(ImageDimension::Cube);
+        let mut parts: Vec<_> = (0..space)
+            .map(|c| {
+                self.add(Expression::AccessIndex {
+                    base: size,
+                    index: c,
+                })
+            })
+            .collect();
+        parts.push(cubes);
         let ty = self.scalar_type(ScalarKind::Uint, space + 1)?;
         Ok(self.add(Expression::Compose {
             ty,
