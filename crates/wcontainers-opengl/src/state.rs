@@ -22,10 +22,18 @@ use crate::stream;
 
 /// Ends the process naming state the driver does not take yet: a crash with the reason in the
 /// case's log, never a draw that ignores it.
-pub fn refuse(what: &str) -> ! {
+pub fn refuse(what: impl std::fmt::Display) -> ! {
     eprintln!("{}: refused: {what}", DRIVER_NAME.to_string_lossy());
     std::process::abort()
 }
+
+/// A refusal returned to the draw or call that ends the process with it.
+pub fn refused<T>(why: std::fmt::Arguments<'_>) -> Result<T, String> {
+    Err(why.to_string())
+}
+
+/// The channels of a colour, as Gallium's blend colour holds them.
+pub const COLOR_CHANNELS: usize = size_of::<pipe_blend_color>() / size_of::<f32>();
 
 /// The program stages the driver takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -107,7 +115,7 @@ pub struct Bound<B: Backend> {
     pub raster: *const Raster<B>,
     pub elements: *const Elements<B>,
     pub vertex_buffers: Vec<VertexBuffer>,
-    pub blend_color: [u32; 4],
+    pub blend_color: [u32; COLOR_CHANNELS],
     pub stencil_ref: [u8; 2],
     pub sample_mask: u32,
     pub viewport: pipe_viewport_state,
@@ -309,7 +317,7 @@ fn blend_op(f: pipe_blend_func) -> BlendOp {
         PIPE_BLEND_MIN => BlendOp::Min,
         PIPE_BLEND_MAX => BlendOp::Max,
         PIPE_BLEND_ADD => BlendOp::Add,
-        _ => refuse("an advanced blend equation"),
+        _ => refuse(format_args!("an advanced blend equation")),
     }
 }
 
@@ -478,7 +486,7 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
         && !backend.caps().has(Features::STENCIL_PER_FACE);
     let mut create = |desc: &DepthStencilDesc| match backend.create_depth_stencil(desc) {
         Ok(block) => block,
-        Err(error) => refuse(&format!("a depth and stencil state: {error:?}")),
+        Err(error) => refuse(format!("a depth and stencil state: {error:?}")),
     };
     let faces = split.then(|| {
         [0, 1].map(|face| {
@@ -550,10 +558,10 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         PIPE_FACE_FRONT => fill_mode(back_fill),
         PIPE_FACE_BACK => fill_mode(front_fill),
         _ if front_fill == back_fill => fill_mode(front_fill),
-        _ => refuse("front and back faces filled differently"),
+        _ => refuse(format_args!("front and back faces filled differently")),
     };
     if state.poly_stipple_enable() != 0 {
-        refuse("polygon stippling");
+        refuse(format_args!("polygon stippling"));
     }
     let provoking = if state.flatshade_first() != 0 {
         ProvokingVertex::First
@@ -606,7 +614,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
     let mut backend = context.screen().backend();
     let mut create = |desc: &RasterDesc| match backend.create_raster(desc) {
         Ok(block) => block,
-        Err(error) => refuse(&format!("a rasterizer state: {error:?}")),
+        Err(error) => refuse(format!("a rasterizer state: {error:?}")),
     };
     let block = create(&desc);
     let faces = (desc.cull == CullMode::None && !caps.has(Features::STENCIL_PER_FACE)).then(|| {
@@ -653,7 +661,9 @@ fn address(wrap: pipe_tex_wrap) -> AddressMode {
         PIPE_TEX_WRAP_CLAMP_TO_BORDER => AddressMode::Border,
         PIPE_TEX_WRAP_MIRROR_REPEAT => AddressMode::Mirror,
         PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE => AddressMode::MirrorOnce,
-        _ => refuse("a texture wrap mode the screen does not report"),
+        _ => refuse(format_args!(
+            "a texture wrap mode the screen does not report"
+        )),
     }
 }
 
@@ -674,7 +684,7 @@ fn filter(f: c_uint) -> Filter {
     }
 }
 
-fn border(color: [f32; 4]) -> BorderColor {
+fn border(color: [f32; COLOR_CHANNELS]) -> BorderColor {
     match color {
         [0.0, 0.0, 0.0, 0.0] => BorderColor::TransparentBlack,
         [0.0, 0.0, 0.0, 1.0] => BorderColor::OpaqueBlack,
@@ -690,7 +700,7 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
     // SAFETY: Mesa passes this driver's context and a state.
     let (context, state) = unsafe { (Context::<B>::of(pipe), &*state) };
     if state.lod_bias != 0.0 {
-        refuse("a sampler's level-of-detail bias");
+        refuse(format_args!("a sampler's level-of-detail bias"));
     }
     let mip = state.min_mip_filter();
     let lod_range = if mip == PIPE_TEX_MIPFILTER_NONE as c_uint {
@@ -733,7 +743,7 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
         });
     match context.screen().backend().create_sampler(&desc) {
         Ok(sampler) => object(Sampler::<B> { sampler, nearest }),
-        Err(error) => refuse(&format!("a sampler: {error:?}")),
+        Err(error) => refuse(format!("a sampler: {error:?}")),
     }
 }
 
@@ -795,7 +805,7 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
         let stream = element.vertex_buffer_index();
         let Some(format) = crate::format::vertex_format(pipe_format::from(element.src_format))
         else {
-            refuse("a vertex format the screen does not report");
+            refuse(format_args!("a vertex format the screen does not report"));
         };
         desc.streams[usize::from(stream)] = Some(VertexStream {
             stride: element.src_stride,
@@ -855,10 +865,10 @@ fn create_shader(
         PIPE_SHADER_IR_NIR => unsafe { state.ir.nir }.cast(),
         // SAFETY: a TGSI state's tokens; the converter reads the screen's NIR options.
         PIPE_SHADER_IR_TGSI => unsafe { tgsi_to_nir(state.tokens.cast(), screen, false) }.cast(),
-        _ => refuse("a program neither in NIR nor in TGSI"),
+        _ => refuse(format_args!("a program neither in NIR nor in TGSI")),
     };
     if raw.is_null() {
-        refuse("a TGSI program Mesa's converter did not take");
+        refuse(format_args!("a TGSI program Mesa's converter did not take"));
     }
     // SAFETY: as above.
     let mut nir = unsafe { Nir::from_raw(raw) };
@@ -965,7 +975,9 @@ unsafe extern "C" fn set_constant_buffer<B: Backend>(
         if buffer.is_null() {
             return;
         }
-        refuse("a uniform buffer past those the screen reports");
+        refuse(format_args!(
+            "a uniform buffer past those the screen reports"
+        ));
     };
     let mut held = std::mem::replace(&mut slot.resource, std::ptr::null_mut());
     slot.bytes.clear();
@@ -1061,7 +1073,9 @@ unsafe extern "C" fn set_vertex_buffers<B: Backend>(
     let mut old = std::mem::take(&mut context.bound.vertex_buffers).into_iter();
     for buffer in buffers {
         if buffer.is_user_buffer {
-            refuse("a vertex stream in client memory (the screen reports none)");
+            refuse(format_args!(
+                "a vertex stream in client memory (the screen reports none)"
+            ));
         }
         // SAFETY: not a user buffer, so a resource.
         let resource = unsafe { buffer.buffer.resource };

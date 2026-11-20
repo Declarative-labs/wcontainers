@@ -16,6 +16,8 @@ use crate::device::HostWindows;
 use crate::gallium::*;
 use crate::resource::Resource;
 use crate::screen::{DRIVER_NAME, Screen};
+use crate::state::refused;
+use wcontainers_shaders::stage::TRIANGLE_VERTICES;
 
 /// A host window the driver presents to, by the device context OpenGL names it with.
 pub struct Window<B: Backend> {
@@ -34,29 +36,32 @@ pub struct Copy<B: Backend> {
 }
 
 /// The vertices of one triangle covering the target.
-const COPY_VERTICES: u32 = 3;
+const COPY_VERTICES: u32 = TRIANGLE_VERTICES;
+/// The copy's entry points.
+const VERTEX_ENTRY: &str = "vs";
+const FRAGMENT_ENTRY: &str = "fs";
 
 impl<B: Backend> Copy<B> {
     fn new(backend: &mut B) -> Result<Copy<B>, wcontainers_gpu::GpuError> {
         let picture = SlotKind::Texture.first_binding();
         let source = format!(
             "@group(0) @binding({picture}) var picture: texture_2d<f32>;
-@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
+@vertex fn {VERTEX_ENTRY}(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
     let corner = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
 }}
-@fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {{
+@fragment fn {FRAGMENT_ENTRY}(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {{
     return textureLoad(picture, vec2<i32>(at.xy), 0);
 }}"
         );
         let vertex = backend.create_shader(&ShaderModule::from_wgsl(
             &source,
-            "vs",
+            VERTEX_ENTRY,
             ShaderStage::Vertex,
         )?)?;
         let fragment = backend.create_shader(&ShaderModule::from_wgsl(
             &source,
-            "fs",
+            FRAGMENT_ENTRY,
             ShaderStage::Fragment,
         )?)?;
         let program = backend.create_program(&Program::Render {
@@ -147,7 +152,7 @@ fn show<B: HostWindows>(
     if !windows.contains_key(&key) {
         let id = windows.len() as u32;
         if !backend.add_window_of(id, device_context) {
-            return Err("a window the back end cannot present to".into());
+            return refused(format_args!("a window the back end cannot present to"));
         }
         let surface = backend.create_surface(id).map_err(|e| format!("{e:?}"))?;
         windows.insert(

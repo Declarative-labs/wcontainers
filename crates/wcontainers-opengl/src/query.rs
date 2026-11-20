@@ -13,11 +13,11 @@ use wcontainers_shaders::stage::STREAM_BUFFERS;
 
 use crate::context::Context;
 use crate::gallium::*;
-use crate::state::refuse;
+use crate::state::{refuse, refused};
 
 /// Interface queries in one set. A guest query begun with less than half of a set left takes a
 /// new set, so a query may run in this many passes over half before the set is full.
-const QUERIES_PER_SET: u32 = 4096;
+const OCCLUSION_QUERY_BATCH: u32 = 4096;
 
 /// The occlusion sets a context made, the last of them the one queries begin in.
 pub struct Sets<B: Backend> {
@@ -49,12 +49,12 @@ impl<B: Backend> Sets<B> {
         backend: &mut B,
         tracker: &mut PassTracker<B>,
     ) -> Result<B::QuerySet, String> {
-        if self.sets.is_empty() || self.used >= QUERIES_PER_SET / 2 {
+        if self.sets.is_empty() || self.used >= OCCLUSION_QUERY_BATCH / 2 {
             let set = backend
-                .create_query_set(QueryKind::OcclusionAny, QUERIES_PER_SET)
+                .create_query_set(QueryKind::OcclusionAny, OCCLUSION_QUERY_BATCH)
                 .map_err(|e| format!("an occlusion set: {e:?}"))?;
             tracker
-                .set_occlusion(backend, set.clone(), QUERIES_PER_SET)
+                .set_occlusion(backend, set.clone(), OCCLUSION_QUERY_BATCH)
                 .map_err(|e| format!("{e:?}"))?;
             self.sets.push(set);
             self.used = 0;
@@ -144,7 +144,7 @@ pub fn count_emitted<B: Backend>(
     };
     // SAFETY: a running count lives until it ends.
     let Some(emitted) = (unsafe { of::<B>(query) }).emitted.as_mut() else {
-        return Err("a count that is not one".into());
+        return refused(format_args!("a count that is not one"));
     };
     if emitted.used == EMITTED_SLOTS {
         emitted.gather(backend)?;
@@ -188,14 +188,14 @@ pub unsafe extern "C" fn create_query<B: Backend>(
                     usage: BufferUsage::COPY_DST.union(BufferUsage::READ_BACK),
                     intent: MapIntent::Rarely,
                 })
-                .unwrap_or_else(|e| refuse(&format!("a count of primitives: {e:?}")));
+                .unwrap_or_else(|e| refuse(format!("a count of primitives: {e:?}")));
             query(Some(Emitted {
                 slots,
                 used: 0,
                 sum: 0,
             }))
         }
-        _ => refuse(&format!(
+        _ => refuse(format!(
             "a query of Gallium kind {kind} (only occlusion predicates are built)"
         )),
     }
@@ -253,7 +253,7 @@ pub unsafe extern "C" fn begin_query<B: Backend>(
             context.running = Some(std::ptr::from_mut(query).cast());
             true
         }
-        Err(reason) => refuse(&format!("an occlusion query: {reason}")),
+        Err(reason) => refuse(format!("an occlusion query: {reason}")),
     }
 }
 
@@ -268,7 +268,7 @@ pub unsafe extern "C" fn end_query<B: Backend>(
         return true;
     }
     let Some(Answer::Running { set, first }) = query.answer.take() else {
-        refuse("an occlusion query ended that is not running");
+        refuse(format_args!("an occlusion query ended that is not running"));
     };
     let mut backend = context.screen().backend();
     let end = if query.paused {
@@ -276,7 +276,7 @@ pub unsafe extern "C" fn end_query<B: Backend>(
     } else {
         match context.tracker.end_query(&mut backend) {
             Ok(range) => range.end,
-            Err(error) => refuse(&format!("an occlusion query: {error:?}")),
+            Err(error) => refuse(format!("an occlusion query: {error:?}")),
         }
     };
     context.queries.used = end;
@@ -306,7 +306,7 @@ pub unsafe extern "C" fn get_query_result<B: Backend>(
             .map_err(|e| format!("{e:?}"))
             .and_then(|()| emitted.gather(&mut backend));
         if let Err(reason) = gathered {
-            refuse(&format!("a count of primitives: {reason}"));
+            refuse(format!("a count of primitives: {reason}"));
         }
         // SAFETY: as above.
         unsafe { (*result).u64_ = emitted.sum };
@@ -315,7 +315,7 @@ pub unsafe extern "C" fn get_query_result<B: Backend>(
     let passed = match answer(context, query, wait) {
         Ok(Some(passed)) => passed,
         Ok(None) => return false,
-        Err(reason) => refuse(&format!("an occlusion query's result: {reason}")),
+        Err(reason) => refuse(format!("an occlusion query's result: {reason}")),
     };
     // SAFETY: as above.
     unsafe { (*result).b = passed };
@@ -332,7 +332,7 @@ fn answer<B: Backend>(
     let Some(Answer::Ended { set, queries, read }) = &mut query.answer else {
         return match query.answer {
             Some(Answer::Known(passed)) => Ok(Some(passed)),
-            _ => Err("a query that has not ended".into()),
+            _ => refused(format_args!("a query that has not ended")),
         };
     };
     if Range::is_empty(queries) {
@@ -388,7 +388,7 @@ pub unsafe extern "C" fn set_active_query_state<B: Backend>(pipe: *mut pipe_cont
         })
     };
     if let Err(error) = changed {
-        refuse(&format!("pausing an occlusion query: {error:?}"));
+        refuse(format!("pausing an occlusion query: {error:?}"));
     }
     query.paused = !enable;
 }

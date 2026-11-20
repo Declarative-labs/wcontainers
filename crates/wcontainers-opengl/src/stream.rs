@@ -217,7 +217,7 @@ pub unsafe extern "C" fn create_stream_output_target<B: Backend>(
             usage: COUNTER_USAGE,
             intent: MapIntent::Rarely,
         })
-        .unwrap_or_else(|e| refuse(&format!("a stream output target: {e:?}")));
+        .unwrap_or_else(|e| refuse(format!("a stream output target: {e:?}")));
     backend.write_buffer(&filled, 0, &(lead as u32).to_le_bytes(), WriteMode::Ordered);
     let mut target = Box::new(Target::<B> {
         base: pipe_stream_output_target::default(),
@@ -295,7 +295,7 @@ pub unsafe extern "C" fn set_stream_output_targets<B: Backend>(
     let mut backend = screen.backend();
     let backend = &mut *backend;
     if let Err(error) = context.tracker.close(backend) {
-        refuse(&format!("stream output targets: {error:?}"));
+        refuse(format!("stream output targets: {error:?}"));
     }
     let streams = &mut context.streams;
     if streams.filled.is_none() && !new.iter().all(|t| t.is_null()) {
@@ -305,7 +305,7 @@ pub unsafe extern "C" fn set_stream_output_targets<B: Backend>(
                 usage: COUNTER_USAGE,
                 intent: MapIntent::Rarely,
             })
-            .unwrap_or_else(|e| refuse(&format!("stream output's block: {e:?}")));
+            .unwrap_or_else(|e| refuse(format!("stream output's block: {e:?}")));
         streams.filled = Some(block);
     }
     for (slot, old) in streams.targets.iter_mut().enumerate() {

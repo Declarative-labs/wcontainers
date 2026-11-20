@@ -22,7 +22,7 @@ use crate::context::Context;
 use crate::gallium::*;
 use crate::resource::Resource;
 use crate::screen::Screen;
-use crate::state::{self, Shader, Stage, refuse};
+use crate::state::{self, Shader, Stage, refuse, refused};
 use crate::view::{IDENTITY, View};
 use crate::{indices, outputs, query, stream};
 
@@ -373,7 +373,7 @@ fn topology(mode: u8) -> Topology {
         MESA_PRIM_TRIANGLES => Topology::TriangleList,
         MESA_PRIM_TRIANGLE_STRIP => Topology::TriangleStrip,
         MESA_PRIM_TRIANGLE_FAN => Topology::TriangleFan,
-        _ => refuse("a primitive the screen does not report"),
+        _ => refuse(format_args!("a primitive the screen does not report")),
     }
 }
 
@@ -455,7 +455,7 @@ fn blend_for<B: Backend>(
     backend: &mut B,
     desc: &BlendDesc,
     framebuffer: &pipe_framebuffer_state,
-    constant: [u32; 4],
+    constant: [u32; state::COLOR_CHANNELS],
 ) -> (B::Blend, bool) {
     let mut desc = *desc;
     let caps = backend.caps().clone();
@@ -473,7 +473,7 @@ fn blend_for<B: Backend>(
         let reads_colour = reads([BlendFactor::Constant, BlendFactor::OneMinusConstant]);
         if reads_alpha {
             let [.., a] = constant;
-            if reads_colour && constant != [a; 4] {
+            if reads_colour && constant != [a; state::COLOR_CHANNELS] {
                 refuse(
                     "the blend constant's colour and its alpha as colour factors of one block, for a constant whose colour is not its alpha (blending in the program is not built)",
                 );
@@ -509,7 +509,7 @@ fn blend_for<B: Backend>(
             programs.blends.insert(desc, block.clone());
             (block, alpha_constant)
         }
-        Err(error) => refuse(&format!("a blend state: {error:?}")),
+        Err(error) => refuse(format!("a blend state: {error:?}")),
     }
 }
 
@@ -587,7 +587,9 @@ fn binding_sets<B: Backend>(
             (Stage::Vertex, _) => {
                 helpers = Some(helper_block(b, pulled, storage_align, first_instance)?);
             }
-            (Stage::Fragment, _) => return Err("helper constants in a fragment program".into()),
+            (Stage::Fragment, _) => {
+                return refused(format_args!("helper constants in a fragment program"));
+            }
         }
     }
     for &(stage, built) in built {
@@ -622,7 +624,9 @@ fn binding_sets<B: Backend>(
             let size = u64::from(slot.size).max(declared);
             if u64::from(slot.offset) + size > u64::from(resource.base.width0) {
                 backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
-                return Err("a uniform block bound smaller than the program declares".into());
+                return refused(format_args!(
+                    "a uniform block bound smaller than the program declares"
+                ));
             }
             uniforms.push((
                 b.binding,
@@ -664,7 +668,9 @@ fn binding_sets<B: Backend>(
                 .ok_or("a fetched input without its stream")?;
             let start = p.stream_offset - p.stream_offset % storage_align;
             if start >= p.buffer_bytes {
-                return Err("a fetched vertex stream past its buffer's end".into());
+                return refused(format_args!(
+                    "a fetched vertex stream past its buffer's end"
+                ));
             }
             let size = (p.buffer_bytes - start).next_multiple_of(STORAGE_WORD);
             entries.push(BindingEntry {
@@ -708,7 +714,7 @@ fn binding_sets<B: Backend>(
                 SlotKind::Texture => {
                     let view = bound.views[b.register as usize];
                     if view.is_null() {
-                        return Err("a texture the program reads is not bound".into());
+                        return refused(format_args!("a texture the program reads is not bound"));
                     }
                     // SAFETY: the slot holds a reference on a live view of this driver.
                     let view = unsafe { View::<B>::of(view) };
@@ -717,12 +723,12 @@ fn binding_sets<B: Backend>(
                 SlotKind::Sampler => {
                     let sampler = bound.samplers[b.register as usize];
                     if sampler.is_null() {
-                        return Err("a sampler the program reads is not bound".into());
+                        return refused(format_args!("a sampler the program reads is not bound"));
                     }
                     // SAFETY: a bound sampler lives until Mesa unbinds and deletes it.
                     BindingResource::Sampler(unsafe { &(*sampler).sampler })
                 }
-                _ => return Err("storage the screen does not report".into()),
+                _ => return refused(format_args!("storage the screen does not report")),
             };
             entries.push(BindingEntry {
                 binding: b.binding,
@@ -763,7 +769,7 @@ pub unsafe extern "C" fn draw_vbo<B: Backend>(
     count: c_uint,
 ) {
     if !indirect.is_null() {
-        refuse("an indirect draw (the screen reports none)");
+        refuse(format_args!("an indirect draw (the screen reports none)"));
     }
     // SAFETY: Mesa passes this driver's context, the draw and `count` ranges.
     let (context, info, draws) = unsafe {
@@ -791,7 +797,9 @@ fn draw<B: Backend>(
         bound.elements,
     );
     if raster.is_null() || depth_stencil.is_null() || blend.is_null() || elements.is_null() {
-        return Err("a draw without rasterizer, depth, blend or vertex state".into());
+        return refused(format_args!(
+            "a draw without rasterizer, depth, blend or vertex state"
+        ));
     }
     // SAFETY: bound states live until Mesa unbinds and deletes them.
     let (raster, depth_stencil, blend, elements) =
@@ -807,7 +815,7 @@ fn draw<B: Backend>(
     let shaders = Stage::ALL.map(|s| context.stages.get(s).shader);
     let [vs, fs] = shaders;
     if vs.is_null() || fs.is_null() {
-        return Err("a draw without a vertex or fragment program".into());
+        return refused(format_args!("a draw without a vertex or fragment program"));
     }
     let (viewport, mut transform) = viewport(&bound.viewport, raster.minus_one);
     let screen = context.screen();
@@ -916,7 +924,7 @@ fn draw<B: Backend>(
     let bound = &context.bound;
     let [.., alpha] = bound.blend_color;
     let blend_constant = if alpha_constant {
-        [alpha; 4]
+        [alpha; state::COLOR_CHANNELS]
     } else {
         bound.blend_color
     };
@@ -977,7 +985,9 @@ fn draw<B: Backend>(
     let index_size = info.index_size;
     let format = index_format(index_size);
     if restart && index_size > 0 && info.restart_index != format.restart_value() {
-        return Err("primitive restart at an index that is not the largest".into());
+        return refused(format_args!(
+            "primitive restart at an index that is not the largest"
+        ));
     }
     let passes = face_passes(backend, depth_stencil, raster, triangles, bound.stencil_ref)?;
     let base = DrawCall {
@@ -1113,7 +1123,9 @@ fn stream_out<B: Backend>(
         return Ok(());
     };
     if info.index_size > 0 {
-        return Err("stream output of an indexed draw (OpenGL ES 3.0 has none)".into());
+        return refused(format_args!(
+            "stream output of an indexed draw (OpenGL ES 3.0 has none)"
+        ));
     }
     let topology = input_topology(topology(info.mode)).ok_or("stream output of a fan or loop")?;
     let mut locations: Vec<u32> = elements
@@ -1494,7 +1506,9 @@ fn draw_ranges<B: Backend>(
             continue;
         }
         if needs_widening(backend, format) {
-            return Err("8-bit indices in a buffer on a back end without them".into());
+            return refused(format_args!(
+                "8-bit indices in a buffer on a back end without them"
+            ));
         }
         // SAFETY: an index buffer of this driver, held by st/mesa for the draw.
         let resource = unsafe { Resource::<B>::of(info.index.resource) };

@@ -92,7 +92,7 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
     let blitter = context.blitter;
     // SAFETY: the blitter was made on this context.
     if !unsafe { util_blitter_is_blit_supported(blitter, info) } {
-        refuse("a blit Gallium's blitter does not make");
+        refuse(format_args!("a blit Gallium's blitter does not make"));
     }
     // SAFETY: as above; the blitter is used by this context's thread only.
     save(context, unsafe { &mut *blitter });

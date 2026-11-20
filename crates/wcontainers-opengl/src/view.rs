@@ -282,7 +282,7 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
                 depth_or_layers: area.depth as u32,
             },
         ),
-        _ => crate::state::refuse("a copy between a buffer and a texture"),
+        _ => crate::state::refuse(format_args!("a copy between a buffer and a texture")),
     }
 }
 
