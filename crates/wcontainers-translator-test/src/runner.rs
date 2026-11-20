@@ -350,7 +350,6 @@ impl Machine {
         seed: u64,
     ) {
         use proptest::prelude::RngExt;
-        use proptest::test_runner::{RngAlgorithm, TestRng};
         self.place(bytes, code.clone(), load_address);
         let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
         for (look_ahead, optimise, starts) in translations {
@@ -365,9 +364,7 @@ impl Machine {
             pieces.push(instantiate(&mut self.store, &load, false));
             self.store.data_mut().loads.push(load);
         }
-        let mut key = [0u8; 32];
-        key[..8].copy_from_slice(&seed.to_le_bytes());
-        let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &key);
+        let mut rng = crate::seeded::generator(seed, &[], "");
         let first = self.store.data().loads.len() - translations.len();
         let mut addresses: Vec<u64> = pieces.iter().flat_map(|p| p.keys().copied()).collect();
         addresses.sort_unstable();
@@ -791,7 +788,7 @@ fn code_at(caller: &mut Caller<'_, Host>, pc: u64) -> Vec<u8> {
     let memory = caller.data().memory.unwrap();
     let data = memory.data(&*caller);
     let at = (pc as usize).min(data.len());
-    data[at..(at + 16).min(data.len())].to_vec()
+    data[at..(at + Arm64::MAX_LENGTH as usize).min(data.len())].to_vec()
 }
 
 /// Count a slow path taken at an address (or for a number) and the time it took; warn once per address

@@ -12,13 +12,14 @@
 use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use proptest::prelude::*;
-use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+use proptest::test_runner::{Config, TestRunner};
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::changes::{Compared, Plan, compare};
 use wcontainers_translator_test::layer2::{assemble, program};
 use wcontainers_translator_test::programs::{Blob, LOAD, Library, STACK_BYTES, build, ready};
 use wcontainers_translator_test::runner::{Pause, Stopped};
+use wcontainers_translator_test::seeded::generator;
 
 type Ops = VecAssembler<Aarch64Relocation>;
 
@@ -71,15 +72,13 @@ impl Tally {
 fn random_programs_with_changes_match_none() {
     let cases = knob("WC_CHANGES_CASES", 64);
     let seed = knob("WC_CHANGES_SEED", 1);
-    let mut seed_bytes = [0u8; 32];
-    seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let mut runner = TestRunner::new_with_rng(
         Config {
             cases: cases as u32,
             failure_persistence: None,
             ..Config::default()
         },
-        TestRng::from_seed(RngAlgorithm::ChaCha, &seed_bytes),
+        generator(seed, &[], ""),
     );
     let tally = std::cell::RefCell::new(Tally::default());
     let result = runner.run(&(program(), plan()), |(program, plan)| {

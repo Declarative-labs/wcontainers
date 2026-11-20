@@ -6132,12 +6132,6 @@ code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"ru
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"the page crashed"
 code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"load-{name}"
 code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"module-{i}.wasm"
-code	crates/wcontainers-translator-test/src/changes.rs	float	choose	0.6
-code	crates/wcontainers-translator-test/src/changes.rs	int	choose	3
-code	crates/wcontainers-translator-test/src/changes.rs	int	compare	32
-code	crates/wcontainers-translator-test/src/changes.rs	int	compare	8
-code	crates/wcontainers-translator-test/src/jobs.rs	int	at_once	20
-code	crates/wcontainers-translator-test/src/jobs.rs	int	at_once	64
 code	crates/wcontainers-translator-test/src/layer1.rs	char	excluded	'p'
 code	crates/wcontainers-translator-test/src/layer1.rs	char	excluded	'p'
 code	crates/wcontainers-translator-test/src/layer1.rs	float	float_bits	-1e-30
@@ -6786,23 +6780,6 @@ code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
 code	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack	8
-code	crates/wcontainers-translator-test/src/mixed.rs	bytestr	mixed	b"inject  "
-code	crates/wcontainers-translator-test/src/mixed.rs	bytestr	mixed	b"mixing  "
-code	crates/wcontainers-translator-test/src/mixed.rs	bytestr	mixed	b"run time"
-code	crates/wcontainers-translator-test/src/mixed.rs	float	mixed	0.5
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	3
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	4
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	4
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	4
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	mixed	64
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	16
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	32
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	8
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	8
-code	crates/wcontainers-translator-test/src/mixed.rs	int	rng	8
 code	crates/wcontainers-translator-test/src/programs.rs	char	build_with	'-'
 code	crates/wcontainers-translator-test/src/programs.rs	char	build_with	'='
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	0xff
@@ -6886,9 +6863,6 @@ code	crates/wcontainers-translator-test/src/reference.rs	int	Landed	35
 code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"cases"
 code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"layer1"
 code	crates/wcontainers-translator-test/src/reference.rs	str	container_name	"wc-translator-{purpose}-{}-{n}"
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::load_mixed	32
-code	crates/wcontainers-translator-test/src/runner.rs	int	Machine::load_mixed	8
-code	crates/wcontainers-translator-test/src/runner.rs	int	code_at	16
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	63
 code	crates/wcontainers-translator-test/src/runner.rs	int	forget_code	64
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	214

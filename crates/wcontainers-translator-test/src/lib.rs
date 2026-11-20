@@ -13,3 +13,4 @@ pub mod mixed;
 pub mod programs;
 pub mod reference;
 pub mod runner;
+pub mod seeded;

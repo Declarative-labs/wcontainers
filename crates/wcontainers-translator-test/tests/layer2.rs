@@ -11,7 +11,7 @@
 //! 1; each starts Chrome three times).
 
 use proptest::prelude::*;
-use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+use proptest::test_runner::{Config, TestRunner};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_arm64::forms;
@@ -26,6 +26,7 @@ use wcontainers_translator_test::programs::{
     native, ran as outcome, reachable_memory, ready, translated, translated_for,
     translated_stopping_everywhere,
 };
+use wcontainers_translator_test::seeded;
 
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -33,15 +34,12 @@ fn knob(name: &str, default: u64) -> u64 {
 
 /// The random generator of case `case` of a run from `seed`, so that any case replays by itself.
 fn generator(seed: u64, case: u64) -> TestRunner {
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&seed.to_le_bytes());
-    key[8..16].copy_from_slice(&case.to_le_bytes());
     let config = Config {
         cases: 1,
         failure_persistence: None,
         ..Config::default()
     };
-    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
+    TestRunner::new_with_rng(config, seeded::generator(seed, &case.to_le_bytes(), ""))
 }
 
 #[test]
