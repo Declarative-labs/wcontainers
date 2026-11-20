@@ -217,15 +217,13 @@ pub enum Swizzle {
     One,
 }
 
-/// The components of a texture's result: a vector's most (`WC_COMPONENTS`).
-pub const COMPONENTS: usize = naga::VectorSize::MAX;
-
 /// The swizzle of the texture bound at one texture unit (`struct wc_texture_swizzle`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextureSwizzle {
     pub unit: u32,
-    pub swizzle: [Swizzle; COMPONENTS],
+    /// One entry per component of a texture's result, a vector's most (`WC_COMPONENTS`).
+    pub swizzle: [Swizzle; naga::VectorSize::MAX],
 }
 
 /// How a vertex program's position (and point size) is changed to meet the host's clip space,

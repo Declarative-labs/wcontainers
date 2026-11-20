@@ -8,7 +8,8 @@ use wcontainers_gpu::{
     ViewDimension,
 };
 
-use wcontainers_nir::mesa::{COMPONENTS, Swizzle};
+use naga::VectorSize;
+use wcontainers_nir::mesa::Swizzle;
 
 use crate::context::Context;
 use crate::gallium::*;
@@ -21,11 +22,11 @@ pub struct View<B: Backend> {
     base: pipe_sampler_view,
     view: Result<B::TextureView, &'static str>,
     /// How the programs that sample it rearrange its results.
-    pub swizzle: [Swizzle; COMPONENTS],
+    pub swizzle: [Swizzle; VectorSize::MAX],
 }
 
 /// The identity swizzle, which needs no change to a program.
-pub const IDENTITY: [Swizzle; COMPONENTS] = [Swizzle::X, Swizzle::Y, Swizzle::Z, Swizzle::W];
+pub const IDENTITY: [Swizzle; VectorSize::MAX] = [Swizzle::X, Swizzle::Y, Swizzle::Z, Swizzle::W];
 
 /// The NIR route's swizzle of a Gallium one.
 fn swizzle(s: pipe_swizzle) -> Swizzle {
