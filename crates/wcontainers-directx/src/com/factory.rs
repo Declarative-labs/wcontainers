@@ -7,14 +7,16 @@
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, HMODULE, MAX_PATH};
-use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_UNSUPPORTED, IDXGIFactory6};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_ERROR_UNSUPPORTED, IDXGIFactory, IDXGIFactory1, IDXGIFactory6, IDXGIObject,
+};
 use windows::Win32::System::Diagnostics::Debug::RtlCaptureStackBackTrace;
 use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
     GetModuleFileNameW, GetModuleHandleExW, GetProcAddress, LoadLibraryW,
 };
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows::core::{GUID, HRESULT, Interface, PCSTR, PCWSTR};
+use windows::core::{GUID, HRESULT, IUnknown, Interface, PCSTR, PCWSTR};
 
 use super::dxgi::Adapter;
 use super::swapchain::Factory;
@@ -127,11 +129,11 @@ pub(super) unsafe fn system<F: Copy>(library: &str, export: &std::ffi::CStr) -> 
     Some(unsafe { std::mem::transmute_copy(&f) })
 }
 
-/// Our factory, as interface `riid`.
+/// Our factory, as interface `riid`; `dxgi10` makes it DXGI 1.0's (`as_dxgi10`).
 ///
 /// # Safety
 /// `riid` and `out` are the caller's, as COM passes them.
-unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
+unsafe fn ours(riid: *const GUID, out: *mut *mut c_void, dxgi10: bool) -> HRESULT {
     if out.is_null() || riid.is_null() {
         return E_POINTER;
     }
@@ -141,7 +143,10 @@ unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
     let Some(caps) = super::caps() else {
         return DXGI_ERROR_UNSUPPORTED;
     };
-    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps, false).into()).into();
+    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps, dxgi10).into()).into();
+    if dxgi10 && let Err(e) = super::dxgi::as_dxgi10(&factory) {
+        return e.code();
+    }
     // SAFETY: both pointers were checked and come from the caller.
     unsafe { factory.query(riid, out) }
 }
@@ -168,7 +173,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out) }
+    unsafe { ours(riid, out, false) }
 }
 
 /// `CreateDXGIFactory1`, as Microsoft documents it.
@@ -188,10 +193,12 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory1(
         };
     }
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out) }
+    unsafe { ours(riid, out, false) }
 }
 
-/// `CreateDXGIFactory`, as Microsoft documents it.
+/// `CreateDXGIFactory`, as Microsoft documents it and Wine's test_create_factory finds it on
+/// Windows: asked for `IDXGIFactory1` it fails, asked for an earlier interface it gives DXGI 1.0's
+/// factory, and asked for a later one it gives that interface of the whole factory.
 ///
 /// # Safety
 /// The pointers are the caller's, as the API defines them.
@@ -207,6 +214,17 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
             None => E_NOINTERFACE,
         };
     }
+    // SAFETY: a checked pointer of the caller's.
+    if !riid.is_null() && unsafe { *riid } == IDXGIFactory1::IID {
+        if !out.is_null() {
+            // SAFETY: the caller's out pointer.
+            unsafe { *out = std::ptr::null_mut() };
+        }
+        return E_NOINTERFACE;
+    }
+    // SAFETY: a checked pointer of the caller's.
+    let earlier = riid.is_null()
+        || [IUnknown::IID, IDXGIObject::IID, IDXGIFactory::IID].contains(unsafe { &*riid });
     // SAFETY: the caller's pointers, passed on.
-    unsafe { ours(riid, out) }
+    unsafe { ours(riid, out, earlier) }
 }

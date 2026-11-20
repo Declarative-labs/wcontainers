@@ -6,12 +6,16 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::Win32::Foundation::{
-    DXGI_STATUS_OCCLUDED, E_INVALIDARG, E_NOINTERFACE, HWND, RECT, S_OK,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DXGI_STATUS_OCCLUDED, DuplicateHandle, E_INVALIDARG,
+    E_NOINTERFACE, HANDLE, HWND, RECT, S_OK,
 };
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_SHADER_RESOURCE, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsIconic, IsWindowVisible};
+use windows::Win32::System::Threading::{CreateSemaphoreW, GetCurrentProcess, ReleaseSemaphore};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, GetDesktopWindow, IsIconic, IsWindowVisible,
+};
 use windows::core::{
     BOOL, GUID, HRESULT, IUnknown, IUnknownImpl, Interface, OutRef, Ref, Result, implement,
 };
@@ -24,6 +28,10 @@ use super::*;
 
 /// `IDXGISwapChain::Present`'s largest sync interval.
 const MAX_SYNC_INTERVAL: u32 = 4;
+
+/// The frame latency of a swap chain made with a frame latency waitable object, until the
+/// program sets another.
+const WAITABLE_LATENCY: u32 = 1;
 
 #[implement(IDXGIFactory6)]
 pub struct Factory {
@@ -223,7 +231,10 @@ impl Factory_Impl {
         windowed: bool,
     ) -> Result<IDXGISwapChain1> {
         let device = our_device(device).map_err(|_| Error::from(E_INVALIDARG))?;
-        if hwnd.is_invalid() {
+        // The desktop window takes no surface the back end can configure; DXGI also answers this
+        // where it cannot present to it.
+        // SAFETY: asks for the desktop window's handle.
+        if hwnd.is_invalid() || hwnd == unsafe { GetDesktopWindow() } {
             return Err(DXGI_ERROR_INVALID_CALL.into());
         }
         if !windowed {
@@ -256,10 +267,25 @@ impl Factory_Impl {
         } else {
             0
         };
-        let chain = front
+        let waitable = d.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32 != 0;
+        // DXGI gives the blit models no waitable object.
+        if waitable && !model.is_flip() {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        let mut chain = front
             .borrow_mut()
-            .create_swap_chain(window, &desc, bind)
+            .create_swap_chain(window, &desc, bind, waitable)
             .map_err(hresult)?;
+        let latency_object = if waitable {
+            chain
+                .set_max_latency(WAITABLE_LATENCY)
+                .map_err(chain_hresult)?;
+            // SAFETY: a semaphore of the process's own, counting the frames the program may begin.
+            let s = unsafe { CreateSemaphoreW(None, chain.max_latency() as i32, i32::MAX, None) }?;
+            Some(LatencyObject(s))
+        } else {
+            None
+        };
         let mut kept = *d;
         kept.Width = width;
         kept.Height = height;
@@ -272,6 +298,7 @@ impl Factory_Impl {
             factory: self.me(),
             hwnd: hwnd.0 as isize,
             desc: Cell::new(kept),
+            latency_object,
         })
         .into())
     }
@@ -288,6 +315,19 @@ pub struct SwapChain {
     factory: IDXGIFactory2,
     hwnd: isize,
     desc: Cell<DXGI_SWAP_CHAIN_DESC1>,
+    /// The frame latency waitable object of a swap chain made with one.
+    latency_object: Option<LatencyObject>,
+}
+
+/// A frame latency waitable object: a semaphore counting the frames the program may begin, made
+/// with the swap chain's latency and released by each frame retired.
+struct LatencyObject(HANDLE);
+
+impl Drop for LatencyObject {
+    fn drop(&mut self) {
+        // SAFETY: the semaphore is ours; the program closes its own duplicates.
+        let _ = unsafe { CloseHandle(self.0) };
+    }
 }
 
 impl Drop for SwapChain {
@@ -325,10 +365,16 @@ impl SwapChain_Impl {
         let hwnd = HWND(self.hwnd as *mut c_void);
         // SAFETY: asks about the program's window.
         let hidden = unsafe { !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() };
+        let test = flags.0 & DXGI_PRESENT_TEST.0 != 0;
         if hidden {
+            // An occluded frame releases the waitable object as a shown one does.
+            if let (Some(o), false) = (&self.latency_object, test) {
+                // SAFETY: releases our semaphore by the frame.
+                let _ = unsafe { ReleaseSemaphore(o.0, 1, None) };
+            }
             return DXGI_STATUS_OCCLUDED;
         }
-        if flags.0 & DXGI_PRESENT_TEST.0 != 0 {
+        if test {
             return S_OK;
         }
         let mut chain = self.chain.borrow_mut();
@@ -336,7 +382,13 @@ impl SwapChain_Impl {
             return DXGI_ERROR_INVALID_CALL;
         };
         match self.front.borrow_mut().present(chain, sync_interval) {
-            Ok(()) => S_OK,
+            Ok(retired) => {
+                if let (Some(o), 1..) = (&self.latency_object, retired) {
+                    // SAFETY: releases our semaphore by the frames retired.
+                    let _ = unsafe { ReleaseSemaphore(o.0, retired as i32, None) };
+                }
+                S_OK
+            }
             Err(e) => chain_hresult(e).code(),
         }
     }
@@ -494,7 +546,40 @@ impl SwapChain_Impl {
         }
         let mut chain = self.chain.borrow_mut();
         let chain = chain.as_mut().ok_or(DXGI_ERROR_INVALID_CALL)?;
-        chain.set_max_latency(frames).map_err(chain_hresult)
+        let before = chain.max_latency();
+        chain.set_max_latency(frames).map_err(chain_hresult)?;
+        // A larger latency lets the program begin as many more frames at once; a smaller one is
+        // kept by `Present`, which waits until fewer frames than it are unretired.
+        if let (Some(o), Some(more @ 1..)) = (&self.latency_object, frames.checked_sub(before)) {
+            // SAFETY: releases our semaphore by the frames the latency grew.
+            let _ = unsafe { ReleaseSemaphore(o.0, more as i32, None) };
+        }
+        Ok(())
+    }
+
+    /// A handle of the swap chain's frame latency waitable object, which the program closes; a
+    /// null handle for a swap chain made without one, as DXGI gives.
+    pub(super) fn get_frame_latency_waitable_object(&self) -> HANDLE {
+        let Some(o) = &self.latency_object else {
+            return HANDLE::default();
+        };
+        let mut handle = HANDLE::default();
+        // SAFETY: duplicates our semaphore's handle within the process for the program.
+        let process = unsafe { GetCurrentProcess() };
+        match unsafe {
+            DuplicateHandle(
+                process,
+                o.0,
+                process,
+                &mut handle,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } {
+            Ok(()) => handle,
+            Err(_) => HANDLE::default(),
+        }
     }
 
     pub(super) fn get_maximum_frame_latency(&self) -> Result<u32> {

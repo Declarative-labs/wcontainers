@@ -1302,9 +1302,16 @@ impl Device_Impl {
         // From 10_0 every device has textures of any size and instancing; constant buffers bind at
         // offsets (`*SetConstantBuffers1`); the rest is absent.
         match feature {
+            // Partial constant buffer updates and writes without overwriting into dynamic
+            // buffers are served as for any buffer. `ClearView` stays FALSE: rectangles of storage
+            // views and video views are not served. Discards keep the contents, so no driver sees
+            // them.
             D3D11_FEATURE_D3D11_OPTIONS => unsafe {
-                (*data.cast::<D3D11_FEATURE_DATA_D3D11_OPTIONS>()).ConstantBufferOffsetting =
-                    true.into();
+                let o = &mut *data.cast::<D3D11_FEATURE_DATA_D3D11_OPTIONS>();
+                o.ConstantBufferOffsetting = true.into();
+                o.ConstantBufferPartialUpdate = true.into();
+                o.MapNoOverwriteOnDynamicConstantBuffer = true.into();
+                o.MapNoOverwriteOnDynamicBufferSRV = true.into();
             },
             D3D11_FEATURE_D3D9_OPTIONS => unsafe {
                 (*data.cast::<D3D11_FEATURE_DATA_D3D9_OPTIONS>()).FullNonPow2TextureSupport =

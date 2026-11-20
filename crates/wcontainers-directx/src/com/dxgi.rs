@@ -108,17 +108,23 @@ impl Adapter_Impl {
         }
         let factory: IDXGIFactory6 = Factory::new(self.to_interface()).into();
         if self.dxgi10 {
-            // Microsoft's page on `CreateDXGIFactory`: DXGI 1.0's factory does not give
-            // `IDXGIFactory1` (DXGI 1.0 and 1.1 are not mixed); the later interfaces it gives.
-            unsafe {
-                restrict::<IDXGIFactory6_Vtbl, 0>(factory.as_raw());
-                restrict::<windows::core::IInspectable_Vtbl, 1>(
-                    factory.cast::<windows::core::IUnknown>()?.as_raw(),
-                );
-            }
+            as_dxgi10(&factory)?;
         }
         unsafe { factory.query(riid, parent).ok() }
     }
+}
+
+/// Gives `factory` DXGI 1.0's form. Microsoft's page on `CreateDXGIFactory`: DXGI 1.0's factory
+/// does not give `IDXGIFactory1` (DXGI 1.0 and 1.1 are not mixed); the later interfaces it gives.
+pub(super) fn as_dxgi10(factory: &IDXGIFactory6) -> Result<()> {
+    // SAFETY: both are interface pointers of our factory, of the tables named.
+    unsafe {
+        restrict::<IDXGIFactory6_Vtbl, 0>(factory.as_raw());
+        restrict::<windows::core::IInspectable_Vtbl, 1>(
+            factory.cast::<windows::core::IUnknown>()?.as_raw(),
+        );
+    }
+    Ok(())
 }
 
 type QueryInterface =
