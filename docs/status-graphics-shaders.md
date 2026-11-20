@@ -59,8 +59,14 @@ Runs at the tip (logs in scratch `graphics-shaders/g6b1`):
   denied clean; the whole suite with every corpus (`--include-ignored --skip mutated`, no
   glslang there): 24 test binaries, all pass (x86-suite2.log). The corpora were copied there from
   the laptop (the machine was new).
-- Desktop (RTX 3080, through the queue, 3 cargo jobs): Windows clippy clean; `geometry_draw` at
-  the default seeds: 8 passed (gpu-geometry2.log); the whole GPU suite: below.
+- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken): Windows clippy with
+  warnings denied clean; every test binary at default seeds (gpu-all.log, task 32): 155 passed,
+  0 failed, 6 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`,
+  `damaged_records_decode_without_a_panic`); `geometry_draw` alone before it: 8 passed
+  (gpu-geometry2.log).
+- Clean-up at the end: this branch's build folder on the desktop deleted, the x86 machine's
+  output folders of this run deleted (its build folder kept: the machine's own, refilled by any
+  run), the checkout's `target` on the Mac (748 MB, from one `cargo check -j 2`) deleted.
 - Literal check (desktop): passes; this crate's lines in `literals.baseline` 586 before the run,
   575 after (11 deleted; the moved geometry code's strings named once).
 - Not run in this run: the laptop (glslang's GLSL outcomes: the new shaders all need compute, so
