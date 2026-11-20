@@ -464,6 +464,7 @@ name = "wcontainers-x86"
 version = "0.1.0"
 dependencies = [
  "iced-x86",
+ "rustc_apfloat",
  "wasm-encoder",
  "wcontainers-abi",
  "wcontainers-guest-cpu",
