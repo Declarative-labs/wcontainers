@@ -714,6 +714,27 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 1, tests: the embedder tests (32, seeds 1 to 3) and the kernel's unit tests (5) passed
+  on the ARM machine (scratch streams/s3-sharing-5.log, s3-affected-1.log; there `sigframe`
+  fails as the manual lists, and passes on this Mac below). Clippy with warnings denied over
+  the kernel passed on the x86 machine and over the kernel test crate on the ARM machine; fmt
+  clean; the literal check passes on this Mac. Whole suite on the ARM machine at e713b19b's tree
+  with the status edits (the command in "How to run" with `-j $ARM_JOBS` and 12 test threads;
+  s3a/suite-arm.log and s3a/fetched/s3a-suite.log, 07:45 to 08:21 UTC, load 14 to 17): 582
+  passed, 28 failed, 6 ignored; the 28 are by name exactly the eleventh run's
+  (s3a/failed-arm.txt against s2k/failed-arm.txt), and the 6 new tests pass. The 20 binaries
+  kept on the Mac (s3a/mac-only.log, this Mac, 23:45 to 23:47 Pacific, load 6 to 12): 94
+  passed, none failed. Combined: 616 tests, 610 passed, 6 ignored, none failed.
+- S3 run 1, speed with no hook implemented (ARM machine, s3a/speed.log, load 15 to 16, about
+  08:25 UTC): the memory test binary at cefb66ab (S2 as merged) and at this run's tree, each
+  built alone, run alternately 7 rounds, round 0 a warm-up. User CPU 11.874 11.860 11.983
+  11.848 11.769 11.872 s before, 11.913 11.903 11.914 11.880 11.912 11.920 s after (means
+  11.868 and 11.907, +0.3 %); wall 15.08 15.13 15.28 15.15 15.02 15.08 s before, 15.24 15.21
+  15.31 15.19 15.20 15.16 s after (+0.6 %). The new tree was slower in 5 of 6 rounds by user
+  CPU and in all 6 by wall time: small, but in one direction, so not shown to be unchanged. What
+  the no-hook path gained: a flag test at every announcement (the proxy's two per call) and when
+  the kernel settles, a queue test when it settles, a test per signal taken, and a test of the
+  mappings an unmap removes. Not yet looked into further.
 - Eleventh run, tests: the embedder tests (27, seeds 1 to 3) passed on the ARM machine at
   93d65247's tree with the `processes` tests (scratch streams/s2k/embedder-4.log, load 12 to 23),
   and the kernel's unit tests (4) at 48c90e4c (embedder-3.log); clippy with warnings denied over
