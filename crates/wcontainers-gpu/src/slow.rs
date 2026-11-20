@@ -10,6 +10,10 @@ const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shade
 /// The reason [`SlowPath::FloatBitsClearByDraw`] shows.
 const FLOAT_BITS_CLEAR_BY_DRAW: &str = "float colour clear made by a draw keeping its bits";
 
+/// The reason [`SlowPath::StreamOutAfterReplay`] shows.
+const STREAM_OUT_AFTER_REPLAY: &str =
+    "stream output after a replayed geometry shader written on the host";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -287,11 +291,15 @@ pub enum SlowPath {
     /// A 32-bit float colour clear whose bits the API's clear value would change (denormals flushed,
     /// NaN payloads quieted), made by a draw writing the bits.
     FloatBitsClearByDraw,
+    /// Stream output after a geometry shader run by replay, written on the host from a read back of
+    /// what the replay captured: the replay captures every output slot, cut ones included, and only
+    /// a count across invocations, which a vertex program cannot make, drops them.
+    StreamOutAfterReplay,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 108] = [
+    pub const ALL: [SlowPath; 109] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -400,6 +408,7 @@ impl SlowPath {
         SlowPath::IndirectFetchPastEnd,
         SlowPath::StorageOffsetInShader,
         SlowPath::FloatBitsClearByDraw,
+        SlowPath::StreamOutAfterReplay,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -533,6 +542,7 @@ impl SlowPath {
             }
             SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
             SlowPath::FloatBitsClearByDraw => FLOAT_BITS_CLEAR_BY_DRAW,
+            SlowPath::StreamOutAfterReplay => STREAM_OUT_AFTER_REPLAY,
         }
     }
 }
@@ -618,7 +628,7 @@ mod tests {
             PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
-            StorageOffsetInShader FloatBitsClearByDraw";
+            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {

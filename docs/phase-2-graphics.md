@@ -2262,7 +2262,9 @@ They never reach a back end. The shaders crate lowers them, and its stage helper
 - WebGL 2 (no compute, `TRANSFORM_FEEDBACK`): stream output is native transform feedback. Geometry
   shaders run by replay: the vertex outputs are captured by transform feedback into a buffer read as a
   texture, then one draw runs the geometry shader once per output vertex slot, each invocation keeping
-  only its own emitted vertex and collapsing unused slots (`GeometryAsReplay`). Hull and domain shaders
+  only its own emitted vertex and collapsing unused slots (`GeometryAsReplay`). Stream output after
+  it is written on the host from a read back of the replay's capture, which holds the collapsed
+  slots too; dropping them needs a count across invocations (`StreamOutAfterReplay`). Hull and domain shaders
   are not offered on WebGL 2 (feature level 10_0 does not have them).
 
 Alpha-antialiased lines (4.12) take the same first step: the vertex stage runs as compute (WebGPU) or is
