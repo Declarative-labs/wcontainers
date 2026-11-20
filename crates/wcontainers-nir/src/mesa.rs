@@ -72,10 +72,92 @@ struct Bytes {
     size: usize,
 }
 
+/// What a name of a GLSL program, or a state value, is in one stage (`enum wc_glsl_name_kind`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+pub enum GlslNameKind {
+    /// A default-block uniform: `at` its first word in uniform buffer 0, `count` its words.
+    Uniform,
+    /// `STATE_FB_WPOS_Y_TRANSFORM`'s four words at `at`.
+    FragCoordYTransform,
+    /// `STATE_FB_PNTC_Y_TRANSFORM`'s four words at `at`.
+    PointCoordYTransform,
+    /// Any other state value, by Mesa's state string.
+    OtherState,
+    /// `at` the program binding, `count` the bindings.
+    UniformBlock,
+    StorageBlock,
+    Sampler,
+    Image,
+    /// `at` the location in the common form, `count` the locations.
+    Input,
+    Output,
+}
+
+/// A stage value's interpolation qualifier (`enum wc_glsl_interpolation`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+pub enum Interpolation {
+    Unqualified,
+    Smooth,
+    Flat,
+    NoPerspective,
+    Other,
+}
+
+/// One name of a GLSL program in one stage and what the OpenGL driver's state reaches it by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlslName {
+    pub kind: GlslNameKind,
+    pub name: String,
+    /// A stage value's GLSL type.
+    pub ty: Option<String>,
+    pub interpolation: Interpolation,
+    pub at: u32,
+    pub count: u32,
+}
+
+/// One stage of a linked GLSL program.
+pub struct GlslStage {
+    pub stage: Stage,
+    pub nir: Nir,
+    pub names: Vec<GlslName>,
+}
+
+#[repr(C)]
+struct RawGlslName {
+    kind: GlslNameKind,
+    name: *mut c_char,
+    ty: *mut c_char,
+    interpolation: Interpolation,
+    at: u32,
+    count: u32,
+}
+
+#[repr(C)]
+struct RawGlslNames {
+    data: *mut RawGlslName,
+    count: usize,
+}
+
 #[repr(C)]
 struct GlslProgram {
     stages: [*mut NirShader; Stage::ALL.len()],
+    names: [RawGlslNames; Stage::ALL.len()],
     log: *mut c_char,
+}
+
+/// A string the bridge owns, copied.
+fn owned_string(text: *const c_char) -> String {
+    if text.is_null() {
+        return String::new();
+    }
+    // SAFETY: the bridge's strings are NUL-terminated until the program is freed.
+    unsafe { CStr::from_ptr(text) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[repr(C)]
@@ -138,8 +220,9 @@ impl Nir {
 
     /// The stages of one GLSL program as the OpenGL driver receives them: compiled and linked by
     /// Mesa's GLSL compiler, then st/mesa's steps for the driver's capabilities (`bridge/glsl.cpp`),
-    /// each buffer an array of words. One entry a source, in `Stage::ALL`'s order.
-    pub fn from_glsl(sources: &[(Stage, &str)]) -> Result<Vec<(Stage, Nir)>, ConvertError> {
+    /// each buffer an array of words; with each stage's names. One entry a source, in
+    /// `Stage::ALL`'s order.
+    pub fn from_glsl(sources: &[(Stage, &str)]) -> Result<Vec<GlslStage>, ConvertError> {
         initialised();
         let owned = sources
             .iter()
@@ -157,24 +240,43 @@ impl Nir {
             .collect();
         let mut program = GlslProgram {
             stages: [std::ptr::null_mut(); Stage::ALL.len()],
+            names: std::array::from_fn(|_| RawGlslNames {
+                data: std::ptr::null_mut(),
+                count: 0,
+            }),
             log: std::ptr::null_mut(),
         };
         // SAFETY: one source pointer a stage (or null), each alive for the call; the bridge fills
         // `program` and Mesa copies what it keeps.
         let linked = unsafe { wc_glsl_to_nir(pointers.as_ptr(), &mut program) };
-        let log = if program.log.is_null() {
-            String::new()
-        } else {
-            // SAFETY: the bridge's log is a NUL-terminated string until wc_glsl_program_free.
-            unsafe { CStr::from_ptr(program.log) }
-                .to_string_lossy()
-                .into_owned()
-        };
+        let log = owned_string(program.log);
         let stages = Stage::ALL
             .iter()
-            .zip(program.stages.iter_mut())
-            .filter(|(_, nir)| !nir.is_null())
-            .map(|(stage, nir)| (*stage, Nir(std::mem::replace(nir, std::ptr::null_mut()))))
+            .zip(program.stages.iter_mut().zip(&program.names))
+            .filter(|(_, (nir, _))| !nir.is_null())
+            .map(|(stage, (nir, names))| {
+                let names = if names.data.is_null() {
+                    &[][..]
+                } else {
+                    // SAFETY: the bridge's array of `count` names, alive until the program is freed.
+                    unsafe { std::slice::from_raw_parts(names.data, names.count) }
+                };
+                GlslStage {
+                    stage: *stage,
+                    nir: Nir(std::mem::replace(nir, std::ptr::null_mut())),
+                    names: names
+                        .iter()
+                        .map(|n| GlslName {
+                            kind: n.kind,
+                            name: owned_string(n.name),
+                            ty: (!n.ty.is_null()).then(|| owned_string(n.ty)),
+                            interpolation: n.interpolation,
+                            at: n.at,
+                            count: n.count,
+                        })
+                        .collect(),
+                }
+            })
             .collect();
         // SAFETY: program came from the bridge; the shaders taken above are no longer in it.
         unsafe { wc_glsl_program_free(&mut program) };
@@ -302,6 +404,10 @@ pub const CONVERTER_VERSION: &str = concat!(
 /// Lavapipe, Mesa's Vulkan driver on the processor, built with the Mesa this crate links: the
 /// reference the corpus run holds the routes to (plan 15.3).
 pub const LAVAPIPE: &str = env!("WCONTAINERS_LAVAPIPE");
+
+/// Mesa's EGL from the same build, through which llvmpipe, Mesa's OpenGL driver on the processor,
+/// is reached: the reference for GLSL programs (plan 15.3).
+pub const EGL: &str = env!("WCONTAINERS_EGL");
 
 /// The steps named in `ConvertError::Mesa`.
 pub const SPIRV_TO_NIR: &str = "spirv_to_nir";

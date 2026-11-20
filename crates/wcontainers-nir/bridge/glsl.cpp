@@ -191,6 +191,116 @@ words_of(const struct glsl_type *type, bool bindless)
    return glsl_count_dword_slots(type, bindless);
 }
 
+static enum wc_glsl_interpolation
+interpolation_of(enum glsl_interp_mode mode)
+{
+   switch (mode) {
+   case INTERP_MODE_NONE:
+      return WC_GLSL_INTERPOLATION_UNQUALIFIED;
+   case INTERP_MODE_SMOOTH:
+      return WC_GLSL_INTERPOLATION_SMOOTH;
+   case INTERP_MODE_FLAT:
+      return WC_GLSL_INTERPOLATION_FLAT;
+   case INTERP_MODE_NOPERSPECTIVE:
+      return WC_GLSL_INTERPOLATION_NOPERSPECTIVE;
+   default:
+      return WC_GLSL_INTERPOLATION_OTHER;
+   }
+}
+
+static bool
+add_name(struct wc_glsl_names *names, enum wc_glsl_name_kind kind, const char *name,
+         const char *type, enum wc_glsl_interpolation interpolation, uint32_t at, uint32_t count)
+{
+   struct wc_glsl_name *grown =
+      (struct wc_glsl_name *)realloc(names->data, (names->count + 1) * sizeof(*grown));
+   if (!grown)
+      return false;
+   names->data = grown;
+   struct wc_glsl_name *added = &grown[names->count++];
+   added->kind = kind;
+   added->name = strdup(name ? name : "");
+   added->type = type ? strdup(type) : NULL;
+   added->interpolation = interpolation;
+   added->at = at;
+   added->count = count;
+   return added->name && (!type || added->type);
+}
+
+/* The program's own stage inputs and outputs, by their location in the common form. */
+static bool
+name_stage_values(nir_shader *nir, struct wc_glsl_names *names)
+{
+   bool added = true;
+   nir_foreach_variable_with_modes(var, nir, nir_var_shader_in | nir_var_shader_out) {
+      bool output = var->data.mode == nir_var_shader_out;
+      uint32_t location;
+      if (wc_builtin_at(nir, output, var->data.location, &location) != WC_BUILTIN_NONE)
+         continue;
+      bool attribute = !output && nir->info.stage == MESA_SHADER_VERTEX;
+      added &= add_name(names, output ? WC_GLSL_OUTPUT : WC_GLSL_INPUT, var->name,
+                        glsl_get_type_name(var->type),
+                        interpolation_of((enum glsl_interp_mode)var->data.interpolation), location,
+                        glsl_count_attribute_slots(var->type, attribute));
+   }
+   return added;
+}
+
+/* Each default-block uniform's words and each state value's, from the stage's parameters. */
+static bool
+name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
+{
+   struct gl_program_parameter_list *params = prog->Parameters;
+   bool added = true;
+   for (unsigned i = 0; i < params->NumParameters; i++) {
+      struct gl_program_parameter *p = &params->Parameters[i];
+      enum wc_glsl_name_kind kind;
+      if (p->Type == PROGRAM_UNIFORM)
+         kind = WC_GLSL_UNIFORM;
+      else if (p->Type != PROGRAM_STATE_VAR)
+         continue;
+      else if (p->StateIndexes[0] == STATE_FB_WPOS_Y_TRANSFORM)
+         kind = WC_GLSL_FRAG_COORD_Y_TRANSFORM;
+      else if (p->StateIndexes[0] == STATE_FB_PNTC_Y_TRANSFORM)
+         kind = WC_GLSL_POINT_COORD_Y_TRANSFORM;
+      else
+         kind = WC_GLSL_OTHER_STATE;
+      /* A matrix or an array has a parameter a column or element, one after another: one name. */
+      struct wc_glsl_name *last = names->count ? &names->data[names->count - 1] : NULL;
+      if (kind == WC_GLSL_UNIFORM && last && last->kind == kind && p->Name &&
+          strcmp(last->name, p->Name) == 0 && last->at + last->count == p->ValueOffset) {
+         last->count += p->Size;
+         continue;
+      }
+      added &= add_name(names, kind, p->Name, NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED,
+                        p->ValueOffset, p->Size);
+   }
+   return added;
+}
+
+/* Each block's, sampler's and image's program binding. */
+static bool
+name_bindings(struct gl_program *prog, nir_shader *nir, struct wc_glsl_names *names)
+{
+   bool added = true;
+   uint32_t uniform_blocks = prog->info.num_ubos + nir->info.first_ubo_is_default_ubo;
+   for (unsigned i = 0; i < prog->info.num_ubos; i++)
+      added &= add_name(names, WC_GLSL_UNIFORM_BLOCK, prog->sh.UniformBlocks[i]->name.string,
+                        NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED, i + nir->info.first_ubo_is_default_ubo, 1);
+   for (unsigned i = 0; i < prog->info.num_ssbos; i++)
+      added &= add_name(names, WC_GLSL_STORAGE_BLOCK, prog->sh.ShaderStorageBlocks[i]->name.string,
+                        NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED, uniform_blocks + i, 1);
+   nir_foreach_variable_with_modes(var, nir, nir_var_uniform | nir_var_image) {
+      const struct glsl_type *bare = glsl_without_array(var->type);
+      if (!glsl_type_is_sampler(bare) && !glsl_type_is_image(bare))
+         continue;
+      added &= add_name(names, glsl_type_is_sampler(bare) ? WC_GLSL_SAMPLER : WC_GLSL_IMAGE,
+                        var->name, NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED, var->data.binding,
+                        glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1);
+   }
+   return added;
+}
+
 /* st/mesa's steps from the linked NIR to what the driver receives, for this driver's capabilities:
  * fragment coordinates as the common form has them, no hardware atomic counters, rectangle
  * textures and gathers with offsets lowered, uniforms packed in words into buffer 0, samplers and
@@ -312,12 +422,22 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
       struct gl_linked_shader *shader = whole->_LinkedShaders[wc_mesa_stage((enum wc_stage)s)];
       if (!sources[s] || !shader)
          continue;
+      struct wc_glsl_names *names = &out->names[s];
+      if (!name_stage_values(shader->Program->nir, names)) {
+         linked = false;
+         break;
+      }
       if (!after_link(whole, shader)) {
          out->log = append_log(out->log, WC_GL_STATE_STRUCTURE);
          linked = false;
          break;
       }
       nir_shader *nir = shader->Program->nir;
+      if (!name_parameters(shader->Program, names) ||
+          !name_bindings(shader->Program, nir, names)) {
+         linked = false;
+         break;
+      }
       uint32_t count;
       uint32_t *sizes = uniform_sizes(shader->Program, nir, &count);
       if (!sizes) {
@@ -334,10 +454,10 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
    free(ctx);
    _mesa_glsl_builtin_functions_decref();
    if (!linked) {
-      for (int s = 0; s < WC_STAGES; s++) {
-         ralloc_free(out->stages[s]);
-         out->stages[s] = NULL;
-      }
+      char *log = out->log;
+      out->log = NULL;
+      wc_glsl_program_free(out);
+      out->log = log;
    }
    return linked;
 }
@@ -345,8 +465,14 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
 extern "C" void
 wc_glsl_program_free(struct wc_glsl_program *program)
 {
-   for (int s = 0; s < WC_STAGES; s++)
+   for (int s = 0; s < WC_STAGES; s++) {
       ralloc_free(program->stages[s]);
+      for (size_t i = 0; i < program->names[s].count; i++) {
+         free(program->names[s].data[i].name);
+         free(program->names[s].data[i].type);
+      }
+      free(program->names[s].data);
+   }
    free(program->log);
    memset(program, 0, sizeof(*program));
 }

@@ -3,6 +3,7 @@
 #define WCONTAINERS_NIR_BRIDGE_PRIVATE_H
 
 #include "bridge.h"
+#include "flat.h"
 #include "nir.h"
 
 #ifdef __cplusplus
@@ -13,6 +14,10 @@ extern "C" {
 const struct nir_shader_compiler_options *wc_compiler_options(void);
 
 mesa_shader_stage wc_mesa_stage(enum wc_stage stage);
+
+/* The built-in of a stage input's or output's slot, and its location in the common form where it
+ * has none. */
+enum wc_builtin wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *location);
 
 /* The clean-up every route starts from: functions inlined, variables in SSA, constants folded. */
 void wc_optimize(nir_shader *nir);

@@ -129,7 +129,7 @@ fn expected() -> (u32, Vec<f32>) {
 #[test]
 fn opengl_buffers_as_words_compute_what_glsl_says() {
     let mut stages = Nir::from_glsl(&[(Stage::Compute, PROGRAM)]).expect("Mesa compiles it");
-    let (_, mut nir) = stages.pop().expect("one stage");
+    let mut nir = stages.pop().expect("one stage").nir;
     let reflection = nir.to_common_form(Stage::Compute).expect("it binds");
     let module = wcontainers_nir::direct::module(&mut nir).expect("route B takes it");
     wcontainers_nir::spirv::validate(&module).expect("it validates");

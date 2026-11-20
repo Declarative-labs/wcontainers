@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include "flat.h"
 #include "bridge.h"
+#include "bridge_private.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -242,9 +243,8 @@ mode_of(nir_variable_mode mode)
    }
 }
 
-/* The built-in of a stage input's or output's slot, and its generic location where it has none. */
-static enum wc_builtin
-builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *location)
+enum wc_builtin
+wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *location)
 {
    *location = 0;
    if (!output && nir->info.stage == MESA_SHADER_VERTEX) {
@@ -482,7 +482,7 @@ add_slots(struct flattening *f)
          .format = WC_FORMAT_NONE,
          .initialised = WC_NONE,
       };
-      v.builtin = builtin_at(f->nir, s->output, s->location, &v.location);
+      v.builtin = wc_builtin_at(f->nir, s->output, s->location, &v.location);
       /* A built-in has its own type whatever part of it the program reaches. */
       const struct glsl_type *type =
          v.builtin == WC_BUILTIN_CLIP_DISTANCE ? glsl_array_type(glsl_float_type(), s->components, 0)

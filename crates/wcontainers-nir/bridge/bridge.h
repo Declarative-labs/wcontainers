@@ -80,11 +80,55 @@ void wc_finish(void);
 struct nir_shader *wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage,
                                    const char *entry_point);
 
+/* What a name of a GLSL program, or a state value, is in one stage's NIR. */
+enum wc_glsl_name_kind {
+   /* A default-block uniform: `at` its first word in uniform buffer 0, `count` its words. */
+   WC_GLSL_UNIFORM,
+   /* The state values st/mesa fills (`at` the first of their four words), and any other state
+    * value, named by Mesa's state string. */
+   WC_GLSL_FRAG_COORD_Y_TRANSFORM,
+   WC_GLSL_POINT_COORD_Y_TRANSFORM,
+   WC_GLSL_OTHER_STATE,
+   /* A block, a sampler or an image: `at` its program binding, `count` its bindings. */
+   WC_GLSL_UNIFORM_BLOCK,
+   WC_GLSL_STORAGE_BLOCK,
+   WC_GLSL_SAMPLER,
+   WC_GLSL_IMAGE,
+   /* A stage input or output: `at` its location in the common form, `count` its locations. */
+   WC_GLSL_INPUT,
+   WC_GLSL_OUTPUT,
+};
+
+/* A stage value's interpolation qualifier. */
+enum wc_glsl_interpolation {
+   WC_GLSL_INTERPOLATION_UNQUALIFIED,
+   WC_GLSL_INTERPOLATION_SMOOTH,
+   WC_GLSL_INTERPOLATION_FLAT,
+   WC_GLSL_INTERPOLATION_NOPERSPECTIVE,
+   WC_GLSL_INTERPOLATION_OTHER,
+};
+
+struct wc_glsl_name {
+   enum wc_glsl_name_kind kind;
+   char *name;
+   /* A stage value's GLSL type (NULL for other names) and interpolation. */
+   char *type;
+   enum wc_glsl_interpolation interpolation;
+   uint32_t at;
+   uint32_t count;
+};
+
+struct wc_glsl_names {
+   struct wc_glsl_name *data;
+   size_t count;
+};
+
 /* One GLSL program's stages as the OpenGL driver receives them, by enum wc_stage (NULL where the
- * program has none), and the compiler's and linker's messages; given back with
- * wc_glsl_program_free. */
+ * program has none), each stage's names, and the compiler's and linker's messages; given back
+ * with wc_glsl_program_free. */
 struct wc_glsl_program {
    struct nir_shader *stages[WC_STAGES];
+   struct wc_glsl_names names[WC_STAGES];
    char *log;
 };
 

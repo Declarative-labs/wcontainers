@@ -6,7 +6,7 @@
 use wcontainers_gpu::{ShaderStage, SlotKind};
 use wcontainers_nir::ConvertError;
 use wcontainers_nir::bind::stage_set;
-use wcontainers_nir::mesa::{Nir, Stage};
+use wcontainers_nir::mesa::{GlslNameKind, GlslStage, Nir, Stage};
 use wcontainers_shaders::ENTRY_POINT;
 
 const COMPUTE: &str = "
@@ -210,10 +210,44 @@ fn route_b_reads_a_linked_glsl_program() {
     ])
     .unwrap();
     assert_eq!(
-        stages.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        stages.iter().map(|s| s.stage).collect::<Vec<_>>(),
         [Stage::Vertex, Stage::Fragment]
     );
-    for (stage, mut nir) in stages {
+    let named = |stage: usize, kind: GlslNameKind, name: &str| {
+        stages[stage]
+            .names
+            .iter()
+            .find(|n| n.kind == kind && n.name == name)
+            .map(|n| (n.at, n.count))
+    };
+    let matrix_words = 16;
+    let scales = 3;
+    assert_eq!(
+        named(0, GlslNameKind::Uniform, "transform").map(|n| n.1),
+        Some(matrix_words)
+    );
+    assert_eq!(
+        named(0, GlslNameKind::Uniform, "scale").map(|n| n.1),
+        Some(scales)
+    );
+    // Uniform buffer 0 is the default block; storage blocks follow the uniform blocks.
+    assert_eq!(named(0, GlslNameKind::UniformBlock, "Light"), Some((1, 1)));
+    assert_eq!(
+        named(0, GlslNameKind::StorageBlock, "Offsets"),
+        Some((2, 1))
+    );
+    assert_eq!(named(0, GlslNameKind::Input, "position"), Some((0, 1)));
+    assert_eq!(named(0, GlslNameKind::Input, "at"), Some((1, 1)));
+    assert_eq!(named(1, GlslNameKind::Sampler, "picture"), Some((0, 1)));
+    assert_eq!(named(1, GlslNameKind::StorageBlock, "Count"), Some((1, 1)));
+    assert_eq!(named(1, GlslNameKind::Output, "colour"), Some((0, 1)));
+    assert!(
+        stages[1]
+            .names
+            .iter()
+            .any(|n| n.kind == GlslNameKind::FragCoordYTransform)
+    );
+    for GlslStage { stage, mut nir, .. } in stages {
         assert!(!nir.serialized().unwrap().is_empty());
         let bindings = nir.to_common_form(stage).unwrap();
         let module = wcontainers_nir::direct::module(&mut nir).unwrap();

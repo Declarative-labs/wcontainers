@@ -84,6 +84,9 @@ const RUSTC_ENV: &str = "cargo::rustc-env=";
 /// Lavapipe, the corpus run's Vulkan reference, by its Meson target, and the variable naming its file.
 const LAVAPIPE_TARGET: &str = "vulkan_lvp";
 const LAVAPIPE_VARIABLE: &str = "WCONTAINERS_LAVAPIPE";
+/// Mesa's EGL, through which the corpus run reaches llvmpipe, its OpenGL reference.
+const EGL_TARGET: &str = "EGL";
+const EGL_VARIABLE: &str = "WCONTAINERS_EGL";
 const INTROSPECTED_TARGETS: &str = "meson-info/intro-targets.json";
 /// Between a variable and its value in `RUSTC_ENV`, and between the parts of the version.
 const ASSIGN: &str = "=";
@@ -154,6 +157,10 @@ fn main() {
     println!(
         "{RUSTC_ENV}{LAVAPIPE_VARIABLE}{ASSIGN}{}",
         target_file(build, LAVAPIPE_TARGET).display()
+    );
+    println!(
+        "{RUSTC_ENV}{EGL_VARIABLE}{ASSIGN}{}",
+        target_file(build, EGL_TARGET).display()
     );
     println!("{CFG}");
 }
