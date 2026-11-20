@@ -70,8 +70,10 @@ Drawn on the RTX 3080 (desktop, through the queue, other tracks' jobs beside; lo
   Stream output after the domain stage with and without `gs_tess_*`, every own hull shader case, fxc's
   and dxc's builds: 264 comparisons (132 dxc), 0 failed, 14 known (subnormal factors, as before).
   The tessellator itself: 128 comparisons, 0 failed.
-- `geometry_draw` (seeds 1 to 4): every test passes; the two layered tests draw `ps_layer` as fxc and
-  as dxc build it, every texel of every layer equal (draw1.log).
+- `geometry_draw` (seeds 1 to 4): every test passes. Its dxc cases now take dxc's builds of the
+  vertex and pixel programs too (`vs_geometry`, `ps_geometry` compiled with dxc; before, fxc's):
+  192 and 152 comparisons (80 dxc each), 0 failed (draw2.log, at the tip). The two layered tests
+  draw `ps_layer` as fxc and as dxc build it, every texel of every layer equal.
 - Mutated copies, each shown to fail (not committed; scratch `mutation-1.diff`, `mutation-2.diff`):
   clockwise and counter-clockwise swapped for DXIL hull shaders fails
   `hull_and_domain_shaders_declare_what_they_are` (x86) and 13 of 66 stream output comparisons, all
@@ -85,17 +87,26 @@ Drawn on the RTX 3080 (desktop, through the queue, other tracks' jobs beside; lo
   64 of 16,384 pixels (wireframe); tessellation: 310 of 32,768 pixels, all in the six wireframe and
   isoline cells (43, 59, 54, 59, 59, 36), the solid cell equal. Both are the line rule the front's
   back end draws by (the Direct3D 12 status: the library draws on wgpu's Vulkan path, whose lines
-  differ; its "Next" 3), not the converter's: fxc's and dxc's builds draw the same texels in our own
-  comparison above.
+  differ; its "Next" 3), not the converter's: in our own comparison above fxc's and dxc's builds
+  differ from Direct3D 11 by the same counts in the same wireframe cells, none missed.
 
-Runs at the tip (x86 machine 96 processors, load 10 to 30 with others' work):
-- Clippy with warnings denied clean (x86 and Windows); whole suite with every corpus
-  (`--include-ignored --skip mutated`): every binary passes but `damaged_records_decode_without_a_panic`
-  (gap A16's known failure, ignored by default: a damaged `ps_gatheroff.dxil` record panics in naga's
-  validator), x86-suite.log.
-- Literal check (x86 machine, a clone with the submodules; the desktop not needed): passes; this
-  crate's baseline lines 575 at the run's start, 530 after (45 deleted: the hull and domain lowering's
-  numbers and strings named once).
+Runs at the tip:
+- x86 machine (96 processors, load 10 to 30 with others' work, -j 48): clippy with warnings denied
+  clean; the whole suite with every corpus (`--include-ignored --skip mutated`): every binary
+  passes but `damaged_records_decode_without_a_panic` (gap A16's known failure, ignored by default:
+  a damaged `ps_gatheroff.dxil` record panics in naga's validator), x86-suite.log.
+- Laptop (load near 0, -j 4, glslang): the same suite, the same one known failure; every corpus's
+  records equal with glslang's GLSL outcomes, so the records written for the newly converting files
+  ("glsl compiles") are glslang's (laptop-suite.log; the tree before `vs_geometry.dxil` and
+  `ps_geometry.dxil` were added, whose records the x86 machine checked without glslang).
+- Desktop (RTX 3080, through the queue): Windows clippy with warnings denied clean (win-clippy.log);
+  every test binary at default seeds: 154 passed, 1 failed, 6 ignored (gpu-all.log), the failure
+  being the own records before the two new dxc files' lines were added (checked at the tip on the
+  x86 machine since); `geometry_draw` and `tessellation_draw` again at the tip (draw2.log, above).
+- Literal check (x86 machine, a clone with the submodules): passes; this crate's baseline lines 575
+  at the run's start, 530 after (45 deleted: the hull and domain lowering's numbers and strings
+  named once).
+- Not run: WebAssembly and Chrome on the new WGSL files (gap A8's comparison).
 
 ## New for the owner
 
