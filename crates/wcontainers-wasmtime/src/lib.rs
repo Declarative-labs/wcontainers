@@ -2019,8 +2019,9 @@ where
             contract::HOOK_MEMORY_FAULT,
             Func::wrap(
                 &mut *store,
-                |mut caller: Caller<'_, Data<G>>, address: i64, access: i32| {
-                    memory_fault(&mut caller, address as u64, access)
+                |mut caller: Caller<'_, Data<G>>, address: i64, access: i32| -> i32 {
+                    memory_fault(&mut caller, address as u64, access);
+                    contract::UNWIND_LEAVE
                 },
             ),
         ),

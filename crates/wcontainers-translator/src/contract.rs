@@ -96,10 +96,13 @@ pub const RUN: &str = "run";
 /// after. To stop the thread, raise its stop flag and return.
 pub const HOOK_SYSCALL: &str = "syscall";
 /// Hook `() -> i32`: the stop flag was seen raised. Registers are saved and `pc` is the instruction about
-/// to run. Return 0 to carry on, anything else to leave.
+/// to run. Return 0 to carry on, or the unwind payload to unwind with: [`UNWIND_LEAVE`] to leave,
+/// [`UNWIND_GO_TO_EXACT`] to run the instruction at `pc` alone.
 pub const HOOK_STOP: &str = "stop";
-/// Hook `(address: i64, access: i32)`: an access the page permissions do not allow. Access is 0 for a read
-/// and 1 for a write. Registers are saved and `pc` is the instruction. The thread then leaves.
+/// Hook `(address: i64, access: i32) -> i32`: an access the page permissions do not allow. Access is 0 for a
+/// read and 1 for a write. Registers are saved and `pc` is the instruction. Returns the unwind payload:
+/// [`UNWIND_LEAVE`] to leave, or [`UNWIND_GO_TO_EXACT`] once the fault is settled, to run the instruction
+/// again alone.
 pub const HOOK_MEMORY_FAULT: &str = "memory_fault";
 /// Hook `(address: i64, exact: i32) -> i32`: with `exact` 0, the lookup finds no piece for this address:
 /// put one there, translated from it (at bounded look-ahead). With `exact` 1, put the piece of the one

@@ -1094,10 +1094,11 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
         .func_wrap(
             HOOKS,
             HOOK_MEMORY_FAULT,
-            move |mut caller: Caller<'_, Host>, address: i64, access: i32| {
+            move |mut caller: Caller<'_, Host>, address: i64, access: i32| -> i32 {
                 let pc = pc_of(&block(&caller));
                 let (address, write) = (address as u64, access == 1);
                 record(&mut caller, Event::Fault { address, write, pc });
+                UNWIND_LEAVE
             },
         )
         .unwrap();

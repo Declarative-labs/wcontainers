@@ -255,7 +255,7 @@ function run({
     [contract.hookStop]: () => {
       Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 0);
       // The runner raised the flag itself to make the thread leave.
-      if (stopped) return 1;
+      if (stopped) return contract.unwindLeave;
       // Raised from outside: the stand-in clears it and the thread carries on.
       slowPath(reason("stopped by the flag"), registers().pc, 0);
       return 0;
@@ -266,6 +266,7 @@ function run({
       const fault = memoryFault(address);
       if (fault === "page") stop({ kind: "memory fault", address: address.toString(), write: access === 1 });
       else stop({ kind: fault });
+      return contract.unwindLeave;
     },
     // Code runs only from pages that allow it, as on Linux: a jump anywhere else faults there. Otherwise the
     // code is translated as it is in memory now, which may be code the program wrote: the blob's code, or the

@@ -2201,13 +2201,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             return;
         }
         self.save(pc, false);
-        self.sink()
-            .call(F_STOP)
-            .if_(BlockType::Empty)
-            .i32_const(UNWIND_LEAVE)
-            .call(G::F_UNWIND)
-            .unreachable()
-            .end();
+        let payload = self.temporary(ValType::I32);
+        crate::code::stop_hook::<G>(&mut self.sink(), payload);
+        let at = self.taken.iter().rposition(|&(_, l)| l == payload).unwrap();
+        let released = self.taken.swap_remove(at);
+        self.free.push(released);
         match after {
             AfterStop::Enter(f) => {
                 self.arguments();
@@ -2752,7 +2750,6 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 s.local_get(fault_at)
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
-                    .i32_const(UNWIND_LEAVE)
                     .call(G::F_UNWIND)
                     .unreachable()
                     .end()

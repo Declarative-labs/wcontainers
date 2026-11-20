@@ -970,7 +970,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
             );
             // The runner raised the flag itself to make the thread leave.
             if caller.data().stopped.is_some() {
-                return 1;
+                return UNWIND_LEAVE;
             }
             // Raised from outside: the stand-in clears it and the thread carries on.
             let mut pc = [0u8; 8];
@@ -986,14 +986,18 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 raise_stop_flag(&caller);
             }
             pause(&mut caller, Pause::Stop);
-            i32::from(caller.data().lose_stack)
+            if caller.data().lose_stack {
+                UNWIND_LEAVE
+            } else {
+                0
+            }
         })
         .unwrap();
     linker
         .func_wrap(
             HOOKS,
             HOOK_MEMORY_FAULT,
-            |mut caller: Caller<'_, Host<G>>, address: i64, access: i32| {
+            |mut caller: Caller<'_, Host<G>>, address: i64, access: i32| -> i32 {
                 slow_path(
                     caller.data_mut(),
                     Reason::MemoryFault.number(),
@@ -1018,6 +1022,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                     MemoryFault::Stack => Stopped::Fault(Fault::Stack),
                 };
                 stop(&mut caller, stopped);
+                UNWIND_LEAVE
             },
         )
         .unwrap();

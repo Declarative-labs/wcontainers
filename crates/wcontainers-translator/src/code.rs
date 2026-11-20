@@ -958,7 +958,9 @@ pub(crate) fn types<G: Guest>() -> TypeSection {
     piece_type::<G>(&mut types); // 0
     types.ty().function([ValType::I64; 7], [ValType::I64]); // 1: syscall
     types.ty().function([], [ValType::I32]); // 2: stop
-    types.ty().function([ValType::I64, ValType::I32], []); // 3: memory_fault
+    types
+        .ty()
+        .function([ValType::I64, ValType::I32], [ValType::I32]); // 3: memory_fault
     types
         .ty()
         .function([ValType::I64, ValType::I32], [ValType::I32]); // 4: load_code
@@ -1248,6 +1250,18 @@ pub(crate) fn unwinder() -> wasm_encoder::Function {
     f
 }
 
+/// Call the stop hook and unwind with the payload it returns unless it is 0 (carry on); `payload` is an i32
+/// local.
+pub(crate) fn stop_hook<G: Guest>(s: &mut InstructionSink<'_>, payload: u32) {
+    s.call(F_STOP)
+        .local_tee(payload)
+        .if_(BlockType::Empty)
+        .local_get(payload)
+        .call(G::F_UNWIND)
+        .unreachable()
+        .end();
+}
+
 /// Put every piece in the lookup table at instantiation, in order from the slot base.
 pub(crate) fn elements<G: Guest>(pieces: u32) -> ElementSection {
     let mut elements = ElementSection::new();
@@ -1321,6 +1335,7 @@ impl<G: Guest> NoneEmitter<'_, G> {
     fn stop_check(&mut self, step: u64) {
         self.sites[Reason::StoppedByFlag as usize] += 1;
         let pc = self.offset + step;
+        let payload = self.local(ValType::I32);
         let mut s = self.sink();
         BLOCK.push(&mut s);
         s.i32_load(memarg(MEMORY_STATE, G::STOP_FLAG_OFFSET as u64, 2))
@@ -1328,13 +1343,8 @@ impl<G: Guest> NoneEmitter<'_, G> {
         save::<G>(&mut s, |s| {
             s.i64_const(pc as i64);
         });
-        s.call(F_STOP)
-            .if_(BlockType::Empty)
-            .i32_const(UNWIND_LEAVE)
-            .call(G::F_UNWIND)
-            .unreachable()
-            .end()
-            .end();
+        stop_hook::<G>(&mut s, payload);
+        s.end();
     }
 
     /// Save registers with `pc` at this instruction plus `step`.
@@ -1581,7 +1591,6 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         s.local_get(fault_at)
             .i32_const(i32::from(access == Access::Write))
             .call(F_MEMORY_FAULT)
-            .i32_const(UNWIND_LEAVE)
             .call(G::F_UNWIND)
             .unreachable()
             .end()
