@@ -319,6 +319,16 @@ type UniformSubroutinesuiv = unsafe extern "C" fn(u32, i32, *const u32);
 type SetTwo = unsafe extern "C" fn(u32, u32);
 /// `glProgramParameteri` and `glFramebufferParameteri`.
 type Parameteri = unsafe extern "C" fn(u32, u32, i32);
+/// The covering triangle of a multisampled texture's fill (`Llvmpipe::fill_samples`).
+const FILL_VERTEX: &str = "#version 450
+void main() {
+    vec2 corner = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+";
+const FILL_VERTICES: i32 = 3;
+/// `glTexStorage3DMultisample`, which glow does not have.
+type TexStorage3DMultisample = unsafe extern "C" fn(u32, i32, u32, i32, i32, i32, u8);
 /// `glClientActiveTexture` and `glEnableClientState`.
 type SetOne = unsafe extern "C" fn(u32);
 /// `glTexCoordPointer` and `glColorPointer`.
@@ -355,6 +365,7 @@ pub struct Llvmpipe {
     clamp_color: SetTwo,
     program_parameter: Parameteri,
     framebuffer_parameter: Parameteri,
+    tex_storage_3d_multisample: TexStorage3DMultisample,
     conventional: ConventionalArrays,
 }
 
@@ -450,6 +461,7 @@ impl Llvmpipe {
             clamp_color,
             program_parameter,
             framebuffer_parameter,
+            tex_storage_3d_multisample,
         ) = unsafe {
             (
                 std::mem::transmute::<*const c_void, GetProgramInterfaceiv>(raw(
@@ -468,6 +480,9 @@ impl Llvmpipe {
                 std::mem::transmute::<*const c_void, SetTwo>(raw("glClampColor")?),
                 std::mem::transmute::<*const c_void, Parameteri>(raw("glProgramParameteri")?),
                 std::mem::transmute::<*const c_void, Parameteri>(raw("glFramebufferParameteri")?),
+                std::mem::transmute::<*const c_void, TexStorage3DMultisample>(raw(
+                    "glTexStorage3DMultisample",
+                )?),
             )
         };
         // SAFETY: each address is the named OpenGL 1.3 or 1.4 function, of the type given.
@@ -502,6 +517,7 @@ impl Llvmpipe {
             clamp_color,
             program_parameter,
             framebuffer_parameter,
+            tex_storage_3d_multisample,
             conventional,
         })
     }
@@ -868,7 +884,11 @@ impl Llvmpipe {
         let image = &sampled.image;
         let (gl_internal, format, ty) = gl_format(image.format)
             .ok_or_else(|| format!("a texture of format {:?} is not made here", image.format))?;
+        let multisampled = image.samples != vk::SampleCountFlags::TYPE_1;
         let target = match image.view {
+            vk::ImageViewType::TYPE_2D if multisampled => glow::TEXTURE_2D_MULTISAMPLE,
+            vk::ImageViewType::TYPE_2D_ARRAY if multisampled => glow::TEXTURE_2D_MULTISAMPLE_ARRAY,
+            _ if multisampled => return Err("a multisampled texture of another view".into()),
             _ if RECTANGLE_SAMPLERS.contains(&sampled.ty) => glow::TEXTURE_RECTANGLE,
             _ if CUBE_IMAGES.contains(&sampled.ty) => glow::TEXTURE_CUBE_MAP,
             _ if CUBE_ARRAY_IMAGES.contains(&sampled.ty) => glow::TEXTURE_CUBE_MAP_ARRAY,
@@ -897,6 +917,33 @@ impl Llvmpipe {
             gl.bind_texture(target, Some(texture));
             let bytes = image.bytes.as_slice();
             match target {
+                glow::TEXTURE_2D_MULTISAMPLE | glow::TEXTURE_2D_MULTISAMPLE_ARRAY => {
+                    let samples = size(image.samples.as_raw())?;
+                    if target == glow::TEXTURE_2D_MULTISAMPLE {
+                        gl.tex_storage_2d_multisample(
+                            target,
+                            samples,
+                            gl_internal,
+                            width,
+                            height,
+                            true,
+                        );
+                    } else {
+                        (self.tex_storage_3d_multisample)(
+                            target,
+                            samples,
+                            gl_internal,
+                            width,
+                            height,
+                            layers,
+                            1,
+                        );
+                    }
+                    self.fill_samples(texture, target, image)?;
+                    gl.use_program(Some(program));
+                    gl.active_texture(glow::TEXTURE0 + unit);
+                    gl.bind_texture(target, Some(texture));
+                }
                 glow::TEXTURE_1D => {
                     gl.tex_image_1d(target, 0, internal, width, 0, format, ty, pixels(bytes));
                 }
@@ -983,6 +1030,12 @@ impl Llvmpipe {
             }
             let nearest = size(glow::NEAREST)?;
             let edge = size(glow::CLAMP_TO_EDGE)?;
+            // A multisampled texture has no sampler state.
+            if multisampled {
+                return self
+                    .sampler_unit(program, unit, sampled)
+                    .map(|()| (texture, readback));
+            }
             gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, nearest);
             gl.tex_parameter_i32(target, glow::TEXTURE_MAG_FILTER, nearest);
             for wrap in [
@@ -1003,11 +1056,26 @@ impl Llvmpipe {
                 gl.tex_parameter_i32(target, glow::TEXTURE_COMPARE_FUNC, size(glow::LEQUAL)?);
                 gl.tex_parameter_i32_slice(target, glow::TEXTURE_SWIZZLE_RGBA, &[red; 4]);
             }
+            self.sampler_unit(program, unit, sampled)?;
+            Ok((texture, readback))
+        }
+    }
+
+    /// Sets the sampler uniform of `sampled` to `unit`; or the OpenGL error making its texture.
+    fn sampler_unit(
+        &self,
+        program: glow::Program,
+        unit: u32,
+        sampled: &SampledTexture,
+    ) -> Result<(), Error> {
+        let gl = &self.gl;
+        // SAFETY: plain OpenGL calls on the current context and the program in use.
+        unsafe {
             let at = gl.get_uniform_location(program, &sampled.uniform);
             let Some(at) = at.as_ref() else {
                 return Err(format!("no location for the sampler {}", sampled.uniform));
             };
-            gl.uniform_1_i32(Some(at), size(unit)?);
+            gl.uniform_1_i32(Some(at), i32::try_from(unit).map_err(|e| e.to_string())?);
             let error = gl.get_error();
             if error != glow::NO_ERROR {
                 return Err(format!(
@@ -1015,8 +1083,100 @@ impl Llvmpipe {
                     sampled.uniform
                 ));
             }
-            Ok((texture, readback))
+            Ok(())
         }
+    }
+
+    /// Writes every sample of a multisampled texture its own texel of `image` (laid out as
+    /// `compare::multisampled` makes them: by layer, sample, row and column), by a draw a layer
+    /// whose fragment program runs a sample at a time and reads its texel from a storage buffer, as
+    /// `Lavapipe::fill_samples` does; OpenGL copies no texels into one. Leaves no program in use.
+    fn fill_samples(
+        &self,
+        texture: glow::Texture,
+        target: u32,
+        image: &Image,
+    ) -> Result<(), Error> {
+        let gl = &self.gl;
+        let (kind, from_bits) = match image.format {
+            vk::Format::R32G32B32A32_SFLOAT => ("vec4", "uintBitsToFloat"),
+            vk::Format::R32G32B32A32_SINT => ("ivec4", "ivec4"),
+            vk::Format::R32G32B32A32_UINT => ("uvec4", ""),
+            other => return Err(format!("multisampled {other:?} is not filled here")),
+        };
+        // SAFETY: a query into a local.
+        let binding = unsafe { gl.get_parameter_i32(glow::MAX_SHADER_STORAGE_BUFFER_BINDINGS) } - 1;
+        let fragment = format!(
+            "#version 450
+layout(std430, binding = {binding}) readonly buffer Texels {{ uvec4 texels[]; }};
+uniform uvec4 place;
+layout(location = 0) out {kind} colour;
+void main() {{
+    uint row = (place.x * place.y + uint(gl_SampleID)) * place.w + uint(gl_FragCoord.y);
+    colour = {from_bits}(texels[row * place.z + uint(gl_FragCoord.x)]);
+}}
+"
+        );
+        let program = self.link(&[(Stage::Vertex, FILL_VERTEX), (Stage::Fragment, &fragment)])?;
+        let size = |n: u32| i32::try_from(n).map_err(|e| e.to_string());
+        let (width, height) = (size(image.extent.width)?, size(image.extent.height)?);
+        // SAFETY: plain OpenGL calls on the current context, on objects made here and `texture`.
+        unsafe {
+            gl.use_program(Some(program));
+            let texels = gl.create_buffer()?;
+            gl.bind_buffer(glow::SHADER_STORAGE_BUFFER, Some(texels));
+            gl.buffer_data_u8_slice(glow::SHADER_STORAGE_BUFFER, &image.bytes, glow::STATIC_DRAW);
+            gl.bind_buffer_base(
+                glow::SHADER_STORAGE_BUFFER,
+                binding.cast_unsigned(),
+                Some(texels),
+            );
+            let array = gl.create_vertex_array()?;
+            gl.bind_vertex_array(Some(array));
+            let framebuffer = gl.create_framebuffer()?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            gl.viewport(0, 0, width, height);
+            let place = gl.get_uniform_location(program, "place");
+            for layer in 0..image.layers {
+                if target == glow::TEXTURE_2D_MULTISAMPLE {
+                    gl.framebuffer_texture_2d(
+                        glow::FRAMEBUFFER,
+                        glow::COLOR_ATTACHMENT0,
+                        target,
+                        Some(texture),
+                        0,
+                    );
+                } else {
+                    gl.framebuffer_texture_layer(
+                        glow::FRAMEBUFFER,
+                        glow::COLOR_ATTACHMENT0,
+                        Some(texture),
+                        0,
+                        size(layer)?,
+                    );
+                }
+                gl.uniform_4_u32(
+                    place.as_ref(),
+                    layer,
+                    image.samples.as_raw(),
+                    image.extent.width,
+                    image.extent.height,
+                );
+                gl.draw_arrays(glow::TRIANGLES, 0, FILL_VERTICES);
+            }
+            gl.memory_barrier(glow::ALL_BARRIER_BITS);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.delete_framebuffer(framebuffer);
+            gl.delete_vertex_array(array);
+            gl.delete_buffer(texels);
+            gl.use_program(None);
+            gl.delete_program(program);
+            let error = gl.get_error();
+            if error != glow::NO_ERROR {
+                return Err(format!("llvmpipe: OpenGL error {error:#x} filling samples"));
+            }
+        }
+        Ok(())
     }
 
     /// Uses the program with its uniforms, blocks (block i bound at i) and textures (texture i

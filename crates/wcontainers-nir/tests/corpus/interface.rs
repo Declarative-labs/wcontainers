@@ -250,6 +250,23 @@ pub fn interface(words: &[u32]) -> Result<Interface, String> {
         };
         let decorations = d.decorations.get(&id).unwrap_or(&none);
         if let Some(slot) = Declarations::slot(decorations) {
+            // A block at a location: its members at the locations after it, one after another.
+            if let (Slot::Location(first), Some(Type::Struct { members })) =
+                (slot, d.types.get(&pointee))
+            {
+                let mut at = first;
+                for (member, &ty) in (0..).zip(members) {
+                    let ty = d.ty(ty)?;
+                    list.push(Var {
+                        id,
+                        member: Some((pointee, member)),
+                        slot: Slot::Location(at),
+                        ty,
+                    });
+                    at += ty.count;
+                }
+                continue;
+            }
             let ty = match slot {
                 Slot::Location(_) => d.ty(pointee)?,
                 Slot::BuiltIn(_) => d.ty(pointee).unwrap_or(Ty {
