@@ -927,11 +927,11 @@ pub struct LinkWords {
     pub branch: (u32, u32),
     /// An empty slot's first word.
     pub empty: u32,
-    /// The first move of a return's last target, as `moves`; the others are a slot's.
+    /// The first move of a jump's last target, as `moves`; the others are a slot's.
     pub last_target_first: (u32, u32),
-    /// A return's test once its last target is made: it goes past the call.
+    /// A jump's test once its last target is made: it goes past the call.
     pub last_target_test: u32,
-    /// A return's direct branch to its last target's piece before it is linked.
+    /// A jump's direct branch to its last target's piece before it is linked.
     pub last_target_branch: u32,
 }
 
@@ -1030,10 +1030,15 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         (n, Held::Register(n))
     };
     let return_address = out.address.wrapping_add(INSTRUCTION);
+    // A call through any register but x30 builds x30 first, so that its last target's hit is one direct branch.
+    let linked_first = op == BranchRegister::Blr && !withheld && n != LINK;
     if withheld {
         out.code.slow(NativeReason::WithheldRegisterNamed);
         out.put(load_page(SCRATCH, withheld_slot(n)));
     } else if op == BranchRegister::Ret {
+        last_target(out, n);
+    } else if linked_first {
+        out.build_address(Reg::X(LINK), return_address, Resume::Through(held));
         last_target(out, n);
     }
     out.put(encode::ubfx(
@@ -1046,7 +1051,7 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         encode::compare_branch(true, SCRATCH, 0).expect("fits"),
         |t| {
             t.resume = Some(Resume::Through(held));
-            if op == BranchRegister::Blr {
+            if op == BranchRegister::Blr && !linked_first {
                 t.fixups.push(Fixup::Address {
                     register: LINK,
                     value: return_address,
@@ -1072,7 +1077,9 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
             out.commit(encode::branch_register(form::BR, SCRATCH), slot)
         }
         BranchRegister::Blr => {
-            out.build_address(Reg::X(LINK), return_address, slot);
+            if !linked_first {
+                out.build_address(Reg::X(LINK), return_address, slot);
+            }
             out.put(encode::branch_register(form::BR, SCRATCH));
         }
     }
@@ -1083,7 +1090,7 @@ fn between(from: usize, to: usize) -> i64 {
     ((to - from) as u64 * INSTRUCTION) as i64
 }
 
-/// Move `k` of a return's last target into t, from the lowest part up, with immediate `imm16`: a `movz`, then a
+/// Move `k` of a jump's last target into t, from the lowest part up, with immediate `imm16`: a `movz`, then a
 /// slot's `movk`s.
 fn last_target_move(k: usize, imm16: u16) -> u32 {
     let half = k as u32;
@@ -1094,13 +1101,13 @@ fn last_target_move(k: usize, imm16: u16) -> u32 {
     }
 }
 
-/// The moves of a return's last target, with their immediates clear.
+/// The moves of a jump's last target, with their immediates clear.
 fn last_target_moves() -> [u32; SLOT_MOVES] {
     std::array::from_fn(|k| last_target_move(k, 0))
 }
 
-/// A return's last target compared in line (docs/native.md section 3.2): on a match a direct branch the inside
-/// links to that target's piece, otherwise on to the jump through the target's slot, by way of a call that has
+/// A return's or call's last target compared in line (docs/native.md section 3.2): on a match a direct branch the
+/// inside links to that target's piece, otherwise on to the jump through the target's slot, by way of a call that has
 /// the inside make this target the last one while there is none.
 fn last_target(out: &mut Out, n: Register) {
     out.put_all(&last_target_moves());
