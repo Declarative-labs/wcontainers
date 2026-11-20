@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## For the orchestrator
 
+- K6c's bar rests on the gap list's entries past plan section 15, decided by the eleventh run
+  without the owner's answer (Questions; Known gaps, first part): page residency (mincore03,
+  mlock201, mlock05, mmap12, vma01), the test harness (fork09, creat05, fcntl12, fcntl12_64,
+  openat03) and IPV6_RTHDR (setsockopt11, cve-2026-53362). If the owner rules otherwise, those
+  12 tests are differences to build. The plan's section 15 was not changed.
+
 - The LTP comparison on our kernel can bring Docker Desktop down on the Mac, as the
   orchestrator's diagnosis (docker-guard/diagnosis/notes.md) found: its test backend is reached
   over a published port with TCP_NODELAY, so request-heavy tests (cve-2014-0196, fork09, the
@@ -14,10 +20,17 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6c, thirteenth run: K6c's bar is met. The whole LTP comparison at 684b15ec matches 4153 of
+K6c, fourteenth run: every finding of the thirteenth run's check is answered (see "K6c,
+fourteenth run"), and the runtime track's assertion (a call woken while it parks) is fixed with a
+test. K6c's bar is not met yet: ADSP038 has no verdict (its four-hour run was still going, a
+twelve-hour run follows it), and the whole LTP comparison at the final code is under that
+section.
+
+K6c, thirteenth run: the run called K6c's bar met, which was early: ADSP038 had no verdict.
+The whole LTP comparison at 684b15ec matches 4153 of
 4211 tests; the other 58 are 36 of section 15's causes, 13 on the gap list, the reference's own
 3 failures and 6 slower than 900 s on the stand-in, five of which give the reference's verdict
-with two hours and the sixth (ADSP038) runs alone with four. remap_file_pages on a removed
+with two hours; the sixth (ADSP038) ran past two hours and then four. remap_file_pages on a removed
 segment is fixed (shmctl05 passes). The whole suite gives the known ARM list there, all of
 which passes on the Mac. See "K6c, thirteenth run".
 
@@ -118,6 +131,126 @@ K6a (first run): every finding of K5's check is fixed (below), and the Linux Tes
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
 
+## K6c, fourteenth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge. Heavy runs were on the ARM64
+machine, in two build folders made for this run (kernel-c, kernel-d) because ADSP038's jobs held
+the track's own; the Mac ran only Docker Desktop's verdicts (layer 1, the Mac list) and the
+literal check.
+
+The runtime track's assertion (brief, 2026-11-19 night): a stream read pulls the host's bytes,
+parks in `receive_stream`, then pulls again; bytes that arrive between the pulls wake the reader
+within its own call, so the call returns `Parked` with its wait already cleared. The outcome is
+right: the woken thread is in line (`wake_thread` put it on the run queue) and its call runs
+again, as a Linux task woken between `prepare_to_wait` and `schedule` does. The assertion now
+asks for a wait or a place in line (or a stopped process), and `end_asking` no longer parks such
+a thread on the backend as well. Test: outside `reads_woken_while_they_park_run_again`
+(guest/echoes.c: 3000 one-byte echoes from a server outside); it failed 3 of 3 before the fix
+(task.rs:224) and passed 5 of 5 after (ARM machine, 05:17 to 05:21 UTC, load 6 to 13).
+
+The thirteenth run's check, each finding:
+- ADSP038 had no verdict, so the bar was not met. Its four-hour run (job
+  kernel/20261120-024815-1653325, 684b15ec) was still going at this run's end with no row; a
+  twelve-hour run (`LTP_LIMIT=43200`, job kernel/20261120-051348-471406, results
+  target/ltp-k6c14/adsp038.tsv in the kernel folder there, followed into scratch
+  k6c14/adsp038-12h-attach.log) started beside it at 05:13 UTC.
+- Socket requests now follow Linux's dispatch: the family's own (`inet_ioctl`: routes after
+  copying the `rtentry`, ARP after the power check, address setting after copying the `ifreq`,
+  SIOCSIFPFLAGS EINVAL; `inet6_ioctl`: routes after copying an `in6_rtmsg`, addresses after the
+  power check), then for any other request of the sockets' kind 0x89 the `ifreq` is copied
+  (EFAULT) and the devices answer (`dev_ioctl`: the interface setters need CAP_NET_ADMIN,
+  anything else ENOTTY); requests of other kinds are ENOTTY at once, and the timestamp requests
+  are ENOTTY on families without them. So SIOCADDRT on a local socket is ENOTTY and SIOCATMARK
+  on UDP with a bad pointer EFAULT, as the reference's. The checker's seeds with 10000
+  sequences each on the Mac: 4747002 and 4747003 matched (05:39 to 05:46 UTC, load 20 to 27);
+  4747001 then stopped at cachestat on a huge page memory file (ours EFAULT from writing the
+  answer, the reference EOPNOTSUPP before it, `is_file_hugepages`): fixed (guest/cachestat.c
+  asks it), and 4747001 matched (05:47 to 05:50 UTC, load 20 to 24). inet's Mac-only tests
+  passed on the Mac; inet's others, unixsock, netprograms and outside on the ARM machine.
+- truncate(2) by name breaks leases as `vfs_truncate` does (`break_lease(inode, O_WRONLY)`
+  after the ETXTBSY check) and waits for them. Extending guest/leases.c found three more, all
+  fixed and matching (ARM machine): Linux 7.0 takes leases only on file systems with a
+  `setlease` and answers EINVAL elsewhere, for F_UNLCK too (measured: /proc, /sys, the cgroup's
+  files and huge page memory files refuse; tmpfs, memory files and the overlay root take them;
+  a FUSE volume keeps taking them, not measured: a default container has no FUSE mount); a
+  memory file's own descriptor is no writer of its inode (`alloc_file_pseudo` leaves
+  `i_writecount`), so a read lease on it is granted and a write lease refused; and letting a
+  lease go takes the file's owner and signal (`lease_modify`'s `f_delown`), so the next lease's
+  break is SIGIO with SI_KERNEL. The same uncounted writer is what lets a memory file holding a
+  program run while its descriptor is open (guest/execveat.c's new last stage), which found
+  that /proc/<pid>/exe lacked " (deleted)" for a removed program: fixed, as `d_path` does.
+- Asynchronous reads and writes are refused at submission (EINVAL, after EBADF) for kinds
+  without `read_iter` or `write_iter`, as measured in the reference by guest/aio.c: event
+  counters, timers and signal descriptors read but do not write; inotify, epoll, process
+  descriptors and message queues do neither. F_SETLEASE on /proc: above.
+- copy_file_range03: the test host skipped idle waits on the machine's clock too, so sleeps
+  took no time while the backend stamped real times. The LTP host now waits for real
+  (`TestHost::waits`, set with `Prepared::wall_clock`); layer 1 and the other tests keep
+  skipping. copy_file_range03 passes in 4.3 s (the ARM machine's reference 3.5 s, 05:27 UTC,
+  load 11 to 14), so it leaves the gap list.
+- clock_nanosleep02, select02 and prctl09 are not a reference flake: Docker Desktop's reference
+  (the committed reference file) fails them every time, sleeping too long. The ARM machine's own
+  reference (native Linux 7.0) passes them in 8.8, 17.2 and 9.0 s, as ours now does with real
+  waits (9.6, 18.4, 9.9 s; same run). They are the reference host's timer precision, section
+  15's "clock and timer precision are the host's" seen from the reference's side, and are listed
+  so from now on.
+- The gap list past section 15 (page residency, the test harness, IPV6_RTHDR; 12 tests now
+  that copy_file_range03 passes) is still the eleventh run's decision without the owner's
+  answer, so the bar holds only if the owner accepts it: put to the orchestrator (For the
+  orchestrator). vma01 gives no warning because the event cannot be seen: whether two
+  neighbouring anonymous mappings' pages were written before a fork needs touched pages, which
+  the Cpu trait does not report, and a counter on every merge would fire on nearly every heap
+  growth and say nothing (Known gaps).
+- `LTP_TIMEOUT_MUL` ends the suite's limit one default limit before the harness's only for
+  tests with the default limit; a test with its own longer limit is ended by the harness's
+  (the comment and For the independent check say so now).
+- timers_match_reference's one failure on the Mac: not seen again. Ten more runs on the Mac
+  at 9eeb106e, each output kept (scratch k6c14/timers-1.log to timers-10.log; 05:55 UTC,
+  load 17 to 20) all passed, with the checker's 23 that makes 1 failure in 34. Still
+  unexplained; written under Known issues so that a failure's output is kept and read.
+- shmget05 and msgget05: /proc/sys/kernel/msg_next_id, sem_next_id and shm_next_id are built
+  (-1, unset); both tests are now broken where the reference's are, at opening the entry for
+  writing on the read-only /proc/sys, and their "proc entry not built" count is gone (ARM
+  machine, 05:50 UTC).
+
+The whole LTP comparison at 2c06b713, every row at that code (ARM machine, `LTP_JOBS=12
+LTP_LIMIT=900`, 05:39 to 06:38 UTC, load 14 to 42 beside the whole suite; committed as
+ltp/ours-20260930-2c06b713.tsv; scratch k6c14/arm/whole.tsv and k6c14/differ.txt from
+k6c13/differ.py): of 4211 distinct tests, 4150 match and 61 differ. Against the thirteenth run:
+copy_file_range03 now passes; new are ADSP072 (a timeout at 900 s, the same cause as its
+neighbours), sched_football and uevent02 (stopped as hangs by the harness's watchdog, which saw
+no turn end while the host really waited for a far deadline: each step of such a wait now counts
+as progress, src/driver.rs) and getrusage04 (fail: system time rose 3.5 ms in one round, under
+the load of the suite beside it). RERUN_PLACEHOLDER
+
+The LTP table at this run's end (4211 tests, verdicts of the ARM64 machine):
+- Matching: 4150.
+- A section 15 cause, 36: as the thirteenth run's list.
+- Excused by the gap list (Known gaps, first part), 12: page residency (mincore03, mlock201,
+  mlock05, mmap12, vma01), IPV6_RTHDR (setsockopt11, cve-2026-53362), the test harness (fork09,
+  creat05, fcntl12, fcntl12_64, openat03). These rest on the owner's ruling (For the
+  orchestrator).
+- The reference host's timer precision, 3: clock_nanosleep02, select02 and prctl09 (Docker
+  Desktop's reference fails them; ours and the ARM machine's reference pass).
+- Slower than 900 s on the stand-in, 7: dio30, fsx22, ADSP037, ADSP072, ADSP073 and ADSP074 run
+  again with a two-hour limit (job kernel-c/20261120-060823-1907998 from 06:08 UTC, results
+  target/ltp-k6c14/slow.tsv in the kernel-c folder there, followed into scratch
+  k6c14/slow-attach.log); ADSP038 ran past four hours (job kernel/20261120-024815-1653325,
+  14408 s, 684b15ec, alone, load 15 to 42) and runs again with twelve (above).
+- Rerun at the final code, 3: sched_football, uevent02, getrusage04 (above).
+
+Whole suite at 9eeb106e on the ARM machine (`cargo test -j 12 -p wcontainers-abi -p
+wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast -- --test-threads=4`, 05:52 to
+07:23 UTC, load 9 to 42, beside the LTP runs; scratch k6c14/suite-attach.log, k6c14/fail14.txt):
+fmt and clippy clean, 242 passed, 36 failed, 6 ignored. The 36 are exactly the known ARM list
+(k6c13/fail13.txt). On the Mac (k6c14/mac3.sh, mac3.log; 05:52 to 05:56 UTC, load 17 to 21):
+layer 1 seeds 9191117, 9191118 and 9191119 (300 in memory, 32 on the backend, 32 cached each)
+matched, and every test of the Mac list passed but proclist's listing, which showed the new
+next id sysctls 0644 where the reference shows 0444: fixed (31b4ec3a), and proclist then passed
+on the Mac; threads proc_task passed run alone. The later commits (31b4ec3a, the watchdog's
+progress in src/driver.rs) touch only that listing and the LTP harness. Literals: the check
+passes; the baseline went from 8491 to 8487 lines (" (deleted)" named once).
+
 ## K6c, thirteenth run
 
 origin/phase-1 and origin/phase-1-literals had nothing new to merge. Heavy runs were on the ARM64
@@ -176,10 +309,11 @@ bar:
 - Excused by the gap list (Known gaps, first part), 13: page residency (mincore03, mlock201,
   mlock05, mmap12, vma01), IPV6_RTHDR (setsockopt11, cve-2026-53362), the test harness (fork09,
   creat05, fcntl12, fcntl12_64, openat03, copy_file_range03).
-- The reference's own failures, 3: clock_nanosleep02, select02 and prctl09 (they pass when the
-  reference runs them again, fourth run).
-- Slower than 900 s on the stand-in, 6, each with the reference's verdict given a longer limit
-  (below): dio30, fsx22, ADSP037, ADSP073 and ADSP074 pass in 1384 to 4444 s; ADSP038 (1000
+- The reference's own failures, 3: clock_nanosleep02, select02 and prctl09 (wrongly called
+  flaky here: Docker Desktop's reference fails them every time by oversleeping; see the
+  fourteenth run).
+- Slower than 900 s on the stand-in, 6, five with the reference's verdict given a longer limit
+  (below; ADSP038 has none): dio30, fsx22, ADSP037, ADSP073 and ADSP074 pass in 1384 to 4444 s; ADSP038 (1000
   readers) ran past 7200 s beside seven others, for the cause found above; it runs again alone
   with a four-hour limit (ARM machine, job kernel/20261120-024815-1653325, results
   target/ltp-k6c13/adsp038.tsv there, followed into scratch k6c13/adsp038-attach.log).
@@ -2253,17 +2387,23 @@ Everything a reviewer should know about what is not compared, in one place.
   shows theirs. One test is `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test
   --bin ltp -- ours <results> <test>` (and `reference` for Docker's). The literals check: `cargo
   run -q -p wcontainers-literals -- check` (exit 0); its baseline had 8592 lines at its start
-  (708289f3) and may only shrink (8511 at e1d37089, under the seventh rules; 8491 at a67cd731).
+  (708289f3) and may only shrink (8511 at e1d37089, under the seventh rules; 8491 at a67cd731;
+  8487 at 9eeb106e).
   From the twelfth run our side of LTP runs on the machine's clock (the reference's runs on its
-  own) with `LTP_TIMEOUT_MUL` set so the suite's own limits end one default limit (30 s) before
-  the harness's `LTP_LIMIT` (src/ltp.rs `environment_on_ours`): a test slow on the stand-in is
-  then the harness's timeout, and one that hangs ends by the suite's own limit as the
-  reference's does. The reference's environment is unchanged. Run it on the ARM64 machine
+  own), and from the fourteenth its waits take their time there too (before, the test host
+  skipped them). `LTP_TIMEOUT_MUL` is set so that a test with the suite's default limit (30 s)
+  ends one default limit before the harness's `LTP_LIMIT` (src/ltp.rs `environment_on_ours`):
+  a test slow on the stand-in is then the harness's timeout, and one that hangs ends by the
+  suite's own limit as the reference's does. A test with a longer limit of its own (ADSP038's
+  is 4 h 29 m 30 s at LTP_LIMIT 14400) is ended by the harness's limit instead. The reference's
+  environment is unchanged. The committed reference file is Docker Desktop's; clock_nanosleep02,
+  select02 and prctl09 fail there every time (timer precision) and pass in the ARM64 machine's
+  own reference. Run it on the ARM64 machine
   only (For the orchestrator). The kernel test crate's tests that differ on the ARM64 machine
   (its manual's list, plus procstatus `limits_match_reference`, sysfs
   `cgroup_matches_reference`, busybox `system`, procaccess, rootbackend and inotify
   `instances_are_limited_per_user`: the 36 in scratch k6c13/fail13.txt) are settled on the Mac
-  by scratch k6c13/mac.sh (with three fresh layer 1 seeds; change them before running it).
+  by scratch k6c14/mac3.sh (with three fresh layer 1 seeds; change them before running it).
 
 - K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
   summary. The reference ran once, so its own flaky tests (timing tests under load, such as
@@ -2776,6 +2916,9 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
   Rss lines, pagemap is not built, mlock2's on-fault counts and the cgroup's memory counts are
   not kept. Excused: mincore03, mlock201, mlock05, mmap12, vma01. Built when the CPU side reports
   touched pages (the streams track's written-page record is a start: it reports writes only).
+  vma01 has no warning: whether two neighbouring anonymous mappings' pages were written before
+  a fork (which keeps Linux from merging them) cannot be seen, and a counter on every merge
+  would fire on nearly every heap growth.
 - (Built in the twelfth run: layout randomization, so aslr01 is no longer on this list.) An
   address space smaller than ARM64 Linux's smallest for 64-bit tasks (2^39 bytes; ours are 4 and
   16 GiB) is randomized with Linux's values for 32-bit tasks (11 bits of mapping base, 2047 pages
@@ -2790,8 +2933,12 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
 - The test harness, not the kernel: the test backend (fuse-backend-rs's passthrough) holds host
   descriptors for each open file and stops near 524273 (fork09, creat05, fcntl12, fcntl12_64,
   where the guest's opens fail before RLIMIT_NOFILE), and has no TMPFILE (openat03, answered as
-  Linux's FUSE answers with such a server); the guest's repeatable clock skips idle waits while
-  the backend stamps real times (copy_file_range03).
+  Linux's FUSE answers with such a server). (copy_file_range03 left this list in the
+  fourteenth run: LTP's waits on ours now take their time.)
+- The reference host's timer precision (section 15's "clock and timer precision are the
+  host's", from the reference's side): Docker Desktop's reference oversleeps in clock_nanosleep02,
+  select02 and prctl09 and fails them every time; ours and the ARM64 machine's native reference
+  pass them.
 
 - Lock waiters wait on one channel for all files: a change to any owner's record locks, or the last
   close of an open file holding locks, wakes every lock waiter, where Linux wakes only those blocked
@@ -3686,6 +3833,11 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, fourteenth run: clock_nanosleep02, select02 and prctl09, which Docker Desktop's
+  reference fails by oversleeping and ours passes, are counted under section 15's "clock and
+  timer precision are the host's", read as covering the reference host's precision too (the
+  ARM64 machine's native reference passes them, as ours does). The committed reference file
+  was not rerun.
 - K6c, twelfth run: our side of the LTP comparison runs on the machine's clock with
   `LTP_TIMEOUT_MUL` set from the harness's limit (For the independent check); the reference's
   runs are unchanged. The repeatable clock made tests that run for a span of time take hours.
@@ -4256,13 +4408,17 @@ gaps (and Departures) so that K6c's gap list could be final. An answer that diff
   backend that can hold more files?
 - Harness causes of two LTP differences: openat03 (the test backend, fuse-backend-rs's
   passthrough, has no TMPFILE, so ours answers as Linux's FUSE does with such a server, where the
-  reference's root is overlayfs) and copy_file_range03 (the guest's repeatable clock skips idle
-  waits while the backend stamps real times). Should these be excused as harness causes, or the
-  harness changed (a backend with TMPFILE; LTP runs on a real-time clock)?
+  reference's root is overlayfs). Should it be excused as a harness cause, or the harness
+  changed (a backend with TMPFILE)? (copy_file_range03 was the other: fixed in the fourteenth
+  run, LTP's waits on ours take their time.)
 
 Earlier: none open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- timers `timers_match_reference` failed once on the Mac in the thirteenth run's check (its
+  output was not kept) and passed 33 runs since. If it fails again, keep the whole output: it
+  says which side's line differs.
 
 - K6c, thirteenth run: a System V segment's mappings never merge here (memory.rs
   `merge_around`). Linux keeps them apart too, except that a new mapping beside a piece of the
@@ -4419,6 +4575,8 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the fourteenth run: NEXT_PLACEHOLDER
 
 K6c, after the thirteenth run: the bar is met; the independent check is next ("For the
 independent check", the thirteenth run's table, scratch k6c13/mac.sh for the Mac's part). Read
@@ -4637,6 +4795,7 @@ sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seed
 6262601 to 6262624 and 8484001 to 8484003 (K6b), 8484004 (K6c, 300 sequences), 9191001 and
 9191002 (K6c third run, 200 each), 9191003 to 9191005 (300, 32, 32 each), 9191100 to 9191104
 (K6c runs' own checks), 9191105 to 9191107 and 9191111 to 9191116 (K6c's tenth, twelfth and
-thirteenth runs, on the Mac; fresh ones start at 9191117), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+thirteenth runs, on the Mac), 9191117 to 9191119 (fourteenth run, on the Mac; fresh ones
+start at 9191120), and the checks' 4747001 to 4747003 (10000 each; again in the fourteenth run), 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
