@@ -13,35 +13,34 @@ The crates follow who implements them, because an implementation sits under its 
 conformance suite runs on one value of one implementation.
 
 - `crates/executor` (wcontainers-executor): `Executor`, `PerThreadWatch`. Implemented by each executor
-  (wasmtime, native, the test stand-ins). The process interface needs it for `Kernel::Executor` and
+  (wasmtime, native, the test stand-ins). The kernel interface needs it for `Kernel::Executor` and
   `ExecutionConfig<E>`.
-- `crates/process` (wcontainers-process): `Kernel`, `Process`, `ProcessInfo` and the data the kernel hands
-  out (the kernel's interface file of "shared memory is announced per process"). Implemented by the
-  kernel. `Kernel` is the root its conformance suite takes; `Process` is not yet reached from it (see e).
-- `crates/system` (wcontainers-system): `System`. Implemented by the embedder (LocalSystem, the test
-  hosts). Depends on the process interface, since every hook is handed a process.
+- `crates/kernel-interface` (wcontainers-kernel-interface): `Kernel`, `Process`, `ProcessInfo` and the
+  data the kernel hands out. Implemented by the kernel. `Kernel` is the root its conformance suite
+  takes; `Process` is not yet reached from it (see e). It was `crates/process` (wcontainers-process)
+  until "how the interface files are organised", and moved with `git mv`.
+- `crates/system` (wcontainers-system): `System` and the nine concerns it is the union of (see g).
+  Implemented by the embedder (LocalSystem, the test hosts). Depends on the kernel interface, since every
+  hook is handed a process.
 - `crates/container` (wcontainers-container): `Container`, `Interrupter`, `StopReason`, `GuestMachine`.
   Implemented by the runtime.
 
-Where `Kernel` lives. In wcontainers-process, beside `Process`. `Process` names `Kernel` (`type Kernel:
-Kernel`) and `Kernel` names `ExecutionConfig` (`resume_process`), which is in this crate, so a `Kernel`
-in a crate of its own would need this crate and this crate would need it: a cycle. A crate of its own
-would work only if `ExecutionConfig`, `ThreadOrdering` and `ReplayDeterminism` moved into it with
-`Kernel` (wcontainers-process would then depend on it); that moves ruled items to another crate and needs
-a folder name no ruling gives. This crate is already the kernel's interface file (the ids ruling says
-so), and the ruling's "the kernel is a trait" puts the kernel's public surface in an interface, which
-this one is. The folder `crates/kernel` was not used: its package would be `wcontainers-kernel`, the
-existing kernel crate's name. For the later move: the existing crate becomes an implementation of this
-interface, so it goes to `crates/process/implementation/<name>` (package `wcontainers-process-<name>`);
-renaming this interface's folder to `kernel` would then be free, but that is your call, not done here.
-Before either, `TaskId`, `Errno`, `siginfo` and `task_id_after` must leave wcontainers-kernel: this crate
-depends on wcontainers-kernel for them, and the kernel, implementing this crate, would depend on it: a
-cycle (see d). The kernel's struct is also called `Kernel` (kernel lib.rs:137); it would implement
-`wcontainers_process::Kernel` by path, so the two names do not clash.
+The kernel interface's folder. "how the interface files are organised" rules its package
+`wcontainers-kernel`, which today's kernel crate holds until it moves under the interface as an
+implementation (when the kernel and streams tracks merge). Until then the folder is the temporary
+`crates/kernel-interface`, package `wcontainers-kernel-interface`. When today's crate moves under it (to
+`crates/kernel-interface/implementation/<name>`, then with the folder), the folder becomes `crates/kernel`
+and the package `wcontainers-kernel`. Before that move, `TaskId`, `Errno`, `siginfo` and `task_id_after`
+must leave today's wcontainers-kernel: this crate and the system's depend on it for them, and the kernel,
+implementing this crate, would depend on it: a cycle (see d). The kernel's struct is also called `Kernel`
+(kernel lib.rs:137); it would implement the trait `Kernel` by path, so the two names do not clash.
+
+Nothing in the kernel interface names the system: `Kernel` has no `type System`, and the crate does not
+depend on wcontainers-system, as the ruling requires.
 
 ## (a) Items in the files that were never ruled
 
-All three crates the kernel uses (executor, process, system)
+All three crates the kernel uses (executor, kernel-interface, system)
 - line 3: `#![no_std]`, with `core::ops::Range`, `core::time::Duration`, `core::ops::ControlFlow` and
   `alloc::vec::Vec`. The kernel is `#![no_std]` (kernel lib.rs:9) and implements or calls all three. These
   are the same types as the `std::` paths you named; only the path differs. container/interface.rs keeps
@@ -56,7 +55,7 @@ executor/interface.rs
 - line 10: `Executor` holds only the ruled `TranslatorConfig`. Today's other executor items are not carried
   (see b).
 
-process/interface.rs
+kernel-interface/interface.rs
 - line 1: the crate doc now names the kernel; line 16: the doc comment of `Kernel`.
 - lines 17 to 43 (`Kernel`) and 48, 68 to 78 (on `Process`) are as ruled ("suspend and resume by task,
   and the process context"). Only rustfmt's line breaks differ.
@@ -101,18 +100,23 @@ process/interface.rs
 - lines 13 and 14: `TaskId`, `Errno` and `siginfo` are imported from wcontainers-kernel (see d).
 - Every doc comment except the ruled one on `ReplayDeterminism::External` (line 109).
 
-system/interface.rs
+system/interface.rs (the split into concerns, their names and the thirteen service methods are in g)
 - line 4: `#![allow(unused_variables)]` (see f).
-- line 18: the parameter `previous` of `allocate_task_id`, and its default body, which calls the kernel's
+- lines 15 to 27: the form of `System` is ruled; which concerns it lists, and their order, are mine.
+- line 31: `type ProcessState` sits on `ProcessTracer`, not on `System` (see g).
+- line 111: the parameter `previous` of `allocate_task_id`, and its default body, which calls the kernel's
   `task_id_after` (system.rs:196): the ruled counter, wrapping past the low ids as today.
-- line 21: the parameter name `id` of `free_task_id` (today's).
-- lines 23 to 96: every hook and both proxy calls take `P: Process<State = Self::ProcessState>`. That form
+- line 114: the parameter name `id` of `free_task_id` (today's).
+- lines 33 to 106: every hook and both proxy calls take `P: Process<State = Self::ProcessState>`. That form
   is ruled for the two shared-memory hooks only; the earlier hooks were ruled with an untyped `process`.
-- line 43: `thread: TaskId` on `on_thread_starting` (today's; `send_signal(thread: TaskId)` is ruled).
-- line 50: the parameter `bytes: u64` of `on_process_outgrown` (today's system.rs:175).
-- lines 94 and 96: the inspection hooks' parameter `process: P` (only the names and the trigger are
-  ruled), and the doc comment of `on_inspection_ended` (line 95).
-- line 14: the doc comment of `System`.
+- line 53: `thread: TaskId` on `on_thread_starting` (today's; `send_signal(thread: TaskId)` is ruled).
+- line 60: the parameter `bytes: u64` of `on_process_outgrown` (today's system.rs:175).
+- lines 104 and 106: the inspection hooks' parameter `process: P` (only the names and the trigger are
+  ruled), and the doc comment of `on_inspection_ended` (line 105).
+- lines 119 to 121: the stream calls' parameters `end`, `bytes` and their types are today's (abi
+  host.rs:110 to 114); only the three names are ruled.
+- lines 14, 29, 109, 117, 124, 130, 135, 140, 145, 162: every doc comment of a trait. Each says, in its
+  last words, whether the concern is "as ruled" or "as abi's `Host` has it today and not yet ruled".
 
 container/interface.rs
 - line 6: `Container` as a trait name (R container.rs:172 is a struct of that name).
@@ -126,20 +130,22 @@ container/interface.rs
 ## (b) Where the files differ from today's code (the migration checklist)
 
 Kernel, crates/wcontainers-kernel/src/system.rs
-- [ ] `pub trait System: Host + Sync` (125) becomes `System: Sync` (system 15). `Host` stays in
-      wcontainers-abi with the ruled `send_stream`, `credit_stream`, `close_stream`; the kernel would then
-      bound its embedder by both. The linter also refuses a supertrait from another crate of the workspace.
-- [ ] New `type ProcessState: Clone + Send` (system 16).
+- [ ] `pub trait System: Host + Sync` (125) becomes the union `System` (system 15) of nine concerns, and
+      abi's `Host` trait (abi host.rs:95) goes: each of its methods is on a concern (see g), with
+      `random` named `fill_random_bytes` and `backend_send` named `send_backend`. Its types
+      (`ConnectionId`, `BackendRequestId`, `End`, `HostError`, `Warning`) and `Event` stay in abi.
+      The hooks, the proxy and `type ProcessState` are on `ProcessTracer`, the task ids on `TaskIdSource`.
+- [ ] New `type ProcessState: Clone + Send` (system 31, on `ProcessTracer`).
 - [ ] Every hook and both proxy calls: `process: Process<'_>` becomes `process: P` with
       `P: Process<State = Self::ProcessState>`; default bodies `let _ = (...);` become `{}`.
 - [ ] New hooks `on_signal_delivering`, `on_shared_memory_mapping`, `on_shared_memory_unmapped`,
       `on_inspection_starting`, `on_inspection_ended`.
-- [ ] `pub struct Process<'a>` (227) becomes the trait `Process` (process 46), with `type State` and
+- [ ] `pub struct Process<'a>` (227) becomes the trait `Process` (kernel-interface 46), with `type State` and
       `type Kernel`.
-- [ ] `pub struct Kernel` (lib.rs:137) implements the trait `Kernel` (process 17): `type Executor`,
+- [ ] `pub struct Kernel` (lib.rs:137) implements the trait `Kernel` (kernel-interface 17): `type Executor`,
       `type SuspendedTask`, `type ProcessContext` and the five calls. Today's kernel has no suspend or
       resume at all.
-- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (process 82);
+- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (kernel-interface 82);
       `info` returns `impl ProcessInfo` instead of `ProcessInfo<'_>`. New on it: `is_inspected`.
 - [ ] `execution_config(&self) -> ExecutionConfig` (284, by value) becomes
       `-> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>`.
@@ -161,7 +167,7 @@ Kernel, crates/wcontainers-kernel/src/system.rs
 - [ ] `Unsupported` (84) is not in the files: nothing there returns it any more. `Kernel::start`
       (container.rs:417) still does.
 - [ ] `WatchesFor` (31), `AccessKind` (40), `ThreadOrdering` (49), `ReplayDeterminism` (57),
-      `MemoryError` (106), `SystemCallResponse` (121) move to the process interface unchanged but for
+      `MemoryError` (106), `SystemCallResponse` (121) move to the kernel interface unchanged but for
       dropped variant comments (on `All`, `Execute`, `Serial`, `Exact` and `MemoryError`'s variants).
 - [ ] `Kernel::process(&mut self, cpu, id)` (370) is not in the files (see d).
 - [ ] `TaskId` (17), `Errno` (errno.rs:9), `task_id_after` (196) and `linux::general::siginfo` stay in
@@ -189,14 +195,17 @@ Runtime (R)
 
 Distributed Everything
 - [ ] workload-placement/interface.rs:2 imports `wcontainers_kernel::{MemoryObject, TaskId}`. There is no
-      `MemoryObject` in wcontainers-kernel; it is `wcontainers_process::MemoryObject` here. Nothing in that
+      `MemoryObject` in wcontainers-kernel; it is `wcontainers_kernel_interface::MemoryObject` here, and
+      `wcontainers_kernel::MemoryObject` once the interface takes the package name. Nothing in that
       repository was changed by this stage.
 
 ## (c) Names I suggested (nothing ruled was renamed)
 
-- Crate folders `executor`, `process`, `system`, `container` (packages `wcontainers-` and the folder).
-  `kernel`, `abi` and `runtime` would give the names of existing packages.
-- That `Kernel` is in wcontainers-process (see "Where `Kernel` lives").
+- Crate folders `executor`, `system`, `container` (packages `wcontainers-` and the folder), and the
+  temporary `kernel-interface` (see "The kernel interface's folder"). `abi` and `runtime` would give the
+  names of existing packages.
+- The names of the nine concerns, each with one alternative, and the method names `fill_random_bytes` and
+  `send_backend` (see g).
 - The doc comment of `Kernel`: "The owner of processes, which suspends and resumes their tasks and their
   contexts."
 - `Process::state` and `Process::memory_id`.
@@ -231,21 +240,24 @@ Distributed Everything
   interface cannot say this; the kernel must keep the id, or the ruling must change.
 - `TaskId` "carries a generation" (first section): no later ruling withdraws it, the code has none, and a
   pid-sized id cannot hold one. `TaskId` is kept as today.
-- Where `TaskId` lives: the embedder hands it out, the process interface needs it, and the system
-  interface depends on the process interface, so by the ids rule it belongs in wcontainers-abi, which this
+- Where `TaskId` lives: the embedder hands it out, the kernel interface needs it, and the system
+  interface depends on the kernel interface, so by the ids rule it belongs in wcontainers-abi, which this
   stage may not change. It is imported from wcontainers-kernel, as are `Errno` (its constants are an impl
   block, which an interface file cannot hold) and `siginfo`. Under the layout the kernel becomes an
-  implementation of the process interface, so these must move before the kernel does.
+  implementation of the kernel interface, so these must move before the kernel does.
 - "Replace Access everywhere" with `AccessKind`: abi's `Access` in `Exit::MemoryFault` is on the
   executor's side. Replacing it makes `AccessKind` needed by two interfaces, so it would move to
   wcontainers-abi, which this stage may not change.
-- The stream services as services of `System` (naming rule, "Later on 2026-11-18"): they stay on abi's
-  `Host`; whether `Host` folds into `System` is not ruled.
 - How a resumed process and the container's first process are given a `ProcessState` value.
 - `run` returning `StopReason` when the executor fails: today's run returns `Result<_, E::Failure>`;
   `run` is written exactly as ruled.
 
 Ruled before, and written now
+- The stream services as services of `System` (naming rule, "Later on 2026-11-18"), which until now stayed
+  on abi's `Host`: they are on `StreamPeer` (system 118 to 121), a concern of `System`. Whether `Host`
+  folds into `System`: it does ("how the interface files are organised": the kernel-facing services were
+  on abi's `Host`). Every method of `Host` is on a concern (see g); abi's own `Host` trait is not changed
+  here and goes at the migration (b).
 - Per-thread distribution ("Per-thread distribution is CORE ... the kernel must be able to move one task
   apart from its siblings", WorkloadPlacement, evening). "The unit that moves is the TASK (per-thread
   distribution is core)": a task is suspended and resumed apart from its siblings by `suspend_tasks` and
@@ -269,8 +281,8 @@ Ruled once and replaced by a later ruling, so not written
 ## (d2) What "suspend and resume by task, and the process context" settles, and what it leaves open
 
 Settled or changed by it
-- Where the executor parameter goes (a, process line 52): on `Kernel` as `type Executor: Executor`, and
-  `Process` reaches it through `type Kernel: Kernel`. The hook bound `P: Process<State =
+- Where the executor parameter goes (a, kernel-interface line 52): on `Kernel` as `type Executor:
+  Executor`, and `Process` reaches it through `type Kernel: Kernel`. The hook bound `P: Process<State =
   Self::ProcessState>` stays exact. `Process::Executor` is gone.
 - Which value stands for the kernel (d): the trait `Kernel`.
 - `SuspendedProcess<E>` as an empty trait: gone, with `suspend`. The kernel's own types are now the
@@ -278,7 +290,7 @@ Settled or changed by it
 - `ExportedProcess` and its one wire form: replaced by two forms, still open (below).
 - `resume` taking `ExecutionConfig<E>`: written, as `resume_process`, and "given at resume, never stored
   in the value".
-- The conformance root of the process interface (e): now the kernel, no longer the process.
+- The conformance root of the kernel interface (e): now the kernel, no longer the process.
 Not settled, and touched by it
 - `execution_config` lending a reference (a, line 52): unchanged, but `resume_process` takes the config
   by value, so whoever resumes needs an owned `TranslatorConfig`; nothing in the traits gives one (e).
@@ -300,8 +312,9 @@ Open in the ruling itself
 
 ## (e) Conformance: which state-building operations the traits lack
 
-Every suite but the process interface's is left empty. These are the operations each would need; none
-were added.
+Every suite but the kernel interface's and the system's is left empty. These are the operations each would
+need; none were added. Every suite function takes the one value `tests!` gives and builds what it needs
+through the trait's own operations, and nothing is passed in from outside.
 
 - `Executor`: no methods, so there is nothing to test.
 - `PerThreadWatch`: `set_thread_permissions` can be called, but nothing it does can be checked. That needs
@@ -352,38 +365,76 @@ were added.
     ruling (for example a second `tests!` for the subtrait, or the method moved to a trait of its own).
   - The suite is not added here: its checks rest on the unruled meaning above and on the open
     `watch_thread_memory` question.
-- `System`: every hook and both proxy calls need a `P: Process<State = Self::ProcessState>`. `System`
-  gives no way to get one, and nothing makes a `ProcessState` value (`Clone + Send`, no constructor).
-  `allocate_task_id` and `free_task_id` alone could be tested (two ids handed out with neither freed
-  differ), but not the trait as a whole.
+- `System` has no methods of its own; its suite is the concerns'. Each suite function is bounded by the
+  one concern it checks (`<C: Clock>`), and `tests!` hands it the implementation's `System` value.
+  Written (system conformance.rs):
+  - `allocate_task_ids_apart` (line 9): an id handed out and not freed is not handed out next. Both calls
+    start from `TaskId(u32::MIN)`, the `previous` today's kernel gives first (lib.rs:272, `last_id: 0`).
+    The check rests on today's doc of `allocate_task_id`, "A free id for a new process or thread"; note
+    that today's kernel also skips an id still carried and asks again (lib.rs:577), so the check is
+    stricter than what the kernel relies on.
+  - `free_task_id_alone` (line 16): after freeing one of two ids, the next allocation does not hand out
+    the other, still held.
+  - `read_monotonic_clock_forward` (line 24): two reads of the monotonic clock never go backwards (abi
+    host.rs:96, "a clock that never goes backwards").
+  - `fill_random_bytes_differently` (line 30): two fills of `size_of::<u128>()` bytes differ ("random bytes
+    fit for cryptography"; equal by chance once in 2^128). The length is the type's, my choice of type.
+  Not written, and the state-building operation each lacks:
+  - `ProcessTracer`, every hook and both proxy calls: a `P: Process<State = Self::ProcessState>`, and a
+    `ProcessState` value (`Clone + Send`, no constructor). No concern gives either.
+  - `StreamPeer`: an `End` that is open. Ends are chosen by the kernel and opened by nothing on the trait,
+    so send, credit and close have nothing to act on, and the embedder's side (data, credit, closing)
+    comes back only as abi `Event`s, which no trait gives back.
+  - `Clock::realtime_nanoseconds`: nothing to build; the wall clock may be set back, so two reads promise
+    nothing. A check needs a ruled promise, not an operation.
+  - `WarningLog::warn`: an operation that reads warnings back; nothing observes `warn`.
+  - `FileServer::send_backend`: the reply arrives as abi `Event::BackendReply`, handed to the kernel by the
+    driver, not through the trait; a check needs an operation that gives the reply back, and a FUSE
+    request to send.
+  - `Network` and `NameResolver`: every result (`Connected`, `ConnectionReady`, `LookedUp`) arrives as an
+    abi `Event`, not through the trait, and `connect` and `listen` need an address and a port the trait
+    cannot make. A check needs an operation that gives the events back, and one that gives an address
+    the implementation serves.
 - `Container`: `run` can be called, but nothing in the trait builds the states `StopReason` reports.
   `Idle` and `Finished` need a program, `Suspended` needs a hook, and `Interrupted` needs the
   interrupter, which only the creation call gives.
 - `Interrupter`: `interrupt` can be seen only through the run of its container; the pair comes only from
   the creation call, which is in no trait.
 - One general point: `tests!` hands the same one value to every suite function of a crate. So a crate's
-  traits must hang from one root that the others are reached from. In `process` that is now `Kernel`,
-  which reaches nothing yet; `Process` reaches the view. In `container` the root would be the creation
-  call.
+  traits must hang from one root that the others are reached from. In `kernel-interface` that is now
+  `Kernel`, which reaches nothing yet; `Process` reaches the view. In `system` it is `System`, which is
+  every concern at once. In `container` the root would be the creation call.
 
 ## (f) The linter, and the rules
 
-Run with the model check over the whole workspace (`cargo-reviewable reviewable check`). For the new
-crates there are 42 findings:
-- 41 `conformance-untested-method`: every method of every trait above but `Kernel::suspend_tasks` and
-  `Kernel::resume_tasks`, the two the process suite calls. They are kept as findings, as section (e)
-  explains.
-- 1 `verb-not-first`: `memory_mapped` (process/interface.rs:83), read by the model as a verb in second
-  place. The name is today's and follows your words "memory mapped", so it is kept, not disputed;
+Run with the model check over the whole workspace (`cargo-reviewable reviewable check`, the linter at
+its commit 2d9604a). For the four interface crates and their suites there are 55 findings:
+- 53 `conformance-untested-method`: 28 in system (every method but the four the suite calls, see e),
+  22 in kernel-interface (every method but `Kernel::suspend_tasks` and `Kernel::resume_tasks`), 1 in
+  executor, 2 in container. They are kept as findings, as section (e) explains.
+- 1 `verb-not-first`: `memory_mapped` (kernel-interface/interface.rs:83), read by the model as a verb in
+  second place. The name is today's and follows your words "memory mapped", so it is kept, not disputed;
   `mapped_memory` would pass.
-- `is_inspected` is disputed in reviewable-answers.toml. The model gave the right answer (first_word) at
-  confidence 0.4995, just under the floor of 0.5, which is a `grammar-unclear` finding. The name is the
-  one in the ruled proposal, so it is kept and the answer disputed: "its answer, first_word, is right: is_
-  is the verb of a predicate, as in is_mapped and is_full". Remove the dispute if you would rather see it.
+- 1 `function-summary-not-third-person`: your doc of `on_inspection_starting` (system/interface.rs:103),
+  kept word for word (below).
+- Two answers are disputed in reviewable-answers.toml. `is_inspected`: the model gave the right answer
+  (first_word) at confidence 0.4995, just under the floor of 0.5, which is a `grammar-unclear` finding;
+  the name is the one in the ruled proposal, so it is kept and the answer disputed: "its answer,
+  first_word, is right: is_ is the verb of a predicate, as in is_mapped and is_full". `credit_stream`:
+  the model answered no_verb at confidence 0.33, a `grammar-unclear` finding; the name is ruled, so the
+  answer is disputed: "credit is the verb, as in credit an account: the kernel credits the embedder
+  bytes on a stream; the name is ruled". Remove either dispute if you would rather see the finding.
 
-The rest of the workspace, not yet in the layout, has 30,643 findings (30,685 in all). The model's
-answers for the new names (`suspend_tasks`, `suspend_process`, `copy_process_context`, `resume_process`,
-`resume_tasks`, `suspend_no_tasks`, `resume_no_tasks`) are all first_word, at confidence 0.91 or more.
+The rest of the workspace, not yet in the layout, has 35,529 findings (35,584 in all). The model's
+answers for the new names (`fill_random_bytes`, `send_backend` and the four suite functions) are all
+first_word, at confidence 0.85 or more.
+
+The linter now runs `comment-grammar` too, on by default (its decision 69, open with you). The first run
+with the key for this reorganisation sent 633 doc summaries of the whole workspace to the model, the
+kernel's and the abi's included, and its answers are in reviewable-answers.toml. Nothing in `off` was
+changed. Four of my type summaries it rejected were rewritten as plain noun phrases (`ExecutionConfig`,
+`MemoryObject`, `GuestMachine`, `StreamPeer`), and the summary of every suite's `tests!` was put on one
+line, as the stricter `comments` rules now need.
 
 Getters and the verb-first rule. "method names are verb first" ("Ruled by the owner, 2026-11-19
 afternoon"), and in the naming rules you agreed for the linter the same day, "getters stay noun phrases".
@@ -395,9 +446,72 @@ Doc comments and the summary rule. A function's doc is to start with a third-per
 of `on_inspection_starting` ("Another process is about to read this one's internal state.") does not,
 and it is kept word for word. The doc of `on_inspection_ended`, which I wrote, does.
 
-Not flagged today, and will be: the process and system interfaces depend on wcontainers-kernel. That
-becomes `depends-on-implementation` once the kernel is an implementation.
+Not flagged today, and will be: the kernel and system interfaces, and the system's suite (for `TaskId`),
+depend on wcontainers-kernel. That becomes `depends-on-implementation` once the kernel is an
+implementation.
 
 The hooks have empty bodies `{}`, as the naming rule needs (`let _ = x;` would make them not hooks), and
 keep their ruled parameter names. So rustc warns about 32 unused parameters unless
 `#![allow(unused_variables)]` is set (system/interface.rs:4).
+
+## (g) The system as a union of concerns: the split, for you to review
+
+"how the interface files are organised" rules the form, `pub trait System: <concern> + ... + Sync {}`,
+the concerns as traits in system/interface.rs, and which parts are ruled (the hooks, the proxy, the task
+ids, the three stream calls). Which method goes in which concern, and the concerns' names, are mine, for
+you to review. In the file the ruled concerns come first, then those from today's abi `Host`, and each
+trait's one-line doc ends with "as ruled" or "as abi's `Host` has it today and not yet ruled". Every
+concern requires `Sync`, as `System` did, and every method takes `&self`.
+
+The split, one concern per piece an embedder would write or reuse whole (name, then one alternative):
+- `ProcessTracer` (line 30; or `ProcessSupervisor`): the two proxy calls and every hook, with
+  `type ProcessState`. Ruled. One piece because every method is handed the same process with the same
+  state, and the ruled uses combine them (locks across machines read the proxy and
+  `on_memory_written_by_kernel` together). The name is ptrace's: a tracer stops a process at system call
+  entry and exit, at signal delivery, exec, clone and exit.
+- `TaskIdSource` (line 110; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. Ruled. Apart from
+  the hooks because the first ruling made it "an id source given at start", and because a stock counter
+  is reused unchanged by an embedder that writes its own hooks, while a distributed one replaces it alone.
+- `StreamPeer` (line 118; or `StreamEndpoint`): `send_stream`, `credit_stream`, `close_stream`. Ruled.
+  The embedder holds the other side of every end, and the three calls share it.
+- `Clock` (line 125; or `TimeSource`): `monotonic_nanoseconds` (126), `realtime_nanoseconds` (127).
+  Apart, because a replaying or simulated embedder replaces time alone.
+- `RandomSource` (line 131; or `EntropySource`): `fill_random_bytes` (132). Apart, because replay replaces
+  it alone, as with time.
+- `WarningLog` (line 136; or `WarningSink`): `warn` (137). Apart: logging is reused whatever else is
+  replaced.
+- `FileServer` (line 141; or `FuseServer`): `send_backend` (142). The embedder is the FUSE server of the
+  container's files; a whole server is one piece.
+- `Network` (line 146; or `NetworkStack`): `connect` (147), `send` (154), `receive` (155), `finish` (156),
+  `close` (157), `listen` (158), `accept` (159). They share `ConnectionId`, and one embedder's sockets do
+  all of them.
+- `NameResolver` (line 163; or `DnsResolver`): `look_up` (164). Apart from `Network` because a resolver
+  is reused or replaced on its own (a fixed table for tests, DNS over HTTPS in a browser) and shares no
+  id with the connections. The other way: `look_up` folded into `Network`.
+
+The thirteen never-ruled service methods, by concern, with their lines in system/interface.rs: `Clock`
+126, 127; `RandomSource` 132; `WarningLog` 137; `FileServer` 142; `Network` 147, 154, 155, 156, 157, 158,
+159; `NameResolver` 164. Their parameters and types are today's (abi host.rs:97 to 145), with these
+exceptions and open points:
+- `random` (host.rs:101) is `fill_random_bytes`: verb first, the verb from today's doc ("Fill with
+  random bytes").
+- `backend_send` (host.rs:107) is `send_backend`: verb first, the same words.
+- Not changed, though a convention touches them: `warning: Warning` (137) and the ruled stream calls'
+  `end: End` (119 to 121) repeat their type, and no ruling gives another word; `look_up`'s
+  `request: u64` (164) is no branded id, and abi's `Event::LookedUp` carries it as `u64`, which this
+  stage may not change; the clocks return `u64` nanoseconds, not `Duration`, since the names say the
+  unit and would change with the type.
+- Their doc comments in abi (the reply arriving as an `Event`, what zero means from `receive`, and so on)
+  are not carried: the interface files carry almost no comments.
+
+Where `ProcessState` lives. On `ProcessTracer`, the concern whose hooks are bounded by it; `System`
+carries it through the supertrait, so `S::ProcessState` names it for any `S: System` (checked with
+cargo). The other way, on `System`, does not compile as the ruled form wants: a supertrait cannot name
+an associated type of its subtrait, so `ProcessTracer` would need the type anyway, or a type parameter
+(`ProcessTracer<State>`), which `System` and every bound on a tracer would then spell out. So `System`
+has no items at all.
+
+What this settles among the conflicts listed before: where the stream calls live (on `StreamPeer`, a
+concern of `System`, no longer on abi's `Host`), and whether abi's `Host` folds in (it does, method by
+method, see d). abi's `Host` trait itself, and today's kernel `System: Host + Sync`, are not changed here
+(b).
