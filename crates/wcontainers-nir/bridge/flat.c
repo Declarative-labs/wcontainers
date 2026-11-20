@@ -59,6 +59,11 @@ dim_of(enum glsl_sampler_dim dim)
       return WC_DIM_3D;
    case GLSL_SAMPLER_DIM_CUBE:
       return WC_DIM_CUBE;
+   case GLSL_SAMPLER_DIM_BUF:
+      return WC_DIM_BUFFER;
+   case GLSL_SAMPLER_DIM_SUBPASS:
+   case GLSL_SAMPLER_DIM_SUBPASS_MS:
+      return WC_DIM_SUBPASS;
    default:
       return WC_DIM_OTHER;
    }
@@ -429,8 +434,49 @@ intrinsic_of(nir_intrinsic_op op)
       return WC_INTRINSIC_DDX_COARSE;
    case nir_intrinsic_ddy_coarse:
       return WC_INTRINSIC_DDY_COARSE;
+   case nir_intrinsic_load_point_coord:
+      return WC_INTRINSIC_LOAD_POINT_COORD;
+   case nir_intrinsic_image_deref_load:
+      return WC_INTRINSIC_IMAGE_DEREF_LOAD;
+   case nir_intrinsic_image_deref_store:
+      return WC_INTRINSIC_IMAGE_DEREF_STORE;
+   case nir_intrinsic_image_deref_size:
+      return WC_INTRINSIC_IMAGE_DEREF_SIZE;
+   case nir_intrinsic_deref_atomic:
+      return WC_INTRINSIC_DEREF_ATOMIC;
+   case nir_intrinsic_deref_atomic_swap:
+      return WC_INTRINSIC_DEREF_ATOMIC_SWAP;
    default:
       return WC_INTRINSIC_UNSUPPORTED;
+   }
+}
+
+static enum wc_atomic_op
+atomic_of(nir_atomic_op op)
+{
+   switch (op) {
+   case nir_atomic_op_iadd:
+      return WC_ATOMIC_ADD;
+   case nir_atomic_op_imin:
+      return WC_ATOMIC_IMIN;
+   case nir_atomic_op_umin:
+      return WC_ATOMIC_UMIN;
+   case nir_atomic_op_imax:
+      return WC_ATOMIC_IMAX;
+   case nir_atomic_op_umax:
+      return WC_ATOMIC_UMAX;
+   case nir_atomic_op_iand:
+      return WC_ATOMIC_AND;
+   case nir_atomic_op_ior:
+      return WC_ATOMIC_OR;
+   case nir_atomic_op_ixor:
+      return WC_ATOMIC_XOR;
+   case nir_atomic_op_xchg:
+      return WC_ATOMIC_EXCHANGE;
+   case nir_atomic_op_cmpxchg:
+      return WC_ATOMIC_COMPARE_EXCHANGE;
+   default:
+      return WC_ATOMIC_OTHER;
    }
 }
 
@@ -449,7 +495,8 @@ flatten_tex(struct flattening *f, nir_tex_instr *tex)
    if (!i)
       return false;
    set_def(i, &tex->def);
-   i->dim = dim_of(tex->sampler_dim);
+   /* A multisampled texture is two-dimensional; the texture's type says it is multisampled. */
+   i->dim = tex->sampler_dim == GLSL_SAMPLER_DIM_MS ? WC_DIM_2D : dim_of(tex->sampler_dim);
    i->arrayed = tex->is_array;
    i->shadow = tex->is_shadow;
    i->component = tex->component;
@@ -555,6 +602,8 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
          i->name = info->name;
       }
    }
+   if (nir_intrinsic_has_atomic_op(intr))
+      i->value[WC_COMPONENTS - 1] = atomic_of(nir_intrinsic_atomic_op(intr));
    if (intr->intrinsic == nir_intrinsic_barrier) {
       i->value[0] = nir_intrinsic_execution_scope(intr) == SCOPE_WORKGROUP;
       i->value[1] = (nir_intrinsic_memory_modes(intr) & nir_var_mem_shared) != 0;
@@ -702,6 +751,31 @@ flatten_list(struct flattening *f, struct exec_list *list)
    return true;
 }
 
+/* A buffer's descriptor (vulkan_resource_index, load_vulkan_descriptor) made again in each block that
+ * uses it, as derefs are, so that it never needs a register; walked backwards so that a copy's own
+ * descriptor is copied in turn. */
+static void
+rematerialize_descriptors(nir_function_impl *impl)
+{
+   nir_foreach_block_reverse(block, impl) {
+      nir_foreach_instr_reverse_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic != nir_intrinsic_vulkan_resource_index &&
+             intr->intrinsic != nir_intrinsic_load_vulkan_descriptor)
+            continue;
+         nir_foreach_use_including_if_safe(use, &intr->def) {
+            if (nir_src_is_if(use) || nir_src_use_instr(use)->block == block)
+               continue;
+            nir_instr *copy = nir_instr_clone(impl->function->shader, instr);
+            nir_instr_insert_before(nir_src_use_instr(use), copy);
+            nir_src_rewrite(use, &nir_instr_as_intrinsic(copy)->def);
+         }
+      }
+   }
+}
+
 /* A value used outside its block (or by an if) is kept in a register of its own, except registers'
  * declarations, constants (made again at each use) and derefs (made again in each block). */
 static bool
@@ -739,6 +813,7 @@ wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
    nir_rematerialize_derefs_in_use_blocks_impl(impl);
+   rematerialize_descriptors(impl);
    nir_builder b = nir_builder_create(impl);
    nir_foreach_block(block, impl) {
       nir_foreach_instr_safe(instr, block) {

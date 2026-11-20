@@ -316,6 +316,34 @@ fn summary(results: &[ShaderResult]) {
             converted - matched - differ
         );
     }
+    let shared: Vec<&ShaderResult> = results
+        .iter()
+        .filter(|r| {
+            r.routes.len() == ROUTES.len()
+                && r.routes
+                    .iter()
+                    .all(|route| route.outcome == Outcome::Compared(Verdict::Matched))
+        })
+        .collect();
+    for route in ROUTES {
+        let mut times: Vec<u64> = shared
+            .iter()
+            .flat_map(|r| &r.routes)
+            .filter(|r| r.route == route)
+            .map(|r| r.convert_ns)
+            .collect();
+        times.sort_unstable();
+        let Some(&median) = times.get(times.len() / 2) else {
+            continue;
+        };
+        let total: u64 = times.iter().sum();
+        eprintln!(
+            "corpus: {route} on the {} shaders every route matches: median {:?}, mean {:?} a shader",
+            times.len(),
+            Duration::from_nanos(median),
+            Duration::from_nanos(total / times.len() as u64)
+        );
+    }
 }
 
 /// The child: one shader through one route, its result as one JSON line on standard output. Before

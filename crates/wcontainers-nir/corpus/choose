@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# The choice between the NIR route's two candidates (plan 15.3): the corpus through both routes and the
+# comparison, optimised, one shader and route at a time on ten cores, so that the times per shader are
+# each route's alone. The last lines give each route's counts and its times on the shaders both match.
+#
+#   crates/wcontainers-nir/corpus/choose [results file]
+#
+# Needs the pinned Mesa built (mesa/build). WC_NIR_SHADERS and WC_NIR_SEED pick a seeded sample.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+repository=$(cd "$here/../../.." && pwd)
+target=${CARGO_TARGET_DIR:-$repository/target}
+# Ten cores, as timings alone are taken on the rented x86-64 machine.
+timing_cores=0-9
+
+"$here/fetch"
+export WCONTAINERS_MESA=$target/mesa/build
+export WC_NIR_CORPUS=$target/nir-corpus
+export WC_NIR_RESULTS=${1:-$target/nir-choice.jsonl}
+export WC_NIR_JOBS=1
+cd "$repository"
+cargo test --release -p wcontainers-nir --test corpus --no-run
+echo "choose: load $(cut -d' ' -f1-3 /proc/loadavg) at the start"
+taskset -c "$timing_cores" cargo test --release -p wcontainers-nir --test corpus
+echo "choose: load $(cut -d' ' -f1-3 /proc/loadavg) at the end"

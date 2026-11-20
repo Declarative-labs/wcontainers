@@ -18,6 +18,11 @@ const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
 type WorkgroupSize = [u32; VectorSize::Tri as usize];
 const SOURCES: usize = 5;
+/// The source of an image store holding the value (after the image, coordinate and sample).
+const IMAGE_STORE_VALUE: usize = 3;
+/// The source of a compare-and-swap holding the value compared (after the pointer); the value
+/// stored follows it, and is the only one of the other atomics.
+const ATOMIC_COMPARE: usize = 1;
 /// A 32-bit scalar's bytes, the only width the route takes (64-bit operations are lowered).
 const WIDTH: u8 = 4;
 /// NIR's booleans are one bit wide.
@@ -57,6 +62,8 @@ enum Dim {
     D2,
     D3,
     Cube,
+    Buffer,
+    Subpass,
     Other,
 }
 
@@ -282,6 +289,8 @@ enum Alu {
     BanyInequal2,
     BanyInequal3,
     BanyInequal4,
+    Fmod,
+    Frem,
     Unsupported,
 }
 
@@ -319,7 +328,31 @@ enum Intrinsic {
     DdyFine,
     DdxCoarse,
     DdyCoarse,
+    LoadPointCoord,
+    ImageDerefLoad,
+    ImageDerefStore,
+    ImageDerefSize,
+    DerefAtomic,
+    DerefAtomicSwap,
     Unsupported,
+}
+
+/// An atomic operation, by `enum wc_atomic_op`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum Atomic {
+    Add,
+    Imin,
+    Umin,
+    Imax,
+    Umax,
+    And,
+    Or,
+    Xor,
+    Exchange,
+    CompareExchange,
+    Other,
 }
 
 #[repr(u32)]
@@ -497,6 +530,10 @@ struct Builder<'a> {
     places: Vec<Option<Handle<Expression>>>,
     outputs: Vec<(Handle<LocalVariable>, Handle<Type>, Binding)>,
     builtins: Vec<(BuiltIn, Handle<Expression>)>,
+    /// Struct members (flat struct type, field) and variables atomics act on: naga's atomics act
+    /// only on atomic types.
+    atomic_fields: Vec<(u32, u32)>,
+    atomic_vars: Vec<u32>,
 }
 
 /// Candidate B: the program of `nir` as a naga module. The shader is changed by the preparation.
@@ -544,10 +581,14 @@ pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
         places: vec![None; f.var_count as usize],
         outputs: Vec::new(),
         builtins: Vec::new(),
+        atomic_fields: Vec::new(),
+        atomic_vars: Vec::new(),
     };
+    let instrs = slice(f.instrs, f.instr_count);
+    b.mark_atomics(instrs);
     b.emitter.start(&b.function.expressions);
     b.variables()?;
-    for instr in slice(f.instrs, f.instr_count) {
+    for instr in instrs {
         b.instr(instr)?;
     }
     b.finish(f)
@@ -583,8 +624,19 @@ fn dimension(d: Dim) -> Result<ImageDimension, ConvertError> {
         Dim::D2 => ImageDimension::D2,
         Dim::D3 => ImageDimension::D3,
         Dim::Cube => ImageDimension::Cube,
+        Dim::Buffer => return Err(unsupported(format_args!("a texel buffer"))),
+        Dim::Subpass => return Err(unsupported(format_args!("a subpass input"))),
         Dim::Other => return Err(unsupported(format_args!("a texture of another dimension"))),
     })
+}
+
+/// The components of a position in an image of `dim`, its layer apart.
+fn coordinate_size(dim: ImageDimension) -> u32 {
+    match dim {
+        ImageDimension::D1 => 1,
+        ImageDimension::D2 => VectorSize::Bi as u32,
+        ImageDimension::D3 | ImageDimension::Cube => VectorSize::Tri as u32,
+    }
 }
 
 fn storage_format(f: Format) -> Result<StorageFormat, ConvertError> {
@@ -652,12 +704,7 @@ impl Builder<'_> {
                     size: vector_size(t.columns)?,
                     scalar: scalar_of(t.scalar)?,
                 });
-                let stride = if t.stride == 0 {
-                    let l = self.layout(row)?;
-                    l.alignment.round_up(l.size)
-                } else {
-                    t.stride
-                };
+                let stride = self.element_stride(row, t.stride)?;
                 TypeInner::Array {
                     base: row,
                     size: naga::ArraySize::Constant(
@@ -686,12 +733,7 @@ impl Builder<'_> {
                     }
                 } else {
                     let base = self.ty(t.element)?;
-                    let stride = if t.stride == 0 {
-                        let l = self.layout(base)?;
-                        l.alignment.round_up(l.size)
-                    } else {
-                        t.stride
-                    };
+                    let stride = self.element_stride(base, t.stride)?;
                     TypeInner::Array {
                         base,
                         size: std::num::NonZeroU32::new(t.length)
@@ -705,7 +747,11 @@ impl Builder<'_> {
                 let mut end = 0;
                 for i in 0..t.length {
                     let field = self.fields[(t.element + i) as usize];
-                    let ty = self.ty(field.ty)?;
+                    let ty = if self.atomic_fields.contains(&(index, i)) {
+                        self.atomic_ty(field.ty)?
+                    } else {
+                        self.ty(field.ty)?
+                    };
                     let layout = self.layout(ty)?;
                     let offset = u32::try_from(field.offset)
                         .unwrap_or_else(|_| layout.alignment.round_up(end));
@@ -753,6 +799,75 @@ impl Builder<'_> {
         Ok(h)
     }
 
+    /// An array's stride: the type's explicit one, or its element's size rounded to its alignment.
+    fn element_stride(
+        &mut self,
+        element: Handle<Type>,
+        explicit: u32,
+    ) -> Result<u32, ConvertError> {
+        Ok(if explicit == 0 {
+            let l = self.layout(element)?;
+            l.alignment.round_up(l.size)
+        } else {
+            explicit
+        })
+    }
+
+    /// The atomic form of a flat scalar type, or of an array of them.
+    fn atomic_ty(&mut self, index: u32) -> Result<Handle<Type>, ConvertError> {
+        let t = self.types[index as usize];
+        match t.kind {
+            TypeKind::Scalar => Ok(self.add_type(TypeInner::Atomic(scalar_of(t.scalar)?))),
+            TypeKind::Array => {
+                let base = self.atomic_ty(t.element)?;
+                let stride = self.element_stride(base, t.stride)?;
+                Ok(self.add_type(TypeInner::Array {
+                    base,
+                    size: std::num::NonZeroU32::new(t.length)
+                        .map_or(naga::ArraySize::Dynamic, naga::ArraySize::Constant),
+                    stride,
+                }))
+            }
+            kind => Err(unsupported(format_args!("an atomic on a {kind:?}"))),
+        }
+    }
+
+    /// Marks the struct members and variables the program's atomics act on, by walking each
+    /// atomic's deref back through its array indices.
+    fn mark_atomics(&mut self, instrs: &[FlatInstr]) {
+        let derefs: std::collections::HashMap<u32, &FlatInstr> = instrs
+            .iter()
+            .filter(|i| i.kind == Kind::Deref)
+            .map(|i| (i.def, i))
+            .collect();
+        let atomics = instrs.iter().filter(|i| {
+            i.kind == Kind::Intrinsic
+                && matches!(
+                    intrinsic_op(i.op),
+                    Intrinsic::DerefAtomic | Intrinsic::DerefAtomicSwap
+                )
+        });
+        for atomic in atomics {
+            let mut at = derefs.get(&atomic.src[0].def).copied();
+            while let Some(d) = at {
+                match deref_kind(d.op) {
+                    Deref::Array => at = derefs.get(&d.src[0].def).copied(),
+                    Deref::Struct => {
+                        if let Some(parent) = derefs.get(&d.src[0].def) {
+                            self.atomic_fields.push((parent.ty, d.value[0]));
+                        }
+                        break;
+                    }
+                    Deref::Var => {
+                        self.atomic_vars.push(d.value[0]);
+                        break;
+                    }
+                    Deref::Cast => break,
+                }
+            }
+        }
+    }
+
     /// The scalar kind of a flat type's components.
     fn kind_of(&self, index: u32) -> ScalarKind {
         let mut t = self.types[index as usize];
@@ -791,15 +906,21 @@ impl Builder<'_> {
 
     fn add(&mut self, e: Expression) -> Handle<Expression> {
         if e.needs_pre_emit() {
-            if let Some((s, span)) = self.emitter.finish(&self.function.expressions) {
-                self.blocks.last_mut().expect("a block").push(s, span);
-            }
-            let h = self.function.expressions.append(e, Span::UNDEFINED);
-            self.emitter.start(&self.function.expressions);
-            h
+            self.add_unemitted(e)
         } else {
             self.function.expressions.append(e, Span::UNDEFINED)
         }
+    }
+
+    /// An expression outside every emit range: one naga does not emit (a variable, a literal, a
+    /// statement's result).
+    fn add_unemitted(&mut self, e: Expression) -> Handle<Expression> {
+        if let Some((s, span)) = self.emitter.finish(&self.function.expressions) {
+            self.blocks.last_mut().expect("a block").push(s, span);
+        }
+        let h = self.function.expressions.append(e, Span::UNDEFINED);
+        self.emitter.start(&self.function.expressions);
+        h
     }
 
     /// Ends the running emit range into the current block, and starts the next.
@@ -950,8 +1071,8 @@ impl Builder<'_> {
                     let space = match var.mode {
                         VarMode::UniformBuffer => AddressSpace::Uniform,
                         VarMode::StorageBuffer => {
-                            let mut access = StorageAccess::empty();
-                            access.set(StorageAccess::LOAD, var.readable != 0);
+                            // The common form has no write-only buffers: one is read-write.
+                            let mut access = StorageAccess::LOAD;
                             access.set(StorageAccess::STORE, var.writable != 0);
                             AddressSpace::Storage { access }
                         }
@@ -974,6 +1095,11 @@ impl Builder<'_> {
                     };
                     let ty = if is_image {
                         self.storage_image(var)?
+                    } else if self
+                        .atomic_vars
+                        .contains(&u32::try_from(index).expect("few"))
+                    {
+                        self.atomic_ty(var.ty)?
                     } else {
                         let block = self.ty(var.ty)?;
                         let t = self.types[var.ty as usize];
@@ -1218,6 +1344,7 @@ fn alu_form(op: Alu) -> Option<(ScalarKind, AluForm)> {
         Alu::Imul => (Sint, F::Binary(B::Multiply)),
         Alu::Idiv => (Sint, F::Binary(B::Divide)),
         Alu::Irem => (Sint, F::Binary(B::Modulo)),
+        Alu::Frem => (Float, F::Binary(B::Modulo)),
         Alu::Udiv => (Uint, F::Binary(B::Divide)),
         Alu::Umod => (Uint, F::Binary(B::Modulo)),
         Alu::Ineg => (Sint, F::Unary(UnaryOperator::Negate)),
@@ -1317,6 +1444,20 @@ fn alu_op(raw: u32) -> Alu {
         unsafe { std::mem::transmute::<u32, Alu>(raw) }
     } else {
         Alu::Unsupported
+    }
+}
+
+fn deref_kind(raw: u32) -> Deref {
+    // SAFETY: the bridge writes only Deref's values as a deref's operation.
+    unsafe { std::mem::transmute::<u32, Deref>(raw) }
+}
+
+fn atomic_op(raw: u32) -> Atomic {
+    if raw < Atomic::Other as u32 {
+        // SAFETY: as alu_op, for Atomic.
+        unsafe { std::mem::transmute::<u32, Atomic>(raw) }
+    } else {
+        Atomic::Other
     }
 }
 
@@ -1500,6 +1641,34 @@ impl Builder<'_> {
                 });
                 (e, ScalarKind::Float)
             }
+            Alu::Fmod => {
+                // NIR's fmod takes the sign of the divisor: a - b * floor(a / b).
+                let a = self.src(i, 0, n, ScalarKind::Float)?;
+                let b = self.src(i, 1, n, ScalarKind::Float)?;
+                let quotient = self.add(Expression::Binary {
+                    op: BinaryOperator::Divide,
+                    left: a,
+                    right: b,
+                });
+                let floor = self.add(Expression::Math {
+                    fun: MathFunction::Floor,
+                    arg: quotient,
+                    arg1: None,
+                    arg2: None,
+                    arg3: None,
+                });
+                let product = self.add(Expression::Binary {
+                    op: BinaryOperator::Multiply,
+                    left: b,
+                    right: floor,
+                });
+                let e = self.add(Expression::Binary {
+                    op: BinaryOperator::Subtract,
+                    left: a,
+                    right: product,
+                });
+                (e, ScalarKind::Float)
+            }
             Alu::Fdot2 | Alu::Fdot3 | Alu::Fdot4 => {
                 let count = source_count(op, n);
                 let a = self.src(i, 0, count, ScalarKind::Float)?;
@@ -1676,8 +1845,7 @@ impl Builder<'_> {
     }
 
     fn deref(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
-        // SAFETY: the bridge writes only Deref's values here.
-        let kind = unsafe { std::mem::transmute::<u32, Deref>(i.op) };
+        let kind = deref_kind(i.op);
         let e = match kind {
             Deref::Var => self.places[i.value[0] as usize]
                 .ok_or_else(|| unsupported(format_args!("a variable the module does not have")))?,
@@ -2040,8 +2208,218 @@ impl Builder<'_> {
                 let e = self.add(Expression::Derivative { axis, ctrl, expr });
                 self.set(i, Value::Expr(e, Float));
             }
+            Intrinsic::LoadPointCoord => self.system_value(i, BuiltIn::PointCoord, Float)?,
+            Intrinsic::ImageDerefLoad => {
+                let (image, t) = self.image(i)?;
+                let (coordinate, array_index) = self.image_coordinate(i, t)?;
+                let sample = if t.multisampled != 0 {
+                    Some(self.src(i, 2, 1, ScalarKind::Sint)?)
+                } else {
+                    None
+                };
+                let e = self.add(Expression::ImageLoad {
+                    image,
+                    coordinate,
+                    array_index,
+                    sample,
+                    level: None,
+                });
+                let kind = scalar_of(t.sampled)?.kind;
+                let e = self.first(e, VectorSize::Quad as u32, i.components)?;
+                self.set(i, Value::Expr(e, kind));
+            }
+            Intrinsic::ImageDerefStore => {
+                let (image, t) = self.image(i)?;
+                if t.multisampled != 0 {
+                    return Err(unsupported(format_args!(
+                        "a store into a multisampled storage image"
+                    )));
+                }
+                let (coordinate, array_index) = self.image_coordinate(i, t)?;
+                let kind = scalar_of(t.sampled)?.kind;
+                let (value, components) = self.whole(i.src[IMAGE_STORE_VALUE].def, kind)?;
+                if components != VectorSize::Quad as u32 {
+                    return Err(unsupported(format_args!(
+                        "an image store of {components} components"
+                    )));
+                }
+                self.statement(Statement::ImageStore {
+                    image,
+                    coordinate,
+                    array_index,
+                    value,
+                });
+            }
+            Intrinsic::ImageDerefSize => {
+                let (image, t) = self.image(i)?;
+                let e = self.image_size(image, dimension(t.dim)?, t.arrayed != 0, None)?;
+                self.set(i, Value::Expr(e, Uint));
+            }
+            Intrinsic::DerefAtomic | Intrinsic::DerefAtomicSwap => self.atomic(i)?,
             Intrinsic::Unsupported => return Err(unsupported(name(i))),
         }
+        Ok(())
+    }
+
+    /// The storage image an image intrinsic acts on, with its flat type.
+    fn image(&self, i: &FlatInstr) -> Result<(Handle<Expression>, FlatType), ConvertError> {
+        let (image, ty) = self.pointer(i.src[0].def)?;
+        Ok((image, self.types[ty as usize]))
+    }
+
+    /// An image intrinsic's coordinate (its second source, four components in NIR) as the
+    /// position and the layer.
+    fn image_coordinate(
+        &mut self,
+        i: &FlatInstr,
+        t: FlatType,
+    ) -> Result<(Handle<Expression>, Option<Handle<Expression>>), ConvertError> {
+        let space = coordinate_size(dimension(t.dim)?);
+        let position = self.src(i, 1, space, ScalarKind::Sint)?;
+        let layer = if t.arrayed != 0 {
+            let mut instr = *i;
+            instr.src[1].swizzle[0] = u8::try_from(space).expect("a component");
+            Some(self.src(&instr, 1, 1, ScalarKind::Sint)?)
+        } else {
+            None
+        };
+        Ok((position, layer))
+    }
+
+    /// The first `want` components of `e`, a vector of `have`.
+    fn first(
+        &mut self,
+        e: Handle<Expression>,
+        have: u32,
+        want: u32,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        Ok(if want == have {
+            e
+        } else if want == 1 {
+            self.add(Expression::AccessIndex { base: e, index: 0 })
+        } else {
+            self.add(Expression::Swizzle {
+                size: vector_size(want)?,
+                vector: e,
+                pattern: naga::SwizzleComponent::XYZW,
+            })
+        })
+    }
+
+    /// An image's size, with its layer count after it when it is arrayed.
+    fn image_size(
+        &mut self,
+        image: Handle<Expression>,
+        dim: ImageDimension,
+        arrayed: bool,
+        level: Option<Handle<Expression>>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let space = coordinate_size(dim);
+        let size = self.add(Expression::ImageQuery {
+            image,
+            query: naga::ImageQuery::Size { level },
+        });
+        if !arrayed {
+            return Ok(size);
+        }
+        let layers = self.add(Expression::ImageQuery {
+            image,
+            query: naga::ImageQuery::NumLayers,
+        });
+        let parts = if space == 1 {
+            vec![size, layers]
+        } else {
+            let mut parts: Vec<_> = (0..space)
+                .map(|c| {
+                    self.add(Expression::AccessIndex {
+                        base: size,
+                        index: c,
+                    })
+                })
+                .collect();
+            parts.push(layers);
+            parts
+        };
+        let ty = self.scalar_type(ScalarKind::Uint, space + 1)?;
+        Ok(self.add(Expression::Compose {
+            ty,
+            components: parts,
+        }))
+    }
+
+    /// An atomic operation on a buffer's or workgroup variable's scalar (`mark_atomics` made its
+    /// type atomic).
+    fn atomic(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
+        use naga::AtomicFunction as F;
+        let op = atomic_op(i.value[VectorSize::MAX - 1]);
+        let (pointer, ty) = self.pointer(i.src[0].def)?;
+        let kind = self.kind_of(ty);
+        let needs = |want: ScalarKind| {
+            if kind == want {
+                Ok(())
+            } else {
+                Err(unsupported(format_args!("an atomic {op:?} on a {kind:?}")))
+            }
+        };
+        let fun = match op {
+            Atomic::Add => F::Add,
+            Atomic::And => F::And,
+            Atomic::Or => F::InclusiveOr,
+            Atomic::Xor => F::ExclusiveOr,
+            Atomic::Imin | Atomic::Umin | Atomic::Imax | Atomic::Umax => {
+                needs(if matches!(op, Atomic::Imin | Atomic::Imax) {
+                    ScalarKind::Sint
+                } else {
+                    ScalarKind::Uint
+                })?;
+                if matches!(op, Atomic::Imin | Atomic::Umin) {
+                    F::Min
+                } else {
+                    F::Max
+                }
+            }
+            Atomic::Exchange => F::Exchange { compare: None },
+            Atomic::CompareExchange => F::Exchange {
+                compare: Some(self.whole(i.src[ATOMIC_COMPARE].def, kind)?.0),
+            },
+            Atomic::Other => {
+                return Err(unsupported(format_args!("an atomic of another operation")));
+            }
+        };
+        let compare = op == Atomic::CompareExchange;
+        let value_at = if compare {
+            ATOMIC_COMPARE + 1
+        } else {
+            ATOMIC_COMPARE
+        };
+        let (value, _) = self.whole(i.src[value_at].def, kind)?;
+        let scalar = Scalar { kind, width: WIDTH };
+        let ty = if compare {
+            self.module.generate_predeclared_type(
+                naga::PredeclaredType::AtomicCompareExchangeWeakResult(scalar),
+            )
+        } else {
+            self.add_type(TypeInner::Scalar(scalar))
+        };
+        let result = self.add_unemitted(Expression::AtomicResult {
+            ty,
+            comparison: compare,
+        });
+        self.statement(Statement::Atomic {
+            pointer,
+            fun,
+            value,
+            result: Some(result),
+        });
+        let e = if compare {
+            self.add(Expression::AccessIndex {
+                base: result,
+                index: 0,
+            })
+        } else {
+            result
+        };
+        self.set(i, Value::Expr(e, kind));
         Ok(())
     }
 
@@ -2061,11 +2439,7 @@ impl Builder<'_> {
         })?;
         let (image, _) = self.pointer(texture)?;
         let dim = dimension(i.dim)?;
-        let space = match dim {
-            ImageDimension::D1 => 1,
-            ImageDimension::D2 => VectorSize::Bi as u32,
-            ImageDimension::D3 | ImageDimension::Cube => VectorSize::Tri as u32,
-        };
+        let space = coordinate_size(dim);
         let arrayed = i.arrayed != 0;
         let result_kind = scalar_of(match i.ty {
             t if t == FlatScalar::Float as u32 => FlatScalar::Float,
@@ -2193,37 +2567,7 @@ impl Builder<'_> {
             }
             TexOp::Size => {
                 let level = scalar_src(self, TexSrc::Lod, Sint)?;
-                let size = self.add(Expression::ImageQuery {
-                    image,
-                    query: naga::ImageQuery::Size { level },
-                });
-                if arrayed {
-                    let layers = self.add(Expression::ImageQuery {
-                        image,
-                        query: naga::ImageQuery::NumLayers,
-                    });
-                    let parts = if space == 1 {
-                        vec![size, layers]
-                    } else {
-                        let mut parts: Vec<_> = (0..space)
-                            .map(|c| {
-                                self.add(Expression::AccessIndex {
-                                    base: size,
-                                    index: c,
-                                })
-                            })
-                            .collect();
-                        parts.push(layers);
-                        parts
-                    };
-                    let ty = self.scalar_type(Uint, space + 1)?;
-                    self.add(Expression::Compose {
-                        ty,
-                        components: parts,
-                    })
-                } else {
-                    size
-                }
+                self.image_size(image, dim, arrayed, level)?
             }
             TexOp::Levels => self.add(Expression::ImageQuery {
                 image,

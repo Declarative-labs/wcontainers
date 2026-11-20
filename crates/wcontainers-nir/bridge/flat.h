@@ -28,7 +28,7 @@ enum wc_type_kind {
    WC_TYPE_OTHER,
 };
 
-enum wc_dim { WC_DIM_1D, WC_DIM_2D, WC_DIM_3D, WC_DIM_CUBE, WC_DIM_OTHER };
+enum wc_dim { WC_DIM_1D, WC_DIM_2D, WC_DIM_3D, WC_DIM_CUBE, WC_DIM_BUFFER, WC_DIM_SUBPASS, WC_DIM_OTHER };
 
 struct wc_flat_type {
    enum wc_type_kind kind;
@@ -147,7 +147,8 @@ enum wc_flat_kind {
    X(unpack_half_2x16) X(pack_unorm_4x8) X(unpack_unorm_4x8) X(pack_snorm_4x8) \
    X(unpack_snorm_4x8) X(pack_unorm_2x16) X(unpack_unorm_2x16) X(ball_fequal2) X(ball_fequal3) \
    X(ball_fequal4) X(bany_fnequal2) X(bany_fnequal3) X(bany_fnequal4) X(ball_iequal2) \
-   X(ball_iequal3) X(ball_iequal4) X(bany_inequal2) X(bany_inequal3) X(bany_inequal4)
+   X(ball_iequal3) X(ball_iequal4) X(bany_inequal2) X(bany_inequal3) X(bany_inequal4) X(fmod) \
+   X(frem)
 
 #define WC_INTRINSICS(X)                                                                           \
    X(LOAD_DEREF) X(STORE_DEREF) X(DECL_REG) X(LOAD_REG) X(STORE_REG) X(VULKAN_RESOURCE_INDEX)    \
@@ -155,7 +156,9 @@ enum wc_flat_kind {
    X(LOAD_FRAG_COORD) X(LOAD_SAMPLE_ID) X(LOAD_LOCAL_INVOCATION_ID) X(LOAD_GLOBAL_INVOCATION_ID) \
    X(LOAD_WORKGROUP_ID) X(LOAD_NUM_WORKGROUPS) X(LOAD_LOCAL_INVOCATION_INDEX) X(DEMOTE)           \
    X(TERMINATE) X(DEMOTE_IF) X(TERMINATE_IF) X(BARRIER) X(DEREF_BUFFER_ARRAY_LENGTH) \
-   X(DDX) X(DDY) X(DDX_FINE) X(DDY_FINE) X(DDX_COARSE) X(DDY_COARSE)
+   X(DDX) X(DDY) X(DDX_FINE) X(DDY_FINE) X(DDX_COARSE) X(DDY_COARSE) X(LOAD_POINT_COORD)        \
+   X(IMAGE_DEREF_LOAD) X(IMAGE_DEREF_STORE) X(IMAGE_DEREF_SIZE) X(DEREF_ATOMIC)                 \
+   X(DEREF_ATOMIC_SWAP)
 
 #define WC_ENUM_ENTRY(name) WC_ALU_##name,
 enum wc_alu_op { WC_ALU_OPS(WC_ENUM_ENTRY) WC_ALU_UNSUPPORTED };
@@ -163,6 +166,21 @@ enum wc_alu_op { WC_ALU_OPS(WC_ENUM_ENTRY) WC_ALU_UNSUPPORTED };
 #define WC_ENUM_ENTRY(name) WC_INTRINSIC_##name,
 enum wc_intrinsic { WC_INTRINSICS(WC_ENUM_ENTRY) WC_INTRINSIC_UNSUPPORTED };
 #undef WC_ENUM_ENTRY
+
+/* An atomic operation of DEREF_ATOMIC, by meaning (Mesa's nir_atomic_op). */
+enum wc_atomic_op {
+   WC_ATOMIC_ADD,
+   WC_ATOMIC_IMIN,
+   WC_ATOMIC_UMIN,
+   WC_ATOMIC_IMAX,
+   WC_ATOMIC_UMAX,
+   WC_ATOMIC_AND,
+   WC_ATOMIC_OR,
+   WC_ATOMIC_XOR,
+   WC_ATOMIC_EXCHANGE,
+   WC_ATOMIC_COMPARE_EXCHANGE,
+   WC_ATOMIC_OTHER,
+};
 
 enum wc_deref_kind { WC_DEREF_VAR, WC_DEREF_ARRAY, WC_DEREF_STRUCT, WC_DEREF_CAST };
 
@@ -208,7 +226,7 @@ struct wc_flat_instr {
    struct wc_flat_src src[WC_SOURCES];
    /* CONST: the values. DEREF: the variable, or the field. INTRINSIC: the set and binding of a
     * resource index; the write mask of a store; a barrier's workgroup execution, workgroup memory and buffer
-    * and image memory. */
+    * and image memory; an atomic's operation (enum wc_atomic_op) in the last. */
    uint32_t value[WC_COMPONENTS];
    /* DEREF: the type it points at. TEX: the result's scalar. */
    uint32_t type;
