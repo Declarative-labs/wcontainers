@@ -102,8 +102,12 @@ Not met, this track's own work and others':
     (section 9) fixes 10_0 on WebGL 2 without naming this loss.
   - Multisampled textures read by shaders (absent on WebGL 2, plan section 6): Wine
     test_unbound_multisample_texture.
-  - Depth clamping without a pixel shader (`DepthClampInShader` needs one) and a depth bias
-    clamp on float depth: refused by name. Wine test_depth_clip, test_depth_bias.
+  - Depth clamping, clip distances and a depth bias in the program without a pixel shader are
+    served since round 2 run 11 (the shaders crate's `builtin::pixel_program_for_variant`;
+    Wine test_depth_clip not rerun on that build yet). Left: a depth bias clamp on float depth,
+    refused by name: Direct3D's float step follows each primitive's largest depth exponent,
+    which a pixel program does not see (the shaders crate's `DEPTH_BIAS` takes one fixed
+    step). Wine test_depth_bias.
   - Cull distances (`CullDistanceAsGeometry` needs compute; WEBGL_clip_cull_distance): Wine
     test_combined_clip_and_cull_distances.
   - Views in another format of the group (`Features::TEXTURE_VIEWS`, the WebGL 2 back end's):
@@ -111,9 +115,19 @@ Not met, this track's own work and others':
   - Formats the WebGL 2 back end lacks: `R16G16_SNORM` and the other 16-bit normalised formats
     (this front's `NormAsInteger` item), `A8_UNORM`: Wine test_create_texture2d, test_texture,
     test_render_a8, test_clear_render_target_view_2d (48 fewer checks).
-  - Copies between formats of different groups that Wine's test_format_compatibility expects
-    (16 checks; the same test passes through the WebGPU build, so the cause is the WebGL 2
-    path's, not found) and test_generate_mips (56 checks, cause not found).
+  - test_format_compatibility (16 checks, all of its test 27: a 16-bit depth texture copied
+    whole into an `R16_TYPELESS` colour texture). Cause, read from the log in round 2 run 11:
+    every 16-bit word at or above 0x8000 arrives as 0x7fff, the rest exact. The front stores
+    `R16_TYPELESS` colour textures as `R16Float`, and the WebGL 2 back end copies depth into
+    colour by a draw (`DepthWrittenByDraw`) writing the bits as a half float, whose NaN
+    patterns (0xff00, 0xffff) the GPU makes its one NaN, 0x7fff. The WebGL 2 track's copy
+    route (the WebGPU build copies through a buffer and passes).
+  - test_generate_mips (56 checks): all on 3D textures (resource type 3), on tests 0 to 3 that
+    expect no mips as well as 6 to 8 that do: level 1 reads 0x48484848 after it was written
+    with zeros, so the write or the read back of a 3D texture's second level goes wrong, not
+    the mip generation. 2D arrays pass, and the same calls pass through the WebGPU build. Not
+    yet proven whose: the WebGL 2 back end's 3D writes (`tex_sub_image_3d` with the unpack
+    image height set) look right when read.
   - Wireframe without WEBGL_polygon_mode (`FillModeConverted`, not built for any back end): the
     rig's raster scene. Pixel shaders reading `SV_PrimitiveID` without a geometry shader
     (`PrimitiveIdAsGeometry` needs compute): the rig's geometry scene.
