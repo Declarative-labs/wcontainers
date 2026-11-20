@@ -3,6 +3,7 @@
 
 use crate::compare::{self, CompareOptions, DEFAULT_SEED, SEED, Verdict};
 use crate::entry;
+use crate::glsl;
 use crate::lavapipe;
 use crate::needs;
 use rand::SeedableRng;
@@ -33,6 +34,10 @@ pub const ROUTES: [&str; 2] = [ROUTE_ZINK, ROUTE_DIRECT];
 const IN_ROUTE: &str = "in the route";
 /// The same while the converted shader is held to the reference.
 const IN_COMPARISON: &str = "in the comparison";
+/// Between the stages of a GLSL program in its result.
+const STAGE_JOINER: &str = "+";
+const GLSL_STAGES_NOT_COMPARED: &str =
+    "GLSL vertex and fragment programs are converted but not yet held to llvmpipe";
 
 /// The knobs, by their environment variable.
 const CORPUS: &str = "WC_NIR_CORPUS";
@@ -130,7 +135,10 @@ fn shader_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for path in entries {
         if path.is_dir() {
             shader_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == SPIRV_EXTENSION) {
+        } else if path
+            .extension()
+            .is_some_and(|e| e == SPIRV_EXTENSION || e == glsl::SHADER_TEST_EXTENSION)
+        {
             out.push(path);
         }
     }
@@ -373,6 +381,12 @@ fn provisional(result: &ShaderResult, route: RouteResult) {
 }
 
 fn shader(file: &Path, route: &str) -> ShaderResult {
+    if file
+        .extension()
+        .is_some_and(|e| e == glsl::SHADER_TEST_EXTENSION)
+    {
+        return glsl_program(file, route);
+    }
     let mut result = ShaderResult {
         shader: file.display().to_string(),
         stage: None,
@@ -533,4 +547,90 @@ fn zink_route(
             (result, None)
         }
     }
+}
+
+/// A GLSL program of piglit's: its stages through Mesa's compiler, each through the route; a
+/// compute program held to llvmpipe.
+fn glsl_program(file: &Path, route: &str) -> ShaderResult {
+    let mut result = ShaderResult {
+        shader: file.display().to_string(),
+        stage: None,
+        refused: None,
+        unreported: None,
+        routes: Vec::new(),
+    };
+    let text =
+        String::from_utf8_lossy(&std::fs::read(file).expect("the file can be read")).into_owned();
+    let sources = match glsl::shader_test_sources(&text) {
+        Ok(s) => s,
+        Err(e) => {
+            result.refused = Some(e);
+            return result;
+        }
+    };
+    result.stage = Some(
+        sources
+            .iter()
+            .map(|(s, _)| format!("{s:?}"))
+            .collect::<Vec<_>>()
+            .join(STAGE_JOINER),
+    );
+    let given: Vec<(Stage, &str)> = sources.iter().map(|(s, t)| (*s, t.as_str())).collect();
+    let stages = match Nir::from_glsl(&given) {
+        Ok(s) => s,
+        Err(e) => {
+            result.refused = Some(e.to_string());
+            return result;
+        }
+    };
+    provisional(
+        &result,
+        RouteResult {
+            route: route.into(),
+            outcome: Outcome::Failed(IN_ROUTE.into()),
+            convert_ns: 0,
+        },
+    );
+    let mut taken = RouteResult {
+        route: route.into(),
+        outcome: Outcome::Failed(IN_ROUTE.into()),
+        convert_ns: 0,
+    };
+    let mut converted = Vec::new();
+    for stage in stages {
+        let (one, module) = match route {
+            ROUTE_ZINK => zink_route(stage.nir, stage.stage, file),
+            ROUTE_DIRECT => direct_route(stage.nir, stage.stage),
+            other => panic!("no route named {other}"),
+        };
+        taken.convert_ns += one.convert_ns;
+        match module {
+            Some(m) => converted.push((stage.stage, stage.names, m)),
+            None => {
+                taken.outcome = one.outcome;
+                result.routes.push(taken);
+                return result;
+            }
+        }
+    }
+    provisional(
+        &result,
+        RouteResult {
+            outcome: Outcome::Compared(Verdict::NotRun(IN_COMPARISON.into())),
+            route: route.into(),
+            convert_ns: taken.convert_ns,
+        },
+    );
+    let options = CompareOptions {
+        seed: knob(SEED).unwrap_or(DEFAULT_SEED),
+        input_sets: knob(INPUT_SETS).unwrap_or(DEFAULT_INPUT_SETS),
+    };
+    taken.outcome = Outcome::Compared(match (converted.as_slice(), sources.as_slice()) {
+        ([(Stage::Compute, names, (module, reflection))], [(_, source)]) => {
+            glsl::compare_compute(source, names, module, reflection, options)
+        }
+        _ => Verdict::NotRun(GLSL_STAGES_NOT_COMPARED.into()),
+    });
+    result.routes.push(taken);
+    result
 }

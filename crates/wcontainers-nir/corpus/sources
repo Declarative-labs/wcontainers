@@ -1,3 +1,4 @@
 # The shader corpus of the NIR route (test data only, never shipped): one source a line, as
 #   name  url  commit  licence
 saschawillems-vulkan https://github.com/SaschaWillems/Vulkan d2d49bf7f2d8469ad9fee47b2a43b430d7e10e1b MIT
+piglit https://gitlab.freedesktop.org/mesa/piglit.git 925102811fff4d9501277d2a640aa5e01d91a9d6 MIT and others (its COPYING), test data only

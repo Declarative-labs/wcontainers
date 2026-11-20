@@ -16,6 +16,8 @@ wcontainers-shaders = { path = "../wcontainers-shaders" }
 
 [dev-dependencies]
 ash = { version = "0.38", default-features = false, features = ["std", "debug"] }
+glow = "0.18.0"
+khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 libloading = "0.8"
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 naga = { workspace = true, features = ["spv-in", "spv-out", "wgsl-in"] }

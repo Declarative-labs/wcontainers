@@ -25,7 +25,7 @@ pub const FEEDER_ENTRY: &str = "feed";
 const FLOAT_RANGE: f32 = 2.0;
 const INTEGER_RANGE: i32 = 4;
 /// Elements of a runtime-sized array in a storage buffer.
-const RUNTIME_ELEMENTS: u32 = 64;
+pub const RUNTIME_ELEMENTS: u32 = 64;
 /// The size of each dimension of a texture, its layers when it is an array, and a cube's faces.
 const TEXTURE_SIZE: u32 = 4;
 const TEXTURE_LAYERS: u32 = 2;
@@ -34,16 +34,16 @@ const CUBE_FACES: u32 = 6;
 const PIXEL_CENTRE: f32 = 0.5;
 const POINT_DEPTH: f32 = 0.5;
 /// The workgroups a compute program is dispatched with, along x.
-const COMPUTE_GROUPS: u32 = 2;
+pub const COMPUTE_GROUPS: u32 = 2;
 /// The bits every colour target starts as, so that a pixel written by neither run is equal in both.
-const CLEAR_BITS: u32 = 0x7fc0_dead;
+pub const CLEAR_BITS: u32 = 0x7fc0_dead;
 /// Floats are equal when their bits are, both are NaN, they are within this many units in the last
 /// place, or both are within FLOAT_ABSOLUTE of each other (cancellation near zero). Both runs are on
 /// the same driver and processor, so only the order and fusing of operations can differ.
 const FLOAT_ULPS: u32 = 1 << 10;
 const FLOAT_ABSOLUTE: f32 = 1.0 / (1 << 20) as f32;
 /// How many differing values a verdict names.
-const NAMED_DIFFERENCES: usize = 3;
+pub const NAMED_DIFFERENCES: usize = 3;
 /// The SPIR-V version the route's module is written in for lavapipe (Vulkan 1.1's).
 pub const SPIRV_VERSION: (u8, u8) = (1, 3);
 
@@ -66,7 +66,7 @@ pub enum Verdict {
 }
 
 /// The bytes a value of each kind is filled from, and how it is compared.
-fn fill_scalar(rng: &mut ChaCha8Rng, kind: Kind) -> u32 {
+pub fn fill_scalar(rng: &mut ChaCha8Rng, kind: Kind) -> u32 {
     match kind {
         Kind::Float => rng.random_range(-FLOAT_RANGE..FLOAT_RANGE).to_bits(),
         Kind::Sint => rng
@@ -224,12 +224,12 @@ fn storage_format(format: naga::StorageFormat) -> Option<(vk::Format, u32, Optio
 }
 
 /// One resource of the route's module, with where each run binds it.
-struct Resource {
-    reference: (u32, u32),
+pub struct Resource {
+    pub reference: (u32, u32),
     route: (u32, u32),
-    kind: vk::DescriptorType,
+    pub kind: vk::DescriptorType,
     slot: SlotKind,
-    elements: Vec<Element>,
+    pub elements: Vec<Element>,
     /// A storage buffer's scalars, to compare its contents.
     layout: Vec<(u32, Kind)>,
     /// A storage image's components.
@@ -298,7 +298,7 @@ fn image(
 }
 
 /// Every resource of the route's module, filled from `rng`.
-fn resources(
+pub fn resources(
     module: &Module,
     reflection: &[ReflectedBinding],
     rng: &mut ChaCha8Rng,
@@ -395,7 +395,7 @@ fn resources(
 /// The descriptors of each run: the route's as its module binds them; the reference's at the
 /// program's own (set, binding), a texture and sampler split from one combined image sampler
 /// joined again.
-fn descriptors(resources: &[Resource]) -> (Vec<Descriptor>, Vec<Descriptor>) {
+pub fn descriptors(resources: &[Resource]) -> (Vec<Descriptor>, Vec<Descriptor>) {
     let route = resources
         .iter()
         .map(|r| Descriptor {
@@ -713,7 +713,7 @@ fn colour_format(kind: Kind) -> vk::Format {
 }
 
 /// The differences between two runs' words, `kinds` saying how each word compares.
-fn differences(
+pub fn differences(
     what: &str,
     a: &[u8],
     b: &[u8],

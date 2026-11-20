@@ -12,9 +12,13 @@ mod compare;
 #[cfg(mesa)]
 mod entry;
 #[cfg(mesa)]
+mod glsl;
+#[cfg(mesa)]
 mod interface;
 #[cfg(mesa)]
 mod lavapipe;
+#[cfg(mesa)]
+mod llvmpipe;
 #[cfg(mesa)]
 mod needs;
 #[cfg(mesa)]

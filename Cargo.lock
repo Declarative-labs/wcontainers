@@ -3809,6 +3809,8 @@ dependencies = [
  "ash",
  "blake3",
  "cc",
+ "glow 0.18.0",
+ "khronos-egl",
  "libloading",
  "naga",
  "rand 0.9.5",
