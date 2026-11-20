@@ -1020,7 +1020,8 @@ impl Builder<'_> {
             FlatBuiltIn::SampleMask => Binding::BuiltIn(BuiltIn::SampleMask),
             FlatBuiltIn::Other => {
                 return Err(unsupported(format_args!(
-                    "a stage value of another built-in"
+                    "a stage value of another built-in (Mesa's slot {})",
+                    var.location
                 )));
             }
         })

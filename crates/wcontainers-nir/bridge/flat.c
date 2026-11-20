@@ -248,8 +248,10 @@ wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *locat
 {
    *location = 0;
    if (!output && nir->info.stage == MESA_SHADER_VERTEX) {
-      if (slot < VERT_ATTRIB_GENERIC0)
+      if (slot < VERT_ATTRIB_GENERIC0) {
+         *location = slot;
          return WC_BUILTIN_OTHER;
+      }
       *location = slot - VERT_ATTRIB_GENERIC0;
       return WC_BUILTIN_NONE;
    }
@@ -258,8 +260,10 @@ wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *locat
          return WC_BUILTIN_FRAG_DEPTH;
       if (slot == FRAG_RESULT_SAMPLE_MASK)
          return WC_BUILTIN_SAMPLE_MASK;
-      if (slot < FRAG_RESULT_DATA0)
+      if (slot < FRAG_RESULT_DATA0) {
+         *location = slot;
          return WC_BUILTIN_OTHER;
+      }
       *location = slot - FRAG_RESULT_DATA0;
       return WC_BUILTIN_NONE;
    }
@@ -270,9 +274,23 @@ wc_builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *locat
       return WC_BUILTIN_POINT_SIZE;
    case VARYING_SLOT_CLIP_DIST0:
       return WC_BUILTIN_CLIP_DISTANCE;
+   case VARYING_SLOT_COL0:
+   case VARYING_SLOT_COL1:
+   case VARYING_SLOT_BFC0:
+   case VARYING_SLOT_BFC1:
+   case VARYING_SLOT_FOGC:
+      /* OpenGL's own stage values: after the generic ones, by their slot. */
+      *location = MAX_VARYING + slot;
+      return WC_BUILTIN_NONE;
    default:
-      if (slot < VARYING_SLOT_VAR0)
+      if (slot >= VARYING_SLOT_TEX0 && slot <= VARYING_SLOT_TEX7) {
+         *location = MAX_VARYING + slot;
+         return WC_BUILTIN_NONE;
+      }
+      if (slot < VARYING_SLOT_VAR0) {
+         *location = slot;
          return WC_BUILTIN_OTHER;
+      }
       *location = slot - VARYING_SLOT_VAR0;
       return WC_BUILTIN_NONE;
    }

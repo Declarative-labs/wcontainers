@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "nir.h"
+#include "nir_builder.h"
 #include "ir.h"
 #include "glsl_parser_extras.h"
 #include "builtin_functions.h"
@@ -25,6 +26,8 @@
  * the ES compatibility extensions, so that one context takes desktop and ES sources alike. */
 #define WC_GL_VERSION 46
 #define WC_GLSL_VERSION 460
+/* A source without #version is GLSL 1.10, as st/mesa sets for desktop OpenGL. */
+#define WC_GLSL_DEFAULT_VERSION 110
 #define WC_GL_DRAW_BUFFERS 8
 #define WC_GL_CLIP_PLANES 8
 #define WC_GL_TEXEL_OFFSET_MIN -8
@@ -60,6 +63,7 @@ report_capabilities(struct gl_context *ctx)
    ctx->Version = WC_GL_VERSION;
    ctx->Const.GLSLVersion = WC_GLSL_VERSION;
    ctx->Const.GLSLVersionCompat = WC_GLSL_VERSION;
+   ctx->Const.DefaultGLSLVersion = WC_GLSL_DEFAULT_VERSION;
    ctx->Extensions.ARB_ES3_1_compatibility = true;
    ctx->Extensions.ARB_ES3_2_compatibility = true;
    ctx->Extensions.ARB_shader_storage_buffer_object = true;
@@ -72,6 +76,9 @@ report_capabilities(struct gl_context *ctx)
    ctx->Const.NativeIntegers = true;
    ctx->Const.UniformBooleanTrue = ~0u;
    ctx->Const.PackedDriverUniformStorage = true;
+   /* Blocks without a layout are laid out as std430, as st/mesa does for a driver loading its
+    * constants from a buffer (uniform buffer 0). */
+   ctx->Const.UseSTD430AsDefaultPacking = true;
    ctx->Const.GLSLFragCoordIsSysVal = true;
    ctx->Const.GLSLFrontFacingIsSysVal = true;
    ctx->Const.GLSLPointCoordIsSysVal = true;
@@ -227,17 +234,18 @@ add_name(struct wc_glsl_names *names, enum wc_glsl_name_kind kind, const char *n
    return added->name && (!type || added->type);
 }
 
-/* The program's own stage inputs and outputs, by their location in the common form. */
+/* The program's own stage inputs and outputs, by their location in the common form; a vertex
+ * program's attributes, OpenGL's own among them, by their slot until name_vertex_elements. */
 static bool
 name_stage_values(nir_shader *nir, struct wc_glsl_names *names)
 {
    bool added = true;
    nir_foreach_variable_with_modes(var, nir, nir_var_shader_in | nir_var_shader_out) {
       bool output = var->data.mode == nir_var_shader_out;
-      uint32_t location;
-      if (wc_builtin_at(nir, output, var->data.location, &location) != WC_BUILTIN_NONE)
-         continue;
       bool attribute = !output && nir->info.stage == MESA_SHADER_VERTEX;
+      uint32_t location = var->data.location;
+      if (!attribute && wc_builtin_at(nir, output, var->data.location, &location) != WC_BUILTIN_NONE)
+         continue;
       added &= add_name(names, output ? WC_GLSL_OUTPUT : WC_GLSL_INPUT, var->name,
                         glsl_get_type_name(var->type),
                         interpolation_of((enum glsl_interp_mode)var->data.interpolation), location,
@@ -301,13 +309,88 @@ name_bindings(struct gl_program *prog, nir_shader *nir, struct wc_glsl_names *na
    return added;
 }
 
+static bool
+attribute_as_element(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_input)
+      return false;
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+   semantics.location = VERT_ATTRIB_GENERIC0 + nir_intrinsic_base(intr);
+   nir_intrinsic_set_io_semantics(intr, semantics);
+   return true;
+}
+
+/* Vertex inputs numbered as st/mesa hands the driver its vertex elements: each attribute, OpenGL's
+ * own (gl_Vertex, gl_Color, ...) among them, at its rank among the attributes read. */
+static uint64_t
+number_vertex_elements(nir_shader *nir)
+{
+   nir_recompute_io_bases(nir, nir_var_shader_in);
+   const uint64_t read = nir->info.inputs_read;
+   nir_shader_intrinsics_pass(nir, attribute_as_element, nir_metadata_all, NULL);
+   nir->info.inputs_read = BITFIELD64_MASK(util_bitcount64(read)) << VERT_ATTRIB_GENERIC0;
+   return read;
+}
+
+/* Each attribute's name at its vertex element, from the attributes read before they were numbered;
+ * an attribute not read has none and loses its name. */
+static void
+name_vertex_elements(struct wc_glsl_names *names, uint64_t read)
+{
+   size_t kept = 0;
+   for (size_t i = 0; i < names->count; i++) {
+      struct wc_glsl_name name = names->data[i];
+      if (name.kind == WC_GLSL_INPUT) {
+         if (!(read & BITFIELD64_BIT(name.at))) {
+            free(name.name);
+            free(name.type);
+            continue;
+         }
+         name.at = util_bitcount64(read & BITFIELD64_MASK(name.at));
+      }
+      names->data[kept++] = name;
+   }
+   names->count = kept;
+}
+
+static bool
+fragcolor_to_every_buffer(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output)
+      return false;
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+   if (semantics.location != FRAG_RESULT_COLOR)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   for (unsigned buffer = 0; buffer < WC_GL_DRAW_BUFFERS; buffer++) {
+      semantics.location = FRAG_RESULT_DATA0 + buffer;
+      nir_store_output(b, intr->src[0].ssa, intr->src[1].ssa,
+                       .write_mask = nir_intrinsic_write_mask(intr),
+                       .component = nir_intrinsic_component(intr),
+                       .src_type = nir_intrinsic_src_type(intr), .io_semantics = semantics);
+   }
+   nir_instr_remove(&intr->instr);
+   return true;
+}
+
+/* gl_FragColor written to every draw buffer, nir_lower_fragcolor's step (the driver's own, as
+ * Zink's) on lowered stage values. */
+static void
+lower_fragcolor(nir_shader *nir)
+{
+   if (nir_shader_intrinsics_pass(nir, fragcolor_to_every_buffer, nir_metadata_control_flow, NULL)) {
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+      nir_recompute_io_bases(nir, nir_var_shader_out);
+   }
+}
+
 /* st/mesa's steps from the linked NIR to what the driver receives, for this driver's capabilities:
  * fragment coordinates as the common form has them, no hardware atomic counters, rectangle
  * textures and gathers with offsets lowered, uniforms packed in words into buffer 0, samplers and
  * images as derefs; then gl_FragColor written to every draw buffer, as the driver does. False for
  * a built-in uniform structure (the compatibility profile's lighting state), not taken yet. */
 static bool
-after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked)
+after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked, uint64_t *attributes)
 {
    struct gl_program *prog = linked->Program;
    nir_shader *nir = prog->nir;
@@ -343,7 +426,7 @@ after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked)
    NIR_PASS(_, nir, nir_opt_intrinsics);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    if (nir->info.stage == MESA_SHADER_VERTEX)
-      nir_recompute_io_bases(nir, nir_var_shader_in);
+      *attributes = number_vertex_elements(nir);
 
    nir_lower_tex_options tex = {};
    tex.lower_rect = true;
@@ -357,7 +440,7 @@ after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked)
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
    NIR_PASS(_, nir, gl_nir_lower_samplers_as_deref, whole);
    if (nir->info.stage == MESA_SHADER_FRAGMENT)
-      NIR_PASS(_, nir, nir_lower_fragcolor, WC_GL_DRAW_BUFFERS);
+      lower_fragcolor(nir);
    return true;
 }
 
@@ -427,11 +510,14 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
          linked = false;
          break;
       }
-      if (!after_link(whole, shader)) {
+      uint64_t attributes = 0;
+      if (!after_link(whole, shader, &attributes)) {
          out->log = append_log(out->log, WC_GL_STATE_STRUCTURE);
          linked = false;
          break;
       }
+      if (shader->Stage == MESA_SHADER_VERTEX)
+         name_vertex_elements(names, attributes);
       nir_shader *nir = shader->Program->nir;
       if (!name_parameters(shader->Program, names) ||
           !name_bindings(shader->Program, nir, names)) {
