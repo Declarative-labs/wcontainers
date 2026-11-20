@@ -420,7 +420,19 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 Next, in this order:
 1. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
    `corpus/cts-programs`' groups, and lower those programs before both runs.
-2. Godot's Compatibility renderer (its `.glsl` files with Godot's section and variant markers) and
+2. Godot's Compatibility renderer, studied in run 9 (godot master 73ca6be2, sparse): the files
+   are `drivers/gles3/shaders/**/*.glsl` (MIT) with `#[modes]` (one item a mode: `name = #define
+   ...`, `\n` between defines), `#[specializations]` (`NAME = true|false`, a define when set),
+   `#[vertex]` and `#[fragment]` sections, `#include "x"` resolved beside the file at Godot's build
+   (`gles3_builders.py`), and `#GLOBALS`, `#MATERIAL_UNIFORMS`, `#CODE : <stage>` where a
+   material's code goes (empty for the base shaders). `ShaderGLES3::_build_variant_code`
+   (`drivers/gles3/shader_gles3.cpp`) puts before each stage: `#version 330` and `#define
+   USE_GLES_OVER_GL` on desktop OpenGL, the set specializations, the shader's general defines,
+   the mode's defines, `#define samplerExternalOES sampler2D`, the multiview block
+   (`ViewIndex uint(0)`, `MAX_VIEWS 1`) and `precision highp float/int`. The general defines
+   come from the renderer's C++ with project-setting values (`rasterizer_scene_gles3.cpp` 4741-4752:
+   `MAX_LIGHT_DATA_STRUCTS`, `MAX_FORWARD_LIGHTS`, `MAX_DECALS`, ...; canvas 2827-2828; sky, particles,
+   tex_blit): the reader needs Godot's default settings for those. Then
    Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
    `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names);
    `rgba16f` storage images in the harness (6 bgfx); `pack_*_split` (64-bit, so refused) stays.
@@ -499,6 +511,10 @@ Next, in this order:
   `WC_NIR_DUMP` set; `nix shell nixpkgs#spirv-tools -c spirv-dis` reads the dumps.
 - Run 8 fetched VK-GL-CTS's shader library data (sparse, at 5bb4c7e8) and a sparse bgfx on the
   x86 machine under `/work/probes` to read their formats; both deleted at the end of the run.
+- Kept between runs: a sparse clone of VK-GL-CTS at 5bb4c7e8 for reading dEQP's formats
+  (`pyro-parked/wcontainers-scratch/graphics-nir/downloads/vkglcts`, no build output); on the x86
+  machine, the CTS source and build under `/work/target/graphics-nir/vk-gl-cts` (with Mesa and the
+  rest, 18 GB in all after run 9).
 - Kept between runs: a shallow clone of the pinned Mesa for reading on the Mac
   (`pyro-parked/wcontainers-scratch/graphics-nir/mesa-src`, 560 MB, no build output; logs beside it in
   `logs/`), and the Mesa build and cargo target on the x86 machine (`/work/target/graphics-nir`).
