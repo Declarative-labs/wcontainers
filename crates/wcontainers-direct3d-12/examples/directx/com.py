@@ -37,11 +37,15 @@ def body(sig, kind):
     # A plain value has no way to say "not implemented": objects.rs must answer it.
     raise SystemExit('%s returns %s: objects.rs must answer it' % (name, ret))
 
-# Interface out pointers: COM asks a call to set them to null before it can fail.
+# Interface out pointers, those beside an interface id: COM asks a call to set them to null
+# before it can fail. Other out pointers (`Map`'s) are left as the caller passed them.
 OUT = re.compile(r'(\w+): \*mut \*mut core::ffi::c_void')
 
+def outs(sig):
+    return OUT.findall(sig) if ': *const windows_core::GUID' in sig else []
+
 def cleared(sig):
-    return ''.join('cleared(%s);\n        ' % n for n in OUT.findall(sig))
+    return ''.join('cleared(%s);\n        ' % n for n in outs(sig))
 
 def args(sig):
     inner = sig[sig.index('(') + 1: sig.index(')')]
@@ -108,8 +112,8 @@ for spec in OBJECTS:
                 out.append('    %s {\n        %s%s::%s(self, %s)\n    }' % (sig, cleared(sig), ty, m, args(sig)))
                 hand.discard(m)
             else:
-                outs = OUT.findall(sig)
-                stub = re.sub(r'([(,] )(\w+): ', lambda m: m.group(1) + ('' if m.group(2) in outs else '_') + m.group(2) + ': ', sig)
+                kept = outs(sig)
+                stub = re.sub(r'([(,] )(\w+): ', lambda m: m.group(1) + ('' if m.group(2) in kept else '_') + m.group(2) + ': ', sig)
                 out.append('    %s {\n        %s%s\n    }' % (stub, cleared(sig), body(sig, ty)))
         out.append('}\n')
     if hand:

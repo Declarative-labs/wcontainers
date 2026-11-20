@@ -2390,7 +2390,6 @@ impl ID3D12Resource_Impl for Resource_Impl {
         preadrange: *const D3D12_RANGE,
         ppdata: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        cleared(ppdata);
         Resource::Map(self, subresource, preadrange, ppdata)
     }
     fn Unmap(&self, subresource: u32, pwrittenrange: *const D3D12_RANGE) {
