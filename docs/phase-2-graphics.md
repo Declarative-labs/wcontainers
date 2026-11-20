@@ -850,7 +850,9 @@ Surface formats: `FormatUse::PRESENT` names the formats `configure_surface` take
 `rgba8unorm`; a back end whose window lacks a format it declares, as a Metal layer lacks
 `rgba8unorm`, draws the frame into the window's format at present, `PresentConverted`). The DXGI layer configures the back buffer's own format where it has `PRESENT`, otherwise
 `rgba16float` for back buffers of more than 8 bits per channel where present, otherwise `rgba8unorm`;
-the present copy converts. Colour space: SDR only. Colours are shown as sRGB and values beyond one are
+the present copy converts. The host's window scales whatever it shows, so a frame of another size
+than its window, from a swap chain asking for no stretching (`DXGI_SCALING_NONE`,
+`ASPECT_RATIO_STRETCH`), is shown stretched (a listed loss, `FrameStretched`). Colour space: SDR only. Colours are shown as sRGB and values beyond one are
 clipped, as on an SDR display. DXGI reports the output's colour space as
 `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709` (`IDXGIOutput6::GetDesc1`, with the SDR luminance values),
 `CheckColorSpaceSupport` answers present for that space and, on 16-bit float back buffers, for

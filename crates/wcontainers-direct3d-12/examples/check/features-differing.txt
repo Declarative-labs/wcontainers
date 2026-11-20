@@ -53,35 +53,7 @@ format_0.support2 0x200 0x0
 format_1.support2 0x200 0x0
 format_10.support1 0x12fcd3f3 0x2fcd3f3
 format_10.support2 0x2c0 0xc0
-format_100.support1 0x2280d320 err_80004005
-format_100.support2 0x80 err_80004005
-format_101.support1 0x22800320 err_80004005
-format_101.support2 0x80 err_80004005
-format_102.support1 0x22801320 err_80004005
-format_102.support2 0x80 err_80004005
-format_103.support1 0xfa80c320 err_80004005
-format_103.support2 0x80 err_80004005
-format_104.support1 0x3a80c320 err_80004005
-format_104.support2 0x80 err_80004005
-format_106.support1 0x38000020 err_80004005
-format_106.support2 0x0 err_80004005
-format_107.support1 0x32800320 err_80004005
-format_107.support2 0x80 err_80004005
-format_108.support1 0x22800320 err_80004005
-format_108.support2 0x80 err_80004005
-format_109.support1 0x22800320 err_80004005
-format_109.support2 0x80 err_80004005
 format_11.support2 0x2c0 0xc0
-format_111.support1 0x20000020 err_80004005
-format_111.support2 0x0 err_80004005
-format_112.support1 0x20000020 err_80004005
-format_112.support2 0x0 err_80004005
-format_113.support1 0x20000020 err_80004005
-format_113.support2 0x0 err_80004005
-format_114.support1 0x20000020 err_80004005
-format_114.support2 0x0 err_80004005
-format_115.support1 0x8413f0 0x8013f0
-format_115.support2 0x200 0x0
 format_12.support2 0x3c0 0xc0
 format_13.support2 0x2c0 0xc0
 format_14.support2 0x2c0 0xc0
@@ -155,16 +127,6 @@ format_81.support2 0x200 0x0
 format_82.support2 0x200 0x0
 format_83.support2 0x200 0x0
 format_84.support2 0x200 0x0
-format_85.quality_levels_2 0x1 0x0
-format_85.quality_levels_4 0x1 0x0
-format_85.quality_levels_8 0x1 0x0
-format_85.support1 0xe4d3f0 0x8013f0
-format_85.support2 0x200 0x0
-format_86.quality_levels_2 0x1 0x0
-format_86.quality_levels_4 0x1 0x0
-format_86.quality_levels_8 0x1 0x0
-format_86.support1 0xe4d3f0 0x8013f0
-format_86.support2 0x200 0x0
 format_87.support1 0x33fcd3f3 0x3fcd3f3
 format_87.support2 0x2c0 0xc0
 format_88.support1 0x30f4d3f3 0xf4d3f0
@@ -183,3 +145,53 @@ format_96.support2 0x200 0x0
 format_97.support2 0x200 0x0
 format_98.support2 0x200 0x0
 format_99.support2 0x200 0x0
+#
+# NV12 (103), 420_OPAQUE (106) and YUY2 (107): plan 4.12's route (ordinary textures: two planes,
+# or rgba8unorm of half the width) is not built in the Direct3D 12 front yet; the front's own open
+# part (status, gap list), answered absent until then.
+format_103.support1 0xfa80c320 err_80004005
+format_103.support2 0x80 err_80004005
+format_106.support1 0x38000020 err_80004005
+format_106.support2 0x0 err_80004005
+format_107.support1 0x32800320 err_80004005
+format_107.support2 0x80 err_80004005
+#
+# The other video formats (AYUV, Y410, Y416, P010, P016, Y210, Y216, NV11, AI44, IA44, P8, A8P8):
+# no browser API has them and the plan gives no route (status, departures); answered absent.
+format_100.support1 0x2280d320 err_80004005
+format_100.support2 0x80 err_80004005
+format_101.support1 0x22800320 err_80004005
+format_101.support2 0x80 err_80004005
+format_102.support1 0x22801320 err_80004005
+format_102.support2 0x80 err_80004005
+format_104.support1 0x3a80c320 err_80004005
+format_104.support2 0x80 err_80004005
+format_108.support1 0x22800320 err_80004005
+format_108.support2 0x80 err_80004005
+format_109.support1 0x22800320 err_80004005
+format_109.support2 0x80 err_80004005
+format_111.support1 0x20000020 err_80004005
+format_111.support2 0x0 err_80004005
+format_112.support1 0x20000020 err_80004005
+format_112.support2 0x0 err_80004005
+format_113.support1 0x20000020 err_80004005
+format_113.support2 0x0 err_80004005
+format_114.support1 0x20000020 err_80004005
+format_114.support2 0x0 err_80004005
+#
+# B5G6R5 (85), B5G5R5A1 (86), B4G4R4A4 (115): sampled through rgba8unorm (FormatConverted), but
+# no exact route draws, blends or stores into them (an rgba8unorm store keeps blended values at 8
+# bits where Direct3D keeps 4, 5 or 6), so targets, storage and multisampling are answered absent
+# (status, departures).
+format_115.support1 0x8413f0 0x8013f0
+format_115.support2 0x200 0x0
+format_85.quality_levels_2 0x1 0x0
+format_85.quality_levels_4 0x1 0x0
+format_85.quality_levels_8 0x1 0x0
+format_85.support1 0xe4d3f0 0x8013f0
+format_85.support2 0x200 0x0
+format_86.quality_levels_2 0x1 0x0
+format_86.quality_levels_4 0x1 0x0
+format_86.quality_levels_8 0x1 0x0
+format_86.support1 0xe4d3f0 0x8013f0
+format_86.support2 0x200 0x0
