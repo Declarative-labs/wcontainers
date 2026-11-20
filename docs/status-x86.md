@@ -138,15 +138,30 @@ What comes next, in this order:
   layer 1's state gains the four selectors, and the reference runner loads them in its handler before
   `rt_sigreturn` and reads them first thing in its handler after the case (Linux neither saves nor restores
   them on a signal); since `arch_prctl(ARCH_SET_FS)` clears the fs selector, a case with a non-null fs or gs
-  selector has that base 0 and the runner sets only the selector. Check on the reference first: whether
-  `push fs` with 64-bit operand size writes 2 bytes or 8 (Intel allows either), and what `mov r32, fs` leaves
-  in the upper half.
+  selector has that base 0 and the runner sets only the selector. Seen on the reference already (scratch
+  `x5/run4/selectors.c` and `selectors.out`): `push fs` writes all 8 bytes, zero-extended, and `pushw fs`
+  moves rsp by 2; `mov r64, ss` and `mov r32, ss` zero-extend; `mov gs` with 0x2b or with a null selector (3)
+  gives a base of 0 and reads back as loaded; `wrgsbase` afterwards keeps the selector; `arch_prctl(ARCH_SET_GS)`
+  makes it 0; `mov ds` with 0x78 loads.
 - The never-claimed list in layer 1 at 100 a form (needs case drawing for VEX, EVEX, XOP and 3DNow operand
   kinds: ymm, zmm, k and mm registers, the vvvv and is4 operands, VSIB) with `REFERENCE_HAS`.
 - The fix-up path for hosts whose probe answers 0, run on an x86 host by forcing the answer in the test
   harness, and what the probe answers in wasmtime and Chrome on x86 and ARM hosts.
 - Layer 3 Csmith for x86 at 1,000 programs; the passed-register lists; the Chrome sample, the no-form and
   refusal tests against the laptop; 100,000 random instructions of a new seed; then the bar as a whole.
+
+The suite at 63fa3b23 (rented x86-64 machine, load 2 to 12, 2,123 s, `suite-run4.log` and `suite-run4b.log`):
+`cargo test --release --no-fail-fast -p wcontainers-guest-cpu -p wcontainers-x86 -p wcontainers-arm64 -p
+wcontainers-translator -p wcontainers-translator-test`. Every x86 test passes but the four the machine's
+5-level paging changes (`every_form_matches_the_cpu_x86_64`, `bytes_in_no_form_stop_as_on_the_cpu_x86_64`,
+`sample_matches_the_cpu_in_chrome_x86_64`, `the_x86_64_reference_refuses_what_linux_refuses`); the 25 ARM64
+tests that need an ARM64 reference fail there, as before. On the rented ARM64 machine (load about 30, with the
+probe setting below) every ARM64 test passes but the two layer 1 tests its manual keeps on the Mac
+(`suite-arm.log`), which were not run on the Mac; nothing ARM64 changed. The laptop's verdict on all default
+forms is below.
+
+Also: `WC_PROBE_ANSWER` (the test runner's `PROBE_ANSWER_SETTING`) makes the harness translate for a host whose
+probe gives that answer, for the fix-up path of hosts answering 0 (see "How to run").
 
 Literals: the check exits 0 (the Mac). New code adds no baseline line; `XMM_BYTES` is now one constant of the
 x86 crate (it was the SIMD module's and a test's copy), and `tests/reciprocals.rs` names the export through the
@@ -2356,6 +2371,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 - The plan's header now counts nine checks.
 
 ## How to run
+
+- Layer 1's verdicts on the i7-8750H (X5): `<scratch>/x5/run4/laptop-bg.sh <name> '<command>'` copies the
+  working tree there and starts the command detached (4 build jobs, under `choom`, off cores 2 and 8), log in
+  `~/wcontainers-x86/logs/<name>.log` there; e.g. `WC_LAYER1_FORMS=<codes> WC_LAYER1_CASES=1000
+  WC_LAYER1_SEED=<n> WC_LAYER1_JOBS=4 cargo test --release -p wcontainers-translator-test --test layer1
+  every_form_matches_the_cpu_x86_64 -- --nocapture`. `WC_PROBE_ANSWER=<answer>` makes the harness translate
+  for a host whose probe gives that answer (one of `PROBE_ANSWERS`), so the not-a-number fix-ups that hosts
+  answering 0 need run on any host.
 
 - Docker on the Mac without Docker Desktop (X4 run 6), for the ARM64 tests whose reference runs in Docker:
   `export LIMA_HOME=<scratch>/x86/lm` and Lima from `nix build nixpkgs#lima`; `limactl start x` (made with

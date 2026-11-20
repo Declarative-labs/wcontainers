@@ -233,9 +233,23 @@ fn block<G: GuestTest>(thread: &[u8]) -> G::Block {
     G::Block::read_from_bytes(&thread[..size_of::<G::Block>()]).expect("a thread block")
 }
 
-/// The probe of this engine, run once per process.
+/// Names an answer the host probe can give, which then stands in for this engine's own, so that what the
+/// translator emits for another host runs and is checked here too.
+pub const PROBE_ANSWER_SETTING: &str = "WC_PROBE_ANSWER";
+
+/// The probe of this engine, run once per process, or the answer `PROBE_ANSWER_SETTING` names.
 pub fn probe<G: GuestTest>() -> G::Host {
     per_guest::<G, _>(|| {
+        if let Some(answer) = std::env::var(PROBE_ANSWER_SETTING)
+            .ok()
+            .and_then(|v| v.parse::<i32>().ok())
+        {
+            assert!(
+                G::PROBE_ANSWERS.contains(&answer),
+                "{PROBE_ANSWER_SETTING} {answer} is not an answer of the probe"
+            );
+            return G::host_from_probe(answer);
+        }
         let engine = engine();
         let module = Module::new(&engine, G::probe_module()).expect("probe module");
         let mut store = Store::new(&engine, ());
