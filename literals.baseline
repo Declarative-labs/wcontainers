@@ -5870,8 +5870,6 @@ code	crates/wcontainers-runtime/src/spec.rs	str	user	"{field}: the kernel starts
 code	crates/wcontainers-runtime/src/system.rs	str	<LocalSystem as Host>::output	"standard error not written"
 code	crates/wcontainers-runtime/src/system.rs	str	<LocalSystem as Host>::output	"standard output not written"
 code	crates/wcontainers-runtime/src/system.rs	str	<LocalSystem as System>::stop_flag	"wcontainers timer"
-code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	4
-code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	8
 code	crates/wcontainers-translator-test/browser/src/lib.rs	str	contract	"align"
 code	crates/wcontainers-translator-test/browser/src/lib.rs	str	contract	"alignment"
 code	crates/wcontainers-translator-test/browser/src/lib.rs	str	contract	"body"
@@ -6124,95 +6122,16 @@ code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"en
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"init and fini lists"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"symbols"
 code	crates/wcontainers-translator-test/src/binaries.rs	str	Starts::by_means	"unwind tables"
-code	crates/wcontainers-translator-test/src/browser.rs	float	run_in_chrome	1000.0
-code	crates/wcontainers-translator-test/src/browser.rs	int	cases	4
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	0xff
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	11
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	11
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	128
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	3
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	4
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	5
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	7
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	7
-code	crates/wcontainers-translator-test/src/browser.rs	int	run_in_chrome	8
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"areas"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"cases"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"cases"
 code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"cases.bin"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"changed"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"codeBytes"
 code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"instructions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"load"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"lookAhead"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"memoryBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"omit"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"regions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"repeat"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"state"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"stopAtSyscall"
-code	crates/wcontainers-translator-test/src/browser.rs	str	cases	"stopped"
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"Target crashed"
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"WC_CHROME_JS_FLAGS"
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"case.json"
-code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"error"
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"node"
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"run.mjs"
 code	crates/wcontainers-translator-test/src/browser.rs	str	launch_or_refused	"the page crashed"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"codeBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"codeStart"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"compiling"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"instantiating"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"load"
 code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"load-{name}"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"lookAhead"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"memoryAfter"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"memoryBefore"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"memoryBytes"
 code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"module-{i}.wasm"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"modules"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"omit"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"regions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	load_modules	"repeat"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"alignment"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"bound"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"breakpoint"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"codeBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"count"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"counters"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"divide error"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"finished"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"float exception"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"general protection"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"kind"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"load"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"lookAhead"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"memory fault"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"memoryBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"nanoseconds"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"omit"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"optimise"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"overflow"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"pc"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"reason"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"regions"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"repeat"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"runs"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"splitBytes"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stack fault"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"status"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stderr"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stdout"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"stopped"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"undefined"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"unsupported"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"userAgent"
 code	crates/wcontainers-translator-test/src/changes.rs	float	choose	0.6
 code	crates/wcontainers-translator-test/src/changes.rs	int	choose	3
 code	crates/wcontainers-translator-test/src/changes.rs	int	compare	32

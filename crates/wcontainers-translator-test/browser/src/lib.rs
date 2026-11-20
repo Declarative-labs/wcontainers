@@ -38,8 +38,8 @@ fn answer(bytes: Vec<u8>) -> i32 {
 }
 
 /// Translate the blob in the input buffer from one start, at look-ahead none (0), full (1) or bounded (2, N
-/// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
-/// stop, 2: permissions, 4: returns, 8: depth; only to measure them), for speed (0) or size (1), split into
+/// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (as
+/// `Omit::bits` gives them; only to measure them), for speed (0) or size (1), split into
 /// modules of at most `module_bytes` of code when not 0 (only to measure calls between modules). Returns the
 /// length of the first code module, or -1 if the start, the code range or the bound is not valid;
 /// [`more_modules`] gives the rest.
@@ -56,12 +56,7 @@ pub extern "C" fn translate(
     module_bytes: u32,
 ) -> i32 {
     let look_ahead = LookAhead::from_code(look_ahead, bound);
-    let omit = Omit {
-        stop: omit & 1 != 0,
-        permissions: omit & 2 != 0,
-        returns: omit & 4 != 0,
-        depth: omit & 8 != 0,
-    };
+    let omit = Omit::from_bits(omit);
     let optimise = if optimise == 1 {
         Optimise::Size
     } else {

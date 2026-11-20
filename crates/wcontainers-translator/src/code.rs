@@ -91,6 +91,33 @@ pub struct Omit {
     pub depth: bool,
 }
 
+impl Omit {
+    /// The checks left out as one bit each, in the order of the fields from the lowest bit, as a caller
+    /// outside Rust passes them.
+    pub fn bits(self) -> u32 {
+        [self.stop, self.permissions, self.returns, self.depth]
+            .into_iter()
+            .rev()
+            .fold(0, |bits, left_out| bits << 1 | u32::from(left_out))
+    }
+
+    /// The checks [`Omit::bits`] gave as `bits`.
+    pub fn from_bits(bits: u32) -> Self {
+        let mut bit = 1;
+        let mut next = || {
+            let left_out = bits & bit != 0;
+            bit <<= 1;
+            left_out
+        };
+        Omit {
+            stop: next(),
+            permissions: next(),
+            returns: next(),
+            depth: next(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// A start address is not a multiple of the instruction alignment inside the code range.

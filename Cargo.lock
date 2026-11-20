@@ -2409,6 +2409,7 @@ dependencies = [
  "proptest",
  "rayon",
  "rustc-hash",
+ "serde",
  "serde_json",
  "wasm-encoder 0.263.0",
  "wasmparser 0.263.0",
