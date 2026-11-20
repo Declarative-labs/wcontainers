@@ -23,7 +23,6 @@ other = 'It does not start with a verb: a noun phrase, or a sentence with its ow
 "Adds bytes to the last slot (the merge step)." = { answer = "third_person_verb", confidence = 0.8845818620787798, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Adds image files to a kernel's root before it starts." = { answer = "third_person_verb", confidence = 0.9495484867612582, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Announces a hook about process `pid` to the embedder, after what the kernel wrote before." = { answer = "third_person_verb", confidence = 0.9854505117363772, model = "perplexity/pplx-decider-v1.2-20261016" }
-"Announces that another process has finished reading this one's internal state." = { answer = "third_person_verb", confidence = 0.979809521552198, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Answers a notice that asked for one (NOTIFY_REPLY, which has no answer itself)." = { answer = "third_person_verb", confidence = 0.8104805692896312, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Appends while another thread truncates the file: the inode is held across each." = { answer = "third_person_verb", confidence = 0.6854522699457635, model = "perplexity/pplx-decider-v1.2-20261016" }
 "Arm's `RecipEstimate` of the 9 bit value in `a`, pushed." = { answer = "other", confidence = 0.7545402597230597, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -396,7 +395,6 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "A shared memory segment (Linux's `shmid_kernel`)." = { answer = "noun_phrase", confidence = 0.9835269342141142, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A short-lived view of what the kernel keeps for one process." = { answer = "noun_phrase", confidence = 0.9730398680284053, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A signal waiting to be acted on, with the `siginfo` a handler or `sigtimedwait` is given." = { answer = "noun_phrase", confidence = 0.8216028077775238, model = "perplexity/pplx-decider-v1.2-20261016" }
-"A source of random bytes, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.8718939424902746, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A system register that unprivileged code may read or write and that we answer." = { answer = "noun_phrase", confidence = 0.903531694451474, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A value read at the loop's entry: a constant or a register that the loop does not write." = { answer = "noun_phrase", confidence = 0.7348074229471183, model = "perplexity/pplx-decider-v1.2-20261016" }
 "A value that literals and constants can share." = { answer = "noun_phrase", confidence = 0.8113055469613357, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -519,7 +517,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The default counter's numbers, but `answer` on the `at`-th ask." = { answer = "noun_phrase", confidence = 0.5411965141861403, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The device a file lives on." = { answer = "noun_phrase", confidence = 0.8471644402931754, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The embedder of a kernel, as the union of every concern below." = { answer = "noun_phrase", confidence = 0.9193096206565716, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The embedder's side of each of the kernel's streams, as ruled." = { answer = "noun_phrase", confidence = 0.8260451985444773, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The embedder's side of each of the kernel's streams." = { answer = "noun_phrase", confidence = 0.9629162702192506, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The embedder's watches on one memory's pages, and the pages written since it last asked." = { answer = "sentence_with_a_verb", confidence = 0.48793483868118986, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 "The fields of one word of one form." = { answer = "noun_phrase", confidence = 0.9119979463591804, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The files of `/proc/net` built here." = { answer = "sentence_with_a_verb", confidence = 0.3760021578786624, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -534,12 +532,12 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The keys of the literals in a file's text, given its path relative to the root." = { answer = "noun_phrase", confidence = 0.8638127105599146, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The kind of a watched access." = { answer = "noun_phrase", confidence = 0.9137526274678456, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The limits `IPC_INFO` shows (`struct shminfo64`)." = { answer = "noun_phrase", confidence = 0.6026632666369568, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The log of the kernel's warnings, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.750107077661189, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The log of the kernel's warnings." = { answer = "noun_phrase", confidence = 0.9575299896273084, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The machine as a container's programs see it." = { answer = "noun_phrase", confidence = 0.7500002068939292, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The memory behind a shared mapping, as the embedder addresses it." = { answer = "noun_phrase", confidence = 0.8513563891848696, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The monotonic clock and the wall clock, as abi's `Host` has them today and not yet ruled." = { answer = "noun_phrase", confidence = 0.5688255913667686, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The monotonic clock and the wall clock." = { answer = "noun_phrase", confidence = 0.9458056519093792, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The namespace's semaphore sets and undo lists." = { answer = "noun_phrase", confidence = 0.9288799929307636, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The network outside the container, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.6547295955662994, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The network outside the container." = { answer = "noun_phrase", confidence = 0.9593680390119904, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The number of a file on its device." = { answer = "noun_phrase", confidence = 0.9697976742678656, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The one memory access of a load or store: where, how many bytes in all, and whether it writes." = { answer = "noun_phrase", confidence = 0.8631205442471835, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The owner of processes, which suspends and resumes their tasks and their contexts." = { answer = "noun_phrase", confidence = 0.6755535548668101, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -550,20 +548,21 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The raw bits of a format's parts." = { answer = "noun_phrase", confidence = 0.9362891645101348, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The reason a run of a container returned." = { answer = "noun_phrase", confidence = 0.888520244883806, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The reason the embedder's read or write of a process's memory failed." = { answer = "noun_phrase", confidence = 0.7800960363142386, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The resolver of names to addresses, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.7169392635268045, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The resolver of names to addresses." = { answer = "noun_phrase", confidence = 0.9604457297157764, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The result of walking all but the last part of a path." = { answer = "noun_phrase", confidence = 0.9319495482318372, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The root files of a crate's targets, relative to the workspace root, whatever their extension." = { answer = "noun_phrase", confidence = 0.95136500891716, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The run queue: runnable threads that are not running, by virtual runtime." = { answer = "noun_phrase", confidence = 0.7041314507816377, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The runner in a long-lived reference container, taking one sequence at a time." = { answer = "noun_phrase", confidence = 0.6312076876588809, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The second source of an arithmetic or logical instruction." = { answer = "noun_phrase", confidence = 0.9835286302696262, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The server of the container's files over FUSE, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.8720160694826203, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The server of the container's files over FUSE." = { answer = "noun_phrase", confidence = 0.9735294600566043, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The shape of an AdvSIMD data processing instruction." = { answer = "noun_phrase", confidence = 0.96607870249836, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The size of a type, as far as it does not depend on the target." = { answer = "noun_phrase", confidence = 0.9080863106168524, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The source of the ids of processes and threads, as ruled." = { answer = "noun_phrase", confidence = 0.8126558587334177, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The source of random bytes." = { answer = "noun_phrase", confidence = 0.944742195437586, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The source of the ids of processes and threads." = { answer = "noun_phrase", confidence = 0.952931555529063, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The stand-in CPU side." = { answer = "noun_phrase", confidence = 0.938655204932314, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The state of a file on the shared anonymous inode." = { answer = "noun_phrase", confidence = 0.9628225258680864, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The state of one named counter." = { answer = "noun_phrase", confidence = 0.9819623543578488, model = "perplexity/pplx-decider-v1.2-20261016" }
-"The system call proxy and the hooks on processes, as ruled." = { answer = "noun_phrase", confidence = 0.6926736150274139, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The system call proxy and the hooks on processes." = { answer = "noun_phrase", confidence = 0.9477289121875188, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The terminal side an open file reads and writes, and whether a hangup cut the file off." = { answer = "noun_phrase", confidence = 0.7056250286161694, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The test host's side of the ends." = { answer = "noun_phrase", confidence = 0.8634862661159044, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The way one process is run." = { answer = "noun_phrase", confidence = 0.6944445988108082, model = "perplexity/pplx-decider-v1.2-20261016" }
