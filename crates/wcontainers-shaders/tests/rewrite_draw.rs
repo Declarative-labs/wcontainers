@@ -16,7 +16,7 @@ use wcontainers_shaders::{ENTRY_POINT, cache, rewrite};
 /// Texels on a side of each texture, a power of two so a moved coordinate is exact.
 const SIZE: u32 = 8;
 /// Textures and samplers in each array.
-const ELEMENTS: usize = 4;
+const ARRAY_LENGTH: usize = 4;
 /// The program's outputs: the sample, the gather, the load and the offset read.
 const OUTPUTS: usize = 4;
 const VEC4_BYTES: u64 = 16;
@@ -30,8 +30,8 @@ const SOURCE: &str = "
 enable wgpu_binding_array;
 struct U { i: u32, pad: u32, o: vec2<i32>, uv: vec2<f32> }
 @group(0) @binding(UNIFORM) var<storage, read> u: U;
-@group(0) @binding(SAMPLER) var s: binding_array<sampler, ELEMENTS>;
-@group(0) @binding(TEXTURE) var t: binding_array<texture_2d<f32>, ELEMENTS>;
+@group(0) @binding(SAMPLER) var s: binding_array<sampler, ARRAY_LENGTH>;
+@group(0) @binding(TEXTURE) var t: binding_array<texture_2d<f32>, ARRAY_LENGTH>;
 @group(0) @binding(STORAGE) var<storage, read_write> out: array<vec4<f32>>;
 @compute @workgroup_size(1) fn ENTRY() {
     let i = u.i;
@@ -49,7 +49,7 @@ fn parse(offset: [i32; 2]) -> Module {
         .replace("SAMPLER", &SlotKind::Sampler.first_binding().to_string())
         .replace("TEXTURE", &SlotKind::Texture.first_binding().to_string())
         .replace("STORAGE", &SlotKind::Storage.first_binding().to_string())
-        .replace("ELEMENTS", &ELEMENTS.to_string())
+        .replace("ARRAY_LENGTH", &ARRAY_LENGTH.to_string())
         .replace("SIZE", &SIZE.to_string())
         .replace("OX", &offset[0].to_string())
         .replace("OY", &offset[1].to_string())
@@ -132,7 +132,7 @@ fn gpu(rng: &mut fastrand::Rng) -> Gpu {
         height: SIZE,
         depth_or_array_layers: 1,
     };
-    let views = (0..ELEMENTS)
+    let views = (0..ARRAY_LENGTH)
         .map(|_| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
@@ -230,11 +230,11 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
         multisampled: false,
     };
     if arrays {
-        let count = std::num::NonZeroU32::new(ELEMENTS as u32);
+        let count = std::num::NonZeroU32::new(ARRAY_LENGTH as u32);
         layout_entries.push(entry(SlotKind::Sampler.first_binding(), sampler, count));
         layout_entries.push(entry(SlotKind::Texture.first_binding(), texture, count));
     } else {
-        for k in 0..ELEMENTS as u32 {
+        for k in 0..ARRAY_LENGTH as u32 {
             layout_entries.push(entry(SlotKind::Sampler.first_binding() + k, sampler, None));
             layout_entries.push(entry(SlotKind::Texture.first_binding() + k, texture, None));
         }
@@ -298,7 +298,7 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
             resource: wgpu::BindingResource::TextureViewArray(&views),
         });
     } else {
-        for k in 0..ELEMENTS as u32 {
+        for k in 0..ARRAY_LENGTH as u32 {
             entries.push(wgpu::BindGroupEntry {
                 binding: SlotKind::Sampler.first_binding() + k,
                 resource: wgpu::BindingResource::Sampler(samplers[k as usize]),
@@ -359,7 +359,7 @@ fn rewritten_arrays_and_gathers_compute_what_the_native_features_do() {
     let ours = rewritten();
     let mut differing = 0;
     for case in 0..cases {
-        let i = rng.u32(..ELEMENTS as u32);
+        let i = rng.u32(..ARRAY_LENGTH as u32);
         let o = [rng.i32(OFFSETS), rng.i32(OFFSETS)];
         // Coordinates a quarter texel from every texel's edge and centre, so no rounding decides
         // which texels a moved coordinate picks.
