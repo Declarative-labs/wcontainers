@@ -713,6 +713,8 @@ fn state_ids(mut states: FlagStates) -> Vec<u32> {
 const FLAGS_IN_LOCALS: u32 = 0;
 /// The flags are in the thread block, which is up to date.
 const FLAGS_IN_BLOCK: u32 = 1;
+/// The flags are as the function's first shape keeps them; the other shapes' states follow in order.
+const FIRST_SHAPE_STATE: u32 = FLAGS_IN_BLOCK + 1;
 
 /// What a check before a memory access does.
 #[derive(Clone, Copy, Debug)]
@@ -947,7 +949,7 @@ impl<G: Guest> Plan<G> {
         // Flag setting shapes, numbered after the two fixed states.
         const {
             assert!(
-                G::SHAPES.len() + 2 <= FlagStates::BITS as usize,
+                G::SHAPES.len() + FIRST_SHAPE_STATE as usize <= FlagStates::BITS as usize,
                 "too many shapes"
             )
         };
@@ -963,7 +965,7 @@ impl<G: Guest> Plan<G> {
             if d.effects.calls {
                 1 << FLAGS_IN_BLOCK
             } else if let Some(shape) = d.effects.flags.and_then(G::shape) {
-                1 << (2 + shapes.iter().position(|s| *s == shape).unwrap())
+                1 << (FIRST_SHAPE_STATE as usize + shapes.iter().position(|s| *s == shape).unwrap())
             } else if !d.effects.defs.intersect(G::FLAG_BITS).is_empty() {
                 1 << FLAGS_IN_LOCALS
             } else {
@@ -2036,7 +2038,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 });
             }
             id if out_of_line => {
-                let id = id as usize - 2;
+                let id = (id - FIRST_SHAPE_STATE) as usize;
                 let function = flags_word_function::<G>(self.plan.shapes[id]);
                 let locals = G::locals_of(self.canonical[id]);
                 let mut s = self.sink();
@@ -2046,7 +2048,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 s.call(function);
             }
             id => {
-                let flags = self.shape_flags(id as usize - 2);
+                let flags = self.shape_flags((id - FIRST_SHAPE_STATE) as usize);
                 push_word::<G>(&mut self.sink(), |s, flag| G::flag_value(s, flags, flag));
             }
         }
@@ -2318,7 +2320,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 load_flag::<G>(&mut self.sink(), block, flag);
             }
             shape => {
-                let flags = self.shape_flags(shape as usize - 2);
+                let flags = self.shape_flags((shape - FIRST_SHAPE_STATE) as usize);
                 G::flag_value(&mut self.sink(), flags, flag);
             }
         }
@@ -2555,7 +2557,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 for (&from, &to) in from.as_slice().iter().zip(to.as_slice()) {
                     s.local_get(from).local_set(to);
                 }
-                self.set_flag_state(2 + id as u32);
+                self.set_flag_state(FIRST_SHAPE_STATE + id as u32);
             }
             None => {
                 for (i, &(flag, _, _)) in G::FLAGS.iter().enumerate() {
@@ -2575,8 +2577,8 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
 
     fn condition(&mut self, cond: G::Cond) {
         let states = self.at.flags;
-        if states.count_ones() == 1 && states.trailing_zeros() >= 2 {
-            let flags = self.shape_flags(states.trailing_zeros() as usize - 2);
+        if states.count_ones() == 1 && states.trailing_zeros() >= FIRST_SHAPE_STATE {
+            let flags = self.shape_flags((states.trailing_zeros() - FIRST_SHAPE_STATE) as usize);
             if G::condition_direct(&mut self.sink(), flags, cond) {
                 return;
             }
