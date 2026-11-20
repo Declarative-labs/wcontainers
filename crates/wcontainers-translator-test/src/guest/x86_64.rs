@@ -1942,6 +1942,13 @@ fn hand_cases() -> Vec<Designed> {
         designed("sysenter", &[0x0f, 0x34], Stop::GeneralProtection, false),
         designed("ud2", &[0x0f, 0x0b], Stop::Illegal, true),
         designed("int 0x81", &[0xcd, 0x81], Stop::GeneralProtection, true),
+        // `wbinvd` with an ignored F3 on a CPU without `wbnoinvd`: kernel only.
+        designed(
+            "wbnoinvd",
+            &[REP, ESCAPE, Code::Wbinvd.op_code().op_code() as u8],
+            Stop::GeneralProtection,
+            true,
+        ),
         Designed {
             name: "int 4",
             case: plain(&[0xcd, 0x04]),

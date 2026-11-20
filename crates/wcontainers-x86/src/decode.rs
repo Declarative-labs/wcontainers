@@ -43,6 +43,10 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     let prefixes = prefix_run(code);
     let address32 = code[..prefixes].contains(&ADDRESS_SIZE);
     let mut too_long = false;
+    // `wbnoinvd` is `wbinvd` with an F3 prefix, which a CPU without it (the one presented) ignores.
+    if iced.code() == Code::Wbnoinvd {
+        iced.set_code(Code::Wbinvd);
+    }
     // iced stops reading at 15 bytes and at what makes an encoding invalid; the CPU counts the whole
     // encoding, and its limit wins over every other rule. An instruction of a feature never presented is
     // counted as the reference CPU counts it too, which for other makers' instructions (3DNow, XOP, SSE4a) is
