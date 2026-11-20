@@ -215,6 +215,9 @@ pub(crate) fn lower(ir: &Ir, variant: &VariantKey) -> Result<(Module, Reflection
     let stage = match l.stage {
         SourceStage::Vertex => ShaderStage::Vertex,
         SourceStage::Pixel => ShaderStage::Fragment,
+        SourceStage::Geometry if variant.flags.contains(VariantFlags::GEOMETRY_REPLAY) => {
+            ShaderStage::Vertex
+        }
         SourceStage::Compute | SourceStage::Geometry | SourceStage::Hull => ShaderStage::Compute,
         SourceStage::Domain => ShaderStage::Vertex,
     };

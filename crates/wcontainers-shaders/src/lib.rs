@@ -97,6 +97,9 @@ pub const CONVERTER_VERSION: &str = concat!(
 /// The refusal of a vertex program writing storage views, which WebGPU's vertex stage cannot.
 const VERTEX_STORAGE_WRITE: &str = "VertexStorageWrite";
 
+/// `VariantFlags::GEOMETRY_REPLAY` asked of a shader that is not a geometry shader.
+const REPLAY_OUTSIDE_GEOMETRY: &str = "a geometry shader's replay form asked of another shader";
+
 /// Converts a shader into the common form, as the variant asks. `root_signature` is the Direct3D 12
 /// root signature the shader is used with.
 pub fn convert(
@@ -128,7 +131,17 @@ pub fn convert(
             return Err(ConvertError::Unsupported(VERTEX_STORAGE_WRITE));
         }
         stage::clip_unpositioned(&mut module)?;
-        variant::apply(&mut module, stage, variant, &mut reflection)?;
+        // A geometry shader's forms take no rewrite of the last vertex stage: its pass-through does.
+        let geometry = matches!(reflection.extras, StageExtras::Geometry { .. });
+        if variant.flags.contains(VariantFlags::GEOMETRY_REPLAY) && !geometry {
+            return Err(ConvertError::Malformed(REPLAY_OUTSIDE_GEOMETRY.into()));
+        }
+        let rewritten = if geometry {
+            ShaderStage::Compute
+        } else {
+            stage
+        };
+        variant::apply(&mut module, rewritten, variant, &mut reflection)?;
         variant::offset::strides(&module, &mut reflection);
         Ok((module, reflection, stage))
     })?;

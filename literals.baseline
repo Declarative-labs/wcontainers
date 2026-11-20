@@ -13360,15 +13360,6 @@ code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_
 code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"w_slope"
 code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::evaluate_prologue	"the position is not a vector"
 code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::sample_positions	"sample_positions"
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_entry_point	3
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_entry_point	3
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_entry_point	3
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_entry_point	3
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_entry_point	4
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_functions	16
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_functions	4
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_functions	4
-code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_functions	4u32
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::location_vec4	4
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::location_vec4	4u32
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	input_vertices	3
@@ -13377,8 +13368,6 @@ code	crates/wcontainers-shaders/src/lower/geometry.rs	int	input_vertices	6
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	swizzle	3
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	swizzle	4
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_declaration	"a geometry declaration outside a geometry shader"
-code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_entry_point	"an input without a type"
-code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_entry_point	"id"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"a geometry shader without its vertex count"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_cut"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_emitted"
@@ -13387,7 +13376,6 @@ code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"gs_written"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"stage_geometry"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"stage_list"
-code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_functions	"stage_vertices"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	input_vertices	"geometry input primitive"
 code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	16
 code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	3
@@ -13432,7 +13420,6 @@ code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellation domain"
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellator output"
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellator partitioning"
-code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	str	clip_unpositioned	"vertex_shader"
 code	crates/wcontainers-shaders/src/stage.rs	str	stream_program	"stage/stream_out.wgsl"
