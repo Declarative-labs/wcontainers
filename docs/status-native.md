@@ -163,7 +163,15 @@ Results (Mac, Hypervisor.framework):
 - Not run, Docker: from about 03:56 Docker Desktop on the Mac started no new container (`docker run` of alpine hung for
   minutes, other tracks' too, while `docker version` answered, so the guard did not restart it). The kernel test (the
   count at every counted event alike at none and 256, the reference), busybox and whole page were stopped by hand and
-  are to be run again when Docker starts containers; their result is below if it came back in this run.
+  are to be run again when Docker starts containers. It had not come back by 04:59 (a probe every minute from 04:29).
+  The change cannot alter what these tests compare (the moves' words are checked equal to before by the routines test,
+  and every native run uses them), but they are part of the run's suites and of the independent check.
+
+What N4 still needs, in order: (1) the kernel test (count at every counted event alike at none and 256 on the benchmark
+set), busybox and whole page, once Docker on the Mac starts containers: `sh n4r19/scripts/mac.sh` runs everything, or
+the three lines of it for kernel, busybox and whole page; (2) the orchestrator's word on the bar, the table's size (run
+15) and loaded translations shared between processes (run 12), and on the forms index (For the orchestrator); (3) the
+independent check.
 
 Measured on the way, nothing kept: host toys of matrix's inner loop (loop.c, align.c, align2.c, align3.c) show its speed
 depends on where the loop falls (an 8-instruction loop 10 to 15% faster starting at an odd word than an even one, and
