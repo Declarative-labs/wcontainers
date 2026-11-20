@@ -6,11 +6,24 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-G5 is declared complete for the independent check (run 44, 2026-11-19): everything on its pass
-bar is done or on the written gap list, and nothing on that list is the front's own unfinished
-part. Run 44 changed no code: no branch it merges (the shared line, webgpu, webgl,
-direct3d-11, shaders, rig, phase-1-literals) had anything new since run 43, so run 43's full
-rerun at 4518fd0e is the current result (the code is the same; only this file changed since).
+G5 is declared complete for the independent check again (run 45, 2026-11-19). The independent
+check of run 44 found six items; run 45 fixed each or wrote it down:
+- Depth bias on lines and points (blocking): drawn unbiased, as real Direct3D 12 draws them
+  (new case `line-bias`: unbiased and biased lines, points and triangles; real and ours both
+  bias the triangle only). A bias with no topology type stays refused by name.
+- Abilities of 11_0 the front serves only through the back end (wireframe, depth clamping, a
+  depth bias clamp, independent blending, a partial sample mask): feature level 11_0 now needs
+  them (`LEVEL_11_0_FIXED_FUNCTION`), so no device reports 11_0 while refusing them; the plan's
+  routes for the first two are not built ("Gap list", Departures, "Next" 2).
+- Debugging annotations (`BeginEvent`, `SetMarker`, `EndEvent` on lists and queues): do nothing,
+  as Direct3D 12 with no tool attached (new case `markers`).
+- Vertex strides other than the layout's packed ones: the claim that no combination is built at
+  a draw is corrected (what each subject does, "Shader cache"); recording them is "Next" 2.
+- The feature comparison: the one served answer above real is named in it, so it passes and a
+  new one would fail it.
+- The stale departure on array slices and viewports: replaced.
+- A back end that lost its device (Godot's 3D platformer's validation errors): the front now
+  removes the device at the next `ExecuteCommandLists`, `Present` or `GetDeviceRemovedReason`.
 
 The pass bar, item by item, with where each is shown:
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080: 186 of
@@ -24,30 +37,34 @@ The pass bar, item by item, with where each is shown:
   one item of the WebGPU back end ("Asked of other tracks"; with that change applied for one run,
   1 of 518,400 pixels beyond 8 per compared frame).
 - CheckFeatureSupport answering as section 9 says: the own program's `features` case against
-  real Direct3D 12, one answer beyond real and served ("CheckFeatureSupport and the front's
-  refusals"), and the crates' tests of section 9's answers.
+  real Direct3D 12, none beyond real but the one named served answer ("CheckFeatureSupport and
+  the front's refusals"), and the crates' tests of section 9's answers.
 - The queue, fence, query, predication, placed-resource and indirect cases against real
-  Direct3D 12: the own program's 30 cases, all equal ("The pass bar's cases").
+  Direct3D 12: the own program's 32 cases, all equal ("The pass bar's cases").
 - The rig's Direct3D 12 scenes, beyond the bar: 95 outputs pass, 22 fail, 3 absent, each named
   ("Scenes").
 
-Run 43's results (2026-11-19, desktop shared with other tracks, load not taken; scratch run43/;
-`bin/all43.sh 1` at 4518fd0e): the literal check passes (lit1.log, lit5.log after the baseline
-was pruned); lint clean (lint1.log); the crates' 50 tests pass (test1.log: 48 of the two crates,
-2 of the interface's slow paths); test files 186 of 198 (full1.log, fail1.txt); own cases 30 of
-30 equal, draw 0 of 4096 pixels beyond 1, `antialiased-lines` 0 of 4096 pixels beyond 63,
-largest difference 38 (check1.log); shader runner 214 of 302, the same 88 failing files as runs
-37 to 42 (runner1.log, rfail1.txt); scenes 95 pass, 22 fail, 3 absent (scenes1.log,
-sfail1.txt); Wine's five dxgi tests 3 pass, 2 fail (dxgi1.log); Microsoft's two samples (2.6 and
-2.5 s) and Godot's 2D platformer (4.3 s) equal real (p1-*.log); Godot's 3D platformer stops at
-the back end's sRGB view (p1-godot-platformer-3d-d3d12-output.log); bgfx 37 727 to 791 pixels
-beyond 8 of 20,480 allowed, the overlay's text (p1-bgfx37.log); fence round trip `--alone` under
-"Measurements". Every full run from 35 to 43 (run 40 ran none) gave the same 12 failing test files; each run's logs are in
-scratch run<N>/ and its record in git (the commits "recorded run N of g5 ...").
+Run 45's results (2026-11-19, desktop shared with other tracks; scratch run45/; `bin/all45.sh 2`
+at a46949cf with the rig patch applied, then `bin/own45.sh 4` at 865ff52a, the case file's last
+change): the literal check passes (lit2.log); lint clean (lint2.log, lint4.log); the crates' 52
+tests pass (test2.log: 50 of the two crates, 2 of the interface's slow paths); test files 186 of
+198, the same 12 failing as runs 35 to 44 (full2.log, logs-full2); own program (check4.log):
+32 of 32 cases equal, draw 0 of 4096 pixels beyond 1, features 192 of 872 differ and none beyond
+real, outputs 22 of 110 and answers 7 of 40 differ, none beyond real, `antialiased-lines` 0 of
+4096 beyond 63, largest difference 38; shader runner 214 of 302, the same 88 failing files
+(runner2.log); scenes 95 pass, 22 fail, 3 absent, the same outputs as run 43 (scenes2.log,
+sfail2.txt); Wine's five dxgi tests 3 pass, 2 fail (dxgi2.log); Microsoft's two samples and
+Godot's 2D platformer equal real (p2-samples.log, p2-godot.log); bgfx 37 865 to 887 pixels
+beyond 8 of 20,480 allowed (p2-bgfx37.log); Godot's 3D platformer now gets
+`DXGI_ERROR_DEVICE_REMOVED` after the back end's first validation error and crashes in its own
+code on the null buffers that follow (exit 0xc0000005, p2-godot-platformer-3d-d3d12-output.log;
+before run 45 it drew white frames with every call succeeding); fence round trip `--alone`
+(alone2.log, processor load 1% before and after): real mean 1 us, largest 9 us; ours mean 17 us,
+largest 111 us.
 
-For the independent check, one command each (scratch `bin/all43.sh <n>` runs them all; "How to
+For the independent check, one command each (scratch `bin/all45.sh <n>` runs them all; "How to
 run" gives each by hand): a sample of the test files with `wine-tests run --dll ...` naming
-tests; the 30 cases with `check_d3d12 cases`; the real programs with `bin/real43.sh <n>`
+tests; the 32 cases with `check_d3d12 cases`; the real programs with `bin/real45.sh <n>`
 (Microsoft's two samples, Godot's two platformers, bgfx 37; other bgfx examples by
 `bgfx-compare.ps1`, "Real program"). Before running the test files,
 apply scratch run20/rig-wine-run-fix.patch to tools/graphics-rig/desktop/wine-run.ps1 (the rig's
@@ -490,7 +507,12 @@ E_NOTIMPL or a removed device, never a fake success.
 ## The pass bar's cases against real Direct3D 12 (own program)
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
-compares the lines (`examples/check/cases.rs`). Run 43: 30 of 30 equal and the one picture
+compares the lines (`examples/check/cases.rs`). Run 45: 32 of 32 equal and the one picture
+within its tolerance (run45/check4.log); new are `line-bias` (lines, points and triangles at
+depth 0.5, each unbiased and with a `DepthBias` of 100000, into D32 depth cleared to 0.503:
+real and ours draw both lines and both point sets and only the unbiased triangle) and `markers`
+(debugging annotations on a list and a queue, then `Close` and a clear: `Close` succeeds and the
+clear lands on both). Run 43: 30 of 30 equal and the one picture
 within its tolerance (run43/check1.log, "0 of 30 cases differ"). Run 41: 30 of 30 equal and the one picture
 within its tolerance (run41/check1.log). Run 39: 29 of 29 equal (run39/check2.log, the
 new `layers` among them; features, outputs and answers as run 34). Run 34: 28 of 28 equal (run34/check1.log;
@@ -569,8 +591,9 @@ fails. Since the rig's run of 2026-11-17 19:11 (its commit 4ffedc6), tests that 
 checks on real Direct3D 12 are counted too, held to every other check, so the counted set is
 198 (it was 193).
 
-The files, as of run 43 (2026-11-19, desktop shared with other tracks; scratch run43/full1.log,
-fail1.txt, logs-full1/; libraries at 4518fd0e, which run 44 did not change): 186 of 198.
+The files, as of run 45 (2026-11-19, desktop shared with other tracks; scratch run45/full2.log,
+logs-full2/; libraries at a46949cf): 186 of 198, the same 12 failing as in run 43 (run43/
+full1.log, fail1.txt).
 - d3d12 (Wine's): 10 of 10 pass.
 - vkd3d-d3d12_invalid_usage: 3 of 3 pass.
 - vkd3d-hlsl_d3d12: 9 of 9 pass.
@@ -854,7 +877,7 @@ debug builds, whole runs of 120 frames.
   driver's (harmless, absent in a container; `bgfx-run.ps1 <name> <seconds> ours nonvapi`
   keeps it out); a Rust panic in the library shows as 0xc0000409.
 
-## Gap list (the pass bar's written list, as of run 44)
+## Gap list (the pass bar's written list, as of run 45)
 
 Every failing test file, shader runner file and real-program difference is one of: an absent
 feature (reported absent as Direct3D 12 expects, or refused by name where Direct3D 12 has no
