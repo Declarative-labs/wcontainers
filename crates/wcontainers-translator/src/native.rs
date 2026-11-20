@@ -127,9 +127,10 @@ pub fn translate_native<G: Native>(
     out.finish();
     for exit in std::mem::take(&mut out.exits) {
         let within = entries.get(&exit.target).copied();
-        if !within.is_some_and(|to| G::link(&mut out, &exit, to))
-            && let Some(exit) = out.for_loader(exit)
-        {
+        if within.is_some_and(|to| G::link(&mut out, &exit, to)) {
+            // The word linked over no longer builds an address.
+            out.places.retain(|place| place.start != exit.start);
+        } else if let Some(exit) = out.for_loader(exit) {
             out.exits.push(exit);
         }
     }
