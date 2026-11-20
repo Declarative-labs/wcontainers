@@ -1,5 +1,7 @@
 //! Running a container, and interrupting it from another thread.
 
+use std::time::Duration;
+
 /// A container a runtime made, run by whoever holds it.
 pub trait Container {
     fn run(&mut self) -> StopReason;
@@ -15,7 +17,7 @@ pub trait Interrupter: Send + Sync {
 pub enum StopReason {
     Interrupted,
     Suspended,
-    Idle { until: Option<u64> },
+    Idle { until: Option<Duration> },
     Finished { status: i32 },
 }
 
