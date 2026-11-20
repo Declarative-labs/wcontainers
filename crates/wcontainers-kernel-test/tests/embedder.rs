@@ -988,13 +988,34 @@ fn watching_a_vast_range_costs_its_mapped_pages_not_its_length() {
 }
 
 /// Lazy memory from the two primitives: a new program's writable pages are saved, cleared and
-/// watched, and each is filled from the saved copy when first touched; a fork's child fills from
-/// its parent's copy. A page found changed when it is filled was written past its watch.
+/// watched, and each is filled from the saved copy when first touched, inside the hook or,
+/// `later`, between steps through `Kernel::process`; a fork's child fills from its parent's copy.
+/// A page found changed when it is filled was written past its watch.
 #[derive(Default)]
 struct Lazy {
+    later: bool,
     saved: BTreeMap<u32, Arc<BTreeMap<u64, Vec<u8>>>>,
+    pending: BTreeMap<(u32, u64), TaskId>,
     filled: Arc<Mutex<u64>>,
     written_past: Arc<Mutex<Vec<u64>>>,
+    /// The process and the thread each hook named.
+    named: Arc<Mutex<Vec<(u32, u32)>>>,
+}
+
+impl Lazy {
+    fn fill(&self, process: &mut Process<'_>, page: std::ops::Range<u64>) {
+        let saved = &self.saved[&process.id().0];
+        let bytes = &saved[&page.start];
+        let now = process.read_memory(page.clone()).expect("a mapped page");
+        if now.iter().any(|byte| *byte != 0) {
+            self.written_past.lock().unwrap().push(page.start);
+        }
+        process
+            .write_memory(page.start, bytes)
+            .expect("a mapped page");
+        process.watch_memory(page, WatchesFor::None);
+        *self.filled.lock().unwrap() += 1;
+    }
 }
 
 impl Hooks for Lazy {
@@ -1025,22 +1046,27 @@ impl Hooks for Lazy {
     fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
-        _: TaskId,
+        thread: TaskId,
         address: u64,
         _: AccessKind,
     ) {
+        self.named.lock().unwrap().push((process.id().0, thread.0));
         let page = page_of(address);
-        let saved = &self.saved[&process.id().0];
-        let bytes = &saved[&page.start];
-        let now = process.read_memory(page.clone()).expect("a mapped page");
-        if now.iter().any(|byte| *byte != 0) {
-            self.written_past.lock().unwrap().push(page.start);
+        if self.later {
+            self.pending
+                .insert((process.id().0, page.start), process.id());
+        } else {
+            self.fill(&mut process, page);
         }
-        process
-            .write_memory(page.start, bytes)
-            .expect("a mapped page");
-        process.watch_memory(page, WatchesFor::None);
-        *self.filled.lock().unwrap() += 1;
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let pending = std::mem::take(&mut self.pending);
+        for ((_, page), id) in &pending {
+            let mut process = kernel.process(cpu, *id).expect("the process waits");
+            self.fill(&mut process, page_of(*page));
+        }
+        !pending.is_empty()
     }
 }
 
@@ -1102,6 +1128,80 @@ fn lazy_memory_runs_the_shell_scripts_as_the_reference_does() {
                 written_past.lock().unwrap()
             );
         }
+    }
+}
+
+/// Runs embedder.c's `mode` under lazy memory as the reference runs it, its pages filled inside
+/// the hook and between steps: the same output, nothing written past a watch, no copy outside a
+/// call's description or short of watched memory. Gives what each lazy run's hooks named.
+fn lazy_as_the_reference(mode: &[&str]) -> Vec<Vec<(u32, u32)>> {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let mut arguments = vec![mode[0], address.as_str(), pages.as_str()];
+    arguments.extend(&mode[1..]);
+    let theirs = reference::run(&program, &arguments);
+    let theirs = String::from_utf8_lossy(&theirs.stdout);
+    let mut named = Vec::new();
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let plain = run_embedder_below(mode, None, seed, None);
+        assert_eq!(stdout(&plain), theirs, "{}, seed {seed}", mode[0]);
+        for later in [false, true] {
+            let lazy = Lazy {
+                later,
+                ..Lazy::default()
+            };
+            let (filled, written_past) = (lazy.filled.clone(), lazy.written_past.clone());
+            let hooks_named = lazy.named.clone();
+            let run = run_embedder_below(mode, Some(Box::new(lazy)), seed, None);
+            let label = format!("{}, seed {seed}, later {later}", mode[0]);
+            assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
+            assert!(*filled.lock().unwrap() > 0, "{label}: nothing was filled");
+            assert!(
+                written_past.lock().unwrap().is_empty(),
+                "{label}: written past the watch: {:x?}",
+                written_past.lock().unwrap()
+            );
+            for counter in [
+                reason::COPY_UNDESCRIBED,
+                reason::WATCH_MET_AT_A_COPY,
+                reason::CALL_SHORT_OF_WATCHED_MEMORY,
+            ] {
+                assert_eq!(
+                    counted(&run, counter),
+                    0,
+                    "{label}: {counter}: {:?}",
+                    run.counters
+                );
+            }
+            named.push(std::mem::take(&mut *hooks_named.lock().unwrap()));
+        }
+    }
+    named
+}
+
+#[test]
+fn a_programs_own_memory_reached_by_the_process_vm_calls_meets_its_watches() {
+    lazy_as_the_reference(&["vm"]);
+}
+
+/// A command line long enough to fill pages the program never touches itself.
+const LONG_ARGUMENT: u64 = 3 * PAGE_SIZE;
+
+#[test]
+fn a_command_line_read_through_proc_meets_the_watches_of_the_process_it_names() {
+    let long = "a".repeat(LONG_ARGUMENT as usize);
+    for named in lazy_as_the_reference(&["cmdline", "self", &long]) {
+        assert!(
+            named.iter().all(|(process, thread)| process == thread),
+            "{named:?}"
+        );
+    }
+    // The child's read meets its parent's watches, named with the child's thread.
+    for named in lazy_as_the_reference(&["cmdline", "parent", &long]) {
+        assert!(
+            named.iter().any(|(process, thread)| process != thread),
+            "{named:?}"
+        );
     }
 }
 

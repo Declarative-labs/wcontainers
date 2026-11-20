@@ -26,6 +26,7 @@ use crate::linux_extra::{
     tms,
 };
 use crate::memory::page_down;
+use crate::process::Pid;
 use crate::system::AccessKind;
 
 /// What one thread's end touches: its lock list and the word that tells joiners it is gone.
@@ -42,8 +43,9 @@ pub(crate) struct ThreadEnd {
 pub(crate) enum Ending {
     Caller,
     Process,
-    /// Every thread of the process but the caller, as `execve` does.
-    Others,
+    /// Every thread of the process but the caller, and then the caller's release of the memory
+    /// it leaves, as `execve` does.
+    Exec,
 }
 
 /// The calling thread's memory as the walk sees it.
@@ -59,6 +61,35 @@ pub(crate) trait Memory {
     fn writable(&mut self, fd: u64) -> Option<bool>;
     /// Whether the call runs again after it made progress and waited.
     fn resuming(&mut self) -> bool;
+    /// Whether a task id names a thread of the caller's process, whose memory is the caller's.
+    fn own_task(&mut self, id: u64) -> bool;
+    /// The process and the range of its memory that reading descriptor `fd` copies, as
+    /// `/proc/<pid>/cmdline` does; none for any other file.
+    fn file_memory(&mut self, fd: u64) -> Option<(Pid, u64, u64)>;
+    /// Meets the watches on a range of process `pid`'s memory as `touch` does on the caller's.
+    fn touch_process(&mut self, pid: Pid, address: u64, length: u64, access: AccessKind) -> bool;
+}
+
+/// The descriptor whose file a call reads, which may copy a process's memory.
+pub(crate) fn read_descriptor(call: SystemCallRequest) -> Option<u64> {
+    let [a0, a1, ..] = call.arguments;
+    match u32::try_from(call.number).ok()? {
+        __NR_read | __NR_pread64 | __NR_readv | __NR_preadv | __NR_preadv2 | __NR_splice => {
+            Some(a0)
+        }
+        __NR_sendfile => Some(a1),
+        _ => None,
+    }
+}
+
+/// The memory a read of descriptor `fd` copies, met before the caller's own.
+fn file_memory(memory: &mut dyn Memory, fd: u64) -> bool {
+    match memory.file_memory(fd) {
+        Some((pid, start, length)) => {
+            length == 0 || memory.touch_process(pid, start, length, AccessKind::Read)
+        }
+        None => true,
+    }
 }
 
 /// Meets a range; a null address or nothing touches nothing.
@@ -144,6 +175,17 @@ fn strings(memory: &mut dyn Memory, mut array: u64) -> bool {
 
 /// A `struct iovec` array, read, then each segment touched as `access`.
 fn vectors(memory: &mut dyn Memory, array: u64, count: u64, access: AccessKind) -> bool {
+    segments(memory, array, count, access, |base| base)
+}
+
+/// As [`vectors`], each segment's address first passed through `address`.
+fn segments(
+    memory: &mut dyn Memory,
+    array: u64,
+    count: u64,
+    access: AccessKind,
+    address: fn(u64) -> u64,
+) -> bool {
     let size = size_of::<iovec>();
     let count = count.min(UIO_MAXIOV.into()) as usize;
     let Some(bytes) = fetch(memory, array, count * size, AccessKind::Read) else {
@@ -152,7 +194,7 @@ fn vectors(memory: &mut dyn Memory, array: u64, count: u64, access: AccessKind) 
     bytes.chunks_exact(size).all(|entry| {
         meet(
             memory,
-            word(entry, offset_of!(iovec, iov_base)),
+            address(word(entry, offset_of!(iovec, iov_base))),
             word(entry, offset_of!(iovec, iov_len)),
             access,
         )
@@ -523,6 +565,11 @@ pub(crate) fn touch(memory: &mut dyn Memory, call: SystemCallRequest) -> bool {
     let timespec = size_of::<__kernel_timespec>();
     let int = size_of::<i32>();
     let offset = size_of::<i64>();
+    if let Some(fd) = read_descriptor(call)
+        && !file_memory(memory, fd)
+    {
+        return false;
+    }
     match number {
         __NR_read | __NR_pread64 | __NR_getdents64 => meet(memory, a1, a2, write),
         __NR_getrandom | __NR_getcwd => meet(memory, a0, a1, write),
@@ -649,19 +696,25 @@ pub(crate) fn touch(memory: &mut dyn Memory, call: SystemCallRequest) -> bool {
                 true
             }
         }
+        // The other side's segments are in the caller's memory too when the task is its own,
+        // found with their tags stripped as `get_user_pages` finds them.
         __NR_process_vm_readv | __NR_process_vm_writev => {
-            let local = if number == __NR_process_vm_readv {
-                write
+            let (local, remote) = if number == __NR_process_vm_readv {
+                (write, read)
             } else {
-                read
+                (read, write)
             };
             vectors(memory, a1, a2, local)
-                && meet(
-                    memory,
-                    a3,
-                    a4.min(UIO_MAXIOV.into()) * size_of::<iovec>() as u64,
-                    read,
-                )
+                && if memory.own_task(a0) {
+                    segments(memory, a3, a4, remote, crate::user::untagged)
+                } else {
+                    meet(
+                        memory,
+                        a3,
+                        a4.min(UIO_MAXIOV.into()) * size_of::<iovec>() as u64,
+                        read,
+                    )
+                }
         }
         __NR_execve | __NR_execveat => {
             let (file, arguments, environment) = if number == __NR_execve {
@@ -669,11 +722,11 @@ pub(crate) fn touch(memory: &mut dyn Memory, call: SystemCallRequest) -> bool {
             } else {
                 (a1, a2, a3)
             };
-            let others = memory.thread_ends(Ending::Others);
+            let ends = memory.thread_ends(Ending::Exec);
             path(memory, file)
                 && strings(memory, arguments)
                 && strings(memory, environment)
-                && thread_ends(memory, &others)
+                && thread_ends(memory, &ends)
         }
         __NR_exit => {
             let ends = memory.thread_ends(Ending::Caller);

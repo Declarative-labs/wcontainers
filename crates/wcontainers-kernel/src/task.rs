@@ -202,21 +202,32 @@ impl Kernel {
             }
         }
         // The watched memory the call will touch is met before it acts, and its copies are
-        // checked against what its description named.
-        let watched = self.watched(tid);
+        // checked against what its description named; so is another process's memory it reads
+        // through a file.
+        let other = if self.watching {
+            self.reads_watched_process(tid, call)
+        } else {
+            None
+        };
+        let watched = self.watched(tid) || other.is_some();
+        let mut unmet = None;
         if watched
-            && !self.walk_watched(cx, tid, |kernel, cx| {
+            && !self.walk_watched(cx, |kernel, cx| {
                 // A copy into this memory by another process's call left nothing for this one.
-                {
-                    let watches = &mut kernel.process_of(tid).map.borrow_mut().watches;
+                let own = kernel.threads[&tid].process;
+                for pid in core::iter::once(own).chain(other) {
+                    let watches = &mut kernel.processes[&pid].map.borrow_mut().watches;
                     watches.touched = None;
                     watches.described = Some(alloc::vec::Vec::new());
                 }
-                let mut memory = crate::system::CallMemory { kernel, cx, tid };
-                syscall::touch::touch(&mut memory, call)
+                let mut memory = crate::system::CallMemory::new(kernel, cx, tid);
+                let met = syscall::touch::touch(&mut memory, call);
+                unmet = memory.unmet;
+                met
             })
         {
-            self.wait_on_watch(tid, None, false);
+            let memory = unmet.unwrap_or(self.process_of(tid).memory);
+            self.park(tid, Channel::Watch(memory.0));
             return;
         }
         self.threads[&tid].taken.borrow_mut().rewind();
@@ -243,21 +254,28 @@ impl Kernel {
         // A copy outside the call's description is counted. If it met a watched page, a call that
         // failed for it runs again once the watch is met, doing again what it did before the
         // copy; one that did part of its work keeps its short result (both counted).
-        let (touched, undescribed) = match (watched, self.threads.get(&tid)) {
-            (true, Some(thread)) => {
-                let watches = &mut self.processes[&thread.process].map.borrow_mut().watches;
+        let mut touched = None;
+        let mut undescribed = false;
+        if watched && let Some(thread) = self.threads.get(&tid) {
+            for pid in core::iter::once(thread.process).chain(other) {
+                let Some(process) = self.processes.get(&pid) else {
+                    continue;
+                };
+                let watches = &mut process.map.borrow_mut().watches;
                 watches.described = None;
-                (watches.touched.take(), watches.undescribed.take())
+                undescribed |= watches.undescribed.take().is_some();
+                if let Some((address, access)) = watches.touched.take() {
+                    touched.get_or_insert((pid, process.memory, address, access));
+                }
             }
-            _ => (None, None),
-        };
-        if undescribed.is_some() {
+        }
+        if undescribed {
             self.counters
                 .count(cx.host, reason::COPY_UNDESCRIBED, call.number);
         }
         let mut runs_again = false;
-        if let Some((address, access)) = touched {
-            let met = self.watch_touched(cx, tid, address, access);
+        if let Some((pid, memory, address, access)) = touched {
+            let met = self.watch_touched(cx, tid, pid, address, access);
             match outcome {
                 syscall::Outcome::Return(value) if !crate::errno::Errno::is_error_return(value) => {
                     self.counters
@@ -275,7 +293,7 @@ impl Kernel {
                         outcome = syscall::Outcome::Restart;
                         runs_again = true;
                     } else {
-                        self.wait_on_watch(tid, None, false);
+                        self.park(tid, Channel::Watch(memory.0));
                         outcome = syscall::Outcome::Parked;
                     }
                 }
@@ -939,6 +957,8 @@ impl Kernel {
         if !self.memory_in_use_elsewhere(pid, memory) {
             cx.cpu.memory_drop(memory);
         }
+        // A reader of this process's memory that waits on a watch finds it gone.
+        self.wake(Channel::Watch(memory.0));
         self.update_watching();
         for files in tables {
             self.put_files(files, pid);

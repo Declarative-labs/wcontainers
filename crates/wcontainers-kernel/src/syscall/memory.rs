@@ -13,6 +13,7 @@ use crate::linux::general::*;
 use crate::linux_extra::LEGACY_MAP_MASK;
 use crate::memory::{Backing, Lock, Mapping, page_align, page_down, page_up};
 use crate::process::Tid;
+use crate::system::AccessKind;
 use crate::{Context, Errno, Kernel, errno};
 
 /// What a protection argument allows. `mprotect` refuses bits ARM64 does not have; `mmap` ignores them.
@@ -1737,6 +1738,11 @@ fn process_vm(
     let mut local = local.into_iter().filter(|(_, length)| *length > 0);
     let mut current = local.next();
     let mut copied = 0;
+    let remote_access = if write {
+        AccessKind::Write
+    } else {
+        AccessKind::Read
+    };
     for (base, length) in targets {
         if remaining == 0 {
             break;
@@ -1745,7 +1751,14 @@ fn process_vm(
             continue;
         }
         let wanted = length.min(remaining);
-        let reach = guest.map.borrow().pinnable(base, wanted, write);
+        let pinnable = guest.map.borrow().pinnable(base, wanted, write);
+        // The other side is this memory, so its watches are met as the local side's are.
+        let reach =
+            guest
+                .map
+                .borrow_mut()
+                .watches
+                .copy_reach(base, wanted, pinnable, remote_access);
         // Linux copies a page of the other side at a time, into as many local segments as it takes.
         let mut at = base;
         while at < base + reach {

@@ -913,13 +913,15 @@ pub(super) fn proc_contents(
     cx.host.random(&mut fresh);
     let memory_in_use = kernel.memory_in_use();
     let cpu = &mut *cx.cpu;
+    // A watched page is not there for the copy until the watch is met, as for a call's copies.
     let mut read_memory = |process: &crate::process::Process, start: u64, length: u64| {
         let mut bytes = alloc::vec![0; length as usize];
+        let mut map = process.map.borrow_mut();
+        let readable = map.accessible(start, length, wcontainers_abi::Permissions::READ);
         let readable =
-            process
-                .map
-                .borrow()
-                .accessible(start, length, wcontainers_abi::Permissions::READ);
+            map.watches
+                .copy_reach(start, length, readable, crate::system::AccessKind::Read);
+        drop(map);
         bytes.truncate(readable as usize);
         if cpu.read(process.memory, start, &mut bytes).is_err() {
             bytes.clear();

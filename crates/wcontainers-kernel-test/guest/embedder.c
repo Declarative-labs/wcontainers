@@ -29,6 +29,10 @@
 //   scatter: in a child, receives the first of two datagrams with recvfrom into the buffer's
 //     second page, its address into the third and the address's length from the fourth, then
 //     the second datagram, and prints both.
+//   vm: in a child, writes a page of data the program never touches with process_vm_writev on
+//     itself, and in another reads it with process_vm_readv; prints what each saw.
+//   cmdline WHOSE LONG: reads the command line of itself (self) or, from a child, of its parent
+//     (parent) through /proc, without touching its strings, and counts the letters a.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -42,6 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <linux/capability.h>
+#include <linux/futex.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
@@ -571,6 +576,79 @@ static void kill_sharer(int signal) {
 static void call_sigkill_sharer(void) { kill_sharer(SIGKILL); }
 static void call_sigterm_sharer(void) { kill_sharer(SIGTERM); }
 
+// A vfork child that clears a word as it ends runs a program: Linux clears the word in the memory
+// it gives back (`exec_mm_release`).
+static void call_vfork_exec_cleartid(void) {
+    static char *arguments[] = {"true", NULL}, *environment[] = {NULL};
+    static const char path[] = "/bin/true";
+    register long x8 __asm__("x8") = SYS_clone;
+    register unsigned long x0 __asm__("x0") = CLONE_VM | CLONE_VFORK | CLONE_CHILD_CLEARTID | SIGCHLD;
+    register long x1 __asm__("x1") = 0, x2 __asm__("x2") = 0, x3 __asm__("x3") = 0;
+    register int *x4 __asm__("x4") = (int *)AT;
+    register const char *x9 __asm__("x9") = path;
+    register char **x10 __asm__("x10") = arguments, **x11 __asm__("x11") = environment;
+    __asm__ volatile("svc #0\n"
+                     "cbnz x0, 1f\n"
+                     "mov x8, %[execve]\n mov x0, x9\n mov x1, x10\n mov x2, x11\n svc #0\n"
+                     "mov x8, %[exit]\n mov x0, xzr\n svc #0\n"
+                     "1:\n"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x9), "r"(x10), "r"(x11),
+                       [execve] "i"(SYS_execve), [exit] "i"(SYS_exit)
+                     : "memory");
+    int status = 0;
+    waitpid((pid_t)x0, &status, 0);
+    printf("vfork exec cleartid %d status %d\n", *(volatile int *)AT == 0, status);
+}
+
+// A vfork child holding a lock on its robust list runs a program: Linux marks the lock as its
+// owner's death in the memory it gives back (`futex_exec_release`).
+#define ROBUST_HEAD ((struct robust_list_head *)(buffer + page + 256))
+#define ROBUST_ENTRY ((struct robust_list *)(buffer + page + 512))
+
+static void prepare_robust_exec(void) {
+    ROBUST_HEAD->list.next = ROBUST_ENTRY;
+    ROBUST_HEAD->futex_offset = AT - (char *)ROBUST_ENTRY;
+    ROBUST_HEAD->list_op_pending = NULL;
+    ROBUST_ENTRY->next = &ROBUST_HEAD->list;
+}
+
+static void call_robust_exec(void) {
+    static char *arguments[] = {"true", NULL}, *environment[] = {NULL};
+    static const char path[] = "/bin/true";
+    register long x8 __asm__("x8") = SYS_clone;
+    register unsigned long x0 __asm__("x0") = CLONE_VM | CLONE_VFORK | SIGCHLD;
+    register long x1 __asm__("x1") = 0, x2 __asm__("x2") = 0, x3 __asm__("x3") = 0, x4 __asm__("x4") = 0;
+    register const char *x9 __asm__("x9") = path;
+    register char **x10 __asm__("x10") = arguments, **x11 __asm__("x11") = environment;
+    register char *x12 __asm__("x12") = AT;
+    register struct robust_list_head *x13 __asm__("x13") = ROBUST_HEAD;
+    __asm__ volatile("svc #0\n"
+                     "cbnz x0, 1f\n"
+                     "mov x8, %[gettid]\n svc #0\n str w0, [x12]\n"
+                     "mov x0, x13\n mov x1, %[size]\n mov x8, %[robust]\n svc #0\n"
+                     "mov x8, %[execve]\n mov x0, x9\n mov x1, x10\n mov x2, x11\n svc #0\n"
+                     "mov x8, %[exit]\n mov x0, xzr\n svc #0\n"
+                     "1:\n"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x9), "r"(x10), "r"(x11),
+                       "r"(x12), "r"(x13), [gettid] "i"(SYS_gettid), [robust] "i"(SYS_set_robust_list),
+                       [size] "i"(sizeof(struct robust_list_head)), [execve] "i"(SYS_execve),
+                       [exit] "i"(SYS_exit)
+                     : "memory");
+    int status = 0;
+    waitpid((pid_t)x0, &status, 0);
+    printf("robust exec owner died %d status %d\n", *(volatile unsigned *)AT == FUTEX_OWNER_DIED, status);
+}
+
+// The process's own memory written as another task's would be.
+static void call_process_vm_writev(void) {
+    char text[8] = "written!";
+    struct iovec local = {text, sizeof text}, remote = {AT, sizeof text};
+    long done = syscall(SYS_process_vm_writev, getpid(), &local, 1, &remote, 1, 0);
+    printf("process_vm_writev %ld %.8s\n", done, AT);
+}
+
 // Each call, and what the parent puts in the buffer before the child that makes it starts.
 static const struct {
     void (*prepare)(void);
@@ -624,6 +702,9 @@ static const struct {
     {prepare_capset, call_capset},
     {NULL, call_sigkill_sharer},
     {NULL, call_sigterm_sharer},
+    {NULL, call_vfork_exec_cleartid},
+    {prepare_robust_exec, call_robust_exec},
+    {NULL, call_process_vm_writev},
 };
 
 static int calls(void) {
@@ -872,6 +953,54 @@ static int proxy(void) {
     return 0;
 }
 
+// A page of initialised data the program itself never touches.
+#define REMOTE_ALIGNMENT 65536
+static char remote_page[REMOTE_ALIGNMENT] __attribute__((aligned(REMOTE_ALIGNMENT))) = "initialised";
+#define REMOTE_TEXT 8
+
+static int vm(void) {
+    pid_t child = fork();
+    if (child == 0) {
+        char text[REMOTE_TEXT] = "written!";
+        struct iovec local = {text, sizeof text}, remote = {remote_page + 64, sizeof text};
+        long done = syscall(SYS_process_vm_writev, getpid(), &local, 1, &remote, 1, 0);
+        printf("process_vm_writev %ld %.8s\n", done, remote_page + 64);
+        fflush(stdout);
+        _exit(0);
+    }
+    waitpid(child, NULL, 0);
+    child = fork();
+    if (child == 0) {
+        char text[REMOTE_TEXT + 1] = {0};
+        struct iovec local = {text, REMOTE_TEXT}, remote = {remote_page, REMOTE_TEXT};
+        long done = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
+        printf("process_vm_readv %ld %s\n", done, text);
+        fflush(stdout);
+        _exit(0);
+    }
+    waitpid(child, NULL, 0);
+    return 0;
+}
+
+static int command_line(const char *whose) {
+    int parent = !strcmp(whose, "parent");
+    pid_t reader = parent ? fork() : 0;
+    if (reader > 0) {
+        waitpid(reader, NULL, 0);
+        return 0;
+    }
+    static char line[1 << 16];
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, "/proc/%d/cmdline", parent ? getppid() : getpid());
+    int file = open(path, O_RDONLY);
+    long length = read(file, line, sizeof line), letters = 0;
+    for (long at = 0; at < length; at++) letters += line[at] == 'a';
+    printf("cmdline %ld letters %ld\n", length, letters);
+    fflush(stdout);
+    if (parent) _exit(0);
+    return 0;
+}
+
 static int exec_program(char *path) {
     char *arguments[] = {path, NULL};
     execve(path, arguments, NULL);
@@ -906,5 +1035,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "kernelwrites") && argc > 4) return kernel_writes(strtol(argv[4], NULL, 0));
     if (!strcmp(mode, "proxy")) return proxy();
     if (!strcmp(mode, "exec") && argc > 4) return exec_program(argv[4]);
+    if (!strcmp(mode, "vm")) return vm();
+    if (!strcmp(mode, "cmdline") && argc > 4) return command_line(argv[4]);
     return 2;
 }

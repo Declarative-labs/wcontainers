@@ -279,6 +279,10 @@ fn exec(
     // timers go (`exit_itimers`).
     super::timer::process_end(kernel, pid, true);
     let tid = kernel.only_thread(cx, pid, tid);
+    // `exec_mm_release`: the caller's robust list, and its word for joiners while another process
+    // still uses the memory it leaves (a `vfork` child's parent).
+    let shared = kernel.memory_in_use_elsewhere(pid, kernel.processes[&pid].memory);
+    super::futex::thread_end(kernel, cx, tid, shared);
     kernel.install_image(cx, pid, tid, image);
     Ok(Exec::Started(tid))
 }

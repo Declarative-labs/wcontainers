@@ -573,7 +573,7 @@ impl Kernel {
             let pid = self.threads[&tid].process;
             if let Some(&signal) = self.dying.get(&pid) {
                 if self.watched(tid)
-                    && !self.walk_watched(cx, tid, |kernel, cx| kernel.ends_touched(cx, tid))
+                    && !self.walk_watched(cx, |kernel, cx| kernel.ends_touched(cx, tid))
                 {
                     self.wait_on_watch(tid, Some(resume), true);
                 } else {
@@ -590,7 +590,7 @@ impl Kernel {
         // Taken off the CPU in its own code: its restartable sequence first.
         if self.threads[&tid].rseq_event {
             if self.watched(tid)
-                && !self.walk_watched(cx, tid, |kernel, cx| kernel.rseq_touched(cx, tid))
+                && !self.walk_watched(cx, |kernel, cx| kernel.rseq_touched(cx, tid))
             {
                 self.wait_on_watch(tid, Some(resume), true);
                 return None;
@@ -604,7 +604,7 @@ impl Kernel {
         loop {
             let mask = self.threads[&tid].signal_mask;
             if self.watched(tid)
-                && !self.walk_watched(cx, tid, |kernel, cx| kernel.frame_touched(cx, tid, !mask))
+                && !self.walk_watched(cx, |kernel, cx| kernel.frame_touched(cx, tid, !mask))
             {
                 self.wait_on_watch(tid, Some(resume), true);
                 return None;
@@ -1168,11 +1168,7 @@ impl Kernel {
         cx.cpu.registers(thread.cpu, &mut registers);
         let (at, _, top) = frame_bounds(thread.alternate_stack, action.sa_flags, registers.sp);
         if crate::user::access_ok(at, top.wrapping_sub(at)) {
-            let mut memory = crate::system::CallMemory {
-                kernel: self,
-                cx,
-                tid,
-            };
+            let mut memory = crate::system::CallMemory::new(self, cx, tid);
             if !crate::syscall::touch::Memory::touch(
                 &mut memory,
                 at,
@@ -1189,11 +1185,7 @@ impl Kernel {
     /// thread must wait.
     fn ends_touched(&mut self, cx: &mut Context<'_>, tid: Tid) -> bool {
         let ends = self.thread_ends(tid, crate::syscall::touch::Ending::Process);
-        let mut memory = crate::system::CallMemory {
-            kernel: self,
-            cx,
-            tid,
-        };
+        let mut memory = crate::system::CallMemory::new(self, cx, tid);
         crate::syscall::touch::thread_ends(&mut memory, &ends)
     }
 
@@ -1206,11 +1198,7 @@ impl Kernel {
         };
         let mut registers = RegisterBlock::ZERO;
         cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
-        let mut memory = crate::system::CallMemory {
-            kernel: self,
-            cx,
-            tid,
-        };
+        let mut memory = crate::system::CallMemory::new(self, cx, tid);
         let field = area + RSEQ_CS_FIELD;
         let mut sequence = [0; size_of::<u64>()];
         if !memory.touch(field, sequence.len() as u64, Write) {
@@ -1283,7 +1271,7 @@ impl Kernel {
             WatchesFor::None => false,
         };
         if watched {
-            if self.watch_touched(cx, tid, at, touch) {
+            if self.watch_touched(cx, tid, pid, at, touch) {
                 self.return_to_user(cx, tid, Resume::FromRegisters);
             } else {
                 self.wait_on_watch(tid, Some(Resume::FromRegisters), false);

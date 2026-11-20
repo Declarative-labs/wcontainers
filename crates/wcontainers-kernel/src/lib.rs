@@ -183,6 +183,9 @@ pub struct Kernel {
     /// Some process has watched pages or a record of written pages: a call, a signal or a fault
     /// then looks at its own process's.
     watching: bool,
+    /// How many times any page's watch was raised (set, or widened to `All`): a walk over what a
+    /// call will touch starts again when this moves under it.
+    watches_raised: u64,
     /// The embedder's watches changed outside a call into the kernel and woke threads, which the
     /// kernel settles before anything runs.
     unsettled: bool,
@@ -272,6 +275,7 @@ impl Kernel {
             last_id: 0,
             ceiling: 0,
             watching: false,
+            watches_raised: 0,
             unsettled: false,
             ids_let_go: Vec::new(),
             outgrown: Rc::default(),

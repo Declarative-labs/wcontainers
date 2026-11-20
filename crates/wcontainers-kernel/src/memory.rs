@@ -303,9 +303,6 @@ pub(crate) struct Watches {
     pub described: Option<Vec<(u64, u64, AccessKind)>>,
     /// The first address a copy of the running call reached outside its description.
     pub undescribed: Option<u64>,
-    /// How many times a page's watch was raised (set, or widened to `All`): a walk over what a
-    /// call will touch starts again when this moves under it.
-    pub raised: u64,
 }
 
 impl Watches {
@@ -382,6 +379,20 @@ impl Watches {
             .range(page_down(start)..end)
             .find(|(_, watch)| access == AccessKind::Write || **watch == WatchesFor::All)
             .map(|(page, _)| (*page).max(start))
+    }
+
+    /// How much of the `reached` bytes from `start` a kernel copy of `length` bytes takes before a
+    /// watched page, which is not there for it until the watch is met; the copy is checked against
+    /// the running call's description.
+    pub fn copy_reach(&mut self, start: u64, length: u64, reached: u64, access: AccessKind) -> u64 {
+        self.check_described(start, start.saturating_add(length), access);
+        match self.first_watched(start, start + reached, access) {
+            Some(at) => {
+                self.touched.get_or_insert((at, access));
+                at - start
+            }
+            None => reached,
+        }
     }
 
     /// Notes that the process wrote `[start, end)`, if the embedder keeps a record.
@@ -477,18 +488,20 @@ impl AddressMap {
     }
 
     /// Sets the embedder's watch on the mapped pages of `[start, end)` (page aligned) and tells
-    /// the CPU side; whether any page's watch changed.
+    /// the CPU side; whether any page's watch changed, and how many pages' were raised (set, or
+    /// widened to `All`).
     pub fn set_watch(
         &mut self,
         cpu: &mut dyn Cpu,
         memory: MemoryId,
         range: core::ops::Range<u64>,
         watch: WatchesFor,
-    ) -> bool {
+    ) -> (bool, u64) {
         // Only watched pages are visited to end watches, and only mapped ones to set them.
         let mut changed = false;
+        let mut raised = 0;
         if range.is_empty() {
-            return changed;
+            return (changed, raised);
         }
         if watch == WatchesFor::None {
             let ended: Vec<u64> = self
@@ -514,7 +527,7 @@ impl AddressMap {
                     let before = self.watches.pages.insert(page, watch);
                     changed |= before != Some(watch);
                     if watch_rank(watch) > before.map_or(0, watch_rank) {
-                        self.watches.raised += 1;
+                        raised += 1;
                     }
                 }
             }
@@ -522,7 +535,7 @@ impl AddressMap {
         if changed {
             self.reapply(cpu, memory, range.start, range.end);
         }
-        changed
+        (changed, raised)
     }
 
     /// The pages written since the embedder last asked, as ranges, and a fresh record from now
