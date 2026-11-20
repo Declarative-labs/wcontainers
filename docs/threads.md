@@ -3060,8 +3060,8 @@ Each bar is checkable by the named tests. The cheapest large win is first.
     lock and its holder's word in a system call, by the build without them, and of the proxy's hooks
     beside it; the same build with 16 processors on four and on eight cores, against 16 on 16 where a
     machine has them.
-  - Before T1's mixed-free bar is trusted, the model of call-ins is redone for section 3's rule (known
-    fault 1). It is not a test of T1's code but of its rules, and costs seconds a search.
+  - Before T1's bar is trusted, the model of call-ins is redone for section 3's rule (known fault 1). It
+    checks T1's rules, not its code, and the form before's model took seconds a search.
 - **T2, a process's threads in parallel on the WebAssembly executor, ARM64 guests.** After decision 4.
   - translator: the Parallel form (7.2): barriers and the 128 bit hook behind the byte (7.3), the mark
     for hooks that are stop points (4.5); the shared import and its declared maximum in both forms.
@@ -3101,9 +3101,10 @@ Each bar is checkable by the named tests. The cheapest large win is first.
   the embedder interface's memory watches exist, with the kernel's own accesses firing
   `on_watched_memory_accessing`, and the translator's count exists in the Parallel form (other
   tracks). With it: a change of the kernel's in an `Exact` process is a call-in (4.5).
-  - Bar: a test embedder holds each page for one writer or several readers, records every hand-over with
-    both threads' positions, and checks it against the run: each hand-over with the same registers and
-    memory as when it was recorded, by running the program again with the same hand-overs forced. The
+  - Bar: a test embedder holds each page for one writer or several readers and records every hand-over
+    with both threads' positions. A test build of the executor that logs every store checks that the
+    record is whole: every store another thread or the kernel made to a page while a thread held it
+    is in the record at its place. Replaying a program from such a record waits for T8. The
     program's threads also fill each other's pages through `read` system calls, so the kernel's own
     accesses are in the record; they write objects on each other's stacks (a scoped thread filling its
     parent's array, a result joined into a stack slot), one of them while it runs on a second stack,
@@ -3337,6 +3338,10 @@ docs/status-threads.md.
     search reaches a state where nothing can move in four steps.
   A model is not the code, and it leaves out masks, weighted time and the merging of two groups
   after a join: section 12's test and its count "call-in with nothing to move it" check the code.
+  **It is a model of groups, and this revision has none.** It has no mixed overlap, no exclusion by
+  "handed out", no mark for a `Serial` task due a turn and no waiter held back by a handed-out
+  `Serial` overlapper (section 3). Its results say nothing about those; the model is to be redone
+  (known fault 1).
 - **A barrier as a hardware instruction, single-threaded** (run7/native-barrier/barrier.c and its two
   logs). A round is a store, the barrier, a load of another word, at user level with no virtual
   machine. Nanoseconds a round, best of seven, 200,000,000 rounds, and what each form adds to a round
@@ -3379,6 +3384,10 @@ docs/status-threads.md.
   inside the hook, differed by +4 with a spread of 27 instructions in the re-run and +23 with a
   spread of 34 in the first run, of about 6.3 million instructions a program start. A real `suspend`
   and `resume` and the native executor were not measured.
+- **The one scheduling rule's costs, by the mixed-ordering check**: it measured nothing new. Every
+  figure it gives is one of this section's or one this plan quotes (leaving `Execution::run`, a stop
+  noticed in Chrome, an interrupt from the host into the machine, the kernel's share of `getppid`, the
+  lock), and every cost of its own is expected (section 3).
 - **The progress count**, by the translator track's measurement, not this plan's
   (orchestrator/progress-count-cost.json): its best form costs the seven quoted benchmarks 16.3% more
   instructions on this Mac and 11.9% on the x86 laptop, and 4.4% more time on the laptop.
@@ -3413,15 +3422,17 @@ docs/status-threads.md.
 - Whether V8 can show half of an aligned plain 64 bit access: its machine code was not read. In Node
   on both hosts no load saw one in 1,000,000,000 (section 14).
 - How long a group stop takes with several threads running, now that a thread is held only at a stop
-  point, and how often real programs cause one (T2, T3). How often a group is called in from outside
+  point, and how often real programs cause one (T2, T3). How often a memory is called in from outside
   (T1).
 - The ordering tests as guest programs through the translator: none was run. What was run are
   hand-written tests (section 14).
 - What the stop lock costs the kernel's accesses to a `Parallel` memory, and how many translations a
   runtime that compiles while it runs has thrown away (T2, T3).
-- What the digest of `External` costs a system call, and how many real programs replay under it (T8).
-- A hand-over through per-thread watches, end to end, and what calling a group in for every change of
-  the kernel's costs a (`Parallel`, `Exact`) group (T4).
+- What the proxy's two hooks cost a system call with their default bodies (T1's builds), and with a
+  system that logs results (T8); and how many real programs replay under `External` (T8). The
+  interface notes leave it unverified that an unused hook costs nothing.
+- A hand-over through per-thread watches, end to end, and what calling a memory in for every change of
+  the kernel's costs a (`Parallel`, `Exact`) process (T4).
 - An interrupt from one virtual CPU to another inside the native executor's machine (T5).
 - A barrier inside the native executor's virtual machine, and `xchg` with memory against two moves in
   the native output's Serial form (T5). At user level on hardware the barriers are measured (section
@@ -3431,13 +3442,17 @@ docs/status-threads.md.
   waiting. Correct, and measured with T1's build at 16 processors on four and eight cores.
 - How long a mark of a call-in stays on in real programs, and how often a thread is asked in for a
   waiter (T1).
-- What the question and the digest cost a process given `None` in a recorded kernel (T8).
+- What a `Serial` task's block and wake costs beside N handed-out `Parallel` overlappers: N call-ins
+  and N hand-outs on the one lock, and the wait for the slowest to reach a stop check (section 3,
+  expected; T2 and T5). The copy of dirty shared pages at each switch on the WebAssembly executor (T2).
+- The prototype's figures for (`Parallel`, `External`): withdrawn, being measured again by the
+  interface work (4.6).
 - `KVM_CAP_MAX_VCPUS` on an ARM64 host: none is at hand.
 - An x86 guest's Parallel form on an x86 host through the translator (the x86 track, T6).
-- A real `suspend` and `resume` on one kernel, with the records moved out and back, and section 5's
-  call for acting on a process from outside a hook: nothing exists to measure. Only the return of
-  `run` at a program start was measured, on a prototype (section 14).
-- How often a `Parallel` group takes a permission from a data page or unmaps one, which makes each of
+- Real `suspend_tasks`, `suspend_process` and the resume calls on one kernel, with the records moved
+  out and back, and their use for acting on a process from outside a hook (section 5): nothing exists
+  to measure. Only the return of `run` at a program start was measured, on a prototype (section 14).
+- How often a `Parallel` process takes a permission from a data page or unmaps one, which makes each of
   its other running threads give up its frames (300.8 ns each, 4.5), and what the returns through the
   bottom loop cost afterwards (T2, T3).
 - What a timer costs when it is sent by the timer thread and not by an idle worker, and how many
