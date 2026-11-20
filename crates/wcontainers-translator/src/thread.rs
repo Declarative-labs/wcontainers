@@ -121,7 +121,17 @@ pub fn thread_module<G: Guest>() -> Vec<u8> {
         (2, ValType::I32),
     ]);
     // `exact`: the piece to call next is the one in the exact slot.
-    let (pc, offset, piece, payload, exact) = (0, 1, 2, 3, 4);
+    let pc = 0;
+    let offset = pc + 1;
+    let piece = offset + 1;
+    let payload = piece + 1;
+    let exact = payload + 1;
+    // How deep each label below nests, from the outermost.
+    const LOOK_UP: u32 = 0;
+    const RESULT: u32 = LOOK_UP + 1;
+    const CATCH: u32 = RESULT + 1;
+    const IF_EXACT: u32 = CATCH + 1;
+    const IF_MISSING: u32 = IF_EXACT + 1;
     let mut s = f.instructions();
     s.loop_(BlockType::Empty);
     s.block(BlockType::Result(ValType::I32));
@@ -152,7 +162,7 @@ pub fn thread_module<G: Guest>() -> Vec<u8> {
         .return_()
         .end();
     // Look the address up again.
-    s.br(4);
+    s.br(IF_MISSING - LOOK_UP);
     s.end();
     s.end();
     for slot in crate::code::passed_slots::<G>() {

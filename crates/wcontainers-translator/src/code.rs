@@ -32,7 +32,36 @@ pub enum LookAhead {
 impl LookAhead {
     /// The look-ahead code reached at run time with no piece is translated at.
     pub const AT_RUN_TIME: LookAhead = LookAhead::Bounded(BOUND);
+
+    /// Its kind as the description section and the browser runner write it, and its bound (0 when it has none).
+    pub fn code(self) -> (u8, u32) {
+        match self {
+            LookAhead::None => (LookAheadCode::None as u8, 0),
+            LookAhead::Full => (LookAheadCode::Full as u8, 0),
+            LookAhead::Bounded(n) => (LookAheadCode::Bounded as u8, n),
+        }
+    }
+
+    /// The look-ahead a kind and bound written by [`LookAhead::code`] stand for.
+    pub fn from_code(kind: u32, bound: u32) -> LookAhead {
+        match kind {
+            k if k == LookAheadCode::None as u32 => LookAhead::None,
+            k if k == LookAheadCode::Full as u32 => LookAhead::Full,
+            _ => LookAhead::Bounded(bound),
+        }
+    }
 }
+
+/// The kinds of [`LookAhead`] as numbers.
+#[repr(u8)]
+enum LookAheadCode {
+    None,
+    Full,
+    Bounded,
+}
+
+/// The version of the description section's layout.
+const DESCRIPTION_VERSION: u8 = 3;
 
 /// What a translation is made for: the one setting the translator has. Both give the same results.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -150,6 +179,8 @@ pub(crate) const BR_TABLE_TARGETS: u64 = 65_520;
 const MODULE_BYTES: usize = ENGINE_MODULE_BYTES - (64 << 20);
 /// Tuning number: the functions a module may hold before the translation is split.
 const MODULE_FUNCTIONS: usize = ENGINE_FUNCTIONS - 1000;
+/// Tuning number: the bytes a function is taken to add to a module's other sections.
+const FUNCTION_ENTRY_BYTES: usize = 8;
 /// Tuning number: the blocks a function may have before it is cut in parts. It bounds how deep translating
 /// one function nests, and so the translator's own stack.
 pub(crate) const FUNCTION_BLOCKS: usize = 2048;
@@ -191,7 +222,7 @@ impl Unit {
     fn bytes(&self) -> usize {
         std::iter::once(&self.piece)
             .chain(&self.others)
-            .map(|f| f.byte_len() + 8)
+            .map(|f| f.byte_len() + FUNCTION_ENTRY_BYTES)
             .sum()
     }
 
@@ -273,13 +304,22 @@ pub(crate) const MEMORY_STATE: u32 = 1;
 const BLOCK: Fixed = Fixed::Global(G_THREAD_BLOCK);
 const BLOCK_LOAD_ADDRESS: Fixed = Fixed::Global(G_LOAD_ADDRESS);
 
+/// Tuning number: the bytes of the engine's stack a piece's frame is taken to use beside its values.
+const FRAME_FIXED_BYTES: usize = 64;
+
 /// The bytes of the engine's stack a piece is taken to use: a fixed part and a slot for each local.
 pub(crate) fn frame_bytes<G: Guest>(locals: &[ValType]) -> i64 {
-    let slots: i64 = locals
+    let slots: usize = locals
         .iter()
-        .map(|t| if *t == ValType::V128 { 16 } else { 8 })
+        .map(|t| {
+            if *t == ValType::V128 {
+                size_of::<u128>()
+            } else {
+                size_of::<u64>()
+            }
+        })
         .sum();
-    64 + 8 * i64::from(G::PARAMETERS) + slots
+    (FRAME_FIXED_BYTES + size_of::<u64>() * G::PARAMETERS as usize + slots) as i64
 }
 
 /// Leave to the bottom loop when the depth in i64 local `depth` is past the budget, with `pc` at the
@@ -920,7 +960,13 @@ fn permission_checker() -> wasm_encoder::Function {
     f
 }
 
-/// Keep the run of pages, from the allowed page of the address in i64 local `at` and at most 8 long, that
+/// Permission table bytes, one a page, read by one 64 bit load.
+pub(crate) const PAGES_PER_LOAD: i64 = size_of::<u64>() as i64;
+/// A 64 bit value with each byte 1, which times a byte gives that byte in every byte.
+pub(crate) const EVERY_BYTE: i64 = (u64::MAX / u8::MAX as u64) as i64;
+
+/// Keep the run of pages, from the allowed page of the address in i64 local `at` and at most
+/// [`PAGES_PER_LOAD`] long, that
 /// allow an access as `this` says: i64 locals `low` (its first address) and `room` (how far past `low` an
 /// access of at most `longest` bytes may start and still end within the run). i64 local `page` is a
 /// temporary.
@@ -940,10 +986,10 @@ pub(crate) fn keep_pages(
         .i64_shl()
         .local_set(low);
     // The table bytes of the page and the seven after it, when they are all in the table.
-    s.local_get(page).i64_const(8).i64_add();
+    s.local_get(page).i64_const(PAGES_PER_LOAD).i64_add();
     table.pages.push(s);
     s.i64_le_u().if_(BlockType::Result(ValType::I64));
-    let every = i64::from(this) * 0x0101_0101_0101_0101;
+    let every = i64::from(this) * EVERY_BYTE;
     s.i64_const(every);
     table.at.push(s);
     s.local_get(page)
@@ -955,7 +1001,7 @@ pub(crate) fn keep_pages(
         .i64_and()
         // Bytes up to the first page that does not allow it, then the run's length in bytes.
         .i64_ctz()
-        .i64_const(3)
+        .i64_const(i64::from(u8::BITS.trailing_zeros()))
         .i64_shr_u()
         .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shl()
@@ -1271,12 +1317,8 @@ pub(crate) fn description<'a>(
     (look_ahead, optimise): (LookAhead, Optimise),
     pieces: impl ExactSizeIterator<Item = &'a u64>,
 ) -> CustomSection<'static> {
-    let (kind, bound) = match look_ahead {
-        LookAhead::None => (0, 0),
-        LookAhead::Full => (1, 0),
-        LookAhead::Bounded(n) => (2, n),
-    };
-    let mut data = vec![3, kind, optimise as u8];
+    let (kind, bound) = look_ahead.code();
+    let mut data = vec![DESCRIPTION_VERSION, kind, optimise as u8];
     bound.encode(&mut data);
     data.extend_from_slice(blake3::hash(blob).as_bytes());
     (pieces.len() as u64).encode(&mut data);

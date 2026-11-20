@@ -831,7 +831,7 @@ fn within(s: &mut InstructionSink<'_>, v: u32, min: i64, max: i64, depth: u32) {
 /// locals, both within the table) allows an access as `this` says. Eight table bytes are read at a time
 /// while eight or more pages are left. Uses `low` and `page` as its own.
 fn pages_allow(s: &mut InstructionSink<'_>, low: u32, high: u32, this: u8, page: u32) {
-    let every = i64::from(this) * 0x0101_0101_0101_0101;
+    let every = i64::from(this) * crate::code::EVERY_BYTE;
     s.local_get(low)
         .i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
         .i64_shr_u()
@@ -844,7 +844,7 @@ fn pages_allow(s: &mut InstructionSink<'_>, low: u32, high: u32, this: u8, page:
         .local_get(high)
         .local_get(page)
         .i64_sub()
-        .i64_const(7)
+        .i64_const(crate::code::PAGES_PER_LOAD - 1)
         .i64_ge_u()
         .if_(BlockType::Empty);
     Table::GLOBALS.at.push(s);
@@ -858,7 +858,7 @@ fn pages_allow(s: &mut InstructionSink<'_>, low: u32, high: u32, this: u8, page:
         .i64_ne()
         .br_if(2)
         .local_get(page)
-        .i64_const(8)
+        .i64_const(crate::code::PAGES_PER_LOAD)
         .i64_add()
         .local_set(page)
         .else_();

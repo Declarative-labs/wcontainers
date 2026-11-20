@@ -15,9 +15,12 @@ const fn position(list: &[u32], bit: u32) -> u32 {
     panic!("the stack pointer is passed")
 }
 
+/// How many bits a register set has.
+const REGISTER_BITS: usize = size_of::<Registers>() * u8::BITS as usize;
+
 /// Each bit's index in `bits`, 255 for a bit not used.
-const fn bit_index(bits: &[Bit]) -> [u8; 128] {
-    let mut at = [u8::MAX; 128];
+const fn bit_index(bits: &[Bit]) -> [u8; REGISTER_BITS] {
+    let mut at = [u8::MAX; REGISTER_BITS];
     let mut i = 0;
     while i < bits.len() {
         at[bits[i].bit as usize] = i as u8;
@@ -83,7 +86,7 @@ pub(crate) trait Layout: Guest {
     const TRACKED: Registers = Self::ALL
         .minus(Self::FLAG_BITS)
         .minus(Registers::of_bits(Self::PASSED_IN));
-    const BIT_INDEX: [u8; 128] = bit_index(Self::BITS);
+    const BIT_INDEX: [u8; REGISTER_BITS] = bit_index(Self::BITS);
 
     /// What the guest says of a register bit.
     fn bit(bit: u32) -> Bit {

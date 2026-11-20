@@ -55,11 +55,7 @@ pub extern "C" fn translate(
     optimise: u32,
     module_bytes: u32,
 ) -> i32 {
-    let look_ahead = match look_ahead {
-        0 => LookAhead::None,
-        1 => LookAhead::Full,
-        _ => LookAhead::Bounded(bound),
-    };
+    let look_ahead = LookAhead::from_code(look_ahead, bound);
     let omit = Omit {
         stop: omit & 1 != 0,
         permissions: omit & 2 != 0,
