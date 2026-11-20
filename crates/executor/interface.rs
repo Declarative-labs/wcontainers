@@ -17,6 +17,6 @@ pub trait PerThreadWatch: Executor {
         &mut self,
         thread: ThreadId,
         range: Range<u64>,
-        permissions: Permissions,
+        allowed: Permissions,
     ) -> Result<(), CpuError>;
 }
