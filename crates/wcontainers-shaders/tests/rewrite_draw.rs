@@ -196,11 +196,66 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
         label: None,
         source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
     });
+    let entry = |binding, ty, count| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty,
+        count,
+    };
+    let mut layout_entries = vec![
+        entry(
+            SlotKind::Uniform.first_binding(),
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            None,
+        ),
+        entry(
+            SlotKind::Storage.first_binding(),
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            None,
+        ),
+    ];
+    let sampler = wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering);
+    let texture = wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: wgpu::TextureViewDimension::D2,
+        multisampled: false,
+    };
+    if arrays {
+        let count = std::num::NonZeroU32::new(ELEMENTS as u32);
+        layout_entries.push(entry(SlotKind::Sampler.first_binding(), sampler, count));
+        layout_entries.push(entry(SlotKind::Texture.first_binding(), texture, count));
+    } else {
+        for k in 0..ELEMENTS as u32 {
+            layout_entries.push(entry(SlotKind::Sampler.first_binding() + k, sampler, None));
+            layout_entries.push(entry(SlotKind::Texture.first_binding() + k, texture, None));
+        }
+    }
+    let group_layout = g
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &layout_entries,
+        });
+    let layout = g
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&group_layout)],
+            immediate_size: 0,
+        });
     let pipeline = g
         .device
         .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None,
-            layout: None,
+            layout: Some(&layout),
             module: &shader,
             entry_point: None,
             compilation_options: Default::default(),
@@ -255,7 +310,7 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
     }
     let group = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
-        layout: &pipeline.get_bind_group_layout(0),
+        layout: &group_layout,
         entries: &entries,
     });
     let mut encoder = g.device.create_command_encoder(&Default::default());
@@ -275,7 +330,10 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
             timeout: None,
         })
         .expect("the queue ends");
-    let mapped = read.slice(..).get_mapped_range().expect("the read buffer maps");
+    let mapped = read
+        .slice(..)
+        .get_mapped_range()
+        .expect("the read buffer maps");
     mapped
         .chunks_exact(size_of::<u32>())
         .map(|w| u32::from_le_bytes(w.try_into().expect("a word")))
