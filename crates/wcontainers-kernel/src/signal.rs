@@ -506,14 +506,42 @@ impl Kernel {
             && !self.dropped(pid, signal);
         if fatal || signal == SIGKILL {
             self.drop_pending(pid, bit(signal));
-            self.die_of(cx, pid, signal);
+            if self.watched(tid) {
+                self.die_when_met(pid, signal);
+            } else {
+                self.die_of(cx, pid, signal);
+            }
             return;
         }
         let wait = self.threads[&tid].call.wait;
-        if wait.is_some_and(|channel| !matches!(channel, Channel::Backend | Channel::Held(_))) {
+        if wait.is_some_and(|channel| {
+            !matches!(
+                channel,
+                Channel::Backend | Channel::Held(_) | Channel::Watch(_)
+            )
+        }) {
             self.wake_thread(tid);
         } else if wait.is_none() && self.running != Some(tid) && !self.signalled.contains(&tid) {
             self.signalled.push_back(tid);
+        }
+    }
+
+    /// Leaves a fatal signal to the process's own threads, as Linux's threads end themselves: the
+    /// first to go back to its program meets the watches on what the kernel stores at the end,
+    /// then ends the process. None of them runs its program or a call again.
+    fn die_when_met(&mut self, pid: Pid, signal: u32) {
+        self.dying.insert(pid, signal);
+        self.processes.get_mut(&pid).expect("process").stopped = false;
+        for tid in self.processes[&pid].threads.clone() {
+            match self.threads[&tid].call.wait {
+                // It goes on once the watches change.
+                Some(Channel::Watch(_)) => continue,
+                Some(_) => self.wake_thread(tid),
+                None => {}
+            }
+            if self.running != Some(tid) && !self.signalled.contains(&tid) {
+                self.signalled.push_back(tid);
+            }
         }
     }
 
@@ -538,18 +566,7 @@ impl Kernel {
     /// before others, then the lowest number (`dequeue_signal`, `next_signal`).
     pub(crate) fn dequeue_signal(&mut self, tid: Tid, allowed: u64) -> Option<Queued> {
         let pid = self.threads[&tid].process;
-        let choose = |set: u64| -> Option<u32> {
-            let ready = set & allowed;
-            if ready == 0 {
-                return None;
-            }
-            let first = if ready & SYNCHRONOUS != 0 {
-                ready & SYNCHRONOUS
-            } else {
-                ready
-            };
-            Some(first.trailing_zeros() + 1)
-        };
+        let choose = |set: u64| first_ready(set, allowed);
         loop {
             let mut queued = if let Some(signal) = choose(self.threads[&tid].pending.set) {
                 self.thread_mut(tid).pending.take(signal)
@@ -578,14 +595,46 @@ impl Kernel {
         tid: Tid,
         resume: Resume,
     ) -> Option<Resume> {
+        if !self.dying.is_empty() {
+            let pid = self.threads[&tid].process;
+            if let Some(&signal) = self.dying.get(&pid) {
+                if self.watched(tid)
+                    && !self.walk_watched(cx, |kernel, cx| kernel.ends_touched(cx, tid))
+                {
+                    self.wait_on_watch(tid, Some(resume), true);
+                } else {
+                    self.die_of(cx, pid, signal);
+                }
+                return None;
+            }
+        }
         let mut restart = match resume {
             Resume::Return(value) => Errno::restart_of(value),
             _ => None,
         };
         let mut resume = resume;
+        // Taken off the CPU in its own code: its restartable sequence first.
+        if self.threads[&tid].rseq_event {
+            if self.watched(tid)
+                && !self.walk_watched(cx, |kernel, cx| kernel.rseq_touched(cx, tid))
+            {
+                self.wait_on_watch(tid, Some(resume), true);
+                return None;
+            }
+            self.thread_mut(tid).rseq_event = false;
+            if self.rseq_preempted(cx, tid)? == Resume::FromRegisters {
+                resume = Resume::FromRegisters;
+            }
+        }
         let mut handled = false;
         loop {
             let mask = self.threads[&tid].signal_mask;
+            if self.watched(tid)
+                && !self.walk_watched(cx, |kernel, cx| kernel.frame_touched(cx, tid, !mask))
+            {
+                self.wait_on_watch(tid, Some(resume), true);
+                return None;
+            }
             let Some(queued) = self.dequeue_signal(tid, !mask) else {
                 break;
             };
@@ -674,7 +723,8 @@ impl Kernel {
             cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
             registers.pc -= 4;
             if code == Errno::ERESTART_RESTARTBLOCK {
-                registers.x[8] = u64::from(__NR_restart_syscall);
+                registers.x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER] =
+                    u64::from(__NR_restart_syscall);
             }
             cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
             resume = Resume::FromRegisters;
@@ -720,15 +770,17 @@ impl Kernel {
         };
         let pc = registers.pc;
         let mut guest = crate::syscall::guest(self, cx, tid);
-        // `struct rseq`'s `rseq_cs` and `struct rseq_cs`'s fields.
-        let sequence: u64 = guest.read_value(area + 8)?;
+        let sequence: u64 = guest.read_value(area + RSEQ_CS_FIELD)?;
         if sequence == 0 {
             return Ok(());
         }
-        let fields = guest.read(sequence, 32)?;
-        let word = |at: usize| u64::from_le_bytes(fields[at..at + 8].try_into().expect("8 bytes"));
-        let version = u32::from_le_bytes(fields[0..4].try_into().expect("4 bytes"));
-        let (start, post_commit, abort) = (word(8), word(16), word(24));
+        let fields: crate::linux_extra::rseq_cs = guest.read_value(sequence)?;
+        let (version, start, post_commit, abort) = (
+            fields.version,
+            fields.start_ip,
+            fields.post_commit_offset,
+            fields.abort_ip,
+        );
         if version > 0
             || start
                 .checked_add(post_commit)
@@ -746,7 +798,7 @@ impl Kernel {
                 return Err(Errno::EINVAL);
             }
         }
-        guest.put(area + 8, &0u64.to_le_bytes())?;
+        guest.put(area + RSEQ_CS_FIELD, &0u64.to_le_bytes())?;
         if inside {
             registers.pc = abort;
         }
@@ -834,14 +886,7 @@ impl Kernel {
         let flags = action.sa_flags;
         let thread = &self.threads[&tid];
         let (stack_base, stack_size, stack_flags) = thread.alternate_stack;
-        let on_alternate = on_stack(thread.alternate_stack, registers.sp);
-        let top = if flags & u64::from(SA_ONSTACK) != 0 && stack_size != 0 && !on_alternate {
-            stack_base.wrapping_add(stack_size)
-        } else {
-            registers.sp
-        };
-        let record = (top.wrapping_sub(frame::RECORD_SIZE)) & !15;
-        let at = (record & !15).wrapping_sub(frame::SIZE);
+        let (at, record, top) = frame_bounds(thread.alternate_stack, flags, registers.sp);
         if !crate::user::access_ok(at, top.wrapping_sub(at)) {
             return Err(Errno::EFAULT);
         }
@@ -1141,6 +1186,155 @@ impl Kernel {
         self.force_signal(tid, fault_info(SIGSEGV, code as i32, address), (0, 0));
     }
 
+    /// Meets the embedder's watches on what acting on the next signal of those `allowed` touches:
+    /// the frame and restartable sequence of a handler, or the thread ends of a fatal one; false
+    /// if the thread must wait.
+    fn frame_touched(&mut self, cx: &mut Context<'_>, tid: Tid, allowed: u64) -> bool {
+        let thread = &self.threads[&tid];
+        let pid = thread.process;
+        let signal = first_ready(thread.pending.set, allowed)
+            .or_else(|| first_ready(self.processes[&pid].pending.set, allowed));
+        let Some(signal) = signal else {
+            return true;
+        };
+        let action = self.processes[&pid].actions.borrow()[signal as usize - 1];
+        if action.sa_handler_kernel == SIG_IGN {
+            return true;
+        }
+        if action.sa_handler_kernel == SIG_DFL {
+            let fatal = matches!(default_action(signal), Default::Terminate | Default::Core)
+                && (self.init != Some(pid) || self.forced(tid, signal));
+            return !fatal || self.ends_touched(cx, tid);
+        }
+        let mut registers = RegisterBlock::ZERO;
+        cx.cpu.registers(thread.cpu, &mut registers);
+        let (at, _, top) = frame_bounds(thread.alternate_stack, action.sa_flags, registers.sp);
+        if crate::user::access_ok(at, top.wrapping_sub(at)) {
+            let mut memory = crate::system::CallMemory::new(self, cx, tid);
+            if !crate::syscall::touch::Memory::touch(
+                &mut memory,
+                at,
+                top - at,
+                crate::system::AccessKind::Write,
+            ) {
+                return false;
+            }
+        }
+        self.rseq_touched(cx, tid)
+    }
+
+    /// Meets the embedder's watches on what the ends of thread `tid`'s process store; false if the
+    /// thread must wait.
+    fn ends_touched(&mut self, cx: &mut Context<'_>, tid: Tid) -> bool {
+        let ends = self.thread_ends(tid, crate::syscall::touch::Ending::Process);
+        let mut memory = crate::system::CallMemory::new(self, cx, tid);
+        crate::syscall::touch::thread_ends(&mut memory, &ends)
+    }
+
+    /// Meets the embedder's watches on what `rseq_fixup` touches; false if the thread must wait.
+    fn rseq_touched(&mut self, cx: &mut Context<'_>, tid: Tid) -> bool {
+        use crate::syscall::touch::Memory;
+        use crate::system::AccessKind::{Read, Write};
+        let Some((area, _, _)) = self.threads[&tid].rseq else {
+            return true;
+        };
+        let mut registers = RegisterBlock::ZERO;
+        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        let mut memory = crate::system::CallMemory::new(self, cx, tid);
+        let field = area + RSEQ_CS_FIELD;
+        let mut sequence = [0; size_of::<u64>()];
+        if !memory.touch(field, sequence.len() as u64, Write) {
+            return false;
+        }
+        if !memory.read(field, &mut sequence) || u64::from_le_bytes(sequence) == 0 {
+            return true;
+        }
+        let sequence = u64::from_le_bytes(sequence);
+        let mut fields = [0; RSEQ_CS_SIZE];
+        if !memory.touch(sequence, RSEQ_CS_SIZE as u64, Read) {
+            return false;
+        }
+        if !memory.read(sequence, &mut fields) {
+            return true;
+        }
+        let section =
+            <crate::linux_extra::rseq_cs as zerocopy::FromBytes>::read_from_bytes(&fields)
+                .expect("the size of a section");
+        let (start, post_commit, abort) = (
+            section.start_ip,
+            section.post_commit_offset,
+            section.abort_ip,
+        );
+        let signature = size_of::<u32>() as u64;
+        registers.pc.wrapping_sub(start) >= post_commit
+            || memory.touch(abort.wrapping_sub(signature), signature, Read)
+    }
+
+    /// A fault the embedder's watches or its record of written pages made, on an access the page's
+    /// mapping allows: the hook, or the page noted as written. Whether it was such a fault.
+    fn embedder_fault(
+        &mut self,
+        cx: &mut Context<'_>,
+        tid: Tid,
+        address: u64,
+        access: Access,
+    ) -> bool {
+        use crate::system::WatchesFor;
+        let pid = self.threads[&tid].process;
+        // The fault names an access's first byte; the access reached into the next page only when
+        // the CPU side allows it all of the first.
+        let last = address.saturating_add(LARGEST_ACCESS - 1);
+        let (watch, at, held_here) = {
+            let map = self.processes[&pid].map.borrow();
+            let page = crate::memory::page_down(address);
+            let held_here = map.watches.holds_back_write(address)
+                || map
+                    .find(address)
+                    .is_some_and(|mapping| mapping.copies_on_write(address))
+                || map.readable_whole(page..page + wcontainers_abi::PAGE_SIZE)
+                    == Err(crate::system::MemoryError::NotRead);
+            match map.watches.watch_at(address) {
+                WatchesFor::None if !held_here => (map.watches.watch_at(last), last, false),
+                watch => (watch, address, true),
+            }
+        };
+        // A page whose reading the CPU side allows faults only on a write, whatever the CPU side
+        // calls it (an atomic's read and write in one).
+        let touch = match (access, watch) {
+            (Access::Read, WatchesFor::Writes) | (Access::Write, _) => {
+                crate::system::AccessKind::Write
+            }
+            (Access::Read, _) => crate::system::AccessKind::Read,
+            (Access::Execute, _) => crate::system::AccessKind::Execute,
+        };
+        let watched = match watch {
+            WatchesFor::All => true,
+            WatchesFor::Writes => touch == crate::system::AccessKind::Write,
+            WatchesFor::None => false,
+        };
+        if watched {
+            if self.watch_touched(cx, tid, pid, at, touch) {
+                self.return_to_user(cx, tid, Resume::FromRegisters);
+            } else {
+                self.wait_on_watch(tid, Some(Resume::FromRegisters), false);
+            }
+            return true;
+        }
+        let process = &self.processes[&pid];
+        // The access's next page only once its first page is all allowed.
+        if access != Access::Execute && {
+            let mut map = process.map.borrow_mut();
+            map.written_fault(cx.cpu, process.memory, address)
+                || (!held_here
+                    && crate::memory::page_down(last) != crate::memory::page_down(address)
+                    && map.written_fault(cx.cpu, process.memory, last))
+        } {
+            self.return_to_user(cx, tid, Resume::FromRegisters);
+            return true;
+        }
+        false
+    }
+
     /// A memory fault: the stack grows if that is what it is; otherwise the signal Linux sends, with
     /// the fault's address and an approximated syndrome (which translation level faulted is Linux's
     /// page tables' own).
@@ -1165,6 +1359,12 @@ impl Kernel {
         } else {
             self.processes[&pid].map.borrow().find(address).cloned()
         };
+        let allowed = mapping.as_ref().is_some_and(|mapping| {
+            crate::memory::cpu_permissions(mapping.permissions).contains(wanted)
+        });
+        if self.watching && allowed && self.embedder_fault(cx, tid, address, access) {
+            return;
+        }
         // A page of a backend file the mapping allows this access to, read when first touched.
         if let Some(mapping) = &mapping
             && let Backing::File {
@@ -1187,7 +1387,9 @@ impl Kernel {
                 self.end_asking(tid, result == Err(Errno::PARKED));
                 match result {
                     Err(Errno::PARKED) => {
-                        self.thread_mut(tid).filling = true;
+                        let thread = self.thread_mut(tid);
+                        thread.filling = true;
+                        thread.resume = Resume::FromRegisters;
                         return;
                     }
                     Err(_) => {
@@ -1354,3 +1556,44 @@ impl Writes {
         self.0.push((at, value.to_le_bytes().to_vec()));
     }
 }
+
+/// The lowest signal of `set` that is `allowed`, the synchronous ones first, as Linux's
+/// `next_signal` picks.
+fn first_ready(set: u64, allowed: u64) -> Option<u32> {
+    let ready = set & allowed;
+    if ready == 0 {
+        return None;
+    }
+    let first = if ready & SYNCHRONOUS != 0 {
+        ready & SYNCHRONOUS
+    } else {
+        ready
+    };
+    Some(first.trailing_zeros() + 1)
+}
+
+/// Where a handler's frame goes for a thread with this alternate stack, the handler's flags and
+/// stack pointer: its start, its record of the frame pointer and link, and the stack's top.
+fn frame_bounds(alternate_stack: (u64, u64, i32), flags: u64, sp: u64) -> (u64, u64, u64) {
+    let (stack_base, stack_size, _) = alternate_stack;
+    let on_alternate = on_stack(alternate_stack, sp);
+    let top = if flags & u64::from(SA_ONSTACK) != 0 && stack_size != 0 && !on_alternate {
+        stack_base.wrapping_add(stack_size)
+    } else {
+        sp
+    };
+    let aligned = |address: u64| address & !(STACK_ALIGNMENT - 1);
+    let record = aligned(top.wrapping_sub(frame::RECORD_SIZE));
+    let at = aligned(record).wrapping_sub(frame::SIZE);
+    (at, record, top)
+}
+
+/// What ARM64 keeps its stack pointer a multiple of (`sp_el0` alignment checking).
+pub(crate) const STACK_ALIGNMENT: u64 = 2 * size_of::<u64>() as u64;
+
+/// The most bytes one ARM64 instruction accesses: four vector registers (`st4`, `ld4`).
+const LARGEST_ACCESS: u64 = 4 * size_of::<u128>() as u64;
+
+/// Where `struct rseq` holds its current sequence's address.
+const RSEQ_CS_FIELD: u64 = core::mem::offset_of!(crate::linux_extra::rseq, rseq_cs) as u64;
+const RSEQ_CS_SIZE: usize = size_of::<crate::linux_extra::rseq_cs>();

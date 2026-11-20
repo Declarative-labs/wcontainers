@@ -1,20 +1,25 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, Warning,
+    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError,
+    SystemCallRequest, Warning,
 };
-use wcontainers_kernel::{Errno, FileRecord, Kernel, Standard, Start};
+use wcontainers_kernel::{
+    AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, Process, Standard, Start, System,
+    SystemCallResponse, TaskId,
+};
 use wcontainers_runtime::{Ending, Execution, Outside, Turn};
 
+use crate::hooks::{BetweenSteps, Hooks, NoHooks};
 use crate::standin::Unsupported;
-use crate::streams::{StreamHost, Streams};
+use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
 
 /// Why a run on our kernel gave no outcome.
@@ -190,8 +195,9 @@ pub struct Run {
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
-/// until a time, the host's clocks jump to it instead of waiting, unless the host waits.
-pub struct TestHost {
+/// until a time, the host's clocks jump to it instead of waiting, unless the host waits. With
+/// `NoHooks` the kernel's own provided defaults answer every hook and task id call.
+pub struct TestHost<H = NoHooks> {
     started: Instant,
     /// How far the clocks have jumped ahead.
     skipped: u64,
@@ -222,6 +228,8 @@ pub struct TestHost {
     /// Whether an idle kernel's waits take their time on the machine's clock, as the reference's
     /// do, rather than being skipped.
     waits: bool,
+    /// What the test does at the kernel's hooks.
+    hooks: Mutex<H>,
 }
 
 /// What a driven run has done to it at moments drawn from its seed, and where it is.
@@ -248,10 +256,9 @@ impl Injecting {
             injections,
             at: moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap),
             signal,
-            signal_at: moments(seed ^ 0x5197, signals),
-            // Notices come close together, so that a short program meets many of them.
-            notice_at: moments_apart(seed ^ 0x6e07, injections.notices, 10),
-            notices: StdRng::seed_from_u64(seed ^ 0x6e08),
+            signal_at: moments(seed ^ SIGNALS_SALT, signals),
+            notice_at: moments_apart(seed ^ NOTICES_SALT, injections.notices, NOTICES_APART),
+            notices: StdRng::seed_from_u64(seed ^ NOTICE_BYTES_SALT),
             turns: 0,
             saved: 0,
             report: None,
@@ -277,6 +284,7 @@ impl TestHost {
             cpu_warnings: Vec::new(),
             injecting: None,
             waits: false,
+            hooks: Mutex::new(NoHooks),
         }
     }
 
@@ -290,6 +298,27 @@ impl TestHost {
         host.wall_base = wall_clock() - 1_000_000_000;
         host
     }
+
+    /// The same host with the test's side of the kernel's hooks.
+    pub fn with_hooks(self, hooks: Box<dyn Hooks>) -> TestHost<Box<dyn Hooks>> {
+        TestHost {
+            started: self.started,
+            skipped: self.skipped,
+            random: self.random,
+            streams: self.streams,
+            warnings: self.warnings,
+            virtual_now: self.virtual_now,
+            wall_base: self.wall_base,
+            schedule: self.schedule,
+            kernel_work: self.kernel_work,
+            backend: self.backend,
+            network: self.network,
+            cpu_warnings: self.cpu_warnings,
+            injecting: self.injecting,
+            waits: self.waits,
+            hooks: Mutex::new(hooks),
+        }
+    }
 }
 
 /// The machine's wall clock, in nanoseconds since 1970.
@@ -300,34 +329,37 @@ fn wall_clock() -> u64 {
         .as_nanos() as u64
 }
 
-impl TestHost {
-    /// The host a saved container is brought back on. What the container wrote has already left;
-    /// the monotonic clock reads from an earlier start than this one's (a kernel that did not carry
-    /// its clock over would see it go back) and the wall clock goes on from the save (a repeatable
-    /// one without the time the save took, moved on by `wall_step`); randomness and the length of
-    /// turns come from `seed`.
-    fn moved(&mut self, seed: u64, wall_step: u64) -> Self {
+impl<H: Send> TestHost<H> {
+    /// Brings a saved container's host back as a new one. What the container wrote has already
+    /// left; the monotonic clock reads from an earlier start than this one's (a kernel that did not
+    /// carry its clock over would see it go back) and the wall clock goes on from the save (a
+    /// repeatable one without the time the save took, moved on by `wall_step`); randomness and the
+    /// length of turns come from `seed`. The backend and the answers it owes, the streams and the
+    /// test's hooks go on.
+    fn move_on(&mut self, seed: u64, wall_step: u64) {
         let wall = self.realtime_nanoseconds();
-        let mut host = Self {
-            started: Instant::now(),
-            skipped: self.skipped,
-            random: Mutex::new(StdRng::seed_from_u64(seed)),
-            streams: Mutex::new(held(&mut self.streams).clone()),
-            warnings: Mutex::new(held(&mut self.warnings).clone()),
-            virtual_now: self.virtual_now.as_ref().map(|_| AtomicU64::default()),
-            wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
-            kernel_work: AtomicU64::default(),
-            // The backend and the answers it owes go on with the copy.
-            backend: Mutex::new(self.backend().take()),
-            // A new host has none of the old one's connections; its published ports go on.
-            network: Mutex::new(held(&mut self.network).moved()),
-            cpu_warnings: self.cpu_warnings.clone(),
-            injecting: self.injecting.take(),
-            waits: self.waits,
-        };
-        host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
-        host
+        self.started = Instant::now();
+        *held(&mut self.random) = StdRng::seed_from_u64(seed);
+        if let Some(now) = &mut self.virtual_now {
+            *now.get_mut() = 0;
+        }
+        self.schedule = StdRng::seed_from_u64(seed ^ SCHEDULE_SALT);
+        *self.kernel_work.get_mut() = 0;
+        // A new host has none of the old one's connections; its published ports go on.
+        let network = held(&mut self.network).moved();
+        *held(&mut self.network) = network;
+        self.wall_base = 0;
+        self.wall_base = wall + wall_step - self.monotonic_nanoseconds();
+    }
+
+    /// The test's hooks for a call the kernel makes; one made while another is running nested in
+    /// it, which is reported rather than waited on.
+    pub fn hook(&self) -> MutexGuard<'_, H> {
+        match self.hooks.try_lock() {
+            Ok(hooks) => hooks,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => panic!("a hook nested in another"),
+        }
     }
 
     /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
@@ -347,7 +379,68 @@ pub(crate) fn held<T>(mutex: &mut Mutex<T>) -> &mut T {
     mutex.get_mut().unwrap_or_else(PoisonError::into_inner)
 }
 
-impl Host for TestHost {
+impl System for TestHost {
+    fn free_task_id(&self, _: TaskId) {}
+}
+
+impl System for TestHost<Box<dyn Hooks>> {
+    fn allocate_task_id(&self, previous: TaskId) -> TaskId {
+        self.hook().allocate_task_id(previous)
+    }
+    fn free_task_id(&self, id: TaskId) {
+        self.hook().free_task_id(id);
+    }
+    fn intercept_system_call_request(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        self.hook()
+            .intercept_system_call_request(process, thread, request)
+    }
+    fn intercept_system_call_response(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        self.hook()
+            .intercept_system_call_response(process, thread, request, response)
+    }
+    fn on_process_starting(&self, process: Process<'_>) {
+        self.hook().on_process_starting(process);
+    }
+    fn on_program_starting(&self, process: Process<'_>) {
+        self.hook().on_program_starting(process);
+    }
+    fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {
+        self.hook().on_thread_starting(process, thread);
+    }
+    fn on_process_exiting(&self, process: Process<'_>) {
+        self.hook().on_process_exiting(process);
+    }
+    fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
+        self.hook().on_process_outgrown(process, bytes);
+    }
+    fn on_watched_memory_accessing(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        address: u64,
+        kind: AccessKind,
+    ) {
+        self.hook()
+            .on_watched_memory_accessing(process, thread, address, kind);
+    }
+    fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
+        self.hook()
+            .on_memory_written_by_kernel(process, thread, range);
+    }
+}
+
+impl<H: Send> Host for TestHost<H> {
     fn monotonic_nanoseconds(&self) -> u64 {
         match &self.virtual_now {
             Some(now) => {
@@ -401,15 +494,15 @@ impl Host for TestHost {
         Ok(())
     }
 
-    fn stream_send(&self, end: End, bytes: &[u8]) {
+    fn send_stream(&self, end: End, bytes: &[u8]) {
         lock(&self.streams).send(end, bytes);
     }
 
-    fn stream_credit(&self, end: End, bytes: u64) {
+    fn credit_stream(&self, end: End, bytes: u64) {
         lock(&self.streams).credit(end, bytes);
     }
 
-    fn stream_close(&self, end: End) {
+    fn close_stream(&self, end: End) {
         lock(&self.streams).close(end);
     }
 
@@ -453,7 +546,10 @@ impl Host for TestHost {
     }
 }
 
-impl StreamHost for TestHost {
+impl<H> StreamHost for TestHost<H>
+where
+    Self: System,
+{
     fn streams(&mut self) -> &mut Streams {
         held(&mut self.streams)
     }
@@ -508,15 +604,15 @@ pub struct Container<'a> {
     pub address_space: u64,
 }
 
-/// As [`run_injected`], with the outside of the container's standard streams.
-pub fn run_outside(
+/// As [`run_injected`], with the client of the container's standard streams.
+pub fn run_with_client(
     container: &Container<'_>,
-    outside: streams::Outside,
+    client: StreamClient,
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
     let prepared = Prepared {
-        outside,
+        client,
         ..prepare(container)
     };
     run_prepared(prepared, container, seed, injections)
@@ -596,8 +692,12 @@ pub struct Prepared {
     pub groups: Vec<u32>,
     /// Whether the container's output also goes to this process's streams as it comes.
     pub echo: bool,
-    /// The outside of its standard streams.
-    pub outside: streams::Outside,
+    /// The client of its standard streams.
+    pub client: StreamClient,
+    /// What the test does at the kernel's hooks; with none, the kernel's provided defaults.
+    pub hooks: Option<Box<dyn Hooks>>,
+    /// The executor's ceiling given at start, if below the address space's end.
+    pub ceiling: Option<u64>,
     /// Whether the guest's clocks are the machine's and its waits take their time, so a test that
     /// runs for a span of time takes that span, rather than moving only with the work run.
     pub wall_clock: bool,
@@ -606,14 +706,16 @@ pub struct Prepared {
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
 pub fn prepare(container: &Container<'_>) -> Prepared {
     let mut kernel = Kernel::new();
-    if container.backend != Some("/") {
+    if container.backend != Some(reference::ROOT_DIRECTORY) {
         image::add_files(&mut kernel, container.files);
     }
     Prepared {
         kernel,
         groups: image::root_groups(container.files),
         echo: false,
-        outside: streams::Outside::default(),
+        client: StreamClient::default(),
+        hooks: None,
+        ceiling: None,
         wall_clock: false,
     }
 }
@@ -627,17 +729,48 @@ static SAVING: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
 /// As [`run_injected`], on a kernel [`prepare`] made for the container.
 pub fn run_prepared(
-    prepared: Prepared,
+    mut prepared: Prepared,
     container: &Container<'_>,
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
+    let host = if prepared.wall_clock {
+        TestHost {
+            waits: true,
+            ..TestHost::new(seed)
+        }
+    } else {
+        TestHost::repeatable(seed)
+    };
+    match prepared.hooks.take() {
+        None => run_hosted(prepared, host, container, seed, injections),
+        Some(hooks) => run_hosted(
+            prepared,
+            host.with_hooks(hooks),
+            container,
+            seed,
+            injections,
+        ),
+    }
+}
+
+fn run_hosted<H: BetweenSteps + Send>(
+    prepared: Prepared,
+    mut host: TestHost<H>,
+    container: &Container<'_>,
+    seed: u64,
+    injections: Injections,
+) -> Result<Run, Failure>
+where
+    TestHost<H>: System,
+{
     let Prepared {
         mut kernel,
         groups,
         echo,
-        outside,
-        wall_clock,
+        client,
+        ceiling,
+        ..
     } = prepared;
     #[cfg(feature = "runtime")]
     let (_alone, _shared);
@@ -652,19 +785,11 @@ pub fn run_prepared(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     let mut cpu = back_end(seed, container.address_space);
-    let mut host = if wall_clock {
-        TestHost {
-            waits: true,
-            ..TestHost::new(seed)
-        }
-    } else {
-        TestHost::repeatable(seed)
-    };
     host.injecting = Some(Injecting::new(seed, injections));
-    *host.streams() = Streams::new(outside);
+    *host.streams() = Streams::new(client);
     host.streams().echo = echo;
     held(&mut host.network).published = container.published.iter().copied().collect();
-    let root_on_backend = container.backend == Some("/");
+    let root_on_backend = container.backend == Some(reference::ROOT_DIRECTORY);
     if container.backend.is_some() {
         let served = match container.root_image {
             _ if !root_on_backend => crate::backend::Served::Empty,
@@ -696,10 +821,14 @@ pub fn run_prepared(
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
         standard: host.standard(),
+        ceiling,
+        execution: ExecutionConfig::default(),
     };
     #[cfg(feature = "runtime")]
     let started = Instant::now();
-    kernel.start(&mut cpu, &host, &start);
+    kernel
+        .start(&mut cpu, &host, &start)
+        .expect("the kernel runs a process serially with exact replay");
     host.started(&mut kernel, &mut cpu);
     let status = match wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut host) {
         Ok(Ending::Finished { status }) => status,
@@ -749,7 +878,7 @@ pub fn run_prepared(
     Ok(finish(run, report))
 }
 
-impl TestHost {
+impl<H> TestHost<H> {
     /// The file backend, for a container with a volume.
     pub(crate) fn backend(&mut self) -> &mut Option<crate::backend::Backend> {
         held(&mut self.backend)
@@ -760,12 +889,15 @@ impl TestHost {
     }
 }
 
-impl Outside for TestHost {
+impl<H: BetweenSteps + Send> Outside for TestHost<H>
+where
+    Self: System,
+{
     /// The run of a copy made at a save, as the process it was copied from gets it.
     type End = Run;
 
     fn standard(&self) -> Standard {
-        lock(&self.streams).outside.standard()
+        lock(&self.streams).client.standard()
     }
 
     fn started(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
@@ -796,10 +928,10 @@ impl Outside for TestHost {
     /// reading of the clock, which the kernel takes as it is entered. The speed moves the points
     /// where the scheduler switches threads, so seeds give different interleavings.
     fn ran(&mut self, progress: u64) {
-        let picoseconds = self.schedule.random_range(500..1500);
-        let kernel = self.schedule.random_range(500..1500);
+        let picoseconds = self.schedule.random_range(INSTRUCTION_PICOSECONDS);
+        let kernel = self.schedule.random_range(TURN_NANOSECONDS);
         if let Some(now) = &mut self.virtual_now {
-            *now.get_mut() += progress.saturating_mul(picoseconds) / 1000;
+            *now.get_mut() += progress.saturating_mul(picoseconds) / PICOSECONDS_PER_NANOSECOND;
             *self.kernel_work.get_mut() = kernel;
         }
     }
@@ -818,7 +950,7 @@ impl Outside for TestHost {
             .backend()
             .as_ref()
             .is_some_and(|backend| backend.waiting())
-            && self.schedule.random_bool(0.5)
+            && self.schedule.random_bool(ANSWER_NOW_CHANCE)
         {
             deliver(kernel, cpu, self);
         }
@@ -854,7 +986,7 @@ impl Outside for TestHost {
             unsafe {
                 assert_eq!(libc::pipe(ends.as_mut_ptr()), 0, "a pipe for the copy");
                 match libc::fork() {
-                    -1 => panic!("fork failed"),
+                    copy if copy < 0 => panic!("fork failed"),
                     0 => {
                         libc::close(ends[0]);
                         std::panic::set_hook(Box::new(|info| panic_in_copy(&info.to_string())));
@@ -875,12 +1007,15 @@ impl Outside for TestHost {
             let injecting = self.injecting();
             let seed = injecting.seed ^ ((injecting.saved as u64) << u32::BITS);
             let wall_step = injecting.injections.wall_step;
-            *self = self.moved(seed, wall_step);
+            self.move_on(seed, wall_step);
             kernel.restore(cpu, self);
         }
     }
 
     fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+        if held(&mut self.hooks).between_steps(kernel, cpu) {
+            return;
+        }
         // An answer owed comes before any time passes.
         if self
             .backend()
@@ -908,7 +1043,7 @@ impl Outside for TestHost {
             let streams = self.streams();
             panic!(
                 "the kernel is idle with nothing to wake it, and this host has no events \
-                 (the outside waits at {:?}); output so far:\n{}{}",
+                 (the client waits at {:?}); output so far:\n{}{}",
                 streams.stuck_at(),
                 String::from_utf8_lossy(&streams.stdout),
                 String::from_utf8_lossy(&streams.stderr)
@@ -946,10 +1081,26 @@ impl Outside for TestHost {
     }
 }
 
-/// Mixed into a run's seed for the schedule's choices and the moments of saves, so that each
-/// draws apart from the host's own randomness.
+/// Mixed into a run's seed for the schedule's choices and the moments of saves and signals, so
+/// that each draws apart from the host's own randomness.
 const SCHEDULE_SALT: u64 = 0x5eed;
 const SAVES_SALT: u64 = 0x5a7e;
+const SIGNALS_SALT: u64 = 0x5197;
+const NOTICES_SALT: u64 = 0x6e07;
+const NOTICE_BYTES_SALT: u64 = 0x6e08;
+
+/// Turns at least between the backend's notices, close together so that a short program meets
+/// many of them.
+const NOTICES_APART: u64 = 10;
+
+/// The chance that one more owed answer arrives in the same turn.
+const ANSWER_NOW_CHANCE: f64 = 0.5;
+
+/// What one instruction on the CPU side takes, in picoseconds, and what the kernel's work on a
+/// turn's end takes, in nanoseconds.
+const INSTRUCTION_PICOSECONDS: Range<u64> = 500..1500;
+const PICOSECONDS_PER_NANOSECOND: u64 = 1000;
+const TURN_NANOSECONDS: Range<u64> = 500..1500;
 
 /// How much of a waiting host's wait for a deadline passes between its marks of progress.
 const WAIT_STEP: Duration = Duration::from_secs(1);
@@ -959,12 +1110,15 @@ const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
 
 /// Hands the kernel what the outside sent, after waiting up to `wait` for something; whether
 /// anything came.
-fn network_events(
+fn network_events<H: Send>(
     kernel: &mut Kernel,
     cpu: &mut dyn wcontainers_abi::Cpu,
-    host: &mut TestHost,
+    host: &mut TestHost<H>,
     wait: Duration,
-) -> bool {
+) -> bool
+where
+    TestHost<H>: System,
+{
     if !held(&mut host.network).waiting() {
         return false;
     }
@@ -1069,11 +1223,13 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
 
 /// Hands the kernel one of the backend's answers or notices, in an order drawn from the seed,
 /// waiting for it.
-pub(crate) fn deliver(
+pub(crate) fn deliver<H: Send>(
     kernel: &mut Kernel,
     cpu: &mut dyn wcontainers_abi::Cpu,
-    host: &mut TestHost,
-) {
+    host: &mut TestHost<H>,
+) where
+    TestHost<H>: System,
+{
     let Some(message) = held(&mut host.backend)
         .as_mut()
         .and_then(|backend| backend.next(&mut host.schedule))

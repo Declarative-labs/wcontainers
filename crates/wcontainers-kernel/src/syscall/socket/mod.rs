@@ -24,7 +24,8 @@ use crate::linux::general::*;
 use crate::linux::net::{
     AF_ALG, AF_INET, AF_INET6, AF_NETLINK, AF_UNIX, AF_UNSPEC, MSG_CMSG_CLOEXEC, MSG_CTRUNC,
     MSG_DONTWAIT, MSG_NOSIGNAL, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL, SCM_CREDENTIALS,
-    SCM_RIGHTS, SHUT_RDWR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, SOL_SOCKET,
+    SCM_RIGHTS, SHUT_RDWR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, SOL_SOCKET, mmsghdr,
+    msghdr,
 };
 use crate::process::{Channel, Pid, Tid};
 use crate::{Context, Errno, Kernel};
@@ -3312,9 +3313,17 @@ pub(super) fn recvmsg(
         guest(kernel, cx, tid).write(header.control, &control)?;
     }
     // `msg_namelen`, `msg_controllen` and `msg_flags` go back.
-    guest(kernel, cx, tid).write_value(address + 8, &name_length)?;
-    guest(kernel, cx, tid).write_value(address + 40, &(control.len() as u64))?;
-    guest(kernel, cx, tid).write_value(address + 48, &out_flags)?;
+    let field = |offset: usize| address + offset as u64;
+    guest(kernel, cx, tid).write_value(
+        field(core::mem::offset_of!(msghdr, msg_namelen)),
+        &name_length,
+    )?;
+    guest(kernel, cx, tid).write_value(
+        field(core::mem::offset_of!(msghdr, msg_controllen)),
+        &(control.len() as u64),
+    )?;
+    guest(kernel, cx, tid)
+        .write_value(field(core::mem::offset_of!(msghdr, msg_flags)), &out_flags)?;
     Ok(received.reported.unwrap_or(copied))
 }
 
@@ -4428,8 +4437,8 @@ fn interface_list(
 }
 
 /// The size of a `struct mmsghdr`, and where its `msg_len` is.
-const MMSGHDR: u64 = 64;
-const MSG_LEN: u64 = 56;
+const MMSGHDR: u64 = size_of::<mmsghdr>() as u64;
+const MSG_LEN: u64 = core::mem::offset_of!(mmsghdr, msg_len) as u64;
 
 /// `__sys_sendmmsg`: each message sent as sendmsg sends it (waiting as it waits), its length
 /// stored after it. An error after the first ends the call with those sent.

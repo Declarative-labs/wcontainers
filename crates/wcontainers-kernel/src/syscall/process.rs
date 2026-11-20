@@ -55,7 +55,7 @@ fn exit_status(status: i32) -> i32 {
 const MAX_ARG_STRINGS: usize = 0x7fff_ffff;
 
 /// The longest one argument or variable may be (`MAX_ARG_STRLEN`).
-const MAX_ARG_STRLEN: u64 = 32 * 4096;
+pub(crate) const MAX_ARG_STRLEN: u64 = 32 * 4096;
 
 /// Reads a null-terminated list of string pointers, as `execve`'s `count` does.
 fn read_pointers(guest: &mut crate::user::Guest<'_>, mut address: u64) -> Result<Vec<u64>, Errno> {
@@ -103,10 +103,11 @@ pub(super) fn execve(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [path, argv, envp, ..]: Args,
+    arguments: Args,
 ) -> Outcome {
+    let [path, argv, envp, ..] = arguments;
     match exec(kernel, cx, tid, AT_FDCWD as u64, path, argv, envp, 0) {
-        Ok(Exec::Started(now)) => started(kernel, cx, tid, now),
+        Ok(Exec::Started(now)) => started(kernel, cx, tid, now, (__NR_execve, arguments)),
         Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
@@ -117,21 +118,34 @@ pub(super) fn execveat(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [dirfd, path, argv, envp, flags, _]: Args,
+    arguments: Args,
 ) -> Outcome {
+    let [dirfd, path, argv, envp, flags, _] = arguments;
     match exec(kernel, cx, tid, dirfd, path, argv, envp, flags as u32) {
-        Ok(Exec::Started(now)) => started(kernel, cx, tid, now),
+        Ok(Exec::Started(now)) => started(kernel, cx, tid, now, (__NR_execveat, arguments)),
         Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
     }
 }
 
-/// A new program in place: the thread starts it, under the process's number if it took it.
-fn started(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, now: Tid) -> Outcome {
+/// A new program in place: the thread starts it, under the process's number if it took it, and
+/// there the embedder is asked for the call's answer.
+fn started(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    now: Tid,
+    (number, arguments): (u32, Args),
+) -> Outcome {
     if now == tid {
         return Outcome::Restart;
     }
+    let call = wcontainers_abi::SystemCallRequest {
+        number: number.into(),
+        arguments,
+    };
+    kernel.answer_in_registers(cx, now, &call);
     kernel.return_to_user(cx, now, Resume::FromRegisters);
     Outcome::Gone
 }
@@ -266,6 +280,10 @@ fn exec(
     // timers go (`exit_itimers`).
     super::timer::process_end(kernel, pid, true);
     let tid = kernel.only_thread(cx, pid, tid);
+    // `exec_mm_release`: the caller's robust list, and its word for joiners while another process
+    // still uses the memory it leaves (a `vfork` child's parent).
+    let shared = kernel.memory_in_use_elsewhere(pid, kernel.processes[&pid].memory);
+    super::futex::thread_end(kernel, cx, tid, shared);
     kernel.install_image(cx, pid, tid, image);
     Ok(Exec::Started(tid))
 }
@@ -380,7 +398,9 @@ pub(super) fn setpgid(
     {
         return Err(Errno::EPERM);
     }
-    kernel.processes.get_mut(&pid).expect("process").group = group;
+    let process = kernel.processes.get_mut(&pid).expect("process");
+    let old = core::mem::replace(&mut process.group, group);
+    kernel.ids_let_go.push(old);
     Ok(0)
 }
 
@@ -401,9 +421,11 @@ pub(super) fn setsid(
         return Err(Errno::EPERM);
     }
     let process = kernel.process_of_mut(tid);
+    let old = [process.session, process.group];
     process.session = pid;
     process.group = pid;
     process.terminal = None;
+    kernel.ids_let_go.extend(old);
     Ok(pid as u64)
 }
 

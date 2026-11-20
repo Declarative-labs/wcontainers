@@ -140,6 +140,23 @@ pub(crate) const ORIG_RSEQ_SIZE: u32 = 32;
 pub(crate) const RSEQ_WRITTEN_SIZE: u32 = 28;
 /// `cpu_id`'s value in an area not registered (`RSEQ_CPU_ID_UNINITIALIZED`).
 pub(crate) const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;
+/// The first fields of `struct rseq`, up to the address of the current sequence.
+#[repr(C)]
+pub(crate) struct rseq {
+    pub cpu_id_start: u32,
+    pub cpu_id: u32,
+    pub rseq_cs: u64,
+}
+/// A restartable sequence's description (`struct rseq_cs`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::KnownLayout)]
+pub(crate) struct rseq_cs {
+    pub version: u32,
+    pub flags: u32,
+    pub start_ip: u64,
+    pub post_commit_offset: u64,
+    pub abort_ip: u64,
+}
 
 /// The `mmap` flags Linux knew before `MAP_SHARED_VALIDATE` (`LEGACY_MAP_MASK` in Linux's internal
 /// `linux/mman.h`): a validated shared mapping refuses any other.

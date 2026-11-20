@@ -79,7 +79,7 @@ static int early(int count) {
 }
 
 // Reads one line, waiting in `how` before each read.
-static int line(const char *how, int epoll, char *into, int room) {
+static int line(const char *how, int epoll, char *into, int space) {
     int length = 0;
     for (;;) {
         if (!strcmp(how, "poll")) {
@@ -100,7 +100,7 @@ static int line(const char *how, int epoll, char *into, int room) {
         ssize_t got = read(0, into + length, 1);
         if (got <= 0) return length ? length : (int)got;
         length += got;
-        if (into[length - 1] == '\n' || length == room) return length;
+        if (into[length - 1] == '\n' || length == space) return length;
     }
 }
 

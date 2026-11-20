@@ -165,9 +165,28 @@ pub mod reason {
     /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
     /// later change to them shows in what is read. Detail: the call number.
     pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
-    /// An outside sent more on an end than the credit the kernel gave; what was past it is
+    /// An embedder sent more on an end than the credit the kernel gave; what was past it is
     /// dropped. Detail: the end.
     pub const STREAM_PAST_CREDIT: &str = "stream data past its credit";
+    /// While the embedder watches memory, a call copied memory its description
+    /// (`syscall/touch.rs`) did not name, so a watch there is met only at the copy. Detail: the
+    /// call's number.
+    pub const COPY_UNDESCRIBED: &str = "copy outside the call's description";
+    /// A kernel copy met a page the embedder watches that the call's description did not name;
+    /// the call runs again once the watch is met, doing again whatever it did before the copy.
+    /// Detail: the call's number.
+    pub const WATCH_MET_AT_A_COPY: &str = "watched memory met at a copy";
+    /// A call did part of its work before a copy met a watched page, and keeps its short result.
+    /// Detail: the call's number.
+    pub const CALL_SHORT_OF_WATCHED_MEMORY: &str = "call short of watched memory";
+    /// The task id source answered a number something still carries, and was asked again (as
+    /// Linux's `alloc_pid` skips used numbers once they wrap). Detail: the number.
+    pub const TASK_ID_CARRIED: &str = "task id still carried";
+    /// The task id source answered a number outside 1 to `pid_max`; the fork or clone fails with
+    /// EAGAIN. Detail: the number.
+    pub const TASK_ID_OUT_OF_RANGE: &str = "task id out of range";
+    /// A request for memory found no room below the executor's ceiling. Detail: the call's number.
+    pub const PROCESS_OUTGROWN: &str = "process outgrew the ceiling";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
     /// The CPU side answered that this host cannot make a memory, a thread or a block of shared

@@ -1,13 +1,17 @@
 //! A process's address space as the kernel keeps it: the ranges it has mapped and what each allows.
 
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::Cell;
 
+use rangemap::RangeSet;
 use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
 
 use crate::fs::Node;
 use crate::linux::general::{RLIMIT_AS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_STACK};
 use crate::process::{LIMITS, Limit};
+use crate::system::{AccessKind, MemoryError, WatchesFor};
 use crate::{Errno, errno};
 
 pub(crate) fn page_down(address: u64) -> u64 {
@@ -339,8 +343,11 @@ pub(crate) struct AddressMap {
     /// Guard pages (`MADV_GUARD_INSTALL`, Linux's guard markers) by address: never accessible,
     /// through any change of protection, until removed, unmapped or mapped over.
     guards: BTreeSet<u64>,
-    /// One past the highest address.
+    /// One past the highest address: the container's address width.
     pub end: u64,
+    /// One past the highest address the executor can give now; nothing is placed above it, and a
+    /// request that would reach past it has outgrown it.
+    pub ceiling: u64,
     /// New mappings with no address go below this, highest first.
     pub mmap_base: u64,
     pub brk_start: u64,
@@ -357,16 +364,184 @@ pub(crate) struct AddressMap {
     /// `PR_SET_DUMPABLE`, kept with the memory as Linux keeps it in `mm->flags`; cleared when a
     /// user's ids change.
     pub dumpable: bool,
+    /// The embedder's watches on these pages and its record of the pages written.
+    pub watches: Watches,
+    /// Where a placement that found no room below the end notes the length it asked for.
+    outgrown: Rc<Cell<Option<u64>>>,
+}
+
+/// How much of a page's access a watch brings back: none, writes, everything.
+fn watch_rank(watch: WatchesFor) -> u8 {
+    match watch {
+        WatchesFor::None => 0,
+        WatchesFor::Writes => 1,
+        WatchesFor::All => 2,
+    }
+}
+
+/// The embedder's watches on one memory's pages, and the pages written since it last asked.
+#[derive(Clone, Default)]
+pub(crate) struct Watches {
+    /// Watched pages by address; never `WatchesFor::None`.
+    pages: BTreeMap<u64, WatchesFor>,
+    /// Pages written since the embedder last asked; none until it first asks.
+    written: Option<RangeSet<u64>>,
+    /// The first watched page a kernel copy for the running call found, and how it touched it.
+    pub touched: Option<(u64, AccessKind)>,
+    /// The ranges the running call's description named and how, against which its copies are
+    /// checked.
+    pub described: Option<Vec<(u64, u64, AccessKind)>>,
+    /// The first address a copy of the running call reached outside its description.
+    pub undescribed: Option<u64>,
+}
+
+impl Watches {
+    /// Notes a copy of `[start, end)` as `access` that the running call's description did not
+    /// name: a write must lie in ranges named as written, which meet every watch.
+    pub fn check_described(&mut self, start: u64, end: u64, access: AccessKind) {
+        let Some(described) = &self.described else {
+            return;
+        };
+        let mut at = start;
+        while at < end {
+            match described.iter().find(|(from, to, named)| {
+                (*from..*to).contains(&at)
+                    && (access != AccessKind::Write || *named == AccessKind::Write)
+            }) {
+                Some((_, to, _)) => at = *to,
+                None => {
+                    self.undescribed.get_or_insert(at);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Whether any page is watched.
+    pub fn any(&self) -> bool {
+        !self.pages.is_empty()
+    }
+
+    /// Whether anything narrows what the CPU side allows.
+    pub fn narrows(&self) -> bool {
+        !self.pages.is_empty() || self.written.is_some()
+    }
+
+    /// What the CPU side allows of a page that would allow `full`.
+    fn narrowed(&self, page: u64, full: Permissions) -> Permissions {
+        let mut allowed = full;
+        match self.pages.get(&page) {
+            Some(WatchesFor::All) => allowed = Permissions::empty(),
+            Some(WatchesFor::Writes) => allowed -= Permissions::WRITE,
+            Some(WatchesFor::None) | None => {}
+        }
+        if self
+            .written
+            .as_ref()
+            .is_some_and(|written| !written.contains(&page))
+        {
+            allowed -= Permissions::WRITE;
+        }
+        allowed
+    }
+
+    /// The watch on the page holding `address`.
+    pub fn watch_at(&self, address: u64) -> WatchesFor {
+        self.pages
+            .get(&page_down(address))
+            .copied()
+            .unwrap_or(WatchesFor::None)
+    }
+
+    /// Whether the record of written pages holds back writing the page of `address`.
+    pub fn holds_back_write(&self, address: u64) -> bool {
+        self.written
+            .as_ref()
+            .is_some_and(|written| !written.contains(&page_down(address)))
+    }
+
+    /// The first address in `[start, end)` whose page is watched for `access`.
+    pub fn first_watched(&self, start: u64, end: u64, access: AccessKind) -> Option<u64> {
+        if self.pages.is_empty() || start >= end {
+            return None;
+        }
+        self.pages
+            .range(page_down(start)..end)
+            .find(|(_, watch)| access == AccessKind::Write || **watch == WatchesFor::All)
+            .map(|(page, _)| (*page).max(start))
+    }
+
+    /// How much of the `reached` bytes from `start` a kernel copy of `length` bytes takes before a
+    /// watched page, which is not there for it until the watch is met; the copy is checked against
+    /// the running call's description.
+    pub fn copy_reach(&mut self, start: u64, length: u64, reached: u64, access: AccessKind) -> u64 {
+        self.check_described(start, start.saturating_add(length), access);
+        match self.first_watched(start, start + reached, access) {
+            Some(at) => {
+                self.touched.get_or_insert((at, access));
+                at - start
+            }
+            None => reached,
+        }
+    }
+
+    /// Notes that the process wrote `[start, end)`, if the embedder keeps a record.
+    pub fn note_written(&mut self, start: u64, end: u64) -> bool {
+        let Some(written) = &mut self.written else {
+            return false;
+        };
+        let pages = page_down(start)..page_up(end);
+        let fresh = !pages.is_empty() && written.gaps(&pages).next().is_some();
+        if fresh {
+            written.insert(pages);
+        }
+        fresh
+    }
+
+    /// Takes the watches of `[start, end)`, by their pages' offsets from `start`.
+    fn take(&mut self, start: u64, end: u64) -> Vec<(u64, WatchesFor)> {
+        let taken: Vec<(u64, WatchesFor)> = self
+            .pages
+            .range(start..end)
+            .map(|(page, watch)| (*page - start, *watch))
+            .collect();
+        for (offset, _) in &taken {
+            self.pages.remove(&(start + offset));
+        }
+        taken
+    }
+
+    /// Forgets the watches and the record of `[start, end)`, which is unmapped.
+    fn forget(&mut self, start: u64, end: u64) {
+        if !self.narrows() {
+            return;
+        }
+        let gone: Vec<u64> = self
+            .pages
+            .range(start..end)
+            .map(|(page, _)| *page)
+            .collect();
+        for page in gone {
+            self.pages.remove(&page);
+        }
+        if let Some(written) = &mut self.written
+            && start < end
+        {
+            written.remove(start..end);
+        }
+    }
 }
 
 impl AddressMap {
-    pub fn new(end: u64) -> Self {
+    /// A map of `end`'s width whose stack's top is at the ceiling.
+    pub fn new(end: u64, ceiling: u64, outgrown: Rc<Cell<Option<u64>>>) -> Self {
         Self {
             mappings: BTreeMap::new(),
             used: BTreeMap::new(),
             guards: BTreeSet::new(),
             end,
-            mmap_base: mmap_base(end, STACK_LIMIT, None, 0),
+            ceiling,
+            mmap_base: mmap_base(ceiling, STACK_LIMIT, None, 0),
             brk_start: 0,
             brk: 0,
             data_size: 0,
@@ -374,7 +549,204 @@ impl AddressMap {
             membarrier: 0,
             protection_keys: 1,
             dumpable: true,
+            watches: Watches::default(),
+            outgrown,
         }
+    }
+
+    /// Ok if all of a range is mapped and none of it is a backend file's page not read yet.
+    pub fn readable_whole(&self, range: core::ops::Range<u64>) -> Result<(), MemoryError> {
+        if range.start >= range.end {
+            return Ok(());
+        }
+        if !self.fully_mapped(range.start, range.end) {
+            return Err(MemoryError::NotMapped);
+        }
+        let mut at = range.start;
+        while at < range.end {
+            let mapping = self.find(at).ok_or(MemoryError::NotMapped)?;
+            let to = mapping.end.min(range.end);
+            if let Backing::File { node, offset, .. } = &mapping.backing {
+                let page = |address: u64| (offset + (address - mapping.start)) / PAGE_SIZE;
+                if !crate::shared::unfilled(node, page(page_down(at))..page(page_up(to))).is_empty()
+                {
+                    return Err(MemoryError::NotRead);
+                }
+            }
+            at = to;
+        }
+        Ok(())
+    }
+
+    /// Sets the embedder's watch on the mapped pages of `[start, end)` (page aligned) and tells
+    /// the CPU side; whether any page's watch changed, and how many pages' were raised (set, or
+    /// widened to `All`).
+    pub fn set_watch(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        range: core::ops::Range<u64>,
+        watch: WatchesFor,
+    ) -> (bool, u64) {
+        // Only watched pages are visited to end watches, and only mapped ones to set them.
+        let mut changed = false;
+        let mut raised = 0;
+        if range.is_empty() {
+            return (changed, raised);
+        }
+        if watch == WatchesFor::None {
+            let ended: Vec<u64> = self
+                .watches
+                .pages
+                .range(range.clone())
+                .map(|(page, _)| *page)
+                .collect();
+            for page in &ended {
+                self.watches.pages.remove(page);
+            }
+            changed = !ended.is_empty();
+        } else {
+            let spans: Vec<(u64, u64)> = self
+                .mappings
+                .range(..range.end)
+                .map(|(_, mapping)| mapping)
+                .filter(|mapping| mapping.end > range.start)
+                .map(|mapping| (mapping.start.max(range.start), mapping.end.min(range.end)))
+                .collect();
+            for (from, to) in spans {
+                for page in (from..to).step_by(PAGE_SIZE as usize) {
+                    let before = self.watches.pages.insert(page, watch);
+                    changed |= before != Some(watch);
+                    if watch_rank(watch) > before.map_or(0, watch_rank) {
+                        raised += 1;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.reapply(cpu, memory, range.start, range.end);
+        }
+        (changed, raised)
+    }
+
+    /// The pages written since the embedder last asked, as ranges, and a fresh record from now
+    /// (the first time: every page mapped writable).
+    pub fn take_dirty(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+    ) -> Vec<core::ops::Range<u64>> {
+        let written = match self.watches.written.replace(RangeSet::new()) {
+            Some(written) => written,
+            None => self
+                .mappings
+                .values()
+                .filter(|mapping| mapping.permissions.contains(Permissions::WRITE))
+                .map(|mapping| mapping.start..mapping.end)
+                .collect(),
+        };
+        let ranges = written.into_iter().collect();
+        let starts: Vec<(u64, u64)> = self.mappings.values().map(|m| (m.start, m.end)).collect();
+        for (start, end) in starts {
+            self.reapply(cpu, memory, start, end);
+        }
+        ranges
+    }
+
+    /// A fork's child's copy: no record of written pages, and nothing of its parent's running
+    /// call.
+    pub fn start_child(&mut self, cpu: &mut dyn Cpu, memory: MemoryId) {
+        self.watches.touched = None;
+        self.watches.described = None;
+        self.watches.undescribed = None;
+        if self.watches.written.take().is_some() {
+            let starts: Vec<(u64, u64)> =
+                self.mappings.values().map(|m| (m.start, m.end)).collect();
+            for (start, end) in starts {
+                self.reapply(cpu, memory, start, end);
+            }
+        }
+    }
+
+    /// Tells the CPU side again what every mapping's pages over `[start, end)` allow.
+    pub fn reapply(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, start: u64, end: u64) {
+        let (start, end) = (page_down(start), page_up(end));
+        let overlapping: Vec<Mapping> = self
+            .mappings
+            .range(..end)
+            .map(|(_, mapping)| mapping)
+            .filter(|mapping| mapping.end > start)
+            .cloned()
+            .collect();
+        for mapping in overlapping {
+            // The ranges were mapped, so the CPU side takes them.
+            let _ = apply_permissions_in(
+                cpu,
+                memory,
+                &mapping,
+                &self.guards,
+                start,
+                end,
+                &self.watches,
+            );
+        }
+    }
+
+    /// Notes that the process's bytes in `[start, end)` changed, and lets the CPU side write the
+    /// pages it now may.
+    pub fn note_written(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, start: u64, end: u64) {
+        if self.watches.note_written(start, end) {
+            self.reapply(cpu, memory, start, end);
+        }
+    }
+
+    /// Takes the watches of `[start, end)` along to pages a move is about to take there.
+    pub fn take_watches(&mut self, start: u64, end: u64) -> Vec<(u64, WatchesFor)> {
+        if self.watches.pages.is_empty() {
+            return Vec::new();
+        }
+        self.watches.take(start, end)
+    }
+
+    /// Pages moved to `[start, end)`: the watches taken along with them are set here, and the
+    /// pages are noted as written.
+    pub fn moved_here(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        start: u64,
+        end: u64,
+        watches: Vec<(u64, WatchesFor)>,
+    ) {
+        for (offset, watch) in watches {
+            self.watches.pages.insert(start + offset, watch);
+        }
+        if self.watches.narrows() {
+            self.watches.note_written(start, end);
+            self.reapply(cpu, memory, start, end);
+        }
+    }
+
+    /// Ends the watches of `[start, end)`, whose pages a fork's child gets fresh.
+    pub fn forget_watches(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, start: u64, end: u64) {
+        if self.watches.pages.range(start..end).next().is_some() {
+            self.watches.forget(start, end);
+            self.reapply(cpu, memory, start, end);
+        }
+    }
+
+    /// A write fault on a page the record of written pages held back: noted, and the page may be
+    /// written from now on. Whether that was the fault's reason.
+    pub fn written_fault(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, address: u64) -> bool {
+        let page = page_down(address);
+        let writable = self
+            .find(address)
+            .is_some_and(|mapping| mapping.permissions.contains(Permissions::WRITE));
+        if !writable || !self.watches.note_written(page, page + PAGE_SIZE) {
+            return false;
+        }
+        self.reapply(cpu, memory, page, page + PAGE_SIZE);
+        true
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Mapping> {
@@ -600,34 +972,85 @@ impl AddressMap {
             .is_none_or(|mapping| mapping.start_gap() >= end)
     }
 
+    /// Bytes new mappings with no address can still take: the gaps below the mmap base.
+    pub fn placeable(&self) -> u64 {
+        let mut free = 0;
+        let mut at = LOWEST_ADDRESS;
+        for mapping in self
+            .mappings
+            .range(..self.mmap_base)
+            .map(|(_, mapping)| mapping)
+        {
+            if mapping.end <= at {
+                continue;
+            }
+            free += mapping.start_gap().min(self.mmap_base).saturating_sub(at);
+            at = mapping.end;
+        }
+        free + self.mmap_base.saturating_sub(at)
+    }
+
+    /// Whether a request for `length` bytes ending at `end` reaches past the ceiling; if so it is
+    /// noted as outgrown.
+    pub fn crosses_ceiling(&self, end: u64, length: u64) -> bool {
+        if end <= self.ceiling {
+            return false;
+        }
+        self.outgrown.set(Some(length));
+        true
+    }
+
     /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search,
     /// which goes on below the program and its heap down to the lowest address.
     pub fn find_free(&self, length: u64) -> Option<u64> {
+        self.find_free_beside(length, &[])
+    }
+
+    /// Free space as [`AddressMap::find_free`] finds it with `taken` in use too: where the loader
+    /// will place a new program's parts.
+    pub fn find_free_beside(&self, length: u64, taken: &[core::ops::Range<u64>]) -> Option<u64> {
         let mut ceiling = self.mmap_base;
         let floor = LOWEST_ADDRESS;
         loop {
-            let start = ceiling.checked_sub(length)?;
-            if start < floor {
+            let start = ceiling.checked_sub(length).filter(|start| *start >= floor);
+            let Some(start) = start else {
+                if self.ceiling < self.end {
+                    self.outgrown.set(Some(length));
+                }
                 return None;
-            }
+            };
             // The highest mapping that, with the guard gap below one that grows down, overlaps
             // [start, ceiling).
-            let blocking = self
+            let mapped = self
                 .mappings
                 .range(..ceiling.saturating_add(STACK_GUARD_GAP))
                 .rev()
                 .map(|(_, mapping)| mapping)
                 .find(|mapping| mapping.start_gap() < ceiling)
-                .filter(|mapping| mapping.end > start);
-            match blocking {
-                Some(mapping) => ceiling = mapping.start_gap(),
+                .filter(|mapping| mapping.end > start)
+                .map(Mapping::start_gap);
+            let reserved = taken
+                .iter()
+                .filter(|range| range.start < ceiling && range.end > start)
+                .map(|range| range.start)
+                .max();
+            match mapped.max(reserved) {
+                Some(below) => ceiling = below,
                 None => return Some(start),
             }
         }
     }
 
-    /// Takes a range out of the table, splitting mappings at its ends, and returns what was there.
+    /// Takes a range out of the table, splitting mappings at its ends, and returns what was there;
+    /// its pages' watches and record go with them.
     pub fn remove(&mut self, start: u64, end: u64) -> Vec<Mapping> {
+        self.watches.forget(start, end);
+        self.split_out(start, end)
+    }
+
+    /// Takes the mappings of a range out of the table to be put back changed, splitting them at
+    /// its ends; the pages, their watches and their record stay.
+    fn split_out(&mut self, start: u64, end: u64) -> Vec<Mapping> {
         let overlapping: Vec<u64> = self
             .mappings
             .range(..end)
@@ -660,6 +1083,8 @@ impl AddressMap {
     ) -> Result<(), Errno> {
         let removed = self.remove(mapping.start, mapping.end);
         self.take_guards(mapping.start, mapping.end);
+        // New pages are new bytes, as Linux marks a new mapping soft-dirty.
+        self.watches.note_written(mapping.start, mapping.end);
         let had_code = removed
             .iter()
             .any(|old| old.permissions.contains(Permissions::EXECUTE));
@@ -706,8 +1131,8 @@ impl AddressMap {
         end: u64,
         permissions: Permissions,
     ) -> Result<(), Errno> {
-        let removed = self.remove(start, end);
-        for mut mapping in removed {
+        let changed = self.split_out(start, end);
+        for mut mapping in changed {
             let had_code = mapping.permissions.contains(Permissions::EXECUTE);
             mapping.permissions = permissions;
             self.apply(cpu, memory, &mapping)?;
@@ -852,7 +1277,7 @@ impl AddressMap {
 
     /// Locks or unlocks a range, every page of which is mapped.
     pub fn set_lock(&mut self, start: u64, end: u64, lock: Lock) {
-        for mut mapping in self.remove(start, end) {
+        for mut mapping in self.split_out(start, end) {
             if !mapping.keeps_lock() {
                 mapping.locked = lock;
             }
@@ -863,7 +1288,7 @@ impl AddressMap {
 
     /// Sets what a fork does with a range, every page of which is mapped.
     pub fn set_on_fork(&mut self, start: u64, end: u64, change: impl Fn(&mut OnFork)) {
-        for mut mapping in self.remove(start, end) {
+        for mut mapping in self.split_out(start, end) {
             change(&mut mapping.on_fork);
             self.mappings.insert(mapping.start, mapping);
         }
@@ -940,7 +1365,7 @@ impl AddressMap {
         match self.find(start).cloned() {
             Some(mapping) => {
                 let (lo, hi) = (page_down(start), page_up(end));
-                apply_permissions_in(cpu, memory, &mapping, &self.guards, lo, hi)
+                apply_permissions_in(cpu, memory, &mapping, &self.guards, lo, hi, &self.watches)
             }
             None => Ok(()),
         }
@@ -960,6 +1385,7 @@ impl AddressMap {
             &self.guards,
             mapping.start,
             mapping.end,
+            &self.watches,
         )
     }
 
@@ -1184,7 +1610,7 @@ pub(crate) fn cpu_permissions(asked: Permissions) -> Permissions {
 /// Tells the CPU side what a mapping's pages in `[lo, hi)` allow: nothing wholly past a file's
 /// end, nothing where a backend file's page is not read yet, so the first touch comes back to read
 /// it, no writing where a private file page is not copied yet, so the first write comes back
-/// to copy it, and nothing on a guard page.
+/// to copy it, and nothing on a guard page; the embedder's watches narrow each page further.
 fn apply_permissions_in(
     cpu: &mut dyn Cpu,
     memory: MemoryId,
@@ -1192,15 +1618,34 @@ fn apply_permissions_in(
     guards: &BTreeSet<u64>,
     lo: u64,
     hi: u64,
+    watches: &Watches,
 ) -> Result<(), Errno> {
     let (lo, hi) = (lo.max(mapping.start), hi.min(mapping.end));
+    let narrows = watches.narrows();
     let mut set = |from: u64, to: u64, permissions: Permissions| {
         let (from, to) = (from.max(lo), to.min(hi));
-        if from < to {
-            cpu.set_permissions(memory, from, to - from, permissions)
-                .map_err(errno::from_cpu)?;
+        if from >= to {
+            return Ok::<(), Errno>(());
         }
-        Ok::<(), Errno>(())
+        if !narrows {
+            return cpu
+                .set_permissions(memory, from, to - from, permissions)
+                .map_err(errno::from_cpu);
+        }
+        // Runs of pages the watches leave alike.
+        let mut start = from;
+        while start < to {
+            let allowed = watches.narrowed(page_down(start), permissions);
+            let mut end = page_down(start) + PAGE_SIZE;
+            while end < to && watches.narrowed(end, permissions) == allowed {
+                end += PAGE_SIZE;
+            }
+            let end = end.min(to);
+            cpu.set_permissions(memory, start, end - start, allowed)
+                .map_err(errno::from_cpu)?;
+            start = end;
+        }
+        Ok(())
     };
     let split = match &mapping.backing {
         Backing::File { file_end, .. } => (*file_end).clamp(mapping.start, mapping.end),
@@ -1234,4 +1679,24 @@ fn apply_permissions_in(
         set(guard, guard + PAGE_SIZE, Permissions::empty())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_mmap_gap_is_linuxs_for_an_address_space_of_any_size() {
+        let gap = |top: u64| top - mmap_base(top, STACK_LIMIT, None, 0);
+        let large = 1 << 32;
+        assert_eq!(gap(large), MIN_GAP);
+        // Five sixths of a top below the least gap is under it: the stack's own gap is kept.
+        let small = MIN_GAP;
+        assert_eq!(gap(small), STACK_LIMIT + STACK_GUARD_GAP);
+        let tiny = MAX_GAP_SHARE.1 * PAGE_SIZE;
+        assert_eq!(gap(tiny), MAX_GAP_SHARE.0 * PAGE_SIZE);
+        for top in [large, small, tiny, 0] {
+            assert!(gap(top) <= top);
+        }
+    }
 }

@@ -1,301 +1,859 @@
 # Status of the streams track
 
-The plan is docs/streams.md; the owner's rulings are in the brief (orchestrator/brief-streams.md).
+The plan is docs/streams.md (S1, the stream ends) and docs/embedder-interface.md (S2, the
+embedder's hooks, the process handle and the memory primitives). The owner's rulings are in
+orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 
 ## Where things stand
 
-S1 (stream ends for standard input, output, error and the terminal): built in the first run;
-the second run fixed everything the independent check found (see "S1, second run"); the third run
-named the literals the track had added and found nothing to fix in the interrupted second check's
-notes (see "S1, third run"). Complete, waiting for its independent check.
-
-What comes next: the independent check of S1, then S2 (orchestrator/next-embedder-interface.md,
-its last two sections). Not built and left open on purpose: ends made by connect, accept, export
-or import; `/dev/console` under `-t` (see the departures).
-
-What exists:
-- abi: `End`, `Host::stream_send`, `stream_credit`, `stream_close`; `Event::StreamData`,
-  `StreamCredit`, `StreamClosed`, `TerminalResized { end, .. }`. `Host::output`,
-  `wcontainers_abi::Stream` and `Event::TerminalInput` are gone; nothing else carries these bytes.
-- kernel: `Start::standard` (`wcontainers_kernel::Standard`: `Pipes { input, output, error }` or
-  `Terminal { end, columns, rows }`); ends.rs holds each end's kernel side as an ordinary open file
-  (pipe reader, pipe writer, pty master) with its send credit. A pipe knows the end that reads it
-  (`Pipe::outside_reader`, set when the end is attached), the input credit outstanding
-  (`Pipe::promised`) and an inbox for the outside's bytes that found no room (at most the credit);
-  a pty keeps the room it promised (`Pty::promised`). The ends are served when the kernel settles
-  (`Kernel::serve_ends`), only after an end's event or a wake on a channel in `Ends::watched`
-  (the channels of the files held, removed when a file is let go). A pipe write sends straight out
-  when the pipe is empty and credit allows. The pipe's old "the host reads it" field and its
-  special cases (splice, readers count) are gone.
-- test host (crates/wcontainers-kernel-test/src/streams.rs): the other sides of the ends, a script
-  (wait for output, send, resize, close input, close output) that the Docker reference
-  (`reference::run_outside`) follows too, seeded send pieces, slow or absent output credit, a
-  rule-breaking mode (`Outside::excess`), and a record of anything the kernel did against the
-  credit rules (`Run::broken`).
-- tests: crates/wcontainers-kernel-test/tests/streams.rs (19 tests), guest programs stdin.c,
-  stdout.c, terminal.c.
+- S1: complete; its third independent check's findings are settled (see "S1 check findings").
+- S2: built in its first run; its first five independent checks' findings settled in the second,
+  fifth, sixth, seventh and eighth runs (sections below); its sixth check's five findings and the
+  owner's rulings of the afternoon of 2026-11-19 (verb-first names, `free_task_id` with no default,
+  `on_memory_written_by_kernel`, the system call proxy, `WatchesFor` and `AccessKind`) settled in
+  the ninth run (see "S2 sixth check findings"); its seventh check's findings settled in the
+  tenth run (see "S2 seventh check findings"); its eighth check's findings settled in the
+  eleventh run (see "S2 eighth check findings").
+- What comes next: S2's ninth independent check. After S2 passes, the next milestone (to be
+  specified) builds the interface crates of origin/phase-1-interfaces; not started here. Not built and left open on purpose: export of
+  a process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
+  docs/embedder-interface.md), the watch put on shared pages when one sharer leaves (it comes with
+  `suspend`), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made by connect,
+  accept, export or import; `/dev/console` under `-t`. Ruled on 2026-11-19 but not part of S2 (in
+  the document's "Not built"): `type ProcessState` (to wait for the reviewable-rust layout, as
+  ruled), signals as an input (`on_signal_delivering`, `Process::send_signal`), the shared-memory
+  hooks `on_shared_memory_mapping` and `on_shared_memory_unmapped` with `MemoryObject` and its
+  branded ids, and a getter for a process's memory id (for `WorkloadPlacement`).
 
 ## How to run
 
-- The stream tests: `RUST_TEST_THREADS=3 nix develop -c cargo test -j 4 -p wcontainers-kernel-test
-  --test streams`. Docker must be running. Our side runs under `SCHEDULE_SEEDS` seeds (3 if unset)
-  from `SCHEDULE_SEED` (1 if unset); the reference once.
+- The embedder's tests: `RUST_TEST_THREADS=3 nix develop -c cargo test -j 4 -p
+  wcontainers-kernel-test --test embedder` (Docker must be running for the lazy memory test).
+  Our side runs under `SCHEDULE_SEEDS` seeds (3 if unset) from `SCHEDULE_SEED` (1 if unset).
+- The stream tests: the same with `--test streams`.
+- The literal check: `RAYON_NUM_THREADS=3 nix develop -c cargo run -q -p wcontainers-literals --
+  check` (exit 0).
 - Everything: `RUST_TEST_THREADS=3 nix develop -c cargo test --no-fail-fast -j 4 -p wcontainers-abi
-  -p wcontainers-kernel -p wcontainers-kernel-test`.
+  -p wcontainers-kernel -p wcontainers-kernel-test -p wcontainers-literals`.
 
-## S1, third run
+## S2
 
-- The second independent check was cut off by the session's restart. Its notes (scratch
-  streams/check2) hold no finding against the code: at 51e89a73 from a clean build the 19 stream
-  tests passed at seeds 1 to 3 and at 25 seeds from 1000; its own programs (a copy through a small
-  buffer with pauses, epoll on 0 with input in pieces, a shell on the terminal sent ^C, sendfile and
-  splice to a slow output, the terminal's output to a slow outside, input left unread at exit,
-  `tee | wc`, a terminal outside past its credit, events for ends that do not exist or go the wrong
-  way) all passed against Docker in the end; the failures in its first two logs were in its own test
-  file and fixed there. Its whole-suite run failed from 18:13 because Docker's daemon stopped
-  (`docker.sock: no such file`), not on anything of ours.
-- Literals: the check's list of gated literals on lines this track added (36, made with the
-  literal checker's `list` from phase-1-literals, run on this tree) is down to 3, each waiting for
-  its owner (see "Literals"). Named in kernel-test's reference.rs: the Docker client and its command
-  words (`reference::docker`, long options where a short one would read as another program's word,
-  `--force` and `--publish`), the containers' names (one `container_name`), a default container's
-  working directory (`ROOT_DIRECTORY`). In the kernel: the root user and group owning the end pipes
-  (`credentials::ROOT_UID`, `ROOT_GID`); the null device's path is gone from a message. The stream
-  tests' inputs that equalled an unrelated named value are written from their sizes (`1 << 9`,
-  `5 << 10`, `8 << 20`, `PAGE_SIZE` for a page-sized read, any `u16` for the text's numbers).
-- The literal check is not merged; see "Departures from the plan".
+What exists (signatures and firing points in docs/embedder-interface.md):
+- kernel: `System: Host + Sync` (system.rs) with `allocate_task_id`, `free_task_id` (no default),
+  `intercept_system_call_request` and `_response`, and the seven hooks (`on_process_starting`,
+  `on_program_starting`, `on_thread_starting`, `on_process_exiting`, `on_process_outgrown`,
+  `on_watched_memory_accessing`, `on_memory_written_by_kernel`), all taking `&self`; `TaskId`;
+  `SystemCallResponse`; `Process` with `id`, `info`, `execution_config`, `read_memory`,
+  `write_memory`, `watch_memory`, `watch_thread_memory` (refused by name), `take_dirty_memory`;
+  `ProcessInfo` with `memory_mapped`, `ceiling_distance`, `compute_used`, `parent`;
+  `Kernel::process(cpu, id)`; `WatchesFor`, `AccessKind` (with `Execute`), `MemoryError`,
+  `ThreadOrdering`, `ReplayDeterminism`, `ExecutionConfig`, `Unsupported`. `Start` has `ceiling`
+  and `execution`; `Kernel::start` returns `Result<(), Unsupported>`.
+- abi: `SystemCallRequest` (was `Syscall`), `SYSTEM_CALL_ARGUMENT_COUNT`,
+  `SYSTEM_CALL_NUMBER_REGISTER`; the stream services are `send_stream`, `credit_stream`,
+  `close_stream`.
+- abi: `PerThreadWatch`, the subtrait of `Cpu` for watching one thread (declared, implemented by no
+  executor).
+- watches and the record of written pages live in each `AddressMap` (memory.rs `Watches`), so a
+  fork's child inherits watches with the map; the CPU side's permissions are narrowed page by page
+  where they are set (`apply_permissions_in`). `syscall/touch.rs` describes what every built call
+  touches and what thread ends touch; task.rs walks it before a call, signal.rs before a signal or
+  an rseq check; `Guest::accessible` checks each copy against the description and treats a watched
+  page as not there; a program's fault on a watched page announces the hook.
+- test host: `driver::TestHost<H>`, its state and the test's hooks each behind a `Mutex`: with
+  `hooks::NoHooks` (every test but the embedder's) it overrides nothing of `System`, so the kernel's own provided defaults answer; with
+  `Box<dyn hooks::Hooks>` (the test's side of every hook and task id call, plus a call between
+  steps) it forwards them. `driver::Prepared::{hooks, ceiling}`, `busybox::run_ours_hooked`.
 
-## S1, second run: the independent check's findings
+The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to 3 unless said):
+- Each hook's firing point and order over fork, exec, thread creation and exit:
+  `life_cycle_hooks_fire_in_order_over_fork_exec_threads_and_exit` (a thread, a forked child that
+  runs /bin/true, the exit): exactly starting(1), program(1), thread(1, 2), free(2), starting(3,
+  parent 1), program(3), exiting(3), free(3), exiting(1), free(1). And
+  `life_cycle_hooks_fire_in_order_over_signals_threaded_exec_vfork_groups_and_unwanted_children`
+  (see "S2 check findings"), 38 events in exact order. Both pass.
+- Task ids from the embedder: `task_ids_come_from_the_embedder_and_go_back_once_nothing_carries_them`:
+  a pool from 1001 reusing freed numbers first; the thread's number, freed when it ended, becomes
+  the child's; no number freed twice. Passes.
+- Trying to make a hook nest: the recorder runs every operation of the handle (info, read,
+  write, watch, the record of written pages, the refused per-thread watch) inside every hook and
+  asserts no hook is running when one starts, and no task id is freed inside a hook. Passes.
+- `on_process_outgrown`: `a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory`: with
+  a ceiling of 1 GiB on a 4 GiB address space, a program mapping 64 MiB at a time is announced once
+  with 64 MiB, the distance left below 64 MiB, the mmap fails with ENOMEM, counted once; without a
+  ceiling nothing is announced and it maps more. `a_fixed_request_past_the_ceiling_...`: a page at
+  1.25 GiB with `MAP_FIXED` and then `MAP_FIXED_NOREPLACE` is announced twice with a page each and
+  both fail, counted as outgrown and not as above the address space; with no ceiling both map.
+  Both pass. Under ceilings below 128 MiB and against whole programs: see "S2 seventh check
+  findings" (three tests, passing on the ARM machine).
+- A hook called while another runs is reported, not waited on:
+  `a_hook_called_while_one_runs_is_reported_as_nested`. A successful exec and a handler's return
+  answered to the proxy: `a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop`.
+- Watches met before calls write, inside the hook and left unmet and met later (between steps,
+  through `Kernel::process`), the result unchanged:
+  `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 51 children each making one
+  call into a watched buffer (the output first compared with the reference's), inputs put there by the parent before the child starts: read, readv
+  (two pages), recvmsg (a datagram, which Linux loses at a fault), a handler's frame on an
+  alternate stack in the buffer, pread64, getcwd, uname, fstat, pipe2, wait4, getrandom,
+  clock_gettime, setitimer, sigaltstack, recvmmsg, msgrcv, sendfile, timerfd_settime,
+  timer_settime, pselect6, getsockopt, ioctl FIONREAD, getgroups, prctl, getresuid,
+  sched_getaffinity, rt_sigtimedwait, splice, copy_file_range, times, getitimer, statfs,
+  readlinkat, capget, epoll_pwait, waitid, getrlimit, fcntl F_GETLK, and the kernel's stores of
+  `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`, and (fifth check) raw
+  recvmsg with its header on a page apart from its data (a datagram, and a stream read in part),
+  raw recvmmsg with its header and its length on two pages, sched_setattr refused for its size
+  and capset refused for its version, and (sixth check) a memory sharer killed by SIGKILL and by
+  SIGTERM, its clear-tid word in the buffer, and (eighth check) a vfork child with a clear-tid
+  word that runs a program, a vfork child holding a robust lock that runs a program, and
+  `process_vm_writev` on the process itself. Each call announced the
+  hook in exactly one process, at an address in the buffer, as a write, with the page as it was
+  when the process started; the output is the same as with no watch; nothing counted outside a
+  description, met at a copy or cut short; and at each process's end every page of the buffer
+  whose bytes changed was announced in it or in its vfork child. Passes both ways.
+- A fault's span: `an_access_that_ends_before_a_watched_page_does_not_announce_it` (with a
+  watch on the store's own page as its control). Passes.
+- `on_memory_written_by_kernel` exact: `the_kernels_writes_are_announced_exactly`. The proxy:
+  `the_embedder_answers_and_changes_system_calls`. Both pass (see the sixth check's findings).
+- `take_dirty_memory` (was `memory_changed`) exact:
+  `the_pages_changed_are_exactly_those_a_program_wrote_or_mapped_anew`: a child writes pages 0, 2
+  and 5 of a buffer itself and page 7 by read(), and maps new memory with `MAP_FIXED` over page 3
+  (writable) and page 4 (read-only); the record over the buffer is exactly [0, 2, 3, 4, 5, 7].
+  Passes.
+- `memory_watch`'s cost: `watching_a_vast_range_costs_its_mapped_pages_not_its_length`: watching
+  and unwatching 0 to 2^48 at a program's start takes under a second (the program's output
+  unchanged). Passes.
+- Lazy memory from the two primitives: `lazy_memory_runs_the_shell_scripts_as_the_reference_does`:
+  every new program's writable pages are saved, cleared to zero and watched (All); each is filled
+  from the saved copy on first touch; a fork's child fills from its parent's copy (found by
+  `ProcessInfo::parent`). The 17 scripts of tests/shell.rs that compare with the reference give
+  the reference's output, error and exit status, pages were filled in each, and no page was found
+  written past its watch, and no copy was outside its call's description. Passes at seeds 1 to 3
+  (the nine embedder tests together 26.6 s, load about 55, 01:01).
+- The whole suite with no hook implemented, and its speed: see "Measurements".
+- The literal check: passes (see "Literals").
 
-- Rule-breaking outside (blocking): the test host now sends all of its credit plus the excess each
-  time and takes exactly the credit off its own count (`Outside::excess`), so every such send is
-  past the kernel's credit by exactly the excess, at every seed. The test checks that the count of
-  `stream data past its credit` equals the number of sends past credit, and that the program read
-  exactly the bytes sent within credit (`Run::sent_within_credit`, `Run::sends_past_credit`).
-  Passed at seeds 1 to 3 and 40 to 52.
-- `children_inherit_the_standard_descriptors` (blocking): busybox `head -c 10` takes a stdio
-  buffer, so what the next reader saw depended on how the seed cut the input. It now uses `dd bs=1
-  count=10`, which takes exactly 10 bytes. The rule is written in docs/streams.md: a program compared
-  with Docker must not show where its reads end. Passed at seeds 1 to 3 and 40 to 52.
-- Output after the outside closed (blocking): the first process is init, which a default SIGPIPE
-  never kills, so the old "default" case could not show a kill. The test now runs the writer both as
-  the first process and as a shell's child (`sh -c '/wc/stdout closed ... ; echo status $? >&2'`).
-  As the child with SIGPIPE default it is killed (status 141); ignored, it gets EPIPE (status 0); as
-  the first process both get EPIPE. Each matches the reference. The first run's status wrongly said
-  the "default" case was killed.
-- Bare literals (blocking): the new `(125..=127)` is gone. reference.rs now checks Docker's own
-  failure statuses in one function (`assert_docker_ran`) instead of three copies. The literal stays
-  until the abi's `exit` module lands: the literal README gives that module to the runtime track
-  (stage 1), and it is on no branch yet. In the files this track touched, these are now named once in
-  kernel-test: `/wc` (`reference::GUEST_DIRECTORY`, with `in_guest_directory` and
-  `guest_directory_entry`), `/bin` (`reference::IMAGE_BINARIES`, `image_command`), `linux/arm64`
-  (`reference::PLATFORM`), the driver's seed salts (`SCHEDULE_SALT`, `SAVES_SALT`), and the save
-  shift (`u32::BITS`). See "Literals" below for what remains.
-- Writing one's own input pipe (minor): fixed rather than kept as a departure. Credit no longer
-  reserves room in the input pipe. A guest writer uses the pipe as on Linux, `F_SETPIPE_SZ` is
-  Linux's rule again (EBUSY only below what the pipe holds), and the outside's bytes that find no
-  room wait in the pipe's inbox (at most the credit given). They go in as readers make room, and a
-  close from outside lets go of the writer only once they are in. New test
-  `a_program_writing_its_own_input_pipe` (the check's command, with `cat` after a second write):
-  matches Docker. Not compared with Docker: the inbox itself (the outside's bytes meeting a pipe a
-  guest writer filled). Two tries to show it failed in Docker, and I did not find why. `dd bs=4096
-  count=16 of=/proc/self/fd/0` wrote nothing (`wc -c` then counted only the outside's 6 bytes;
-  dd's errors were hidden). `head -c 65536 /dev/zero > /proc/self/fd/0` never finished, and I
-  removed that container. The inbox is tested only by reading, and by the stream tests passing
-  through it when it is empty.
-- Costs on unrelated pipes and wakes (minor): a pipe write now reads one field of the pipe it
-  already holds (`outside_reader`) instead of walking the ends. A channel is removed from `watched`
-  when its file is let go, so a wake compares against at most the live ends' channels (3 today).
-  Making the wake itself free would need a mark that the wake path can reach from a channel; not
-  done, and not measured.
-- Outside closing before the start made the file (minor): `Kernel::attach_end` now lets go of the
-  file through the kernel's release, as a close does. New test
-  `a_terminal_closed_before_the_start_finished` (root on the backend, the outside closing at once;
-  the test host now runs the script's first steps that wait for nothing at `begin`): `read` sees end
-  of file and the shell exits 7. A run with the old drop showed that this test passes even without
-  the release, because the slave sees no master by count. The release is still what marks the pty
-  closed and wakes its waiters.
-- Reference runner (minor): an Expect that times out now removes the container (`docker rm -f`)
-  and kills the client before it panics. `run_outside` sets `DOCKER_CLI_HINTS=false`, so the client
-  adds no "What's next" text to a terminal after a failed run.
-- Stale comment in fs/mod.rs (minor): rewritten.
-- `priority_inheriting_futexes_match_reference` (minor, not this track's code): the check saw it
-  fail once in the whole suite at a load of 90 to 110, and pass 3 of 3 alone. The reference printed
-  two lines in the other order. This is a race in the reference, recorded here, and not changed:
-  it belongs to the kernel track.
+Found on the way, fixed:
+- A kernel copy that noted a page as written told the CPU side only over its unaligned range, which
+  the executor rounds inward, so the page stayed write-protected and the program's next store was
+  a SIGSEGV (`reapply` now covers whole pages).
+- The stand-in (unicorn) reports an atomic's store to a write-protected page as a read, and a
+  store's fault at its first byte even when it reaches into the next page. A fault on a page whose
+  reading is allowed is taken as a write, and a fault's span (64 bytes, four vector registers) is
+  checked; the next page is noted only once the first may be written, so the record stays exact.
+- A thread woken between steps (a watch met through `Kernel::process`) was picked before the kernel
+  settled it; `Kernel::next` now answers `Idle` at time 0 first.
 
-## S1, first run
+## S2 check findings (the first check), settled in the second run
 
-The bar, item by item (this Mac's Docker, linux/arm64, alpine:3.22; ours under seeds 1 to 3, the
-reference once; tests/streams.rs, 17 tests, 30.8 s for the 16 before the backend one, load 55 to
-65):
-- `docker run -i`: a pipeline reading all its input (`sort | uniq -c | ...`, 200 kB);
-  end of input as end of file (read 0 twice, poll POLLHUP; also with no input at all); 1 MiB to a
-  reader of 512-byte reads that sleeps every 32 reads, every byte counted and hashed, and the
-  kernel never promised more than the pipe's size (the program's F_GETPIPE_SZ) at once; a reader
-  that closes 0 after 100 bytes while 1 MiB still comes (the kernel closes the input end); input
-  arriving while blocked in read, poll, select and epoll (sent only when the container waits);
-  children inheriting 0 to 2 (`read`, `head`, `cat | wc` in a shell); redirecting them away
-  (`exec 3<&0 </dev/null`, `exec 1>&2`); input to a container whose start still waits on the
-  backend: all match.
-- Output: 8 MiB to an outside that takes 64 KiB only when the container waits, blocking and
-  nonblocking (the nonblocking writer met EAGAIN, here and in the reference): matches. Output
-  after the outside closed: see the second run. No run had anything in `Run::broken` (the kernel never sent past
-  credit, after a close, or credit on an output end).
-- Terminal: `-t` without input (isatty, ttyname, size 0 0, settings, pgrp, sid, tcgetpgrp, rdev,
-  mode, gid, /proc/self/stat's tty fields, fdinfo flags 02000002); `-it` resize to 100x30 with
-  SIGWINCH; canonical reads with echo, erase and kill, ^D at a line's start reads 0, then a raw
-  read of 3; ^C and ^Z reaching the program and its child (same group), echoed as ^C and ^Z; a
-  busybox shell: `sleep 30` stopped by ^C, then `echo $((6*7))`, then `exit`: all match.
-- Rule breaking (no reference): see the second run for the outside that sends past its credit (the
-  first run's version went past it only at some seeds). An outside that never gives output credit
-  holds a nonblocking writer to the pipe's 65536 bytes, EAGAIN after, and nothing is sent.
-- Whole suite at 6ca181b8 (this checkout's build, scratch streams/mine-suite.log,
-  `RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4 -p wcontainers-abi -p wcontainers-kernel -p
-  wcontainers-kernel-test`, 52 minutes with the build, load 66.7 at the start and 66.1 at the end):
-  232 passed, 0 failed, 6 ignored. Compared test by test with the run before this work
-  (streams/verdicts.py base-suite.log mine-suite.log): every one of the 220 earlier tests has the
-  same verdict; the new ones are the 17 stream tests and the abi's one unit test (the abi was not in
-  the earlier command).
-- Layer 1: its default runs passed in that suite (`sequences_match_reference`, 64 sequences, seed
-  0; `sequences_on_backend_match_reference` and `sequences_on_cached_backend_match_reference` at
-  their default counts).
-- clippy with warnings denied and fmt: clean on the abi, the kernel and the test crate
-  (`cargo clippy --all-targets -- -D warnings`), and `cargo check --workspace --all-targets` builds.
-- No bare literal added: `git diff 2edbc451 -- crates/wcontainers-kernel crates/wcontainers-abi`,
-  every added line with a digit read by eye: only 0 (as a value or a count), `.0` field access, and
-  named constants (`NULL_PATH`, `PTMX_PATH`, `NO_THREAD`, `pipe::MODE` from Linux's `S_IFIFO |
-  S_IRUSR | S_IWUSR`, replacing the bare `0o600` that was there; the `/dev/pts/{index}` format now
-  in one function). In the test crate the ends' numbers, `UNLIMITED`, `MOST_AT_ONCE`, `BUSY_TURNS`
-  and the reference's waits are named; the rest are test inputs.
+- [blocking] Calls outside the description table did their work, met the watch at the copy and
+  ran again. Every built call that touches program memory is now described (syscall/touch.rs:
+  strings, `execve`'s strings, every structure, `ioctl` by encoding and the old terminal requests,
+  `futex`, `prctl`, `seccomp`, IPC by command), and every copy a call makes while anything is
+  watched is checked against its description (`copy outside the call's description`, counted).
+  The calls test now makes 41 calls (the check's 14 among them: setitimer, sigaltstack, recvmmsg,
+  msgrcv, sendfile, timerfd_settime, timer_settime, pselect6, getsockopt, FIONREAD, getgroups,
+  prctl, getresuid, sched_getaffinity), each the first writer of its watched page, with the page
+  unchanged at the hook and nothing counted outside a description; the lazy memory test asserts no
+  copy outside a description over the 17 scripts. A description removed on purpose (times) makes
+  the calls test fail on that counter (checked once, restored). The calls left to the check are
+  listed, with why, in docs/embedder-interface.md.
+- [blocking] The kernel's own stores: `CLONE_PARENT_SETTID` is now stored before
+  `on_process_starting`; `CLONE_CHILD_SETTID` is met by the clone's walk; a thread's end
+  (robust list and `clear_child_tid`) is walked by `exit`, `exit_group`, `execve` (the other
+  threads) and before a fatal signal is acted on; rseq's accesses are walked before a handler and
+  at preemption (the preemption check moved into `deliver`, behind a per-thread `rseq_event`, so a
+  thread that waits on a watch checks its sequence when it goes on). Tested by three calls (raw
+  vfork clones with each flag). A vfork parent going on after its child stores nothing more, so its
+  clone is not walked again.
+- [blocking] The ceiling: every map keeps the executor's address space as its end (the width);
+  the ceiling is a separate field. Fixed requests (`MAP_FIXED`, `MAP_FIXED_NOREPLACE`,
+  `MREMAP_FIXED`), `brk` growth and program segments that reach past it are announced as outgrown;
+  a hint above it is placed below. Test `a_fixed_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory`.
+  The stack's top and the mmap base stay at the ceiling (see "Departures").
+- [minor] A fault's span is looked at only when the CPU side allows the access all of the faulting
+  page (no watch, no held-back write, no copy-on-write, no backend page not read). Test
+  `an_access_that_ends_before_a_watched_page_does_not_announce_it` (the check's case).
+- [minor] When the first process ends, every other process is killed (SIGKILL, as
+  `zap_pid_ns_processes`), each with `on_process_exiting` (after the first's, see the second
+  check), and every number still carried is freed once the container has ended.
+- [minor] The order test now has a second program (`paths`): death by a fatal signal, `execve` from
+  a second thread (its old number freed after `on_program_starting`), vfork, a group leader reaped
+  while its group lives on (its number freed only when the grandchild leaves by `setpgid`, then by
+  `setsid`, after a child made in between), and a child whose parent ignores SIGCHLD. Exact order
+  at seeds 1 to 3.
+- [minor] Speed over more than one test: see "Measurements".
+- [minor] embedder.c's constants: the buffer's address and pages come as arguments, the page size
+  from `sysconf`, and the number of calls is printed by the program from its own table (the size
+  `outgrow` maps was still a literal on both sides; see the second check).
+- [minor] `task_id_allocate`: an answer out of range fails at once (`task id out of range`,
+  EAGAIN); each carried answer is counted (`task id still carried`) before the next try. The
+  `previous` argument stays (the default counter needs it) and is listed for the owner.
+- [minor] `Kernel::watching` is recomputed (any process with watches or a record) when watches
+  change, a program starts and a process ends, instead of staying on.
 
-Found on the way: the first whole-suite run (stopped; scratch streams/mine-suite-1-stopped.log)
-failed every run with the root on the backend: the output credit came before the start had made
-the ends and was lost. Fixed by naming the ends when `start` is called (6ca181b8), with a test.
+## S2 second check findings, settled in the fifth run
+
+- [blocking] mremap dropped watches and left moved pages out of the record. A watch now belongs to
+  its page's bytes: a move's walk meets the pages it takes along as reads (an `All` watch fires
+  where the page is, so lazy memory fills it before it moves), the remaining watches go along to
+  the new place, and the moved pages are noted written there (as Linux's soft-dirty bits). The
+  same gap was in `madvise`: `MADV_DONTNEED`, `MADV_DONTNEED_LOCKED` and `MADV_REMOVE` are met as
+  writes and their pages noted written, as are the old pages of `MREMAP_DONTUNMAP`; a fork's
+  child's pages wiped by `MADV_WIPEONFORK` lose their watches. Test
+  `watches_and_the_record_follow_pages_moved_or_dropped` (a child moves 4 watched pages with
+  `MREMAP_FIXED`, sums them, writes the last, drops the next page of the buffer): the same output
+  as with no hooks (`dropped 0`, as Linux), hooks exactly [read at pages 0, 1, 2 where they were,
+  write at the carried page where it landed, write at the dropped page], record exactly the 4
+  moved pages where they landed and the dropped one.
+- [blocking] The first process's end: the document said the others were announced first; the
+  code (and Linux, whose first process kills the rest after its own memory is gone) announces the
+  first, then each other. The document now says so. Test
+  `the_first_process_is_announced_ending_before_the_others_it_takes_along`: exactly starting(1),
+  program(1), starting(2, parent 1), exiting(1), exiting(2), free(1), free(2), exit status 3.
+- [blocking] brk past the ceiling could never be announced: the stack (just below the ceiling)
+  was met first. Growth ending above the ceiling is now outgrowing it, checked before what lies in
+  the way. Test `heap_growth_past_the_ceiling_is_announced_and_fails_as_out_of_memory` (the buffer
+  unmapped, brk grown by 1 GiB): with a 1 GiB ceiling announced once with 1 GiB, refused, counted
+  once; with none it grows.
+- [blocking] The size `outgrow` maps was a literal in embedder.c and `PIECE` in the test: it is now
+  an argument, `PIECE` its one definition.
+- [minor] `on_process_outgrown`'s moment: every place that decides it does so before the request
+  has any effect (`MREMAP_FIXED`'s ceiling check moved before it unmaps the destination), and the
+  thread gets its result only after the hook returns, so a later `suspend` in the hook can run the
+  call again. `find_free` notes nothing without a ceiling, and the note is taken after every call.
+- [minor] The cost of watching is confined: a call or signal walks its description only when its
+  own process has watched pages (`Kernel::watched`, after the kernel-wide flag). Not measured.
+- [minor] The test host's defaults: with no hooks the host is `TestHost<NoHooks>`, which overrides
+  nothing of `System`, so the whole suite runs the kernel's own provided defaults; only the
+  embedder's tests go through `Hooks`, whose no-op methods are the tests' convenience.
+- [minor] The two task id departures (no generation, the `previous` argument) are now under
+  "Departures".
+- [minor] The walk announces what a call's arguments name, not what it writes: kept (nothing else
+  is known before the call runs), now said in the document and under "Departures".
+- [minor] `memory_write` into a shared page the process may not write is refused
+  (`MemoryError::SharedNotWritable`), as Linux's `check_vma_flags` refuses a forced write there.
+  Test `a_read_only_shared_page_is_not_written_by_the_embedder` (a read-only shared memfd page):
+  refused, the file and the mapping still read `x`.
+- [minor] The first program is told apart by the kernel having no first process yet
+  (`Kernel::init`), not by `MemoryId(0)`; the placeholder id stays only until that program's
+  memory exists, and nothing reads it.
+- [minor] `/proc/self/status` printing one `Vm` line where the reference prints 12: outside this
+  track (the kernel track's `/proc`, counted as `proc fields not tracked`); left to it.
+
+## S2 third check findings, settled in the sixth run
+
+- [blocking] An attribute change dropped watches and the record: `mprotect`, `pkey_mprotect`,
+  `mlock`, `mlock2`, `munlock` and `madvise`'s fork advice took their range out of the table
+  through the same call as `munmap`, which forgets the pages' watches and record. They now split
+  the mappings without forgetting (memory.rs `split_out`); only unmapping and mapping over a page
+  end its watch. Test `watches_and_the_record_stay_through_attribute_changes` (embedder.c
+  `attributes`: seven changes, each in its own child, over the buffer's first three pages, the
+  first written before the change, the second lazy (saved, cleared, watched All) and read after
+  it, the third watched for writes and written after it): ours with no hooks prints what the
+  reference prints (`<change> 0 read x` for each), the hooked run prints the same, each child meets
+  exactly [read of the lazy page, write of the third], and each child's record is exactly pages
+  [0, 1, 2]. Without the fix every change printed `read \0` (checked once at seed 1).
+- [blocking] `memory_changed` lost pages written before such a change: the same fix; the same
+  test's record.
+- [blocking] Lazy memory over a page whose attributes change: the same fix; the same test's lazy
+  page is read correctly after each of the seven changes.
+- [minor] `moved_here` told the CPU side the moved pages' permissions again with nothing watched:
+  it now does so only when the process has a watch or a record.
+- [minor] The report of which processes share memory, and shared pages marked watched when one
+  leaves: not built; named in docs/embedder-interface.md's "Not built" list (it comes with
+  `suspend`) and above.
+- [minor] A wake made between steps is settled only when the embedder answers `Idle` at time 0:
+  the document now says an embedder that resolves watches between steps must answer it at once;
+  listed for the owner.
+- [minor] `ProcessInfo::compute_used` and `ceiling_distance` checked by value:
+  `the_distance_to_the_ceiling_and_the_compute_used_are_the_processes_own` (embedder.c `spend`: a
+  child maps 1 MiB, spends CPU time and prints its `CLOCK_PROCESS_CPUTIME_ID`): with and without a
+  ceiling, the distance at its end is exactly 1 MiB less than at its start, its compute used at
+  its start is zero, and at its end at least what it printed, which is above zero.
+- [minor] `getrusage`'s `ru_maxrss` in a forked child (ours above 0, the reference 0): the kernel
+  track's; listed for it under "For the orchestrator".
+
+## S2 fourth check findings, settled in the seventh run
+
+- The owner's ruling (`&self`, `System: Sync`), first and as its own commit (2cc763e8): every
+  method of `System` and of the abi's `Host` takes `&self`; kernel calls take `&dyn System`; the
+  test host keeps its state behind a `Mutex` (`HostState`) and the test's hooks behind another
+  (`hooks::Hooks: Send`; the embedder tests' records are `Arc<Mutex<..>>`). Kernel unit tests,
+  embedder (15) and streams (20) passed after it (scratch streams/s2e/selfref.log).
+- [blocking] A watch set inside `on_process_exiting` was skipped by the thread-end stores that
+  came after the hook. `end_process` now does each thread's robust list and `CLONE_CHILD_CLEARTID`
+  store first (as Linux's `mm_release` comes before the exit is told), then announces the hook, so
+  a watch set then has nothing of the kernel's left to meet. The first process's stores now come
+  before the others are killed, as in Linux, and agree with what its walk computed. Test
+  `a_watch_set_as_a_process_exits_changes_nothing_the_program_sees` (the 41 calls with a host that
+  watches the buffer only from `on_process_exiting`): output the same as with no hooks (`child
+  cleartid 1`), nothing counted. With the old order it printed `child cleartid 0` (checked once).
+- [blocking] The walk before a call did not start over when a hook raised a watch behind it. Each
+  memory's `Watches` counts raised watches (set, or widened to `All`); `Kernel::walk_watched` runs
+  a call's walk, a signal's and the rseq check again from the start until a pass meets no raised
+  watch. Test `a_watch_raised_behind_a_calls_walk_is_met_before_the_call_acts` (embedder.c
+  `scatter`: recvfrom into page 1, its address into page 2, the length from page 3; the host
+  watches page 1 and at each hook ends that page's watch and puts `All` on the next): ours with no
+  hooks prints what the reference prints (`recvfrom 3 one len 0 next two`), the hooked run the
+  same both inside the hook and between steps, hooks exactly [page 1, page 2, page 3, all writes],
+  nothing counted. Without the restart it printed `recvfrom 3 two len 0 next ` (checked once).
+- [minor] The `&self` ruling: done first (above).
+- [minor] Clippy on Linux: `openpty`'s size is passed as `&raw mut size` (Linux takes a constant
+  pointer, macOS a mutable one). Clippy with warnings denied passes on the ARM machine and here.
+- [minor] `memory_read` of a range that ends before it starts, and `memory_write` past the last
+  address, are refused with the new `MemoryError::InvalidRange`; `memory_watch` acts on no page
+  for them. Checked inside every hook of the order tests.
+- [minor] The walk is a second description of what each call touches, checked only while
+  something is watched: kept, and put to the owner (see "For the orchestrator"). What guards it
+  today: the 41 calls, the 17 shell scripts under lazy memory and the attribute and move tests
+  assert no copy outside a description.
+- [minor] Speed: the check's ARM measurement backs the earlier claim; nothing to settle.
+- The owner's rename of 2026-11-19: `memory_changed` is `memory_take_dirty` (bf36978b, its own
+  commit; the address map's `take_changed` is `take_dirty`).
+
+## S2 fifth check findings, settled in the eighth run
+
+- [blocking] recvmsg's header was described as read only, though the call writes its
+  `msg_namelen`, `msg_controllen` and `msg_flags` back after taking the data; the same for
+  recvmmsg's headers, `sched_setattr`'s size on E2BIG and (found by the new check) `capset`'s
+  version on EINVAL. The walk now meets those fields as writes (`message`, `sched_attributes`,
+  `capability_header` in syscall/touch.rs; capget's header now as precisely as capset's), and
+  the copy check takes the access into account: a write must lie in a range described as written
+  (`Watches::check_described`). With the old descriptions and the new check, the calls test
+  counted copies outside the description for recvmsg, recvmmsg, sched_setattr and capset (212,
+  243, 274, 91), and with raw calls the blocking datagram recvmsg lost its datagram and waited
+  for ever (scratch streams/s2f/unfixed-raw.log). With the fix the 46 calls pass at seeds 1 to 3.
+  The C library (musl) copies a msghdr to its stack and back and clears recvmmsg's padding in
+  place, so the program's own stores met the header page first; the test makes these calls
+  directly. The kernel's write-backs in recvmsg and the mmsghdr size and `msg_len` offset now
+  come from the structures (`offset_of!`, `size_of`), three baseline lines fewer.
+- [minor] `memory_take_dirty` left out pages replaced by a new mapping: every new mapping (mmap,
+  `MAP_FIXED` over mapped pages, heap and stack growth, mremap's growth) is now in the record
+  whatever it allows, as Linux marks a new mapping soft-dirty. The record is now a
+  `rangemap::RangeSet` (already a dependency of the kernel), so a large new mapping costs one
+  range. Test above ([0, 2, 3, 4, 5, 7]).
+- [minor] A fork's task id could be left unfreed when the executor failed after it was taken:
+  make_child now copies the memory and makes the thread first and takes the number last, as
+  `copy_process` takes it after `copy_mm`; a failure frees what the executor made
+  (`memory_drop`, `thread_drop`), and make_thread drops its new thread when no number comes. Not
+  tested: the stand-in's failures cannot be forced from a test.
+- [minor] `memory_watch` cost followed the range's length: ending watches now visits only the
+  watched pages of the range, setting them only the mapped ones. Test above.
+- [minor] Speed: measured again (see "Measurements", eighth run): the memory test binary's user
+  CPU time is about 0.3 % higher from the `&self` commit on, and unchanged by everything after
+  it, this run's fixes included. That commit put the test host's state behind a `Mutex` taken on
+  every `Host` call (the owner's ruling requires `Sync`); the kernel's no-hook path changed there
+  only from `&mut dyn` to `&dyn`. Which of the two the 0.3 % is was not measured.
+
+## S2 sixth check findings, settled in the ninth run
+
+- [blocking] A fatal signal from another process (`kill`, `tgkill`, `tkill`, a group) ended its
+  target at once in the sender's call, and the stores at the target's end (its threads' robust
+  lists and `CLONE_CHILD_CLEARTID` words) were made with no walk: a watched word was dropped, and
+  the hook came after the call, in the sender. Now a fatal signal to a process with watched
+  memory is left to the process's own threads, as Linux's threads end themselves on their way
+  back (`SIGNAL_GROUP_EXIT`): the process is noted dying (`Kernel::dying`), each thread is woken
+  from any wait but a watch's (a stopped process is no longer stopped), and the first to go back
+  (`deliver`) walks the ends' stores, waiting on a watch that stays, then ends the process. None
+  of its threads runs its program or a call again (`system_call` and `wake_thread` send them to
+  their signals first). A process with no watched memory still ends at once, so nothing changes
+  without watches. Test: two calls added to the calls test (`kill_sharer` in embedder.c: a
+  `CLONE_VM` process of its own waiting in `ppoll` on its own stack, killed with SIGKILL and with
+  SIGTERM, its clear-tid word in the buffer), now 48 calls; the calls test also compares the
+  program's output with the reference's now. With the old kernel it failed (output differs,
+  `copy outside the call's description` and `call short of watched memory` counted for 129,
+  kill; scratch streams/s2g/unfixed.log); with the fix it passes at seeds 1 to 3, inside the
+  hook and between steps.
+- [minor] The owner's rulings of the afternoon of 2026-11-19, applied: methods verb first
+  (`read_memory`, `write_memory`, `watch_memory`, `watch_thread_memory`, `take_dirty_memory`,
+  `allocate_task_id`, `free_task_id`, `send_stream`, `credit_stream`, `close_stream`);
+  `free_task_id` has no default (the test host with no hooks implements it doing nothing);
+  `WatchesFor`, `AccessKind { Read, Write, Execute }` (an instruction fetch on an `All` page is
+  now `Execute`), `on_watched_memory_accessing(.., kind)`, `watch_memory(range, watches)`;
+  `on_memory_written_by_kernel`; the system call proxy. Tests:
+  `the_kernels_writes_are_announced_exactly` (embedder.c `kernelwrites`: a child's read into the
+  buffer, its clock_gettime, a vfork clone's `CLONE_PARENT_SETTID` word, the vfork child's
+  clear-tid word at its end, a killed sharer's clear-tid word, each exactly, each to the process
+  the memory belongs to and its thread; then a signal's frame, inside the alternate stack) and
+  `the_embedder_answers_and_changes_system_calls` (embedder.c `proxy`: getpid answered by the
+  embedder, every write to standard output one byte shorter by a changed request, getuid's
+  answer changed). Both pass at seeds 1 to 3.
+- [minor] The cost statement: the document now says that every copy, watched or not, takes its
+  address map's watches and finds no description and no watched page, and that a thread's way
+  back pays one more test (whether a fatal signal waits on watches).
+- [minor] The span test had no control: it now also watches the store's own page, which must
+  announce exactly the store's address, beside the next page, which must announce nothing.
+- [minor] `semctl` GETALL through the copy check: as documented; nothing to settle.
+
+## S2 seventh check findings, settled in the tenth run
+
+- [blocking] An answer of `allocate_task_id` outside 1 to `pid_max` panicked (the refusal went
+  through `Counters::refuse`, which only takes reasons of `NOT_BUILT`). Now counted (`task id out
+  of range`) and the fork fails with EAGAIN. Test `a_task_id_out_of_range_fails_the_fork_with_eagain`
+  (answers 0, then `u32::MAX`, at the shell's fork: `sh: can't fork: Resource temporarily
+  unavailable`, counted once).
+- [blocking] A ceiling below 128 MiB underflowed the mmap base. The gap below the stack's top is
+  now Linux's own (`mmap_base`: 128 MiB, at most five sixths of the top; memory.rs `mmap_gap`,
+  with a unit test). Test `a_small_ceiling_is_kept_and_a_first_program_past_it_is_refused`: under
+  a 100 MiB ceiling the program runs and maps 4 MiB pieces until the hook fires and mmap fails with
+  ENOMEM; under a 16-page ceiling the start fails with ENOMEM.
+- [minor] A first program that does not fit was neither announced nor counted (the container just
+  died of SIGSEGV). The loader now checks the whole new program (segments, interpreter, vDSO,
+  where it will put them; loader.rs `fits_below_ceiling`) before its point of no return: an
+  `execve` that does not fit fails with ENOMEM and the old program carries on (announced,
+  counted; test `a_new_program_past_the_ceiling_is_refused_before_the_old_one_goes`, guest
+  bigdata.c with 128 MiB of zeroed data under the 100 MiB ceiling, and it runs with none), and the
+  container's first program is counted and warned and fails the start with ENOMEM, with no hook,
+  since its process is announced only once its program is loaded (stated in the document).
+- [minor] The cost with no hook implemented (two dynamic calls a system call, a noted range a
+  copy): not changed. The owner accepted the kernel-write hook as the zero-cost choice; making
+  the kernel generic over `System` is his decision (listed for him). The check measured no
+  difference from before S2; the document now says so.
+- [minor] The nesting check could hang rather than fail: the test host now takes the test's hooks
+  with `try_lock` and panics "a hook nested in another"
+  (`a_hook_called_while_one_runs_is_reported_as_nested`, a should-panic test that calls a hook
+  while holding them).
+- [minor] The plan for shared memory was out of date: the document's "Not built" now names the
+  evening ruling's two hooks, `MemoryObject` and the branded ids, the getter for a process's memory
+  id that `WorkloadPlacement` needs, `ProcessState` and signals as an input.
+- [minor] A successful `execve` had no response: now built rather than listed. A call that
+  replaces its thread's registers answers with the new x0, and the embedder's answer goes into
+  x0: `execve` answers 0 in the new program after `on_program_starting`, to the thread carrying
+  the process's number (a threaded exec included); `rt_sigreturn` answers the x0 it restored
+  (task.rs `answer_in_registers`). A call run again after a watch is met is asked again as a new
+  call, as before. Test `a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop`
+  (embedder.c `paths` and `kernelwrites`).
+- [minor] A thread waiting on a watch the embedder never resolves cannot be killed: kept, and
+  its consequence stated under "Departures" and for the owner.
+- [minor] The ninth run's "tree before S2 measured 4 % slower" did not reproduce: the check
+  measured the two trees alike (see "Measurements").
+
+## S2 eighth check findings, settled in the eleventh run
+
+- [blocking] `process_vm_readv` and `process_vm_writev` on a task of the caller's own process
+  copied the other side with no watch met, no hook and no count. The walk (syscall/touch.rs) now
+  meets the other side's segments, tags stripped, as read or written, when the task is the
+  caller's own; the copy checks the other side's watches and description as it checks the local
+  side's (memory.rs `Watches::copy_reach`, used by `Guest::accessible` too). Tests: the calls
+  test's `process_vm_writev` (a Writes watch from the child's start), and
+  `a_programs_own_memory_reached_by_the_process_vm_calls_meets_its_watches` (embedder.c `vm`:
+  under lazy memory a page of data the program never touches is written by one child and read by
+  another; filled inside the hook and between steps, the reference's output). Before the fix
+  (kernel changes stashed, ARM machine, scratch streams/s2k/before-fix.log): ours
+  "process_vm_writev 8 \nprocess_vm_readv 8 \n" against the reference's "written!" and
+  "initiali".
+- [blocking] `/proc/<pid>/cmdline` and `environ` read a process's memory with no watch met. A
+  read of such a file (`read`, `pread64`, `readv`, `preadv`, `preadv2`, `sendfile`, `splice`:
+  touch.rs `read_descriptor`) now meets, before the caller's buffer, the strings it copies in the
+  memory of the process the file names, whichever process that is; the hook names that process
+  and the reading thread, and a thread waiting on another process's watch waits on that
+  process's memory and is woken when its watches change or it ends (or runs a program). The read
+  itself treats a watched page as not there and is checked against the description, as a call's
+  copies are; the call checks both memories after it runs. A walk starts again when a hook
+  raised a watch in any process (the count of raised watches is now the kernel's). Test
+  `a_command_line_read_through_proc_meets_the_watches_of_the_process_it_names` (embedder.c
+  `cmdline self|parent LONG`, a 12288-letter argument, under lazy memory, filled inside the hook
+  and between steps; for `parent` a child reads its parent's command line and the hook names the
+  parent with the child's thread). Before the fix: "cmdline 10040 letters 1926" against the
+  reference's "letters 10000" (with the earlier 10000-letter argument).
+- [blocking] The document's claims: the item saying another process's memory is met at the copy
+  with no hook is gone; the document now says `process_vm_*` on another process is refused
+  (ENOSYS, counted) and `/proc/<pid>/mem` does not exist, describes both reads above, names the
+  thread an access through `/proc` is announced with, and counts the calls tested.
+- [minor] A vfork child with `CLONE_CHILD_CLEARTID` that runs a program left the word. `execve`
+  now does Linux's `exec_mm_release` after `de_thread`: the caller's robust list (locks marked as
+  their owner's death, waiters woken, priority-inheriting locks handed on) and its clear-tid word
+  while another process still uses the memory it leaves, then forgets both. The walk of `execve`
+  meets these stores (`Ending::Exec`, was `Others`). The robust list at exec was not checked by
+  the check; it was missing too. Tests: two calls of the calls test (`vfork exec cleartid`,
+  `robust exec owner died`), each matching the reference and announced before the store. Before
+  the fix (only the exec store stashed, s2k/before-exec-fix.log): both 0 where the reference has 1.
+- [minor] Two dynamic calls through `&dyn System` a system call with no hook implemented, and a
+  noted range a copy: carried to the next milestone, as the orchestrator ruled (the kernel becomes
+  generic over its `System` when it implements the interface crates). Measured by the eighth
+  check (ARM machine, load 12 to 23): user CPU medians of the memory test binary 11.837 s before
+  S2 and 11.872 s at its tip (+0.3 %, ranges overlapping). This run adds one flag test to a call
+  with no watch anywhere (`Kernel::watching`, already tested) and nothing else to that path.
 
 ## Measurements
 
-- Third run, the tests the literal changes can affect (`--test streams --test outside --test
-  busybox --test turns`, scratch streams/run3-tests.log, seeds 1 to 3): 29 passed, 1 ignored (as
-  before), 18:36 to 18:39 with the build, load 54 to 75.
-- Third run, whole suite at 540deca2 (scratch streams/run3-suite.log, the command in "How to run",
-  63 minutes with the build, load 67.4 at the start and 90.4 at the end): 234 passed, 0 failed,
-  6 ignored. `streams/verdicts.py base-suite.log run3-suite.log`: every one of the 220 tests from
-  before this work has the same verdict; the 20 others are the 19 stream tests and the abi's unit
-  test, all passing. Layer 1's three seeded sequence tests passed at their default counts.
-- Third run: clippy (`--all-targets -- -D warnings`) and `cargo fmt --check` on the abi, the
-  kernel and the test crate: clean.
+- Third run's fixes, stream tests (20 tests, seeds 1 to 3): passed, 27.2 s, load 73 to 82 (21:15).
+- Regression subset after the core change (streams, busybox, shell, processes, sigframe, threads,
+  memory, faults, saving; seeds 1 to 3; load 120 to 150, 21:38): all passed but
+  `a_terminal_is_resized`, whose reference side failed: the Docker client never forwarded the resize
+  (`the reference never showed "size 100 30"`). It passed at 21:15 and in every earlier run. Not
+  this track's kernel (the reference is Docker); recorded as a reference-side flake under load.
+- Whole suite with no hook implemented (the test host forwards every hook to `hooks::Defaults`,
+  which does what `System`'s defaults do), at 0c569e7d, the command in "How to run" (scratch
+  streams/s2/suite.log, 70 minutes with the build, 21:55 to 23:05, load 92 at the start and 133 at
+  the end): 579 passed, 1 failed, 6 ignored. `streams/verdicts.py run3-suite.log s2/suite.log`:
+  every one of the 240 tests of S1's last suite has the same verdict but `busybox::system`, whose
+  `ls -l /dev/null` shows the minute the container started: the reference's said 05:59 and ours
+  06:00 (UTC). It passed alone at 22:34 (74.9 s, load 118). The four stream tests that the
+  comparison shows as gone are the renamed ones, passing under their new names. New and passing:
+  `credit_on_the_input_end_is_counted`, the six embedder tests (the lazy memory test at seeds 1 to
+  3 among them, 19.0 s for the six), and the literal check's own tests. The commits after
+  0c569e7d add the abi's `PerThreadWatch` declaration, two kernel unit tests (`system::tests`,
+  passing: refused orderings by name, the default counter's wrap) and documents.
+- Whole suite at 565881d2 (third run, scratch streams/s2b/suite.log, 01:10 to 02:08, load 62 at the
+  start): 492 passed, 93 failed, 6 ignored, but not a verdict on the kernel: Docker Desktop stopped
+  at 02:04 ("Docker Desktop is unable to start", for every track) and every test started after it
+  failed at `docker create` or at the reference; `python::system_test_modules_match_reference`
+  failed when its backend container died at 02:04:20; the two `devopen` tests failed because two
+  `zig cc` guest builds hung for 19 minutes with every thread waiting (zig 0.16, the shared
+  ~/.cache/zig, while a second test binary also built guests) and were killed. The 35 test binaries
+  with failures are to be rerun by scratch streams/s2b/rerun.sh LOG (python last and alone).
+- First rerun (02:40 to 02:55, load 7 rising to 62, scratch streams/s2b/rerun.log): the two
+  `devopen` tests and `python::system_program_matches_reference` passed; Docker stopped again at
+  02:51 (its VM log: "multiplexer: read vsock:57: no buffer space available"; the 02:04 stop was
+  "vpnkit-data.sock: connection reset by peer" with port forwards of other projects open) and
+  everything after failed at `docker create`. Both stops came while python tests of this track and
+  of the kernel track were running; whether those contribute is not known.
+- Second rerun (fourth run, the same tree as 565881d2, scratch streams/s2b/rerun-2.log, this Mac,
+  04:59 to 05:42; load 6 at the start, 73 when python began at 05:03, 39 at the end): the 34 test
+  binaries passed (90 tests), then python alone (3 tests, 2323 s). With the first rerun and the
+  suite's earlier tests (`cat s2b/suite.log s2b/rerun.log s2b/rerun-2.log`, later verdicts winning):
+  585 passed, 0 failed, 6 ignored. `streams/verdicts.py s2/suite.log s2b/combined.log`: every test
+  has the verdict it had at 0c569e7d but `busybox::system`, failed there (the minute flake above)
+  and passing now; new and passing: the three embedder tests and two `system::tests` unit tests
+  added since. The whole suite's verdicts with no hook implemented are unchanged.
+- Speed with no hook implemented: tests/shell.rs `runs_repeat_for_a_seed` (ours only, four
+  background jobs of `seq 1 3000 | wc -l`, run at several seeds), its own test binary built at
+  59056384 (before S2, in a scratch worktree, since removed) and at 0c569e7d, run alternately
+  (scratch streams/s2/timing.sh, timing.log, timing-2.log). Before: 2.48, 1.92, 2.43, 3.64, 2.11,
+  2.05, 2.00, 1.97 s; after: 2.62, 2.05, 2.21, 2.07, 1.92, 2.28, 1.97, 1.96 s; load 156 falling to
+  127 (21:59 to 22:01). Medians 2.08 s before and 2.06 s after: unchanged within this machine's
+  noise. Expected, not measured: a process with no watch and no record pays one flag test per call
+  and per fault (`Kernel::watching`), and none per page permission set.
+- Speed with no hook implemented over five whole test binaries (fourth run, this Mac): threads,
+  processes, memory, sigframe and shell, built before S2 (59056384, in a scratch worktree, since
+  removed) and at 565881d2's tree, each binary run alone with 3 test threads, old and new
+  alternately, a warm-up round not counted and three rounds counted, inside `nix develop`
+  (scratch streams/s2b/timing-2.sh, timing-5.log, timing-summary.py; 06:23 to 06:47, load 33 to
+  101). Wall and CPU (user plus system, the test's child processes included: Docker's client and
+  zig) medians, old then new: threads 41.4 / 40.5 s wall, 23.4 / 25.6 s CPU (rounds 22.9, 23.4,
+  24.3 against 22.8, 25.6, 25.6); processes 8.7 / 8.5 s, 1.63 / 1.61 s; memory 44.5 / 45.8 s,
+  7.88 / 7.97 s; sigframe 3.9 / 4.0 s, 0.44 / 0.44 s; shell 58.2 / 73.8 s wall (old's rounds 58,
+  54, 73; new's 75, 60, 74: the reference's Docker runs under the load), 8.29 / 8.27 s CPU. All
+  passed. Unchanged within this machine's noise.
+- A first try of the same (timing-4.log, 05:55 to 06:11, load 27 to 72) showed threads 60 %
+  slower, and it was not the kernel: the tests put the whole guest program folder
+  (target/tmp/guest) into each container, and the new build's held 151 programs (257 MB, from the
+  whole suite) against the old build's 20 (30 MB). A sample of `threads_survive_saving` showed the
+  same samples in the kernel and the stand-in on both sides (StandIn::run 22 and 22) and the extra
+  time in reading files. With the same folder on both sides (timing-5) the difference went. For
+  later measurements: compare builds with the same guest folder.
+- Zig: `zig cc` from Homebrew outside `nix develop` hung (three guest builds of one test binary
+  sleeping 10 minutes at the link); the timing now runs inside `nix develop`, where it did not.
 
-- Second run, stream tests (`tests/streams.rs`, 19 tests): seeds 1 to 3, 35.8 s, load 40 to 48
-  (16:43); seeds 40 to 52 (`SCHEDULE_SEED=40 SCHEDULE_SEEDS=13`), all pass, 92.9 s, load about
-  49 to 57 (16:47 to 16:49).
-- Second run, whole suite at 3597a068 (scratch streams/run2-suite.log, the command in "How to
-  run", 58 minutes with the build, load 54.5 at the start and 50.9 at the end): 234 passed, 0
-  failed, 6 ignored. `streams/verdicts.py base-suite.log run2-suite.log`: every one of the 220
-  tests from before this work has the same verdict; the 20 others are the 19 stream tests and the
-  abi's unit test. Layer 1's seeded sequences passed in it at their default counts.
-  `priority_inheriting_futexes_match_reference` passed in this run.
-- clippy (`--all-targets -- -D warnings`) and `cargo fmt --check` on the abi, the kernel and the
-  test crate: clean. How the literals were checked: the added lines of `git diff` with a digit or
-  a path, read by eye (list in "S1, second run").
+- Fifth run, after the second check's fixes (4d7e959e): the embedder tests (13, seeds 1 to 3) and
+  streams, memory and faults passed on this Mac (scratch streams/s2c/affected-1.log, 08:03 to
+  08:07, load 40 to 28; embedder 82 s). Whole suite on the ARM machine (`cargo test --no-fail-fast
+  -j $ARM_JOBS` over the four crates; scratch streams/s2c/suite-s2c.log, 2257 s, ending 08:45,
+  machine load 61): 561 passed, 28 failed, 6 ignored. 26 of the failures are the manual's list of
+  tests whose reference differs there, plus `terminal::splice_holds_the_pipe` (the reference's tty
+  there echoes once more: theirs "abc\r\nabc\r\n", ours "abc\r\n") and the literal check's
+  `the_workspace_keeps_to_its_baseline` (the copy there has no git). On this Mac the 20 binaries
+  holding them passed, 94 tests (scratch streams/s2c/mac-only.log, 08:09 to 08:13, load 24 to 17),
+  and the literal check's tests passed. So 595 tests: 589 passed, 6 ignored, none failed. Speed was
+  not measured again: with no hook the path is the same one flag test per call, and the host with
+  no hooks now forwards nothing.
 
-- Whole suite before this work, at 2edbc451 (a clean copy with its own build, scratch
-  streams/base-suite.log, `RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4 -p wcontainers-kernel
-  -p wcontainers-kernel-test`): 214 passed, 0 failed, 6 ignored, 61 minutes with the build, load
-  42.9 at the start and 53.8 at the end.
-- Nothing about speed was measured. Expected only: a write to standard output costs what it did
-  (sent straight out while the pipe is empty and credit lasts), and each kernel entry pays one flag
-  test for the ends unless a wake touched their pipes or terminals.
+- Sixth run, after the third check's fixes (2e91a1fb): the embedder tests (15, seeds 1 to 3),
+  memory and faults passed on this Mac (scratch streams/s2d/affected-1.log, 09:20 to 09:27, load
+  68 to 64; embedder 140 s). The ARM machine could not be reached (arm-run: "taken away or is
+  down", 09:31 and 09:33), so the whole suite ran on this Mac, the command in "How to run"
+  (scratch streams/s2d/suite.log, 09:28 to 10:39, load 67 at the start, 23 at the end): 597
+  tests, 591 passed, 0 failed, 6 ignored. `streams/verdicts.py s2b/combined.log s2d/suite.log`:
+  every test of the fourth run's whole suite has the same verdict; the six tests added since are
+  new and pass.
+- Speed with no hook implemented, sixth run (2e91a1fb against 59056384, before S2), this Mac:
+  threads, processes, memory, sigframe and shell, both built into this track's one target folder
+  (59056384 from a source-only scratch worktree, its five binaries copied aside, then this tree
+  rebuilt; S2's counter text found only in the new binaries), so both sides share one guest
+  folder; run alternately with 3 test threads inside `nix develop`, a warm-up round and three
+  counted (scratch streams/s2d/timing-6.sh, timing-6.log, 10:42 to 11:11, load 29 to 63; summary
+  by s2b/timing-summary.py). Medians, old then new, wall and CPU (user plus system): threads 46.6 /
+  56.7 s wall, 23.6 / 24.6 s CPU; processes 10.3 / 9.3 s, 1.66 / 1.63 s; memory 58.4 / 63.3 s,
+  8.79 / 8.58 s; sigframe 4.4 / 4.7 s, 0.42 / 0.41 s; shell 87.4 / 88.9 s, 8.11 / 8.14 s. All
+  passed. Threads' wall looked slower, so three more rounds of it alone, new first (timing-7.log,
+  11:12 to 11:16, load 29 to 43): new 43.3, 54.8, 51.7 s, old 46.3, 55.1, 47.8 s; CPU new 22.6,
+  23.5, 23.0 s, old 23.9, 22.4, 22.1 s. Over the six rounds: wall medians new 55.3 s, old 47.2 s,
+  ranges overlapping (new 43.3 to 66.3, old 46.3 to 56.9); CPU medians new 23.4 s, old 23.2 s. The
+  kernel runs inside the test process, so its work is in the CPU time, which is unchanged within
+  1 %; the wall difference is not explained by it (the tests also wait on Docker's reference).
+  Measured only on this loaded Mac; a quiet machine would settle the threads wall time.
 
-## Licences
+- Seventh run, after the fourth check's fixes (bf36978b; the commits after it are documents):
+  the embedder tests (17, seeds 1 to 3), faults, memory, orphans, processes, rseqabort, shell,
+  sigframe, threads and zombie passed on this Mac (scratch streams/s2e/fixes-1.log, ending 12:42,
+  load 30; embedder 101 s). Clippy with warnings denied over the three crates passed on the ARM
+  machine (s2e/clippy-arm-2.log) and here. Whole suite on the ARM machine, the command in "How to
+  run" with `-j $ARM_JOBS` (s2e/suite-arm.log, 2312 s, 12:44 to 13:22, machine load 40 falling to
+  21): 565 passed, 28 failed, 6 ignored; the 28 are the 26 of the manual's list plus
+  `terminal::splice_holds_the_pipe` and the literal check's `the_workspace_keeps_to_its_baseline`,
+  as in the fifth run. Their 20 binaries passed on this Mac (s2e/mac-only-4.log, 12:54 to 12:57,
+  load 20 to 98; an earlier try, mac-only-3.log, failed at `docker create` when Docker's socket
+  closed, nothing of the kernel), and the literal check's tests and the check passed here
+  (s2e/literals-mac.log, 13:23, load 115; 7589 baseline lines). Combined (s2e/combined.log): 599 tests, 593 passed, 6 ignored,
+  none failed. `streams/verdicts.py s2d/suite.log s2e/combined.log`: every test of the sixth run's
+  suite has the same verdict; the two tests added are new and pass. Speed not measured again (the
+  fourth check measured it on the ARM machine at 319aeede; the no-hook path is unchanged since).
 
-No dependency added.
+- Eighth run, speed with no hook implemented, on the ARM machine: the memory test binary
+  (tests/memory.rs) built from three trees, each in its own fresh build directory with only that
+  binary's guest programs: 319aeede (before the `&self` commit, S2 otherwise built), 2cc763e8
+  (the `&self` commit) and 0ea3a743 (this run's fixes), run alternately with 3 test threads
+  (scratch streams/s2f/speed.sh; speed-self.log, 23:11, load 24 to 42, and speed-self-3.log,
+  23:23, load 32 to 46). User CPU, seconds: 319aeede 11.876, 11.852, 11.879, 11.841, 11.875,
+  11.882, 11.874, 11.847, 11.853 (median 11.86); 2cc763e8 11.899, 11.882, 11.907, 11.861, 11.913,
+  11.857, 11.933, 11.893, 11.917 (median 11.90); 0ea3a743 11.965, 11.939, 11.909, 11.886, 11.885
+  (median 11.91). Wall 15.4 to 16.8 s on all three, overlapping. A first try that ran the
+  current tree from the track's shared build directory (speed-self-2.log) showed 13.4 s user and
+  0.8 s system: its guest folder held 151 programs from whole suites against 1, the effect found
+  in the fourth run; not the kernel.
+- Eighth run, tests: the embedder tests (18, seeds 1 to 3) and the kernel's unit tests passed on
+  the ARM machine (scratch streams/s2f/embedder-3.log and the vast watch test, 23:05 to 23:10,
+  load 16 to 35). Clippy with warnings denied over the three crates passed on the x86 machine
+  (s2f/clippy-x86.log, clippy-x86-2.log). The 20 test binaries the manual keeps on the Mac passed
+  here, 94 tests (s2f/mac-only.log, 15:11 to 15:13 Pacific, load 8 to 14), and the literal check's
+  tests and the check passed here (s2f/literals-mac.log).
+- Eighth run, whole suite on the ARM machine at 00b623f4's tree (the command in "How to run"
+  with `-j $ARM_JOBS`; scratch streams/s2f/suite-arm.log, 2214 s, ending 00:04 UTC, machine load
+  about 20 at the end): 567 passed, 27 failed, 6 ignored. The 27 are the 26 tests of the
+  manual's list that differ there and the literal check's `the_workspace_keeps_to_its_baseline`
+  (no git there); `terminal::splice_holds_the_pipe` passed there this time. All 27 passed on this
+  Mac (above). Combined (s2f/combined.log): 600 tests, 594 passed, 6 ignored, none failed.
+  `streams/verdicts.py s2e/combined.log s2f/combined.log`: every test of the seventh run's suite
+  has the same verdict, but the dirty record's test, renamed and passing; the vast watch test is
+  new and passes.
+
+- Ninth run, speed with no hook implemented, on the ARM machine: the memory and processes test
+  binaries built from three trees, each in its own fresh build directory: 59056384 (before S2),
+  f5f8b8b9 (the eighth run's end) and this run's tree (a8629893's sources), run alternately
+  with 3 test threads, round 0 a warm-up (scratch streams/s2g/speed.sh, speed.log, 01:24 to
+  01:29 UTC, machine load 27 to 31). User CPU, seconds, rounds 1 to 5: memory before S2 12.271,
+  12.304, 12.297, 12.538, 12.316 (median 12.30); eighth 11.739, 11.785, 11.781, 11.772, 11.782
+  (median 11.78); ninth 11.842, 12.159, 11.835, 11.846, 11.841 (median 11.84). Processes: before
+  0.339, 0.337, 0.320, 0.293, 0.315; eighth 0.304, 0.303, 0.299, 0.322, 0.332; ninth 0.301, 0.334,
+  0.340, 0.299, 0.296 (within noise). Wall, memory: before 15.65 to 16.18 s, eighth 15.12 to
+  15.29 s, ninth 15.21 to 15.60 s. So this run's tree costs about 0.5 % more user CPU than the
+  eighth's on the memory binary (four rounds of five 0.05 to 0.07 s above, one 0.37 s): with no
+  hook implemented every system call now makes two calls of empty provided methods through the
+  trait object (the proxy) and every copy into program memory notes its range. Not measured which
+  of the two it is. The tree before S2 measured 4 % slower than both here, unlike the eighth
+  run's comparison (+0.3 %); not explained (that tree also differs in code merged since). The
+  seventh check did not reproduce it (below): read the 4 % as a measurement artifact.
+- Seventh check, speed with no hook implemented, ARM machine (its scratch s2check7/head/speed7.sh,
+  speed7.log; load 56 falling to 22): memory and processes binaries in fresh build directories
+  from 59056384 (before S2) and f7d06fc2, run alternately, rounds 1 to 6. Memory user CPU, before:
+  11.897 11.925 11.895 11.914 11.897 11.859 (median 11.897 s); f7d06fc2: 11.865 11.909 11.883
+  11.864 11.878 11.873 (median 11.876 s). Processes medians 0.309 and 0.306 s. No difference.
+  Not measured by this track; the tenth run's changes add one hook call to `execve` and
+  `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
+
+- Eleventh run, tests: the embedder tests (27, seeds 1 to 3) passed on the ARM machine at
+  93d65247's tree with the `processes` tests (scratch streams/s2k/embedder-4.log, load 12 to 23),
+  and the kernel's unit tests (4) at 48c90e4c (embedder-3.log); clippy with warnings denied over
+  the three crates passed there and on the x86 machine. Whole suite on the ARM machine at
+  48c90e4c's tree (the command in "How to run" with `-j $ARM_JOBS` and 12 test threads;
+  s2k/fetched/suite-arm.log, 2222 s, ending about 06:08 UTC, load 29 to 40): 576 passed, 28
+  failed, 6 ignored; the 28 are by name exactly the tenth run's (s2k/failed-arm.txt against
+  s2j/failed-arm.txt), and the two new embedder tests pass. The 20 binaries kept on the Mac at
+  the same tree (s2k/mac-only.log, this Mac, 21:32 to 21:34 Pacific, load 4 to 19): 94 passed,
+  `splice_holds_the_pipe` among them. The literal check's tests on this Mac: all passed
+  (s2k/literals-mac.log). Combined: 610 tests, 604 passed, 6 ignored, none failed. 93d65247 only
+  adds a wake at exec, tested by the embedder and processes tests above.
+- Eleventh run, speed (ARM machine, s2k/speed-2.log, load 28 to 44, 06:20 UTC): the memory test
+  binary of 1bacb2d4 (S2 before this run) and of 93d65247, each built alone with `cargo test -p
+  wcontainers-kernel-test --test memory`, run alternately 7 rounds, round 0 a warm-up: user CPU
+  12.224 12.207 12.181 12.225 12.218 11.981 s before, 11.984 11.952 11.959 11.992 11.980 11.983
+  s after. No slowdown. A first try (s2k/speed.log) timed the whole suite's build of the binary
+  against one built alone: 12.3 s user and 0.88 s system against 11.9 and 0.30, every round; the
+  difference is the build (the suite's packages build it differently), not the code, and that
+  comparison is not used.
+- Tenth run, tests: the embedder tests (25, seeds 1 to 3) and the kernel's unit tests (4) passed
+  on the ARM machine; clippy with warnings denied over the three crates passed there. Whole suite
+  on the ARM machine at ae37b07c's tree (the command in "How to run" with `-j $ARM_JOBS` and 12
+  test threads; scratch streams/s2j/suite-arm.log, 2099 s, ending about 04:20 UTC, load 14 to
+  18): 574 passed, 28 failed, 6 ignored. The 28 are the ninth run's 27 (the manual's list and the
+  literal check's workspace test, no git there) and `terminal::splice_holds_the_pipe`, failed on
+  the reference's side (Docker's tty echoed `abc` once more, as seen before). The 20 binaries
+  kept on the Mac (s2j/mac-only.log, this Mac, 19:44 to 19:47 Pacific, load 3 to 7): 94 passed,
+  `splice_holds_the_pipe` among them. The literal check's tests on this Mac: all passed
+  (s2j/literals-mac.log). Combined: 608 tests, 602 passed, 6 ignored, none failed.
+
+- Ninth run, tests: the embedder tests (20, seeds 1 to 3) on the ARM machine (scratch
+  streams/s2g/embedder-2.log, affected-1.log; the nesting checks added to the new hooks last,
+  nest.log). Clippy with warnings denied over the three crates passed on the x86 machine
+  (s2g/clippy-5.log). Whole suite on the ARM machine at a8629893's tree, before the order tests'
+  nesting checks (the command in "How to run" with `-j $ARM_JOBS`; s2g/suite-arm.log, 2139 s,
+  ending about 01:58 UTC, machine load 23 to 27): 569 passed, 27 failed, 6 ignored; the 27 are
+  by name exactly the eighth run's (the 26 of the manual's list and the literal check's
+  `the_workspace_keeps_to_its_baseline`, no git there), and every test that passed then passes
+  now, with the two new embedder tests. The 20 binaries kept on the Mac (s2g/mac-only.log, this
+  Mac, 17:29 to 18:22 Pacific, load 10 to 23): 92 passed, and in `terminal` two failed on the
+  reference's side (`splice_holds_the_pipe`: Docker's tty echoed once more, as seen before;
+  `job_control`: the reference container hung for 50 minutes and was removed); `terminal` alone
+  again passed all 10 (s2g/mac-terminal.log, 18:23, load 8). The literal check's tests passed
+  here (s2g/literals-mac.log). Combined: 602 tests, 596 passed, 6 ignored, none failed.
 
 ## Literals
 
-The track's fix list is orchestrator/magic-literals/fix-kernel.md, which covers the same crates as
-the kernel track. This track takes only the lines in the files it touches, so that the merges stay
-small. Left as they are, each until its owner's constant is on a branch this one merges:
-- `125..=127`, Docker's run-failure statuses: one place in reference.rs (`assert_docker_ran`), and
-  `container.rs`'s `start_failed` (125, 126, 127). Owner: the abi's `exit` module (runtime track,
-  stage 1 of the literal README).
-- driver.rs's `wait_status & 0x7f`. Owner: the kernel's public `wait` module (kernel track, stage 4).
-- tty.rs's `slave_path` (`"/dev/pts/{index}"`): the run before joined two copies of it into this
-  one function. A path built from a directory needs the kernel's path separator, which has no name
-  yet and is the kernel track's (step 25 of its list); the mount table's `/dev/pts` is that track's
-  line too.
-- Other copies of `/wc`, `linux/arm64` and the Docker command words are in kernel-test files this
-  track did not change (backend.rs, image.rs, layer1.rs, ltp.rs, runtimes.rs, busybox.rs). They can
-  use the names above when the kernel track works its list. `ENVIRONMENT`'s `HOSTNAME=wc-kernel`
-  restates `HOSTNAME`; not changed.
-- Naming the Docker words makes the checker read their copies in the kernel track's tests as
-  `restated` (16 lines in tests/go.rs, java.rs and python.rs, which run Docker themselves: true
-  copies, for that track to replace with `reference::docker`), and busybox.rs's two `"rm"` (the
-  shell's command, another fact that only shares the text). Before these names the same tests
-  already restated `PLATFORM` and `GUEST_DIRECTORY`.
+- Adopted at da21d326 (`init` once on this tree, version 7 of the rules): 7612 baseline lines, of
+  them wcontainers-kernel 2269, wcontainers-kernel-test 2434, wcontainers-abi 4, and 11 policy lines
+  (the kernel's generated Linux files only). After this run: 3 lines fewer (the moved `"/"` in
+  busybox.rs, now `ROOT_DIRECTORY`, and the two `!15` of the frame, now `STACK_ALIGNMENT`).
+- After the fifth run: 7589 lines; wcontainers-kernel 2257, wcontainers-kernel-test 2423,
+  wcontainers-abi 4. The fifth run named what the driver's renamed functions held (the notices'
+  salts and gap, the chance of a second answer in a turn, a turn's time ranges, the backend's
+  root) and kept the clock step in `TestHost::ran` (an associated function now, so the generic host
+  keeps its key). Its `1000` (picoseconds in a nanosecond) stays: as a named constant the check
+  takes three test inputs of 1000 elsewhere in the crate for restatements of it, and as a mark it
+  says 1000 has a name (`AUDIT_GET`).
+- After the sixth run: unchanged, 7589 lines; the check passes (exit 0).
+- After the seventh run: unchanged, 7589 lines; the check passes (exit 0).
+- After the eighth run: 7586 lines (recvmsg's three header offsets now `offset_of!`); the check
+  passes (exit 0). It reads the checkout's git history, so it runs on this Mac. The test host's clock
+  step stays `TestHost::ran` (an associated function taking the locked state) so its `1000` keeps
+  its key.
+- After the ninth run: 7579 lines (the call number register and the argument count now named in
+  the abi; the stand-in, `deliver` and `settle` use them); the check passes (exit 0).
+- After the tenth run: 7577 lines (the mmap gap's `128 << 20` now `MMAP_GAP_MIN` with Linux's
+  `MAX_GAP` beside it); the check passes on this Mac (exit 0, scratch streams/s2j/literals-2.log;
+  it needs the git history, which the rented machines' copies lack).
+- After the eleventh run: unchanged, 7577 lines; the check passes on this Mac (exit 0, scratch
+  streams/s2k/literals-2.log; the new test's argument length is `3 * PAGE_SIZE`, since 10000 was
+  taken for a restatement of another constant).
+- The check's list of changes that could add lines: one, `da21d326f277 the start`.
+- Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
+  `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
 
-What the checker counts in this track's crates (version 4 of the rules, `list` on this tree with no
-policy lines, so the kernel's generated Linux files are counted too): wcontainers-abi 4,
-wcontainers-kernel 11944 (9618 of them in src/linux and syscall/list.rs), wcontainers-kernel-test
-2443. That is what an init here would put in the baseline, less the generated files.
+## Licences
 
-How the added literals were checked: scratch streams/added-lits.sh runs the checker's `list`
-(scratch streams/bin/wcontainers-literals, the second check's build of phase-1-literals at
-f561838a) on this tree and keeps the gated findings on lines added since 2edbc451, working tree
-included. It prints the 3 lines above.
+No dependency added by this track. The literal check's crate brings syn, proc-macro2, quote, toml,
+fnv and rayon (all MIT OR Apache-2.0), a test-time tool of the workspace, not a dependency of
+anything shipped.
 
 ## Departures from the plan
 
-- The literal check is not adopted yet. The brief says to merge origin/phase-1-literals and follow
-  the adoption steps in its docs/literals.md; step 1 of those steps says a track does not merge
-  phase-1-literals directly, but merges its integration branch once that has the check, because a
-  later merge of an integration branch without the check would bring other tracks' literals as
-  `+` lines the track can neither fix nor add. Here that is real: the kernel track works in the same
-  crates and merges into phase-1 without the check, and phase-1-literals also carries main's other
-  tracks (runtime, x86, about 40,000 lines) that phase-1 does not have. Neither phase-1 nor main has
-  the check yet (checked at 18:30), and no other track has adopted it. A merge cannot be undone and
-  waiting can, so this run waited: it used the checker's `list` on this tree instead (see
-  "Literals"), and the next run merges phase-1 once phase-1 has the check, then runs `init` once.
-
-- With `-t`, Docker also bind-mounts the slave at `/dev/console`. Not built: `/dev/console` is
-  absent, as without `-t` (ENOENT), so nothing pretends.
-- A terminal's room toward the slave is still held for the outside's credit, so `TIOCSTI` from
-  inside may find less room than on Linux while credit is outstanding. Pipes no longer hold room
-  (second run).
-- Bytes the outside sends after the kernel closed an input end are dropped without a count (they
-  were within the credit; Linux's shim gets EPIPE for them). Bytes past the credit are counted.
-  Bytes waiting in a pipe's inbox when its last reader goes are dropped the same way.
-- Output after the outside closed its end cannot be shown by Docker (its daemon reads every
-  container's output for the log), so the reference runs the same program on a pipe whose reader
-  it closed itself (stdout.c `closed self`), and ours with the outside closing (`closed outside`).
+- The literal check is taken as its crate's files from 7668c010, not merged (see above). When
+  phase-1 or main carries the check with the runtime adapted to the stream ends, a merge brings
+  the same files; the baseline will conflict, and docs/literals.md step 4 says how to settle it
+  (leave it, `init`, commit).
+- Hooks and task ids are on `wcontainers_kernel::System`, which extends the abi's `Host`, not on
+  one trait in the abi: the hooks take `Process`, which holds the kernel. The `&self` ruling names
+  `System`; the abi's `Host` methods (the clocks, randomness, warnings, the backend, connections
+  and the stream ends) take `&self` too, since the naming rule counts them as the `System`'s
+  services and a `Sync` trait whose half takes `&mut self` could not be called from two threads. The rename of `Host`
+  into `System` and of `Cpu` into `Executor` is left to the runtime track's merge.
+- `Process` has no executor parameter (`Process<'_, E>` in the rulings) and `ExecutionConfig` no
+  `translator` field: the kernel reaches the executor as `dyn Cpu`. `Kernel::process` takes the
+  executor (`cpu`), which the kernel does not own.
+- `memory_read` returns an owned copy, not pieces of borrowed bytes: the `Cpu` trait reads by copy.
+  `memory_write(address, bytes)` takes the address, not a range, since the range is the bytes'.
+- `ProcessInfo::parent` is added (Linux's `getppid`, published to anyone): an embedder that keeps
+  its own picture from the hooks needs a new process's parent at `on_process_starting`, and the
+  lazy memory test needs it to hand a child its parent's saved pages. For the owner.
+- The ceiling: low-first placement and the executor's ceiling are not on origin/phase-1
+  (unchanged at eb515b7a on 2026-11-19), so the ceiling is given at start and kept beside the
+  width in every map. Assumed: the executor cannot back any address at or above the ceiling, so
+  anything that would reach past it is outgrown (fixed requests, brk growth, segments, placements
+  that find no room), and, with top-down placement, the stack's top and the mmap base are put at
+  the ceiling so placed memory stays below it. The width (the highest address a fixed request may
+  name) stays the executor's address space. Stack growth is downward and never reaches the
+  ceiling.
+- `memory_take_dirty`'s first answer is every page mapped writable (nothing was recorded before);
+  writes by other processes to shared pages are not in a process's record.
+- Watches act on whole pages of `PAGE_SIZE`. Left to the copy check (listed with why in
+  docs/embedder-interface.md): `semctl` GETALL/SETALL and the IPC `*_INFO` commands,
+  `restart_syscall`, a priority-inheriting lock handed on at a thread's end, and thread-end
+  stores when the container ends. `process_vm_*` on another process is refused (ENOSYS, counted)
+  and `/proc/<pid>/mem` is not built.
+- A read of another process's command line or environment through `/proc` announces
+  `on_watched_memory_accessing` with that process and the reading thread, a thread of another
+  process (the interface did not say which thread; this is the task making the access). For the
+  owner.
+- The first process's end now kills the others in the kernel (Docker kills them from outside), so
+  each is announced and its number freed.
+- Task ids: the embedder's id carries no generation (the earlier ruling said it would): the
+  embedder hands out every number and hears when each is free, so a number it keeps never names
+  another process without its knowing. `task_id_allocate` takes `previous`, the id handed out
+  last, which the owner's names do not have: the provided default counter needs it, since a
+  trait's default method keeps no state. Both for the owner to confirm.
+- `on_memory_accessing` before a call is announced for what the call's arguments name, which can
+  be more than it then writes (a short read, `nanosleep`'s remaining time).
+- `AccessKind` is the kernel's (the ruled name); the abi's `Access` stays for the executor's
+  faults, which `AccessKind` follows one to one.
+- `on_memory_written_by_kernel` is announced for every copy into program memory (one routine,
+  user.rs `Guest`), not for memory changed by mapping calls (reported by `take_dirty_memory`), a
+  new program's stack, vDSO and segment tails written by `execve` (the whole new memory is the
+  embedder's to read at `on_program_starting`), or backend pages of a mapped file (written into
+  the file all mappers share). The owner named "a page of a mapped file being filled" among his
+  examples: for him to confirm. Writes are announced after the call, before the next hook and
+  before any thread runs again, not inside the copy (a hook cannot be given the process while a
+  call holds it).
+- The abi's `Syscall` is renamed `SystemCallRequest` (one type, the ruled name), and the register
+  holding a call's number is the abi's `SYSTEM_CALL_NUMBER_REGISTER`; the executors construct it,
+  so the runtime track's executor adapts.
+- A changed request is written into the thread's registers (as ptrace's change at the
+  syscall-entry stop), so a waiting call runs the changed one again and the program sees x1 to x5
+  changed after the call. A `Break` answer is not given to `intercept_system_call_response`.
+- `watch_thread_memory` is my verb-first form of `memory_watch_thread`; for the owner.
+- Watch waits are not ended by signals, as backend waits are not. Consequence: a thread
+  waiting on a watch the embedder never resolves cannot be killed, SIGKILL included (it acts once
+  the watches change); Linux's nearest wait, a userfaultfd fault, can be killed, and a kernel
+  store into such a page is then skipped. An embedder that loses a page leaves an unkillable
+  process. Listed for the owner.
+- From S1, still standing: `a_terminal_closed_before_the_start_finished` does not guard the
+  release it was written for (devpts lookup goes by the master's count; no observation found that
+  does); `/dev/console` absent under `-t`; a terminal's space toward the slave is
+  held for the embedder's credit; bytes the embedder sends after the kernel closed an input end are
+  dropped uncounted; output after the embedder closed its end is compared with a pipe whose reader
+  the reference program closed itself.
 
 ## For the orchestrator
 
-Names for the owner (all suggestions but `stream_credit`, which the owner chose):
-- `End` (`wcontainers_abi::End(u32)`).
-- `Host::stream_send`, `Host::stream_close` (beside the owner's `stream_credit`).
-- `Event::StreamData`, `Event::StreamCredit`, `Event::StreamClosed`, and
-  `Event::TerminalResized { end, columns, rows }` (the old event, given the end).
-- `Start::standard` and `wcontainers_kernel::Standard::{Pipes, Terminal}`.
+- For the owner (design, found by S2's fourth check): the walk in syscall/touch.rs is a second,
+  hand-kept description of what each call touches, beside the call's own copies; a difference is
+  seen only while something is watched (counted as `copy outside the call's description`), so a
+  new call needs a description and nothing checks it while nothing is watched. It is what makes a
+  watch fire before a call has any effect. The other way, Linux's, is to fault inside the copy and
+  run the call again, which loses what the call did before the copy (a datagram). Kept until he
+  rules.
+- For the runtime track: the abi's `Host` methods now take `&self` and `System` requires `Sync`.
 
-Decided here, not ruled by the brief:
-- The embedder names the ends made at start; the kernel will name the ones it makes later, from
-  numbers no live end has.
-- A terminal's size changes through its own event (`TerminalResized` with the end), the brief's
-  "plus its size".
-- Closing: the outside's close frees the end at once (the kernel lets go of its file and says
-  nothing more); the kernel's close means it sends nothing more, and the outside then frees the end
-  by closing it. An input end is closed by the kernel when no reader is left; an output end when
-  no writer is left and all it held is sent; a terminal end when the slave has no opener and all the
-  master held is sent. The outside closing a terminal end closes the master (the slave hangs up).
-- Credit the kernel gives: the room it has (a pipe's free pages plus the room in a last page the
-  outside's bytes may join; a pty's room toward the slave) less what is outstanding (and, for a
-  pipe, what waits in its inbox), granted at start and again when it has grown by a page, or when
-  nothing is outstanding and any room is free. A pipe's room is not held for the credit: a writer
-  inside may take it, and the outside's bytes then wait in the inbox, at most the credit.
-- `Next::Finished` can come while output is held for want of credit; the embedder grants credit
-  until each output end closes.
-- `docker run -t` without `-i` is a terminal end the outside never sends on.
-- A start that fails closes every end it named at once (stream_close for each).
-- The runtime (on main) asked for `Event::Input` and a flow-control event; this interface covers
-  both with `StreamData` and `StreamCredit`.
+- For the kernel track (found by S2's third check): in a forked child `getrusage(RUSAGE_SELF)`
+  reports `ru_maxrss` above 0; the reference reports 0.
+- For the owner: a watch resolved between steps through `Kernel::process` wakes its thread only
+  once the embedder answers `Next::Idle { until_nanoseconds: Some(0) }` with `Event::Timer`, since
+  settling may announce hooks and free task ids, which need the `System`; `Kernel::next` does not
+  take it.
+
+- For the owner: `task_id_allocate` takes `previous` (the id handed out last), which the
+  owner's names do not have; the provided default counter needs it, since a trait's default
+  method keeps no state.
+- Names for the owner (suggested): `MemoryError::InvalidRange`; `Process::memory_write(address,
+  bytes)`; `ProcessInfo::parent`;
+  `ProcessInfo::ceiling_distance` (defined as what new mappings can still take below the ceiling);
+  `MemoryError::{NotMapped, NotRead, Executor}`; `Unsupported`; `ExecutionConfig::supported`;
+  `Start::ceiling`, `Start::execution`; `task_id_after` (the default counter);
+  `PerThreadWatch::set_thread_permissions`.
+- Carried to the next milestone (orchestrator, 2026-11-19 night): the system call proxy costs
+  every call two calls of empty methods through `&dyn System`, and every copy into program memory
+  notes its range for `on_memory_written_by_kernel`. The ninth run measured about 0.5 % user CPU
+  on the memory test binary; S2's seventh and eighth checks measured no difference beyond noise
+  (+0.3 %). The kernel becomes generic over its `System` when it implements the interface
+  crates.
+- For the owner: a thread waiting on a watch the embedder never resolves cannot be killed (see
+  "Departures"); Linux's userfaultfd wait can be, skipping the kernel's store.
+- For the owner: a container whose first program does not fit below `Start::ceiling` fails its
+  start with ENOMEM, counted, with no `on_process_outgrown` (its process is not announced yet).
+- For the runtime track: the abi's `Syscall` is `SystemCallRequest`; `Host::stream_send`,
+  `stream_credit`, `stream_close` are `send_stream`, `credit_stream`, `close_stream`;
+  `System::free_task_id` has no default.
+- From S1 (suggested, unchanged): `End`, `Host::send_stream`, `Host::close_stream`,
+  `Event::StreamData`, `Event::StreamCredit`, `Event::StreamClosed`, `Event::TerminalResized`,
+  `Start::standard`, `Standard::{Pipes, Terminal}`.
+- The literal check: phase-1-kernel merged phase-1-literals directly; this branch took only the
+  crate. Whoever merges both into phase-1 resolves the baseline once by `init`.

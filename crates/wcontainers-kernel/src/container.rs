@@ -6,8 +6,9 @@ use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Cpu, End, Host, PAGE_SIZE, Resume};
+use wcontainers_abi::{Cpu, End, PAGE_SIZE, Resume};
 
+use crate::counters::reason;
 use crate::credentials::{Credentials, ROOT_GID, ROOT_UID};
 use crate::ends::Standard;
 use crate::file::{FdTable, OpenFile};
@@ -67,6 +68,11 @@ pub struct Start<'a> {
     pub backend: Option<&'a [u8]>,
     /// What descriptors 0 to 2 are.
     pub standard: Standard,
+    /// The highest address the executor can give a process now, if below the end of its address
+    /// space; a request past it is announced as `System::on_process_outgrown`.
+    pub ceiling: Option<u64>,
+    /// How the first process is run.
+    pub execution: crate::ExecutionConfig,
 }
 
 /// The file mode creation mask a default Docker container's first process starts with.
@@ -715,8 +721,14 @@ impl Kernel {
     /// process. With the root on the backend this waits for the backend's answers like any call,
     /// so it may still be going on when this returns; a start that fails ends the container, and
     /// [`Kernel::start_failure`] says why.
-    pub fn start(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, start: &Start<'_>) {
+    pub fn start(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        host: &dyn crate::System,
+        start: &Start<'_>,
+    ) -> Result<(), crate::Unsupported> {
         assert!(self.init.is_none(), "the container has already started");
+        start.execution.supported()?;
         let mut cx = Context {
             cpu,
             host,
@@ -731,15 +743,26 @@ impl Kernel {
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
+        self.ceiling = start.ceiling.map_or(self.machine.memory_bytes, |ceiling| {
+            ceiling.min(self.machine.memory_bytes)
+        });
         self.hostname = start.hostname.to_vec();
-        for end in start.standard.ends() {
-            self.ends.name(end);
+        for (end, sends) in start.standard.ends() {
+            self.ends.name(end, sends);
         }
         if let Some(path) = start.backend {
             self.mount_backend(path);
         }
 
-        let pid = self.allocate_id();
+        let pid = match self.allocate_id(&mut cx) {
+            Ok(pid) => pid,
+            Err(error) => {
+                self.start_failure = Some(error);
+                self.finished = Some(start_failed(error));
+                self.close_unmade(&mut cx, &start.standard);
+                return Ok(());
+            }
+        };
         let root = self.files.root.clone();
         let credentials = Credentials::container_root(start.groups.to_vec());
         let process = Process {
@@ -750,7 +773,9 @@ impl Kernel {
             session: pid,
             memory: wcontainers_abi::MemoryId(0),
             map: Rc::new(core::cell::RefCell::new(crate::memory::AddressMap::new(
-                cx.cpu.address_space().end,
+                self.machine.memory_bytes,
+                self.ceiling,
+                self.outgrown.clone(),
             ))),
             threads: vec![pid],
             limits: docker_limits(),
@@ -776,6 +801,7 @@ impl Kernel {
             peak_mapped: 0,
             started: cx.monotonic(),
             vdso: 0,
+            execution: start.execution,
             execed: false,
             self_exec_id: 0,
             // What Docker's first process inherits (measured).
@@ -815,6 +841,7 @@ impl Kernel {
         }));
         self.run_start(&mut cx);
         self.settle(&mut cx);
+        Ok(())
     }
 
     /// Why the container's start failed, once it has.
@@ -852,6 +879,12 @@ impl Kernel {
                 })
             };
             self.end_asking(pid, result == Err(Errno::PARKED));
+            // The first program did not fit below the ceiling: counted, with no hook, since its
+            // process is announced only once its program is loaded.
+            if self.outgrown.take().is_some() {
+                self.counters
+                    .count(cx.host, reason::PROCESS_OUTGROWN, u64::from(__NR_execve));
+            }
             match result {
                 // The mounts are made: the first program's part asks afresh.
                 Ok(false) => continue,
@@ -860,6 +893,7 @@ impl Kernel {
                 Err(error) => {
                     self.processes.remove(&pid);
                     self.threads.remove(&pid);
+                    self.ids_let_go.push(pid);
                     self.start_failure = Some(error);
                     self.finished = Some(start_failed(error));
                     self.close_unmade(cx, &starting.standard);
@@ -947,6 +981,7 @@ impl Kernel {
             Err(crate::loader::Failed::Fatal) => {
                 self.processes.remove(&pid);
                 self.threads.remove(&pid);
+                self.ids_let_go.push(pid);
                 self.init = Some(pid);
                 self.finished = Some(SIGSEGV as i32);
                 self.close_unmade(cx, &starting.standard);
@@ -1019,7 +1054,7 @@ impl Kernel {
         for file in descriptors {
             files
                 .add(file, false, 0, limit)
-                .expect("room for the first descriptors");
+                .expect("space for the first descriptors");
         }
         Ok(())
     }
@@ -1043,7 +1078,7 @@ impl Kernel {
                 name: Vec::new(),
             },
         )
-        .expect("a new container's file systems have room");
+        .expect("a new container's file systems have space");
         let other = if flags == O_RDONLY {
             O_WRONLY
         } else {
@@ -1061,6 +1096,8 @@ impl Kernel {
     pub(crate) fn install_image(&mut self, cx: &mut Context<'_>, pid: Pid, tid: Tid, image: Image) {
         let thread = self.threads.get_mut(&tid).expect("thread");
         let process = self.processes.get_mut(&pid).expect("process");
+        // The container's first program replaces no memory: its process has none yet.
+        let first = self.init.is_none();
         let old_memory = core::mem::replace(&mut process.memory, image.memory);
         process.map = Rc::new(core::cell::RefCell::new(image.map));
         process.executable = image.executable;
@@ -1111,7 +1148,7 @@ impl Kernel {
         if lose_parent_death_signal {
             thread.parent_death_signal = 0;
         }
-        if old_memory.0 != 0 {
+        if !first {
             cx.cpu.thread_drop(thread.cpu);
             thread.cpu = cx
                 .cpu
@@ -1125,11 +1162,24 @@ impl Kernel {
         thread.resume = Resume::FromRegisters;
         // A `vfork` child gives its parent's memory back; any other old memory goes.
         self.release_vfork(tid);
-        if old_memory.0 != 0 && !self.memory_in_use_elsewhere(pid, old_memory) {
+        if !first && !self.memory_in_use_elsewhere(pid, old_memory) {
             cx.cpu.memory_drop(old_memory);
+        }
+        // A reader of the old program's memory that waits on a watch reads the new one.
+        if !first {
+            self.wake(crate::process::Channel::Watch(old_memory.0));
         }
         self.files_released(cx);
         crate::shared::release(self, cx);
+        self.update_watching();
+        if first {
+            self.announce(cx, pid, |system, process| {
+                system.on_process_starting(process)
+            });
+        }
+        self.announce(cx, pid, |system, process| {
+            system.on_program_starting(process)
+        });
     }
 
     /// A tmpfs's count, kept for the machine's memory in use.

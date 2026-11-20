@@ -1,4 +1,3 @@
-code	crates/wcontainers-abi/src/exit.rs	int	Syscall	6
 code	crates/wcontainers-abi/src/registers.rs	int	RegisterBlock	31
 code	crates/wcontainers-abi/src/registers.rs	int	RegisterBlock	32
 code	crates/wcontainers-arm64/src/decode.rs	int	address	12
@@ -1608,29 +1607,17 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"/usr/local/sbin"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"/usr/sbin"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"/{}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"{directory}/{command}"
-code	crates/wcontainers-kernel-test/src/busybox.rs	str	run_ours_on	"/"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"/{target}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"/{}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"{major},{minor}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_kernel	"{major},{minor}"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"backend-file\0"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"data"
-code	crates/wcontainers-kernel-test/src/driver.rs	float	<TestHost as Outside>::arrived	0.5
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e3
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<Injections as Default>::default	100
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	1000
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::stopped	- 1
-code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x5197
-code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x6e07
-code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x6e08
-code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	10
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
@@ -1655,9 +1642,7 @@ code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"LOOK_AHEAD_SEE
 code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"bounded"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"full"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"none"
-code	crates/wcontainers-kernel-test/src/driver.rs	str	prepare	"/"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	report	", "
-code	crates/wcontainers-kernel-test/src/driver.rs	str	run_prepared	"/"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	wall_clock	"the clock is after 1970"
 code	crates/wcontainers-kernel-test/src/generate.rs	char	convert	'\n'
 code	crates/wcontainers-kernel-test/src/generate.rs	str	add_byte_derives	r"#\[derive\(Debug, Copy, Clone\)\]\npub struct ([A-Za-z0-9_]+) \{"
@@ -3783,7 +3768,6 @@ code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	4
 code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	4
 code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	5
 code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	5
-code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	8
 code	crates/wcontainers-kernel-test/src/standin.rs	int	x_register	29
 code	crates/wcontainers-kernel-test/src/standin.rs	int	x_register	30
 code	crates/wcontainers-kernel-test/src/standin.rs	str	Memory::save_registers	"16 bytes"
@@ -4477,7 +4461,6 @@ code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::charge_signal	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::deliver	4
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::deliver	4
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::deliver	4
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::deliver	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::die_with	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::force_signal	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::queue_to_process	128
@@ -4498,23 +4481,13 @@ code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::restore_frame	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::restore_frame	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::restore_frame	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::restore_frame	8
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	16
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	24
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	32
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	4
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	4
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	8
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	8
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	8
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::rseq_fixup	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_from_timer	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_queued	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_to_group	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_to_process	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_to_thread	128
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	15
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	15
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	16
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	16
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	29
@@ -4547,8 +4520,6 @@ code	crates/wcontainers-kernel/src/signal.rs	int	sender_info	16
 code	crates/wcontainers-kernel/src/signal.rs	int	sender_info	20
 code	crates/wcontainers-kernel/src/signal.rs	int	signal_of	128
 code	crates/wcontainers-kernel/src/signal.rs	int	signal_of	4
-code	crates/wcontainers-kernel/src/signal.rs	str	Kernel::rseq_fixup	"4 bytes"
-code	crates/wcontainers-kernel/src/signal.rs	str	Kernel::rseq_fixup	"8 bytes"
 code	crates/wcontainers-kernel/src/syscall/aio.rs	int	complete	12
 code	crates/wcontainers-kernel/src/syscall/aio.rs	int	complete	4
 code	crates/wcontainers-kernel/src/syscall/aio.rs	int	get_events	8
@@ -5573,10 +5544,7 @@ code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	1000
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	12
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	4
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	4
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	40
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	48
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	48
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	8
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	17
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	32
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	4096
@@ -5984,10 +5952,6 @@ code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	0xff
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	10_000_000
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	128
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	8
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	3
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	4
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	5
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	8
 code	crates/wcontainers-kernel/src/tty.rs	byte	Discipline::finish_erasing	b'/'
 code	crates/wcontainers-kernel/src/tty.rs	byte	Pty::echo_char	b'\t'
 code	crates/wcontainers-kernel/src/tty.rs	byte	Pty::echo_op	b'\x08'

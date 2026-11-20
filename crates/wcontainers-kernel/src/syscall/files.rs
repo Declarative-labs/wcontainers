@@ -983,10 +983,11 @@ pub(super) fn proc_contents(
     let memory_in_use = kernel.memory_in_use();
     let cpu = &mut *cx.cpu;
     // A command line or environment is read only from anonymous memory, as `access_remote_vm`
-    // with FOLL_ANON reads it.
+    // with FOLL_ANON reads it; a watched page is not there for the copy until the watch is met, as
+    // for a call's copies.
     let mut read_memory = |process: &crate::process::Process, start: u64, length: u64| {
         let mut bytes = alloc::vec![0; length as usize];
-        let map = process.map.borrow();
+        let mut map = process.map.borrow_mut();
         let readable = map.accessible(start, length, wcontainers_abi::Permissions::READ);
         let mut anonymous = start;
         while anonymous < start + readable {
@@ -995,8 +996,12 @@ pub(super) fn proc_contents(
                 _ => break,
             }
         }
+        let readable = readable.min(anonymous.saturating_sub(start));
+        let readable =
+            map.watches
+                .copy_reach(start, length, readable, crate::system::AccessKind::Read);
         drop(map);
-        bytes.truncate(readable.min(anonymous.saturating_sub(start)) as usize);
+        bytes.truncate(readable as usize);
         if cpu.read(process.memory, start, &mut bytes).is_err() {
             bytes.clear();
         }

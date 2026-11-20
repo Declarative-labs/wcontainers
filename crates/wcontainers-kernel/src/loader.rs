@@ -21,6 +21,7 @@ use crate::memory::{
     AddressMap, Backing, LayoutRandomization, Mapping, STACK_LIMIT, page_down, page_up,
 };
 use crate::process::{StartingStack, Tid};
+use crate::signal::STACK_ALIGNMENT;
 use crate::{Context, Errno, Kernel, errno};
 
 /// Linux's `AT_PLATFORM` string on ARM64.
@@ -37,9 +38,6 @@ const SCRIPT_LINE: usize = 256;
 
 /// What the stack is given beyond the arguments when a program starts (Linux's `stack_expand`).
 const STACK_EXPAND: u64 = 128 << 10;
-
-/// The alignment of the stack pointer a program starts with, and of the tables below its strings.
-const STACK_ALIGNMENT: u64 = 16;
 
 /// An ELF file header and program header as Linux reads them.
 type Header = elf::FileHeader64<LittleEndian>;
@@ -514,8 +512,8 @@ fn place(
     environment: &[Vec<u8>],
     readable: bool,
 ) -> Result<Image, Failed> {
-    let end = cx.cpu.address_space().end;
-    let mut map = AddressMap::new(end);
+    let end = kernel.ceiling;
+    let mut map = AddressMap::new(kernel.machine.memory_bytes, end, kernel.outgrown.clone());
     let endian = LittleEndian;
     // In the order of Linux's `load_elf_binary`: the program's header and program headers, its
     // loader's name and header, the loader's program headers, then the properties.
@@ -640,6 +638,15 @@ fn place(
         Some((found, _, segments)) => segment_tails(found, segments)?,
         None => Vec::new(),
     };
+    if map.ceiling < map.end {
+        fits_below_ceiling(
+            &map,
+            (&header, &segments, bias),
+            interpreter
+                .as_ref()
+                .map(|(_, header, segments)| (header, segments.as_slice())),
+        )?;
+    }
     // The point of no return: from here a failure kills the process.
     let main_path = program.path.clone();
     // A program on the backend shows its pages as Linux's page cache, each read when touched.
@@ -765,12 +772,14 @@ fn place(
     })
 }
 
+/// The length of `[vvar]` and the vDSO together.
+const VDSO_LENGTH: u64 = (crate::vdso::VVAR_PAGES + crate::vdso::CODE_PAGES) * PAGE_SIZE;
+
 /// Maps `[vvar]` and the vDSO where `mmap` would put them, and writes the vDSO's code
 /// (`arch_setup_additional_pages`). The data pages hold nothing a program reads here.
 fn place_vdso(cx: &mut Context<'_>, memory: MemoryId, map: &mut AddressMap) -> Result<u64, Errno> {
     use crate::vdso::{CODE_PAGES, VVAR_PAGES};
-    let length = (VVAR_PAGES + CODE_PAGES) * PAGE_SIZE;
-    let start = map.find_free(length).ok_or(Errno::ENOMEM)?;
+    let start = map.find_free(VDSO_LENGTH).ok_or(Errno::ENOMEM)?;
     let code = start + VVAR_PAGES * PAGE_SIZE;
     let special = |start: u64, end: u64, permissions: Permissions, name: &'static str| Mapping {
         start,
@@ -793,7 +802,7 @@ fn place_vdso(cx: &mut Context<'_>, memory: MemoryId, map: &mut AddressMap) -> R
         memory,
         special(
             code,
-            start + length,
+            start + VDSO_LENGTH,
             Permissions::READ | Permissions::EXECUTE,
             "[vdso]",
         ),
@@ -845,6 +854,75 @@ fn segment_tails(program: &Program, segments: &[Segment]) -> Result<Vec<(u64, Ve
     Ok(tails)
 }
 
+fn loadable(segments: &[Segment]) -> Vec<&Segment> {
+    segments
+        .iter()
+        .filter(|segment| segment.p_type(LittleEndian) == elf::PT_LOAD)
+        .collect()
+}
+
+/// The lowest page of a file's loadable segments and the length from it to their last page.
+fn load_span(loads: &[&Segment]) -> Option<(u64, u64)> {
+    let endian = LittleEndian;
+    let lowest = loads
+        .iter()
+        .map(|segment| page_down(segment.p_vaddr(endian)))
+        .min()?;
+    let highest = loads
+        .iter()
+        .map(|segment| {
+            segment
+                .p_vaddr(endian)
+                .saturating_add(segment.p_memsz(endian))
+        })
+        .max()?;
+    Some((lowest, page_up(highest) - lowest))
+}
+
+/// Decides before the point of no return that the whole new program fits below the ceiling where
+/// [`place_elf`] and [`place_vdso`] will put it: its segments, its interpreter and the vDSO. A part
+/// that does not is noted outgrown and refused; a malformed file is left to `place_elf`.
+fn fits_below_ceiling(
+    map: &AddressMap,
+    (header, segments, bias): (&Header, &[Segment], u64),
+    interpreter: Option<(&Header, &[Segment])>,
+) -> Result<(), Errno> {
+    let endian = LittleEndian;
+    let mut taken = Vec::new();
+    let mut heap = 0;
+    let files = core::iter::once((header, segments, Some(bias)))
+        .chain(interpreter.map(|(h, s)| (h, s, None)));
+    for (header, segments, bias) in files {
+        let loads = loadable(segments);
+        let Some((lowest, span)) = load_span(&loads) else {
+            return Ok(());
+        };
+        let main = bias.is_some();
+        let bias = match (bias, header.e_type(endian)) {
+            (_, elf::ET_EXEC) => 0,
+            (Some(bias), _) => bias,
+            (None, _) => map.find_free_beside(span, &taken).ok_or(Errno::ENOMEM)? - lowest,
+        };
+        for segment in &loads {
+            let address = bias.wrapping_add(segment.p_vaddr(endian));
+            let Some(end) = address.checked_add(segment.p_memsz(endian)) else {
+                return Ok(());
+            };
+            let (start, stop) = (page_down(address), page_up(end));
+            if map.crosses_ceiling(stop.saturating_add(STACK_LIMIT), stop - start) {
+                return Err(Errno::ENOMEM);
+            }
+            taken.push(start..stop);
+            if main {
+                heap = heap.max(end);
+            }
+        }
+    }
+    map.find_free_beside(VDSO_LENGTH, &taken)
+        .map(drop)
+        .ok_or(Errno::ENOMEM)
+}
+
 /// Places one ELF file's loadable segments, with the tails [`segment_tails`] read. With no bias
 /// given, the file goes wherever free space is, as `mmap` would put it.
 fn place_elf(
@@ -857,25 +935,8 @@ fn place_elf(
     bias: Option<u64>,
 ) -> Result<Placed, Errno> {
     let endian = LittleEndian;
-    let loads: Vec<_> = segments
-        .iter()
-        .filter(|segment| segment.p_type(endian) == elf::PT_LOAD)
-        .collect();
-    let lowest = loads
-        .iter()
-        .map(|segment| page_down(segment.p_vaddr(endian)))
-        .min()
-        .ok_or(Errno::ENOEXEC)?;
-    let highest = loads
-        .iter()
-        .map(|segment| {
-            segment
-                .p_vaddr(endian)
-                .saturating_add(segment.p_memsz(endian))
-        })
-        .max()
-        .ok_or(Errno::ENOEXEC)?;
-    let span = page_up(highest) - lowest;
+    let loads = loadable(segments);
+    let (lowest, span) = load_span(&loads).ok_or(Errno::ENOEXEC)?;
     let bias = match (bias, header.e_type(endian)) {
         (_, elf::ET_EXEC) => 0,
         (Some(bias), elf::ET_DYN) => bias,
@@ -898,7 +959,10 @@ fn place_elf(
         }
         let start = page_down(address);
         let stop = page_up(address.checked_add(segment_memory).ok_or(Errno::ENOEXEC)?);
-        if start < LOWEST_ADDRESS || stop > map.end - STACK_LIMIT {
+        if start < LOWEST_ADDRESS
+            || stop > map.end - STACK_LIMIT
+            || map.crosses_ceiling(stop + STACK_LIMIT, stop - start)
+        {
             return Err(Errno::ENOMEM);
         }
         let permissions = segment_permissions(segment.p_flags(endian).0);

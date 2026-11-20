@@ -121,6 +121,8 @@ pub(crate) struct Process {
     pub started: u64,
     /// Where the vDSO is mapped; its signal return code is there.
     pub vdso: u64,
+    /// How the embedder asked for it to be run.
+    pub execution: crate::ExecutionConfig,
     /// A change of user left the new user over RLIMIT_NPROC (`PF_NPROC_EXCEEDED`), which the next
     /// `execve` refuses if it still is.
     pub nproc_exceeded: bool,
@@ -255,7 +257,7 @@ impl Pending {
 }
 
 /// Linux's `TASK_COMM_LEN` less the terminating zero.
-const NAME_LENGTH: usize = 15;
+pub(crate) const NAME_LENGTH: usize = 15;
 
 impl Thread {
     /// Sets the `comm` name from a path's last part, as `execve` does.
@@ -344,6 +346,11 @@ pub(crate) struct Thread {
     /// Whether it waits for pages of a mapped file its program touched, so once woken it goes on
     /// from the instruction that touched them instead of running a call again.
     pub filling: bool,
+    /// Waits on a watch with a signal's frame to write: acts on its signals before it runs.
+    pub delivering: bool,
+    /// Taken off the CPU in its own code since it last went back to it, so its restartable
+    /// sequence is checked first (`rseq_event_mask`).
+    pub rseq_event: bool,
     /// The address and syndrome of the thread's last fault, which every later frame shows.
     pub fault: (u64, u64),
     /// Signals a fault forced on the thread, which even the first process acts on.
@@ -567,6 +574,9 @@ pub(crate) enum Channel {
     /// Another thread of the process dumps core (Linux's `coredump_task_exit`): the thread waits,
     /// woken by nothing, until the process ends.
     CoreDump,
+    /// A change to the embedder's watches on a memory (its handle); no signal ends this wait, as
+    /// none ends a wait for the backend.
+    Watch(u32),
 }
 
 /// What `restart_syscall` runs again.
@@ -622,6 +632,8 @@ impl Thread {
             system: 0,
             woken_at: None,
             filling: false,
+            delivering: false,
+            rseq_event: false,
             fault: (0, 0),
             forced: 0,
             schedule: Schedule::default(),

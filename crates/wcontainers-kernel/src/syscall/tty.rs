@@ -1301,10 +1301,10 @@ pub(crate) fn start_terminal(
 /// Where runc opens the container's terminal pairs.
 pub const PTMX_PATH: &str = "/dev/ptmx";
 
-/// The outside's bytes into the master its end holds, within the room promised, as a master write
+/// The embedder's bytes into the master its end holds, within the space promised, as a master write
 /// takes them: the slave's line discipline takes them in at once. Returns how many were past the
 /// promise, which are dropped.
-pub(crate) fn from_outside(
+pub(crate) fn receive_from_end(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     file: &FileRef,
@@ -1319,7 +1319,7 @@ pub(crate) fn from_outside(
         pair.promised -= taken as u64;
         pair.process_echoes(side);
         let written = pair.write(side, &bytes[..taken]);
-        debug_assert_eq!(written, taken, "the room was promised");
+        debug_assert_eq!(written, taken, "the space was promised");
         taken
     };
     after(kernel, cx, &pty);
@@ -1329,22 +1329,22 @@ pub(crate) fn from_outside(
     bytes.len() - taken
 }
 
-/// Room to promise the outside writing a master: the room toward the slave past what is promised,
-/// once that is worth a credit (a page, or any room with nothing promised), now promised.
-pub(crate) fn promise_outside(file: &FileRef) -> u64 {
+/// Credit to give the embedder writing a master: the space toward the slave past what is promised,
+/// once that is worth a credit (a page, or any space with nothing promised), now promised.
+pub(crate) fn credit_for_end(file: &FileRef) -> u64 {
     let (pty, side, _) = end(file).expect("a terminal");
     let mut pair = pty.borrow_mut();
-    let room = (pair.write_room(side) as u64).saturating_sub(pair.promised);
-    if room < wcontainers_abi::PAGE_SIZE && (pair.promised > 0 || room == 0) {
+    let space = (pair.write_room(side) as u64).saturating_sub(pair.promised);
+    if space < wcontainers_abi::PAGE_SIZE && (pair.promised > 0 || space == 0) {
         return 0;
     }
-    pair.promised += room;
-    room
+    pair.promised += space;
+    space
 }
 
-/// Up to `most` bytes the master its end holds has for the outside, taken as a master read takes
+/// Up to `most` bytes the master its end holds has for the embedder, taken as a master read takes
 /// them, the slave's writers woken.
-pub(crate) fn to_outside(
+pub(crate) fn send_to_end(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     file: &FileRef,
@@ -1355,7 +1355,7 @@ pub(crate) fn to_outside(
         return Vec::new();
     }
     let mut bytes = Vec::new();
-    let room_made = {
+    let space_made = {
         let mut pair = pty.borrow_mut();
         pair.sides[side].take(
             &mut bytes,
@@ -1369,7 +1369,7 @@ pub(crate) fn to_outside(
         pair.settle();
         wakeup.then_some(other)
     };
-    if let Some(other) = room_made {
+    if let Some(other) = space_made {
         for file in async_files(&pty, other) {
             kernel.send_io_signal(cx, &file, POLL_OUT);
         }
@@ -1390,7 +1390,7 @@ pub(crate) fn drained(file: &FileRef) -> bool {
 }
 
 /// A terminal end's new size, as `TIOCSWINSZ` on its master sets it.
-pub(crate) fn resize_from_outside(
+pub(crate) fn resize_from_end(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     file: &FileRef,

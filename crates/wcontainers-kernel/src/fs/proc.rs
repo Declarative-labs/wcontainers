@@ -2007,6 +2007,18 @@ pub(crate) fn map_line(mapping: &crate::memory::Mapping) -> MapLine {
     }
 }
 
+/// The start and length of the memory of a live `process` that reading `file` copies, for the
+/// files that read it.
+pub(crate) fn memory_read(process: &Process, file: ProcessFile) -> Option<(u64, u64)> {
+    let (start, end) = match file {
+        _ if process.ended.is_some() => return None,
+        ProcessFile::Cmdline => process.starting_stack.arguments,
+        ProcessFile::Environ => process.starting_stack.environment,
+        _ => return None,
+    };
+    Some((start, end - start))
+}
+
 /// A file of a process's or thread's directory, which shows thread `tid` of `process`.
 fn process_file(
     source: &mut Source<'_>,
@@ -2018,21 +2030,15 @@ fn process_file(
     let shown = shown(source.view, process, tid);
     let mut out = String::new();
     let stack = &process.starting_stack;
-    let range = |(start, end): (u64, u64)| (start, end - start);
     match file {
         // An ended process's memory is gone, so its command line and environment read empty
         // (`environ` and `auxv` are refused at the open; `auxv` opened before keeps the saved
         // vector).
-        ProcessFile::Cmdline | ProcessFile::Environ if process.ended.is_some() => {
-            return Ok(Vec::new());
-        }
-        ProcessFile::Cmdline => {
-            let (start, length) = range(stack.arguments);
-            return Ok((source.read_memory)(process, start, length));
-        }
-        ProcessFile::Environ => {
-            let (start, length) = range(stack.environment);
-            return Ok((source.read_memory)(process, start, length));
+        ProcessFile::Cmdline | ProcessFile::Environ => {
+            return Ok(match memory_read(process, file) {
+                Some((start, length)) => (source.read_memory)(process, start, length),
+                None => Vec::new(),
+            });
         }
         ProcessFile::Auxv => return Ok(stack.auxiliary.clone()),
         // Read and written in place (`crate::syscall::memory::proc_mem`), never made.

@@ -163,6 +163,10 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
     }
 }
 
+impl wcontainers_kernel::System for System {
+    fn free_task_id(&self, _: wcontainers_kernel::TaskId) {}
+}
+
 impl Host for System {
     fn monotonic_nanoseconds(&self) -> u64 {
         self.now()
@@ -186,7 +190,7 @@ impl Host for System {
         Err(HostError::NotSupported)
     }
 
-    fn stream_send(&self, end: End, bytes: &[u8]) {
+    fn send_stream(&self, end: End, bytes: &[u8]) {
         let (writer, name) = match end {
             OUTPUT => (&self.output, OUTPUT_NOT_WRITTEN),
             _ => (&self.error, ERROR_NOT_WRITTEN),
@@ -210,10 +214,10 @@ impl Host for System {
     }
 
     /// No end takes input: the kernel gives no credit.
-    fn stream_credit(&self, _: End, _: u64) {}
+    fn credit_stream(&self, _: End, _: u64) {}
 
     /// The writers stay open for this process's own use.
-    fn stream_close(&self, _: End) {}
+    fn close_stream(&self, _: End) {}
 
     fn connect(&self, _: ConnectionId, _: &[u8], _: u16, _: bool) -> Result<(), HostError> {
         Err(HostError::NotSupported)

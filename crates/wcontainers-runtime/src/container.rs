@@ -112,20 +112,24 @@ impl<B: BackEnd> Runtime<B> {
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
         let standard = outside.standard();
-        kernel.start(
-            &mut cpu,
-            &outside,
-            &Start {
-                path: path.as_bytes(),
-                arguments: &arguments,
-                environment: &environment,
-                working_directory: accepted.cwd.as_bytes(),
-                hostname: accepted.hostname.as_bytes(),
-                groups: &accepted.groups,
-                backend: None,
-                standard,
-            },
-        );
+        kernel
+            .start(
+                &mut cpu,
+                &outside,
+                &Start {
+                    path: path.as_bytes(),
+                    arguments: &arguments,
+                    environment: &environment,
+                    working_directory: accepted.cwd.as_bytes(),
+                    hostname: accepted.hostname.as_bytes(),
+                    groups: &accepted.groups,
+                    backend: None,
+                    standard,
+                    ceiling: None,
+                    execution: wcontainers_kernel::ExecutionConfig::default(),
+                },
+            )
+            .expect("the kernel runs a process serially with exact replay");
         outside.started(&mut kernel, &mut cpu);
         Ok(Container {
             kernel,

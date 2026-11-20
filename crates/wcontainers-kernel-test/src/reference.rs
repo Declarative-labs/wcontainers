@@ -260,7 +260,7 @@ pub(crate) const EXPECT_PATIENCE: std::time::Duration = std::time::Duration::fro
 /// How often the reference looks again for output a script expects.
 pub(crate) const EXPECT_LOOK: std::time::Duration = std::time::Duration::from_millis(5);
 
-/// How long a slow outside pauses after each piece of output it takes.
+/// How long a slow client pauses after each piece of output it takes.
 const SLOW_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// The most a reader of the client's output takes at once.
@@ -270,14 +270,14 @@ const READ_CHUNK: usize = 1 << 16;
 type Shown = std::sync::Arc<std::sync::Mutex<(Vec<u8>, Vec<u8>)>>;
 
 /// Runs `command` (a path in the image, or under `/wc`, where `directory` is mounted read-only) as
-/// the first process of a default container whose standard streams have the outside given: `-i`
+/// the first process of a default container whose standard streams have the client given: `-i`
 /// for input, `-t` for a terminal (with input, the client on a pseudo-terminal of that size), and
 /// its script followed as on our kernel. A script may not close the output: Docker's daemon reads a
 /// container's output for its log whatever the client does.
-pub fn run_outside(
+pub fn run_with_client(
     directory: &Path,
     command: &[&str],
-    outside: &crate::streams::Outside,
+    stream_client: &crate::streams::StreamClient,
 ) -> Outcome {
     use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -300,15 +300,15 @@ pub fn run_outside(
         .args([docker::HOSTNAME_OPTION, HOSTNAME])
         .arg(docker::VOLUME_OPTION)
         .arg(guest_volume(&directory));
-    if outside.input {
+    if stream_client.input {
         client.arg(docker::INTERACTIVE);
     }
-    if outside.terminal.is_some() {
+    if stream_client.terminal.is_some() {
         client.arg(docker::TERMINAL);
     }
     client.arg(IMAGE).args(command);
     let shown: Shown = Default::default();
-    let pace = outside.output_pace.map(|pace| pace as usize);
+    let pace = stream_client.output_pace.map(|pace| pace as usize);
     let reader = |mut from: std::fs::File, error: bool, pace: Option<usize>| {
         let shown = shown.clone();
         std::thread::spawn(move || {
@@ -334,90 +334,91 @@ pub fn run_outside(
     let mut master: Option<std::fs::File> = None;
     let mut input: Option<std::sync::mpsc::Sender<Vec<u8>>> = None;
     let mut threads = Vec::new();
-    let mut child = if let (Some((columns, rows)), true) = (outside.terminal, outside.input) {
-        let mut master_fd = libc::c_int::default();
-        let mut slave_fd = libc::c_int::default();
-        let mut size = libc::winsize {
-            ws_row: rows,
-            ws_col: columns,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: openpty fills the two descriptors; the slave is made raw so the client's
-        // terminal passes bytes unchanged both ways, as the client itself sets it.
-        let (master_file, slave) = unsafe {
-            assert_eq!(
-                libc::openpty(
-                    &mut master_fd,
-                    &mut slave_fd,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    // A raw pointer: macOS's openpty takes it mutable, Linux's constant.
-                    &raw mut size
-                ),
-                0,
-                "openpty"
-            );
-            let mut settings: libc::termios = std::mem::zeroed();
-            assert_eq!(libc::tcgetattr(slave_fd, &mut settings), 0, "tcgetattr");
-            libc::cfmakeraw(&mut settings);
-            assert_eq!(
-                libc::tcsetattr(slave_fd, libc::TCSANOW, &settings),
-                0,
-                "tcsetattr"
-            );
-            (
-                std::fs::File::from_raw_fd(master_fd),
-                OwnedFd::from_raw_fd(slave_fd),
-            )
-        };
-        let child = client
-            .stdin(Stdio::from(slave.try_clone().expect("slave")))
-            .stdout(Stdio::from(slave.try_clone().expect("slave")))
-            .stderr(Stdio::from(slave))
-            .spawn()
-            .expect("running docker");
-        // The command holds the slave's copies until it goes; the master reads EIO only once
-        // every copy is closed.
-        drop(client);
-        threads.push(reader(
-            master_file.try_clone().expect("master"),
-            false,
-            pace,
-        ));
-        master = Some(master_file);
-        child
-    } else {
-        let mut child = client
-            .stdin(if outside.input {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("running docker");
-        let stdout = std::fs::File::from(OwnedFd::from(child.stdout.take().expect("stdout")));
-        let stderr = std::fs::File::from(OwnedFd::from(child.stderr.take().expect("stderr")));
-        threads.push(reader(stdout, false, pace));
-        threads.push(reader(stderr, true, None));
-        if let Some(mut stdin) = child.stdin.take() {
-            let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
-            input = Some(sender);
-            std::thread::spawn(move || {
-                for bytes in receiver {
-                    // A container that closed its input leaves the rest unread.
-                    if stdin.write_all(&bytes).is_err() {
-                        break;
+    let mut child =
+        if let (Some((columns, rows)), true) = (stream_client.terminal, stream_client.input) {
+            let mut master_fd = libc::c_int::default();
+            let mut slave_fd = libc::c_int::default();
+            let mut size = libc::winsize {
+                ws_row: rows,
+                ws_col: columns,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            // SAFETY: openpty fills the two descriptors; the slave is made raw so the client's
+            // terminal passes bytes unchanged both ways, as the client itself sets it.
+            let (master_file, slave) = unsafe {
+                assert_eq!(
+                    libc::openpty(
+                        &mut master_fd,
+                        &mut slave_fd,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        // Linux takes the size as a constant pointer, macOS as a mutable one.
+                        &raw mut size
+                    ),
+                    0,
+                    "openpty"
+                );
+                let mut settings: libc::termios = std::mem::zeroed();
+                assert_eq!(libc::tcgetattr(slave_fd, &mut settings), 0, "tcgetattr");
+                libc::cfmakeraw(&mut settings);
+                assert_eq!(
+                    libc::tcsetattr(slave_fd, libc::TCSANOW, &settings),
+                    0,
+                    "tcsetattr"
+                );
+                (
+                    std::fs::File::from_raw_fd(master_fd),
+                    OwnedFd::from_raw_fd(slave_fd),
+                )
+            };
+            let child = client
+                .stdin(Stdio::from(slave.try_clone().expect("slave")))
+                .stdout(Stdio::from(slave.try_clone().expect("slave")))
+                .stderr(Stdio::from(slave))
+                .spawn()
+                .expect("running docker");
+            // The command holds the slave's copies until it goes; the master reads EIO only once
+            // every copy is closed.
+            drop(client);
+            threads.push(reader(
+                master_file.try_clone().expect("master"),
+                false,
+                pace,
+            ));
+            master = Some(master_file);
+            child
+        } else {
+            let mut child = client
+                .stdin(if stream_client.input {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("running docker");
+            let stdout = std::fs::File::from(OwnedFd::from(child.stdout.take().expect("stdout")));
+            let stderr = std::fs::File::from(OwnedFd::from(child.stderr.take().expect("stderr")));
+            threads.push(reader(stdout, false, pace));
+            threads.push(reader(stderr, true, None));
+            if let Some(mut stdin) = child.stdin.take() {
+                let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+                input = Some(sender);
+                std::thread::spawn(move || {
+                    for bytes in receiver {
+                        // A container that closed its input leaves the rest unread.
+                        if stdin.write_all(&bytes).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
-        }
-        child
-    };
+                });
+            }
+            child
+        };
     let mut found = crate::streams::Found::default();
-    for step in &outside.script {
+    for step in &stream_client.script {
         match step {
             Step::Expect(bytes) => {
                 let started = std::time::Instant::now();
@@ -471,10 +472,11 @@ pub fn run_outside(
                 assert!(master.is_none(), "the reference's terminal is not closed");
                 input = None;
             }
-            Step::CloseOutput => panic!("Docker reads the output for its log; see run_outside"),
+            Step::CloseOutput => panic!("Docker reads the output for its log; see run_with_client"),
             Step::ChangeServed { .. } => {
                 panic!("only a run with a backend changes its files; see backend::reference_run")
             }
+            Step::Credit { .. } => panic!("Docker's client gives no credit"),
         }
     }
     let status = child.wait().expect("docker ran");

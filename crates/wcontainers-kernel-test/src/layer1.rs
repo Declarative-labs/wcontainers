@@ -12,7 +12,7 @@ use linux_raw_sys::general as linux;
 use linux_raw_sys::ioctl;
 use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
-use wcontainers_abi::{Event, Exit, Next, Syscall};
+use wcontainers_abi::{Event, Exit, Next, SystemCallRequest};
 use wcontainers_kernel::{Kernel, Start};
 
 /// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
@@ -4539,9 +4539,13 @@ fn run_ours_on(
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
         backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
-        standard: crate::streams::Outside::default().standard(),
+        standard: crate::streams::StreamClient::default().standard(),
+        ceiling: None,
+        execution: wcontainers_kernel::ExecutionConfig::default(),
     };
-    kernel.start(&mut cpu, &host, &start);
+    kernel
+        .start(&mut cpu, &host, &start)
+        .expect("the kernel runs a process serially with exact replay");
     crate::streams::begin(&mut kernel, &mut cpu, &mut host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);
@@ -4569,7 +4573,7 @@ fn run_ours_on(
         kernel.exit(
             cpu,
             host,
-            Exit::Syscall(Syscall {
+            Exit::Syscall(SystemCallRequest {
                 number: call.number.into(),
                 arguments: call.arguments,
             }),
@@ -4586,7 +4590,7 @@ fn run_ours_on(
                     kernel.exit(
                         cpu,
                         host,
-                        Exit::Syscall(Syscall {
+                        Exit::Syscall(SystemCallRequest {
                             number: linux::__NR_exit_group.into(),
                             arguments: [CHILD_STATUS, 0, 0, 0, 0, 0],
                         }),

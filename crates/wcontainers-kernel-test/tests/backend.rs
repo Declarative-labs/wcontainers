@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_kernel_test::streams::{Outside, Step};
+use wcontainers_kernel_test::streams::{Step, StreamClient};
 use wcontainers_kernel_test::{backend, driver, guest, image, reference};
 
 /// Where both mount the backend, and where the program starts.
@@ -51,11 +51,11 @@ fn same_on_outside(
             root_image: None,
             address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
         };
-        let outside = Outside {
+        let client = StreamClient {
             script: script.clone(),
             ..Default::default()
         };
-        let ours = driver::run_outside(&container, outside, seed, injections)
+        let ours = driver::run_with_client(&container, client, seed, injections)
             .expect("an outcome on our kernel");
         let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();

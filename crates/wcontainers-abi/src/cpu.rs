@@ -96,3 +96,16 @@ pub trait Cpu {
     /// Replace a thread's registers. The thread must next be run with [`crate::Resume::FromRegisters`].
     fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock);
 }
+
+/// An executor that can give one thread narrower page permissions than its memory's, so that a
+/// watch can hold one thread and not its siblings.
+pub trait PerThreadWatch: Cpu {
+    /// What a range allows for one thread from now on, within what its memory allows.
+    fn set_thread_permissions(
+        &mut self,
+        thread: ThreadId,
+        address: u64,
+        length: u64,
+        permissions: Permissions,
+    ) -> Result<(), CpuError>;
+}

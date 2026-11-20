@@ -11,7 +11,7 @@ pub struct ConnectionId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BackendRequestId(pub u64);
 
-/// One end of a byte stream between the kernel and the outside: a handle local to one kernel,
+/// One end of a byte stream between the kernel and the embedder: a handle local to one kernel,
 /// whose other side the embedder holds. Each direction carries data, credit and closing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct End(pub u32);
@@ -84,7 +84,7 @@ pub enum Event<'a> {
     StreamData { end: End, bytes: &'a [u8] },
     /// The kernel may send this many more bytes on an end.
     StreamCredit { end: End, bytes: u64 },
-    /// The outside has let go of an end: it sends and takes nothing more on it.
+    /// The embedder has let go of an end: it sends and takes nothing more on it.
     StreamClosed { end: End },
     /// A terminal end's terminal changed size.
     TerminalResized { end: End, columns: u16, rows: u16 },
@@ -106,12 +106,12 @@ pub trait Host: Sync {
     /// request is one FUSE defines as having no reply.
     fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 
-    /// Bytes out of an end, never more than the credit the outside gave on it.
-    fn stream_send(&self, end: End, bytes: &[u8]);
-    /// The outside may send this many more bytes on an end (added to what it may send already).
-    fn stream_credit(&self, end: End, bytes: u64);
-    /// The kernel sends nothing more on an end, data or credit; the outside frees it by closing it.
-    fn stream_close(&self, end: End);
+    /// Bytes out of an end, never more than the credit the embedder gave on it.
+    fn send_stream(&self, end: End, bytes: &[u8]);
+    /// The embedder may send this many more bytes on an end (added to what it may send already).
+    fn credit_stream(&self, end: End, bytes: u64);
+    /// The kernel sends nothing more on an end, data or credit; the embedder frees it by closing it.
+    fn close_stream(&self, end: End);
 
     /// Start connecting to an outside address (4 or 16 bytes) and port. The result arrives as
     /// [`Event::Connected`]. `stream` is true for TCP and false for UDP. A UDP connection may be

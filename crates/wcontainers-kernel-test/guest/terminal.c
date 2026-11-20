@@ -104,7 +104,7 @@ static int resize(int columns, int rows) {
 static void show_read(void) {
     char buffer[128];
     ssize_t count = read(0, buffer, sizeof buffer);
-    // One write, so the line is whole when the outside sees it.
+    // One write, so the line is whole when the client sees it.
     char line[512];
     int length = snprintf(line, sizeof line, "read %zd:", count);
     for (ssize_t i = 0; i < count; i++)

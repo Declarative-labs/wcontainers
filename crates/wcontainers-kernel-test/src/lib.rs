@@ -6,6 +6,7 @@ pub mod busybox;
 pub mod driver;
 pub mod generate;
 pub mod guest;
+pub mod hooks;
 pub mod image;
 pub mod layer1;
 pub mod libctest;
@@ -235,16 +236,16 @@ fn same_output_seeded(
 }
 
 /// Runs `command` (the guest program `program` built into `out` and run from `/wc`, or else a
-/// command of the image) with the outside given, in the reference once and on our kernel under
+/// command of the image) with the client given, in the reference once and on our kernel under
 /// every seed of [`schedule_seeds`]; checks that both give the same, that the kernel kept the credit
 /// rules and closed its output ends; returns our runs.
 pub fn assert_same_streams(
     out: &Path,
     program: Option<&str>,
     command: &[&str],
-    outside: &streams::Outside,
+    client: &streams::StreamClient,
 ) -> Vec<driver::Run> {
-    assert_same_streams_on(out, program, command, outside, None)
+    assert_same_streams_on(out, program, command, client, None)
 }
 
 /// As [`assert_same_streams`], with the file backend mounted at `backend` (`/` for the root).
@@ -252,7 +253,7 @@ pub fn assert_same_streams_on(
     out: &Path,
     program: Option<&str>,
     command: &[&str],
-    outside: &streams::Outside,
+    client: &streams::StreamClient,
     backend: Option<&str>,
 ) -> Vec<driver::Run> {
     let mut all: Vec<String> = command.iter().map(|part| part.to_string()).collect();
@@ -271,7 +272,7 @@ pub fn assert_same_streams_on(
         }
     };
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
-    let theirs = reference::run_outside(&directory, &all, outside);
+    let theirs = reference::run_with_client(&directory, &all, client);
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(&directory, guest_directory_entry()));
     // The image's commands are found on its PATH, as the reference's are.
@@ -279,7 +280,7 @@ pub fn assert_same_streams_on(
         Some(_) => all[0].to_string(),
         None => image_command(all[0]),
     };
-    let environment = streams_environment(outside);
+    let environment = streams_environment(client);
     let container = driver::Container {
         files: &files,
         path: &path,
@@ -294,9 +295,9 @@ pub fn assert_same_streams_on(
     };
     let mut runs = Vec::new();
     for seed in schedule_seeds() {
-        let ours = driver::run_outside(
+        let ours = driver::run_with_client(
             &container,
-            outside.clone(),
+            client.clone(),
             seed,
             driver::Injections::default(),
         )
@@ -331,11 +332,11 @@ pub fn image_command(name: &str) -> String {
         .into_owned()
 }
 
-/// The environment a container with the outside given starts with, as `docker run` gives it.
-pub fn streams_environment(outside: &streams::Outside) -> Vec<&'static str> {
+/// The environment a container with the client given starts with, as `docker run` gives it.
+pub fn streams_environment(client: &streams::StreamClient) -> Vec<&'static str> {
     let mut environment = reference::ENVIRONMENT.to_vec();
     // Docker puts it before HOME, the last.
-    if outside.terminal.is_some() {
+    if client.terminal.is_some() {
         environment.insert(environment.len() - 1, reference::TERMINAL_VARIABLE);
     }
     environment

@@ -32,6 +32,7 @@ mod seccomp;
 mod shared;
 mod signal;
 mod syscall;
+mod system;
 mod task;
 mod tty;
 mod user;
@@ -41,7 +42,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Host, Next};
+use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Next};
 
 pub use container::{
     Attributes, DEVPTS_PATH, DOCKER_UMASK, EXIT_NOT_FOUND, EXIT_NOT_RUNNABLE, EXIT_START_FAILED,
@@ -53,15 +54,19 @@ pub use ends::Standard;
 pub use errno::Errno;
 pub use process::DOCKER_LIMITS;
 pub use syscall::tty::PTMX_PATH;
+pub use system::{
+    AccessKind, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism, System,
+    SystemCallResponse, TaskId, ThreadOrdering, Unsupported, WatchesFor, task_id_after,
+};
 
 use counters::Counters;
 use fs::{FileSystem, Node, Numbers, Time};
-use process::{Pid, Process, Thread, Tid};
+use process::{Pid, Thread, Tid};
 
 /// What a call into the kernel may use besides the kernel's own state.
 pub(crate) struct Context<'a> {
     pub cpu: &'a mut dyn Cpu,
-    pub host: &'a dyn Host,
+    pub host: &'a dyn System,
     /// What is added to the host's monotonic clock to give the kernel's (see
     /// [`Kernel::restore`]).
     monotonic_offset: u64,
@@ -150,7 +155,7 @@ pub(crate) struct Files {
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
 pub struct Kernel {
-    processes: BTreeMap<Pid, Process>,
+    processes: BTreeMap<Pid, process::Process>,
     threads: BTreeMap<Tid, Thread>,
     /// Threads that can run and are not the current one.
     run_queue: schedule::RunQueue,
@@ -179,6 +184,12 @@ pub struct Kernel {
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
     signalled: VecDeque<Tid>,
+    /// Processes sent a fatal signal while their memory is watched, with the signal: their
+    /// threads end of it on their way back to the program, once the kernel's stores at the end
+    /// have met the watches (`SIGNAL_GROUP_EXIT`).
+    dying: BTreeMap<Pid, u32>,
+    /// What the kernel wrote into processes' memory and has not yet told the embedder.
+    kernel_writes: core::cell::RefCell<Vec<system::KernelWrite>>,
     /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
     /// host whose clock reads differently.
     monotonic_offset: u64,
@@ -194,6 +205,22 @@ pub struct Kernel {
     picked_runtime: u64,
     /// The last process or thread number handed out. Both share one space, as in Linux.
     last_id: i32,
+    /// The highest address the executor can give a process now (at most the address space's end).
+    ceiling: u64,
+    /// Some process has watched pages or a record of written pages: a call, a signal or a fault
+    /// then looks at its own process's.
+    watching: bool,
+    /// How many times any page's watch was raised (set, or widened to `All`): a walk over what a
+    /// call will touch starts again when this moves under it.
+    watches_raised: u64,
+    /// The embedder's watches changed outside a call into the kernel and woke threads, which the
+    /// kernel settles before anything runs.
+    unsettled: bool,
+    /// Numbers that may no longer be carried, given back to the embedder when the kernel settles.
+    ids_let_go: Vec<i32>,
+    /// The length a placement asked for that found no room below the ceiling, shared with every
+    /// address map.
+    outgrown: Rc<core::cell::Cell<Option<u64>>>,
     /// The container's first process; when it ends the container ends.
     init: Option<Pid>,
     /// The first process's wait status once it has ended.
@@ -228,7 +255,7 @@ pub struct Kernel {
     poll_watches: syscall::epoll::Watches,
     /// The names local sockets are bound to.
     sockets: syscall::socket::Names,
-    /// The byte streams to the outside.
+    /// The byte streams to the embedder.
     ends: ends::Ends,
     machine: Machine,
     hostname: Vec<u8>,
@@ -279,12 +306,20 @@ impl Kernel {
             aio_polls_due: false,
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
+            dying: BTreeMap::new(),
+            kernel_writes: Default::default(),
             monotonic_offset: 0,
             wall_offset: 0,
             entry_now: 0,
             last_now: 0,
             picked_runtime: 0,
             last_id: 0,
+            ceiling: 0,
+            watching: false,
+            watches_raised: 0,
+            unsettled: false,
+            ids_let_go: Vec::new(),
+            outgrown: Rc::default(),
             init: None,
             finished: None,
             starting: None,
@@ -362,11 +397,17 @@ impl Kernel {
         if let Some(status) = self.finished {
             return Next::Finished { status };
         }
+        // Come back at once ([`Event::Timer`]), so the woken threads are settled first.
+        if self.unsettled {
+            return Next::Idle {
+                until_nanoseconds: Some(0),
+            };
+        }
         self.pick()
     }
 
     /// The thread from the last [`Next::Run`] has come back.
-    pub fn exit(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, exit: Exit) {
+    pub fn exit(&mut self, cpu: &mut dyn Cpu, host: &dyn System, exit: Exit) {
         let tid = self
             .running
             .take()
@@ -402,7 +443,7 @@ impl Kernel {
     }
 
     /// Something happened outside.
-    pub fn event(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, event: Event<'_>) {
+    pub fn event(&mut self, cpu: &mut dyn Cpu, host: &dyn System, event: Event<'_>) {
         let mut cx = Context {
             cpu,
             host,
@@ -453,7 +494,7 @@ impl Kernel {
             }
             Event::StreamCredit { end, bytes } => {
                 self.entry_now = cx.monotonic();
-                self.stream_credit(&mut cx, end, bytes);
+                self.credit_stream(&mut cx, end, bytes);
                 self.settle(&mut cx);
                 return;
             }
@@ -478,7 +519,7 @@ impl Kernel {
     /// Sends a signal to the container's first process from outside the container, as `docker
     /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
     /// other signals with no handler from that process.
-    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, signal: u32) {
+    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &dyn System, signal: u32) {
         assert!(self.running.is_none(), "a signal sent while a thread runs");
         let mut cx = Context {
             cpu,
@@ -503,7 +544,7 @@ impl Kernel {
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
     /// again from its saved registers, and every parked call runs again, its deadline on the clock
     /// it had.
-    pub fn restore(&mut self, cpu: &mut dyn Cpu, host: &dyn Host) {
+    pub fn restore(&mut self, cpu: &mut dyn Cpu, host: &dyn System) {
         assert!(self.running.is_none(), "restored while a thread runs");
         self.monotonic_offset = self.last_now.wrapping_sub(host.monotonic_nanoseconds());
         let mut cx = Context {
@@ -590,34 +631,64 @@ impl Kernel {
         fs::proc::task_credentials(&self.processes, &self.threads, pid)
     }
 
-    /// The next free process and thread number, wrapping at `pid_max` past the low numbers
-    /// (`alloc_pid`'s `RESERVED_PIDS`).
-    fn allocate_id(&mut self) -> i32 {
-        loop {
-            self.last_id += 1;
-            if self.last_id >= PID_MAX {
-                self.last_id = RESERVED_PIDS;
+    /// A free process and thread number from the embedder's task ids, skipping any still carried
+    /// as Linux's `alloc_pid` does (counted); EAGAIN for a number out of range, or once every
+    /// number has been tried.
+    fn allocate_id(&mut self, cx: &mut Context<'_>) -> Result<i32, Errno> {
+        for _ in RESERVED_PIDS..PID_MAX {
+            let id = cx.host.allocate_task_id(TaskId::of(self.last_id)).pid();
+            if !(1..PID_MAX).contains(&id) {
+                self.counters
+                    .count(cx.host, reason::TASK_ID_OUT_OF_RANGE, id as u32 as u64);
+                return Err(Errno::EAGAIN);
             }
-            let taken = self.processes.contains_key(&self.last_id)
-                || self.threads.contains_key(&self.last_id)
-                || self.processes.values().any(|process| {
-                    process.group == self.last_id || process.session == self.last_id
-                });
-            if !taken {
-                return self.last_id;
+            self.last_id = id;
+            if !self.carried(id) {
+                return Ok(id);
+            }
+            self.counters
+                .count(cx.host, reason::TASK_ID_CARRIED, id as u64);
+        }
+        Err(Errno::EAGAIN)
+    }
+
+    /// Whether a process, thread, process group or session carries a number.
+    fn carried(&self, id: i32) -> bool {
+        self.processes.contains_key(&id)
+            || self.threads.contains_key(&id)
+            || self
+                .processes
+                .values()
+                .any(|process| process.group == id || process.session == id)
+    }
+
+    /// Gives back to the embedder the numbers let go of that nothing carries any more.
+    pub(crate) fn release_ids(&mut self, cx: &mut Context<'_>) {
+        let mut ids = core::mem::take(&mut self.ids_let_go);
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            if self.finished.is_some() || !self.carried(id) {
+                cx.host.free_task_id(TaskId::of(id));
             }
         }
+    }
+
+    /// Notes the numbers a process carried, which may be let go of with it.
+    pub(crate) fn let_go_of_ids(&mut self, process: &process::Process) {
+        self.ids_let_go
+            .extend([process.pid, process.group, process.session]);
     }
 
     pub(crate) fn thread_mut(&mut self, tid: Tid) -> &mut Thread {
         self.threads.get_mut(&tid).expect("thread exists")
     }
 
-    pub(crate) fn process_of(&self, tid: Tid) -> &Process {
+    pub(crate) fn process_of(&self, tid: Tid) -> &process::Process {
         &self.processes[&self.threads[&tid].process]
     }
 
-    pub(crate) fn process_of_mut(&mut self, tid: Tid) -> &mut Process {
+    pub(crate) fn process_of_mut(&mut self, tid: Tid) -> &mut process::Process {
         let pid = self.threads[&tid].process;
         self.processes.get_mut(&pid).expect("process exists")
     }
@@ -754,8 +825,8 @@ impl Kernel {
 
 /// The largest process number plus one (`pid_max`'s default of `PID_MAX_DEFAULT`, which
 /// `/proc/sys/kernel/pid_max` reports), and the numbers skipped when they wrap.
-const PID_MAX: i32 = 4_194_304;
-const RESERVED_PIDS: i32 = 300;
+pub(crate) const PID_MAX: i32 = 4_194_304;
+pub(crate) const RESERVED_PIDS: i32 = 300;
 
 /// One ARM64 Linux system call and whether the kernel has built it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

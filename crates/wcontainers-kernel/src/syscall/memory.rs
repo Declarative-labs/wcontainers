@@ -13,6 +13,7 @@ use crate::linux::general::*;
 use crate::linux_extra::LEGACY_MAP_MASK;
 use crate::memory::{Backing, Lock, Mapping, page_align, page_down, page_up};
 use crate::process::Tid;
+use crate::system::AccessKind;
 use crate::{Context, Errno, Kernel, errno};
 
 /// What a protection argument allows. `mprotect` refuses bits ARM64 does not have; `mmap` ignores them.
@@ -58,13 +59,15 @@ pub(super) fn brk(
         map.brk = address;
         return Ok(address);
     }
-    // Growing: the new part must not touch the next mapping, nor a stack's guard gap.
+    // Growing past the ceiling is outgrowing it, whatever lies in the way (the stack sits just
+    // below the ceiling). Otherwise the new part must not touch the next mapping, nor a stack's
+    // guard gap.
+    if new_end > map.end || map.crosses_ceiling(new_end, new_end - old_end) {
+        return Ok(old);
+    }
     if let Some(next) = map.next_after(old_end)
         && next.start_gap() < new_end
     {
-        return Ok(old);
-    }
-    if new_end > map.end {
         return Ok(old);
     }
     // Linux's `check_data_rlimit` on the heap and the program's data, then `may_expand_vm` on the
@@ -211,13 +214,16 @@ pub(super) fn do_mmap(
         if address < LOWEST_ADDRESS {
             return Err(Errno::EPERM);
         }
+        if map.crosses_ceiling(address + length, length) {
+            return Err(Errno::ENOMEM);
+        }
         address
     } else {
         let hint = page_down(address);
         let hint_fits = hint >= LOWEST_ADDRESS
             && hint
                 .checked_add(length)
-                .is_some_and(|end| end <= map.end && map.free_for_placement(hint, end));
+                .is_some_and(|end| end <= map.ceiling && map.free_for_placement(hint, end));
         if hint != 0 && hint_fits {
             hint
         } else {
@@ -932,7 +938,11 @@ pub(super) fn madvise(
     // anonymous memory. Linux's `madvise_remove`, mapping by mapping.
     if advice == MADV_REMOVE {
         let mut at = address;
-        while let Some(mapping) = process.map.borrow().next_after(at).cloned() {
+        loop {
+            let next = process.map.borrow().next_after(at).cloned();
+            let Some(mapping) = next else {
+                break;
+            };
             if mapping.start >= end {
                 break;
             }
@@ -969,6 +979,12 @@ pub(super) fn madvise(
                 }
                 _ => return Err(Errno::EINVAL),
             }
+            process.map.borrow_mut().note_written(
+                cx.cpu,
+                process.memory,
+                mapping.start.max(at),
+                mapping.end.min(end),
+            );
             at = mapping.end;
         }
         if !process.map.borrow().fully_mapped(address, end) {
@@ -1261,7 +1277,7 @@ fn remap_at(
     // Grow in place when the range is the end of its mapping and the space after is free.
     let old_end = old + old_length;
     let grown_end = old.saturating_add(new_length);
-    if mapping.end == old_end && grown_end <= map.end && !map.any_mapped(old_end, grown_end) {
+    if mapping.end == old_end && grown_end <= map.ceiling && !map.any_mapped(old_end, grown_end) {
         let mut extra = mapping.cut_public(old_end, grown_end);
         if let Backing::File { file_end, .. } = &mut extra.backing {
             *file_end = (*file_end).min(grown_end).max(old_end);
@@ -1290,6 +1306,13 @@ fn remap_to(
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
     let mut map = process.map.borrow_mut();
+    // Outgrowing the ceiling is decided before anything is unmapped.
+    if request.flags & MREMAP_FIXED != 0
+        && request.new_address + request.new_length <= map.end
+        && map.crosses_ceiling(request.new_address + request.new_length, request.new_length)
+    {
+        return Err(Errno::ENOMEM);
+    }
     if request.flags & MREMAP_FIXED != 0 {
         let end = (request.new_address + request.new_length).min(map.end);
         if request.new_address < end {
@@ -1326,7 +1349,7 @@ fn remap_to(
         // The address is a hint, taken when the space there is free.
         let hint = request.new_address;
         if hint >= LOWEST_ADDRESS
-            && hint + request.new_length <= map.end
+            && hint + request.new_length <= map.ceiling
             && !map.any_mapped(hint, hint + request.new_length)
         {
             hint
@@ -1417,6 +1440,9 @@ fn move_range(
     cx.cpu
         .read(memory, old, &mut bytes)
         .map_err(errno::from_cpu)?;
+    // The embedder's watches go with the pages, which are new where they land.
+    let moved_length = old_length.min(new_length);
+    let watches = map.take_watches(old, old + moved_length);
     let mut moved = mapping.cut_public(old, old + new_length);
     let shift = |address: u64| address - old + destination;
     moved.start = destination;
@@ -1444,6 +1470,13 @@ fn move_range(
                 .map_err(errno::from_cpu)?;
         }
     }
+    map.moved_here(
+        cx.cpu,
+        memory,
+        destination,
+        destination + moved_length,
+        watches,
+    );
     drop(map);
     crate::shared::show(kernel, cx, memory, &moved)?;
     crate::shared::release(kernel, cx);
@@ -1464,12 +1497,14 @@ fn drop_pages(
         return Ok(());
     }
     match &mapping.backing {
-        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to),
+        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to)?,
         _ => cx
             .cpu
             .zero(memory, from, to - from)
-            .map_err(errno::from_cpu),
+            .map_err(errno::from_cpu)?,
     }
+    map.note_written(cx.cpu, memory, from, to);
+    Ok(())
 }
 
 pub(super) fn msync(
@@ -1856,6 +1891,11 @@ fn process_vm(
     let mut local = local.into_iter().filter(|(_, length)| *length > 0);
     let mut current = local.next();
     let mut copied = 0;
+    let remote_access = if write {
+        AccessKind::Write
+    } else {
+        AccessKind::Read
+    };
     for (base, length) in targets {
         if remaining == 0 {
             break;
@@ -1864,10 +1904,13 @@ fn process_vm(
             continue;
         }
         let wanted = length.min(remaining);
-        let reach = kernel.processes[&remote]
-            .map
-            .borrow()
-            .pinnable(base, wanted, write);
+        // The other side's watches are met as a call's own copies meet them.
+        let reach = {
+            let mut map = kernel.processes[&remote].map.borrow_mut();
+            let pinnable = map.pinnable(base, wanted, write);
+            map.watches
+                .copy_reach(base, wanted, pinnable, remote_access)
+        };
         // Linux copies a page of the other side at a time, into as many local segments as it takes.
         let mut at = base;
         while at < base + reach {
@@ -1890,8 +1933,8 @@ fn process_vm(
             if remote == local_process {
                 super::guest(kernel, cx, tid).copy_within(from.1, to.1, moved)?;
             } else {
-                let bytes = process_guest(kernel, cx, from.0).read(from.1, moved)?;
-                process_guest(kernel, cx, to.0).write(to.1, &bytes)?;
+                let bytes = process_guest(kernel, cx, from.0, tid).read(from.1, moved)?;
+                process_guest(kernel, cx, to.0, tid).write(to.1, &bytes)?;
             }
             copied += moved;
             remaining -= moved;
@@ -1954,9 +1997,9 @@ pub(super) fn proc_mem(
                 result = Err(Errno::EFAULT);
                 break;
             };
-            process_guest(kernel, cx, pid).forced_write(address, &bytes)
+            process_guest(kernel, cx, pid, tid).forced_write(address, &bytes)
         } else {
-            let bytes = process_guest(kernel, cx, pid).forced_read(address, length);
+            let bytes = process_guest(kernel, cx, pid, tid).forced_read(address, length);
             if !bytes.is_empty()
                 && super::guest(kernel, cx, tid)
                     .write(buffer + copied, &bytes)
@@ -1982,11 +2025,12 @@ pub(super) fn proc_mem(
     result.map(|()| copied)
 }
 
-/// A process's memory, as another process's call reaches it.
+/// A process's memory, as another process's call (by `tid`) reaches it.
 fn process_guest<'a>(
     kernel: &'a mut Kernel,
     cx: &'a mut Context<'_>,
     pid: crate::process::Pid,
+    tid: Tid,
 ) -> crate::user::Guest<'a> {
     let process = &kernel.processes[&pid];
     crate::user::Guest {
@@ -1995,6 +2039,9 @@ fn process_guest<'a>(
         map: &process.map,
         limits: &process.limits,
         may_lock_any: false,
+        pid,
+        tid,
+        written: &kernel.kernel_writes,
     }
 }
 

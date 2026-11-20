@@ -22,7 +22,7 @@ use wasmtime::{
 };
 use wcontainers_abi::{
     Access, AddressSpace, CounterReading, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
-    RegisterBlock, Resume, SharedId, Syscall, ThreadId, Warning,
+    RegisterBlock, Resume, SharedId, SystemCallRequest, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_runtime::{
@@ -1696,7 +1696,7 @@ fn syscall<G>(caller: &mut Caller<'_, Data<G>>, number: i64, arguments: [i64; 6]
 where
     G: Guest<Block = RegisterBlock>,
 {
-    let call = Syscall {
+    let call = SystemCallRequest {
         number: number as u64,
         arguments: arguments.map(|a| a as u64),
     };

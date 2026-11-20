@@ -6,7 +6,7 @@ use core::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
+use wcontainers_abi::{Cpu, Exit, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel::{Kernel, Standard};
 
 mod container;
@@ -142,8 +142,9 @@ pub trait Execution: Cpu + Sized {
     fn restored(&self) -> Self;
 }
 
-/// What surrounds the kernel: its [`Host`], and what the loop asks between turns.
-pub trait Outside: Host {
+/// What surrounds the kernel: its [`wcontainers_kernel::System`], and what the loop asks between
+/// turns.
+pub trait Outside: wcontainers_kernel::System {
     /// What a run ended by the outside gives back.
     type End;
     /// The first process's descriptors 0 to 2, whose other sides this outside holds.

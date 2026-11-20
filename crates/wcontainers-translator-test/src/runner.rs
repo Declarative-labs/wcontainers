@@ -11,7 +11,7 @@ use wasmtime::{
     SharedMemory, Store, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{
-    Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET, Syscall,
+    Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET, SystemCallRequest,
     Warning,
 };
 use wcontainers_arm64::Arm64;
@@ -846,7 +846,7 @@ fn hooks(linker: &mut Linker<Host>) {
              a4: i64,
              a5: i64|
              -> i64 {
-                let call = Syscall {
+                let call = SystemCallRequest {
                     number: number as u64,
                     arguments: [a0, a1, a2, a3, a4, a5].map(|a| a as u64),
                 };
@@ -1361,7 +1361,7 @@ fn file(host: &mut Host, fd: u64) -> Option<&mut Vec<u8>> {
 }
 
 /// The stand-in kernel.
-fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
+fn stand_in(caller: &mut Caller<'_, Host>, call: SystemCallRequest) -> i64 {
     const EBADF: i64 = 9;
     const EFAULT: i64 = 14;
     const ENOSYS: i64 = 38;
