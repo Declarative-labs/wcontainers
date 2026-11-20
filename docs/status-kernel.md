@@ -4,6 +4,13 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## For the orchestrator
 
+- Twentieth run (15:07 to about 15:20 UTC on the 20th): Docker Desktop on the Mac again starts
+  no container. Every container made since 14:12 UTC stays "Created" (this track's probes of
+  14:31 and 15:08 were removed; seven of other tracks are left). The ARM64 machine is up. So the
+  Mac's part of the bar (scratch kernel/k6c19/mac5.sh) cannot run, and the run stopped early as
+  the brief says. Two jobs of the nineteenth run go on on the ARM64 machine (K6c, nineteenth and
+  twentieth runs): the whole suite at e300fadf and the whole LTP comparison at 000f95e8.
+
 - Eighteenth run (13:30 to about 14:10 UTC on the 20th): the ARM64 machine (3.134.104.48) still
   could not be reached (arm-run 125) and Docker Desktop on the Mac still started no container (a
   probe stayed "Created" for two minutes; 54 others were stuck, none named for this run; the
@@ -27,25 +34,20 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   track's new containers stayed "Created" (45 at 12:54). No reference and no LTP could run.
   Both were still so at 13:10 UTC, when the run stopped.
 
-- The literal check fails on this branch since the fifteenth run's merge of origin/phase-1, with
-  one finding only: "literals.baseline was started more than once, by 68214b2eec10, da21d326f277".
-  da21d326 is the streams track's own start of the baseline ("took the literal check from
-  phase-1-literals at 7668c010 and started the streams baseline"), which origin/phase-1 carries;
-  this branch's baseline started from phase-1-literals' 68214b2e. No change in the tree can settle
-  it and history is not rewritten here: it needs the literals track's or the orchestrator's ruling.
-  Every other finding is settled (the baseline went from 8487 to 8451 lines with the merge).
+- The literal check's two baseline starts (68214b2e here, da21d326 from the streams track) are
+  settled by the orchestrator's ruling of 2026-11-20, built in the nineteenth run in
+  crates/wcontainers-literals (a50ce7de): they count as one because each brought the checker's
+  crate with it and 8620f9be, the merge joining them, holds no line neither parent held. The
+  check passes; that merge is now listed among the changes that could add lines.
 - The merge of origin/phase-1 renamed `wcontainers_abi::Syscall` to `SystemCallRequest` and made
   the kernel's host the `System` trait, so this branch also changed, minimally, crates it does
   not own but carries: wcontainers-runtime (its `Outside` now requires `System`, the stream
   methods' new names, the start's new fields), wcontainers-wasmtime and wcontainers-translator-test
   (the renamed request type). Their owners will meet the same edits when they merge phase-1.
 
-- K6c's bar rests on the gap list's entries past plan section 15, decided by the eleventh run
-  without the owner's answer (Questions; Known gaps, first part): page residency (mincore03,
-  mlock201, mlock05, mmap12, vma01), the test harness (fork09, creat05, fcntl12, fcntl12_64,
-  openat03) and IPV6_RTHDR (setsockopt11, cve-2026-53362). If the owner rules otherwise, those
-  12 tests are differences to build. The plan's section 15 was not changed.
-
+- The gap list's tests past plan section 15, and ADSP038, are the owner's to rule on (ruling of
+  2026-11-20): listed by name under "Waiting for the owner", counted apart from the tests that
+  match, and not holding K6c's check.
 - The LTP comparison on our kernel can bring Docker Desktop down on the Mac, as the
   orchestrator's diagnosis (docker-guard/diagnosis/notes.md) found: its test backend is reached
   over a published port with TCP_NODELAY, so request-heavy tests (cve-2014-0196, fork09, the
@@ -54,7 +56,39 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   process. From the tenth run of K6c the LTP comparison on our kernel runs only on the rented
   ARM64 machine (native Docker, no vsock link); the Mac's run was stopped at 07:40 on the 19th.
 
+## Waiting for the owner
+
+LTP tests that differ from the reference for a cause outside plan section 15's list, each with its
+one cause (Known gaps, first part, has the detail). Counted apart from the matching tests; by the
+orchestrator's ruling of 2026-11-20 they do not hold K6c's check, which confirms each differs for
+this cause and no other. 13 tests:
+- mincore03: page residency is not known (the Cpu trait does not report touched pages).
+- mlock201: page residency (mlock2's on-fault counts).
+- mlock05: page residency (smaps has no Rss lines).
+- mmap12: page residency (pagemap is not built).
+- vma01: page residency (whether neighbouring anonymous mappings were written before a fork,
+  which decides Linux's merge, cannot be seen).
+- setsockopt11: IPV6_RTHDR (the made-up network has no IPv6 route outside the container).
+- cve-2026-53362: IPV6_RTHDR, as setsockopt11.
+- fork09: the test harness (the backend server holds a host descriptor per open file and stops
+  near 524273 open files, before the guest's RLIMIT_NOFILE).
+- creat05: the test harness, as fork09.
+- fcntl12: the test harness, as fork09.
+- fcntl12_64: the test harness, as fork09.
+- openat03: the test harness (the backend server has no TMPFILE).
+- ADSP038 (aiodio_sparse with 1000 readers): no verdict in 3 h 49 min, 4 h and 7 h 20 min.
+  Each reader's read of the unmapped backend file is a backend message where Linux reads its
+  page cache, and on one CPU the writer waits behind every reader (section 15's slower file
+  access until section 8's cache and one CPU, but a timeout is not a verdict). With 6 to 512
+  readers (ADSP030 to 037) the same program gives the reference's verdict.
+
 ## Where things stand
+
+K6c, nineteenth and twentieth runs: the orchestrator's three rulings are built or recorded (the
+literal check passes; the gap list past section 15 and ADSP038 are under "Waiting for the
+owner"; the runtime track's assertion was fixed in the fourteenth run). Every finding of the
+check is answered at the tip (the fourteenth run's list). The ARM64 part of the bar is running;
+the Mac's part waits for Docker Desktop. See "K6c, nineteenth and twentieth runs".
 
 K6c, eighteenth run: no code changed; nothing could run against a reference (no ARM64 machine,
 no working Docker Desktop). The literal check gives only the second start again, with the
@@ -195,6 +229,42 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, nineteenth and twentieth runs
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge (14:10 and 15:08 UTC).
+
+The orchestrator's rulings of 2026-11-20:
+- The literal baseline's two starts count as one (a50ce7de, in crates/wcontainers-literals with
+  a test, `two_adoptions_joined_by_a_merge_without_growth_count_as_one_start`, that failed before
+  it; Departures). The crate's tests passed on the x86 machine (14:20 UTC, load 116; k6c19/lit-before.log
+  and lit-crate.log) but `the_workspace_keeps_to_its_baseline`, which needs the git history the
+  copy there lacks. The check itself passes at 000f95e8 with the baseline at 8448 lines (Mac,
+  15:12 UTC, load 2.4; scratch k6c19/lit-20th.txt).
+- The gap list's 12 tests past plan section 15 and ADSP038: listed under "Waiting for the owner".
+- The task.rs assertion: fixed in the fourteenth run (outside `reads_woken_while_they_park_run_again`);
+  the whole suite covers it.
+
+The check's findings at the tip: each was answered in the fourteenth run (its list, one item per
+finding). Since then guest/sockioctls.c also asks the route and interface requests on a local
+socket and SIOCATMARK on UDP with a bad address (000f95e8). Against the ARM64 reference at that
+tree (job kernel-b/20261120-142205-304392, 14:22 UTC, load 21; scratch k6c19/findings-arm.log
+and findings-arm2.log): inet `socket_ioctl_checks_match_reference`, recordlocks
+`leases_match_reference` and aio's 3 tests passed. The check's layer 1 seeds (4747001 to 4747003,
+10000 sequences) are in k6c19/mac5.sh, not run yet (Docker Desktop).
+
+The bar's ARM64 part (scratch k6c18/arm-final.sh at e300fadf; the code after it is the literals
+crate and the sockioctls guest only):
+- terminal, five runs (job kernel/20261120-141216-37898, 14:12 to 14:15 UTC, load 15 to 30;
+  k6c18/terminal-e300fadf.log): `splice_holds_the_pipe` passed 5 of 5; `making_pairs` failed 5 of
+  5, which is on the ARM list (its verdict is the Mac's).
+- The whole suite: job kernel/20261120-141523-126036, running at 15:12 UTC. Its log is
+  /work/jobs/kernel/20261120-141523-126036/log there (a part fetched to k6c19/arm/log).
+- The whole LTP comparison at 000f95e8 (the last was at 2c06b713, before the merge of the
+  streams track's second milestone): job kernel-b/20261120-142514-619315 (image built fresh,
+  `LTP_JOBS=8 LTP_LIMIT=900`), 1269 of 4226 rows at 15:11 UTC; results
+  target/ltp-k6c19/whole.tsv in the kernel-b folder there (a part fetched to k6c19/arm/whole.tsv).
+  The second build folder (/work/target/kernel-b) is deleted when it ends.
 
 ## K6c, eighteenth run
 
@@ -4075,6 +4145,16 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, nineteenth run: the orchestrator's ruling on the literal baseline's two starts asked for
+  two conditions (the starts on different parents of a merge; the merged baseline holding no line
+  in neither parent's). The check also asks that each start brought the checker's crate with it
+  (no parent had it), which is what "a track adopting the check" is. Without that, any branch that
+  wrote a baseline of its own over new literals and was merged whole would pass, which the
+  literals crate's test `a_side_branch_that_starts_its_own_baseline_fails` forbids; that test is
+  kept. The lines are compared as a multiset (no line more times than in any parent).
+- K6c, nineteenth run: crates/wcontainers-literals and docs/literals.md belong to the literals
+  track; this branch changed them because the brief's ruling says to (its own commit, a50ce7de).
+
 - K6c, seventeenth run: guest ttylock no longer runs `cat /dev/tty | cat`. Linux gives that
   command's output either way (one CPU: 20 once, 10 twice in 30; 192 CPUs: 30 once; the ARM64
   references twice), so comparing it compared two schedules, not two kernels. The case removed
@@ -4842,6 +4922,21 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the twentieth run (A is the orchestrator's cloud/arm-run, S the scratch folder kernel):
+1. Read the whole suite: `A --fetch kernel /work/jobs/kernel/20261120-141523-126036/log
+   S/k6c19/arm/`. Every failure must be on the known ARM list (k6c14/fail14.txt) or settled.
+2. Read the LTP comparison: `A --fetch kernel-b target/ltp-k6c19/whole.tsv S/k6c19/arm/`. If the
+   job ended early or the machine was lost, its command is in the first lines of
+   k6c19/ltp-attach.log (it continues its file; on a new machine the image is built first). Then
+   `ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv S/k6c19/arm/whole.tsv`,
+   commit it as ltp/ours-20260930-000f95e8.tsv and write the table as the fourteenth run's, the
+   13 under "Waiting for the owner" counted apart. Rerun any new difference; delete
+   /work/target/kernel-b there.
+3. When Docker Desktop starts containers: `bash S/k6c19/mac5.sh > S/k6c19/mac5.log 2>&1` (layer
+   1 seeds 9191123 to 9191125, the Mac list, timers three times with each output kept, the
+   check's seeds 4747001 to 4747003 with 10000 sequences).
+4. If all three hold, say K6c's bar is met; the independent check follows "For the independent check".
 
 K6c, after the eighteenth run: unchanged from the seventeenth's list just below, with item 2 now
 one command: `bash <scratch>/kernel/k6c18/arm-final.sh` once the ARM64 machine answers
