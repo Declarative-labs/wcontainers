@@ -55,8 +55,8 @@ Round 2, run 9 (2026-11-19, about 20:50 to 23:30 Pacific):
   before; library com 15 and programs 41 with 2 ignored; front 55, unit 5, cache 1; lint of both
   builds clean; literal check exit 0. Module sizes and building-ahead hits are measured on this
   tree (Measurements).
-- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 and the x86 machine's
-  /work/target/g-d3d11 were deleted. Nothing was built on the Mac, and nothing was installed.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (21.1 GB) and the x86
+  machine's /work/target/g-d3d11 (3.3 GB) were deleted. Nothing was built on the Mac, and nothing was installed.
 
 ## Wine's Direct3D 11 tests through ours
 
