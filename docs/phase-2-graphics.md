@@ -546,7 +546,8 @@ bias, storage formats from the bound view, constant buffers past the limits, ver
 the program, how typed buffers are read (`TexelBufferRoute`: native where the back end has
 `TEXEL_BUFFERS`, which neither browser API has, storage on WebGPU, a texture on WebGL 2 whose element e
 is texel (e % 2048, e / 2048), `TEXEL_BUFFER_TEXTURE_WIDTH`; by either, the format of each view at a
-texture slot is `texel_formats`), storage slots
+texture slot is `texel_formats`, which also gives the view of a texture of another component kind than
+the program declares, read by its bits as Direct3D reads it), storage slots
 packed into one buffer, storage textures used with atomics read through a buffer, textures and targets stored as integers (`decoded`, `targets_in_shader`), blending or logic
 operations done in the program, the sample mask written by the program, clip depth, flipped depth
 ranges, depth bias, the counting variant, the interpolation the pixel program reads the vertex
