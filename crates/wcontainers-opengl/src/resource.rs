@@ -222,11 +222,16 @@ pub unsafe extern "C" fn resource_destroy<B: Backend>(
     });
 }
 
+/// Whether Gallium's map flags `usage` hold `flag` (whose C enum is signed on some hosts).
+fn has(usage: c_uint, flag: pipe_map_flags) -> bool {
+    usage & flag as c_uint != 0
+}
+
 /// How a write treats the bytes already there, from Gallium's map flags.
 pub fn write_mode(usage: c_uint) -> WriteMode {
-    if usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE != 0 {
+    if has(usage, PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
         WriteMode::Discard
-    } else if usage & PIPE_MAP_UNSYNCHRONIZED != 0 {
+    } else if has(usage, PIPE_MAP_UNSYNCHRONIZED) {
         WriteMode::NoOverwrite
     } else {
         WriteMode::Ordered
@@ -267,7 +272,7 @@ unsafe fn transfer(
     // SAFETY: the caller's.
     unsafe { reference(&mut base.resource, resource) };
     base.set_level(level);
-    base.set_usage(usage);
+    base.set_usage(usage as pipe_map_flags);
     base.box_ = area;
     Box::new(Transfer {
         base,
@@ -300,7 +305,7 @@ pub unsafe extern "C" fn buffer_map<B: Backend>(
     };
     // SAFETY: as above.
     let mut transfer = unsafe { transfer(resource, level, usage, area, size) };
-    if usage & PIPE_MAP_READ != 0 {
+    if has(usage, PIPE_MAP_READ) {
         // SAFETY: as above.
         let ours = unsafe { Resource::<B>::of(resource) };
         let Some(buffer) = ours.buffer() else {
@@ -393,8 +398,8 @@ pub unsafe extern "C" fn buffer_unmap<B: Backend>(
             Box::from_raw(transfer.cast::<Transfer>()),
         )
     };
-    let usage = transfer.base.usage();
-    if usage & PIPE_MAP_WRITE != 0 && usage & PIPE_MAP_FLUSH_EXPLICIT == 0 {
+    let usage = transfer.base.usage() as c_uint;
+    if has(usage, PIPE_MAP_WRITE) && !has(usage, PIPE_MAP_FLUSH_EXPLICIT) {
         let bytes = transfer.bytes;
         write_mapped_buffer(context, &mut transfer, 0..bytes);
     }
@@ -560,7 +565,7 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
     let mut transfer = unsafe { transfer(resource, level, usage, area, size) };
     transfer.base.stride = stride;
     transfer.base.layer_stride = layer_stride;
-    if usage & PIPE_MAP_READ != 0 {
+    if has(usage, PIPE_MAP_READ) {
         let mut backend = context.screen().backend();
         outside_pass(context, &mut backend);
         let read = |backend: &mut B, stencil: bool, out: &mut [u8]| {
@@ -656,7 +661,7 @@ pub unsafe extern "C" fn texture_unmap<B: Backend>(
             Box::from_raw(transfer.cast::<Transfer>()),
         )
     };
-    if transfer.base.usage() & PIPE_MAP_WRITE != 0 {
+    if has(transfer.base.usage() as c_uint, PIPE_MAP_WRITE) {
         // SAFETY: the transfer holds a reference on its resource.
         let resource = unsafe { Resource::<B>::of(transfer.base.resource) };
         if let Some((texture, desc)) = resource.texture() {

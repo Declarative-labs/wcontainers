@@ -173,7 +173,7 @@ pub struct Shader {
     pub nir: Nir,
 }
 
-fn factor(f: c_uint) -> BlendFactor {
+fn factor(f: pipe_blendfactor) -> BlendFactor {
     match f {
         PIPE_BLENDFACTOR_ONE => BlendFactor::One,
         PIPE_BLENDFACTOR_SRC_COLOR => BlendFactor::Src,
@@ -264,7 +264,7 @@ fn writes(mask: c_uint) -> ColorWrites {
         (PIPE_MASK_B, ColorWrites::B),
         (PIPE_MASK_A, ColorWrites::A),
     ] {
-        if mask & bit != 0 {
+        if mask & bit as c_uint != 0 {
             w |= ours;
         }
     }
@@ -300,14 +300,14 @@ unsafe extern "C" fn create_blend_state(
         if rt.blend_enable() != 0 {
             target.blend = Some((
                 BlendComponent {
-                    src: factor(rt.rgb_src_factor()),
-                    dst: factor(rt.rgb_dst_factor()),
-                    op: blend_op(rt.rgb_func()),
+                    src: factor(rt.rgb_src_factor() as pipe_blendfactor),
+                    dst: factor(rt.rgb_dst_factor() as pipe_blendfactor),
+                    op: blend_op(rt.rgb_func() as pipe_blend_func),
                 },
                 BlendComponent {
-                    src: factor(rt.alpha_src_factor()),
-                    dst: factor(rt.alpha_dst_factor()),
-                    op: blend_op(rt.alpha_func()),
+                    src: factor(rt.alpha_src_factor() as pipe_blendfactor),
+                    dst: factor(rt.alpha_dst_factor() as pipe_blendfactor),
+                    op: blend_op(rt.alpha_func() as pipe_blend_func),
                 },
             ));
         }
@@ -317,7 +317,8 @@ unsafe extern "C" fn create_blend_state(
             targets,
             same_for_all: !independent,
             alpha_to_coverage: state.alpha_to_coverage() != 0,
-            logic_op: (state.logicop_enable() != 0).then(|| logic_op(state.logicop_func())),
+            logic_op: (state.logicop_enable() != 0)
+                .then(|| logic_op(state.logicop_func() as pipe_logicop)),
         },
     })
 }
@@ -334,10 +335,10 @@ unsafe extern "C" fn delete_blend_state(_: *mut pipe_context, state: *mut c_void
 
 fn face(state: &pipe_stencil_state) -> StencilFace {
     StencilFace {
-        compare: compare(state.func()),
-        fail: stencil_op(state.fail_op()),
-        depth_fail: stencil_op(state.zfail_op()),
-        pass: stencil_op(state.zpass_op()),
+        compare: compare(state.func() as pipe_compare_func),
+        fail: stencil_op(state.fail_op() as pipe_stencil_op),
+        depth_fail: stencil_op(state.zfail_op() as pipe_stencil_op),
+        pass: stencil_op(state.zpass_op() as pipe_stencil_op),
     }
 }
 
@@ -352,7 +353,7 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
     let back_on = back.enabled() != 0;
     let back = if back_on { back } else { front };
     let desc = DepthStencilDesc {
-        depth_compare: depth.then(|| compare(state.depth_func())),
+        depth_compare: depth.then(|| compare(state.depth_func() as pipe_compare_func)),
         depth_write: depth && state.depth_writemask() != 0,
         stencil: (front.enabled() != 0).then(|| (face(front), face(back))),
         stencil_read_mask: [front.valuemask() as u8, back.valuemask() as u8],
@@ -393,10 +394,12 @@ unsafe extern "C" fn delete_depth_stencil_alpha_state<B: Backend>(
 }
 
 fn fill_mode(mode: c_uint) -> FillMode {
-    match mode {
-        PIPE_POLYGON_MODE_LINE => FillMode::Line,
-        PIPE_POLYGON_MODE_POINT => FillMode::Point,
-        _ => FillMode::Solid,
+    if mode == PIPE_POLYGON_MODE_LINE as c_uint {
+        FillMode::Line
+    } else if mode == PIPE_POLYGON_MODE_POINT as c_uint {
+        FillMode::Point
+    } else {
+        FillMode::Solid
     }
 }
 
@@ -471,7 +474,7 @@ unsafe extern "C" fn delete_rasterizer_state<B: Backend>(
     context.screen().retire(Object::Raster(state.block));
 }
 
-fn address(wrap: c_uint) -> AddressMode {
+fn address(wrap: pipe_tex_wrap) -> AddressMode {
     match wrap {
         PIPE_TEX_WRAP_REPEAT => AddressMode::Repeat,
         PIPE_TEX_WRAP_CLAMP_TO_EDGE => AddressMode::Clamp,
@@ -483,7 +486,7 @@ fn address(wrap: c_uint) -> AddressMode {
 }
 
 fn filter(f: c_uint) -> Filter {
-    if f == PIPE_TEX_FILTER_LINEAR {
+    if f == PIPE_TEX_FILTER_LINEAR as c_uint {
         Filter::Linear
     } else {
         Filter::Nearest
@@ -509,7 +512,7 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
         refuse("a sampler's level-of-detail bias");
     }
     let mip = state.min_mip_filter();
-    let lod_range = if mip == PIPE_TEX_MIPFILTER_NONE {
+    let lod_range = if mip == PIPE_TEX_MIPFILTER_NONE as c_uint {
         [0, 0]
     } else {
         [state.min_lod.to_bits(), state.max_lod.to_bits()]
@@ -517,11 +520,17 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
     let desc = SamplerDesc {
         min: filter(state.min_img_filter()),
         mag: filter(state.mag_img_filter()),
-        mip: filter(mip),
-        address: [state.wrap_s(), state.wrap_t(), state.wrap_r()].map(address),
+        mip: if mip == PIPE_TEX_MIPFILTER_LINEAR as c_uint {
+            Filter::Linear
+        } else {
+            Filter::Nearest
+        },
+        address: [state.wrap_s(), state.wrap_t(), state.wrap_r()]
+            .map(|w| address(w as pipe_tex_wrap)),
         lod_range,
         anisotropy: state.max_anisotropy().max(1) as u16,
-        compare: (state.compare_mode() != 0).then(|| compare(state.compare_func())),
+        compare: (state.compare_mode() != 0)
+            .then(|| compare(state.compare_func() as pipe_compare_func)),
         // SAFETY: a float border colour, which is all the screen takes.
         border: border(unsafe { state.border_color.f }),
     };
@@ -796,8 +805,7 @@ unsafe extern "C" fn set_vertex_buffers<B: Backend>(
     count: c_uint,
     buffers: *const pipe_vertex_buffer,
 ) {
-    // SAFETY: Mesa passes this driver's context and `count` buffers, whose references the
-    // driver takes over (Gallium's rule for vertex buffers).
+    // SAFETY: Mesa passes this driver's context and `count` buffers.
     let (context, buffers) = unsafe {
         (
             Context::<B>::of(pipe),
@@ -811,13 +819,11 @@ unsafe extern "C" fn set_vertex_buffers<B: Backend>(
         }
         // SAFETY: not a user buffer, so a resource.
         let resource = unsafe { buffer.buffer.resource };
-        // A slot bound to the same resource keeps the reference it had, as Gallium's helpers do.
-        if let Some(previous) = old.next()
-            && previous.resource != resource
-        {
-            // SAFETY: the slot held one reference.
-            unsafe { resource::release(previous.resource) };
-        }
+        // Each slot holds its own reference, kept where the slot is bound to the same resource
+        // again, as Gallium's helpers do.
+        let mut held = old.next().map_or(std::ptr::null_mut(), |p| p.resource);
+        // SAFETY: both are null or live resources; the slot's reference moves to the new one.
+        unsafe { resource::reference(&mut held, resource) };
         context.bound.vertex_buffers.push(VertexBuffer {
             resource,
             offset: buffer.buffer_offset,

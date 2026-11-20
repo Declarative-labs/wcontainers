@@ -28,7 +28,7 @@ pub struct View<B: Backend> {
 pub const IDENTITY: [Swizzle; COMPONENTS] = [Swizzle::X, Swizzle::Y, Swizzle::Z, Swizzle::W];
 
 /// The NIR route's swizzle of a Gallium one.
-fn swizzle(s: c_uint) -> Swizzle {
+fn swizzle(s: pipe_swizzle) -> Swizzle {
     match s {
         PIPE_SWIZZLE_X => Swizzle::X,
         PIPE_SWIZZLE_Y => Swizzle::Y,
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         base.swizzle_b(),
         base.swizzle_a(),
     ]
-    .map(swizzle);
+    .map(|s| swizzle(s as pipe_swizzle));
     Box::into_raw(Box::new(View::<B> {
         base,
         view,
