@@ -46,7 +46,6 @@ const OUTPUT: &str = "output";
 const UNIFORM: &str = "uniform";
 const EXTENSION_REQUIREMENT: &str = "extension";
 const LIMIT_REQUIREMENT: &str = "limit";
-const IN: &str = "in";
 /// The results a case may expect in which a program is built and drawn.
 const BUILT: [&str; 2] = ["pass", "build_successful"];
 /// The version a case has when it names none (`DEFAULT_GLSL_VERSION`).
@@ -87,6 +86,28 @@ impl Version {
             format!("{VERSION_DIRECTIVE} {} {ES}", self.number)
         } else {
             format!("{VERSION_DIRECTIVE} {}", self.number)
+        }
+    }
+}
+
+/// Where a stage value is declared, which gives its qualifier.
+#[derive(Clone, Copy)]
+enum Qualifier {
+    VertexInput,
+    VertexOutput,
+    FragmentInput,
+}
+
+impl Qualifier {
+    /// A stage value's declaration, `rest` after its qualifier in the version's words.
+    fn declared(self, version: Version, rest: &str) -> String {
+        match (self, version.in_out()) {
+            (Qualifier::VertexInput | Qualifier::FragmentInput, true) => format!("in {rest}"),
+            (Qualifier::VertexOutput, true) => format!("out {rest}"),
+            (Qualifier::VertexInput, false) => format!("attribute {rest}"),
+            (Qualifier::VertexOutput | Qualifier::FragmentInput, false) => {
+                format!("varying {rest}")
+            }
         }
     }
 }
@@ -234,7 +255,7 @@ const QUOTES: [char; 2] = ['"', '\''];
 const ESCAPE: char = '\\';
 const COMMENT: char = '#';
 const SYMBOLS: &str = "=+-,|;()[]{}>";
-const DECIMAL_POINT: char = '.';
+const FRACTION_MARK: char = '.';
 const EXPONENTS: [char; 2] = ['e', 'E'];
 const SIGNS: [char; 2] = ['+', '-'];
 
@@ -274,7 +295,7 @@ impl<'a> Lexer<'a> {
         } else if first.is_ascii_digit() {
             let digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
             let mut n = digits(rest);
-            if rest[n..].starts_with(DECIMAL_POINT) {
+            if rest[n..].starts_with(FRACTION_MARK) {
                 n += 1;
                 n += digits(&rest[n..]);
                 if rest[n..].starts_with(EXPONENTS) {
@@ -542,7 +563,8 @@ fn requirement(lexer: &mut Lexer) -> Result<Option<Requirement>, String> {
                 }
             }
             let save = lexer.at;
-            let stages = if lexer.next()? == Token::Word(IN) {
+            // The grammar has one word here, before a stage list.
+            let stages = if matches!(lexer.next()?, Token::Word(_)) {
                 lexer.symbol('{')?;
                 let mut stages = vec![lexer.word()?.to_owned()];
                 loop {
@@ -674,21 +696,18 @@ fn vertex_case(
     version: Version,
     source: &str,
 ) -> Result<Vec<(Stage, String)>, String> {
-    let (stage_in, stage_out) = if version.in_out() {
-        ("in", "out")
-    } else {
-        ("attribute", "varying")
-    };
-    let mut declarations = format!("{stage_in} highp vec4 {POSITION_ATTRIBUTE};\n");
+    let stage_in = |rest: String| Qualifier::VertexInput.declared(version, &rest);
+    let stage_out = |rest: String| Qualifier::VertexOutput.declared(version, &rest);
+    let mut declarations = stage_in(format!("highp vec4 {POSITION_ATTRIBUTE};\n"));
     let mut setup = String::new();
     let mut output = format!("gl_Position = {POSITION_ATTRIBUTE};\n");
     for v in of(case, Storage::Input) {
         let (name, float) = (&v.name, v.ty.float_type().name());
         if v.ty.kind == Kind::Float {
-            declarations += &format!("{stage_in} {float} {name};\n");
+            declarations += &stage_in(format!("{float} {name};\n"));
         } else {
             let ty = v.ty.name();
-            declarations += &format!("{stage_in} {float} {ATTRIBUTE_PREFIX}{name};\n");
+            declarations += &stage_in(format!("{float} {ATTRIBUTE_PREFIX}{name};\n"));
             setup += &format!("{ty} {name} = {ty}({ATTRIBUTE_PREFIX}{name});\n");
         }
     }
@@ -696,11 +715,11 @@ fn vertex_case(
     for v in of(case, Storage::Output) {
         let (name, float) = (&v.name, v.ty.float_type().name());
         if v.ty.kind == Kind::Float {
-            declarations += &format!("{stage_out} {float} {name};\n");
+            declarations += &stage_out(format!("{float} {name};\n"));
             passed.push((name.clone(), v.ty));
         } else {
             let ty = v.ty.name();
-            declarations += &format!("{stage_out} {float} {VARYING_PREFIX}{name};\n{ty} {name};\n");
+            declarations += &stage_out(format!("{float} {VARYING_PREFIX}{name};\n{ty} {name};\n"));
             output += &format!("{VARYING_PREFIX}{name} = {float}({name});\n");
             passed.push((format!("{VARYING_PREFIX}{name}"), v.ty.float_type()));
         }
@@ -712,13 +731,13 @@ fn vertex_case(
         ("POSITION_FRAG_COLOR", "gl_Position".to_owned()),
     ];
     let vertex = specialized(source, &params, case, VERTEX, version)?;
-    let stage_in = if version.in_out() { "in" } else { "varying" };
+    let stage_in = |rest: String| Qualifier::FragmentInput.declared(version, &rest);
     let mut fragment = format!(
         "{}\nprecision highp float;\nprecision highp int;\n",
         version.directive()
     );
     for (name, ty) in &passed {
-        fragment += &format!("{stage_in} {} {name};\n", ty.name());
+        fragment += &stage_in(format!("{} {name};\n", ty.name()));
     }
     let (outputs, writes) = written(version, &passed)?;
     fragment += &format!("{outputs}void main()\n{{\n{writes}}}\n");
@@ -732,16 +751,16 @@ fn fragment_case(
     version: Version,
     source: &str,
 ) -> Result<Vec<(Stage, String)>, String> {
-    let stage_in = if version.in_out() { "in" } else { "varying" };
+    let stage_in = |rest: String| Qualifier::FragmentInput.declared(version, &rest);
     let mut declarations = String::new();
     let mut setup = String::new();
     for v in of(case, Storage::Input) {
         let (name, float) = (&v.name, v.ty.float_type().name());
         if v.ty.kind == Kind::Float {
-            declarations += &format!("{stage_in} {float} {name};\n");
+            declarations += &stage_in(format!("{float} {name};\n"));
         } else {
             let ty = v.ty.name();
-            declarations += &format!("{stage_in} {float} {VARYING_PREFIX}{name};\n");
+            declarations += &stage_in(format!("{float} {VARYING_PREFIX}{name};\n"));
             setup += &format!("{ty} {name} = {ty}({VARYING_PREFIX}{name});\n");
         }
     }
@@ -764,16 +783,16 @@ fn complete_case(case: &Case, version: Version) -> Result<Vec<(Stage, String)>, 
     let ([vertex], [fragment]) = (case.vertex.as_slice(), case.fragment.as_slice()) else {
         return Err("not one vertex and one fragment source".into());
     };
-    let stage_in = if version.in_out() { "in" } else { "attribute" };
-    let mut declarations = format!("{stage_in} highp vec4 {POSITION_ATTRIBUTE};\n");
+    let stage_in = |rest: String| Qualifier::VertexInput.declared(version, &rest);
+    let mut declarations = stage_in(format!("highp vec4 {POSITION_ATTRIBUTE};\n"));
     let mut setup = String::new();
     for v in of(case, Storage::Input) {
         let (name, ty) = (&v.name, v.ty.name());
         if v.ty.kind == Kind::Float {
-            declarations += &format!("{stage_in} {ty} {name};\n");
+            declarations += &stage_in(format!("{ty} {name};\n"));
         } else {
             let float = v.ty.float_type().name();
-            declarations += &format!("{stage_in} {float} {ATTRIBUTE_PREFIX}{name};\n");
+            declarations += &stage_in(format!("{float} {ATTRIBUTE_PREFIX}{name};\n"));
             setup += &format!("{ty} {name} = {ty}({ATTRIBUTE_PREFIX}{name});\n");
         }
     }
