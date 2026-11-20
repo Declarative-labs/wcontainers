@@ -1,4 +1,5 @@
-// Jumps through a register, ROUNDS of each: a tail call to another function whose address is read from data,
+// Jumps through a register, ROUNDS of each: a tail call to another function whose address is read from data
+// (placed after a function a call names, so the translator knows it is outside the caller),
 // a jump into its own function to an address no table explains (its start plus an offset worked out from
 // data), a switch whose table's address the function keeps in its frame, three tail calls of a function
 // to its own start, and a jump into another part of a function cut in parts. Exits with the low bits of what
@@ -37,10 +38,6 @@ apply:
   ldr x9, [x9]
   br x9
 
-step:
-  add x0, x0, #3
-  ret
-
 // With x1 set, jumps to its own second instruction, which gives back 2; x2 is 0.
 wander:
   cbnz x1, 2f
@@ -54,6 +51,10 @@ wander:
   add x9, x9, x10
   mov x1, #0
   br x9
+
+step:
+  add x0, x0, #3
+  ret
 
 // Tail calls itself through a register x0 times, then gives back 7.
 again:

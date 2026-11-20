@@ -3131,6 +3131,15 @@ contract's bits, in both runners).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
+- T3: a tail call through a register to a function that nothing names as a start (no start given, no direct
+  call to it) and that lies before the next certain start is counted "jump through a register not
+  recognised", although it is a tail call: since 40fd0c67 a function's whole reaches up to the next certain
+  start, and such a jump has the same shape as a computed goto (an address loaded from data, then `br`), so
+  the two cannot be told apart from the code. The output is right; only the counter and warning over-report.
+  In a real binary the runtime's starts (symbols, unwind tables) name such functions. Found in the eighth run:
+  `register_jumps.S` had its tail call's target right after the caller, and counted 3,600 against the 2,400
+  expected (rented ARM64 machine); the target now sits past a called function, as the test means "outside".
+
 - T3: a switch whose code has no bound check before its table (the compiler proved the index's range, as for
   `k % 48` or an argument of a static function whose every caller it sees) is left unrecognised, as the
   table's length cannot be known. Its cases are never found, so each is made at run time once (bounded

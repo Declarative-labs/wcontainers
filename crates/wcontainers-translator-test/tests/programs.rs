@@ -611,8 +611,8 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     (native, best, Some(in_chrome))
 }
 
-/// A jump through a register to outside its function, or to its own start, is a tail call, no slow path; one
-/// to inside its function that no table explains, in its own part or in another of a function cut in parts,
+/// A jump through a register to outside its function (past the next certain start of a function: one given or
+/// a direct call's target), or to its own start, is a tail call, no slow path; one to inside its function that no table explains, in its own part or in another of a function cut in parts,
 /// is, counted each time it runs; a switch whose table's address its function keeps in its frame is a table
 /// explained. The program makes `ROUNDS` of each, for speed and for size.
 #[test]
