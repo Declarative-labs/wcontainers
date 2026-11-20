@@ -754,7 +754,10 @@ impl Kernel {
             } else {
                 self.make_runnable(tid, Resume::FromRegisters);
             }
-            if (delivering || dying) && !self.signalled.contains(&tid) {
+            // A thread that touched watched memory outside a call acts on a signal sent while it
+            // waited before it touches the memory again.
+            let signal_waits = filling && self.signal_pending(tid);
+            if (delivering || dying || signal_waits) && !self.signalled.contains(&tid) {
                 self.signalled.push_back(tid);
             }
         }

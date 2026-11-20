@@ -104,6 +104,17 @@ impl Kernel {
                 }
             }
         }
+        // A process whose context is off this kernel still lives and may write what it maps.
+        if !mapped.is_empty() {
+            for (_, map) in self.live_maps_away() {
+                writable.extend(
+                    map.borrow()
+                        .iter()
+                        .filter(|mapping| mapping.allowed.contains(Permissions::WRITE))
+                        .filter_map(|mapping| Some(source_of(mapping)?.0)),
+                );
+            }
+        }
         mapped.retain(|(source, _), _| {
             writable.contains(source)
                 || self
@@ -117,7 +128,8 @@ impl Kernel {
 
     /// Tells the embedder what changed in the shared memory processes map: every end first,
     /// then every start, each in the process it is about. What it was told is kept in step piece
-    /// by piece, so a process a hook takes off the kernel carries exactly that, and is told the
+    /// by piece, as the starts it was told less the ends, so an end names the whole or a part of
+    /// one start, and a process a hook takes off the kernel carries exactly that, and is told the
     /// rest when it is back.
     pub(crate) fn announce_sharing(&mut self, cx: &mut Context<'_>) {
         self.map_notes.sharing_changed.set(false);
@@ -173,8 +185,8 @@ impl Kernel {
                 return;
             }
         }
+        // What was told stays as the pieces announced, so every end lies inside one start.
         let here = &self.processes;
-        self.shared_announced = mapped;
         self.shared_announced
             .retain(|(_, pid), _| here.contains_key(pid));
     }
