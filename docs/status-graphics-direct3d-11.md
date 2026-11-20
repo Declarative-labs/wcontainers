@@ -2,62 +2,56 @@
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
 Runs so far: six on G4a, the first slice; runs 1 to 25 of G4 (2026-11-17 and 18); round 2, runs
-1 to 11 (2026-11-19 and 20). This file keeps the current state only; each earlier run's own record is in
+1 to 12 (2026-11-19 and 20). This file keeps the current state only; each earlier run's own record is in
 its git history (`git log -p docs/status-graphics-direct3d-11.md`).
 
 ## Where things stand
 
-G4 is not complete. Of the independent check's two blocking findings left after run 9, neither
-is closed, and each now waits on another track: the WebGL 2 build reports 9_3 until the shaders
-track serves stream output without a geometry shader on transform feedback, and section 10's one
-family library waits on the Direct3D 12 track moving its COM objects out of its examples (its
-Next 5; it has not answered on the order). Both are in the Gap list with what each still takes.
-This front's own open work on the bar: the format shortfalls named as departures, and
-`NormAsInteger` (16-bit normalised formats where the back end lacks them).
+G4 is not complete. Of the independent check's two blocking findings left after run 9, the
+WebGL 2 one is closed in round 2 run 12: the WebGL 2 build reports 10_0 and the bar's WebGL 2
+cases match real Direct3D through it. The other, section 10's one family library, waits on the
+Direct3D 12 track moving its COM objects out of its examples (its Next 4; it has not answered on
+the order). This front's own open work on the bar: the format shortfalls named as departures,
+and `NormAsInteger` (16-bit normalised formats where the back end lacks them).
 
-Round 2, run 11 (2026-11-20, about 00:00 to 02:15 Pacific):
-- Merged origin/phase-2-graphics-shaders (with the Direct3D 12 branch inside it: the pixel
-  program for a variant, depth clamped behind a geometry stage's pass-through, textures read in
-  their view's kind, the NIR route's rewrite entry point; two interface commits naming the
-  stretched frame); no conflict. The other branches had nothing new.
-- A draw without a pixel shader whose variant needs a pixel program (depth clamped in the
-  program, clip distances in the program, a depth bias in the program) now takes the shaders
-  crate's `builtin::pixel_program_for_variant` (`Context::pixel_stage`, used by the plain and
-  the staged programs; counted draws rewrite it to count). The two refusals it replaced are gone.
-  New tests against real Direct3D: programs.rs `depth_only_draws_clamped_and_clipped_as_direct3d_does`
-  and `depth_only_draws_clamped_in_the_program_as_direct3d_does` (`WEBGPU_OFF` taking
-  depth-clip-control away; asserts `DepthClampInShader` was taken); example own_cases `unshaded`.
-- Experiment, not committed (the run 10 level check letting transform feedback stand for compute
-  below 11_0, logs/r11x-wine10gl.log): Wine's d3d10core file through the WebGL 2 build passes 96
-  of 111 (95 at run 10): test_depth_clip now passes there.
-- Causes found from run 10's logs for two WebGL 2 failures (Gap list): test_format_compatibility
-  is the WebGL 2 back end's depth-to-colour copy writing bits through a half float target; the
-  failures of test_generate_mips are all a 3D texture's second level written or read wrongly.
-- The whole bar at 39000fa9 (logs/r11e-*, 00:54 to 02:00 Pacific): library com 15 and programs
-  43 with 2 ignored (Known failures); Wine's d3d11 file 146 of 166 and d3d10core 110 of 111, the
-  same failing tests as run 10; every scene through the library 135 pass, 0 fail, 4 absent; the
-  WebGL 2 build's scenes 2, 0, 137 absent (9_3); the three programs of the bar
-  (godot-platformer-3d-d3d11, chocolate-doom, atg-simplelightingpc) and 9 others match real
-  Direct3D on every compared frame; atg-simplecomputepc and atg-simplemsaa_pc differ as before;
-  bgfx's six as before. Front 55, unit 5, cache 1 on the rented x86 machine; lint of both builds
-  clean (logs/r11a-lint.log); literal check exit 0 at 4430d1cb (logs/r11d-literals.log). Sizes
-  and building-ahead hits in Measurements.
-- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (20 GB, the WebGL 2
-  build inside it) and the x86 machine's /work/target/g-d3d11 (2.2 GB) were deleted. Nothing
-  was built on the Mac (formatting only); nothing was installed.
+Round 2, run 12 (2026-11-20, about 02:00 to 04:00 Pacific):
+- Merged origin/phase-2-graphics-shaders (its run 58: stream output of a vertex shader alone on
+  the replay route, `GeometryReplay::streamed`, with the interface commit widening
+  `StreamOutAfterReplay`) and origin/phase-2-graphics-direct3d-12 (nothing past the shaders
+  merge); no conflict.
+- A vertex shader's stream output on a back end without compute programs now takes
+  `GeometryReplay::streamed` (`make_replayed`); the refusal `STREAM_OUT_WITHOUT_COMPUTE` is gone.
+  The feature level check lets transform feedback stand for compute below 11_0 and needs cube
+  arrays from 10_1, which the device learns by making a texture of two cubes (Departures), so
+  the WebGL 2 build reports 10_0, as plan section 9 fixes it. New tests: front.rs's level test
+  (transform feedback without compute gives 10_1, without cube arrays 10_0; the recorder's
+  `cube_arrays`), and programs.rs
+  `stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does` (example own_level10
+  `stream`), which matches real Direct3D on both builds.
+- The cube-face count is the named `CUBE_FACES` in device.rs; ten literal lines left the
+  baseline.
+- The whole bar at 32c76f17 (logs/r12e-*, 02:50 to 03:30 Pacific) and the WebGL 2 build's
+  (logs/r12b-*, r12c-*, r12d-*, 02:09 to 02:41): see Wine's files, the Gap list and
+  Measurements. At 7e4d8df6 (the cube-face constant): literal check exit 0, lint of both builds
+  clean, front 55, unit 5, cache 1 (x86), library com 15 and programs 44 with 2 ignored
+  (logs/r12f-*, r12g-lib.log, 03:31 to 04:00).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (the WebGL 2 build
+  inside it) and the x86 machine's /work/target/g-d3d11 were deleted. Nothing was built on the
+  Mac (formatting only); nothing was installed.
 
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), round 2
-run 11, on the RTX 3080 through the queue, not alone, rigfix/wine.sh:
-- d3d11: 146 pass of 166 (logs/r11e-wine.log, 127 s of tests). The 20 failing are in the Gap list.
-- d3d10core: 110 of 111 (logs/r11e-wine10.log, 71.9 s): test_desktop_window (Gap list).
-- d3d10core through the WebGL 2 build at an uncommitted 10_0 (experiment): 96 of 111
-  (logs/r11x-wine10gl.log, 153.7 s); the 15 failing are under the WebGL 2 item of the Gap list.
+run 12, on the RTX 3080 through the queue, not alone, rigfix/wine.sh:
+- d3d11: 146 pass of 166 (logs/r12e-wine.log, 124.4 s). The 20 failing are in the Gap list.
+- d3d10core: 110 of 111 (logs/r12e-wine10.log, 76 s): test_desktop_window (Gap list).
+- d3d10core through the WebGL 2 build (10_0): 98 of 111 (logs/r12d-wine10gl.log, 146.8 s); the
+  13 failing are under the WebGL 2 item of the Gap list. test_stream_output now passes there.
+- d3d11 through the WebGL 2 build: 78 of 166 (logs/r12d-wine11gl.log, 180.7 s), not on the bar.
 - dxgi (not on G4's bar): 4 of the 17 tests without a Direct3D 12 part at run 8 (Gap list).
 Each earlier run's counts are in this file's git history.
 
-## Gap list (the pass bar's written list, round 2 run 11)
+## Gap list (the pass bar's written list, round 2 run 12)
 
 Everything on G4's pass bar that does not give real Direct3D's verdict on the RTX 3080, each item
 once, with its cause and whose work it is. The bar allows a gap only where a named absent feature
@@ -68,21 +62,16 @@ test_create_device applies to real Direct3D's run too: its child process makes a
 `Windowed = FALSE`, which would take the owner's screen (tools/graphics-rig/wine-excluded.txt).
 
 Not met, this track's own work and others':
-- The WebGL 2 cases. The WebGL 2 build reports 9_3, so the three `own_level10` cases (per-target
-  blends without OES_draw_buffers_indexed, `resinfo`, an empty slot's `resinfo`) get no 10_0
-  device there; at 10_0 they pass (round 2 run 9's experiment). Since run 10 geometry shaders
-  (`GeometryAsReplay`) and typed buffers (`TexelBufferAsTexture`) are served there. What 10_0
-  still needs, measured by the experiment at 10_0 (Wine's d3d10core 96 of 111 through the
-  WebGL 2 build at run 11, logs/r11x-wine10gl.log; run 10's per-test logs in
-  r10x-wine10gl-logs/; the rig's scenes at run 10 94 pass, 36 fail, 14 absent,
-  logs/r10x-webgl.log), each with its owner:
-  - Stream output without a geometry shader (refused `STREAM_OUT_WITHOUT_COMPUTE`): the shaders
-    crate's replay takes a geometry stage only, and its host writer of Direct3D's stream output
-    is private to it. Asked of the shaders track: the replay's capture and stream output for a
-    vertex shader alone (plan section 7 puts stream output on WebGL 2 in the stage helper).
-    Wine: test_stream_output (1 check), test_stream_output_vs. This is what keeps the level at
-    9_3; once it lands, `serves` (device.rs) lets transform feedback stand for compute below
-    11_0 (the experiment's one-line change).
+- The WebGL 2 cases are met since round 2 run 12: the WebGL 2 build reports 10_0, and the four
+  `own_level10` cases (per-target blends without OES_draw_buffers_indexed, `resinfo`, an empty
+  slot's `resinfo`, and a vertex shader's stream output without a geometry shader, streamed and
+  drawn over two draws) match real Direct3D through it (logs/r12c-webgllib.log,
+  r12d-webgllib.log). Stream output from a vertex shader alone takes the shaders crate's
+  `GeometryReplay::streamed` (`StreamOutAfterReplay`); geometry shaders take `GeometryAsReplay`,
+  typed buffers `TexelBufferAsTexture`. What the WebGL 2 build still does not give real
+  Direct3D's verdict on, measured at round 2 run 12 (Wine's d3d10core 98 of 111 through it,
+  logs/r12d-wine10gl.log; the rig's scenes 95 pass, 17 fail, 30 absent, logs/r12d-webgl.log,
+  the 17 being the missing pictures of the three scenes named below), each with its owner:
   - A sample mask leaving out samples (WebGL 2 has no `gl_SampleMask`; the shaders crate's
     `SAMPLE_MASK` cannot serve it): refused by name, removing the device. Wine
     test_sample_mask, test_multisample_resolve; the rig's msaa scene. No route exists; the plan
@@ -91,7 +80,7 @@ Not met, this track's own work and others':
     test_unbound_multisample_texture.
   - Depth clamping, clip distances and a depth bias in the program without a pixel shader are
     served since round 2 run 11 (the shaders crate's `builtin::pixel_program_for_variant`;
-    Wine test_depth_clip passes through the WebGL 2 build at the experiment's 10_0). Left: a depth bias clamp on float depth,
+    Wine test_depth_clip passes through the WebGL 2 build). Left: a depth bias clamp on float depth,
     refused by name: Direct3D's float step follows each primitive's largest depth exponent,
     which a pixel program does not see (the shaders crate's `DEPTH_BIAS` takes one fixed
     step). Wine test_depth_bias.
@@ -118,9 +107,9 @@ Not met, this track's own work and others':
   - Wireframe without WEBGL_polygon_mode (`FillModeConverted`, not built for any back end): the
     rig's raster scene. Pixel shaders reading `SV_PrimitiveID` without a geometry shader
     (`PrimitiveIdAsGeometry` needs compute): the rig's geometry scene.
-  - Cube arrays: the WebGL 2 back end has none and `Caps` names no such feature, so a device of
-    10_1 (which the experiment made) refuses them at creation (the rig's textures scene). The
-    level check should stop at 10_0 there once `Caps` can say it (interface).
+  - Wine's d3d11 file through the WebGL 2 build (not on the bar, whose d3d11 file is the WebGPU
+    build's): 78 of 166 (logs/r12d-wine11gl.log); 57 of the failing run fewer checks than real
+    Direct3D because they skip below 11_0, the rest are the absences above.
 - Section 10's one family library. Ours (`wcontainers_directx.dll`) carries Direct3D 10 and 11
   and DXGI; the Direct3D 12 track's `wcontainers_d3d12.dll` (crates/wcontainers-direct3d-12/
   examples/directx) carries Direct3D 12 and a DXGI of its own. Section 10 has one library, built
@@ -130,7 +119,7 @@ Not met, this track's own work and others':
   modules are measured each alone (Measurements), which is not the measurement the plan asks.
   Waits on the Direct3D 12 track: its COM objects (about 9,400 lines) are in its crate's
   examples, which this crate cannot depend on, and its status plans to move them into
-  `wcontainers-directx` itself (its Next 5); asked since round 2 run 9, not answered by run 11.
+  `wcontainers-directx` itself (its Next 4); asked since round 2 run 9; at round 2 run 12 its status still lists the move as its own Next 4.
 
 Shortfalls of the reported 11_0 against Microsoft's format tables (Departures, round 2 run 9),
 with the test that shows each:
@@ -151,7 +140,7 @@ with the test that shows each:
   shortfalls (section 9).
 All of these are compared in `format_support_as_direct3d_reports_it_but_the_named_shortfalls`.
 
-Wine's d3d11 file (20 of 166 failing at round 2 run 11, logs/r11e-wine.log; the same 20 since run 8). Every failing test but test_format_support and
+Wine's d3d11 file (20 of 166 failing at round 2 run 12, logs/r12e-wine.log; the same 20 since run 8). Every failing test but test_format_support and
 test_swapchain_formats (shortfalls above) sits behind an absence:
 - The 11_1 device and Wine's WARP fallback: `D3D11CreateDevice` with 11_1 alone fails, logic
   operations have no route (plan section 9), and this library offers no WARP adapter:
@@ -171,7 +160,7 @@ test_swapchain_formats (shortfalls above) sits behind an absence:
   runs 23 checks of real Direct3D's 28 and fails none. Real DXGI on the RTX 3080 makes that swap
   chain; Wine's test accepts the refusal as `broken`.
 
-Wine's d3d10core file (1 of 111 failing, logs/r11e-wine10.log): test_desktop_window, as above.
+Wine's d3d10core file (1 of 111 failing, logs/r12e-wine10.log): test_desktop_window, as above.
 
 Wine's dxgi file through our dxgi.dll (not on G4's bar; run since run 7 because the check on run 5
 asked; scratch run-dxgi.sh, the 17 tests without a Direct3D 12 part). Passing at run 8:
@@ -188,7 +177,7 @@ value (`GetDesc`, `EnumOutputs`, `GetMaximumFrameLatency`: test_adapter_desc, te
 test_maximum_frame_latency); fewer display modes (the infrastructure crate's `OutputDesc`:
 test_find_closest_matching_mode runs 67 checks of 2055 and fails none).
 
-Real programs (logs/r11e-programs.log and r11e-bgfx.log, round 2 run 11: the three programs of the pass bar, godot-platformer-3d-d3d11, chocolate-doom and atg-simplelightingpc, match real Direct3D on every compared frame, and so do atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04 to 07; bgfx's six as before, five passing or running to their end and bgfx-26-occlusion differing in its overlay (Departures, run 16)). The two that differ, outside the bar's three:
+Real programs (logs/r12e-programs.log and r12e-bgfx.log, round 2 run 12: the three programs of the pass bar, godot-platformer-3d-d3d11, chocolate-doom and atg-simplelightingpc, match real Direct3D on every compared frame, and so do atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04 to 07; bgfx's six as before, five passing or running to their end and bgfx-26-occlusion differing in its overlay (Departures, run 16)). The two that differ, outside the bar's three:
 - atg-simplecomputepc: every pixel inside the Mandelbrot set differs (154,515 pixels); the
   converted compute program's division gives just below 4 where real Direct3D gives 4 (inferred,
   run 17). The shaders track's (Asked).
@@ -197,7 +186,7 @@ Real programs (logs/r11e-programs.log and r11e-bgfx.log, round 2 run 11: the thr
   of four covered differently at an edge; the cause is not proven (round 2 run 5).
 
 Listed cases of section 12, each with its test against real Direct3D (Tests):
-- Not met: the WebGL 2 cases (above).
+- The WebGL 2 cases: met since round 2 run 12 (above).
 - Not met in the browser's configuration: a compute shader storing to `R16G16_UNORM` typed views
   on a device without texture-formats-tier1 and without wgpu's 16-bit-norm feature.
   `typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does` fails
@@ -245,9 +234,12 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
   `typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does` (library,
   programs.rs) fail on every build and are marked `#[ignore]` with the reason (Gap list); run
   them with `--include-ignored`.
-- On the WebGL 2 build only: every library test that makes a device of 10_0 or more fails, as the
-  build reports 9_3, among them the three `own_level10` tests of the WebGL 2 cases. They are not
-  marked in the code: the same tests pass on WebGPU.
+- On the WebGL 2 build only: the library tests that ask for 11_0 or 10_1 (shader model 5
+  bytecode, compute, tessellation, or the default levels compared with real Direct3D's 11_x) fail,
+  as the build reports 10_0, or reach the absences of the Gap list's WebGL 2 item: com.rs
+  `unserved_shaders_are_refused_not_faked` and 29 of programs.rs at round 2 run 12
+  (logs/r12b-webgllib.log, r12c-webgllib.log; 12 pass, 1 ignored). They are not marked in the
+  code: the same tests pass on WebGPU.
 
 ## What comes next
 
@@ -257,24 +249,22 @@ In order:
    bits), then un-ignore the 16-bit-norm test; it also serves WebGL 2's 16-bit formats (Wine
    test_create_texture2d, test_texture, test_clear_render_target_view_2d on that build).
 2. Section 10's family library, once the Direct3D 12 track moves its COM objects into
-   `wcontainers-directx` (its Next 5) or agrees that this track does: one DXGI shell, export
+   `wcontainers-directx` (its Next 4) or agrees that this track does: one DXGI shell, export
    `D3D12CreateDevice`, measure the joined module's size and load time.
-3. WebGL 2 at 10_0: once the shaders track serves stream output without a geometry shader on
-   transform feedback, take it in `create_geometry_shader`'s vertex case and `run_replayed`,
-   let transform feedback stand for compute below 11_0 in `serves` (the experiment's change;
-   stop at 10_0 where the back end has no cube arrays, once `Caps` names them), and rerun the
-   WebGL 2 library suite, its scenes and both Wine files on that build. Meanwhile: prove whose
-   the 3D second-level failure of test_generate_mips is (a small write and read back of a 3D
-   texture's level 1 on the WebGL 2 back end alone).
-4. The format shortfalls that are this front's own: `420_OPAQUE`, NV12's and YUY2's storage
-   views and gathers, back buffer views in the group; remove each from the test's named
-   differences as it is served.
-5. Constant buffer counts through the WebGPU back end's counters (its frame report).
-6. `ClearView` of storage views' rectangles through the shaders crate's storage clear program.
-7. Building ahead at a shader's arrival: read why the guessed states differ from the drawn ones,
+3. Replace the cube array probe (`makes_cube_arrays`, Departures) with a `Caps` feature once the
+   interface names one and both back ends declare it (Asked).
+4. Prove whose the 3D second-level failure of test_generate_mips on the WebGL 2 build is (a
+   small write and read back of a 3D texture's level 1 on the WebGL 2 back end alone).
+5. The format shortfalls that are this front's own: `420_OPAQUE` (the Direct3D 12 track stored
+   it as ordinary textures in its round's run 50; read how), NV12's and YUY2's storage views and
+   gathers, back buffer views in the group; remove each from the test's named differences as it
+   is served.
+6. Constant buffer counts through the WebGPU back end's counters (its frame report).
+7. `ClearView` of storage views' rectangles through the shaders crate's storage clear program.
+8. Building ahead at a shader's arrival: read why the guessed states differ from the drawn ones,
    or stop building ahead at arrival.
-8. Wine's dxgi file: the null-out-pointer crashes, `CreateSurface`, `CreateSubresourceSurface`.
-9. The literal fix list, a part per run.
+9. Wine's dxgi file: the null-out-pointer crashes, `CreateSurface`, `CreateSubresourceSurface`.
+10. The literal fix list, a part per run.
 
 ## How to run
 
@@ -373,13 +363,11 @@ needs the shaders crate's submodules, so commands start with `git submodule upda
 
 ## Tests
 
-At round 2 run 11: front.rs 55, tests/cache.rs 1, unit 5 (wcontainers-direct3d-11, recording
-back end); com.rs 15 and programs.rs 45 (wcontainers-directx, real devices), of which 2 are
+At round 2 run 12: front.rs 55, tests/cache.rs 1, unit 5 (wcontainers-direct3d-11, recording
+back end); com.rs 15 and programs.rs 46 (wcontainers-directx, real devices), of which 2 are
 ignored as known failures (Known failures). New this run: programs.rs
-`depth_only_draws_clamped_and_clipped_as_direct3d_does` and
-`depth_only_draws_clamped_in_the_program_as_direct3d_does` (depth-only draws without a pixel
-shader, clamped to their viewports' depth ranges and clipped, natively and through the pixel
-program for a variant). Every listed case of section 12 has its test against real
+`stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does`; front.rs's level test takes
+transform feedback without compute and a back end without cube arrays. Every listed case of section 12 has its test against real
 Direct3D on WebGPU; the constant buffer counts are tested on the recording back end only, and
 the WebGL 2 cases fail on the WebGL 2 build (Gap list). programs.rs runs each example once beside
 the system's d3d11.dll and once beside ours and compares what each printed; the random lifetimes
@@ -425,12 +413,16 @@ comparison is seeded (`WC_LIFETIMES`, default seeds 1 to 8 at 300 steps each).
   `wgpu-texture-adapter-specific-format-features` away is the nearest: it leaves WebGPU's
   guaranteed format uses, under which `R11G11B10_FLOAT` cannot be stored, but `R16G16_UNORM`
   still can (wgpu's 16-bit-norm feature guarantees it).
-- Round 2 run 4, brought up to date in round 2 run 10: plan section 9 fixes feature level 10_0
-  on WebGL 2. The WebGL 2 build reports 9_3, because 10_0 requires stream output, and stream
-  output without a geometry shader has no route without compute (the shaders crate's replay
-  takes a geometry stage only; geometry shaders and typed buffers are served there since run
-  10). Reporting 10_0 while refusing it would be faking. So the WebGL 2 cases of the pass bar
-  are not met.
+- Round 2 run 12: the feature level check needs cube arrays from 10_1 (Microsoft's feature level
+  table), and `Caps` names no such feature, so the device asks the back end at its creation for
+  a texture of two cubes of one texel and destroys it (`makes_cube_arrays`); a refusal stops the
+  level at 10_0. This is how the WebGL 2 build reports 10_0, as plan section 9 fixes it. The
+  cost is one texture made and destroyed per device. A `Caps` feature is the plan's form;
+  adding one now would take 10_1 and 11_0 from the WebGPU back end until its track declares it
+  (Asked of the interface track).
+- Round 2 run 4, superseded in round 2 run 12: the WebGL 2 build reported 9_3 while stream output
+  without a geometry shader had no route without compute; the shaders crate's replay serves it
+  since its run 58, and the build reports 10_0.
 - Round 2 run 10: typed buffers read through texture copies (`TexelBufferAsTexture`) copy the
   whole buffer into a texture of each view format the first time a draw reads it after a write,
   not only the view's range: a view's first element is then at its own byte offset over the
@@ -754,7 +746,8 @@ comparison is seeded (`WC_LIFETIMES`, default seeds 1 to 8 at 300 steps each).
 
 ## Interface changes
 
-None in round 2 run 11 (the interface commits merged in run 11 are the Direct3D 12 track's).
+None in round 2 runs 11 and 12 (the interface commits merged in them are the shaders and
+Direct3D 12 tracks').
 
 None in G4 run 22.
 
@@ -776,22 +769,28 @@ None in G4 runs 3 to 12.
 
 ## Measurements
 
-- Round 2 run 11. Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through the queue, not
-  alone (other tracks' jobs sharing it; a display-reset hazard job held the queue before some
-  steps). Times Pacific, 2026-11-20.
-  - Module sizes (section 10), release builds of 39000fa9, 01:22 to 01:28 (logs/r11e-sizes.log):
-    wcontainers_directx.dll 14,081,536 bytes on WebGPU (16,384 more than run 10) and 9,664,512
-    bytes on WebGL 2 (13,824 more); the forwarders 1,024 bytes each. Section 10's joined module
+- Round 2 run 12. Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through the queue, not
+  alone (other tracks' jobs sharing it; a display-reset hazard job of another track held the
+  queue before some steps). Times Pacific, 2026-11-20.
+  - Module sizes (section 10), release builds of 32c76f17, 03:13 to 03:19 (logs/r12e-sizes.log):
+    wcontainers_directx.dll 14,089,216 bytes on WebGPU (7,680 more than run 11) and 9,670,656
+    bytes on WebGL 2 (6,144 more); the forwarders 1,024 bytes each. Section 10's joined module
     does not exist (Gap list); run 8's load times stand.
   - Building ahead (plan 4.4; run-warm.sh, the five programs run twice from one cache
-    directory, 01:28 to 02:00, logs/r11e-warm.log): Godot 3D's warm start built its 61 recorded
+    directory, 03:19 to 03:30, logs/r12e-warm.log): Godot 3D's warm start built its 61 recorded
     combinations at start and drew all 61, built 124 ahead at shaders' arrival and drew none of
     them, and built 26 at their first draw. Godot 2D built 3 at start, drew 3, 10 at their first
-    draw. Unchanged from runs 9 and 10.
-  - The WebGL 2 experiment at 10_0 (uncommitted level check; logs/r11x-*, 00:45 to 00:54):
-    Wine's d3d10core 96 of 111 (153.7 s).
-  - Front 55, unit 5, cache 1 on the rented x86 machine (192 processors, load 1.35 when the run
-    began), 00:55.
+    draw. Unchanged from runs 9 to 11.
+  - The whole bar at 32c76f17 (logs/r12e-*, 02:50 to 03:30): literal check exit 0 (after the
+    eight baseline lines it named were deleted); lint of both builds clean with warnings denied;
+    library com 15, programs 44 with 2 ignored (55.2 s); Wine's d3d11 146 of 166 (124.4 s),
+    d3d10core 110 of 111 (76 s); scenes 135 pass, 0 fail, 4 absent; the WebGL 2 build's scenes
+    95 pass, 17 fail, 30 absent; programs and bgfx's as in the Gap list.
+  - The WebGL 2 build at 29d3fb69 and 32c76f17 (logs/r12b-*, r12c-*, r12d-*, 02:09 to 02:41):
+    com 14 of 15, programs 12 pass, 29 fail, 1 ignored (30.8 s; Known failures); the new stream
+    case passes; Wine's d3d10core 98 of 111 (146.8 s), d3d11 78 of 166 (180.7 s).
+  - Front 55, unit 5, cache 1 on the rented x86 machine (192 processors, load 1.25 when the run
+    began), 02:08.
 
 - Round 2 run 10. Machine: the desktop (Windows 10, RTX 3080, i9-9900K), through the queue, not
   alone (other tracks' jobs sharing it). Times Pacific, 2026-11-19.
@@ -888,20 +887,17 @@ Earlier runs' measurements are in this file's git history.
 Open asks only; the answered ones are in this file's git history.
 - Interface track: a vertex format for `B8G8R8X8_UNORM` reading blue, green and red with the
   fourth component 1 (WebGPU's `unorm8x4-bgra` reads the X byte); an `R10G10B10_XR_BIAS_A2_UNORM`
-  format; a `Caps` feature for cube arrays (WebGL 2 has none, so a 10_1 device there would
-  refuse them).
+  format; a `Caps` feature for cube arrays, declared by the WebGPU back end at the same time
+  (this front probes for them meanwhile, Departures round 2 run 12).
 - WebGPU track: `B5G6R5_UNORM` and `B5G5R5A1_UNORM` as render targets (blended), through the back
   end's converted formats.
-- Shaders track: stream output without a geometry shader on a back end with transform feedback
-  and no compute (the replay's capture of the vertex stage and its host writer of Direct3D's
-  stream output, for a vertex shader alone), which keeps the WebGL 2 build below 10_0 (round 2
-  run 10); atg-simplecomputepc's division (every pixel inside the Mandelbrot set just below
+- Shaders track: atg-simplecomputepc's division (every pixel inside the Mandelbrot set just below
   4 where Direct3D gives 4, inferred in run 17); the geometry replay's streams past the first
   (`GeometryReplayStreams`) and drawing a stream past 0; an aliased-line route for multisampled
   targets (with the interface track); the pass-through's clip distances at the linked location
   behind a geometry stage (round 2 run 3).
 - Direct3D 12 track: the order in which this crate takes over its Windows library with one DXGI
-  shell (section 10); not answered by round 2 run 11 (its Next 5 plans to move its COM objects
+  shell (section 10); not answered by round 2 run 12 (its Next 4 plans to move its COM objects
   into `wcontainers-directx` itself).
 - WebGL 2 track: copies from a depth texture into a colour texture of its group stored as a half
   float (`R16_TYPELESS` as `R16Float`) keep every bit pattern, NaNs included (the draw-made copy
@@ -911,6 +907,10 @@ Open asks only; the answered ones are in this file's git history.
   checked by the rig (the library tests check it today).
 
 ## Literals
+
+- Round 2 run 12: the cube-face count is `CUBE_FACES` (device.rs); the ten lines of `6` it
+  replaced left the baseline; no line added, no mark made. wcontainers-direct3d-11 542 lines,
+  wcontainers-directx 239 (781). The check exits 0 at the run's last commit (logs/r12f-literals.log).
 
 - Round 2 run 11: the two refusals the pixel program for a variant replaced left the baseline
   (two lines); no line added, no mark made. wcontainers-direct3d-11 552 lines,
@@ -931,7 +931,7 @@ Open asks only; the answered ones are in this file's git history.
 
 ## Licences
 
-Round 2 runs 10 and 11 added no dependency and installed nothing on the desktop.
+Round 2 runs 10 to 12 added no dependency and installed nothing on the desktop.
 
 G4 run 22 added no dependency (the windows crate features used were already on) and installed
 nothing on the desktop.

@@ -47,10 +47,10 @@ pub(crate) struct StageRun<B: Backend> {
 /// The bytes of the stage helper's filled sizes and primitive counts.
 const FILLED_BYTES: u64 = (STREAM_FILLED_WORDS * COUNTER_BYTES) as u64;
 
-/// Stream output without a geometry shader where the back end has no compute programs: the
-/// shaders crate's replay takes a geometry stage only.
-pub(crate) const STREAM_OUT_WITHOUT_COMPUTE: &str =
-    "stream output without a geometry shader on a back end without compute programs";
+/// Cull distances or alpha-antialiased lines through the stage helper where the back end has no
+/// compute programs: the replay takes a geometry shader or stream output only.
+const STAGE_ROUTE_WITHOUT_COMPUTE: &str =
+    "cull distances or alpha-antialiased lines through the stage helper without compute programs";
 
 /// A vertex shader variant the replay cannot capture: what follows the geometry stage (the
 /// viewport, clip distances) or inputs fetched in the program.
@@ -775,26 +775,37 @@ impl<B: Backend> Device<B> {
         vs: &Shader<B>,
         vk: StageVariant,
     ) -> Result<StageRun<B>> {
-        let (shader, _) = gs.stage.as_ref().expect("a geometry stage");
         let key = self.variant_key(vs, vk, SourceStage::Vertex);
         let vertex = crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &key)?;
-        let layer_named = crate::shader::names_layer(&shader.reflection.outputs);
-        let mut key = VariantKey {
-            output_interpolation: interpolation(self.ctx.ps.as_deref()),
-            ..crate::shader::geometry_key(&shader.typed, shader.layered, shader.clip, true)
+        let (replay, layer_named) = match (&gs.stage, &gs.stream) {
+            (Some((shader, _)), stream) => {
+                let layer_named = crate::shader::names_layer(&shader.reflection.outputs);
+                let mut key = VariantKey {
+                    output_interpolation: interpolation(self.ctx.ps.as_deref()),
+                    ..crate::shader::geometry_key(&shader.typed, shader.layered, shader.clip, true)
+                };
+                if layer_named {
+                    key.flags |= VariantFlags::LAYER_FROM_STAGE;
+                    key.linked.location = crate::shader::linked_location(
+                        shader
+                            .reflection
+                            .outputs
+                            .iter()
+                            .chain(self.ctx.ps.iter().flat_map(|p| &p.reflection.inputs)),
+                    );
+                }
+                let geometry = crate::shader::convert_geometry(&shader.bytecode, &key)?;
+                let replay =
+                    GeometryReplay::new(&mut self.backend, &vertex, &geometry, stream.as_ref());
+                (replay, layer_named)
+            }
+            // A vertex shader alone, captured for its stream output and drawn from the capture.
+            (None, Some(stream)) => (
+                GeometryReplay::streamed(&mut self.backend, &vertex, stream),
+                false,
+            ),
+            (None, None) => return not_implemented(STAGE_ROUTE_WITHOUT_COMPUTE),
         };
-        if layer_named {
-            key.flags |= VariantFlags::LAYER_FROM_STAGE;
-            key.linked.location = crate::shader::linked_location(
-                shader
-                    .reflection
-                    .outputs
-                    .iter()
-                    .chain(self.ctx.ps.iter().flat_map(|p| &p.reflection.inputs)),
-            );
-        }
-        let geometry = crate::shader::convert_geometry(&shader.bytecode, &key)?;
-        let replay = GeometryReplay::new(&mut self.backend, &vertex, &geometry, gs.stream.as_ref());
         let replay = replay.map_err(|e| self.staged_error(e))?;
         let gpu = self.backend.create_shader(replay.passthrough());
         let gpu = self.gpu(gpu)?;
@@ -837,8 +848,8 @@ impl<B: Backend> Device<B> {
         raster: Option<&B::Raster>,
         draw: Replayed,
     ) -> Result<bool> {
-        if gs.stage.is_none() {
-            return not_implemented(STREAM_OUT_WITHOUT_COMPUTE);
+        if gs.stage.is_none() && gs.stream.is_none() {
+            return not_implemented(STAGE_ROUTE_WITHOUT_COMPUTE);
         }
         // The vertex stage is captured as drawn, so a variant applying what follows the geometry
         // stage (the viewport, clip distances) or fetching its inputs has no place there.
