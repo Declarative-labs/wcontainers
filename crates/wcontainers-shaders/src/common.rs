@@ -143,7 +143,7 @@ fn moved_gather(module: &mut Module, f: &Function, r: &Read) -> Result<Function>
         } => Scalar::F32,
         _ => return Err(ConvertError::Unsupported(crate::refusal::DYNAMIC_OFFSET)),
     };
-    let result = crate::variant::vector(module, 4, scalar);
+    let result = crate::variant::vector(module, VectorSize::Quad as u8, scalar);
     let mut h = Function {
         arguments: r
             .passed
