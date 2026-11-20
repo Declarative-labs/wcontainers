@@ -1028,7 +1028,11 @@ exact bit numbers, so everything derived from them, and the output, stays the sa
 Passed registers (T16). Two ordered lists instead of "x0 and x1, from x0 up, plus sp". A piece's
 parameters are `PASSED_IN`, then the expected return address and the depth; its results are `PASSED_OUT`.
 ARM64: both [x0, x1, sp]. x86 starts with in = [rdi, rsi, rsp] and out = [rax, rsp]; which and how many is
-a tuning number, measured at milestone X5 (section 11). `tracked()`, `register()`, the none emitter's get
+a tuning number, measured at milestone X5 (section 11): of five pairs of lists timed on the benchmark set in
+wasmtime at full look-ahead, these starting lists ran fewest instructions on six of the eight workloads and
+the set fastest in all (20.9 s against 21.6 s), but with them layer 2 differs at bounded look-ahead (a
+register passed out and not in, which no list before had, loses its value there). Until that is fixed (X6,
+bounded look-ahead) x86 keeps in = [rsp, rdi, rsi, rdx, rcx, r8, r9, rax] and out = [rsp, rax, rdx]. `tracked()`, `register()`, the none emitter's get
 and set and `reload(live, passed_from)` go through the lists.
 
 Flags (T22 to T25). The translator keeps its machinery: a current shape, a local per completed flag, the
@@ -2851,10 +2855,12 @@ AVX-VNNI and VAES) is also run on the reference and compared, at 100 cases a for
 since an instruction the CPU lacks stops before it touches its operands. Where the reference lacks the
 feature too (AVX-512 and the other EVEX forms, seen in run 7; TSX, WAITPKG, CLWB, PTWRITE, SERIALIZE,
 MOVDIRI and RDPID, run 9; 3DNow and XOP, which Intel CPUs never had, expected to give SIGILL there too),
-both sides must stop with illegal instruction. Where the reference has it (`GuestTest::REFERENCE_HAS`: AES,
-PCLMULQDQ, RDRAND, RDSEED, CLFLUSHOPT, XSAVEOPT, XSAVEC, and the AVX setting's list while the setting is
-off), the translated side must stop with illegal instruction and the reference's run is recorded, not
-compared. A form's
+both sides must stop with illegal instruction. Where the reference has it (`GuestTest::reference_has`, from x86's `REFERENCE_HAS`: AES,
+PCLMULQDQ, RDRAND, RDSEED, CLFLUSHOPT, XSAVEOPT, XSAVEC, INVPCID and XSAVES, the last two kernel only there,
+and the AVX setting's list while the setting is off), the translated side must stop with illegal instruction
+and the reference's run is recorded, not compared. These forms are `GuestTest::unoffered_forms`, run by
+`unoffered_forms_are_illegal` with its own knob, `WC_LAYER1_UNOFFERED_CASES`; a check fails if any code of
+the list has no case that can be drawn. A form's
 name (the `Code` name) is the seed key; its group is its mnemonic and encoding. A case is a random
 `Instruction` for the `Code`, with operands from `op_kind(i)` (registers, immediates weighted toward edges,
 memory operands whose base and index point into DATA), encoded by iced's `Encoder`, which gives the bytes and
@@ -3104,7 +3110,6 @@ apply unchanged.
 - The NaN fix-up's cost for x86 guests on ARM hosts.
 - x87 in software against native on programs that use `long double`, and how many transcendental cases
   the reference rounds differently from the correctly rounded result.
-- The passed-register lists for x86.
 - Engine memory for x86 output. (Compile time and output size against input size, raw and gzipped, at
   none and full: `measure_x86_64`, first at X4, in the status file.)
 - Not seen on the reference: which fault the CPU gives for an encoding past 15 bytes that runs into an

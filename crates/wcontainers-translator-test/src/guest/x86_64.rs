@@ -479,7 +479,8 @@ fn written(bytes: &[u8], code: Code) -> bool {
 }
 
 /// The features of unoffered forms the reference CPU has, besides the AVX setting's (plan 7.4): its runs of
-/// them are recorded, not compared.
+/// them are recorded, not compared. `invpcid` and `xsaves` are kernel only there (general protection), where
+/// a CPU without them, the one presented, has no such instruction.
 const REFERENCE_HAS: &[&str] = &[
     "AES",
     "PCLMULQDQ",
@@ -488,6 +489,8 @@ const REFERENCE_HAS: &[&str] = &[
     "CLFLUSHOPT",
     "XSAVEOPT",
     "XSAVEC",
+    "INVPCID",
+    "XSAVES",
 ];
 
 /// Whether the translator gives `code` the claim group of a feature not offered by default.
