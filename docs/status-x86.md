@@ -116,6 +116,98 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   and `null_call` did not run in Chrome at none, a store into a page of code under the trap flag was lost
   and stopped at itself, the "Full" runs of x86 C programs never had `main` in the full translation (now
   also built position independent), and two smaller ones (see "X6, run 3").
+- X6f (the link address of a fixed-address program; the X6 check's open findings): run 1 (2026-11-20) fixed the
+  five findings and built the owner's ruling: the translator takes the program's link address and follows
+  absolute immediates through it, with the address in the cache key (see "X6f, run 1"). What comes next: X6f's
+  independent check.
+
+## X6f, run 1 (2026-11-20)
+
+Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws) for lint, the x86 tests, layers 2 and
+3, ARM64's output comparison and the timings; the rented ARM64 machine for ARM64's tests; the i7-8750H for
+layer 1's verdicts; the Mac for git, formatting and the literal check. Logs in scratch `x6f/`.
+
+The X6 check's findings:
+- Plan 5.7 said a JIT's measurement "comes at X6": it now says X6 measured only a loop writing its own next
+  instruction, and that a JIT program is measured with real programs (X9, X10). Plan 12's "the JIT case pays
+  this for every write" is now marked expected, not measured.
+- Plan 12 listed "an instruction writing into its own bytes runs as it was read" as not seen: it is now under
+  seen, with `self_written.c`'s `100 93 90`.
+- `browser.rs`'s status match had bare signal numbers and `128 + n` in every arm: each stop kind now names its
+  signal (`linux_raw_sys::general::SIGSEGV` and the rest; `linux-raw-sys` is now a dependency of the test
+  crate), the low 8 bits come from `as u8`, and `128 +` is written once. The same in `programs.rs`'s `ran`.
+  28 baseline lines went. The one `128` left in each stays until `wcontainers_abi::exit::SIGNALLED_EXIT_BASE`
+  (owned by the abi crate, not on a branch I merge) exists; the check does not report it.
+- `code_written_by_another_thread_matches_linux_x86_64` hung when the step was broken: each run now has
+  `SPIN_TIME_LIMIT` (120 s); a watchdog thread raises the stop flag past it and the next stop fails the test.
+  With `lose_stack` taken out of `Paused::write` by hand (a mutation, not kept; `mutation.log`) the test fails
+  in 151 s with "still running after 120s" at (None, Speed).
+- `Paused::write` refuses a write at a system call's pause: recorded for X10 in the plan's milestone list
+  (a test of another thread writing code while this one is inside a system call).
+
+The link address (the owner's ruling):
+- `translate`, `translate_omitting` and `translate_in_modules` take `link_address: Option<u64>` after the code
+  range: where the blob's first byte is linked, for an ELF of type `ET_EXEC`; `None` for code that may be
+  loaded anywhere. `Guest::built_address` returns `BuiltAddress::Offset` (relative to the instruction, as
+  before) or `BuiltAddress::Absolute`; x86 says `Absolute` for `mov` and `push` of a 32- or 64-bit immediate.
+  The translator maps an absolute address to a blob offset only with a link address (`Code::built_offset`);
+  the offset is then an entry like any built address. The output still holds no absolute address. ARM64 and
+  the test guest return only offsets.
+- The runtime (`wcontainers-wasmtime`, the runtime track's): `Key` has `link_address` and the cache file's
+  hash takes it; `compiled` takes it beside the code's hash and passes it to `translate`; its one caller passes
+  `None`, since the ELF's type does not reach it. Listed for the runtime track under "For the orchestrator".
+- The test runners: `Machine::load`, `load_omitting`, `load_split` and `load_mixed` take `(load_address,
+  link_address)`; code translated at run time gets none, as in the runtime. `Blob` has `link_address` (from the
+  ELF: `.text`'s address for `ET_EXEC`; `Some(LOAD)` for x86's assembled blobs, which are assembled there;
+  `None` for ARM64's hand-made ones) and `main` (its offset, from the symbols); `Binary` has `link_address` (the
+  image's lowest address for `ET_EXEC`). The browser translator's `translate` takes `linked` and
+  `link_address`, and `runner.js` passes the blob's. `time-blob`'s dump holds the link address after the code
+  size.
+- `main_is_in_the_full_translation_x86_64`: the rare-path C programs (`written_code`, `null_call`, `jumps`,
+  `exceptions`, `fibers`, `coroutines`, `self_written`, `written_by_another`) at -O0 and -O2, fixed and
+  position independent: the full translation from the entry has a piece for `main` in every one; a fixed
+  build without the link address has none. `main_is_in_the_full_translation_arm64`: the shared ones, fixed,
+  have `main` with or without it. Rust's `panics` is left out of both, and ARM64's position independent builds:
+  rustc's x86 start code takes `main` from the global offset table (`mov 0x62033(%rip),%rdi` in `_start_c`
+  of `panics-O0`, objdump on the rented machine), an address held in data that no walk follows; ARM64's
+  `written_code-O0-pic` has no piece for `main` either (measured), which I expect has the same cause (not
+  disassembled: zig refused to build the probe there with "CacheCheckFailed").
+- Chrome gets the address: with it, hello, jumps and written_code (fixed, -O0 and -O2) at full make 18 to 22
+  translations at run time, without it 42 to 47, the same counts in wasmtime and Chrome (scratch
+  `x6f/scratch_link_chrome.rs`, `scratch.log`).
+
+Measured:
+- x86's `--test programs` (every x86 program test, Chrome included, the C programs in both positions with
+  their link address), release, rented x86-64 machine (`programs.log`, load up to 73 with my other jobs): 23
+  passed, 0 failed (486 s).
+- ARM64's output byte for byte against 56a34d24 (before the link address), every look-ahead, both settings,
+  each kind of start alone (scratch `same-remote.sh`, `same.log`, `same-java.log`, rented x86-64 machine):
+  bench 505, busybox 34, musl 120, rg 34, git 34, python 34, java 40, go 28 modules, all the same. Node and Bun
+  not run. Java at the earlier commit first overflowed a rayon thread's stack with 32 threads; with
+  `RUST_MIN_STACK=67108864` both sides ran.
+- The benchmark set, -O2 `SCALE=1`, before (56a34d24) and after (a1960001), wasmtime and Chrome at full for
+  speed, 5 alternating pairs, the order flipped every round, `taskset -c 0-9`, rented x86-64 machine, load
+  1.2 to 21.7 (`pairs.log`, `pairs-summary.txt`). After over before, median of the pairs: fib 1.001 wasmtime,
+  1.002 Chrome; sieve 1.002, 0.904; hash 0.998, 0.998; sort 1.003, 0.988; interpret 1.000, 1.004; matrix
+  1.000, 0.999; walk 1.087, 1.026; search 1.000, 1.006. Every output equal. Only sort's translation changes
+  (its comparator's address is an immediate: 5 pieces against 4, one more built address); the other seven
+  are the same byte for byte with and without the link address (`scratch.log`), so their differences are not
+  the translation's: walk varied most within each side (wasmtime before 2.375 to 2.792 s, after 2.408 to 2.733
+  s), and sieve in Chrome was 5% to 10% faster after in all five pairs with the same guest code, for a reason I
+  have not found.
+- Layer 2 x86, seed 9701, 10,000 programs, all on the CPU, 48 at once (`layers.log`): 0 failing (181 s; 3,421
+  faulted, 1,118 left to an address at full, 23,677 stacks lost, 23,790 pieces forgotten). x86's assembled
+  blobs now carry their link address.
+- Layer 3 Csmith x86, seed 9702, 1,000 programs, 48 at once: 881 compared (1 also in Chrome), 119 did not end
+  in time on Linux, 0 failing (338 s).
+- Lint with warnings denied for the four owned crates, the ARM64 crate, `wcontainers-wasmtime` and the browser
+  crate for both guests, and `cargo fmt --check`: pass (`lint2.log`).
+- The literal check (the Mac): exits 0; 28 baseline lines went, none added. Baseline lines of this track's
+  crates: x86 125, guest-cpu 28, the test crate 2,048, the translator 72.
+
+So X6f's bar holds: both builds of the rare-path C programs have `main` in the full translation, they match the
+reference at every look-ahead in wasmtime and Chrome, ARM64's output is the same byte for byte, and the
+benchmark set's pairs are recorded. What comes next: X6f's independent check.
 
 ## X6, run 3 (2026-11-20)
 
@@ -1087,6 +1179,16 @@ Baseline lines: wcontainers-translator-test 2111 (3 fewer), wcontainers-translat
 wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the milestone is not complete.
 
 ## For the orchestrator
+
+- X6f run 1, for the runtime track: `wcontainers-wasmtime` changed only as far as it must to compile. `Key`
+  gains `link_address: Option<u64>`, `Compiler::file` hashes it, `compiled` takes `(hash, link_address)` and
+  passes it to `translate`, and `compile` passes `None`. To use it: when `starts::image_starts` finds the image
+  of a run and its header's `e_type` is `ET_EXEC`, pass `Some(run.start)` (a fixed image is mapped at its link
+  address, so the run's start is where its first byte is linked); `None` otherwise and at run time.
+- X6f run 1, a question: addresses held in data are still not followed, the global offset table's above all
+  (rustc's x86 start code and, I expect, ARM64's position independent start code take `main` from it). For a
+  fixed program, a `mov r, [rip + d]` that reads a word of the blob could be followed through the link
+  address the same way. Not built: the ruling was about immediates.
 
 - X6 run 3, a question for the owner: x86 programs built for a fixed address (most static x86-64 binaries)
   take a function's address as an absolute immediate, so at full look-ahead `main` and everything only
@@ -3067,6 +3169,18 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X6f (on the rented x86-64 machine): `cargo test -p wcontainers-translator-test --test programs --
+  main_is_in_the_full_translation` (both guests; translation only, no reference), and the X6 programs below,
+  which now run every fixed C program with its link address. ARM64's output against a commit from before the
+  link address: `same-output.sh <commit>` as before (it gives the earlier commit's `tests/output.rs` no link
+  address); on a rented machine, whose copy has no .git, scratch `x6f/same-remote.sh` does its steps by hand
+  (`/work/probes/x6f/old.tar` from `git archive <commit>`, the ARM64 binaries in `/work/probes/x6f/bin`; java
+  needs `RUST_MIN_STACK=67108864` with many rayon threads). The benchmark set before and after as
+  alternating pairs: scratch `x6f/pairs-remote.sh <rounds> [workloads]` from an x86-run copy (it builds
+  `time-blob` from `/work/probes/x6f/old.tar` and from the copy, dumps each workload with each, and runs
+  wasmtime and Chrome at full on cores 0 to 9, the order flipped every round). `time-blob`'s dump now holds
+  the link address after the code size.
+
 - X6 (on the rented x86-64 machine, `x86-run <checkout> --name x86 -- '<command>'`): `cargo test -p
   wcontainers-translator-test --test programs -- trap_flag_steps_match_linux_x86_64
   self_written_code_matches_linux_x86_64 written_code_and_null_calls_match_linux_x86_64
@@ -3303,6 +3417,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X6f run 1: layer 2 x86 at 10,000 programs, seed 9701; layer 3 Csmith x86 at 1,000, seed 9702 (rented x86-64
+  machine); layer 1's hand cases, no-form bytes and Chrome sample at seed 9703 (i7-8750H); the benchmark set
+  in 5 pairs; the suite's default counts elsewhere.
 - X6 run 3: the trap flag's 11 cases at the 4 look-aheads in wasmtime and Chrome; the rare-path C programs at
   -O0 and -O2 in both positions at the 4 look-aheads and 3 mixed seeds in wasmtime and 4 in Chrome (rented
   x86-64 machine); layer 1's hand cases, no-form bytes and Chrome sample at seed 9621 (i7-8750H); ARM64's
@@ -3455,6 +3572,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Licences of what this track uses
 
+- Added at X6f: `linux-raw-sys` 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), already in the
+  workspace (the kernel's tests), now a dependency of the test crate for Linux's signal numbers.
 - Added at X5 run 3: `rustc_apfloat` 0.2.3 (Apache-2.0 WITH LLVM-exception), already a dependency of the
   ARM64 crate, now of `wcontainers-x86` (the exact path of SIMD floating point).
 - Added at X1, all already in the workspace: `blake3` (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH
@@ -3502,6 +3621,11 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
+- X6f run 1: the runtime passes no link address (the ruling asked for the smallest change to its call that
+  compiles; the ELF's type does not reach it). The description section does not record the link address, so
+  ARM64's output stays the same byte for byte; its effect shows in the pieces the section lists. Rust's
+  `panics` and ARM64's position independent builds are not in the "main in the full translation" test, for the
+  reason under "X6f, run 1".
 - X6 run 3: the guest interface's `StepAt` has a third case, `Retry(pc)`, which the plan's section 5.1 did
   not have: the memory fault hook's retry of a write to a page locked for code must not count as the stepped
   instruction having finished. And the rare-path C programs are tested built both ways (fixed and position
