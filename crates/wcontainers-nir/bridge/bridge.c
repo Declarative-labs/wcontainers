@@ -510,6 +510,93 @@ wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform t
    nir_shader_intrinsics_pass(nir, transform_position, nir_metadata_control_flow, &transform);
 }
 
+/* The texture unit a texture instruction samples: its variable's binding plus a constant index. */
+static bool
+texture_unit(nir_tex_instr *tex, uint32_t *unit)
+{
+   int at = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
+   if (at < 0)
+      return false;
+   nir_deref_instr *deref = nir_src_as_deref(tex->src[at].src);
+   uint32_t index = 0;
+   if (deref->deref_type == nir_deref_type_array) {
+      if (!nir_src_is_const(deref->arr.index))
+         return false;
+      index = nir_src_as_uint(deref->arr.index);
+      deref = nir_deref_instr_parent(deref);
+   }
+   if (deref->deref_type != nir_deref_type_var)
+      return false;
+   *unit = deref->var->data.binding + index;
+   return true;
+}
+
+static nir_def *
+zero_or_one(nir_builder *b, nir_alu_type type, uint8_t which)
+{
+   const bool one = which == WC_SWIZZLE_ONE;
+   switch (nir_alu_type_get_base_type(type)) {
+   case nir_type_int:
+   case nir_type_uint:
+      return nir_imm_int(b, one);
+   default:
+      return nir_imm_float(b, one);
+   }
+}
+
+struct swizzles {
+   const struct wc_texture_swizzle *data;
+   size_t count;
+};
+
+static bool
+swizzle_texture(nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_tex)
+      return false;
+   nir_tex_instr *tex = nir_instr_as_tex(instr);
+   const struct swizzles *s = data;
+   uint32_t unit;
+   if (nir_tex_instr_is_query(tex) || (tex->is_shadow && tex->is_new_style_shadow) ||
+       !texture_unit(tex, &unit))
+      return false;
+   const uint8_t *swizzle = NULL;
+   for (size_t i = 0; i < s->count; i++) {
+      if (s->data[i].unit == unit)
+         swizzle = s->data[i].swizzle;
+   }
+   if (!swizzle)
+      return false;
+   b->cursor = nir_after_instr(&tex->instr);
+   nir_def *swizzled;
+   if (tex->op == nir_texop_tg4) {
+      if (swizzle[tex->component] < WC_SWIZZLE_ZERO) {
+         tex->component = swizzle[tex->component];
+         return true;
+      }
+      swizzled = zero_or_one(b, tex->dest_type, swizzle[tex->component]);
+      swizzled = nir_vec4(b, swizzled, swizzled, swizzled, swizzled);
+   } else {
+      nir_scalar parts[WC_COMPONENTS];
+      for (unsigned i = 0; i < WC_COMPONENTS; i++) {
+         parts[i] = swizzle[i] < WC_SWIZZLE_ZERO
+                       ? nir_get_scalar(&tex->def, swizzle[i])
+                       : nir_get_scalar(zero_or_one(b, tex->dest_type, swizzle[i]), 0);
+      }
+      swizzled = nir_vec_scalars(b, parts, WC_COMPONENTS);
+   }
+   nir_def_rewrite_uses_after(&tex->def, swizzled);
+   return true;
+}
+
+void
+wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle *swizzles,
+                        size_t count)
+{
+   struct swizzles s = {swizzles, count};
+   nir_shader_instructions_pass(nir, swizzle_texture, nir_metadata_control_flow, &s);
+}
+
 void
 wc_nir_free(struct nir_shader *nir)
 {

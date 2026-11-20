@@ -8,6 +8,8 @@ use wcontainers_gpu::{
     ViewDimension,
 };
 
+use wcontainers_nir::mesa::{COMPONENTS, Swizzle};
+
 use crate::context::Context;
 use crate::gallium::*;
 use crate::resource::{self, Resource};
@@ -18,6 +20,23 @@ use crate::screen::DRIVER_NAME;
 pub struct View<B: Backend> {
     base: pipe_sampler_view,
     view: Result<B::TextureView, &'static str>,
+    /// How the programs that sample it rearrange its results.
+    pub swizzle: [Swizzle; COMPONENTS],
+}
+
+/// The identity swizzle, which needs no change to a program.
+pub const IDENTITY: [Swizzle; COMPONENTS] = [Swizzle::X, Swizzle::Y, Swizzle::Z, Swizzle::W];
+
+/// The NIR route's swizzle of a Gallium one.
+fn swizzle(s: c_uint) -> Swizzle {
+    match s {
+        PIPE_SWIZZLE_X => Swizzle::X,
+        PIPE_SWIZZLE_Y => Swizzle::Y,
+        PIPE_SWIZZLE_Z => Swizzle::Z,
+        PIPE_SWIZZLE_W => Swizzle::W,
+        PIPE_SWIZZLE_1 => Swizzle::One,
+        _ => Swizzle::Zero,
+    }
 }
 
 impl<B: Backend> View<B> {
@@ -160,7 +179,19 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: as above; the view takes its own reference.
     unsafe { resource::reference(&mut base.texture, texture) };
     let view = texture_view::<B>(&mut *context.screen().backend(), resource, &base);
-    Box::into_raw(Box::new(View::<B> { base, view })).cast()
+    let swizzle = [
+        base.swizzle_r(),
+        base.swizzle_g(),
+        base.swizzle_b(),
+        base.swizzle_a(),
+    ]
+    .map(swizzle);
+    Box::into_raw(Box::new(View::<B> {
+        base,
+        view,
+        swizzle,
+    }))
+    .cast()
 }
 
 /// `pipe_context::sampler_view_destroy`.

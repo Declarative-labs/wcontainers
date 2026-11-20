@@ -202,6 +202,30 @@ unsafe extern "C" {
     fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
+    fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
+}
+
+/// What one component of a texture's result is made of (`enum wc_swizzle`).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Swizzle {
+    X,
+    Y,
+    Z,
+    W,
+    Zero,
+    One,
+}
+
+/// The components of a texture's result: a vector's most (`WC_COMPONENTS`).
+pub const COMPONENTS: usize = naga::VectorSize::MAX;
+
+/// The swizzle of the texture bound at one texture unit (`struct wc_texture_swizzle`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureSwizzle {
+    pub unit: u32,
+    pub swizzle: [Swizzle; COMPONENTS],
 }
 
 /// How a vertex program's position is changed to meet the host's clip space and viewport
@@ -282,6 +306,12 @@ impl Nir {
     pub fn fragcolor_to_buffers(&mut self, buffers: u32) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_fragcolor_to_buffers(self.0, buffers) }
+    }
+
+    /// Every result read from the textures at the units listed rearranged by their swizzle.
+    pub fn swizzle_textures(&mut self, swizzles: &[TextureSwizzle]) {
+        // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
+        unsafe { wc_nir_swizzle_textures(self.0, swizzles.as_ptr(), swizzles.len()) }
     }
 
     /// A vertex program's position changed by `transform`. Nothing for another stage.

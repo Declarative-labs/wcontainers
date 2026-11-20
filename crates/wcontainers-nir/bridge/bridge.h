@@ -10,6 +10,8 @@
 extern "C" {
 #endif
 
+#include "flat.h"
+
 struct nir_shader;
 struct nir_shader_compiler_options;
 
@@ -199,6 +201,27 @@ struct wc_position_transform {
 };
 
 void wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform);
+
+/* What one component of a texture's result is made of: one of its components, zero or one. */
+enum wc_swizzle {
+   WC_SWIZZLE_X,
+   WC_SWIZZLE_Y,
+   WC_SWIZZLE_Z,
+   WC_SWIZZLE_W,
+   WC_SWIZZLE_ZERO,
+   WC_SWIZZLE_ONE,
+};
+
+/* The swizzle of the texture bound at one texture unit. */
+struct wc_texture_swizzle {
+   uint32_t unit;
+   uint8_t swizzle[WC_COMPONENTS];
+};
+
+/* Every result read from the textures at the units listed rearranged by their swizzle (Gallium's
+ * sampler views carry one; the host's texture views do not). */
+void wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle *swizzles,
+                             size_t count);
 
 void wc_nir_free(struct nir_shader *nir);
 void wc_bytes_free(struct wc_bytes *bytes);

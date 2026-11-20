@@ -11,14 +11,14 @@ use wcontainers_gpu::{
     Program, ReflectedBinding, RingKind, ScissorRect, ShaderModule, ShaderStage, SlotKind,
     SlowPath, StageSet, Topology, VertexBinding, Viewport, cut_scissors,
 };
-use wcontainers_nir::mesa::PositionTransform;
+use wcontainers_nir::mesa::{PositionTransform, TextureSwizzle};
 
 use crate::context::Context;
 use crate::gallium::*;
 use crate::resource::Resource;
 use crate::screen::Screen;
 use crate::state::{self, Shader, Stage, refuse};
-use crate::view::View;
+use crate::view::{IDENTITY, View};
 
 /// One stage's program converted for one variant, and what it binds.
 struct Built<B: Backend> {
@@ -31,10 +31,18 @@ struct Built<B: Backend> {
 /// A shader state as a map key: the address Mesa holds it at.
 type ShaderId = usize;
 
+/// What a program is converted for beside its NIR: the position's transform (vertex programs) and
+/// the swizzles of the views bound where it samples.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+struct Variant {
+    transform: PositionTransform,
+    swizzles: Vec<TextureSwizzle>,
+}
+
 /// The programs and blocks made so far, by what they were made from.
 pub struct Programs<B: Backend> {
-    built: HashMap<(ShaderId, PositionTransform), Built<B>>,
-    programs: HashMap<(ShaderId, PositionTransform, ShaderId), B::Program>,
+    built: HashMap<(ShaderId, Variant), Built<B>>,
+    programs: HashMap<(ShaderId, Variant, ShaderId, Variant), B::Program>,
     blends: HashMap<BlendDesc, B::Blend>,
 }
 
@@ -52,7 +60,7 @@ impl<B: Backend> Programs<B> {
     /// Drops everything made from one shader state, which Mesa is deleting.
     pub fn forget(&mut self, screen: &Screen<B>, shader: *const Shader) {
         let id = shader as ShaderId;
-        let built: Vec<_> = self.built.keys().filter(|k| k.0 == id).copied().collect();
+        let built: Vec<_> = self.built.keys().filter(|k| k.0 == id).cloned().collect();
         for key in built {
             if let Some(b) = self.built.remove(&key) {
                 screen.retire(Object::Shader(b.shader));
@@ -62,7 +70,7 @@ impl<B: Backend> Programs<B> {
             .programs
             .keys()
             .filter(|k| k.0 == id || k.2 == id)
-            .copied()
+            .cloned()
             .collect();
         for key in programs {
             if let Some(p) = self.programs.remove(&key) {
@@ -99,15 +107,18 @@ fn uniform_sizes(module: &naga::Module) -> HashMap<u32, u64> {
         .collect()
 }
 
-/// One stage's program through the NIR route, for `transform`.
+/// One stage's program through the NIR route, for `variant`.
 fn convert<B: Backend>(
     backend: &mut B,
     shader: &Shader,
-    transform: PositionTransform,
+    variant: &Variant,
 ) -> Result<Built<B>, String> {
     let mut nir = shader.nir.try_clone().ok_or("out of memory")?;
-    if transform != PositionTransform::default() {
-        nir.transform_position(transform);
+    if variant.transform != PositionTransform::default() {
+        nir.transform_position(variant.transform);
+    }
+    if !variant.swizzles.is_empty() {
+        nir.swizzle_textures(&variant.swizzles);
     }
     let key = nir.key().map_err(|e| e.to_string())?;
     let stage = shader.stage.nir();
@@ -430,20 +441,33 @@ fn draw<B: Backend>(
     if transform.reverse_z {
         backend.slow_paths().hit(SlowPath::ViewportDepthFlip);
     }
+    let variants = [
+        Variant {
+            transform,
+            swizzles: swizzles(context.stages.get(Stage::Vertex)),
+        },
+        Variant {
+            transform: PositionTransform::default(),
+            swizzles: swizzles(context.stages.get(Stage::Fragment)),
+        },
+    ];
+    if variants.iter().any(|v| !v.swizzles.is_empty()) {
+        backend.slow_paths().hit(SlowPath::SwizzleInShader);
+    }
     let programs = &mut context.programs;
-    for (shader, variant) in [(vs, transform), (fs, PositionTransform::default())] {
-        let key = (shader as ShaderId, variant);
-        if let Entry::Vacant(slot) = programs.built.entry(key) {
+    for (shader, variant) in [vs, fs].into_iter().zip(&variants) {
+        if let Entry::Vacant(slot) = programs.built.entry((shader as ShaderId, variant.clone())) {
             // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
             slot.insert(convert(backend, unsafe { &*shader }, variant)?);
         }
     }
-    let program_key = (vs as ShaderId, transform, fs as ShaderId);
+    let [vertex, fragment] = variants;
     let built = [
-        &programs.built[&(vs as ShaderId, transform)],
-        &programs.built[&(fs as ShaderId, PositionTransform::default())],
+        &programs.built[&(vs as ShaderId, vertex.clone())],
+        &programs.built[&(fs as ShaderId, fragment.clone())],
     ];
-    if let Entry::Vacant(slot) = programs.programs.entry(program_key) {
+    let program_key = (vs as ShaderId, vertex, fs as ShaderId, fragment);
+    if let Entry::Vacant(slot) = programs.programs.entry(program_key.clone()) {
         slot.insert(
             backend
                 .create_program(&Program::Render {
@@ -644,6 +668,24 @@ fn draw<B: Backend>(
         backend.destroy(Object::BindingSet(set));
     }
     Ok(())
+}
+
+/// The swizzles of a stage's bound views that rearrange their results.
+fn swizzles<B: Backend>(stage: &state::StageState<B>) -> Vec<TextureSwizzle> {
+    stage
+        .views
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !v.is_null())
+        .filter_map(|(unit, &v)| {
+            // SAFETY: the slot holds a reference on a live view of this driver.
+            let swizzle = unsafe { View::<B>::of(v) }.swizzle;
+            (swizzle != IDENTITY).then_some(TextureSwizzle {
+                unit: unit as u32,
+                swizzle,
+            })
+        })
+        .collect()
 }
 
 fn fan_or_loop(topology: Topology) -> FanOrLoop {
