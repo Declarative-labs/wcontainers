@@ -25,15 +25,15 @@ struct Held<I> {
 /// instruction at look-ahead none, at most `n` at `Bounded(n)`, and up to the end of `code` at full, going on
 /// after every instruction that falls through (a call's return comes back through its entry slot) and to every
 /// direct branch's target inside `code`. A backward branch's next instruction, where a loop is left, is reached
-/// through an exit and starts a piece of its own, unless the branch goes back before the start and the code
-/// after it comes back into the piece (docs/native.md section 3.2). Instructions are laid out in address order;
+/// through an exit and starts a piece of its own, unless the code after it comes back into the piece (docs/
+/// native.md section 3.2). Instructions are laid out in address order;
 /// a branch to an instruction the piece holds goes straight to it, any other leaves through an exit, and a
 /// conditional branch's taken side is placed out of line. `None` when no instruction starts there.
 ///
 /// The count's adds are written only when `exact_replay` is set: the process asked for exact replay
 /// (`ReplayDeterminism::Exact`, from which the caller derives it and which keys its cache of translations).
 /// Each straight-line part, entered only at its start and ended by a branch or where the code goes elsewhere,
-/// has its add placed by `count_placement` (section 4), or counted ahead by the one part it is entered from
+/// has its add placed by `count_placement` (section 4), or counted ahead by the parts it is entered from
 /// (`counted_ahead`), and every exit leaves the count the guest's, so it is exact wherever the piece is entered
 /// or left. The position map keeps the count ahead by the events still to come from the add to each event's
 /// commit point.
@@ -78,19 +78,59 @@ pub fn translate_native<G: Native>(
     let part_of = |k: usize| starts.partition_point(|&s| s <= k) - 1;
     let index_at: BTreeMap<usize, usize> =
         held.iter().enumerate().map(|(k, h)| (h.at, k)).collect();
+    let end_of = |p: usize| starts.get(p + 1).copied().unwrap_or(held.len());
     // The parts each part goes on to inside the piece: the next by falling through, a branch's target.
-    let successors: Vec<BTreeSet<usize>> = (0..starts.len())
+    let ways: Vec<(Option<usize>, Option<usize>)> = (0..starts.len())
         .map(|p| {
-            let end = starts.get(p + 1).copied().unwrap_or(held.len());
-            let last = &held[end - 1];
+            let last = &held[end_of(p) - 1];
             let through = (last.goes_on
-                && held.get(end).is_some_and(|n| n.at == last.at + last.length))
+                && held
+                    .get(end_of(p))
+                    .is_some_and(|n| n.at == last.at + last.length))
             .then_some(p + 1);
             let branch = last
                 .target
                 .and_then(|t| index_at.get(&t))
                 .map(|&k| part_of(k));
-            through.into_iter().chain(branch).collect()
+            (through, branch)
+        })
+        .collect();
+    let successors: Vec<BTreeSet<usize>> = ways
+        .iter()
+        .map(|&(through, branch)| through.into_iter().chain(branch).collect())
+        .collect();
+    // The loops the piece holds, as the offsets from a branch back's target to the branch.
+    let loops: Vec<(usize, usize)> = held
+        .iter()
+        .filter_map(|h| {
+            h.target
+                .filter(|&t| t <= h.at && index_at.contains_key(&t))
+                .map(|t| (t, h.at))
+        })
+        .collect();
+    // The way each part most likely goes on inside the piece: the one that stays in the innermost loop holding
+    // the part, else a branch back, else falling through.
+    let likely: Vec<Option<usize>> = (0..starts.len())
+        .map(|p| match ways[p] {
+            (Some(through), Some(branch)) if through != branch => {
+                let (first, last) = (held[starts[p]].at, held[end_of(p) - 1].at);
+                let innermost = loops
+                    .iter()
+                    .filter(|&&(head, end)| head <= first && last <= end)
+                    .min_by_key(|&&(head, end)| end - head);
+                let stays = |q: usize| {
+                    innermost.is_some_and(|&(head, end)| (head..=end).contains(&held[starts[q]].at))
+                };
+                let back = held[starts[branch]].at <= last;
+                Some(if stays(branch) == stays(through) {
+                    if back { branch } else { through }
+                } else if stays(branch) {
+                    branch
+                } else {
+                    through
+                })
+            }
+            (through, branch) => through.or(branch),
         })
         .collect();
     let placed: Vec<Option<(usize, u32)>> = (0..starts.len())
@@ -103,7 +143,8 @@ pub fn translate_native<G: Native>(
         .iter()
         .map(|p| p.map_or(0, |(_, total)| total))
         .collect();
-    let (amounts, leads) = counted_ahead(&successors, &own);
+    let throughs: Vec<Option<usize>> = ways.iter().map(|&(through, _)| through).collect();
+    let (amounts, leads) = counted_ahead(&successors, &likely, &throughs, &own);
     let mut adds = vec![None; held.len()];
     for (p, &amount) in amounts.iter().enumerate() {
         if amount > 0 {
@@ -146,7 +187,7 @@ pub fn translate_native<G: Native>(
         part.push((here, h.instruction));
     };
     let mut out = HostCode::new();
-    // The host offset of each part's start, by guest address.
+    // The host offset of each part's start and the count's lead there, by guest address.
     let mut entries = BTreeMap::new();
     // The current straight-line part's instructions so far, with their guest addresses.
     let mut part: Vec<(u64, G::Instruction)> = Vec::new();
@@ -157,7 +198,7 @@ pub fn translate_native<G: Native>(
         out.start(here, events[k], G::stopping(&h.instruction, here));
         if part_starts[k] {
             let p = part_of(k);
-            entries.insert(here, out.offset());
+            entries.insert(here, (out.offset(), leads[p]));
             out.enter_ahead(leads[p]);
             part.clear();
             if let Some(branch) = G::test_loop_invariant(&mut out, &invariants[p]) {
@@ -202,18 +243,27 @@ pub fn translate_native<G: Native>(
             G::link(&mut out, &test, start),
             "a piece's own copy is near"
         );
-        copies.push((written..out.exits.len(), start, head));
+        copies.push((written..out.exits.len(), start, head, leads[p]));
     }
     for (n, exit) in std::mem::take(&mut out.exits).into_iter().enumerate() {
         // A copy's branch back to its start stays in the copy.
         let within = copies
             .iter()
-            .find(|(written, _, head)| written.contains(&n) && exit.target == *head)
-            .map(|&(_, start, _)| start)
+            .find(|(written, _, head, _)| written.contains(&n) && exit.target == *head)
+            .map(|&(_, start, _, lead)| (start, lead))
             .or_else(|| entries.get(&exit.target).copied());
-        if within.is_some_and(|to| G::link(&mut out, &exit, to)) {
+        // A part entered with the guest's count is linked to past the exit's settling, as a loader links.
+        let linked = within.and_then(|(to, lead)| {
+            let from = if lead == 0 {
+                out.for_loader(exit)?
+            } else {
+                exit
+            };
+            G::link(&mut out, &from, to).then_some(from)
+        });
+        if let Some(from) = linked {
             // The word linked over no longer builds an address.
-            out.places.retain(|place| place.start != exit.start);
+            out.places.retain(|place| place.start != from.start);
         } else if let Some(exit) = out.for_loader(exit) {
             out.exits.push(exit);
         }
@@ -222,11 +272,18 @@ pub fn translate_native<G: Native>(
 }
 
 /// Each part's add and how far the count is ahead where the part is entered, given the parts each goes on to
-/// inside the piece (`successors`) and its own events (`own`). A part entered only from one part that goes on
-/// only to it has its events counted by that part's add, so a loop of such parts adds once a turn; the first
-/// part is entered from outside, where the count is the guest's. Where a part's code leaves the piece with the
-/// count still ahead, its exit brings it back.
-fn counted_ahead(successors: &[BTreeSet<usize>], own: &[u32]) -> (Vec<u32>, Vec<u32>) {
+/// inside the piece (`successors`), the one it most likely goes on to (`likely`), the one it falls through to
+/// (`throughs`) and its own events (`own`). A part entered only from parts that most likely go on to it, each
+/// going on only to it or having an add of its own to join, has its events counted by their adds, so a loop of
+/// such parts adds once a turn; the first part is entered from outside, where the count is the guest's. A part's
+/// other way on, and its code leaving the piece, with the count still ahead, goes through code that brings the
+/// count back, so no such way is a part's fall-through.
+fn counted_ahead(
+    successors: &[BTreeSet<usize>],
+    likely: &[Option<usize>],
+    throughs: &[Option<usize>],
+    own: &[u32],
+) -> (Vec<u32>, Vec<u32>) {
     let parts = own.len();
     let mut predecessors = vec![BTreeSet::new(); parts];
     for (p, next) in successors.iter().enumerate() {
@@ -234,50 +291,61 @@ fn counted_ahead(successors: &[BTreeSet<usize>], own: &[u32]) -> (Vec<u32>, Vec<
             predecessors[q].insert(p);
         }
     }
-    // The part whose add counts each part's events in its place.
-    let counted_by = |q: usize| -> Option<usize> {
-        let &p = predecessors[q].first()?;
-        (q != 0 && p != q && predecessors[q].len() == 1 && successors[p].len() == 1).then_some(p)
-    };
-    let mut amounts = vec![0; parts];
-    for (q, &events) in own.iter().enumerate() {
-        let mut home = q;
-        for _ in 0..parts {
-            match counted_by(home) {
-                Some(p) => home = p,
-                None => break,
-            }
-        }
-        amounts[home] += events;
-    }
-    let mut leads: Vec<Option<u32>> = vec![None; parts];
-    for q in 0..parts {
-        // The chain of parts counted by the one before, from q back to the first that is not.
-        let mut chain = vec![q];
-        while let Some(p) = counted_by(*chain.last().expect("a part")) {
-            if leads[p].is_some() || chain.len() > parts {
-                break;
-            }
-            chain.push(p);
-        }
-        for &part in chain.iter().rev() {
-            let lead = match counted_by(part) {
-                None => 0,
-                Some(p) => {
-                    let before = leads[p].expect("the part before has its lead");
-                    before + amounts[p] - own[p]
+    let mut ahead: Vec<bool> = (0..parts)
+        .map(|q| {
+            q != 0
+                && !predecessors[q].is_empty()
+                && predecessors[q].iter().all(|&p| {
+                    p != q && likely[p] == Some(q) && (successors[p].len() == 1 || own[p] > 0)
+                })
+        })
+        .collect();
+    let next_ahead = |ahead: &[bool], p: usize| likely[p].filter(|&s| ahead[s]);
+    let leads_of = |ahead: &[bool]| -> Vec<u32> {
+        (0..parts)
+            .map(|q| {
+                let (mut lead, mut at) = (0, Some(q));
+                while let Some(x) = at.filter(|&x| ahead[x]) {
+                    lead += own[x];
+                    at = next_ahead(ahead, x);
                 }
-            };
-            leads[part] = Some(lead);
+                lead
+            })
+            .collect()
+    };
+    let leads = loop {
+        // A loop of parts each counted ahead would add nothing a turn: its first part keeps its own add.
+        for start in 0..parts {
+            let mut seen = vec![start];
+            while let Some(s) = next_ahead(&ahead, *seen.last().expect("a part")) {
+                if let Some(k) = seen.iter().position(|&x| x == s) {
+                    let first = *seen[k..].iter().min().expect("a loop has parts");
+                    ahead[first] = false;
+                    break;
+                }
+                seen.push(s);
+            }
         }
-    }
-    (
-        amounts,
-        leads
-            .into_iter()
-            .map(|l| l.expect("every part has its lead"))
-            .collect(),
-    )
+        let leads = leads_of(&ahead);
+        let falls_ahead = (0..parts).find_map(|p| {
+            let s = likely[p]?;
+            (throughs[p].is_some_and(|t| t != s) && leads[s] > 0).then_some(s)
+        });
+        match falls_ahead {
+            Some(s) => ahead[s] = false,
+            None => break leads,
+        }
+    };
+    let amounts = (0..parts)
+        .map(|q| {
+            if ahead[q] {
+                0
+            } else {
+                own[q] + likely[q].map_or(0, |s| leads[s])
+            }
+        })
+        .collect();
+    (amounts, leads)
 }
 
 /// The instructions of the piece at `address` whose bytes start `code`, in address order: at most `limit`, seen
@@ -294,8 +362,8 @@ fn reach<G: Native>(code: &[u8], address: u64, limit: usize) -> Vec<Held<G::Inst
         &mut held,
         &mut later,
     );
-    // The code after a branch back before the start is held when it comes back into the piece: the rest of a
-    // turn of the piece's loop. Code that only leaves (a return after a loop's last turn) starts its own piece.
+    // The code after a branch back is held when it comes back into the piece: the rest of a turn of a loop the
+    // piece holds. Code that only leaves (a return after a loop's last turn) starts its own piece.
     while let Some(next) = later.pop() {
         let (mut more, mut further) = (BTreeMap::new(), Vec::new());
         walk::<G>(
@@ -319,8 +387,7 @@ fn reach<G: Native>(code: &[u8], address: u64, limit: usize) -> Vec<Held<G::Inst
 }
 
 /// Walks from `from` into `found`, at most `limit` instructions, past what `known` holds: fall-through and
-/// direct branch targets inside `code`, but not a call's next instruction, nor the next instruction of a branch
-/// back into the walk's code (where a loop is left); the next instruction of a branch back before the start
+/// direct branch targets inside `code`, but not a call's next instruction; the next instruction of a branch back
 /// goes to `later`.
 fn walk<G: Native>(
     code: &[u8],
@@ -356,10 +423,10 @@ fn walk<G: Native>(
         work.extend(target);
         let backward = route == Route::Transfer && flow.target.is_some_and(|by| by <= 0);
         if goes_on {
-            match (backward, target) {
-                (false, _) => work.push(at + length),
-                (true, None) => later.push(at + length),
-                (true, Some(_)) => {}
+            if backward {
+                later.push(at + length);
+            } else {
+                work.push(at + length);
             }
         }
         found.insert(
@@ -378,22 +445,27 @@ fn walk<G: Native>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::counted_ahead;
 
-    fn successors(parts: &[&[usize]]) -> Vec<BTreeSet<usize>> {
-        parts
+    /// Each part as the parts it goes on to inside the piece, the one it most likely goes on to and the one it
+    /// falls through to.
+    type Part<'a> = (&'a [usize], Option<usize>, Option<usize>);
+
+    fn ahead(parts: &[Part], own: &[u32]) -> (Vec<u32>, Vec<u32>) {
+        let successors: Vec<_> = parts
             .iter()
-            .map(|next| next.iter().copied().collect())
-            .collect()
+            .map(|p| p.0.iter().copied().collect())
+            .collect();
+        let likely: Vec<_> = parts.iter().map(|p| p.1).collect();
+        let throughs: Vec<_> = parts.iter().map(|p| p.2).collect();
+        counted_ahead(&successors, &likely, &throughs, own)
     }
 
     /// A loop of two parts entered at the first adds once a turn, the second part entered with its event ahead.
     #[test]
     fn a_loop_of_two_parts_adds_once() {
         assert_eq!(
-            counted_ahead(&successors(&[&[1], &[0]]), &[1, 1]),
+            ahead(&[(&[1], Some(1), Some(1)), (&[0], Some(0), None)], &[1, 1]),
             (vec![2, 0], vec![0, 1])
         );
     }
@@ -402,16 +474,98 @@ mod tests {
     #[test]
     fn a_chain_is_counted_by_its_first_part() {
         assert_eq!(
-            counted_ahead(&successors(&[&[1], &[2], &[]]), &[1, 1, 1]),
+            ahead(
+                &[
+                    (&[1], Some(1), Some(1)),
+                    (&[2], Some(2), Some(2)),
+                    (&[], None, None)
+                ],
+                &[1, 1, 1]
+            ),
             (vec![3, 0, 0], vec![0, 2, 1])
         );
     }
 
-    /// A part entered from two parts, or from a part that goes on to two, keeps its own add.
+    /// A loop entered at its second part, which goes back to its first or on to a third that goes back too, with
+    /// a way out of the first to the piece's start: the first part adds for the second, once a turn, and its way
+    /// out settles.
     #[test]
-    fn a_join_or_a_fork_keeps_its_adds() {
+    fn an_inner_loop_adds_once_a_turn() {
         assert_eq!(
-            counted_ahead(&successors(&[&[1, 2], &[2], &[]]), &[0, 1, 1]),
+            ahead(
+                &[
+                    (&[2], Some(2), None),
+                    (&[0, 2], Some(2), Some(2)),
+                    (&[1, 3], Some(1), Some(3)),
+                    (&[1], Some(1), None),
+                ],
+                &[0, 1, 1, 1]
+            ),
+            (vec![1, 2, 0, 1], vec![0, 0, 1, 0])
+        );
+    }
+
+    /// A loop of parts that would each be counted by the one before keeps the add in its first part.
+    #[test]
+    fn a_loop_counted_ahead_keeps_one_add() {
+        assert_eq!(
+            ahead(
+                &[
+                    (&[1], Some(1), Some(1)),
+                    (&[2], Some(2), Some(2)),
+                    (&[1], Some(1), None)
+                ],
+                &[0, 1, 1]
+            ),
+            (vec![0, 2, 0], vec![0, 0, 1])
+        );
+    }
+
+    /// A part with an add of its own counts the part it most likely goes on to by falling through; its branch
+    /// elsewhere settles.
+    #[test]
+    fn a_fork_counts_its_likely_fall_through() {
+        assert_eq!(
+            ahead(
+                &[
+                    (&[1, 2], Some(1), Some(1)),
+                    (&[], None, None),
+                    (&[], None, None)
+                ],
+                &[1, 1, 1]
+            ),
+            (vec![2, 0, 1], vec![0, 1, 0])
+        );
+    }
+
+    /// A part whose likely way on is a branch keeps the add of its target there, so its fall-through needs none.
+    #[test]
+    fn a_fork_falling_through_elsewhere_keeps_the_adds() {
+        assert_eq!(
+            ahead(
+                &[
+                    (&[1, 2], Some(2), Some(1)),
+                    (&[], None, None),
+                    (&[], None, None)
+                ],
+                &[1, 1, 1]
+            ),
+            (vec![1, 1, 1], vec![0, 0, 0])
+        );
+    }
+
+    /// A part entered from two parts, or from a fork with no add of its own, keeps its own add.
+    #[test]
+    fn a_join_or_a_fork_without_an_add_keeps_its_adds() {
+        assert_eq!(
+            ahead(
+                &[
+                    (&[1, 2], Some(1), Some(1)),
+                    (&[2], Some(2), Some(2)),
+                    (&[], None, None)
+                ],
+                &[0, 1, 1]
+            ),
             (vec![0, 1, 1], vec![0, 0, 0])
         );
     }
