@@ -2304,6 +2304,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 12: plan 5.3 says a fork's child shares the parent's loaded translations and its mirror's slot pages. As
+  built, every process loads its own pieces (from the monitor's kept translations, so nothing is translated again) and
+  fills its own mirror: the inside links every direct exit within its process, which is right only for a process that
+  maps the target's code, so shared frames need either exits through slots past a loaded translation (a speed trade,
+  put to the orchestrator) or code frames copied before a link is written while another process holds them. Plan 5.3
+  says so.
+
 - N4 run 11: plan 3.2 says loading a translation into the code area writes its address places. As built, the monitor
   writes them (`Translation::moved`) before it puts the piece in the link, so the inside still receives code made for
   its address and needs no encoder; a loaded translation is not yet shared between processes inside the machine, which
@@ -2485,6 +2492,20 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 12: (1) Run 7's option (a) is not sound as written: every slot address is what some guest jump computes, so a
+  piece placed in the slot pages of guest addresses that cannot run code would be run by a guest jump to such an
+  address, which must fault there; it is withdrawn. (2) Option (b) for returns is where the gap is: bench.c's fib, as
+  zig compiled it, makes its second recursive call a loop around its one call site, so every return but the last goes
+  to the same place, and sort's comparison returns go to two sites in long runs. A toy in fib's own shape on the host
+  (n4r13/returns.c and returns.log, wall time only, 7 rounds, load 16) gives per run of fib(36): the return as built
+  +27.5 to +39.6% over plain bl/ret, option (b)'s hit path -0.2 to +3.2% (a first run at load 15 to 18: +31 to +48%
+  and +4 to +10%). So the return as built is most of fib's +48.6%
+  cycles, and (b) is expected (not measured natively) to take fib to about +20% and to help sort and calls.c. It adds a
+  second path to every return (the compare in line, the slot on a miss) and one patch of the site by the inside at its
+  first miss. This track will build it as a departure unless told otherwise. (3) Loaded translations shared between
+  processes (plan 5.3) are not built: see Departures; sharing frames needs exits through slots past a loaded
+  translation (a speed trade) or code frames copied on a link. Which, if either?
 
 - N4 run 11: the page test of the Split route, as built since run 6, costs no measurable cycles on this M5: leaving it
   out for every access of 16 bytes or fewer took 10 to 26% of the instructions of sort, interpret, matrix and walk

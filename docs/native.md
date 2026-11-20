@@ -1223,7 +1223,15 @@ maps another region (brief: leaving for more memory), up to the bound of section
   it counts guest frames, and copies a mirror frame before it writes a slot in it while another process
   holds it. Shared blocks (`shared_map`) map the same frames in each process, which a 4 KiB granule allows at
   any 4 KiB boundary, so the copying method runtime.md section 8 needs for 16 KiB host pages is not needed
-  here.
+  here. As built (N4): a child, and the same program run twice, load their own pieces and fill their own
+  mirror, the pieces coming from the monitor's kept translations (section 3.2) without translating again;
+  no code area frame or slot page is shared yet. Why: the inside links every direct exit within its process
+  (section 3.2, linked exits), and a link is right only for a process that maps the target's code. Sharing
+  frames therefore needs one of two things: exits that leave a loaded translation go through their slots
+  (one more indirect branch and seven words where a linked exit is one `b`: a speed trade, put to the
+  orchestrator), or a code area frame is copied before a process writes a link into it while another holds
+  it, as for mirror frames, which shares little after the first links. What sharing would save is the link
+  round trip and the copy of each piece (the translation itself is already kept); it is not measured yet.
 - **Leaving a translation** (code changed, section 3.5, or the range unmapped) happens in one process:
   that process's slots for the range are emptied (copying the mirror frame first if shared) and its count of
   holders of the translation drops.
@@ -1252,18 +1260,38 @@ maps another region (brief: leaving for more memory), up to the bound of section
   - Each guest thread has its own table root: a thread's record holds its own TTBR0 root (ARM64) or CR3
     (x86-64) and its own address-space identifier, which the floor loads at every switch. Threads of one
     process share every lower table whose entries are the same for all of them and have their own where a
-    page's permission differs between them. This is what serves the embedder's watches: `memory_watch`
-    per process on every executor, and `memory_watch_thread` per thread, since this executor implements
-    `PerThreadWatch`: a watched page is invalid (Watch::All) or read-only (Watch::Writes) in the table roots
-    the watch covers, so a touch faults to the inside, which calls `on_memory_accessing` and lets the
-    thread go on once the watch is gone. A change to a shared page's entry is written into every table root
-    holding it and invalidated for each identifier, broadcast. Under Serial every thread of a process may
-    keep the process's one root, as today. N1 built and tested the per-thread root (two threads of one
-    process, one page writable under one root and read-only under the other, switched back and forth with no
+    page's permission differs between them. This is what serves the embedder's watches (the owner's names
+    of 2026-11-19: `Process::watch_memory(range, WatchesFor)` per process on every executor, and per thread
+    on this executor, which implements `PerThreadWatch`): a watched page is invalid (`WatchesFor::All`) or
+    read-only (`WatchesFor::Writes`) in the table roots the watch covers, so a touch faults to the inside,
+    which calls `on_watched_memory_accessing(process, thread, address, AccessKind)` and lets the thread go
+    on once the watch is gone. A change to a shared page's entry is written into every table root holding
+    it and invalidated for each identifier, broadcast. Under Serial every thread of a process may keep the
+    process's one root, as today. N1 built and tested the per-thread root (two threads of one process, one
+    page writable under one root and read-only under the other, switched back and forth with no
     invalidation).
-  - `memory_changed`: the ranges written since last asked come from the page tables' written marks (ARM64
-    hardware dirty state, DBM, where the CPU has it, else a write-protect and first-write fault; x86-64's
-    dirty bit), read and cleared by the inside per page, with the same invalidation as a permission change.
+  - `take_dirty_memory` (was `memory_changed`): the ranges written since last asked come from the page
+    tables' written marks (ARM64 hardware dirty state, DBM, where the CPU has it, else a write-protect and
+    first-write fault; x86-64's dirty bit), read and cleared by the inside per page, with the same
+    invalidation as a permission change.
+  - The kernel's own writes into a process's memory (the data of a `read`, a signal frame, a page of a
+    mapped file being filled, the thread-exit clear of a registered address) are treated exactly as the
+    program's. The kernel inside writes through the inside's linear map, never through the process's
+    tables, so the hardware sets no mark for them; two things make them alike. (1) Dirty: the `Cpu` side's
+    `write` and `zero` (and the copy that ends sharing, which a write by the kernel can cause) set the
+    written mark of every page they touch, in every table root that maps the page's frame (each process that
+    shows a shared block's page, whichever mapping the kernel wrote through), by the same per-page record
+    `take_dirty_memory` reads and clears; a page whose entry is write-protected only to catch its first
+    write is marked as that fault would mark it. (2) Watches: the kernel checks the range of every write
+    and read it makes into a process's memory against that process's watches before making it, and calls
+    `on_watched_memory_accessing` for the first watched address, with the thread whose call it serves,
+    before the access, as the fault does for the program; the hook `on_memory_written_by_kernel` follows
+    every write with its exact range. The watch check is the kernel's, so it is the same on every executor
+    and costs nothing when no watch is set (one empty map). Tests, built with the watches (N5 on): a guest
+    `read` into a page the program never wrote is in the next `take_dirty_memory`, through a private page and
+    through a shared block mapped in two processes (both report it); a watch with `WatchesFor::Writes` over
+    a `read`'s buffer fires before the data lands (the hook sees the old bytes) and a signal frame pushed
+    onto a watched stack fires it likewise; each against the WebAssembly executor's answer.
   - The kernel inside is entered by one caller at a time for now: a lock in the inside around every kernel
     entry (a system call, a fault the kernel resolves, a stop); a virtual CPU that finds it held waits in
     the inside, not on the host.
