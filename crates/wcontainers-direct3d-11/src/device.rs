@@ -228,6 +228,9 @@ const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
     "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)";
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
 const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound to nothing";
+const TYPED_BUFFER_UNCLAIMED: &str =
+    "a typed buffer view of a format whose typed buffers are not served";
+const STORAGE_UNCLAIMED: &str = "a storage view of a format whose storage views are not served";
 
 /// The color targets a pass takes at feature level `level`.
 fn level_targets(level: u32) -> u32 {
@@ -480,7 +483,9 @@ impl<B: Backend> Device<B> {
             }
             s.support2 = 0;
         }
-        if !format::storage_viewed(dxgi) {
+        if !format::storage_viewed(dxgi)
+            || format::texture_format(dxgi).is_some_and(format::no_storage_form)
+        {
             s.support1 &= !TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 &= !(UAV_TYPED_LOAD | UAV_TYPED_STORE);
         }
@@ -515,6 +520,7 @@ impl<B: Backend> Device<B> {
         // texels (`StorageFormatThroughBuffer`), which serves loads too.
         let through = texture.is_some_and(|f| {
             format::storage_viewed(dxgi)
+                && !format::no_storage_form(f)
                 && (self.stored_through(f) || as_integer.is_some_and(|t| self.through_takes(t)))
         });
         if through {
@@ -635,8 +641,10 @@ impl<B: Backend> Device<B> {
     /// textures can have, and for a count the back end draws that format with; none otherwise.
     pub fn multisample_quality_levels(&self, dxgi: u32, samples: u32) -> u32 {
         if samples == 1 {
+            // Direct3D answers one level for a single sample of `UNKNOWN` too (measured).
             return u32::from(
-                self.format_support(dxgi).support1 & crate::desc::support::TEXTURE2D != 0,
+                dxgi == format::UNKNOWN
+                    || self.format_support(dxgi).support1 & crate::desc::support::TEXTURE2D != 0,
             );
         }
         let format = format::texture_format(dxgi).or_else(|| {
@@ -1862,6 +1870,9 @@ impl<B: Backend> Device<B> {
         if format::is_srgb(v.desc.format) {
             return Err(Error::InvalidArg("an sRGB unordered access view"));
         }
+        if format::no_storage_form(v.format) {
+            return not_implemented(STORAGE_UNCLAIMED);
+        }
         self.check_format(v.format, self.storage_use(v.format))?;
         Ok(Rc::new(ShaderView::Texture(v)))
     }
@@ -1978,6 +1989,10 @@ impl<B: Backend> Device<B> {
             let f = format::texture_format_of(format)?;
             match f.block() {
                 (1, 1, bytes) if !f.is_depth_stencil() && format::buffer_viewed(format) => {
+                    // Served exactly where `CheckFormatSupport` claims typed buffers.
+                    if self.format_support(format).support1 & support::BUFFER == 0 {
+                        return not_implemented(TYPED_BUFFER_UNCLAIMED);
+                    }
                     (bytes, Some(f))
                 }
                 _ => {
