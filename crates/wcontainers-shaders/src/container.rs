@@ -148,6 +148,48 @@ pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
     Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
 }
 
+/// The DXBC instruction token's fields (d3d11TokenizedProgramFormat.hpp): the opcode in its low bits,
+/// the instruction's length in words from `LENGTH_SHIFT`, a control point count from
+/// `CONTROL_POINTS_SHIFT`.
+const OPCODE_BITS: u32 = 11;
+const LENGTH_SHIFT: u32 = 24;
+const LENGTH_BITS: u32 = 7;
+const CONTROL_POINTS_SHIFT: u32 = 11;
+const CONTROL_POINTS_BITS: u32 = 6;
+/// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its token.
+const CUSTOM_DATA: u32 = 53;
+/// `D3D11_SB_OPCODE_DCL_INPUT_CONTROL_POINT_COUNT`.
+const DCL_INPUT_CONTROL_POINT_COUNT: u32 = 147;
+
+/// `bits` bits of `token` from `shift`.
+fn field(token: u32, shift: u32, bits: u32) -> u32 {
+    token >> shift & ((1 << bits) - 1)
+}
+
+/// A DXBC program's declared input control points per patch (hull and domain shaders), from its code
+/// chunk.
+pub(crate) fn dxbc_input_control_points(container: &[u8]) -> Option<u32> {
+    let code = chunks(container, b"SHEX")
+        .chain(chunks(container, b"SHDR"))
+        .next()?;
+    let mut at = size_of::<CodeHeader>();
+    while let Some(token) = word(code, at) {
+        let opcode = field(token, 0, OPCODE_BITS);
+        if opcode == DCL_INPUT_CONTROL_POINT_COUNT {
+            return Some(field(token, CONTROL_POINTS_SHIFT, CONTROL_POINTS_BITS));
+        }
+        let length = match opcode {
+            CUSTOM_DATA => word(code, at + size_of::<u32>())?,
+            _ => field(token, LENGTH_SHIFT, LENGTH_BITS),
+        };
+        if length == 0 {
+            return None;
+        }
+        at += length as usize * size_of::<u32>();
+    }
+    None
+}
+
 /// The start of a DXIL container's `PSV0` chunk (DirectXShaderCompiler's
 /// DxilPipelineStateValidation.h): the size of its runtime information, then that information, which
 /// for a geometry shader starts with `GSInfo`.
@@ -160,6 +202,15 @@ struct PipelineStateGeometry {
     output_stream_mask: u32,
 }
 
+/// The start of a hull or domain shader's `PSV0` chunk: `HSInfo` and `DSInfo` both start with the
+/// input control point count.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct PipelineStateTessellation {
+    runtime_info_size: u32,
+    input_control_points: u32,
+}
+
 /// The tag of a DXIL container's pipeline state chunk.
 const PIPELINE_STATE_TAG: [u8; 4] = *b"PSV0";
 /// `D3D_PRIMITIVE_1_CONTROL_POINT_PATCH`, the first of the patch primitives.
@@ -169,6 +220,15 @@ pub(crate) const FIRST_PATCH_PRIMITIVE: u32 = 8;
 pub(crate) fn geometry_input_primitive(container: &[u8]) -> Option<u32> {
     let psv = chunks(container, &PIPELINE_STATE_TAG).next()?;
     word(psv, offset_of!(PipelineStateGeometry, input_primitive))
+}
+
+/// A DXIL hull or domain shader's input control points per patch, from its `PSV0` chunk.
+pub(crate) fn patch_input_points(container: &[u8]) -> Option<u32> {
+    let psv = chunks(container, &PIPELINE_STATE_TAG).next()?;
+    word(
+        psv,
+        offset_of!(PipelineStateTessellation, input_control_points),
+    )
 }
 
 /// An element of an input or output signature.

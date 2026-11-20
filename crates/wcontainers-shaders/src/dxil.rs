@@ -9,6 +9,8 @@ pub(crate) mod images;
 mod nonfinite;
 mod one_d;
 mod registers;
+mod staged;
+mod tessellation;
 mod widths;
 
 use crate::ConvertError;
@@ -249,26 +251,13 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    // naga's reader has no tessellation execution models, which the stage helper would take them
-    // through.
-    match crate::container::program_type(dxil) {
-        Some(crate::ir::program::GEOMETRY)
-            if container::geometry_input_primitive(dxil)
-                .is_some_and(|p| p >= container::FIRST_PATCH_PRIMITIVE) =>
-        {
-            return Err(ConvertError::Unsupported(
-                crate::refusal::GEOMETRY_PATCH_INPUT,
-            ));
-        }
-        Some(crate::ir::program::HULL) => {
-            return Err(ConvertError::Unsupported(crate::refusal::DXIL_HULL_SHADER));
-        }
-        Some(crate::ir::program::DOMAIN) => {
-            return Err(ConvertError::Unsupported(
-                crate::refusal::DXIL_DOMAIN_SHADER,
-            ));
-        }
-        _ => {}
+    if crate::container::program_type(dxil) == Some(crate::ir::program::GEOMETRY)
+        && container::geometry_input_primitive(dxil)
+            .is_some_and(|p| p >= container::FIRST_PATCH_PRIMITIVE)
+    {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::GEOMETRY_PATCH_INPUT,
+        ));
     }
     let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
     if evaluates_inputs(&spirv) {
@@ -280,6 +269,7 @@ pub(crate) fn lower(
     widths::widen(&mut spirv)?;
     registers::encode(&mut spirv);
     let geometry = geometry::prepare(&mut spirv)?;
+    let tessellation = tessellation::prepare(&mut spirv, dxil)?;
     let mut declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
@@ -406,7 +396,17 @@ pub(crate) fn lower(
                 _ => ShaderStage::Compute,
             }
         }
-        None => stage,
+        None => match &tessellation {
+            Some(declared) => {
+                let (source, extras, inputs) =
+                    tessellation::finish(&mut module, declared, [&inputs, &outputs])?;
+                reflection.stage = source;
+                reflection.extras = extras;
+                reflection.inputs = inputs;
+                stage
+            }
+            None => stage,
+        },
     };
     helper_invocations(&mut module);
     Ok((module, reflection, stage))
