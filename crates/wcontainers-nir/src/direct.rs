@@ -334,6 +334,8 @@ enum Intrinsic {
     ImageDerefSize,
     DerefAtomic,
     DerefAtomicSwap,
+    LoadStage,
+    StoreStage,
     Unsupported,
 }
 
@@ -2034,6 +2036,55 @@ impl Builder<'_> {
         Ok(())
     }
 
+    /// The local a stage value's slot is kept in, and its flat type.
+    fn stage_value(&self, i: &FlatInstr) -> Result<(Handle<Expression>, u32), ConvertError> {
+        let var = i.value[0] as usize;
+        let place = self.places.get(var).copied().flatten();
+        match (place, self.vars.get(var)) {
+            (Some(pointer), Some(v)) => Ok((pointer, v.ty)),
+            _ => Err(unsupported(format_args!(
+                "a stage value the module does not have"
+            ))),
+        }
+    }
+
+    /// `count` components of `whole` (a value of the flat type `ty`) from `first` on: a vector's
+    /// swizzle, or an array's elements gathered into a vector.
+    fn part(
+        &mut self,
+        whole: Handle<Expression>,
+        ty: u32,
+        first: u32,
+        count: u32,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let t = self.types[ty as usize];
+        if t.kind == TypeKind::Scalar || (first == 0 && count == t.components) {
+            return Ok(whole);
+        }
+        if count == 1 {
+            return Ok(self.add(Expression::AccessIndex {
+                base: whole,
+                index: first,
+            }));
+        }
+        if t.kind == TypeKind::Array {
+            let components = (first..first + count)
+                .map(|index| self.add(Expression::AccessIndex { base: whole, index }))
+                .collect();
+            let ty = self.scalar_type(self.kind_of(ty), count)?;
+            return Ok(self.add(Expression::Compose { ty, components }));
+        }
+        let mut pattern = [naga::SwizzleComponent::X; VectorSize::MAX];
+        for (p, c) in pattern.iter_mut().zip(first..first + count) {
+            *p = naga::SwizzleComponent::XYZW[c as usize];
+        }
+        Ok(self.add(Expression::Swizzle {
+            size: vector_size(count)?,
+            vector: whole,
+            pattern,
+        }))
+    }
+
     /// Stores `value` (of `components`) through `pointer` where `mask` says, the whole value at once
     /// when it says all.
     fn store(
@@ -2256,6 +2307,35 @@ impl Builder<'_> {
                 self.set(i, Value::Expr(e, Uint));
             }
             Intrinsic::DerefAtomic | Intrinsic::DerefAtomicSwap => self.atomic(i)?,
+            Intrinsic::LoadStage => {
+                let (pointer, ty) = self.stage_value(i)?;
+                let whole = self.add(Expression::Load { pointer });
+                let e = self.part(whole, ty, i.component, i.components)?;
+                self.set(i, Value::Expr(e, self.kind_of(ty)));
+            }
+            Intrinsic::StoreStage => {
+                let (pointer, ty) = self.stage_value(i)?;
+                let (value, components) = self.whole(i.src[0].def, self.kind_of(ty))?;
+                if self.types[ty as usize].kind == TypeKind::Scalar {
+                    self.statement(Statement::Store { pointer, value });
+                    return Ok(());
+                }
+                for c in (0..components).filter(|c| i.value[2] & (1 << c) != 0) {
+                    let pointer = self.add(Expression::AccessIndex {
+                        base: pointer,
+                        index: i.component + c,
+                    });
+                    let value = if components == 1 {
+                        value
+                    } else {
+                        self.add(Expression::AccessIndex {
+                            base: value,
+                            index: c,
+                        })
+                    };
+                    self.statement(Statement::Store { pointer, value });
+                }
+            }
             Intrinsic::Unsupported => return Err(unsupported(name(i))),
         }
         Ok(())

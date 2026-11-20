@@ -23,11 +23,30 @@
       }                                                                                            \
    } while (0)
 
+/* A stage value of lowered IO (load_input, load_interpolated_input, store_output): one variable a
+ * slot, its type and interpolation gathered from the intrinsics that reach it. */
+struct io_slot {
+   bool output;
+   unsigned location;
+   nir_alu_type base;
+   unsigned components;
+   /* A fragment input's load: load_input (flat) or the barycentric's op; nir_num_intrinsics before
+    * the first. */
+   nir_intrinsic_op load;
+   enum glsl_interp_mode interp;
+   const char *refused;
+};
+
 struct flattening {
    struct wc_flat *out;
+   const nir_shader *nir;
    uint32_t type_capacity, field_capacity, var_capacity, instr_capacity, initialiser_capacity;
    struct hash_table *types;
    struct hash_table *vars;
+   struct io_slot *slots;
+   uint32_t slot_count, slot_capacity;
+   /* The variable of the first slot; the others follow in order. */
+   uint32_t first_slot_var;
 };
 
 static enum wc_scalar
@@ -221,17 +240,18 @@ mode_of(nir_variable_mode mode)
    }
 }
 
-/* A stage input's or output's built-in, and its generic location where it has none. */
+/* The built-in of a stage input's or output's slot, and its generic location where it has none. */
 static enum wc_builtin
-builtin_of(const nir_shader *nir, const nir_variable *var, uint32_t *location)
+builtin_at(const nir_shader *nir, bool output, unsigned slot, uint32_t *location)
 {
-   int slot = var->data.location;
    *location = 0;
-   if (var->data.mode == nir_var_shader_in && nir->info.stage == MESA_SHADER_VERTEX) {
+   if (!output && nir->info.stage == MESA_SHADER_VERTEX) {
+      if (slot < VERT_ATTRIB_GENERIC0)
+         return WC_BUILTIN_OTHER;
       *location = slot - VERT_ATTRIB_GENERIC0;
       return WC_BUILTIN_NONE;
    }
-   if (var->data.mode == nir_var_shader_out && nir->info.stage == MESA_SHADER_FRAGMENT) {
+   if (output && nir->info.stage == MESA_SHADER_FRAGMENT) {
       if (slot == FRAG_RESULT_DEPTH)
          return WC_BUILTIN_FRAG_DEPTH;
       if (slot == FRAG_RESULT_SAMPLE_MASK)
@@ -256,20 +276,6 @@ builtin_of(const nir_shader *nir, const nir_variable *var, uint32_t *location)
    }
 }
 
-static enum wc_interpolation
-interpolation_of(const nir_variable *var)
-{
-   switch (var->data.interpolation) {
-   case INTERP_MODE_FLAT:
-      return WC_INTERP_FLAT;
-   case INTERP_MODE_NOPERSPECTIVE:
-      return WC_INTERP_LINEAR;
-   default:
-      return glsl_base_type_is_integer(glsl_get_base_type(glsl_without_array(var->type)))
-                ? WC_INTERP_FLAT
-                : WC_INTERP_PERSPECTIVE;
-   }
-}
 
 static bool
 add_constant(struct flattening *f, const nir_constant *c, const struct glsl_type *type)
@@ -296,15 +302,12 @@ add_constant(struct flattening *f, const nir_constant *c, const struct glsl_type
 }
 
 static bool
-add_var(struct flattening *f, nir_shader *nir, nir_variable *var)
+add_var(struct flattening *f, nir_variable *var)
 {
    struct wc_flat_var v = {
       .mode = mode_of(var->data.mode),
       .set = var->data.descriptor_set,
       .binding = var->data.binding,
-      .interpolation = interpolation_of(var),
-      .centroid = var->data.centroid,
-      .sample = var->data.sample,
       .readable = !(var->data.access & ACCESS_NON_READABLE),
       .writable = !(var->data.access & ACCESS_NON_WRITEABLE),
       .format = format_of(var->data.image.format),
@@ -312,8 +315,6 @@ add_var(struct flattening *f, nir_shader *nir, nir_variable *var)
    };
    if (!type_index(f, var->type, &v.type))
       return false;
-   if (var->data.mode & (nir_var_shader_in | nir_var_shader_out))
-      v.builtin = builtin_of(nir, var, &v.location);
    if (var->constant_initializer) {
       v.initialised = f->out->initialiser_count;
       if (!add_constant(f, var->constant_initializer, var->type))
@@ -322,6 +323,188 @@ add_var(struct flattening *f, nir_shader *nir, nir_variable *var)
    GROW(f->out->vars, f->out->var_count, f->var_capacity);
    _mesa_hash_table_insert(f->vars, var, (void *)(uintptr_t)f->out->var_count);
    f->out->vars[f->out->var_count++] = v;
+   return true;
+}
+
+/* What an IO intrinsic reaches: its slot (the clip distances folded into one array) and its first
+ * component, or the reason it is refused. */
+struct io_access {
+   bool output;
+   unsigned location;
+   unsigned first;
+   unsigned count;
+   nir_alu_type base;
+   const char *refused;
+};
+
+static bool
+io_access(const nir_shader *nir, nir_intrinsic_instr *intr, struct io_access *a)
+{
+   bool output;
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_input:
+   case nir_intrinsic_load_interpolated_input:
+      output = false;
+      break;
+   case nir_intrinsic_store_output:
+      output = true;
+      break;
+   default:
+      return false;
+   }
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+   nir_src *offset = nir_get_io_offset_src(intr);
+   const nir_def *value = output ? intr->src[0].ssa : &intr->def;
+   *a = (struct io_access){
+      .output = output,
+      .location = semantics.location,
+      .first = nir_intrinsic_component(intr),
+      .count = value->num_components,
+      .base = nir_alu_type_get_base_type(output ? nir_intrinsic_src_type(intr)
+                                                : nir_intrinsic_dest_type(intr)),
+   };
+   if (nir_src_is_const(*offset))
+      a->location += nir_src_as_uint(*offset);
+   else
+      a->refused = "a stage value indexed at run time";
+   if (value->bit_size != WC_VALUE_BITS)
+      a->refused = "a stage value of other than 32 bits";
+   if (semantics.dual_source_blend_index)
+      a->refused = "a second blend source";
+   bool varying = (nir->info.stage == MESA_SHADER_FRAGMENT) != output;
+   if (varying &&
+       (a->location == VARYING_SLOT_CLIP_DIST0 || a->location == VARYING_SLOT_CLIP_DIST1)) {
+      a->first += (a->location - VARYING_SLOT_CLIP_DIST0) * WC_COMPONENTS;
+      a->location = VARYING_SLOT_CLIP_DIST0;
+   }
+   return true;
+}
+
+static struct io_slot *
+find_slot(struct flattening *f, bool output, unsigned location)
+{
+   for (uint32_t n = 0; n < f->slot_count; n++) {
+      if (f->slots[n].output == output && f->slots[n].location == location)
+         return &f->slots[n];
+   }
+   return NULL;
+}
+
+static bool
+is_barycentric(nir_intrinsic_op op)
+{
+   switch (op) {
+   case nir_intrinsic_load_barycentric_pixel:
+   case nir_intrinsic_load_barycentric_centroid:
+   case nir_intrinsic_load_barycentric_sample:
+   case nir_intrinsic_load_barycentric_at_sample:
+   case nir_intrinsic_load_barycentric_at_offset:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* Every slot the IO intrinsics reach, with the widest access, one kind (u32 where they disagree)
+ * and a fragment input's one way of interpolation. */
+static bool
+gather_slots(struct flattening *f, nir_function_impl *impl)
+{
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         struct io_access a;
+         if (!io_access(f->nir, intr, &a) || a.refused)
+            continue;
+         struct io_slot *s = find_slot(f, a.output, a.location);
+         if (!s) {
+            GROW(f->slots, f->slot_count, f->slot_capacity);
+            s = &f->slots[f->slot_count++];
+            *s = (struct io_slot){
+               .output = a.output,
+               .location = a.location,
+               .base = a.base,
+               .load = nir_num_intrinsics,
+            };
+         }
+         if (s->base != a.base)
+            s->base = nir_type_uint;
+         s->components = MAX2(s->components, a.first + a.count);
+         if (a.output || f->nir->info.stage != MESA_SHADER_FRAGMENT)
+            continue;
+         nir_intrinsic_op load = nir_intrinsic_load_input;
+         enum glsl_interp_mode interp = INTERP_MODE_FLAT;
+         if (intr->intrinsic == nir_intrinsic_load_interpolated_input) {
+            nir_intrinsic_instr *barycentric = nir_src_as_intrinsic(intr->src[0]);
+            load = barycentric->intrinsic;
+            interp = nir_intrinsic_interp_mode(barycentric);
+            if (load == nir_intrinsic_load_barycentric_at_sample ||
+                load == nir_intrinsic_load_barycentric_at_offset)
+               s->refused = "interpolation at a sample or an offset";
+         }
+         if (s->load != nir_num_intrinsics && (s->load != load || s->interp != interp))
+            s->refused = "a stage value interpolated two ways";
+         s->load = load;
+         s->interp = interp;
+      }
+   }
+   return true;
+}
+
+static enum glsl_base_type
+base_type_of(nir_alu_type base)
+{
+   switch (base) {
+   case nir_type_float:
+      return GLSL_TYPE_FLOAT;
+   case nir_type_int:
+      return GLSL_TYPE_INT;
+   default:
+      return GLSL_TYPE_UINT;
+   }
+}
+
+/* One variable a slot, after the shader's own. */
+static bool
+add_slots(struct flattening *f)
+{
+   f->first_slot_var = f->out->var_count;
+   for (uint32_t n = 0; n < f->slot_count; n++) {
+      const struct io_slot *s = &f->slots[n];
+      struct wc_flat_var v = {
+         .mode = s->output ? WC_VAR_OUTPUT : WC_VAR_INPUT,
+         .readable = true,
+         .writable = true,
+         .format = WC_FORMAT_NONE,
+         .initialised = WC_NONE,
+      };
+      v.builtin = builtin_at(f->nir, s->output, s->location, &v.location);
+      /* A built-in has its own type whatever part of it the program reaches. */
+      const struct glsl_type *type =
+         v.builtin == WC_BUILTIN_CLIP_DISTANCE ? glsl_array_type(glsl_float_type(), s->components, 0)
+         : v.builtin == WC_BUILTIN_POSITION    ? glsl_vec4_type()
+         : v.builtin == WC_BUILTIN_SAMPLE_MASK ? glsl_uint_type()
+         : v.builtin == WC_BUILTIN_FRAG_DEPTH || v.builtin == WC_BUILTIN_POINT_SIZE
+            ? glsl_float_type()
+            : glsl_vector_type(base_type_of(s->base), s->components);
+      if (!type_index(f, type, &v.type))
+         return false;
+      /* Lowered IO keeps the interpolation only where a fragment input is loaded; an output takes
+       * the default of its kind. */
+      v.interpolation = s->base == nir_type_float ? WC_INTERP_PERSPECTIVE : WC_INTERP_FLAT;
+      if (s->load == nir_intrinsic_load_input)
+         v.interpolation = WC_INTERP_FLAT;
+      else if (s->load != nir_num_intrinsics)
+         v.interpolation = s->interp == INTERP_MODE_NOPERSPECTIVE ? WC_INTERP_LINEAR
+                           : s->interp == INTERP_MODE_FLAT        ? WC_INTERP_FLAT
+                                                                  : WC_INTERP_PERSPECTIVE;
+      v.centroid = s->load == nir_intrinsic_load_barycentric_centroid;
+      v.sample = s->load == nir_intrinsic_load_barycentric_sample;
+      GROW(f->out->vars, f->out->var_count, f->var_capacity);
+      f->out->vars[f->out->var_count++] = v;
+   }
    return true;
 }
 
@@ -578,6 +761,9 @@ flatten_tex(struct flattening *f, nir_tex_instr *tex)
 static bool
 flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
 {
+   /* A barycentric is read only as the interpolation of its loads (gather_slots). */
+   if (is_barycentric(intr->intrinsic))
+      return true;
    struct wc_flat_instr *i = next_instr(f, WC_FLAT_INTRINSIC);
    if (!i)
       return false;
@@ -609,6 +795,19 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
       i->value[1] = (nir_intrinsic_memory_modes(intr) & nir_var_mem_shared) != 0;
       i->value[2] = (nir_intrinsic_memory_modes(intr) & (nir_var_mem_ssbo | nir_var_image)) != 0;
    }
+   struct io_access a;
+   if (io_access(f->nir, intr, &a)) {
+      const struct io_slot *s = a.refused ? NULL : find_slot(f, a.output, a.location);
+      const char *refused = s ? s->refused : a.refused;
+      if (refused) {
+         i->kind = WC_FLAT_UNSUPPORTED;
+         i->name = refused;
+         return true;
+      }
+      i->op = a.output ? WC_INTRINSIC_STORE_STAGE : WC_INTRINSIC_LOAD_STAGE;
+      i->value[0] = f->first_slot_var + (uint32_t)(s - f->slots);
+      i->component = a.first;
+   }
    return true;
 }
 
@@ -638,7 +837,7 @@ flatten_instr(struct flattening *f, nir_instr *instr)
       set_def(i, &lc->def);
       for (unsigned c = 0; c < lc->def.num_components; c++)
          i->value[c] = lc->def.bit_size == 1 ? lc->value[c].b : lc->value[c].u32;
-      if (lc->def.bit_size != 1 && lc->def.bit_size != 32) {
+      if (lc->def.bit_size != 1 && lc->def.bit_size != WC_VALUE_BITS) {
          i->kind = WC_FLAT_UNSUPPORTED;
          i->name = "load_const of other than 32 bits";
       }
@@ -751,19 +950,25 @@ flatten_list(struct flattening *f, struct exec_list *list)
    return true;
 }
 
-/* A buffer's descriptor (vulkan_resource_index, load_vulkan_descriptor) made again in each block that
- * uses it, as derefs are, so that it never needs a register; walked backwards so that a copy's own
- * descriptor is copied in turn. */
+/* What is made again in each block that uses it, as derefs are: a buffer's descriptor and a
+ * barycentric, which never need a register. */
+static bool
+made_in_each_block(nir_intrinsic_op op)
+{
+   return op == nir_intrinsic_vulkan_resource_index ||
+          op == nir_intrinsic_load_vulkan_descriptor || is_barycentric(op);
+}
+
+/* Walked backwards so that a copy's own descriptor is copied in turn. */
 static void
-rematerialize_descriptors(nir_function_impl *impl)
+rematerialize_in_use_blocks(nir_function_impl *impl)
 {
    nir_foreach_block_reverse(block, impl) {
       nir_foreach_instr_reverse_safe(instr, block) {
          if (instr->type != nir_instr_type_intrinsic)
             continue;
          nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-         if (intr->intrinsic != nir_intrinsic_vulkan_resource_index &&
-             intr->intrinsic != nir_intrinsic_load_vulkan_descriptor)
+         if (!made_in_each_block(intr->intrinsic))
             continue;
          nir_foreach_use_including_if_safe(use, &intr->def) {
             if (nir_src_is_if(use) || nir_src_use_instr(use)->block == block)
@@ -807,13 +1012,17 @@ wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
 {
    memset(out, 0, sizeof(*out));
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
-   /* Blocks of stage values (gl_PerVertex) as one variable a member, the unused ones dropped. */
-   NIR_PASS(_, nir, nir_split_per_member_structs);
-   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
+   /* Stage values in one form, lowered IO, as the OpenGL linker hands them over: a Vulkan
+    * program's blocks of them (gl_PerVertex) split a member each first. */
+   if (!nir->info.io_lowered) {
+      NIR_PASS(_, nir, nir_split_per_member_structs);
+      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
+      nir_lower_io_passes(nir, false);
+   }
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
    nir_rematerialize_derefs_in_use_blocks_impl(impl);
-   rematerialize_descriptors(impl);
+   rematerialize_in_use_blocks(impl);
    nir_builder b = nir_builder_create(impl);
    nir_foreach_block(block, impl) {
       nir_foreach_instr_safe(instr, block) {
@@ -833,19 +1042,23 @@ wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
 
    struct flattening f = {
       .out = out,
+      .nir = nir,
       .types = _mesa_pointer_hash_table_create(NULL),
       .vars = _mesa_pointer_hash_table_create(NULL),
    };
    bool ok = true;
+   /* The stage values' own variables are left behind by the lowering; their slots stand for them. */
    nir_foreach_variable_in_shader(var, nir) {
-      ok = ok && add_var(&f, nir, var);
+      if (!(var->data.mode & (nir_var_shader_in | nir_var_shader_out)))
+         ok = ok && add_var(&f, var);
    }
    nir_foreach_function_temp_variable(var, impl) {
-      ok = ok && add_var(&f, nir, var);
+      ok = ok && add_var(&f, var);
    }
-   ok = ok && flatten_list(&f, &impl->body);
+   ok = ok && gather_slots(&f, impl) && add_slots(&f) && flatten_list(&f, &impl->body);
    _mesa_hash_table_destroy(f.types, NULL);
    _mesa_hash_table_destroy(f.vars, NULL);
+   free(f.slots);
    if (!ok)
       wc_flat_free(out);
    return ok;

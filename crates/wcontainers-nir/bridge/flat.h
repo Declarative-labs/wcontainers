@@ -13,6 +13,8 @@ struct nir_shader;
 #define WC_NONE UINT32_MAX
 #define WC_COMPONENTS 4
 #define WC_SOURCES 5
+/* The bit size of the values the route takes (booleans apart). */
+#define WC_VALUE_BITS 32
 
 enum wc_scalar { WC_SCALAR_FLOAT, WC_SCALAR_SINT, WC_SCALAR_UINT, WC_SCALAR_BOOL, WC_SCALAR_OTHER };
 
@@ -158,7 +160,7 @@ enum wc_flat_kind {
    X(TERMINATE) X(DEMOTE_IF) X(TERMINATE_IF) X(BARRIER) X(DEREF_BUFFER_ARRAY_LENGTH) \
    X(DDX) X(DDY) X(DDX_FINE) X(DDY_FINE) X(DDX_COARSE) X(DDY_COARSE) X(LOAD_POINT_COORD)        \
    X(IMAGE_DEREF_LOAD) X(IMAGE_DEREF_STORE) X(IMAGE_DEREF_SIZE) X(DEREF_ATOMIC)                 \
-   X(DEREF_ATOMIC_SWAP)
+   X(DEREF_ATOMIC_SWAP) X(LOAD_STAGE) X(STORE_STAGE)
 
 #define WC_ENUM_ENTRY(name) WC_ALU_##name,
 enum wc_alu_op { WC_ALU_OPS(WC_ENUM_ENTRY) WC_ALU_UNSUPPORTED };
@@ -225,7 +227,7 @@ struct wc_flat_instr {
    uint32_t sources;
    struct wc_flat_src src[WC_SOURCES];
    /* CONST: the values. DEREF: the variable, or the field. INTRINSIC: the set and binding of a
-    * resource index; the write mask of a store; a barrier's workgroup execution, workgroup memory and buffer
+    * resource index, or a stage value's variable; the write mask of a store; a barrier's workgroup execution, workgroup memory and buffer
     * and image memory; an atomic's operation (enum wc_atomic_op) in the last. */
    uint32_t value[WC_COMPONENTS];
    /* DEREF: the type it points at. TEX: the result's scalar. */
@@ -234,6 +236,8 @@ struct wc_flat_instr {
    enum wc_dim dim;
    uint32_t arrayed;
    uint32_t shadow;
+   /* TEX: a gather's component. LOAD_STAGE, STORE_STAGE: the first component (or clip distance)
+    * of the variable it reaches. */
    uint32_t component;
    /* UNSUPPORTED, or an operation outside the enums: Mesa's name of it. */
    const char *name;
