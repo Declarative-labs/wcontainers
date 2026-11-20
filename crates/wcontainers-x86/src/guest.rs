@@ -8,7 +8,7 @@ use crate::meaning::is_string;
 use crate::operand::*;
 use crate::{
     FLAGS_WORD, FLOAT_EXCEPTION, FS_BASE, GS_BASE, MXCSR, MXCSR_AT_START, MXCSR_MODE,
-    MXCSR_TRACKING, RFLAGS, X86_64, X86Block, XMM,
+    MXCSR_TRACKING, RFLAGS, STEP, STEP_AT, STEP_HELD, TF, X86_64, X86Block, XMM,
 };
 use core::ops::Range;
 use iced_x86::{Mnemonic, OpKind, Register};
@@ -26,6 +26,8 @@ pub enum Control {
     Mxcsr,
     MxcsrTracking,
     FloatException,
+    /// i32: not zero when the trap of a single step is held back one instruction (`mov ss`).
+    StepHeld,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +57,11 @@ pub enum Trap {
     FloatException(u32),
 }
 
+/// The states of single stepping's machine (`X86Private::step`).
+const STEP_IDLE: u32 = 0;
+const STEP_ALONE: u32 = 1;
+const STEP_RUNNING: u32 = 2;
+
 /// x86's own slow paths.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -68,7 +75,7 @@ pub enum Reason {
     StringTrapFlag,
     StringOverlap,
     StringRangeNotAllowed,
-    TrapFlagNotStepped,
+    TrapFlagSet,
     AlignmentCheckNotProvided,
     MxcsrFlagsReadNotKept,
     FarTransferTo32Bit,
@@ -328,6 +335,7 @@ impl Guest for X86_64 {
             Control::Mxcsr => MXCSR,
             Control::MxcsrTracking => MXCSR_TRACKING,
             Control::FloatException => FLOAT_EXCEPTION,
+            Control::StepHeld => STEP_HELD,
         }
     }
 
@@ -461,8 +469,8 @@ impl Guest for X86_64 {
             "rep movs or stos over memory not all accessible, one element at a time",
         ),
         (
-            Reason::TrapFlagNotStepped,
-            "popf set the trap flag: single steps are not taken",
+            Reason::TrapFlagSet,
+            "trap flag set by the program: single steps",
         ),
         (
             Reason::AlignmentCheckNotProvided,
@@ -496,6 +504,39 @@ impl Guest for X86_64 {
 
     fn offer_key(offer: Offer) -> u32 {
         offer.avx.into()
+    }
+
+    const STEPS: bool = true;
+
+    /// The trap flag's single steps: an instruction that starts with TF set runs alone and stops the thread
+    /// once it is done, as section 5.1 of the plan says.
+    fn step(state: &mut [u8], at: StepAt) -> Step {
+        let word =
+            |at: usize| u32::from_le_bytes(state[at..][..size_of::<u32>()].try_into().unwrap());
+        let rflags = u64::from_le_bytes(state[RFLAGS..][..size_of::<u64>()].try_into().unwrap());
+        let tf = rflags & TF != 0;
+        let (machine, held) = (word(STEP), word(STEP_HELD));
+        let at_pc = u64::from_le_bytes(state[STEP_AT..][..size_of::<u64>()].try_into().unwrap());
+        let (next, answer) = match at {
+            StepAt::Kernel => (STEP_IDLE, if tf { Step::Run } else { Step::Off }),
+            StepAt::Stop(pc) => match machine {
+                STEP_ALONE if pc == at_pc => (STEP_RUNNING, Step::Run),
+                STEP_RUNNING if held != 0 => {
+                    state[STEP_HELD..][..size_of::<u32>()].copy_from_slice(&0u32.to_le_bytes());
+                    state[STEP_AT..][..size_of::<u64>()].copy_from_slice(&pc.to_le_bytes());
+                    (STEP_ALONE, Step::Exact)
+                }
+                STEP_RUNNING => (STEP_IDLE, Step::Trap),
+                _ if tf => {
+                    state[STEP_HELD..][..size_of::<u32>()].copy_from_slice(&0u32.to_le_bytes());
+                    state[STEP_AT..][..size_of::<u64>()].copy_from_slice(&pc.to_le_bytes());
+                    (STEP_ALONE, Step::Exact)
+                }
+                _ => (STEP_IDLE, Step::Off),
+            },
+        };
+        state[STEP..][..size_of::<u32>()].copy_from_slice(&next.to_le_bytes());
+        answer
     }
 
     /// An access whose first or last byte is not canonical (bits 63 to 47 not all equal) is a stack fault

@@ -468,6 +468,7 @@ pub fn ran<G: GuestTest>(
         Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => 128 + 8,
         Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => 128 + 11,
         Stopped::Fault(Fault::Stack) => 128 + 7,
+        Stopped::Fault(Fault::SingleStep) => 128 + 5,
         other => {
             let pc = u64::from_le_bytes(
                 zerocopy::IntoBytes::as_bytes(registers)[G::PC_OFFSET..][..8]
@@ -537,6 +538,19 @@ pub fn native<G: GuestTest>(blob: &Blob) -> Ran {
         stderr: ran.stderr,
         status: ran.status,
     }
+}
+
+/// A blob run natively on the reference, with the signal, `si_code`, pc and general registers of the signal
+/// that ended it, if one did (`BlobRan::stop`).
+pub fn native_with_stop<G: GuestTest>(blob: &Blob) -> (Ran, Option<(u32, u32, Vec<u64>)>) {
+    let ran = on_reference::<G>(blob, 0);
+    let stop = ran.stop;
+    let ran = Ran {
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        status: ran.status,
+    };
+    (ran, stop)
 }
 
 fn on_reference<G: GuestTest>(blob: &Blob, runs: u32) -> BlobRan {

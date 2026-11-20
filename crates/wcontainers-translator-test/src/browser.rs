@@ -222,7 +222,7 @@ fn run_in_chrome<G: GuestTest>(
         Some("memory fault") => 128 + 11,
         Some("alignment") => 128 + 7,
         Some("undefined" | "unsupported") => 128 + 4,
-        Some("breakpoint") => 128 + 5,
+        Some("breakpoint" | "single step") => 128 + 5,
         Some("divide error" | "float exception") => 128 + 8,
         Some("general protection" | "overflow") => 128 + 11,
         Some("stack fault") => 128 + 7,

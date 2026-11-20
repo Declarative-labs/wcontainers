@@ -13,7 +13,7 @@ use wasmtime::{
     SharedMemory, Store, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{Access, CounterReading, Exit, PAGE_SIZE, Permissions, Syscall, Warning};
-use wcontainers_guest_cpu::{CodeChanges, HookBody, HookType, MemoryFault};
+use wcontainers_guest_cpu::{CodeChanges, HookBody, HookType, MemoryFault, Step, StepAt};
 pub use wcontainers_translator::contract::thread_state_size;
 use wcontainers_translator::contract::{self, Reason};
 use wcontainers_translator::{
@@ -61,6 +61,8 @@ pub enum Fault {
     Overflow,
     /// x86's stack fault: `SIGBUS`, `SI_KERNEL`.
     Stack,
+    /// A single step of the trap flag: `SIGTRAP`, `TRAP_TRACE`.
+    SingleStep,
 }
 
 /// Where the thread is paused when the pause function runs.
@@ -731,6 +733,9 @@ impl<G: GuestTest> Machine<G> {
     /// Run from the registers set until the thread stops. Returns why, and the registers at that moment.
     pub fn run(&mut self) -> (Stopped, G::Block) {
         self.store.data_mut().stopped = None;
+        if G::STEPS && step_on::<G>(&self.state, StepAt::Kernel) == Step::Run {
+            self.raise_stop_flag();
+        }
         let mut outcome = self.run.call(&mut self.store, ());
         while outcome.is_ok() && std::mem::take(&mut self.store.data_mut().lose_stack) {
             self.fresh_thread();
@@ -1032,6 +1037,22 @@ fn stop<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, stopped: Stopped) {
     host.stopped = Some(stopped);
 }
 
+/// Ask the guest what single stepping does now, on the thread's state; `Off` for a CPU that cannot step.
+fn step<G: GuestTest>(caller: &Caller<'_, Host<G>>, at: StepAt) -> Step {
+    if !G::STEPS {
+        return Step::Off;
+    }
+    step_on::<G>(caller.data().state.as_ref().unwrap(), at)
+}
+
+fn step_on<G: GuestTest>(state: &SharedMemory, at: StepAt) -> Step {
+    let cells = &state.data()[BLOCK_AT as usize..][..thread_state_size::<G>()];
+    // SAFETY: the range is inside the memory, and the guest thread is stopped, so nothing else touches
+    // these bytes while the guest works on them in place.
+    let bytes = unsafe { std::slice::from_raw_parts_mut(cells.as_ptr() as *mut u8, cells.len()) };
+    G::step(bytes, at)
+}
+
 fn raise_stop_flag<G: GuestTest>(caller: &Caller<'_, Host<G>>) {
     let state = caller.data().state.clone().unwrap();
     write_shared(
@@ -1069,6 +1090,9 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 let result = stand_in(&mut caller, call);
                 if caller.data().stopped.is_none() {
                     pause(&mut caller, Pause::Syscall);
+                    if step::<G>(&caller, StepAt::Kernel) == Step::Run {
+                        raise_stop_flag(&caller);
+                    }
                 }
                 result
             },
@@ -1091,6 +1115,21 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
             let mut pc = [0u8; 8];
             read_shared(&state, BLOCK_AT as usize + G::PC_OFFSET, &mut pc);
             let pc = u64::from_le_bytes(pc);
+            match step::<G>(&caller, StepAt::Stop(pc)) {
+                Step::Trap => {
+                    stop(&mut caller, Stopped::Fault(Fault::SingleStep));
+                    return UNWIND_LEAVE;
+                }
+                Step::Run => {
+                    raise_stop_flag(&caller);
+                    return 0;
+                }
+                Step::Exact => {
+                    raise_stop_flag(&caller);
+                    return UNWIND_GO_TO_EXACT;
+                }
+                Step::Off => {}
+            }
             slow_path(
                 caller.data_mut(),
                 Reason::StoppedByFlag.number(),

@@ -8,8 +8,9 @@ use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Library, Ran, boundaries, build, build_with, native, ran, reachable_memory, ready_on,
-    ready_with, translated, translated_for, translated_stopping_everywhere,
+    Blob, Library, Ran, boundaries, build, build_with, native, native_with_stop, ran,
+    reachable_memory, ready_on, ready_with, translated, translated_for,
+    translated_stopping_everywhere,
 };
 use wcontainers_translator_test::runner::Machine;
 use wcontainers_x86::X86_64;
@@ -789,6 +790,45 @@ fn self_written_code_matches_linux_x86_64() {
             eprintln!("{what}: code written without announcement {written} times");
             assert!(written >= 200, "{what}");
         });
+        full_matches_in_chrome::<X86_64>(&blob, &theirs);
+    }
+}
+
+/// The cases of `programs/x86_64/trap_flag.S`: `popf` setting TF before a `nop`, a `jmp`, a `call`, a `ret` and
+/// a `syscall`, a `popf` clearing it, a `rep movsb`, a load of ss, and `iretq` setting it.
+const TRAP_FLAG_CASES: u32 = 9;
+
+/// The trap flag set by the program: each case stops with SIGTRAP `TRAP_TRACE` where the reference stops, with
+/// its general registers and rip, at every look-ahead, and in Chrome with its status.
+#[test]
+fn trap_flag_steps_match_linux_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::{SIGTRAP, TRAP_TRACE};
+    for case in 0..TRAP_FLAG_CASES {
+        let define = format!("CASE={case}");
+        let blob = build_with::<X86_64>("trap_flag", "-O0", Library::None, &[&define]);
+        let (theirs, stop) = native_with_stop::<X86_64>(&blob);
+        let (signal, code, registers) = stop.expect("the reference stops by a signal");
+        assert_eq!((signal, code), (SIGTRAP, TRAP_TRACE), "case {case}");
+        for how in [
+            (LookAhead::None, Optimise::Speed),
+            (LookAhead::Full, Optimise::Speed),
+            (LookAhead::Full, Optimise::Size),
+            (LookAhead::AT_RUN_TIME, Optimise::Speed),
+        ] {
+            let (ours, machine, block) = translated_for::<X86_64>(&blob, how);
+            let what = format!("case {case} at {how:?}");
+            assert_eq!(ours, theirs, "{what}");
+            // The record holds the general registers in the block's order, then rip.
+            let (gpr, rip) = registers.split_at(block.gpr.len());
+            assert_eq!(&block.gpr[..], gpr, "general registers of {what}");
+            assert_eq!(block.rip, rip[0], "rip of {what}");
+            let set = <X86_64 as wcontainers_guest_cpu::Guest>::REASONS
+                .iter()
+                .find(|r| r.0 == wcontainers_x86::Reason::TrapFlagSet)
+                .unwrap()
+                .1;
+            assert!(machine.count_named(set) > 0, "{what}");
+        }
         full_matches_in_chrome::<X86_64>(&blob, &theirs);
     }
 }

@@ -179,6 +179,11 @@ pub struct X86Private {
     pub mxcsr_tracking: u32,
     /// The `si_code` of the unmasked SIMD floating point exception the float hook last met, 0 for none.
     pub float_exception: u32,
+    /// Single stepping by the trap flag: idle, one instruction about to run alone at `step_at`, or running.
+    pub step: u32,
+    /// Not zero when the instruction running alone loaded ss, which holds its trap back one instruction.
+    pub step_held: u32,
+    pub step_at: u64,
 }
 /// The bits of an x87 slot that hold its register.
 pub const X87_REGISTER_BITS: u32 = 80;
@@ -209,6 +214,12 @@ pub const MXCSR_TRACKING: usize =
     <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, mxcsr_tracking);
 pub const FLOAT_EXCEPTION: usize =
     <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, float_exception);
+pub const STEP: usize =
+    <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, step);
+pub const STEP_HELD: usize =
+    <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, step_held);
+pub const STEP_AT: usize =
+    <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, step_at);
 
 /// The rflags bits of the six arithmetic flags, and those of `X86Block::rflags`.
 pub const CF: u64 = 1;

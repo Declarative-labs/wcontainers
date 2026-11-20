@@ -372,7 +372,7 @@ fn translate_within<G: Guest>(
     }
     let mut counts = [0; Means::ALL.len()];
     let given: BTreeSet<u64> = starts.iter().copied().collect();
-    let mut read = Vec::new();
+    let read: Vec<Range<u64>>;
     let modules = match look_ahead {
         LookAhead::Bounded(0) => return Err(Error::NoBound),
         LookAhead::None | LookAhead::Bounded(1) => {

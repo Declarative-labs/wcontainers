@@ -46,13 +46,13 @@ const KEPT: u64 =
 const RF: u128 = 1 << 16;
 
 const SIGILL: u32 = 4;
-const SIGTRAP: u32 = 5;
+pub const SIGTRAP: u32 = 5;
 const SIGBUS: u32 = 7;
 const SIGFPE: u32 = 8;
 const SIGSEGV: u32 = 11;
 const SIGSYS: u32 = 31;
 const TRAP_BRKPT: u32 = 1;
-const TRAP_TRACE: u32 = 2;
+pub const TRAP_TRACE: u32 = 2;
 const SI_KERNEL: u32 = 128;
 const BUS_ADRALN: u32 = 1;
 const FPE_INTDIV: u32 = 1;

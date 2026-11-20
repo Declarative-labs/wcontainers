@@ -297,13 +297,26 @@ function run({
         raiseStopFlag();
         return 0n;
       }
-      return standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v)));
+      const result = standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v)));
+      if (!stopped && step(1, 0n) === "run") raiseStopFlag();
+      return result;
     },
     [contract.hookStop]: () => {
       exactMark = null;
       Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 0);
       // The runner raised the flag itself to make the thread leave.
       if (stopped) return contract.unwindLeave;
+      switch (step(0, registers().pc)) {
+        case "trap":
+          stop({ kind: "single step" });
+          return contract.unwindLeave;
+        case "run":
+          raiseStopFlag();
+          return 0;
+        case "exact":
+          raiseStopFlag();
+          return contract.unwindGoToExact;
+      }
       // Raised from outside: the stand-in clears it and the thread carries on.
       slowPath(reason("stopped by the flag"), registers().pc, 0);
       return 0;
@@ -392,6 +405,17 @@ function run({
     const code = memory.subarray(pc, Math.min(pc + contract.maxLength, memory.length));
     new Uint8Array(translator.memory.buffer, cpuState + size, code.length).set(code);
     return contract.memoryFaults[translator.cpu_memory_fault(address, code.length)];
+  }
+  // What single stepping does now (`cpu_step`, `kind` 0 at a stop with pc, 1 after the kernel), on a copy of
+  // the thread's state that is copied back.
+  function step(kind, pc) {
+    if (!contract.cpuSteps) return "off";
+    const size = contract.threadStateSize;
+    const inState = new Uint8Array(state.buffer, BLOCK_AT, size);
+    new Uint8Array(translator.memory.buffer, cpuState, size).set(inState);
+    const answer = contract.steps[translator.cpu_step(kind, pc)];
+    inState.set(new Uint8Array(translator.memory.buffer, cpuState, size));
+    return answer;
   }
   // An argument as `cpu_hook` takes it: i64 arguments arrive as BigInt, i32 ones as numbers.
   const wide = (value) => (typeof value === "bigint" ? value : BigInt(value));

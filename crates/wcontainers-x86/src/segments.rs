@@ -161,6 +161,11 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             let value = read(e, i, 1, mem);
             low_selector(e, value);
             load_segment(e, to, value);
+            // A trap is held back over the instruction after a load of ss.
+            if to == Register::SS {
+                e.sink().i32_const(1);
+                e.set_control(Control::StepHeld);
+            }
         }
         Push => {
             let value = selector(e, ins.op_register(0));

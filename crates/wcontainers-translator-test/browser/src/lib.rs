@@ -9,7 +9,9 @@ use wcontainers_abi::Permissions;
 use wcontainers_arm64::Arm64 as G;
 #[cfg(not(any(feature = "arm64", feature = "x86_64")))]
 compile_error!("name the guest with a feature: arm64 or x86_64");
-use wcontainers_guest_cpu::{GUEST_REASONS, Guest, HookBody, HookDone, HookType, Personality};
+use wcontainers_guest_cpu::{
+    GUEST_REASONS, Guest, HookBody, HookDone, HookType, Personality, Step, StepAt,
+};
 use wcontainers_translator::contract;
 use wcontainers_translator::{
     Error, LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
@@ -232,6 +234,23 @@ pub extern "C" fn cpu_memory_fault(address: i64, length: u32) -> i32 {
     })
 }
 
+/// What single stepping does now (`Guest::step`), on the thread's state copied to [`cpu_state`], which the
+/// runner copies back: at a stop hook call with `pc` (`kind` 0) or after the kernel had the thread (1).
+/// Returns the place of the answer in the contract's `steps`.
+#[unsafe(no_mangle)]
+pub extern "C" fn cpu_step(kind: u32, pc: i64) -> i32 {
+    let at = match kind {
+        0 => StepAt::Stop(pc as u64),
+        _ => StepAt::Kernel,
+    };
+    let length = contract::thread_state_size::<G>();
+    let step = STATE.with_borrow_mut(|state| G::step(&mut state[..length], at));
+    STEPS.iter().position(|s| *s == step).unwrap() as i32
+}
+
+/// The answers of `Guest::step`, in the order the contract names them.
+const STEPS: [Step; 4] = [Step::Off, Step::Run, Step::Exact, Step::Trap];
+
 // Every hook's arguments fit `cpu_hook`'s and its results `HookDone`'s.
 const _: () = {
     let mut i = 0;
@@ -332,6 +351,8 @@ pub extern "C" fn contract() -> i32 {
         "bound": wcontainers_translator::BOUND,
         "unwindLeave": UNWIND_LEAVE,
         "unwindGoToExact": UNWIND_GO_TO_EXACT,
+        "steps": ["off", "run", "exact", "trap"],
+        "cpuSteps": G::STEPS,
         "codeChangesDetected": G::CODE_CHANGES == wcontainers_guest_cpu::CodeChanges::Detected,
         "hookSyscall": HOOK_SYSCALL,
         "hookStop": HOOK_STOP,

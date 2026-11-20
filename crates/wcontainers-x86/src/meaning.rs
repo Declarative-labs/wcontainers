@@ -3305,7 +3305,7 @@ pub(crate) fn load_rflags<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32, by
         .i64_or();
     e.set_control(Control::Rflags);
     for (bit, reason) in [
-        (TF, Reason::TrapFlagNotStepped),
+        (TF, Reason::TrapFlagSet),
         (ALIGNMENT_CHECK, Reason::AlignmentCheckNotProvided),
     ] {
         e.sink()
@@ -3316,6 +3316,11 @@ pub(crate) fn load_rflags<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32, by
             .i64_ne()
             .if_(BlockType::Empty);
         e.warn(reason);
+        // Single stepping starts at the next stop check (`Guest::step`).
+        if bit == TF {
+            e.sink().i32_const(1);
+            e.raise_stop();
+        }
         e.sink().end();
     }
     let word = e.local(ValType::I32);
