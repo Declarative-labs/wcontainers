@@ -207,7 +207,7 @@ fn run_in_chrome<G: GuestTest>(
         .iter()
         .map(|(range, permissions)| serde_json::json!([range.start, range.end, permissions.bits()]))
         .collect();
-    let mut setup = serde_json::json!({
+    let setup = serde_json::json!({
         "codeBytes": blob.code_bytes,
         "load": blob.load,
         "memoryBytes": place.memory_bytes,
@@ -231,7 +231,6 @@ fn run_in_chrome<G: GuestTest>(
             | (u8::from(omit.returns) << 2)
             | (u8::from(omit.depth) << 3),
     });
-    setup[RUNNER_KEY] = runner_names();
     let result = launch(&directory, &setup, flags);
     std::fs::remove_dir_all(&directory).unwrap();
     // An array of bytes, or none where the runner gives null (a stop with no thread state).
@@ -308,6 +307,8 @@ fn launch_or_refused(
     setup: &Value,
     flags: Option<&str>,
 ) -> Result<Value, String> {
+    let mut setup = setup.clone();
+    setup[RUNNER_KEY] = runner_names();
     std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
 
     let mut command = Command::new("node");
@@ -441,7 +442,7 @@ pub fn cases<G: crate::guest::GuestTest>(
         .iter()
         .map(|range| serde_json::json!([range.start, range.end - range.start]))
         .collect();
-    let mut setup = serde_json::json!({
+    let setup = serde_json::json!({
         "codeBytes": code_bytes,
         "load": code,
         "memoryBytes": memory_bytes,
@@ -456,7 +457,6 @@ pub fn cases<G: crate::guest::GuestTest>(
         "stopAtSyscall": true,
         "standIn": stand_in::<G>(),
     });
-    setup[RUNNER_KEY] = runner_names();
     let result = launch(&directory, &setup, None);
     std::fs::remove_dir_all(&directory).unwrap();
     let numbers = |value: &Value| -> Vec<u8> {
