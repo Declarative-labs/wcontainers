@@ -78,6 +78,7 @@ fn bench(out: &mut String) {
                     &[0],
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     probe(),
                     NO_OFFER,
                 )
@@ -117,6 +118,7 @@ fn binary(out: &mut String, name: &str) {
                     starts,
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     probe(),
                     NO_OFFER,
                 )

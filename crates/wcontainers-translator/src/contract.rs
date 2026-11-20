@@ -122,6 +122,25 @@ pub const HOOK_TRAP: &str = "trap";
 pub use wcontainers_guest_cpu::PROBE;
 // After these six, the guest's own hooks follow, as `Guest::HOOKS` names and types them.
 
+/// With [`crate::ProgressCount::Kept`], the u64 at the stop flag's place: the thread calls the stop hook at
+/// the next stop check where the progress count is at least this. Raising the stop writes 0 here.
+pub const fn progress_limit_offset<G: Guest>() -> usize {
+    G::STOP_FLAG_OFFSET
+}
+
+/// With [`crate::ProgressCount::Kept`], the u64 after the limit: the progress count, whenever registers are
+/// saved. It counts the guest's executed instructions that can go backward: every direct jump to its own
+/// address or below (taken or not), call, return and jump through a register or memory.
+pub const fn progress_count_offset<G: Guest>() -> usize {
+    let at = G::STOP_FLAG_OFFSET + size_of::<u64>();
+    assert!(
+        at + size_of::<u64>() <= G::BLOCK_SIZE
+            && G::STOP_FLAG_OFFSET.is_multiple_of(align_of::<u64>()),
+        "the limit and the count fit the block, aligned"
+    );
+    at
+}
+
 /// Bytes a runner gives each thread at its block's place: the block (registers, then the stop flag), then
 /// words of the CPU side's own, which start zero when the thread is made and which the kernel never sees.
 pub const fn thread_state_size<G: Guest>() -> usize {
@@ -169,8 +188,9 @@ pub const STACK_BUDGET: i64 = 128 * 1024;
 /// Tuning number: a slow path warns once per address (or number), when its count there reaches this.
 pub const WARNING_THRESHOLD: u64 = 1;
 
-/// Name of the custom section describing a code module: format version (one byte, 3), look-ahead (one byte,
+/// Name of the custom section describing a code module: format version (one byte, 4), look-ahead (one byte,
 /// 0 for none, 1 for full, 2 for bounded), what it is optimised for (one byte, 0 for speed, 1 for size), the
-/// look-ahead's N (unsigned LEB128, 0 unless bounded), the blob's BLAKE3 hash (32 bytes), then the number of
-/// pieces and each piece's offset in the blob in slot order, as unsigned LEB128.
+/// look-ahead's N (unsigned LEB128, 0 unless bounded), the blob's BLAKE3 hash (32 bytes), the number of
+/// pieces and each piece's offset in the blob in slot order, as unsigned LEB128, then whether it keeps the
+/// progress count (one byte, 0 for absent, 1 for kept).
 pub const DESCRIPTION_SECTION: &str = "wcontainers";

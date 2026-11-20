@@ -862,6 +862,7 @@ fn every_translation_valid<const F: bool>() {
                     &starts,
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     (),
                     offer,
                 )
@@ -1123,6 +1124,7 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                     &[address - LOAD],
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     (),
                     false,
                 )
@@ -1329,6 +1331,7 @@ fn run<const F: bool>(
         starts,
         look_ahead,
         optimise,
+        wcontainers_translator::ProgressCount::Absent,
         (),
         false,
     )

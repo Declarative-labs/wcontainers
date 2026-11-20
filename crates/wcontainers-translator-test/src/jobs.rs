@@ -3,6 +3,24 @@
 
 use rayon::prelude::*;
 
+/// Where Linux gives the load averages.
+const LOAD_AVERAGES: &str = "/proc/loadavg";
+/// What gives them on macOS, which has no such file.
+const LOAD_AVERAGES_COMMAND: [&str; 3] = ["sysctl", "-n", "vm.loadavg"];
+
+/// The machine's load averages as the system prints them, for the record beside a timing.
+pub fn load() -> String {
+    if let Ok(averages) = std::fs::read_to_string(LOAD_AVERAGES) {
+        return averages.trim().to_string();
+    }
+    let [command, arguments @ ..] = LOAD_AVERAGES_COMMAND;
+    let output = std::process::Command::new(command)
+        .args(arguments)
+        .output()
+        .expect("the load averages");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 /// The stack of each thread that runs cases.
 const CASE_THREAD_STACK_BYTES: usize = 64 << 20;
 

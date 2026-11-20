@@ -18,8 +18,9 @@ use wcontainers_abi::{
 use wcontainers_arm64::Arm64;
 use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
 use wcontainers_translator::contract::{self, Reason, SLOT_BYTES, WASM_PAGE_BYTES};
+use wcontainers_translator::contract::{progress_count_offset, progress_limit_offset};
 use wcontainers_translator::{
-    LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
+    LookAhead, Omit, Optimise, ProgressCount, Translation, translate_in_modules, translate_omitting,
 };
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -101,6 +102,26 @@ impl Paused<'_, '_> {
         raise_stop_flag(self.caller);
     }
 
+    /// The progress count now.
+    pub fn progress_count(&mut self) -> u64 {
+        read_u64(self.caller, progress_count_offset::<Arm64>())
+    }
+
+    /// The progress count the thread stops at from now on, after this stop.
+    pub fn set_progress_limit(&mut self, limit: u64) {
+        self.caller.data_mut().limit = limit;
+    }
+
+    /// At a stop: the thread leaves and carries on from its registers with only pieces made at run time at
+    /// look-ahead none, which check at every instruction.
+    pub fn carry_on_at_none(&mut self) {
+        let host = self.caller.data_mut();
+        host.loads.clear();
+        host.picks.clear();
+        host.run_time = Box::new(|| LookAhead::None);
+        host.lose_stack = true;
+    }
+
     /// At a stop: the WebAssembly stack is lost here. The thread leaves, and carries on from its registers in
     /// a fresh thread instance.
     pub fn lose_stack(&mut self) {
@@ -174,6 +195,10 @@ pub struct Host {
     pause: Option<PauseFunction>,
     /// No limit on instances and tables: each piece made at run time and each fresh thread instance is one.
     limits: wasmtime::StoreLimits,
+    /// Whether translations keep the progress count.
+    progress: ProgressCount,
+    /// With the progress count, the limit the stop hook puts back.
+    limit: u64,
 }
 
 pub struct Machine {
@@ -289,6 +314,8 @@ impl Machine {
                     .tables(usize::MAX)
                     .memories(usize::MAX)
                     .build(),
+                progress: ProgressCount::Absent,
+                limit: u64::MAX,
             },
         );
         store.limiter(|host| &mut host.limits);
@@ -468,6 +495,7 @@ impl Machine {
             starts,
             LookAhead::Full,
             host.optimise,
+            host.progress,
             host.facts,
             (),
             module_bytes,
@@ -523,6 +551,41 @@ impl Machine {
         self.store.data_mut().run_time = Box::new(choose);
     }
 
+    /// Translations made from now on keep the progress count, from 0, with no limit: call before any load.
+    pub fn keep_progress_count(&mut self) {
+        self.store.data_mut().progress = ProgressCount::Kept;
+        let block = BLOCK_AT as usize;
+        write_shared(
+            &self.state,
+            block + progress_limit_offset::<Arm64>(),
+            &u64::MAX.to_le_bytes(),
+        );
+        write_shared(
+            &self.state,
+            block + progress_count_offset::<Arm64>(),
+            &0u64.to_le_bytes(),
+        );
+    }
+
+    /// With the progress count, the thread stops at the first stop check where the count is at least `limit`,
+    /// and at every one after it until a pause function sets another.
+    pub fn set_progress_limit(&mut self, limit: u64) {
+        self.store.data_mut().limit = limit;
+        let at = BLOCK_AT as usize + progress_limit_offset::<Arm64>();
+        write_shared(&self.state, at, &limit.to_le_bytes());
+    }
+
+    /// The progress count now.
+    pub fn progress_count(&self) -> u64 {
+        let mut count = [0u8; size_of::<u64>()];
+        read_shared(
+            &self.state,
+            BLOCK_AT as usize + progress_count_offset::<Arm64>(),
+            &mut count,
+        );
+        u64::from_le_bytes(count)
+    }
+
     /// From now on the thread stops at every stop check it reaches (each counted), and carries on each time.
     pub fn stop_at_every_check(&mut self) {
         self.store.data_mut().stop_everywhere = true;
@@ -531,11 +594,7 @@ impl Machine {
 
     /// Raise the thread's stop flag while it is not running, as something outside the thread would.
     pub fn raise_stop_flag(&self) {
-        write_shared(
-            &self.state,
-            BLOCK_AT as usize + STOP_FLAG_OFFSET,
-            &1u32.to_le_bytes(),
-        );
+        write_stop(&self.state, self.store.data().progress, None);
     }
 
     /// Something another host thread can call to raise the stop flag while the guest runs.
@@ -824,11 +883,31 @@ fn stop(caller: &mut Caller<'_, Host>, stopped: Stopped) {
 
 fn raise_stop_flag(caller: &Caller<'_, Host>) {
     let state = caller.data().state.clone().unwrap();
-    write_shared(
-        &state,
-        BLOCK_AT as usize + STOP_FLAG_OFFSET,
-        &1u32.to_le_bytes(),
-    );
+    write_stop(&state, caller.data().progress, None);
+}
+
+/// Raise the stop (`limit` none), or clear it: the stop flag, or with the progress count the limit (0 to
+/// raise it).
+fn write_stop(state: &SharedMemory, progress: ProgressCount, limit: Option<u64>) {
+    let block = BLOCK_AT as usize;
+    match progress {
+        ProgressCount::Absent => {
+            let flag = u32::from(limit.is_none());
+            write_shared(state, block + STOP_FLAG_OFFSET, &flag.to_le_bytes());
+        }
+        ProgressCount::Kept => {
+            let at = block + progress_limit_offset::<Arm64>();
+            write_shared(state, at, &limit.unwrap_or(0).to_le_bytes());
+        }
+    }
+}
+
+/// A u64 of the thread block, at `offset` from its start.
+fn read_u64(caller: &Caller<'_, Host>, offset: usize) -> u64 {
+    let state = caller.data().state.clone().unwrap();
+    let mut value = [0u8; size_of::<u64>()];
+    read_shared(&state, BLOCK_AT as usize + offset, &mut value);
+    u64::from_le_bytes(value)
 }
 
 fn hooks(linker: &mut Linker<Host>) {
@@ -866,11 +945,8 @@ fn hooks(linker: &mut Linker<Host>) {
     linker
         .func_wrap(HOOKS, HOOK_STOP, |mut caller: Caller<'_, Host>| -> i32 {
             let state = caller.data().state.clone().unwrap();
-            write_shared(
-                &state,
-                BLOCK_AT as usize + STOP_FLAG_OFFSET,
-                &0u32.to_le_bytes(),
-            );
+            let host = caller.data();
+            write_stop(&state, host.progress, Some(host.limit));
             // The runner raised the flag itself to make the thread leave.
             if caller.data().stopped.is_some() {
                 return 1;
@@ -1178,6 +1254,7 @@ fn translate_load(
         starts,
         look_ahead,
         optimise,
+        host.progress,
         host.facts,
         (),
         omit,

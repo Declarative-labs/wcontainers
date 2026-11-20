@@ -32,6 +32,7 @@ fn main() {
         &[0],
         LookAhead::Full,
         Optimise::Speed,
+        wcontainers_translator::ProgressCount::Absent,
         wcontainers_translator_test::runner::probe(),
         (),
         omit,

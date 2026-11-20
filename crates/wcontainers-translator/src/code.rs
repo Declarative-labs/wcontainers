@@ -12,8 +12,8 @@ use wasm_encoder::{
     TableType, TagKind, TagType, TypeSection, ValType,
 };
 use wcontainers_guest_cpu::{
-    Access, Effects, Emitter, GUEST_REASONS, Guest, ReturnAddress, Target, TrapDetail, TrapKind,
-    TrapPc,
+    Access, Effects, Emitter, FlowKind, GUEST_REASONS, Guest, ReturnAddress, Target, TrapDetail,
+    TrapKind, TrapPc,
 };
 
 /// How much code the translator sees at once.
@@ -61,7 +61,10 @@ enum LookAheadCode {
 }
 
 /// The version of the description section's layout.
-const DESCRIPTION_VERSION: u8 = 3;
+const DESCRIPTION_VERSION: u8 = 4;
+
+/// What a translation is made with: the look-ahead, what it is optimised for, and the progress count.
+type How = (LookAhead, Optimise, ProgressCount);
 
 /// What a translation is made for: the one setting the translator has. Both give the same results.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -71,6 +74,16 @@ pub enum Optimise {
     Speed,
     /// Run speed may be given up for smaller output.
     Size,
+}
+
+/// Whether translated code keeps the progress count ([`crate::contract::progress_count_offset`]), merged
+/// into its stop check: "count; if count >= limit, stop". The count is the same at every look-ahead.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ProgressCount {
+    /// The stop check tests the stop flag.
+    #[default]
+    Absent,
+    Kept,
 }
 
 /// Tuning number: the default N of bounded look-ahead.
@@ -374,21 +387,25 @@ pub(crate) fn depth_check<G: Guest>(s: &mut InstructionSink<'_>, depth: u32, ent
 
 /// Translate a blob from the given starts. `code` is where in the blob the code is; starts and every piece
 /// are blob offsets. The output never holds an absolute address.
+#[allow(clippy::too_many_arguments)]
 pub fn translate<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
+    progress: ProgressCount,
     host: G::Host,
     offer: G::Offer,
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
-    translate_omitting::<G>(blob, code, starts, look_ahead, optimise, host, offer, omit)
+    let how = (look_ahead, optimise, progress);
+    translate_within::<G>(blob, code, starts, how, (host, offer), omit, MODULE_BYTES)
 }
 
 /// [`translate`] without some checks at full look-ahead, only to measure what they cost. Look-ahead none
 /// always keeps every check.
+#[cfg(feature = "measure")]
 #[allow(clippy::too_many_arguments)]
 pub fn translate_omitting<G: Guest>(
     blob: &[u8],
@@ -396,11 +413,12 @@ pub fn translate_omitting<G: Guest>(
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
+    progress: ProgressCount,
     host: G::Host,
     offer: G::Offer,
     omit: Omit,
 ) -> Result<Translation, Error> {
-    let how = (look_ahead, optimise);
+    let how = (look_ahead, optimise, progress);
     translate_within::<G>(blob, code, starts, how, (host, offer), omit, MODULE_BYTES)
 }
 
@@ -414,12 +432,13 @@ pub fn translate_in_modules<G: Guest>(
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
+    progress: ProgressCount,
     host: G::Host,
     offer: G::Offer,
     module_bytes: usize,
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
-    let how = (look_ahead, optimise);
+    let how = (look_ahead, optimise, progress);
     translate_within::<G>(blob, code, starts, how, (host, offer), omit, module_bytes)
 }
 
@@ -427,7 +446,7 @@ fn translate_within<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
     starts: &[u64],
-    (look_ahead, optimise): (LookAhead, Optimise),
+    (look_ahead, optimise, progress): (LookAhead, Optimise, ProgressCount),
     (host, offer): (G::Host, G::Offer),
     omit: Omit,
     module_bytes: usize,
@@ -441,6 +460,7 @@ fn translate_within<G: Guest>(
         range: code,
         host,
         offer,
+        progress,
     };
     for &start in starts {
         if !blob_code.inside(start) {
@@ -463,7 +483,7 @@ fn translate_within<G: Guest>(
                 counts[means as usize] += 1;
             }
             let first = none_emit(&blob_code, &found, 0..found.len());
-            let how = (look_ahead, optimise);
+            let how = (look_ahead, optimise, progress);
             modules::<G>(blob, how, &entries, first, module_bytes, |group| {
                 none_emit(&blob_code, &found, group)
             })
@@ -490,7 +510,7 @@ fn translate_within<G: Guest>(
                         counts[means as usize] += 1;
                     }
                     let emit = |group| planned.emit(group);
-                    let how = (look_ahead, optimise);
+                    let how = (look_ahead, optimise, progress);
                     break modules::<G>(blob, how, &entries, first, module_bytes, emit);
                 }
                 for i in over {
@@ -510,7 +530,7 @@ fn translate_within<G: Guest>(
 /// otherwise as many modules as needed, each emitted for its group of units by `emit`.
 fn modules<G: Guest>(
     blob: &[u8],
-    how: (LookAhead, Optimise),
+    how: How,
     entries: &[u64],
     first: Vec<Unit>,
     module_bytes: usize,
@@ -545,12 +565,7 @@ fn modules<G: Guest>(
 }
 
 /// A code module holding these units, the table's pieces at `entries`.
-fn module<G: Guest>(
-    blob: &[u8],
-    how: (LookAhead, Optimise),
-    entries: &[u64],
-    units: Vec<Unit>,
-) -> CodeModule {
+fn module<G: Guest>(blob: &[u8], how: How, entries: &[u64], units: Vec<Unit>) -> CodeModule {
     let mut module = Module::new();
     module.section(&types::<G>());
     module.section(&imports::<G>());
@@ -607,6 +622,7 @@ pub(crate) struct Code<'a, G: Guest> {
     pub range: Range<u64>,
     pub host: G::Host,
     pub offer: G::Offer,
+    pub progress: ProgressCount,
 }
 
 impl<G: Guest> Code<'_, G> {
@@ -702,6 +718,9 @@ fn none_emit<G: Guest>(
                 body: Vec::new(),
                 locals: Vec::new(),
                 sites: [0; SITES],
+                count: (code.progress == ProgressCount::Kept).then_some(CountIn::Block(BLOCK)),
+                event: code.progress == ProgressCount::Kept
+                    && progress_event::<G>(&decoded.instruction),
             };
             emitter.entry();
             G::emit(&mut emitter, &decoded.instruction);
@@ -777,17 +796,111 @@ pub(crate) fn page_bit(access: Access) -> u8 {
     }
 }
 
-/// Pop an i32 and raise the thread's stop flag when it is not zero.
-pub(crate) fn raise_stop<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
+/// Pop an i32 and raise the thread's stop when it is not zero: the flag, or with the progress count a limit
+/// of 0.
+pub(crate) fn raise_stop<G: Guest>(
+    s: &mut InstructionSink<'_>,
+    block: Fixed,
+    progress: ProgressCount,
+) {
     s.if_(BlockType::Empty);
     block.push(s);
-    s.i32_const(1)
-        .i32_store(memarg(
+    match progress {
+        ProgressCount::Absent => s.i32_const(1).i32_store(memarg(
             MEMORY_STATE,
             G::STOP_FLAG_OFFSET as u64,
             natural_align::<u32>(),
-        ))
-        .end();
+        )),
+        ProgressCount::Kept => s.i64_const(0).i64_store(memarg(
+            MEMORY_STATE,
+            progress_limit_offset::<G>() as u64,
+            natural_align::<u64>(),
+        )),
+    };
+    s.end();
+}
+
+/// Whether an instruction is an event of the progress count when it runs: a direct jump to its own address
+/// or below, taken or not, a call, a return, or a jump through a register or memory.
+pub(crate) fn progress_event<G: Guest>(instruction: &G::Instruction) -> bool {
+    let flow = G::flow(instruction);
+    match flow.kind {
+        FlowKind::Plain => flow.target.is_some_and(|by| by <= 0),
+        FlowKind::Call | FlowKind::CallThrough(_) | FlowKind::Return | FlowKind::JumpThrough(_) => {
+            true
+        }
+    }
+}
+
+/// Where a piece keeps the progress count.
+#[derive(Clone, Copy)]
+pub(crate) enum CountIn {
+    /// The thread block, at every event.
+    Block(Fixed),
+    /// An i64 local, written to the thread block with the registers.
+    Local(u32),
+}
+
+impl CountIn {
+    fn push(self, s: &mut InstructionSink<'_>, count_at: u64) {
+        match self {
+            CountIn::Block(block) => {
+                block.push(s);
+                s.i64_load(memarg(MEMORY_STATE, count_at, natural_align::<u64>()));
+            }
+            CountIn::Local(local) => {
+                s.local_get(local);
+            }
+        }
+    }
+
+    /// Add one to the count.
+    pub(crate) fn add_event<G: Guest>(self, s: &mut InstructionSink<'_>) {
+        let count_at = progress_count_offset::<G>() as u64;
+        match self {
+            CountIn::Block(block) => {
+                block.push(s);
+                self.push(s, count_at);
+                s.i64_const(1).i64_add().i64_store(memarg(
+                    MEMORY_STATE,
+                    count_at,
+                    natural_align::<u64>(),
+                ));
+            }
+            CountIn::Local(local) => {
+                s.local_get(local).i64_const(1).i64_add().local_set(local);
+            }
+        }
+    }
+}
+
+/// Push an i32, not zero when the thread must call the stop hook: the stop flag, or with the progress count
+/// (kept in `count`) whether it has reached the limit.
+pub(crate) fn push_stop_wanted<G: Guest>(
+    s: &mut InstructionSink<'_>,
+    block: Fixed,
+    count: Option<CountIn>,
+) {
+    match count {
+        None => {
+            block.push(s);
+            s.i32_load(memarg(
+                MEMORY_STATE,
+                G::STOP_FLAG_OFFSET as u64,
+                natural_align::<u32>(),
+            ));
+        }
+        Some(count) => {
+            count.push(s, progress_count_offset::<G>() as u64);
+            block.push(s);
+            s.i64_load(memarg(
+                MEMORY_STATE,
+                progress_limit_offset::<G>() as u64,
+                natural_align::<u64>(),
+            ))
+            .i64_ge_u();
+        }
+    }
 }
 
 /// Set i32 local `allowed` to whether the i64 `length` bytes from the address in i64 local `at` (locals
@@ -1348,7 +1461,7 @@ pub(crate) fn elements<G: Guest>(pieces: u32) -> ElementSection {
 
 pub(crate) fn description<'a>(
     blob: &[u8],
-    (look_ahead, optimise): (LookAhead, Optimise),
+    (look_ahead, optimise, progress): How,
     pieces: impl ExactSizeIterator<Item = &'a u64>,
 ) -> CustomSection<'static> {
     let (kind, bound) = look_ahead.code();
@@ -1359,6 +1472,7 @@ pub(crate) fn description<'a>(
     for offset in pieces {
         offset.encode(&mut data);
     }
+    data.push(progress as u8);
     CustomSection {
         name: DESCRIPTION_SECTION.into(),
         data: data.into(),
@@ -1378,9 +1492,29 @@ struct NoneEmitter<'a, G: Guest> {
     body: Vec<u8>,
     locals: Vec<ValType>,
     sites: Sites,
+    /// Where the progress count is, when it is kept.
+    count: Option<CountIn>,
+    /// The instruction is an event of the progress count not yet counted.
+    event: bool,
 }
 
 impl<G: Guest> NoneEmitter<'_, G> {
+    fn progress(&self) -> ProgressCount {
+        match self.count {
+            Some(_) => ProgressCount::Kept,
+            None => ProgressCount::Absent,
+        }
+    }
+
+    /// Count the instruction's event, at its first way out, before anything is passed on.
+    fn count_event(&mut self) {
+        if std::mem::take(&mut self.event)
+            && let Some(count) = self.count
+        {
+            count.add_event::<G>(&mut self.sink());
+        }
+    }
+
     /// The checks every piece starts with: each one passes control on.
     fn entry(&mut self) {
         let offset = self.offset;
@@ -1398,14 +1532,10 @@ impl<G: Guest> NoneEmitter<'_, G> {
     fn stop_check(&mut self, step: u64) {
         self.sites[Reason::StoppedByFlag as usize] += 1;
         let pc = self.offset + step;
+        let count = self.count;
         let mut s = self.sink();
-        BLOCK.push(&mut s);
-        s.i32_load(memarg(
-            MEMORY_STATE,
-            G::STOP_FLAG_OFFSET as u64,
-            natural_align::<u32>(),
-        ))
-        .if_(BlockType::Empty);
+        push_stop_wanted::<G>(&mut s, BLOCK, count);
+        s.if_(BlockType::Empty);
         save::<G>(&mut s, |s| {
             s.i64_const(pc as i64);
         });
@@ -1682,10 +1812,12 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
     }
 
     fn raise_stop(&mut self) {
-        raise_stop::<G>(&mut self.sink(), BLOCK);
+        let progress = self.progress();
+        raise_stop::<G>(&mut self.sink(), BLOCK, progress);
     }
 
     fn jump(&mut self, target: Target) {
+        self.count_event();
         self.arguments(
             |s| {
                 s.local_get(G::L_RETURN);
@@ -1696,12 +1828,14 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
     }
 
     fn jump_if(&mut self, target: Target) {
+        self.count_event();
         self.sink().if_(BlockType::Empty);
         self.jump(target);
         self.sink().end();
     }
 
     fn call(&mut self, target: Target) {
+        self.count_event();
         let next = self.next_offset();
         // The flags are always in the thread block here.
         let frame = frame_bytes::<G>(&self.locals);
@@ -1724,6 +1858,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
     }
 
     fn ret(&mut self, target: u32) {
+        self.count_event();
         let mut s = self.sink();
         pop_return_address::<G>(&mut s);
         s.local_get(target);

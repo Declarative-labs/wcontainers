@@ -66,7 +66,7 @@ pub extern "C" fn translate(
     let code = code_start..code_end;
     let result = INPUT.with_borrow(|blob| match module_bytes {
         0 => {
-            translate_omitting::<Arm64>(blob, code, &[start], look_ahead, optimise, host, (), omit)
+            translate_omitting::<Arm64>(blob, code, &[start], look_ahead, optimise, wcontainers_translator::ProgressCount::Absent, host, (), omit)
         }
         _ => {
             let module_bytes = module_bytes as usize;
@@ -76,6 +76,7 @@ pub extern "C" fn translate(
                 &[start],
                 look_ahead,
                 optimise,
+                wcontainers_translator::ProgressCount::Absent,
                 host,
                 (),
                 module_bytes,

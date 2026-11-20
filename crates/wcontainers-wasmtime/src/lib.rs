@@ -319,6 +319,7 @@ impl<G: Guest> Compiler<G> {
                     &key.starts,
                     look_ahead,
                     optimise,
+                    wcontainers_translator::ProgressCount::Absent,
                     self.host,
                     offer,
                 )

@@ -1645,6 +1645,10 @@ struct FullEmitter<'a, G: Guest> {
     raised_stop: bool,
     /// i64 local: the depth the piece passes to what it calls, its callers' and its own.
     depth: u32,
+    /// i64 local: the progress count, when it is kept.
+    count: Option<u32>,
+    /// The instruction being emitted is an event of the progress count not yet counted.
+    event: bool,
 }
 
 impl<'a, G: Guest> FullEmitter<'a, G> {
@@ -1694,8 +1698,13 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             written: false,
             raised_stop: false,
             depth: 0,
+            count: None,
+            event: false,
         };
         e.depth = e.new_local(ValType::I64);
+        if code.progress == ProgressCount::Kept {
+            e.count = Some(e.new_local(ValType::I64));
+        }
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
             let room = e.new_local(ValType::I64);
@@ -1744,6 +1753,15 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .i64_const(frame_bytes::<G>(&e.locals))
             .i64_add()
             .local_set(e.depth);
+        if let Some(count) = e.count {
+            Fixed::Global(G_THREAD_BLOCK).push(&mut s);
+            s.i64_load(memarg(
+                MEMORY_STATE,
+                progress_count_offset::<G>() as u64,
+                natural_align::<u64>(),
+            ))
+            .local_set(count);
+        }
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
             depth_check::<G>(&mut s, G::L_DEPTH, function.entry);
@@ -1965,6 +1983,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 self.frame_check(from, len);
             }
             let decoded = self.decoded();
+            self.event = self.count.is_some() && progress_event::<G>(&decoded.instruction);
             G::emit(self, &decoded.instruction);
             self.at.aligned = aligned_after(&decoded, self.at.aligned);
             let released: Vec<_> = self.taken.drain(mark..).collect();
@@ -2059,12 +2078,45 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         self.write_back_flags(false);
     }
 
-    /// Copy every tracked register that may be stale in the thread block there.
+    /// Copy every tracked register that may be stale in the thread block there, and the progress count.
     fn write_back_registers(&mut self) {
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in self.at.dirty.bits() {
             let local = self.register(bit);
             Slot::of_bit::<G>(bit).store_from(&mut self.sink(), block, local);
+        }
+        if let Some(count) = self.count {
+            let mut s = self.sink();
+            block.push(&mut s);
+            s.local_get(count).i64_store(memarg(
+                MEMORY_STATE,
+                progress_count_offset::<G>() as u64,
+                natural_align::<u64>(),
+            ));
+        }
+    }
+
+    /// Load the progress count from the thread block, after a call to another piece.
+    fn reload_count(&mut self) {
+        if let Some(count) = self.count {
+            let block = self.fixed(G_THREAD_BLOCK);
+            let mut s = self.sink();
+            block.push(&mut s);
+            s.i64_load(memarg(
+                MEMORY_STATE,
+                progress_count_offset::<G>() as u64,
+                natural_align::<u64>(),
+            ))
+            .local_set(count);
+        }
+    }
+
+    /// Count the instruction's event, at its first way out, before anything is passed on.
+    fn count_event(&mut self) {
+        if std::mem::take(&mut self.event)
+            && let Some(count) = self.count
+        {
+            CountIn::Local(count).add_event::<G>(&mut self.sink());
         }
     }
 
@@ -2213,13 +2265,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
+        let count = self.count.map(CountIn::Local);
         let mut s = self.sink();
-        block.push(&mut s);
-        s.i32_load(memarg(
-            MEMORY_STATE,
-            G::STOP_FLAG_OFFSET as u64,
-            natural_align::<u32>(),
-        ));
+        push_stop_wanted::<G>(&mut s, block, count);
         if let Some(entry) = deep {
             // The callers' depth, not this piece's own frame, so a piece called from the bottom loop always
             // runs, however large its frame.
@@ -2884,10 +2932,12 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     fn raise_stop(&mut self) {
         self.raised_stop = true;
         let block = self.fixed(G_THREAD_BLOCK);
-        raise_stop::<G>(&mut self.sink(), block);
+        let progress = self.code.progress;
+        raise_stop::<G>(&mut self.sink(), block, progress);
     }
 
     fn jump(&mut self, target: Target) {
+        self.count_event();
         match target {
             Target::Relative(by) => {
                 let to = self.at.offset.wrapping_add_signed(by);
@@ -2904,6 +2954,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn jump_if(&mut self, target: Target) {
+        self.count_event();
         self.sink().if_(BlockType::Empty);
         self.labels.push(Label::Other);
         let saved = self.at;
@@ -2914,6 +2965,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn call(&mut self, target: Target) {
+        self.count_event();
         // The callee may change the floating point controls.
         self.at.float_mode = false;
         let offset = self.at.offset;
@@ -2968,6 +3020,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             };
             self.sink().local_set(local);
         }
+        self.reload_count();
         self.at.dirty = Registers::NONE;
         self.set_flag_state(FLAGS_IN_BLOCK);
         // What is known about the stack pointer (its frame, its alignment) holds after the call only if the
@@ -2998,6 +3051,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn ret(&mut self, target: u32) {
+        self.count_event();
         pop_return_address::<G>(&mut self.sink());
         self.write_back_registers();
         // The flags go back only when the caller asks for them.

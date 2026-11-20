@@ -64,19 +64,7 @@ fn variants() -> [(&'static str, Omit); 6] {
     ]
 }
 
-/// Where Linux gives the load averages; macOS has none, and `sysctl` gives them there.
-const LOAD_AVERAGES: &str = "/proc/loadavg";
-
-fn load() -> String {
-    if let Ok(averages) = std::fs::read_to_string(LOAD_AVERAGES) {
-        return averages.trim().to_string();
-    }
-    let output = std::process::Command::new("sysctl")
-        .args(["-n", "vm.loadavg"])
-        .output()
-        .expect("sysctl");
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
+use wcontainers_translator_test::jobs::load;
 
 fn gzip(bytes: &[u8]) -> usize {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -103,6 +91,7 @@ fn size(blob: &Blob) {
             &[0],
             LookAhead::Full,
             optimise(),
+            wcontainers_translator::ProgressCount::Absent,
             wcontainers_translator_test::runner::probe(),
             (),
         )

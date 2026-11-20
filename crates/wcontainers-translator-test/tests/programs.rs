@@ -222,6 +222,7 @@ fn cut_functions_and_split_translations_match_linux() {
                 &[0],
                 LookAhead::Full,
                 wcontainers_translator::Optimise::Speed,
+                wcontainers_translator::ProgressCount::Absent,
                 wcontainers_translator_test::runner::probe(),
                 (),
                 module_bytes,
@@ -489,6 +490,7 @@ fn measure() {
                 &starts,
                 LookAhead::None,
                 wcontainers_translator::Optimise::Speed,
+                wcontainers_translator::ProgressCount::Absent,
                 wcontainers_translator_test::runner::probe(),
                 (),
             )
@@ -565,13 +567,7 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
     let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let chrome = std::env::var("WC_BENCH_CHROME").map_or(true, |v| v != "0");
-    let load = || {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .expect("sysctl");
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
+    let load = wcontainers_translator_test::jobs::load;
     let theirs = native(blob);
     let native = native_seconds(blob, runs);
     let mut best = f64::MAX;
