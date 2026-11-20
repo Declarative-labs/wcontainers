@@ -6972,9 +6972,7 @@ redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack:
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_PHNUM	AT_PHNUM = 5
 redefinition	crates/wcontainers-translator-test/src/layout.rs	int	initial_stack::AT_RANDOM	AT_RANDOM = 25
 redefinition	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	LOAD = 65536
-redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	BLOCK_AT	BLOCK_AT = 0
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	LOAD = 65536
-redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	PERMISSIONS_AT	PERMISSIONS_AT = 4096
 redefinition	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse::WORD	WORD = 8
 redefinition	crates/wcontainers-wasmtime/src/starts.rs	int	WORD	WORD = 8
 redefinition	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	CODE = 65536
