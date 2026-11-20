@@ -44,10 +44,13 @@ pub unsafe extern "system" fn D3D10CoreCreateDevice(
     out: *mut *mut c_void,
 ) -> HRESULT {
     // Direct3D 10's runtime makes its devices here for the program.
-    if !factory::called_by_program_or(&["d3d10.dll", "d3d10_1.dll"]) {
+    if !factory::called_by_program_or(&[factory::D3D10_LIBRARY, factory::D3D10_1_LIBRARY]) {
         // SAFETY: the system's export of this name has this type.
         return match unsafe {
-            factory::system::<CreateDevice>("d3d10core.dll", c"D3D10CoreCreateDevice")
+            factory::system::<CreateDevice>(
+                factory::D3D10CORE_LIBRARY,
+                factory::entry::D3D10_CORE_CREATE_DEVICE,
+            )
         } {
             Some(f) => unsafe { f(factory, adapter, flags, level, out) },
             None => DXGI_ERROR_UNSUPPORTED,
@@ -116,8 +119,12 @@ pub unsafe extern "system" fn D3D10CreateDevice(
 ) -> HRESULT {
     if !factory::called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { factory::system::<CreateDevice10>("d3d10.dll", c"D3D10CreateDevice") }
-        {
+        return match unsafe {
+            factory::system::<CreateDevice10>(
+                factory::D3D10_LIBRARY,
+                factory::entry::D3D10_CREATE_DEVICE,
+            )
+        } {
             Some(f) => unsafe { f(adapter, driver_type, software, flags, sdk_version, out) },
             None => DXGI_ERROR_UNSUPPORTED,
         };
@@ -152,7 +159,10 @@ pub unsafe extern "system" fn D3D10CreateDevice1(
     if !factory::called_by_program() {
         // SAFETY: the system's export of this name has this type.
         return match unsafe {
-            factory::system::<CreateDevice101>("d3d10_1.dll", c"D3D10CreateDevice1")
+            factory::system::<CreateDevice101>(
+                factory::D3D10_1_LIBRARY,
+                factory::entry::D3D10_CREATE_DEVICE1,
+            )
         } {
             Some(f) => unsafe {
                 f(
@@ -239,6 +249,11 @@ pub extern "system" fn D3D10CoreRegisterLayers() -> HRESULT {
 #[unsafe(no_mangle)]
 pub extern "system" fn D3D10CoreGetVersion() -> u32 {
     // SAFETY: the system's export of this name has this type.
-    unsafe { factory::system::<GetVersion>("d3d10core.dll", c"D3D10CoreGetVersion") }
-        .map_or(0, |f| unsafe { f() })
+    unsafe {
+        factory::system::<GetVersion>(
+            factory::D3D10CORE_LIBRARY,
+            factory::entry::D3D10_CORE_GET_VERSION,
+        )
+    }
+    .map_or(0, |f| unsafe { f() })
 }

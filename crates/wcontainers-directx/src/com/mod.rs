@@ -49,6 +49,9 @@ use output::Output_Impl;
 use swapchain::{Factory, Factory_Impl, SwapChain_Impl};
 
 pub use chosen::{Chosen, FEATURES_OFF};
+pub use factory::{
+    D3D10_1_LIBRARY, D3D10_LIBRARY, D3D10CORE_LIBRARY, D3D11_LIBRARY, DXGI_LIBRARY, entry,
+};
 pub type Front = wcontainers_direct3d_11::Device<Chosen>;
 pub type Shared = Rc<RefCell<Front>>;
 
@@ -428,7 +431,12 @@ pub unsafe extern "system" fn D3D11CreateDevice(
 ) -> HRESULT {
     if !factory::called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { factory::system::<CreateDevice>("d3d11.dll", c"D3D11CreateDevice") } {
+        return match unsafe {
+            factory::system::<CreateDevice>(
+                factory::D3D11_LIBRARY,
+                factory::entry::D3D11_CREATE_DEVICE,
+            )
+        } {
             Some(f) => unsafe {
                 f(
                     adapter,
@@ -591,8 +599,8 @@ pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
         // SAFETY: the system's export of this name has this type.
         return match unsafe {
             factory::system::<CreateDeviceAndSwapChain>(
-                "d3d11.dll",
-                c"D3D11CreateDeviceAndSwapChain",
+                factory::D3D11_LIBRARY,
+                factory::entry::D3D11_CREATE_DEVICE_AND_SWAP_CHAIN,
             )
         } {
             Some(f) => unsafe {
