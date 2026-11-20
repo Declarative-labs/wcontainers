@@ -10,7 +10,8 @@ Run 46 reported it complete with this list so that the independent check would r
 run 46's results stale and three gap causes wrong. Run 47 fixed those findings (see "Run 47");
 the gap list is now worked in the order the fronts need it ("Next"); run 48 did the Direct3D 12
 front's two named items (arrays of views in shader model 5.1 DXBC, the evaluated attribute's
--1.16e-10; see "Run 48"); run 49 the Direct3D 11 front's `GeometryStreams` (see "Run 49").
+-1.16e-10; see "Run 48"); run 49 the Direct3D 11 front's `GeometryStreams` (see "Run 49"); run 50
+its indexed strips through the stage helper (`StageIndexedStrip`, see "Run 50").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -154,8 +155,8 @@ The gap list (every item of the pass bar not met):
   tessellation-patch-vars and clip-cull-distance-1 files). Takes: the three execution models in the carried reader (inputs as arrays per
   vertex, `EmitVertex`/`EndPrimitive`, the patch constant function), lowered as the DXBC route's.
 - A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
-  which Direct3D does not allow; several streams of points convert since run 49), indexed strips
-  into a geometry shader, triangle strips with adjacency, indirect draws through the stages, the
+  which Direct3D does not allow; several streams of points convert since run 49), triangle strips
+  with adjacency (indexed strips of every other kind run on every route since run 50), indirect draws through the stages, the
   primitive's number behind a geometry shader (the rig's geometry scene's `ps_id`, the Direct3D 11
   front), cull distances from a geometry or domain shader, typed buffers in geometry shaders.
   Takes: each its route and a drawn test, the primitive's number first.
@@ -2255,6 +2256,52 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 50 (the gap list in the fronts' order: the Direct3D 11 front's `StageIndexedStrip`):
+- Merged origin/phase-2-graphics-webgpu, -direct3d-11 and -direct3d-12 (no conflicts); the
+  others had nothing new.
+- Read both fronts' statuses for what waits here. The Direct3D 11 front: indexed strips through
+  the stage helper removed the device (`StageIndexedStrip`: any geometry shader, stream output,
+  cull-distance or alpha-antialiased line draw of an indexed strip; its ignored test
+  `an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does`), then
+  `GeometryAsReplay` (A5). The Direct3D 12 front's "Next" 5 (a `Buffer<float4>` vertex shader
+  with `DrawBaseSource::Arguments` failing validation) was fixed in run 29 (test
+  `draw_arguments_keep_the_typed_views_place`); its other items are on the gap list.
+- Indexed strips (line strips, triangle strips, line strips with adjacency) now run on every
+  route of the stage helper. A new program (`stage/strips.wgsl`, `stage::strip_program`, one
+  workgroup of 256 runs with a scan) lists the strip's primitives as an indexed list: a restart
+  index (the format's largest, as Direct3D 11 and WebGPU restart) ends a strip, and the triangles
+  of each strip alternate from its start, odd ones taking their last two vertices swapped, as
+  non-indexed strips already did. The stages then take the draw as an indexed list with a place
+  for every primitive the strip could have (`count + 1 - n` primitives); the list's first word
+  holds the listed indices' total (`stage::word::LISTED_TOTAL`), so the vertex stage writes the
+  places past it as records outside every clip volume (w = -1, so the cull, line and primitive
+  routes draw nothing of them), the geometry stage closes their slots and stream output skips
+  them. Primitive numbers count only the listed primitives, per instance, as Direct3D's do. The
+  program and its list are made at the first indexed strip a `Stages` draws.
+- Drawn against real Direct3D 11 on the RTX 3080 (16-bit indices with restarts, one in the
+  middle of each draw and one in eight at seeded places): `geometry_draw` gained 3 geometry cases
+  (`gs_cut` triangle strip instanced with a base vertex, `gs_lines` line strip, `gs_line_adjacent`
+  line strip with adjacency), 2 cull cases (`vs_cull` triangle strip instanced, line strip) and 3
+  stream output cases (vertex triangle strip instanced, `gs_cut` triangle strip, vertex line
+  strip); `stage_draw` gained an indexed line strip on the alpha-antialiased line route and an
+  indexed triangle strip (two instances) and line strip on the primitive number route, both from
+  the fxc and the dxc build. New unit test `the_strip_program_validates`.
+- Results (desktop RTX 3080 through the queue, other tracks' jobs beside; laptop load 4 to 7
+  from other work), logs in scratch `graphics-shaders/run50`:
+  - Seeds 1 to 4 (gpu1.log): geometry 104 comparisons 0 failed, stream output 48 and 0, four
+    streams 16 and 0, antialiased lines 48 and 0 (the RTX 3080 and WARP at most 127 apart),
+    primitive numbers 56 and 0. Every new case draws texels (or writes primitives) at every seed;
+    stream output word for word equal, counts equal.
+  - Seeds 1 to 8 (gpu2.log, gpu3.log): every new case passes at every seed once the adjacency
+    strip case was lengthened from 12 to 20 indices (at seed 6 its restarts left no strip of 4,
+    so neither side drew anything and the test counts an empty picture as a failure). The one
+    failure, `gs_clip` triangle list at seed 6, is gap A10 (claimed for seeds 1 to 4 only).
+  - Lint with warnings denied, Windows (in the GPU job) and Linux (laptop): clean. Laptop unit
+    tests (no corpora): every binary passes. Literal check (check2.txt): passes, nothing to add;
+    one line of the Direct3D 11 crate it named stale was deleted; this crate's baseline unchanged.
+- Not drawn: 32-bit indices of a strip (the same reading as the vertex stage's; the tests' index
+  buffers are 16-bit) and indexed strips after a domain stage (patches have no strips).
+
 Run 49 (the gap list in the fronts' order: the Direct3D 11 front's `GeometryStreams`):
 - Merged origin/phase-2-graphics-webgpu and origin/phase-2-graphics-direct3d-11 (no conflicts);
   the other branches had nothing new.
@@ -2422,7 +2469,8 @@ Run 47 (the check of run 46's report: every finding fixed or recorded):
   `run47/out` (49 MB, the files Chrome compiled).
 
 Next (in order). The gap list (top of this file) in the order the fronts need it:
-0. Done in run 49: `GeometryStreams` (several streams of points). The primitive's number behind a
+0. Done in run 50: indexed strips through the stage helper (the Direct3D 11 front's
+   `StageIndexedStrip`). Done in run 49: `GeometryStreams` (several streams of points). The primitive's number behind a
    geometry shader is not waited on now: the Direct3D 11 front draws the rig's geometry scene's
    `ps_id` with the back end's native primitive index (its status, run 5: 135 scenes pass). The
    stage helper's own route for it stays on A7.
@@ -2660,6 +2708,15 @@ The older list, kept for its detail:
 
 ## Asked of other tracks
 
+- The Direct3D 11 track (run 50): the stage helper takes indexed strips on every route (geometry
+  shaders, stream output, cull distances, alpha-antialiased lines, primitive numbers), so the
+  front can drop its `NotImplemented("StageIndexedStrip")` and un-ignore
+  `an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does`. Pass the draw's index
+  buffer in `StageDraw::index` as for lists; the helper restarts at the format's largest index.
+- The Direct3D 12 track (run 50): its "Next" 5 (a DXBC `Buffer<float4>` vertex shader with
+  `DrawBaseSource::Arguments` failing validation, "Index 3 is out of bounds") was fixed here in
+  run 29; nothing waits on it. Indexed strips through the stage helper work as above (its
+  refusals of indexed strips there, if any, can go).
 - The Direct3D 11 track (run 49), for test_so_statistics_query: geometry shaders writing several
   streams of points convert and run through `Stages` now. Give the stage helper a filled block of
   `stage::STREAM_FILLED_WORDS` words (the front's own `FILLED_BYTES = 32` in context/geometry.rs
@@ -4048,6 +4105,17 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- Indexed strips through the stage helper (run 50) run the vertex stage once per place of the
+  listed indices, not once per index of the strip: a vertex shared by a strip's triangles is shaded
+  up to three times. This keeps one form (an indexed list) for every route after it instead of
+  teaching each route a list of record numbers; the cost is more vertex work on a route that is
+  already a counted slow path (`GeometryAsCompute`, `StreamOutAsCompute`,
+  `CullDistanceAsGeometry`, `AntialiasedLinesAsQuads`, `PrimitiveIdAsGeometry`). A vertex shader
+  with side effects would see the difference, and those (`VertexStorageWrite`) are refused. The
+  restart index is always the format's largest, as Direct3D 11 and WebGPU restart; a Direct3D 12
+  pipeline with restarts off (`D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED`) is the front's to
+  route.
 
 - Run 47 touched the WebGL 2 back end's crate, which another track owns, by six lines: a public
   module `wcontainers_gpu_webgl::glsl` re-exporting its own `write`, `needs`, `GlslSettings` and
