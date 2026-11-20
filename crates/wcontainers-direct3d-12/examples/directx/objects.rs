@@ -756,6 +756,18 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        self.create_graphics_pipeline(d, false, riid, out)
+    }
+
+    /// A graphics pipeline of description `d`; `topology_from_draws` for a stream that gave no
+    /// primitive topology type.
+    fn create_graphics_pipeline(
+        &self,
+        d: &D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+        topology_from_draws: bool,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
         let root = d.pRootSignature.as_ref().map(|r| {
             // SAFETY: root signatures come from this library.
             unsafe { r.as_impl() }.0.clone()
@@ -871,6 +883,7 @@ impl Device {
                 inputs,
                 strip_cut,
                 topology_type,
+                topology_from_draws,
                 rtv_formats,
                 dsv_format,
                 samples,
@@ -987,8 +1000,8 @@ impl Device {
         // SAFETY: the API requires a description of a valid stream.
         let desc = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
         match unsafe { crate::stream::read(desc) }? {
-            crate::stream::Pipeline::Graphics(g) => {
-                self.CreateGraphicsPipelineState(&*g, riid, out)
+            crate::stream::Pipeline::Graphics(g, topology_given) => {
+                self.create_graphics_pipeline(&g, !topology_given, riid, out)
             }
             crate::stream::Pipeline::Compute(c) => self.CreateComputePipelineState(&c, riid, out),
         }
@@ -1665,13 +1678,10 @@ impl Device {
                 *pdesc.as_ref().ok_or(E_INVALIDARG)?,
             )
         };
-        let unordered = desc
-            .Flags
-            .contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, Some(unordered))
-            .map_err(hr)?;
         let kind = heap_kind(&heap)?;
         let front = resource_desc(&desc);
+        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, kind, Some(&front))
+            .map_err(hr)?;
         check_creation(kind, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_committed(kind, &front)?;

@@ -85,6 +85,7 @@ pub const CASES: &[&str] = &[
     "layers",
     "line-bias",
     "markers",
+    "undefined-topology",
     ANTIALIASED_LINES,
 ];
 
@@ -137,6 +138,7 @@ pub fn run(name: &str) -> Result<String> {
             "layers" => layers(&c),
             "line-bias" => line_bias(&c),
             "markers" => markers(&c),
+            "undefined-topology" => undefined_topology(&c),
             ANTIALIASED_LINES => antialiased_lines(&c),
             _ => panic!("no case {name}"),
         }
@@ -3452,6 +3454,78 @@ unsafe fn markers(c: &Ctx) -> Result<String> {
         c.finish()?;
         let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
         Ok(format!("close {closed:?} colour {}", colours(&pixels)))
+    }
+}
+
+/// Graphics pipelines of primitive topology type `UNDEFINED`, with a pixel shader and a target
+/// without and with a depth bias, without a pixel shader, and without one or a colour target but
+/// with a depth target: prints each creation's result.
+unsafe fn undefined_topology(c: &Ctx) -> Result<String> {
+    unsafe {
+        let vs = compile(
+            "float4 main(uint id : SV_VertexID) : SV_Position { return float4(id, 0, 0.5, 1); }",
+            s!("vs_5_0"),
+        )?;
+        let ps = compile(
+            "float4 main() : SV_Target { return float4(1, 1, 1, 1); }",
+            s!("ps_5_0"),
+        )?;
+        let root = c.root(&[], D3D12_ROOT_SIGNATURE_FLAG_NONE)?;
+        let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: b.as_ptr().cast(),
+            BytecodeLength: b.len(),
+        };
+        let mut out = Vec::new();
+        for (bias, pixel, target) in [
+            (0, true, true),
+            (1, true, true),
+            (0, false, true),
+            (0, false, false),
+        ] {
+            let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+                pRootSignature: transmute_copy(&root),
+                VS: code(&vs),
+                PS: if pixel {
+                    code(&ps)
+                } else {
+                    D3D12_SHADER_BYTECODE::default()
+                },
+                SampleMask: u32::MAX,
+                RasterizerState: D3D12_RASTERIZER_DESC {
+                    FillMode: D3D12_FILL_MODE_SOLID,
+                    CullMode: D3D12_CULL_MODE_NONE,
+                    DepthClipEnable: true.into(),
+                    DepthBias: bias,
+                    ..Default::default()
+                },
+                PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_UNDEFINED,
+                NumRenderTargets: u32::from(target),
+                DSVFormat: if target {
+                    DXGI_FORMAT_UNKNOWN
+                } else {
+                    DXGI_FORMAT_D32_FLOAT
+                },
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                ..Default::default()
+            };
+            if target {
+                desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            }
+            desc.BlendState.RenderTarget[0].RenderTargetWriteMask =
+                D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
+            let made = c
+                .device
+                .CreateGraphicsPipelineState::<ID3D12PipelineState>(&desc)
+                .map(|_| ())
+                .map_err(|e| e.code());
+            out.push(format!(
+                "bias {bias} pixel {pixel} target {target} {made:?}"
+            ));
+        }
+        Ok(out.join(" "))
     }
 }
 

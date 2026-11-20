@@ -995,12 +995,12 @@ fn picture<B: Backend>(
     out
 }
 
-/// Whether the replay route takes `case`: it refuses strips with adjacency and indexed strips by name.
+/// Whether the replay route takes `case`: it refuses strips with adjacency by name.
 fn replayed(case: &Case) -> bool {
-    !(matches!(
+    !matches!(
         case.topology,
         InputTopology::LineStripAdjacency | InputTopology::TriangleStripAdjacency
-    ) || (strip(case.topology) && case.indexed.is_some()))
+    )
 }
 
 /// `case` through the replay route (`GeometryReplay`), as a front on a back end without compute
@@ -1083,7 +1083,9 @@ fn ours_replayed<B: Backend>(
         .collect();
     assert!(gs.reflection.helpers.is_empty());
     let geometry_set = b.create_binding_set(&geometry_entries).unwrap();
-    let index_buffer = case.indexed.map(|_| buffer(b, indices, BufferUsage::INDEX));
+    // The route reads an indexed strip's indices back.
+    let index_usage = BufferUsage::INDEX | BufferUsage::COPY_SRC;
+    let index_buffer = case.indexed.map(|_| buffer(b, indices, index_usage));
     // Stream output: buffers filled with a pattern, so bytes not written compare too.
     let usage = BufferUsage::COPY_SRC | BufferUsage::COPY_DST;
     let bound = stream.map_or(&TWO_BUFFERS, |s| s.1);

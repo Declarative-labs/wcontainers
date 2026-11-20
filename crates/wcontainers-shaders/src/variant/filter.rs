@@ -9,7 +9,7 @@ use naga::{
     Block, Expression, Function, FunctionArgument, FunctionResult, Handle, ImageClass, ImageQuery,
     Literal, Module, SampleLevel, Scalar, ScalarKind, Span, Statement, Type, TypeInner,
 };
-use wcontainers_gpu::{HelperValue, Reflection, ShaderStage, VariantFlags};
+use wcontainers_gpu::{Format, HelperValue, Reflection, ShaderStage, VariantFlags};
 
 use super::{
     HelperMember, Outlined, Result, copy_constant, each_block, f32_lit, function, helper_once,
@@ -31,9 +31,25 @@ enum Shape {
     Depth2DArray,
 }
 
+/// The texel type of a float texture's declaration in the library, which a decoded texture's integer
+/// type replaces.
+const FLOAT_TEXELS: &str = "<f32>";
+const UNSIGNED_TEXELS: &str = "<u32>";
+const SIGNED_TEXELS: &str = "<i32>";
+/// The library's function decoding an integer texel, as the source declares it with a placeholder
+/// body ([`super::decoded::texel_function`] gives its body), and a decoded texture's load, its
+/// texture's load in place of `LOAD`.
+const DECODE_FUNCTION: &str = "decode_texel";
+const DECODE_DECLARATION: &str =
+    "fn decode_texel(raw: vec4<u32>) -> vec4<f32> { return vec4<f32>(raw); }\n";
+const DECODED_LOAD: &str = "decode_texel(bitcast<vec4<u32>>(LOAD))";
+const LOAD_PLACEHOLDER: &str = "LOAD";
+const NO_DECODE_FUNCTION: &str = "the filter library has no decoding function";
+
 impl Shape {
-    /// The library for this shape: `filter.wgsl` with its texture type, axes and loads filled in.
-    fn source(self) -> String {
+    /// The library for this shape: `filter.wgsl` with its texture type, axes and loads filled in;
+    /// for a texture stored as integers of `decoded`'s kind, loads of those integers decoded.
+    fn source(self, decoded: Option<ScalarKind>) -> String {
         let (texture, axes, taps, load) = match self {
             Shape::D1 => (
                 "texture_1d<f32>",
@@ -72,10 +88,24 @@ impl Shape {
                 "vec4<f32>(textureLoad(t, c.xy, layer, level), 0.0, 0.0, 1.0)",
             ),
         };
+        let (texture, load, decode) = match decoded {
+            None => (String::from(texture), String::from(load), String::new()),
+            Some(kind) => (
+                texture.replace(
+                    FLOAT_TEXELS,
+                    match kind {
+                        ScalarKind::Sint => SIGNED_TEXELS,
+                        _ => UNSIGNED_TEXELS,
+                    },
+                ),
+                DECODED_LOAD.replace(LOAD_PLACEHOLDER, load),
+                String::from(DECODE_DECLARATION),
+            ),
+        };
         format!(
-            "fn load_at(t: {texture}, c: vec3<i32>, layer: i32, level: i32) -> vec4<f32> {{ return {load}; }}\n{}",
+            "{decode}fn load_at(t: {texture}, c: vec3<i32>, layer: i32, level: i32) -> vec4<f32> {{ return {load}; }}\n{}",
             LIBRARY
-                .replace("TEXTURE", texture)
+                .replace("TEXTURE", &texture)
                 .replace("AXES", axes)
                 .replace("TAPS", taps)
         )
@@ -86,27 +116,41 @@ impl Shape {
 /// functions it calls into `ahead`, which [`Outlined::finish`] puts before every other function.
 #[derive(Default)]
 pub(super) struct Library {
-    parsed: Vec<(Shape, Module)>,
+    /// Each shape's library, by the guest format of a texture stored as integers.
+    parsed: Vec<((Shape, Option<Format>), Module)>,
     pub(super) ahead: naga::Arena<Function>,
     /// Each imported function by its form in the target module, so equal copies are made once.
     imported: Vec<(String, Handle<Function>)>,
 }
 
 impl Library {
-    /// The library function `name` of `shape`, imported into `module`.
+    /// The library function `name` of `shape`, imported into `module`, for a texture stored as
+    /// integers where `decoded` gives the guest's format.
     fn function(
         &mut self,
         module: &mut Module,
-        shape: Shape,
+        (shape, decoded): (Shape, Option<Format>),
         name: &str,
     ) -> Result<Handle<Function>> {
-        let at = match self.parsed.iter().position(|(s, _)| *s == shape) {
+        let at = match self.parsed.iter().position(|(k, _)| *k == (shape, decoded)) {
             Some(at) => at,
             None => {
-                let parsed = naga::front::wgsl::parse_str(&shape.source()).map_err(|e| {
-                    ConvertError::Malformed(format!("the filter library does not parse: {e}"))
-                })?;
-                self.parsed.push((shape, parsed));
+                let kind = decoded.map(super::decoded::stored_kind).transpose()?;
+                let mut parsed =
+                    naga::front::wgsl::parse_str(&shape.source(kind)).map_err(|e| {
+                        ConvertError::Malformed(format!("the filter library does not parse: {e}"))
+                    })?;
+                if let Some(format) = decoded {
+                    let (stub, vec4f) = parsed
+                        .functions
+                        .iter()
+                        .find(|(_, f)| f.name.as_deref() == Some(DECODE_FUNCTION))
+                        .and_then(|(h, f)| Some((h, f.result.as_ref()?.ty)))
+                        .ok_or_else(|| ConvertError::Malformed(NO_DECODE_FUNCTION.into()))?;
+                    parsed.functions[stub] =
+                        super::decoded::texel_function(&parsed.functions[stub], vec4f, format)?;
+                }
+                self.parsed.push(((shape, decoded), parsed));
                 self.parsed.len() - 1
             }
         };
@@ -241,6 +285,8 @@ pub(super) struct Sources {
     pub state: HelperMember,
     pub bias: Option<HelperMember>,
     pub clamp: Option<HelperMember>,
+    /// The guest's format of a texture stored as integers (`VariantKey::decoded`).
+    pub decoded: Option<Format>,
 }
 
 /// Replaces sample `h` of function `owner` by a call into the library.
@@ -275,6 +321,9 @@ pub(super) fn sample(
             ..
         }
     );
+    if depth && sources.decoded.is_some() {
+        return Err(ConvertError::Unsupported(crate::refusal::DECODED_TEXTURE));
+    }
     if depth_ref.is_some() {
         return Err(ConvertError::Unsupported(if sources.by_texture {
             "FilterInShaderOnComparison"
@@ -529,7 +578,10 @@ pub(super) fn sample(
                 Expression::Literal(Literal::U32(component as u32)),
                 Span::UNDEFINED,
             );
-            let function = outlined.library.function(module, shape, "filter_gather")?;
+            let function =
+                outlined
+                    .library
+                    .function(module, (shape, sources.decoded), "filter_gather")?;
             (
                 function,
                 alloc::vec![
@@ -644,7 +696,10 @@ pub(super) fn sample(
                 }
                 None => f32_lit(&mut callee, f32::MIN),
             };
-            let function = outlined.library.function(module, shape, "filter_sample")?;
+            let function =
+                outlined
+                    .library
+                    .function(module, (shape, sources.decoded), "filter_sample")?;
             (
                 function,
                 alloc::vec![

@@ -143,13 +143,24 @@ pub struct Texture<B: Backend> {
     pub shadow: RefCell<Vec<Vec<u8>>>,
     /// Per subresource of a staging texture, its shadow against the GPU's copy.
     pub staged: RefCell<Vec<Staged<B>>>,
-    /// A swap chain's buffer, whose target views may also take the sRGB twin of its format.
-    pub chain: bool,
+    /// Whether it is a swap chain's buffer, and whether views may draw into it.
+    pub chain: ChainBuffer,
     /// The minimum level-of-detail clamp `SetResourceMinLOD` gives, in the texture's levels.
     pub min_lod: Cell<f32>,
     /// NV12's chroma plane (this texture holds its luma): half the width and height, two
     /// channels, viewed through `R8G8_*`.
     pub chroma: Option<Rc<Texture<B>>>,
+}
+
+/// A texture's place in a swap chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainBuffer {
+    /// Not a swap chain's buffer.
+    None,
+    /// A buffer drawn into, whose target views may also take the sRGB twin of its format.
+    Drawn,
+    /// A buffer past the first of the sequential blit model, which DXGI gives for reading only.
+    Read,
 }
 
 /// What a texture's second read back or write holds besides the first.

@@ -111,11 +111,15 @@ fn main() -> windows::core::Result<()> {
             let real = std::fs::read_to_string(&args[2]).expect("real Direct3D 12's answers");
             let ours = std::fs::read_to_string(&args[3]).expect("our answers");
             let verbose = args.get(4).is_some_and(|a| a == "all");
-            std::process::exit(i32::from(!compare_features(&real, &ours, verbose)));
+            let listed = args
+                .get(5)
+                .map(|f| std::fs::read_to_string(f).expect("the listed differences"));
+            let good = compare_features(&real, &ours, verbose, listed.as_deref());
+            std::process::exit(i32::from(!good));
         }
         _ => eprintln!(
             "usage: check_d3d12 draw <out.rgba> | compare <a> <b> <tolerance> | features <out.txt> \
-             | compare-features <real.txt> <ours.txt> [all]"
+             | compare-features <real.txt> <ours.txt> [all|some] [listed.txt]"
         ),
     }
     Ok(())
@@ -187,9 +191,11 @@ use wcontainers_directx_graphics_infrastructure::support1;
 /// Prints each answer of ours beyond real Direct3D 12's (every differing one with `all`) and returns whether none of ours promises more than real
 /// Direct3D 12's on the same GPU: per line, `le` values may be lower, `ge` higher (or zero, not
 /// reported), `bits` a subset (with `SERVED_BEYOND_REAL`'s bits),
-/// and an answer real Direct3D 12 refuses must be refused.
+/// and an answer real Direct3D 12 refuses must be refused for the same reason (an ability ours
+/// lacks is refused as not done only where real answers). With `listed` (lines "key real ours"),
+/// every differing answer must be listed and every listed one must still differ so.
 #[cfg(windows)]
-fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
+fn compare_features(real: &str, ours: &str, verbose: bool, listed: Option<&str>) -> bool {
     let parse = |text: &str| -> std::collections::BTreeMap<String, (String, String)> {
         text.lines()
             .filter_map(|l| {
@@ -215,6 +221,8 @@ fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
             continue;
         }
         let within = match (number(r), number(o)) {
+            // Refused for a missing ability only where real answers.
+            _ if rule == "eq" => r == "ok" && o == "notimpl",
             (Some(r), Some(o)) => match rule.as_str() {
                 "le" => o <= r,
                 // A bound: ours may be wider, or zero where the ability is absent.
@@ -244,6 +252,26 @@ fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
         }
         differ += 1;
         good &= within;
+        let line = format!("{key} {r} {o}");
+        if listed.is_some_and(|l| !l.lines().any(|x| x == line)) {
+            println!("{line}  NOT LISTED");
+            good = false;
+        }
+    }
+    for line in listed
+        .into_iter()
+        .flat_map(str::lines)
+        .filter(|l| !l.starts_with('#'))
+    {
+        let mut w = line.split_whitespace();
+        let (key, r, o) = (w.next(), w.next(), w.next());
+        let holds = key.is_some_and(|k| {
+            real.get(k).map(|v| v.0.as_str()) == r && ours.get(k).map(|v| v.0.as_str()) == o
+        });
+        if !holds {
+            println!("{line}  LISTED, NO LONGER SO");
+            good = false;
+        }
     }
     println!(
         "{differ} of {} answers differ, {}",

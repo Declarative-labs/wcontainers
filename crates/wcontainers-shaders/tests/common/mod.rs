@@ -189,6 +189,8 @@ pub struct Reference {
     pub samples: u32,
     /// The pixel shader's texture slot left empty.
     pub unbound: bool,
+    /// The target cleared to zero instead of [`CLEAR`].
+    pub cleared_to_zero: bool,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -386,7 +388,7 @@ pub fn direct3d_11(
         c.RSSetState(&raster);
         c.OMSetBlendState(blend.as_ref(), Some(&[0.0; 4]), !0);
         c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        if format == Format::Rgba32Uint {
+        if format == Format::Rgba32Uint || reference.cleared_to_zero {
             c.ClearRenderTargetView(&rtv, &[0.0; 4]);
         } else {
             c.ClearRenderTargetView(&rtv, &CLEAR);
@@ -1500,12 +1502,27 @@ pub fn ours<B: Backend + 'static>(
 /// How many texels differ, and the largest difference of any channel (8-bit channels, or 32-bit
 /// integers).
 pub fn differ(a: &[u8], b: &[u8], format: Format) -> (usize, u64) {
+    use Format as F;
     let (channel, texel) = match format {
         Format::Rgba32Uint => (4, 16),
         // Positive f32 bits count steps apart.
         Format::Depth32Float => (4, 4),
+        // Narrow integer formats (normalised ones held as integers) by their own channels.
+        F::R16Uint
+        | F::Rg16Uint
+        | F::Rgba16Uint
+        | F::R16Sint
+        | F::Rg16Sint
+        | F::Rgba16Sint
+        | F::R8Sint
+        | F::Rg8Sint
+        | F::Rgba8Sint => {
+            let texel = format.block().2 as usize;
+            (texel / format.components().count_ones() as usize, texel)
+        }
         _ => (1, 4),
     };
+    let signed = format.kind() == wcontainers_gpu::FormatKind::Sint && channel < 4;
     let mut count = 0;
     let mut largest = 0;
     for (x, y) in a.chunks(texel).zip(b.chunks(texel)) {
@@ -1513,8 +1530,15 @@ pub fn differ(a: &[u8], b: &[u8], format: Format) -> (usize, u64) {
             .chunks(channel)
             .zip(y.chunks(channel))
             .map(|(p, q)| {
-                let v = |c: &[u8]| c.iter().rev().fold(0u64, |n, b| n << 8 | *b as u64);
-                v(p).abs_diff(v(q))
+                let v = |c: &[u8]| {
+                    let raw = c.iter().rev().fold(0u64, |n, b| n << 8 | *b as u64);
+                    let unused = u64::BITS - u8::BITS * c.len() as u32;
+                    match signed {
+                        true => ((raw << unused) as i64 >> unused) as i128,
+                        false => raw as i128,
+                    }
+                };
+                v(p).abs_diff(v(q)) as u64
             })
             .max()
             .unwrap();

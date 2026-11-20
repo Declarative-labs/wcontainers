@@ -234,7 +234,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         texel_formats: _,
         storage_packed,
         texels_through_buffer: _,
-        decoded,
+        decoded: _,
         targets_in_shader: _,
         min_lod_clamped: _,
         texture_layers: _,
@@ -255,7 +255,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     }
     let asked = [
         (*storage_packed != 0, crate::refusal::STORAGE_PACKED),
-        (!decoded.is_empty(), crate::refusal::NORM_AS_INTEGER),
         (
             *layout != [0; 32] || root_signature.is_some(),
             crate::refusal::ROOT_SIGNATURE_LAYOUT,

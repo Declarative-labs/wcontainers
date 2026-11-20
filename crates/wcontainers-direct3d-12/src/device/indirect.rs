@@ -50,6 +50,19 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// Whether buffer `id` lies in the program's memory (an upload buffer), which `read_now` reads
+    /// with no wait.
+    pub(super) fn in_program_memory(&self, id: ResourceId) -> bool {
+        matches!(
+            self.resources.get(id.0 as usize),
+            Some(Resource {
+                heap: HeapType::Upload,
+                storage: Storage::Buffer { host: Some(_), .. },
+                ..
+            })
+        )
+    }
+
     /// `size` bytes at `offset` of buffer `id`, as they are once the work recorded so far is done:
     /// an upload buffer's from its memory, others read back now.
     pub(super) fn read_now(
@@ -177,7 +190,15 @@ impl<B: Backend> Replay<B> {
                 IndirectArgument::Dispatch => caps.has(Features::COMPUTE),
                 _ => caps.has(Features::INDIRECT_FIRST_INSTANCE) && !bases_unread && !rewritten,
             };
-        if !on_gpu {
+        // Draws without indices fetching per-vertex streams, whose arguments lie in the program's
+        // memory, are read from it with no wait and drawn directly, so a stream read past its end
+        // reads zeros (`VertexFetchZeroed`) instead of being skipped (`IndirectFetchPastEnd`).
+        let fetches_vertices = d.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .is_some_and(|r| r.inputs.iter().any(|(e, _)| !e.per_instance));
+        let in_memory = d.in_program_memory(args) && count.is_none_or(|c| d.in_program_memory(c.0));
+        if !on_gpu || call == IndirectArgument::Draw && fetches_vertices && in_memory {
             return self.read_back_indirect(d, s, max, args, args_offset, count, span);
         }
         d.upload(args)?;
@@ -253,7 +274,9 @@ impl<B: Backend> Replay<B> {
         span: u64,
     ) -> Result<(), Error> {
         self.settle(d)?;
-        d.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        if !d.in_program_memory(args) || count.is_some_and(|c| !d.in_program_memory(c.0)) {
+            d.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        }
         let bytes = d.read_now(args, args_offset, span)?;
         let n = match count {
             Some((c, offset)) => {

@@ -14,7 +14,9 @@ front's two named items (arrays of views in shader model 5.1 DXBC, the evaluated
 its indexed strips through the stage helper (`StageIndexedStrip`) and, from A7, triangle strips
 with adjacency (see "Run 50"); run 51 the converter's half of A5, the geometry shader's replay form
 for WebGL 2 (see "Run 51"); run 52 the route that runs it, `stage::GeometryReplay`, drawn on ANGLE
-equal to Direct3D 11 (see "Run 52"); run 53 stream output after it (see "Run 53").
+equal to Direct3D 11 (see "Run 52"); run 53 stream output after it (see "Run 53"); run 54 the
+variant key's `decoded` and normalised targets in `targets_in_shader` (`NormAsInteger`, both
+fronts' 16-bit normalised textures; see "Run 54").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -55,7 +57,7 @@ The pass bar, item by item:
    distances (`vs_cull`) reaches WebGL 2 only through the stage helper there (gap A5).
 3. Each variant field and flag of 6.4 has a test showing the rewritten program's result equals the
    unrewritten one's with the native feature, or real Direct3D's picture. Met for every field and
-   flag but four (gap A4). Where each is tested (drawn on the RTX 3080; test binaries of
+   flag but three (gap A4). Where each is tested (drawn on the RTX 3080; test binaries of
    `crates/wcontainers-shaders/tests`):
    - `variant_draw` (`variants_draw_as_the_native_feature_does` unless named): `CLIP_DEPTH_REWRITE`
      (WebGL 2 with and without EXT_clip_control against WebGPU), `VIEWPORT_DEPTH_FLIP`,
@@ -68,7 +70,9 @@ The pass bar, item by item:
      `samples` (and `inputs_evaluated_elsewhere_match_direct3d`), `draw_base` (`Helpers` and
      `Arguments`, non-zero bases, direct and indirect), `texel_formats` and `texel_buffers`
      (`typed_buffers_draw_as_direct3d_does`), `texture_layers`
-     (`multisampled_array_layers_read_as_direct3d_does`).
+     (`multisampled_array_layers_read_as_direct3d_does`), `targets_in_shader` into normalised
+     targets held as integers (since run 54, against Direct3D 11 drawing into the normalised
+     format, both back ends).
    - `compute_draw`: `storage_formats` (`storage_textures_match_direct3d`), `texel_buffers` and
      `texel_formats` (`typed_buffers_match_direct3d`), `texels_through_buffer`
      (`storage_textures_through_buffers_match_direct3d`), `STORAGE_OFFSET`
@@ -76,7 +80,9 @@ The pass bar, item by item:
      (`buffer_arrays_use_the_elements_picked`: arrays of constant and typed buffers, two declared
      without a length, sized by the ranges, against Direct3D's rules; not against real Direct3D 12,
      which no drawn test here drives yet).
-   - `filter_draw`: `filter_in_shader`, `border_in_shader` (against real Direct3D 11 and WARP;
+   - `filter_draw`: `filter_in_shader`, `border_in_shader`, `decoded` (since run 54: R16_UNORM,
+     R16G16_SNORM, R16G16B16A16_UNORM and R8G8B8A8_SNORM held as their integer formats, every
+     sampling mode and loads; against real Direct3D 11 and WARP;
      anisotropic filtering a known failure, Known gaps: since run 47 only the modes that take a
      footprint from derivatives are counted as known, an explicit level or a gather must match). `shadow_draw`: `filter_in_shader` on
      depth textures compared and read plainly, `swizzled` on depth views.
@@ -97,7 +103,8 @@ The pass bar, item by item:
    tessellation scene, stream output after a domain stage; `stage_draw`). On WebGL 2 since run 52,
    geometry shaders by replay (`geometry_draw`,
    `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`, on ANGLE: every case of the WebGPU
-   test but the strips with adjacency and the indexed strips, which the route refuses by name), and
+   test but the strips with adjacency, which the route refuses by name; indexed strips since run
+   54), and
    stream output after them since run 53 (`stream_output_after_replay_matches_direct3d`).
    Not met: the rest of WebGL 2 (tessellation, cull distances, lines: gap A5), DXIL
    (A6), some topologies and streams (A7), vertex shaders writing storage (A9), and single texels on
@@ -134,7 +141,8 @@ The gap list (every item of the pass bar not met):
   at a level as its cause, but that back end has written all three since its commit 2080826c; the
   refusals came from the corpus test writing GLSL with naga itself. The test now uses the back
   end's writing (item 2), and every shader needing nothing beyond GLSL ES 3.00 compiles.
-- A4. Four parts of the variant key are refused by name and have no test of a result:
+- A4. Three parts of the variant key are refused by name and have no test of a result (`decoded`
+  built in run 54):
   - `PROVOKING_LAST` (`ProvokingRewrite`): no rewrite of the programs alone can give a flat input the
     last vertex's value, since a pixel program sees one value per primitive. The exact route is the
     front's (indices rotated per primitive, strips and fans made lists). Waits: nobody (both fronts
@@ -143,20 +151,14 @@ The gap list (every item of the pass bar not met):
     only if the front keeps them in one arena, and the binding the packed buffer takes is not named.
     Waits: nobody yet (programs with more storage views than the back end binds). Takes: settling
     the arena with the interface track, then the program's offsets from the helpers.
-  - `decoded` (`NormAsInteger`): a texture or target of a format the back end lacks, read or written
-    as integers and decoded in the program. Waits: the Direct3D 11 front (normalised targets of
-    another type, test_layered_rtv_mismatch's cases) and the Direct3D 12 front (a slot read in its
-    view's type, runner texture-load lines 235 to 267, which also needs an interface field).
-    Takes: the decode and encode per format (variant/texel.rs has the encoders) and a drawn test.
   - `layout` and a root signature (`RootSignatureLayout`): root constants read as immediates.
     Waits: nobody (the Direct3D 12 front binds root constants as a uniform buffer). Takes: the
     immediates in the program from the root signature's parameters.
 - A5. The stage helper on WebGL 2 (plan section 7). Geometry shaders run there since run 52
   (`stage::GeometryReplay`, `SlowPath::GeometryAsReplay`, drawn equal to Direct3D 11 on ANGLE).
-  Not built, each refused by name or absent: strips with adjacency (`GeometryReplayAdjacentStrip`)
-  and indexed strips (`GeometryReplayIndexedStrip`: their restart indices leave the captured
-  primitives' count on the GPU; takes the indices read back, as the back end's own capture does,
-  or the front listing them); records wider than one capture target
+  Indexed strips run there since run 54 (listed on the host from their indices read back).
+  Not built, each refused by name or absent: strips with adjacency (`GeometryReplayAdjacentStrip`);
+  records wider than one capture target
   (`GeometryReplayComponents`, past `capture_components`, 16 slots on WebGL 2's minimum);
   layered geometry (`selects`, built on the same pass-through, not drawn on WebGL 2 yet); stream
   output from a geometry shader writing several streams (`GeometryReplayStreams`: the replay runs
@@ -203,7 +205,10 @@ The gap list (every item of the pass bar not met):
   texel, where the pixel program clips by the interpolated distance and leaves the edges as drawn.
   Waits: nobody (a texel on an edge). Takes: clipping the triangles in the stage helper's compute
   (the polygon cut at each plane, as the rasteriser does), then the same seeds compared again.
-- Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the
+- Also open but not on the pass bar's words, for the fronts' real programs: a texture slot read
+  in its view's type where the program declares another (the Direct3D 12 front's runner
+  texture-load lines 235 to 267; needs an interface field giving the view's format per slot, then
+  the reads reinterpreted as `decoded`'s are decoded), `ResourceArray` on the
   DXIL route for arrays of typed buffers and arrays declared without a length (the DXBC route takes
   both since run 48), `InterpolateAt` on the DXIL route,
   `CalculateLevelOfDetail`, `SampleClamp`, `globallycoherent` storage, DXIL signed atomic minimum
@@ -2273,6 +2278,66 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 54 (the gap list in the fronts' order: A4's `decoded` and normalised targets, `NormAsInteger`):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the others had
+  nothing new. Read both fronts' statuses: no real program of theirs waits here now; the Direct3D
+  11 front's 16-bit normalised test waits on `decoded`, its WebGL 2 10_0 on its own work, and
+  the Direct3D 12 front's runner items are on the gap list.
+- `variant/decoded.rs`: a slot in `VariantKey::decoded` is declared as the integer format of the
+  same bits (unsigned for UNORM, signed for SNORM), once every read is rewritten. Loads read the
+  slot's variable and decode each component as Direct3D converts (`pull::decode`, correctly
+  rounded), absent ones zero and alpha one. Samples and gathers go through the filter library
+  (as `filter_in_shader`), whose `load_at` for such a shape decodes through a function whose body
+  is the same decode, built in naga IR. Size queries under `TEXTURE_INFO` read the variable
+  directly too. Refused by name: BGRA and formats that are not normalised (`DecodedFormat`), a
+  slot that is not a single-sampled float texture (`DecodedTexture`).
+- `variant/targets.rs`: a `TargetInShader` of a normalised format (the interface says the front
+  holds it as integers) encodes the float output into those integers (`texel::encode`, signed
+  codes sign-extended); its output's reflected scalar is `Uint` or `Sint`. A non-float output
+  into it is refused `TargetsInShader`; BGRA `NormAsInteger`.
+- `NormAsInteger` is no longer refused for `decoded`; `unbuilt` lost it.
+- Tests: `decoded_textures_are_read_as_integers` and the normalised cases of
+  `targets_of_another_type_take_the_outputs_bits` (tests/variants.rs, both routes, GLSL ES
+  written). `ps_filter` (tests/own/filter.hlsl) gained a seventh mode, a load at the coordinate
+  wrapped into the texture after asking its size, rebuilt with the desktop's fxc and dxc
+  10.0.26100 (only ps_filter's two files changed). `filtering_in_the_program_matches_direct3d`
+  now also draws R16_UNORM, R16G16_SNORM, R16G16B16A16_UNORM and R8G8B8A8_SNORM held as their
+  integer formats through `decoded`, against Direct3D 11 sampling the normalised texture.
+  `variants_draw_as_the_native_feature_does` draws ps_textured into the same four as integer
+  targets on both back ends against Direct3D 11 drawing into the normalised format.
+- Indexed strips through `GeometryReplay` (the Direct3D 11 front's 10_0 on WebGL 2; refused as
+  `GeometryReplayIndexedStrip` before): the route reads the draw's index range back (whole words,
+  as buffer copies need), lists each strip's primitives on the host in the order `strips.wgsl`
+  lists them for the compute route (a restart index ends a strip, odd triangles take their last
+  two vertices swapped), writes the list into the index ring as u32, and captures it as a list.
+  The replay tests now draw every indexed strip case: `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`
+  64 comparisons (56 before), 0 failed, 16 refused (strips with adjacency only);
+  `stream_output_after_replay_matches_direct3d` 24 comparisons (20 before), 0 failed, 8 refused
+  (desktop, RTX 3080, ANGLE, seeds 1 to 4, gpu5.log, 9 s; the WebGPU geometry test 112
+  comparisons, layered 24, streams 16, all 0 failed). Departure recorded below.
+- Departure (recorded below): the normalised targets are compared within one code per channel,
+  Direct3D's own conversion tolerance (`D3D11_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP`, 0.6), as the
+  RTX 3080's render targets round some values otherwise (R16_UNORM exact; R16G16_SNORM 296,
+  R16G16B16A16_UNORM 964, R8G8B8A8_SNORM 383 of 4096 texels a code apart, never more; the
+  16-bit unorm blue channel holds exact ties, 128.5 times an odd code). WARP was tried as an
+  exact reference and dropped: its picture of this scene differs from the GPU's by thousands of
+  codes on 11 to 944 texels (rasterising and filtering, not conversion). The common `differ`
+  now compares 16-bit and signed 8-bit integer formats by their own channels, signed where signed.
+- Results at this run's code (logs in scratch `graphics-shaders/run54`):
+  - Desktop, RTX 3080, `filter_draw` (gpu1.log, one GPU job, shared queue, 3 cargo jobs, load not
+    taken, 470 s): 1,358 comparisons at seeds 1 to 8, 0 failed, 96 known (seed 8's anisotropic
+    footprints, now for the new formats too). The decoded loads equal the GPU's Direct3D exactly
+    (largest difference 0) on both back ends and routes.
+  - Desktop, `variant_draw` (gpu4.log, 5 s): 6 tests pass, 48 comparisons, 0 failed.
+  - Desktop: clippy with warnings denied on Windows, clean; literal check passes with nothing to
+    add or delete (check2.txt; the first, check1.txt, named four new literals, since named, and
+    three baseline lines to delete, deleted). This crate's baseline 594 lines (540 code, 46
+    restated, 6 role, 2 redefinition), from 597.
+  - Rented x86 machine (`x86-run`, 192 threads, load 10 to 20 from others): clippy with warnings
+    denied, Linux, clean; `cargo test -p wcontainers-shaders` without the corpora: every test
+    passes (variants 36, geometry 17, glsl_writer 11, corpus 8 and 3 ignored, cache 6, compute
+    3, fuzz 1).
+
 Run 53 (the gap list in the fronts' order: A5, stream output after a replayed geometry shader):
 - Merged nothing: no branch had anything new. Checked and committed run 52's work (below). The
   Direct3D 11 front's status says 10_0 on WebGL 2 needs geometry shaders and stream output; it
@@ -2633,11 +2698,11 @@ Next (in order). The gap list (top of this file) in the order the fronts need it
    arrays on the DXIL route (`ResourceArray` there), and a drawn test of arrays against real
    Direct3D 12.
 2. The Direct3D 11 front's: `GeometryAsReplay` and lines on WebGL 2 (A5). Geometry shaders by
-   replay done (runs 51 to 53, `stage::GeometryReplay`). Left of A5, in the front's order:
-   indexed strips (read the indices back as the back end's own capture does, or list them in the
-   route), alpha-antialiased lines on WebGL 2,
-   layered geometry drawn there. Stream output after it done (run 53).
-3. `decoded` (A4, both fronts' normalised targets and the Direct3D 12 front's view-typed reads).
+   replay done (runs 51 to 53, `stage::GeometryReplay`), stream output after it (run 53), indexed
+   strips through it (run 54). Left of A5, in the front's order: alpha-antialiased lines on
+   WebGL 2, layered geometry drawn there.
+3. Done in run 54: `decoded` and normalised targets (A4). Left of it: the Direct3D 12 front's
+   view-typed reads (needs an interface field; "Also open" under the gap list).
 4. DXIL geometry, hull and domain shaders (A6).
 5. The rest of A4, A7, A10, A9, A1, A8, A2 in that order. Each closes with its drawn test and its
    line deleted from the gap list.
@@ -2866,6 +2931,14 @@ The older list, kept for its detail:
 
 ## Asked of other tracks
 
+- Both Direct3D tracks (run 54): `decoded` and normalised targets in `targets_in_shader` are built
+  (see "How the Direct3D fronts call `convert`"), drawn equal to real Direct3D 11 on both back
+  ends. The Direct3D 11 front can hold 16-bit normalised textures as their integer formats where
+  the back end lacks them and un-ignore
+  `typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does` (its
+  storage views of them go through `texels_through_buffer`, built since run 18). The Direct3D 12
+  front's view-typed reads (texture-load lines 235 to 267) still need an interface field.
+
 - The Direct3D 11 track (run 53): geometry shaders run on WebGL 2 by replay (`GeometryAsReplay`):
   `stage::GeometryReplay`, called as under "How the Direct3D fronts call `convert`", drawn equal
   to Direct3D 11 on ANGLE for every own geometry shader. Its refusals (indexed strips, strips with
@@ -2922,6 +2995,20 @@ The older list, kept for its detail:
 
 ## How the Direct3D fronts call `convert`
 
+- Normalised textures and targets the back end lacks (`NormAsInteger`, plan 4.12; since run 54).
+  Hold the texture as the integer format of the same bits: unsigned for UNORM (`R16_UNORM` as
+  `r16uint`, `R10G10B10A2_UNORM` as `rgb10a2uint`), signed for SNORM (`R16G16_SNORM` as `rg16sint`,
+  `R8G8B8A8_SNORM` as `rgba8sint`). A program reading it takes `VariantKey::decoded` with
+  (texture slot, the guest's format): the slot is declared as that integer format, loads are
+  decoded as Direct3D converts, and samples and gathers are filtered in the program from them,
+  exactly as `filter_in_shader` (so the slot's samplers leave `sampled_pairs`, and the helper
+  values are the same: `SamplerState`, `BorderColor`, `TextureComponents`, `LodBias` with
+  `lod_bias`, `TextureLevels` with `TEXTURE_INFO`). A program writing it as a target takes a
+  `TargetInShader` with the guest's normalised format: its float output is encoded into the
+  integers (the reflection's output says `Uint` or `Sint`); draw into the integer target. BGRA,
+  a format with no integer twin, is refused `NormAsInteger` (targets) or `DecodedFormat`
+  (`decoded`); a decoded slot that is not a single-sampled float texture `DecodedTexture`;
+  combining with the old value stays `BlendInShader`.
 - Geometry shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, then the geometry
   shader with `output_interpolation` from the pixel shader's inputs (as for a vertex shader), and the
   vertex shader with every input pulled (`pulled`, as for pulled inputs) and `draw_base: Helpers`.
@@ -2946,7 +3033,9 @@ The older list, kept for its detail:
   returned `FinalDraw`: the program of `replay.passthrough()` and the pixel shader,
   `replay.vertex_layout()`, `buffer` as stream 0, no indices, its list topology, `count`
   vertices, one instance. `None` means nothing to draw. Refused by name: strips with adjacency,
-  indexed strips, indirect draws, records past `capture_components`. Stream output (since run 53):
+  indirect draws, records past `capture_components`. Indexed strips (since run 54): the route
+  reads the draw's indices back, so the index buffer needs `BufferUsage::COPY_SRC`; it restarts
+  at the format's largest index, as Direct3D does. Stream output (since run 53):
   pass the declaration to `new` and `ReplayDraw::stream_output` as on the compute route, but with
   buffers and the filled block made with `COPY_SRC` and `COPY_DST` (no storage); the route reads
   the filled block, writes stream 0's whole primitives on the host as Direct3D does (a primitive
@@ -4301,6 +4390,17 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- Indexed strips through the replay route (run 54) are listed on the host from the indices read
+  back (one blocking read a draw on WebGL 2), where the compute route lists them on the GPU: WebGL
+  2 has no compute, and the listed count decides the capture's size. The host listing follows
+  `strips.wgsl`'s order, so both routes give the geometry shader the same primitives.
+
+- Normalised targets held as integers (run 54) are compared with real Direct3D 11 within one code
+  per channel, not exactly: the program rounds the scaled value to nearest, and Direct3D allows
+  its own conversion `D3D11_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP` (0.6), which the RTX 3080's render
+  targets use (ties of 16-bit codes go the other way, and some others). The decoded reads are
+  exact (correctly rounded, equal to the GPU's).
 
 - Stream output after a replayed geometry shader on WebGL 2 (run 53) is written on the host from a
   read back of the replay's capture (`StreamOutAfterReplay`), not by transform feedback as section 7

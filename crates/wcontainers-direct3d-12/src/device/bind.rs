@@ -78,7 +78,8 @@ enum Form {
     Image { read: bool, writable: bool },
 }
 
-/// `D3D12_SHADER_VISIBILITY` of each graphics stage.
+/// `D3D12_SHADER_VISIBILITY` of every stage (compute's), and of graphics stages.
+pub(super) const ALL: u32 = 0;
 pub(super) const VERTEX: u32 = 1;
 pub(super) const GEOMETRY: u32 = 4;
 pub(super) const PIXEL: u32 = 5;
