@@ -89,6 +89,15 @@ this cause and no other. 13 tests:
 
 ## Where things stand
 
+KF (what other tracks ask of the kernel), first run: the K6c check's four findings are answered
+(a fatal signal now ends its target when the target next runs; uevent02 is counted apart with
+its cause; the ttylock race is measured on ARM64 Linux on one CPU; the ARM64 machine's two other
+verdicts are recorded). Built: waits, epoll and shared futexes keyed on kernel-numbered ids and
+inode numbers, not host addresses; the page size from the abi everywhere in the kernel's crates
+(baseline 8446 to 8347 lines). The two bugs were fixed in K6c (eighth and ninth runs). Not
+started: the record and replay test, low-first placement with the address width, memory size
+and ceiling given at start, the runtime's start values. See "KF, first run".
+
 K6c, twenty-first run: the whole LTP comparison at 000f95e8 showed two new differences, both
 fixed with a test that failed before: fs_di never ended (a copy_file_range of many backend
 messages asked forever, from f84695a7), and setrlimit06 got SIGKILL without SIGXCPU (a turn of
@@ -245,6 +254,54 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## KF, first run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge (22:43 UTC on the 20th).
+Heavy runs on the ARM64 machine (load 20 to 28 on 96 cores); the literal check on the Mac (load
+5). Scratch folder kernel/kf1.
+
+The K6c check's findings:
+- A fatal signal ended its target inside the sender's kill (signal.rs `complete` called `die_of`
+  at once). Now every fatal signal takes the deferred path (`die_when_met`): the target's threads
+  are put in line (parked ones woken, stopped ones continued), and the first whose turn comes
+  ends the process (task.rs `settle`, which no longer acts at once on a dying process's queued
+  signals). process_mrelease now answers 0 for a dying process, as Linux does (its memory is not
+  given back to the host: plan section 15). New test processes
+  `killed_children_end_when_they_next_run_as_on_linux` (guest killorder.c: a sleeping child sent
+  SIGTERM and SIGKILL, a stopped one SIGKILL, a running one SIGTERM; each `waitpid(WNOHANG)` right
+  after the kill, then a blocking wait), compared with the ARM64 reference on one CPU over the
+  schedule seeds: before, "reaped at once 1" three times where Linux says 0 (kf1/killorder-before.log);
+  after, passed. The departure is deleted.
+- uevent02 matched by verdict only: ours breaks because NETLINK_KOBJECT_UEVENT is not built
+  (counted "socket protocol not built", then a checkpoint timeout); Docker Desktop's reference
+  breaks by running past its time limit. It is counted apart from the matching tests from now on:
+  of the comparison at 91d85e31, 4153 match by verdict and cause, uevent02 matches by verdict
+  for another cause (socket protocol NETLINK_KOBJECT_UEVENT not built). A matching broken or
+  failing verdict is not proof of the same cause in general; the comparison cannot tell from
+  verdicts alone, so such a case is found only by reading the logs.
+- ttylock's `cat /dev/tty | cat` on ARM64 Linux on one CPU (old guest from 3c4a7075^, zig cc
+  aarch64-linux-musl, alpine:3.22 on the ARM64 machine's Docker with `--cpuset-cpus=0`, 30 runs,
+  load 21 to 28; kf1/ttyprobe/log): 13 printed the line once and 17 twice. So Linux races there on
+  the ARM64 reference's own setup too, and the case stays out of the guest. The other three lines
+  gave one answer each, 30 of 30.
+- The ARM64 machine's own reference broke mm:ksm06_1 and pty:pty05 where Docker Desktop's and
+  ours skipped them. The bar uses the committed (Docker Desktop) reference; recorded here only.
+
+The brief's asks:
+- The two bugs: done in K6c (O_EXCL and O_TRUNC on a backend CREATE, 17703df3, test backend
+  `races_match_reference` via guest backendrace.c; mapped backend pages dropped when attributes
+  show a change, d52191ba, guest backendchanged.c).
+- Host addresses: /proc/net's socket numbers and open files were numbered in K6c (322cfeef).
+  Now every wait channel, epoll's queues and shared futex keys use a kernel number
+  (`Kernel::next_object`, kept in the epoll instance, inotify instance, event counter, terminal
+  pair, System V queue, AIO ring, open file and socket) or an inode's device and number
+  (`ObjectId`, process.rs). What is left of `Rc::as_ptr` in the kernel is equality and
+  de-duplication of live objects, which nothing a guest sees depends on.
+- The page size: every use in the kernel, its test crate and the abi takes
+  `wcontainers_abi::PAGE_SIZE` (with `MAX_SKB_FRAGS`, `SKB_MAX_ALLOC`, `SHARED_INFO`, `SK_BUFF`,
+  `MAX_PAGE_ORDER` and FUSE's `MIN_MAX_WRITE` named once). The literal check passes; the
+  baseline went from 8446 to 8347 lines (kf1/lit2.txt).
 
 ## K6c, twenty-first run
 
@@ -4534,10 +4591,6 @@ All on this shared Mac; noisy, not benchmarks.
 - libc-test runs each test through its own runner with a 600 s time limit (`runtest -t 600`), not
   its default 5 s: the stand-in CPU on a loaded machine is far slower than the reference, and only a
   test that never ends should time out.
-
-- A fatal signal ends a process at once here, where Linux ends it when it next runs. So
-  process_mrelease never finds a dying process with memory to free: a running process is EINVAL and an
-  ended one ESRCH; Linux answers 0 in the window before the victim runs (a race in the reference).
 
 - The root file system is in memory (tmpfs), or on the backend (K4, the server's tmpfs directory in
   tests). Tests fill it from `docker export` of the reference image. What shows the file system's
