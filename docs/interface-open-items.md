@@ -61,70 +61,74 @@ executor/interface.rs
   (see b).
 
 kernel-interface/interface.rs
-- line 1: the crate doc now names the kernel; line 16: the doc comment of `Kernel`.
-- lines 17 to 43 (`Kernel`) and 48, 68 to 78 (on `Process`) are as ruled ("suspend and resume by task,
+- line 1: the crate doc now names the kernel; line 17: the doc comment of `Kernel`.
+- lines 18 to 44 (`Kernel`) and 49, 70 to 80 (on `Process`) are as ruled ("suspend and resume by task,
   and the process context"). Only rustfmt's line breaks differ.
-- lines 52 and 64: the executor is reached through the kernel, as `<Self::Kernel as Kernel>::Executor`,
+- lines 53 and 66: the executor is reached through the kernel, as `<Self::Kernel as Kernel>::Executor`,
   in `execution_config` and in the `where` of `watch_thread_memory`. The ruling gives `Kernel` its
   `type Executor` and `Process` its `type Kernel: Kernel`, and so settles where the executor parameter
   goes; the spelling of the path is mine.
-- line 52: `execution_config(&self) -> &ExecutionConfig<...>`. The getter is ruled ("Agreed
+- line 53: `execution_config(&self) -> &ExecutionConfig<...>`. The getter is ruled ("Agreed
   2026-11-18 night"); that it lends a reference is mine. By value it cannot be written by a kernel generic
   over its executor: `E::TranslatorConfig` has no bound, so the kernel cannot copy it out of `&self`
   (today's `ExecutionConfig` is `Copy`, so this never came up). The runtime already hands translator
   settings by reference (R container.rs:35, 103). The other way is `type TranslatorConfig: Clone` and a
   return by value. Your choice.
-- line 53: `state(&mut self) -> &mut Self::State`: the behaviour is ruled ("per-process state": handed over
+- line 54: `state(&mut self) -> &mut Self::State`: the behaviour is ruled ("per-process state": handed over
   with the process, mutable, no lock), the name and signature are not.
-- line 54: `memory_id(&self) -> MemoryId`: the getter is ruled (WorkloadPlacement, evening), the name is
+- line 55: `memory_id(&self) -> MemoryId`: the getter is ruled (WorkloadPlacement, evening), the name is
   not. See (d) on what the id means across exec.
-- line 56: `read_memory` returns `Result<impl Iterator<Item = &[u8]>, MemoryError>`. "Pieces of borrowed
+- line 58: `read_memory` returns `Result<impl Iterator<Item = &[u8]>, MemoryError>`. "Pieces of borrowed
   bytes" is ruled; the iterator type, the `Result` and `MemoryError` are not.
-- line 60: `write_memory` returns `Result<(), MemoryError>`: not ruled.
-- line 62: `watch_thread_memory`: the verb-first spelling of the ruled `memory_watch_thread`, and the
+- line 62: `write_memory` returns `Result<(), MemoryError>`: not ruled.
+- line 64: `watch_thread_memory`: the verb-first spelling of the ruled `memory_watch_thread`, and the
   `where ...Executor: PerThreadWatch` form of "only where the executor implements the subtrait". See
   (e) for what that form does to a conformance suite.
-- line 65: `take_dirty_memory` returns `Vec<Range<u64>>` (today's type; not ruled).
-- lines 83 to 85: the accessor names `memory_mapped`, `ceiling_distance`, `compute_used` are today's;
+- line 67: `take_dirty_memory` returns `Vec<Range<u64>>` (today's type; not ruled).
+- lines 85 to 87: the accessor names `memory_mapped`, `ceiling_distance`, `compute_used` are today's;
   the ruling names the concepts ("memory mapped, distance to the ceiling, compute used").
-- line 86: `ProcessInfo::parent(&self) -> Option<TaskId>` (today's system.rs:256).
-- line 87: `ProcessInfo::is_inspected(&self) -> bool`. It is in the inspection proposal ("Proposed to the
+- line 88: `ProcessInfo::parent(&self) -> Option<TaskId>` (today's system.rs:256).
+- line 89: `ProcessInfo::is_inspected(&self) -> bool`. It is in the inspection proposal ("Proposed to the
   owner 2026-11-18 night, NOT ruled": "the kernel announces `on_inspection_starting` at the first and
   `on_inspection_ended` after the last; `ProcessInfo::is_inspected()`"), and that proposal was then
   "RULED" "as proposed above" ("Ruled and named by the owner, 2026-11-18 night"). The two hooks come from
   the same sentence, so all three are written. No later section names it again; strike it if your ruling
   covered only the line Linux draws.
-- lines 98, 105, 114, 122, 130: derives `Clone, Copy, Debug, PartialEq, Eq`, as today.
-- lines 129 to 137: `MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }`
+- lines 100, 107, 116, 124, 132: derives `Clone, Copy, Debug, PartialEq, Eq`, as today.
+- lines 131 to 139: `MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }`
   (today's system.rs:106).
-- line 143: `SignalInformation = siginfo`, the generated binding of Linux's `siginfo` (kernel
+- line 145: `SignalInformation = siginfo`, the generated binding of Linux's `siginfo` (kernel
   linux/general.rs:814). The ruling says "Linux's own record of a signal"; that it is this binding is
   my reading.
-- lines 146, 157, 161, 165, 169: derives `Clone, Copy, Debug, PartialEq, Eq, Hash` on `MemoryObject` and
+- lines 148, 159, 163, 167, 171: derives `Clone, Copy, Debug, PartialEq, Eq, Hash` on `MemoryObject` and
   its four ids, which distributed-everything's `MemoryShard` needs (workload-placement/interface.rs:5).
-- lines 13 and 14: `TaskId`, `Errno` and `siginfo` are imported from wcontainers-kernel (see d).
-- Every doc comment except the ruled one on `ReplayDeterminism::External` (line 109).
+- lines 14 and 15: `TaskId`, `Errno` and `siginfo` are imported from wcontainers-kernel (see d).
+- Every doc comment except the ruled one on `ReplayDeterminism::External` (line 111).
+- line 56, `Process::processor_features`, and lines 174 to 179, the contents of `ProcessorFeatures`:
+  PROPOSED (see h). The type's name is ruled.
 
 system/interface.rs (the split into concerns, their names and the thirteen service methods are in g)
 - line 4: `#![allow(unused_variables)]` (see f).
 - lines 15 to 27: the form of `System` is ruled; which concerns it lists, and their order, are mine.
-- lines 30 to 162: each concern as a trait, its name, and which methods it holds are mine (see g); only
+- lines 30 to 180: each concern as a trait, its name, and which methods it holds are mine (see g); only
   the methods of the first three are ruled. The concerns do not require `Sync` themselves: the ruling puts
   it on the embedder's trait ("`System: Sync`", 2026-11-19, and the union's `+ Sync`), and `System` keeps it.
 - line 31: `type ProcessState` sits on `ProcessTracer`, not on `System`, where "per-process state" put it
   (see g).
-- line 110: the parameter `previous` of `allocate_task_id`, and its default body, which calls the kernel's
+- line 128: the parameter `previous` of `allocate_task_id`, and its default body, which calls the kernel's
   `task_id_after` (system.rs:196): the ruled counter, wrapping past the low ids as today.
-- line 113: the parameter name `id` of `free_task_id` (today's).
+- line 131: the parameter name `id` of `free_task_id` (today's).
 - lines 33 to 105: every hook and both proxy calls take `P: Process<State = Self::ProcessState>`. That form
   is ruled for the two shared-memory hooks only; the earlier hooks were ruled with an untyped `process`.
+  It is ruled too for `choose_processor_features` (lines 107 to 113, as ruled, see h).
+- lines 114 to 123: `read_monotonic_nanoseconds` and `read_random_number`: PROPOSED (see h).
 - line 53: `thread: TaskId` on `on_thread_starting` (today's; `send_signal(thread: TaskId)` is ruled).
 - line 60: the parameter `bytes: u64` of `on_process_outgrown` (today's system.rs:175).
 - lines 104 and 105: the inspection hooks' parameter `process: P` (only the names and the trigger are
   ruled). Of the fourteen hooks only `on_inspection_starting` has a doc comment, your own (line 103).
-- lines 118 to 120: the stream calls' parameters `end`, `bytes` and their types are today's (abi
+- lines 136 to 138: the stream calls' parameters `end`, `bytes` and their types are today's (abi
   host.rs:110 to 114); only the three names are ruled.
-- lines 14, 29, 108, 116, 123, 129, 134, 139, 144, 161: every doc comment of a trait, each a noun phrase.
+- lines 14, 29, 126, 134, 141, 147, 152, 157, 162, 179: every doc comment of a trait, each a noun phrase.
   Whether a concern's methods are ruled is said in (g), not in the file.
 
 container/interface.rs
@@ -149,12 +153,12 @@ Kernel, crates/wcontainers-kernel/src/system.rs
       `P: Process<State = Self::ProcessState>`; default bodies `let _ = (...);` become `{}`.
 - [ ] New hooks `on_signal_delivering`, `on_shared_memory_mapping`, `on_shared_memory_unmapped`,
       `on_inspection_starting`, `on_inspection_ended`.
-- [ ] `pub struct Process<'a>` (227) becomes the trait `Process` (kernel-interface 46), with `type State` and
+- [ ] `pub struct Process<'a>` (227) becomes the trait `Process` (kernel-interface 47), with `type State` and
       `type Kernel`.
-- [ ] `pub struct Kernel` (lib.rs:137) implements the trait `Kernel` (kernel-interface 17): `type Executor`,
+- [ ] `pub struct Kernel` (lib.rs:137) implements the trait `Kernel` (kernel-interface 18): `type Executor`,
       `type SuspendedTask`, `type ProcessContext` and the five calls. Today's kernel has no suspend or
       resume at all.
-- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (kernel-interface 82);
+- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (kernel-interface 84);
       `info` returns `impl ProcessInfo` instead of `ProcessInfo<'_>`. New on it: `is_inspected`.
 - [ ] `execution_config(&self) -> ExecutionConfig` (284, by value) becomes
       `-> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>`.
@@ -263,7 +267,7 @@ Distributed Everything
 
 Ruled before, and written now
 - The stream services as services of `System` (naming rule, "Later on 2026-11-18"), which until now stayed
-  on abi's `Host`: they are on `StreamPeer` (system 117 to 120), a concern of `System`. Whether `Host`
+  on abi's `Host`: they are on `StreamPeer` (system 135 to 138), a concern of `System`. Whether `Host`
   folds into `System`: it does ("how the interface files are organised": the kernel-facing services were
   on abi's `Host`). Every method of `Host` is on a concern (see g); abi's own `Host` trait is not changed
   here and goes at the migration (b).
@@ -290,7 +294,7 @@ Ruled once and replaced by a later ruling, so not written
 ## (d2) What "suspend and resume by task, and the process context" settles, and what it leaves open
 
 Settled or changed by it
-- Where the executor parameter goes (a, kernel-interface line 52): on `Kernel` as `type Executor:
+- Where the executor parameter goes (a, kernel-interface line 53): on `Kernel` as `type Executor:
   Executor`, and `Process` reaches it through `type Kernel: Kernel`. The hook bound `P: Process<State =
   Self::ProcessState>` stays exact. `Process::Executor` is gone.
 - Which value stands for the kernel (d): the trait `Kernel`.
@@ -301,7 +305,7 @@ Settled or changed by it
   in the value".
 - The conformance root of the kernel interface (e): now the kernel, no longer the process.
 Not settled, and touched by it
-- `execution_config` lending a reference (a, line 52): unchanged, but `resume_process` takes the config
+- `execution_config` lending a reference (a, line 53): unchanged, but `resume_process` takes the config
   by value, so whoever resumes needs an owned `TranslatorConfig`; nothing in the traits gives one (e).
 - The per-container translator settings of `runtime.container(...)` (d): the ruling gives the config
   per process at resume, which still conflicts with them.
@@ -419,11 +423,11 @@ through the trait's own operations, and nothing is passed in from outside.
 ## (f) The linter, and the rules
 
 Run with the model check over the whole workspace (`cargo-reviewable reviewable check`, the linter at
-its commit 2d9604a). For the four interface crates and their suites there are 55 findings:
-- 53 `conformance-untested-method`: 28 in system (every method but the four the suite calls, see e),
-  22 in kernel-interface (every method but `Kernel::suspend_tasks` and `Kernel::resume_tasks`), 1 in
+its commit 2d9604a). For the four interface crates and their suites there are 59 findings:
+- 57 `conformance-untested-method`: 31 in system (every method but the four the suite calls, see e),
+  23 in kernel-interface (every method but `Kernel::suspend_tasks` and `Kernel::resume_tasks`), 1 in
   executor, 2 in container. They are kept as findings, as section (e) explains.
-- 1 `verb-not-first`: `memory_mapped` (kernel-interface/interface.rs:83), read by the model as a verb in
+- 1 `verb-not-first`: `memory_mapped` (kernel-interface/interface.rs:85), read by the model as a verb in
   second place. The name is today's and follows your words "memory mapped", so it is kept, not disputed;
   `mapped_memory` would pass.
 - 1 `function-summary-not-third-person`: your doc of `on_inspection_starting` (system/interface.rs:103),
@@ -436,7 +440,7 @@ its commit 2d9604a). For the four interface crates and their suites there are 55
   answer is disputed: "credit is the verb, as in credit an account: the kernel credits the embedder
   bytes on a stream; the name is ruled". Remove either dispute if you would rather see the finding.
 
-The rest of the workspace, not yet in the layout, has 35,529 findings (35,584 in all). The model's
+The rest of the workspace, not yet in the layout, has 35,529 findings (35,588 in all). The model's
 answers for the new names (`fill_random_bytes`, `send_backend` and the four suite functions) are all
 first_word, at confidence 0.85 or more.
 
@@ -447,7 +451,8 @@ changed. Four of my type summaries it rejected were rewritten as plain noun phra
 `MemoryObject`, `GuestMachine`, `StreamPeer`), and the summary of every suite's `tests!` was put on one
 line, as the stricter `comments` rules now need. After the review of the reorganisation the trait
 summaries lost their endings on what is ruled; the model's answers for
-the shorter summaries are recorded, and the findings are the same 55.
+the shorter summaries are recorded, and the findings are the same 55. The processor features (h) add
+four, each a `conformance-untested-method`; their names and the summary of `ProcessorFeatures` pass.
 
 Getters and the verb-first rule. "method names are verb first" ("Ruled by the owner, 2026-11-19
 afternoon"), and in the naming rules you agreed for the linter the same day, "getters stay noun phrases".
@@ -465,7 +470,8 @@ depend on wcontainers-kernel. That becomes `depends-on-implementation` once the 
 implementation.
 
 The hooks have empty bodies `{}`, as the naming rule needs (`let _ = x;` would make them not hooks), and
-keep their ruled parameter names. So rustc warns about 32 unused parameters unless
+keep their ruled parameter names. So rustc warns about 33 unused parameters (the 33rd is `process` of
+`choose_processor_features`, unused by its ruled default) unless
 `#![allow(unused_variables)]` is set (system/interface.rs:4).
 
 ## (g) The system as a union of concerns: the split, for you to review
@@ -481,53 +487,54 @@ union); the concerns do not repeat it. Every method takes `&self`.
 
 The split, one concern per piece an embedder would write or reuse whole (name, then one alternative):
 - `ProcessTracer` (line 30; or `ProcessSupervisor`): the two proxy calls and every hook, with
-  `type ProcessState`. The methods are ruled; the trait is mine, and so is putting `ProcessState` on it
-  ("per-process state" ruled it onto the embedder's trait, then `System`; see the end of this section).
+  `type ProcessState`, and after them `choose_processor_features` (ruled onto "the embedder's
+  process-tracing concern") and the two proposed reads (see h). The proxy calls and the hooks are
+  ruled; the trait is mine, and so is putting `ProcessState` on it ("per-process state" ruled it onto the embedder's trait, then `System`; see the end of this section).
   One piece because every method is handed the same process with the same state, and the ruled uses
   combine them (locks across machines read the proxy and `on_memory_written_by_kernel` together). The
   name is ptrace's: a tracer stops a process at system call entry and exit, at signal delivery, exec,
   clone and exit.
-- `TaskIdSource` (line 109; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. The methods are
+- `TaskIdSource` (line 127; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. The methods are
   ruled; the trait is mine. Apart from the hooks because the first ruling made it "an id source given at
   start", and because a stock counter is reused unchanged by an embedder that writes its own hooks, while
   a distributed one replaces it alone.
-- `StreamPeer` (line 117; or `StreamEndpoint`): `send_stream`, `credit_stream`, `close_stream`. The
+- `StreamPeer` (line 135; or `StreamEndpoint`): `send_stream`, `credit_stream`, `close_stream`. The
   methods are ruled; the trait is mine. The embedder holds the other side of every end, and the three
   calls share it.
-- `Clocks` (line 124; or `TimeSource`): `monotonic_nanoseconds` (125), `realtime_nanoseconds` (126).
+- `Clocks` (line 142; or `TimeSource`): `monotonic_nanoseconds` (143), `realtime_nanoseconds` (144).
   Plural because it holds two clocks. Apart, because a replaying or simulated embedder replaces time alone.
-- `RandomSource` (line 130; or `EntropySource`): `fill_random_bytes` (131). Apart, because replay replaces
+- `RandomSource` (line 148; or `EntropySource`): `fill_random_bytes` (149). Apart, because replay replaces
   it alone, as with time.
-- `WarningLog` (line 135; or `WarningSink`): `warn` (136). Apart: logging is reused whatever else is
+- `WarningLog` (line 153; or `WarningSink`): `warn` (154). Apart: logging is reused whatever else is
   replaced.
-- `FileServer` (line 140; or `FuseServer`): `send_backend` (141). The embedder is the FUSE server of the
+- `FileServer` (line 158; or `FuseServer`): `send_backend` (159). The embedder is the FUSE server of the
   container's files; a whole server is one piece. On this trait `send_backend` reads oddly, since the
   server is itself the back end the kernel sends to; the method keeps today's words (`backend_send`, verb
   first), as no ruling gives others. `FuseServer` would read no better with it; a method name such as
   `send_file_request` would, and is yours to give.
-- `Network` (line 145; or `NetworkStack`): `connect` (146), `send` (153), `receive` (154), `finish` (155),
-  `close` (156), `listen` (157), `accept` (158). They share `ConnectionId`, and one embedder's sockets do
+- `Network` (line 163; or `NetworkStack`): `connect` (164), `send` (171), `receive` (172), `finish` (173),
+  `close` (174), `listen` (175), `accept` (176). They share `ConnectionId`, and one embedder's sockets do
   all of them.
-- `NameResolver` (line 162; or `DnsResolver`): `look_up` (163). Apart from `Network` because a resolver
+- `NameResolver` (line 180; or `DnsResolver`): `look_up` (181). Apart from `Network` because a resolver
   is reused or replaced on its own (a fixed table for tests, DNS over HTTPS in a browser) and shares no
   id with the connections. The other way: `look_up` folded into `Network`.
 
 The thirteen never-ruled service methods, by concern, with their lines in system/interface.rs: `Clocks`
-125, 126; `RandomSource` 131; `WarningLog` 136; `FileServer` 141; `Network` 146, 153, 154, 155, 156, 157,
-158; `NameResolver` 163. Their parameters and types are today's (abi host.rs:97 to 145), with these
+143, 144; `RandomSource` 149; `WarningLog` 154; `FileServer` 159; `Network` 164, 171, 172, 173, 174, 175,
+176; `NameResolver` 181. Their parameters and types are today's (abi host.rs:97 to 145), with these
 exceptions and open points:
 - `random` (host.rs:101) is `fill_random_bytes`: verb first, the verb from today's doc ("Fill with
   random bytes").
 - `backend_send` (host.rs:107) is `send_backend`: verb first, the same words.
 - Not changed, though a convention touches them (each is today's, and no ruling gives another form):
-  - A parameter name repeats its type: `warning: Warning` (136), the ruled stream calls' `end: End`
-    (118 to 120), `connection: ConnectionId` (148, 153 to 156, 158), and in part `request:
-    BackendRequestId` (141).
-  - `look_up`'s `request: u64` (163) is no branded id, and abi's `Event::LookedUp` carries it as `u64`,
+  - A parameter name repeats its type: `warning: Warning` (154), the ruled stream calls' `end: End`
+    (136 to 138), `connection: ConnectionId` (166, 171 to 174, 176), and in part `request:
+    BackendRequestId` (159).
+  - `look_up`'s `request: u64` (181) is no branded id, and abi's `Event::LookedUp` carries it as `u64`,
     which this stage may not change.
   - Standard-library types: the clocks return `u64` nanoseconds, not `Duration`, since the names say the
-    unit and would change with the type; `connect` takes `address: &[u8], port: u16` (149, 150) and
-    `listen` a bare `port: u16` (157), where `core::net::IpAddr` or `SocketAddr` (usable without `std`)
+    unit and would change with the type; `connect` takes `address: &[u8], port: u16` (167, 168) and
+    `listen` a bare `port: u16` (175), where `core::net::IpAddr` or `SocketAddr` (usable without `std`)
     would be the standard types. abi's `Event::LookedUp` hands addresses back as bytes (host.rs:80), so
     the change reaches abi.
 - Not a rule broken, but for you to see: `Network::send`, `receive`, `finish` and `close` name no
@@ -547,3 +554,90 @@ What this settles among the conflicts listed before: where the stream calls live
 concern of `System`, no longer on abi's `Host`), and whether abi's `Host` folds in (it does, method by
 method, see d). abi's `Host` trait itself, and today's kernel `System: Host + Sync`, are not changed here
 (b).
+
+## (h) The processor features a program is told ("RULED by the owner, 2026-11-20 afternoon")
+
+Ruled, and written as ruled
+- `ProcessTracer::choose_processor_features` (system 107 to 113), word for word:
+  ```rust
+  fn choose_processor_features<P: Process<State = Self::ProcessState>>(
+      &self,
+      process: P,
+      supported: &ProcessorFeatures,
+  ) -> ProcessorFeatures {
+      supported.clone()
+  }
+  ```
+  The kernel asks once per program, before its first instruction. `supported` is what this host's
+  executor runs at full speed; the default passes it on unchanged; an embedder returns less to keep a
+  process portable. It returns a value, so it is a service, like the task ids, not a hook.
+- The type's name `ProcessorFeatures` (kernel-interface 174), and that it can be cloned (the ruled
+  `supported.clone()`). Its contents are PROPOSED (below).
+- `ExecutionConfig` did NOT gain a field, and there is no setter: the list cannot change while a program
+  runs. The ruling withdraws the sketch of a `processor_features` field with a getter on the executor.
+  The kernel passes the chosen list to its executor internally; nothing on `Executor` names it.
+- After the choice the list belongs to the process and travels in the process context; a receiving
+  kernel is not asked again. `ProcessContext` is the kernel's own associated type, so nothing was added
+  to it. What the interface cannot say: an implementation's `ProcessContext` must hold the chosen list,
+  and `resume_process` must give it to the resumed process without calling `choose_processor_features`.
+  A check of this waits on a process the kernel's suite can reach (see e).
+- A process arriving with features the host lacks is accepted and runs with the missing instructions done
+  in software, from the start. That is ruled and belongs to the executors (each emulated instruction a
+  named slow path, counted and warned; each routine checked against hardware by the single-instruction
+  differential test). Nothing is on the interface for it. The embedder sees which features a host runs at
+  full speed as `supported`; no other getter was added.
+- It supersedes "the processor is fixed for the whole container". Today's fixed claim becomes what an
+  executor reports as `supported`: abi machine.rs's `HWCAP` and `HWCAP2` on ARM64, and on x86-64 the
+  claim lists of origin/phase-2-x86 (crates/wcontainers-x86/src/claims.rs). abi machine.rs's module doc
+  ("it is never emulated in software") is contradicted by the ruling and changes at the migration.
+- The clock and random services stay as they are, with no process: they are the kernel's own reads.
+  This replaces the midday direction's "through the System's existing clock and random-number concerns".
+
+PROPOSED, for you to rule (none of these is in the ruling as code)
+1. The contents of `ProcessorFeatures` (kernel-interface 174 to 179):
+   ```rust
+   pub enum ProcessorFeatures {
+       Arm64 { hwcap: u64, hwcap2: u64 },
+       X86_64 { cpuid_features: Vec<String> },
+   }
+   ```
+   ARM64 holds Linux's own two words, `AT_HWCAP` and `AT_HWCAP2`, as today's code tells them (abi
+   machine.rs `HWCAP`, `HWCAP2`, bits named in `hwcap`). x86-64 holds what the x86 branch's claims are
+   written in: names of iced's `CpuidFeature` (`DEFAULT_FEATURES`, `AVX_FEATURES`), owned, since the list
+   travels to other machines; x86 Linux has no hwcap words that carry these (a program asks CPUID). No
+   feature is listed here: which are offered comes from the audit you parked. Derives `Clone, Debug,
+   PartialEq, Eq`; not `Copy`, because of the list. The variant names are mine.
+   Alternative: x86-64 in the processor's own form too, the CPUID words that carry feature bits (leaf 1
+   ECX and EDX, leaf 7 EBX, ECX and EDX, leaf 0x80000001 ECX and EDX) as `u32` fields: `Copy`, no
+   allocation, and exactly what CPUID answers; but it is not what the x86 branch writes today, and which
+   leaves is my choice.
+2. `Process::processor_features(&self) -> &ProcessorFeatures` (kernel-interface 56): the one getter for
+   what a process was told, a noun phrase, lending like `execution_config`. Alternative name:
+   `claimed_features` (the midday direction's word "claim").
+3. The two reads by an instruction, each an input of that process, on `ProcessTracer` after the ruled
+   items (system 114 to 123):
+   ```rust
+   fn read_monotonic_nanoseconds<P: Process<State = Self::ProcessState>>(
+       &self,
+       process: P,
+       thread: TaskId,
+   ) -> u64;
+   fn read_random_number<P: Process<State = Self::ProcessState>>(
+       &self,
+       process: P,
+       thread: TaskId,
+   ) -> u64;
+   ```
+   Not hooks: each returns the value the program gets, and has no default (a default would need the
+   embedder's clock or random source, which `ProcessTracer` cannot reach). Time is nanoseconds on the
+   monotonic clock, the unit of `Clocks::monotonic_nanoseconds`; turning it into what the counter
+   instruction reads (ARM `CNTVCT_EL0` at the claimed `CNTFRQ_EL0`, x86 `RDTSC`) would be the kernel's or
+   the executor's. The random number is 64 bits, the widest that ARM `RNDR` and x86 `RDRAND` give.
+   Which time reads reach the embedder (the midday default: our time routine logs its reads without
+   trapping) is still open and unmeasured.
+   Alternative for time: one method taking which clock, `read_clock(process, thread, clock: Clock) ->
+   u64`. No abi type names a clock: abi has only today's two `Host` methods (host.rs:96, 98); the
+   kernel's `Clock` (syscall/timer.rs:23) is private and about timers, and Linux's `CLOCK_MONOTONIC` is a
+   bare constant in the kernel's bindings. So `Clock` would be new, in the kernel interface.
+   Alternative for random: `fill_random_bytes_for(process, thread, into: &mut [u8])`, the shape of
+   `RandomSource::fill_random_bytes` with the process, which serves any width.
