@@ -2357,7 +2357,10 @@ Run 56 (the gap list in the fronts' order: the Direct3D 12 front's three asks):
     one GPU job, 77 s): own 135 and own DXIL 73 WGSL files compile, the four new ones among them.
   - Literal check (desktop, check3.txt): passes, nothing to add; this crate's baseline 590 lines,
     unchanged (the new message is a named constant).
-- Clean-up: below.
+- Clean-up: the desktop's `C:\wc\target\phase-2-graphics-shaders` and the x86 machine's
+  `/work/target/graphics-shaders` (4.7 GB) and `/work/probes/graphics-shaders-run56` deleted at
+  the end; scratch keeps the logs and `run56/out` (the files Chrome compiled). Nothing was built
+  on the laptop or the Mac.
 
 Run 55 (the gap list in the fronts' order: the Direct3D 12 front's `TypedBufferFormatKind`, A2,
 and the DXIL route's typed buffer arrays):
