@@ -42,7 +42,9 @@ Round 2, run 11 (2026-11-20, about 00:00 to 02:15 Pacific):
   bgfx's six as before. Front 55, unit 5, cache 1 on the rented x86 machine; lint of both builds
   clean (logs/r11a-lint.log); literal check exit 0 at 4430d1cb (logs/r11d-literals.log). Sizes
   and building-ahead hits in Measurements.
-- Clean-up at the end: see Measurements (the build folders deleted).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (20 GB, the WebGL 2
+  build inside it) and the x86 machine's /work/target/g-d3d11 (2.2 GB) were deleted. Nothing
+  was built on the Mac (formatting only); nothing was installed.
 
 ## Wine's Direct3D 11 tests through ours
 
