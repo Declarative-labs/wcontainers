@@ -36,7 +36,12 @@ implementing this crate, would depend on it: a cycle (see d). The kernel's struc
 (kernel lib.rs:137); it would implement the trait `Kernel` by path, so the two names do not clash.
 
 Nothing in the kernel interface names the system: `Kernel` has no `type System`, and the crate does not
-depend on wcontainers-system, as the ruling requires.
+depend on wcontainers-system, as the ruling requires. But both interfaces depend on today's
+wcontainers-kernel (for `TaskId`, `Errno`, `siginfo` and `task_id_after`), and that crate also holds today's
+`pub trait System: Host + Sync` (system.rs:125). So until those items move out (see d), the kernel
+interface still reaches today's system through that dependency, and whoever writes a system cannot read
+system/interface.rs alone: the default body of `allocate_task_id` (system 111) calls the kernel's
+`task_id_after`, and `TaskId` is the kernel's. The "strong contract" holds only after that move.
 
 ## (a) Items in the files that were never ruled
 
@@ -103,20 +108,24 @@ kernel-interface/interface.rs
 system/interface.rs (the split into concerns, their names and the thirteen service methods are in g)
 - line 4: `#![allow(unused_variables)]` (see f).
 - lines 15 to 27: the form of `System` is ruled; which concerns it lists, and their order, are mine.
-- line 31: `type ProcessState` sits on `ProcessTracer`, not on `System` (see g).
-- line 111: the parameter `previous` of `allocate_task_id`, and its default body, which calls the kernel's
+- lines 30 to 162: each concern as a trait, its name, and which methods it holds are mine (see g); only
+  the methods of the first three are ruled. The concerns do not require `Sync` themselves: the ruling puts
+  it on the embedder's trait ("`System: Sync`", 2026-11-19, and the union's `+ Sync`), and `System` keeps it.
+- line 31: `type ProcessState` sits on `ProcessTracer`, not on `System`, where "per-process state" put it
+  (see g).
+- line 110: the parameter `previous` of `allocate_task_id`, and its default body, which calls the kernel's
   `task_id_after` (system.rs:196): the ruled counter, wrapping past the low ids as today.
-- line 114: the parameter name `id` of `free_task_id` (today's).
-- lines 33 to 106: every hook and both proxy calls take `P: Process<State = Self::ProcessState>`. That form
+- line 113: the parameter name `id` of `free_task_id` (today's).
+- lines 33 to 105: every hook and both proxy calls take `P: Process<State = Self::ProcessState>`. That form
   is ruled for the two shared-memory hooks only; the earlier hooks were ruled with an untyped `process`.
 - line 53: `thread: TaskId` on `on_thread_starting` (today's; `send_signal(thread: TaskId)` is ruled).
 - line 60: the parameter `bytes: u64` of `on_process_outgrown` (today's system.rs:175).
-- lines 104 and 106: the inspection hooks' parameter `process: P` (only the names and the trigger are
-  ruled), and the doc comment of `on_inspection_ended` (line 105).
-- lines 119 to 121: the stream calls' parameters `end`, `bytes` and their types are today's (abi
+- lines 104 and 105: the inspection hooks' parameter `process: P` (only the names and the trigger are
+  ruled). Of the fourteen hooks only `on_inspection_starting` has a doc comment, your own (line 103).
+- lines 118 to 120: the stream calls' parameters `end`, `bytes` and their types are today's (abi
   host.rs:110 to 114); only the three names are ruled.
-- lines 14, 29, 109, 117, 124, 130, 135, 140, 145, 162: every doc comment of a trait. Each says, in its
-  last words, whether the concern is "as ruled" or "as abi's `Host` has it today and not yet ruled".
+- lines 14, 29, 108, 116, 123, 129, 134, 139, 144, 161: every doc comment of a trait, each a noun phrase.
+  Whether a concern's methods are ruled is said in (g), not in the file.
 
 container/interface.rs
 - line 6: `Container` as a trait name (R container.rs:172 is a struct of that name).
@@ -212,9 +221,9 @@ Distributed Everything
 - `Interrupter`.
 - The field types of `StopReason`: `until: Option<Duration>`, `status: i32`.
 - The parameter `allowed` of `set_thread_permissions`.
-- The parameter `process: P` of the two inspection hooks, and the doc comment of `on_inspection_ended`:
-  "Announces that another process has finished reading this one's internal state."
-- Every doc comment but the two you wrote.
+- The parameter `process: P` of the two inspection hooks.
+- Every doc comment but the two you wrote, and the named constants `BEFORE_FIRST_TASK_ID` and
+  `RANDOM_FILL_LENGTH` in the system's suite (see e).
 - If you want the linter clean on `ProcessInfo`, `mapped_memory` for `memory_mapped` (see f).
 
 ## (d) Ruled, but not written yet, and why
@@ -254,7 +263,7 @@ Distributed Everything
 
 Ruled before, and written now
 - The stream services as services of `System` (naming rule, "Later on 2026-11-18"), which until now stayed
-  on abi's `Host`: they are on `StreamPeer` (system 118 to 121), a concern of `System`. Whether `Host`
+  on abi's `Host`: they are on `StreamPeer` (system 117 to 120), a concern of `System`. Whether `Host`
   folds into `System`: it does ("how the interface files are organised": the kernel-facing services were
   on abi's `Host`). Every method of `Host` is on a concern (see g); abi's own `Host` trait is not changed
   here and goes at the migration (b).
@@ -366,26 +375,28 @@ through the trait's own operations, and nothing is passed in from outside.
   - The suite is not added here: its checks rest on the unruled meaning above and on the open
     `watch_thread_memory` question.
 - `System` has no methods of its own; its suite is the concerns'. Each suite function is bounded by the
-  one concern it checks (`<C: Clock>`), and `tests!` hands it the implementation's `System` value.
+  one concern it checks (`<C: Clocks>`), and `tests!` hands it the implementation's `System` value.
   Written (system conformance.rs):
-  - `allocate_task_ids_apart` (line 9): an id handed out and not freed is not handed out next. Both calls
-    start from `TaskId(u32::MIN)`, the `previous` today's kernel gives first (lib.rs:272, `last_id: 0`).
+  - `allocate_task_ids_apart` (line 15): an id handed out and not freed is not handed out next. Both calls
+    start from `BEFORE_FIRST_TASK_ID` (line 9), `TaskId(u32::MIN)`: not an id ever handed out, but the
+    `previous` today's kernel gives first (lib.rs:272, `last_id: 0`).
     The check rests on today's doc of `allocate_task_id`, "A free id for a new process or thread"; note
     that today's kernel also skips an id still carried and asks again (lib.rs:577), so the check is
     stricter than what the kernel relies on.
-  - `free_task_id_alone` (line 16): after freeing one of two ids, the next allocation does not hand out
+  - `free_task_id_alone` (line 22): after freeing one of two ids, the next allocation does not hand out
     the other, still held.
-  - `read_monotonic_clock_forward` (line 24): two reads of the monotonic clock never go backwards (abi
+  - `read_monotonic_clock_forward` (line 30): two reads of the monotonic clock never go backwards (abi
     host.rs:96, "a clock that never goes backwards").
-  - `fill_random_bytes_differently` (line 30): two fills of `size_of::<u128>()` bytes differ ("random bytes
-    fit for cryptography"; equal by chance once in 2^128). The length is the type's, my choice of type.
+  - `fill_random_bytes_differently` (line 36): two fills of `RANDOM_FILL_LENGTH` (line 12, the size of a
+    `u128`) bytes differ ("random bytes fit for cryptography"; equal by chance once in 2^128). The length
+    is the type's, my choice of type.
   Not written, and the state-building operation each lacks:
   - `ProcessTracer`, every hook and both proxy calls: a `P: Process<State = Self::ProcessState>`, and a
     `ProcessState` value (`Clone + Send`, no constructor). No concern gives either.
   - `StreamPeer`: an `End` that is open. Ends are chosen by the kernel and opened by nothing on the trait,
     so send, credit and close have nothing to act on, and the embedder's side (data, credit, closing)
     comes back only as abi `Event`s, which no trait gives back.
-  - `Clock::realtime_nanoseconds`: nothing to build; the wall clock may be set back, so two reads promise
+  - `Clocks::realtime_nanoseconds`: nothing to build; the wall clock may be set back, so two reads promise
     nothing. A check needs a ruled promise, not an operation.
   - `WarningLog::warn`: an operation that reads warnings back; nothing observes `warn`.
   - `FileServer::send_backend`: the reply arrives as abi `Event::BackendReply`, handed to the kernel by the
@@ -434,7 +445,9 @@ with the key for this reorganisation sent 633 doc summaries of the whole workspa
 kernel's and the abi's included, and its answers are in reviewable-answers.toml. Nothing in `off` was
 changed. Four of my type summaries it rejected were rewritten as plain noun phrases (`ExecutionConfig`,
 `MemoryObject`, `GuestMachine`, `StreamPeer`), and the summary of every suite's `tests!` was put on one
-line, as the stricter `comments` rules now need.
+line, as the stricter `comments` rules now need. After the review of the reorganisation the trait
+summaries lost their endings on what is ruled; the model's answers for
+the shorter summaries are recorded, and the findings are the same 55.
 
 Getters and the verb-first rule. "method names are verb first" ("Ruled by the owner, 2026-11-19
 afternoon"), and in the naming rules you agreed for the linter the same day, "getters stay noun phrases".
@@ -444,7 +457,8 @@ is read by the model as a verb phrase, which is why it alone is flagged.
 
 Doc comments and the summary rule. A function's doc is to start with a third-person verb. Your ruled doc
 of `on_inspection_starting` ("Another process is about to read this one's internal state.") does not,
-and it is kept word for word. The doc of `on_inspection_ended`, which I wrote, does.
+and it is kept word for word. `on_inspection_ended` has no doc comment: the one I wrote ("Announces
+that...") read unlike yours beside it, and the interface files carry almost no comments.
 
 Not flagged today, and will be: the kernel and system interfaces, and the system's suite (for `TaskId`),
 depend on wcontainers-kernel. That becomes `depends-on-implementation` once the kernel is an
@@ -458,49 +472,67 @@ keep their ruled parameter names. So rustc warns about 32 unused parameters unle
 
 "how the interface files are organised" rules the form, `pub trait System: <concern> + ... + Sync {}`,
 the concerns as traits in system/interface.rs, and which parts are ruled (the hooks, the proxy, the task
-ids, the three stream calls). Which method goes in which concern, and the concerns' names, are mine, for
-you to review. In the file the ruled concerns come first, then those from today's abi `Host`, and each
-trait's one-line doc ends with "as ruled" or "as abi's `Host` has it today and not yet ruled". Every
-concern requires `Sync`, as `System` did, and every method takes `&self`.
+ids, the three stream calls). You "did not rule on which method goes in which concern", so every concern
+below, its name and its methods' grouping are mine, for you to review; for the first three only the
+methods are ruled, not the trait that holds them. In the file the concerns holding ruled methods come
+first, then those from today's abi `Host`; each trait's doc is a plain noun phrase, and what is ruled is
+said only here. Only `System` requires `Sync`, as ruled ("`System: Sync`", and the `+ Sync` of the
+union); the concerns do not repeat it. Every method takes `&self`.
 
 The split, one concern per piece an embedder would write or reuse whole (name, then one alternative):
 - `ProcessTracer` (line 30; or `ProcessSupervisor`): the two proxy calls and every hook, with
-  `type ProcessState`. Ruled. One piece because every method is handed the same process with the same
-  state, and the ruled uses combine them (locks across machines read the proxy and
-  `on_memory_written_by_kernel` together). The name is ptrace's: a tracer stops a process at system call
-  entry and exit, at signal delivery, exec, clone and exit.
-- `TaskIdSource` (line 110; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. Ruled. Apart from
-  the hooks because the first ruling made it "an id source given at start", and because a stock counter
-  is reused unchanged by an embedder that writes its own hooks, while a distributed one replaces it alone.
-- `StreamPeer` (line 118; or `StreamEndpoint`): `send_stream`, `credit_stream`, `close_stream`. Ruled.
-  The embedder holds the other side of every end, and the three calls share it.
-- `Clock` (line 125; or `TimeSource`): `monotonic_nanoseconds` (126), `realtime_nanoseconds` (127).
-  Apart, because a replaying or simulated embedder replaces time alone.
-- `RandomSource` (line 131; or `EntropySource`): `fill_random_bytes` (132). Apart, because replay replaces
+  `type ProcessState`. The methods are ruled; the trait is mine, and so is putting `ProcessState` on it
+  ("per-process state" ruled it onto the embedder's trait, then `System`; see the end of this section).
+  One piece because every method is handed the same process with the same state, and the ruled uses
+  combine them (locks across machines read the proxy and `on_memory_written_by_kernel` together). The
+  name is ptrace's: a tracer stops a process at system call entry and exit, at signal delivery, exec,
+  clone and exit.
+- `TaskIdSource` (line 109; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. The methods are
+  ruled; the trait is mine. Apart from the hooks because the first ruling made it "an id source given at
+  start", and because a stock counter is reused unchanged by an embedder that writes its own hooks, while
+  a distributed one replaces it alone.
+- `StreamPeer` (line 117; or `StreamEndpoint`): `send_stream`, `credit_stream`, `close_stream`. The
+  methods are ruled; the trait is mine. The embedder holds the other side of every end, and the three
+  calls share it.
+- `Clocks` (line 124; or `TimeSource`): `monotonic_nanoseconds` (125), `realtime_nanoseconds` (126).
+  Plural because it holds two clocks. Apart, because a replaying or simulated embedder replaces time alone.
+- `RandomSource` (line 130; or `EntropySource`): `fill_random_bytes` (131). Apart, because replay replaces
   it alone, as with time.
-- `WarningLog` (line 136; or `WarningSink`): `warn` (137). Apart: logging is reused whatever else is
+- `WarningLog` (line 135; or `WarningSink`): `warn` (136). Apart: logging is reused whatever else is
   replaced.
-- `FileServer` (line 141; or `FuseServer`): `send_backend` (142). The embedder is the FUSE server of the
-  container's files; a whole server is one piece.
-- `Network` (line 146; or `NetworkStack`): `connect` (147), `send` (154), `receive` (155), `finish` (156),
-  `close` (157), `listen` (158), `accept` (159). They share `ConnectionId`, and one embedder's sockets do
+- `FileServer` (line 140; or `FuseServer`): `send_backend` (141). The embedder is the FUSE server of the
+  container's files; a whole server is one piece. On this trait `send_backend` reads oddly, since the
+  server is itself the back end the kernel sends to; the method keeps today's words (`backend_send`, verb
+  first), as no ruling gives others. `FuseServer` would read no better with it; a method name such as
+  `send_file_request` would, and is yours to give.
+- `Network` (line 145; or `NetworkStack`): `connect` (146), `send` (153), `receive` (154), `finish` (155),
+  `close` (156), `listen` (157), `accept` (158). They share `ConnectionId`, and one embedder's sockets do
   all of them.
-- `NameResolver` (line 163; or `DnsResolver`): `look_up` (164). Apart from `Network` because a resolver
+- `NameResolver` (line 162; or `DnsResolver`): `look_up` (163). Apart from `Network` because a resolver
   is reused or replaced on its own (a fixed table for tests, DNS over HTTPS in a browser) and shares no
   id with the connections. The other way: `look_up` folded into `Network`.
 
-The thirteen never-ruled service methods, by concern, with their lines in system/interface.rs: `Clock`
-126, 127; `RandomSource` 132; `WarningLog` 137; `FileServer` 142; `Network` 147, 154, 155, 156, 157, 158,
-159; `NameResolver` 164. Their parameters and types are today's (abi host.rs:97 to 145), with these
+The thirteen never-ruled service methods, by concern, with their lines in system/interface.rs: `Clocks`
+125, 126; `RandomSource` 131; `WarningLog` 136; `FileServer` 141; `Network` 146, 153, 154, 155, 156, 157,
+158; `NameResolver` 163. Their parameters and types are today's (abi host.rs:97 to 145), with these
 exceptions and open points:
 - `random` (host.rs:101) is `fill_random_bytes`: verb first, the verb from today's doc ("Fill with
   random bytes").
 - `backend_send` (host.rs:107) is `send_backend`: verb first, the same words.
-- Not changed, though a convention touches them: `warning: Warning` (137) and the ruled stream calls'
-  `end: End` (119 to 121) repeat their type, and no ruling gives another word; `look_up`'s
-  `request: u64` (164) is no branded id, and abi's `Event::LookedUp` carries it as `u64`, which this
-  stage may not change; the clocks return `u64` nanoseconds, not `Duration`, since the names say the
-  unit and would change with the type.
+- Not changed, though a convention touches them (each is today's, and no ruling gives another form):
+  - A parameter name repeats its type: `warning: Warning` (136), the ruled stream calls' `end: End`
+    (118 to 120), `connection: ConnectionId` (148, 153 to 156, 158), and in part `request:
+    BackendRequestId` (141).
+  - `look_up`'s `request: u64` (163) is no branded id, and abi's `Event::LookedUp` carries it as `u64`,
+    which this stage may not change.
+  - Standard-library types: the clocks return `u64` nanoseconds, not `Duration`, since the names say the
+    unit and would change with the type; `connect` takes `address: &[u8], port: u16` (149, 150) and
+    `listen` a bare `port: u16` (157), where `core::net::IpAddr` or `SocketAddr` (usable without `std`)
+    would be the standard types. abi's `Event::LookedUp` hands addresses back as bytes (host.rs:80), so
+    the change reaches abi.
+- Not a rule broken, but for you to see: `Network::send`, `receive`, `finish` and `close` name no
+  subject, unlike `send_stream` and `close_stream`; on the merged `System` `send` sits beside
+  `send_stream`. `send_connection`, `close_connection` and so on would match the stream calls.
 - Their doc comments in abi (the reply arriving as an `Event`, what zero means from `receive`, and so on)
   are not carried: the interface files carry almost no comments.
 
