@@ -7,7 +7,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 - Seventh run: still no ARM64 reference (the rented ARM64 machine, ubuntu@3.134.104.48, unreachable; the
   Mac's Docker still leaves new containers in "Created"). Everything T3 still needs is one command for each
   side once a reference is back: scratch `translator/t3/r7/verify-arm.sh` (rented ARM64 machine) and
-  `verify-mac.sh` (layer 1, the Mac). If you can bring either reference back, please run them or say so.
+  `verify-mac.sh` (layer 1, the Mac). Neither had come back by 05:48. If you can bring either reference back,
+  please run them or say so.
 - T3 (this milestone) is NOT complete after the sixth run. The third independent check found that jumps
   through a register to their own function's code past what was explored (a switch with no bound check, a
   computed goto) went uncounted since b4384452; 40fd0c67 counts them (see "Sixth run of T3"). Its tests and
@@ -376,7 +377,8 @@ Sixth run of T3 (2026-11-20 04:20 to 05:30 local), the third independent check's
 Seventh run of T3 (2026-11-20 05:08 local on):
 - Still no ARM64 reference at the start: arm-run's machine (now ubuntu@3.134.104.48) did not answer, and the
   Mac's Docker still left every new container in "Created" (this run's probe `wc-translator-probe-83328`,
-  `alpine:3.22 echo ok`, too). So none of the checks below that need Linux could run.
+  `alpine:3.22 echo ok`, too). Watched until 05:48: neither came back (the probe stayed "Created" for 35
+  minutes and was removed). So none of the checks below that need Linux could run.
 - What waits for a reference is now one command each, in scratch `t3/r7`: `verify-arm.sh [jobs]` (from the
   Mac: makes the old side `old-5d8dbc5a` as a git tree, sends it and pairs.sh to the ARM64 machine, then one
   arm-run job: the three register jump tests, layer 2 at seed 600 (25,000, all on the CPU, 5 in Chrome),
