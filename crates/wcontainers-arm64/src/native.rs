@@ -6,7 +6,7 @@ use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Ope
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
 use crate::Arm64;
-use crate::carry::{self, COUNT};
+use crate::carry::{self, AlignedBases, COUNT};
 use crate::encode;
 use crate::exact::Operation;
 use crate::instruction::{Address, Instruction as I, Reg, SystemRegister};
@@ -204,12 +204,29 @@ impl Native for Arm64 {
         }
     }
 
-    fn carry(before: &[(u64, I)], i: &I, bytes: &[u8], address: u64, code: &mut HostCode) {
+    type LoopInvariant = AlignedBases;
+
+    fn loop_invariant(part: &[(u64, I)]) -> AlignedBases {
+        carry::aligned_bases(part)
+    }
+
+    fn test_loop_invariant(code: &mut HostCode, invariant: &AlignedBases) -> Option<usize> {
+        carry::test_aligned_bases(code, invariant)
+    }
+
+    fn carry(
+        before: &[(u64, I)],
+        i: &I,
+        bytes: &[u8],
+        address: u64,
+        invariant: &AlignedBases,
+        code: &mut HostCode,
+    ) {
         if carry::known_jump(before, i, address, code) {
             return;
         }
         let word = u32::from_le_bytes(bytes.try_into().expect("an instruction is one word"));
-        carry::carry(i, word, address, code);
+        carry::carry(i, word, address, invariant, code);
     }
 
     fn count(code: &mut HostCode, events: u32) {

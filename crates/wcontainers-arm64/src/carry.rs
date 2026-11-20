@@ -126,6 +126,77 @@ fn free_pair(avoid: Registers) -> Register {
 struct Out<'a> {
     code: &'a mut HostCode,
     address: u64,
+    /// The bases a test before the instruction's loop found aligned.
+    aligned: &'a AlignedBases,
+}
+
+/// Base registers of a loop's accesses, each with the size it was found aligned to by one test before the loop;
+/// no instruction of the loop writes them, so the test holds for every turn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AlignedBases(Vec<(Register, u32)>);
+
+impl AlignedBases {
+    fn holds(&self, base: Reg, bytes: u32) -> bool {
+        matches!(base, Reg::X(n) if self.0.iter().any(|&(r, b)| r == n && b >= bytes))
+    }
+}
+
+/// The bases whose page test an access in `part` makes as a test of the base's alignment alone (an access of one
+/// element at its base's alignment), that no instruction of `part` writes, with the largest size tested.
+pub(crate) fn aligned_bases(part: &[(u64, I)]) -> AlignedBases {
+    let written = part
+        .iter()
+        .fold(Registers::NONE, |w, (_, i)| w.union(touched(i).1));
+    let mut bases: Vec<(Register, u32)> = Vec::new();
+    for (_, i) in part {
+        if !matches!(Arm64::route(i), Route::Copy | Route::Split) || !one_element(i) {
+            continue;
+        }
+        let Some(m) = i.memory_access() else {
+            continue;
+        };
+        let Some(Reg::X(base)) = base_of(&m.address) else {
+            continue;
+        };
+        if m.bytes > 1
+            && may_cross_page(&m)
+            && aligned_with_base(&m.address, m.bytes)
+            && !WITHHELD.contains(&base)
+            && !written.has_bit(bit(base))
+        {
+            match bases.iter_mut().find(|(r, _)| *r == base) {
+                Some((_, bytes)) => *bytes = (*bytes).max(m.bytes),
+                None => bases.push((base, m.bytes)),
+            }
+        }
+    }
+    AlignedBases(bases)
+}
+
+/// The test of `aligned`'s bases in t, ending in a branch taken when every one is aligned (pointed later), whose
+/// offset it gives; when one is not, the code goes on after it.
+pub(crate) fn test_aligned_bases(code: &mut HostCode, aligned: &AlignedBases) -> Option<usize> {
+    let (&(last, last_bytes), rest) = aligned.0.split_last()?;
+    let test = |base: Register, bytes: u32| {
+        encode::and_immediate(SCRATCH, base, u64::from(bytes) - 1)
+            .expect("a power of two less one is a logical immediate")
+    };
+    // Each earlier base's branch skips to the word after the last branch.
+    let words_left = |k: usize| ((rest.len() - k) * 2 + 1) as i64;
+    for (k, &(base, bytes)) in rest.iter().enumerate() {
+        code.push(&test(base, bytes).to_le_bytes());
+        let skip = encode::compare_branch(true, SCRATCH, words_left(k) * INSTRUCTION as i64)
+            .expect("fits");
+        code.push(&skip.to_le_bytes());
+    }
+    code.push(&test(last, last_bytes).to_le_bytes());
+    let at = code.offset();
+    code.push(
+        &encode::compare_branch(false, SCRATCH, 0)
+            .expect("fits")
+            .to_le_bytes(),
+    );
+    Some(at)
 }
 
 /// Code out of line: a test's other way, entered from the branch at `from` in the state it had there.
@@ -343,11 +414,15 @@ struct StandIn {
 }
 
 /// The host code of one guest instruction (docs/native.md section 3.4).
-pub(crate) fn carry(i: &I, word: u32, address: u64, code: &mut HostCode) {
+pub(crate) fn carry(i: &I, word: u32, address: u64, aligned: &AlignedBases, code: &mut HostCode) {
     let route = Arm64::route(i);
     let (uses, defs) = touched(i);
     let named = |r: Register| uses.union(defs).has_bit(bit(r));
-    let mut out = Out { code, address };
+    let mut out = Out {
+        code,
+        address,
+        aligned,
+    };
     if !WITHHELD.into_iter().any(named) || OWN_WAY.contains(&route) {
         carry_route(&mut out, route, i, word);
         return;
@@ -638,7 +713,10 @@ fn access(
             |t| t.call = Some(InsideCall::Misaligned),
         );
     }
-    if align.is_none() && m.bytes > 1 && may_cross_page(m) {
+    // A base tested once before the loop needs no test here.
+    let tested_before =
+        one_element && aligned_with_base(&m.address, m.bytes) && out.aligned.holds(base, m.bytes);
+    if align.is_none() && m.bytes > 1 && may_cross_page(m) && !tested_before {
         out.code.slow(page_test(m.bytes));
         let test = page_test_words(&m.address, m.bytes);
         let (crossing, before) = test.split_last().expect("a test ends in its branch");
@@ -1211,7 +1289,12 @@ pub(crate) fn known_jump(before: &[(u64, I)], i: &I, address: u64, code: &mut Ho
                 .to_le_bytes(),
         );
     }
-    let mut out = Out { code, address };
+    let aligned = AlignedBases::default();
+    let mut out = Out {
+        code,
+        address,
+        aligned: &aligned,
+    };
     jump(&mut out, BranchRegister::Br, Reg::X(n));
     true
 }

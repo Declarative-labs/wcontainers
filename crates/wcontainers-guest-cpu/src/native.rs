@@ -64,14 +64,24 @@ pub trait Native: Guest {
     fn hook_class(hook: Self::Hook, first: Option<i64>) -> NativeClass;
     /// The class of a control, read or written.
     fn control_class(control: Self::Control, write: bool) -> NativeClass;
+    /// What a test made once before a loop settles for every turn of it; the default settles nothing.
+    type LoopInvariant: Default;
+    /// What one test before a straight-line part that loops to its own start (`part`, with its guest addresses)
+    /// can settle for every turn, because no instruction of the part changes it.
+    fn loop_invariant(part: &[(u64, Self::Instruction)]) -> Self::LoopInvariant;
+    /// Writes the test of `invariant`, ending in a branch taken when it holds and pointed later by
+    /// [`Self::link`]; gives that branch's offset, or none when it settles nothing.
+    fn test_loop_invariant(code: &mut HostCode, invariant: &Self::LoopInvariant) -> Option<usize>;
     /// Writes the host code of one decoded instruction, `bytes` at guest `address`, as its route says, given the
-    /// instructions of its straight-line part before it (`before`, oldest first, with their guest addresses).
-    /// Its spans start at the instruction, before its commit point, with the count already placed.
+    /// instructions of its straight-line part before it (`before`, oldest first, with their guest addresses)
+    /// and what a test before its loop settled (`invariant`). Its spans start at the instruction, before its
+    /// commit point, with the count already placed.
     fn carry(
         before: &[(u64, Self::Instruction)],
         i: &Self::Instruction,
         bytes: &[u8],
         address: u64,
+        invariant: &Self::LoopInvariant,
         code: &mut HostCode,
     );
     /// Writes the count's add of `events` counted events.
