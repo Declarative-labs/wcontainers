@@ -330,6 +330,18 @@ The brief's asks:
   each with ceilings 4 GiB, 16 GiB and the width: every placement under the ceiling and the
   width, the lowest tier filled the same way under every ceiling, higher tiers used in order,
   outgrown exactly when the ceiling cut the search); passed on the ARM64 machine.
+- The runtime's ask for the wait status's parts (38a2ace8): a public module `wcontainers_kernel::wait`
+  (`WAIT_EXIT_SHIFT`, `WAIT_SIGNAL_MASK`, `WAIT_CORE_DUMPED`, `WAIT_STOPPED`, `WAIT_CONTINUED`,
+  `exited`, `stopped`, `decode`), the literal fix list's step 10 home; every encoding and
+  decoding in the kernel and the test driver uses it, and `wcontainers_abi::SIGNALLED_EXIT_BASE`
+  (128) is named once. The literal baseline is now 8324 lines (kf1/lit3.txt). The other
+  defaults it asks for: capabilities (`DOCKER_CAPABILITIES`), limits (`DOCKER_LIMITS`) and the
+  umask (`DOCKER_UMASK`) were exported already; the mounts with their options and the read-only
+  paths are not yet.
+
+The Mac's part at bdf4674f (scratch kf1/mac.sh, log kf1/mac.log; 15:09 to 15:12 PST, load 8 to
+31, -j 4): layer 1 seeds 9191126 to 9191128 passed (300 sequences, 32 on the backend, 32 on the
+cached backend each); the Mac list (18 test files and 9 single tests) passed, none failed.
 
 ## K6c, twenty-first run
 
@@ -5141,7 +5153,7 @@ changes it, the literal check with a smaller baseline):
 1. Read the whole suite at bdf4674f (ARM64 job kernel/20261120-230854-3849256, log
    scratch kf1/suite-bdf4674f.log, `arm-run --fetch kernel /work/jobs/kernel/<id>/log` if the
    follower stopped) and the Mac's part (scratch kf1/mac.sh, log kf1/mac.log: layer 1 seeds
-   9191126 to 9191128, the Mac list). Every failure must be on the ARM list
+   9191126 to 9191128 and the Mac list passed). Every failure must be on the ARM list
    (k6c14/fail14.txt) or settled. backend, inet and inotify failed in the ids run
    (kf1/ids/log, names cut off by the filter): confirm they are the ARM list's.
 2. The record and replay test: the driver keeps every result the System and the Cpu gave the
@@ -5151,9 +5163,8 @@ changes it, the literal check with a smaller baseline):
 3. The runtime's start values (origin/main docs/status-runtime.md "Asked of the kernel track"):
    user and group, umask, capability sets, limits, no_new_privs, a seccomp filter, sysctls, the
    mount list, the domain name, the per-process values; and the defaults as public constants
-   (capabilities and limits are exported; the umask is; the mounts with their options, the
-   read-only paths and the wait status's parts are not; the literal fix list's step 10 names the
-   wait module).
+   (capabilities, limits, the umask and the wait status's parts are exported; the mounts with
+   their options and the read-only paths are not).
 4. The literal fix list, from step 2 (time units).
 
 K6c, after the twenty-first run: the bar is met at 91d85e31 (K6c, twenty-first run). Next is
@@ -5445,6 +5456,6 @@ sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seed
 9191002 (K6c third run, 200 each), 9191003 to 9191005 (300, 32, 32 each), 9191100 to 9191104
 (K6c runs' own checks), 9191105 to 9191107 and 9191111 to 9191116 (K6c's tenth, twelfth and
 thirteenth runs, on the Mac), 9191117 to 9191119 (fourteenth run, on the Mac; fresh ones
-start at 9191120), and the checks' 4747001 to 4747003 (10000 each; again in the fourteenth run), 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+start at 9191120), 9191126 to 9191128 (KF, first run; fresh ones start at 9191129), and the checks' 4747001 to 4747003 (10000 each; again in the fourteenth run), 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
