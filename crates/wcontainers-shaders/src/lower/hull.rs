@@ -68,7 +68,7 @@ const PATCHES_VARIABLE: &str = "stage_patches";
 const POINTS_VARIABLE: &str = "stage_points";
 /// The function filling a domain program's inputs, and its argument: the vertex number.
 pub(crate) const DOMAIN_INPUTS_FUNCTION: &str = "domain_inputs";
-pub(crate) const DOMAIN_VERTEX_ARGUMENT: &str = "vertex";
+pub(crate) const DOMAIN_VERTEX_ARGUMENT: &str = "domain_vertex";
 
 /// Why a hull or domain shader is malformed.
 const OUTSIDE_TESSELLATION: &str = "a tessellation declaration outside hull and domain";

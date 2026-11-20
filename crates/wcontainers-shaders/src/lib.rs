@@ -82,6 +82,7 @@ pub const ENTRY_POINT: &str = "main";
 
 /// The name of the draw arguments' offset in a program reading its draw bases from them.
 pub use build::ARGUMENTS_OFFSET;
+pub use container::token;
 
 /// The refusal of a view's component mapping that a depth texture's read cannot take exactly.
 pub const SWIZZLED_DEPTH: &str = "SwizzledDepth";

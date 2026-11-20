@@ -128,8 +128,8 @@ fn chunks<'a>(container: &'a [u8], tag: &'a [u8; 4]) -> impl Iterator<Item = &'a
 
 /// The program's shader model, from its `SHEX` or `SHDR` chunk's version token.
 pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
-    let code = chunks(container, b"SHEX")
-        .chain(chunks(container, b"SHDR"))
+    let code = chunks(container, &SHEX)
+        .chain(chunks(container, &SHDR))
         .next()?;
     let version = word(code, offset_of!(CodeHeader, version))?;
     Some((
@@ -142,45 +142,42 @@ pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
 /// `SHDR`): the token's high half.
 pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
     let code = chunks(container, b"DXIL")
-        .chain(chunks(container, b"SHEX"))
-        .chain(chunks(container, b"SHDR"))
+        .chain(chunks(container, &SHEX))
+        .chain(chunks(container, &SHDR))
         .next()?;
     Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
 }
 
-/// The DXBC instruction token's fields (d3d11TokenizedProgramFormat.hpp): the opcode in its low bits,
-/// the instruction's length in words from `LENGTH_SHIFT`, a control point count from
-/// `CONTROL_POINTS_SHIFT`.
-const OPCODE_BITS: u32 = 11;
-const LENGTH_SHIFT: u32 = 24;
-const LENGTH_BITS: u32 = 7;
-const CONTROL_POINTS_SHIFT: u32 = 11;
-const CONTROL_POINTS_BITS: u32 = 6;
-/// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its token.
-const CUSTOM_DATA: u32 = 53;
-/// `D3D11_SB_OPCODE_DCL_INPUT_CONTROL_POINT_COUNT`.
-const DCL_INPUT_CONTROL_POINT_COUNT: u32 = 147;
-
-/// `bits` bits of `token` from `shift`.
-fn field(token: u32, shift: u32, bits: u32) -> u32 {
-    token >> shift & ((1 << bits) - 1)
+/// The fields of a DXBC instruction's first word (d3d11TokenizedProgramFormat.hpp): the opcode in its
+/// low bits, the instruction's length in words, and a control point count.
+pub mod token {
+    pub const OPCODE_MASK: u32 = 0x7ff;
+    pub const LENGTH_SHIFT: u32 = 24;
+    pub const LENGTH_MASK: u32 = 0x7f;
+    pub const CONTROL_POINTS_SHIFT: u32 = 11;
+    pub const CONTROL_POINTS_MASK: u32 = 0x3f;
 }
+
+/// The tags of a DXBC program's code chunk (shader model 5 and 4).
+const SHEX: [u8; 4] = *b"SHEX";
+const SHDR: [u8; 4] = *b"SHDR";
 
 /// A DXBC program's declared input control points per patch (hull and domain shaders), from its code
 /// chunk.
 pub(crate) fn dxbc_input_control_points(container: &[u8]) -> Option<u32> {
-    let code = chunks(container, b"SHEX")
-        .chain(chunks(container, b"SHDR"))
+    use crate::ir::dxbc_op;
+    let code = chunks(container, &SHEX)
+        .chain(chunks(container, &SHDR))
         .next()?;
     let mut at = size_of::<CodeHeader>();
-    while let Some(token) = word(code, at) {
-        let opcode = field(token, 0, OPCODE_BITS);
-        if opcode == DCL_INPUT_CONTROL_POINT_COUNT {
-            return Some(field(token, CONTROL_POINTS_SHIFT, CONTROL_POINTS_BITS));
+    while let Some(word0) = word(code, at) {
+        let opcode = word0 & token::OPCODE_MASK;
+        if opcode == dxbc_op::DCL_INPUT_CONTROL_POINT_COUNT {
+            return Some(word0 >> token::CONTROL_POINTS_SHIFT & token::CONTROL_POINTS_MASK);
         }
         let length = match opcode {
-            CUSTOM_DATA => word(code, at + size_of::<u32>())?,
-            _ => field(token, LENGTH_SHIFT, LENGTH_BITS),
+            dxbc_op::CUSTOM_DATA => word(code, at + size_of::<u32>())?,
+            _ => word0 >> token::LENGTH_SHIFT & token::LENGTH_MASK,
         };
         if length == 0 {
             return None;
