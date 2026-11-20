@@ -159,16 +159,35 @@ Measured:
   one a feature that machine has and the i7-8750H lacks (AVX-512 and the other EVEX forms, SHA, GFNI, VAES,
   AVX-VNNI, AMX, TSX, WAITPKG, PKU, MOVDIRI, ENQCMD, SERIALIZE and the rest of its manual's list), plus
   `invpcid` and `xsaves`, kernel only there (general protection), now in `REFERENCE_HAS` (the laptop's
-  cpuinfo has both). The list's verdict is the laptop's: PENDING.
+  cpuinfo has both). The list's verdict is the laptop's, below.
 
-PENDING-LAPTOP-BATCH
+On the i7-8750H at 4ad0ca98 (`batch5-laptop.log`, load 0.3 to 4, 4 at once):
+- The 38 segment and far-transfer forms, 1,000 a form, seed 9330: 0 failing (109 s).
+- The unoffered forms, 2,993 forms, 100 a form, seed 9331 (833 s): 1 failing, `Wbnoinvd`. Our side gave
+  illegal instruction in every case of every form. The reference refused every form it lacks, as it must;
+  of the forms it has it ran 71,400 cases (landed 53,639, memory fault 10,026, general protection 6,179,
+  float exception 1,255, stack fault 301) and refused none. `wbnoinvd` is `wbinvd` with an F3 prefix, which a
+  CPU without it ignores, so the CPU presented must give general protection: fixed in 50fd0936 (the decoder
+  takes it as `wbinvd`), with a hand-made case compared with the reference; then the hand-made cases (96) and
+  `wbinvd` and `invd` at 1,000, seed 9334, 0 failing (`wbno-laptop.log`). It now counts among the codes
+  decoded as another code (76).
+- 10,000 cases in no form, seed 9332: 0 failing (30 s).
+- The Chrome sample, 3 a form, 3,189 cases, seed 9333, Chrome 158 there: 0 failing (31 s).
+- `the_x86_64_reference_refuses_what_linux_refuses` passed on the laptop in the job above (`l1-all1-laptop.log`).
+The whole default list and the unoffered list once more after the last changes: running at the time of writing.
 
 Literals: the check exits 0 (the Mac). The test crate's baseline lost 12 lines (the starting state's numbers,
 now named, and the scales); no line was added. Baseline lines: x86 125, interface 28, translator 72, test crate
 2,094.
 
 What comes next, in this order:
-PENDING-NEXT
+- Fix the translator's loss of a register passed out and not in at bounded look-ahead (replay above), then
+  take the plan's passed-register lists (3% faster on the benchmark set): X6, with bounded look-ahead.
+- X5's independent check: 100,000 random instructions of its own seed, every host-dependent instruction
+  marked, and the ARM64 layer 1 tests on the Mac (`every_form_matches_the_cpu_arm64` and
+  `sample_matches_the_cpu_in_chrome_arm64`, which fail on the rented ARM64 machine as its manual says; the
+  shared runner of layer 1 was refactored this run, without a change to what it does, and they were not run
+  on the Mac).
 
 ## X5, run 4 (2026-11-20)
 
@@ -2794,6 +2813,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   form, 88 hand-made cases). All 0 failing but the two `pextrw` forms to memory in the seed 2611 run
   (fixed, then seed 79) and the Chrome sample, which cannot run on the Mac (a page resource 404: it runs on
   the rented x86-64 machine).
+- X5 runs 4 and 5, layer 1 against the i7-8750H at 1,000 a form unless said: every default form at seeds
+  9105 and 9204 (1,025 and 1,063 forms), the run's new forms at seeds 9101, 9102, 9104, 9201 to 9203, 9330 and
+  9334, `dpps`/`dppd` at 3,000 at seeds 9105 to 9108, the 76 float forms with the probe forced to 0 at seed 9109;
+  the unoffered forms at 100 a form (2,993 forms, seed 9331); 10,000 no-form cases (seed 9332); the Chrome
+  sample at 3 a form (seed 9333). Layer 3 Csmith for x86 at 1,000 programs (seed 5502, 879 compared) and 300
+  (seed 9311). Layer 2 for x86 at 3,000 (seed 9310) with the shorter passed-register lists only.
 
 ## Measurements
 
