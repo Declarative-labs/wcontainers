@@ -1264,12 +1264,13 @@ impl Kernel {
     /// The `siginfo` of SIGCHLD for a child that ended or changed state.
     pub(crate) fn child_info(&self, pid: Pid, status: i32) -> [u8; 128] {
         let process = &self.processes[&pid];
-        let (code, value) = if status & 0x7f == 0 {
-            (CLD_EXITED, (status >> 8) & 0xff)
-        } else if status & 0x80 != 0 {
-            (CLD_DUMPED, status & 0x7f)
-        } else {
-            (CLD_KILLED, status & 0x7f)
+        let (code, value) = match crate::wait::decode(status) {
+            crate::wait::Ended::Exited(code) => (CLD_EXITED, code),
+            crate::wait::Ended::Killed {
+                signal,
+                core_dumped: true,
+            } => (CLD_DUMPED, signal),
+            crate::wait::Ended::Killed { signal, .. } => (CLD_KILLED, signal),
         };
         let time = process.ended_time / 10_000_000;
         let uid = self.task_credentials(pid).uid;

@@ -104,7 +104,7 @@ fn start_failed(error: Errno) -> i32 {
         Errno::EACCES => EXIT_NOT_RUNNABLE,
         _ => EXIT_START_FAILED,
     };
-    status << 8
+    crate::wait::exited(status)
 }
 
 /// The container's start while it runs: what the first process starts with, and how far it got.

@@ -1622,10 +1622,6 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
 code	crates/wcontainers-kernel-test/src/driver.rs	int	decode::Reader<'_>::number	8
-code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0x7f
-code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0xff
-code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	128
-code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	8
 code	crates/wcontainers-kernel-test/src/driver.rs	int	look_ahead	0x1007_a4ead
 code	crates/wcontainers-kernel-test/src/driver.rs	int	look_ahead	64
 code	crates/wcontainers-kernel-test/src/driver.rs	int	moments	100
@@ -3779,7 +3775,6 @@ code	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	6
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::start	0x23
 code	crates/wcontainers-kernel/src/container.rs	int	directory_at	0o755
 code	crates/wcontainers-kernel/src/container.rs	int	new_root	0o755
-code	crates/wcontainers-kernel/src/container.rs	int	start_failed	8
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/dev"
@@ -4478,15 +4473,6 @@ code	crates/wcontainers-kernel/src/syscall/aio.rs	str	io_pgetevents	"8 bytes"
 code	crates/wcontainers-kernel/src/syscall/aio.rs	str	submit_one	"4 bytes"
 code	crates/wcontainers-kernel/src/syscall/aio.rs	str	submit_one	"8 bytes"
 code	crates/wcontainers-kernel/src/syscall/clone.rs	int	child_usage	1024
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	0x7f
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	0x7f
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	0x7f
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	0x7f
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	0x80
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	0xff
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	0xffff
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	8
-code	crates/wcontainers-kernel/src/syscall/clone.rs	int	find_child	8
 code	crates/wcontainers-kernel/src/syscall/clone.rs	int	wait4	- 1
 code	crates/wcontainers-kernel/src/syscall/clone.rs	int	waitid	128
 code	crates/wcontainers-kernel/src/syscall/clone.rs	int	waitid	16
@@ -4895,8 +4881,6 @@ code	crates/wcontainers-kernel/src/syscall/process.rs	int	capset	4
 code	crates/wcontainers-kernel/src/syscall/process.rs	int	capset	4
 code	crates/wcontainers-kernel/src/syscall/process.rs	int	capset	4
 code	crates/wcontainers-kernel/src/syscall/process.rs	int	capset	5
-code	crates/wcontainers-kernel/src/syscall/process.rs	int	exit_status	0xff
-code	crates/wcontainers-kernel/src/syscall/process.rs	int	exit_status	8
 code	crates/wcontainers-kernel/src/syscall/process.rs	int	getgroups	4
 code	crates/wcontainers-kernel/src/syscall/process.rs	int	getrusage	1024
 code	crates/wcontainers-kernel/src/syscall/process.rs	int	getrusage	1024
@@ -5858,14 +5842,8 @@ code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	magic	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	read_capabilities	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	read_capabilities	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	set_backend_acl	4
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	0x7f
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	0x7f
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	0x7f
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	0x80
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	0xff
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	10_000_000
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	128
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	8
 code	crates/wcontainers-kernel/src/tty.rs	byte	Discipline::finish_erasing	b'/'
 code	crates/wcontainers-kernel/src/tty.rs	byte	Pty::echo_char	b'\t'
 code	crates/wcontainers-kernel/src/tty.rs	byte	Pty::echo_op	b'\x08'
@@ -8049,7 +8027,6 @@ role	crates/wcontainers-kernel-test/src/bin/ltp.rs	int	main	2
 role	crates/wcontainers-kernel-test/src/bin/ltp.rs	int	usage	2
 role	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	0
 role	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	0
-role	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0
 role	crates/wcontainers-kernel-test/src/driver.rs	int	finish	0
 role	crates/wcontainers-kernel-test/src/driver.rs	int	panic_in_copy	1
 role	crates/wcontainers-kernel-test/src/image.rs	int	host_directory	0

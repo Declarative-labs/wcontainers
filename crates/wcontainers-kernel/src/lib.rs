@@ -37,6 +37,7 @@ mod task;
 mod tty;
 mod user;
 mod vdso;
+pub mod wait;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;

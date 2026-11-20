@@ -23,7 +23,7 @@ pub(super) fn exit(
     tid: Tid,
     arguments: Args,
 ) -> Outcome {
-    let status = exit_status(arguments[0] as i32);
+    let status = crate::wait::exited(arguments[0] as i32);
     let pid = kernel.threads[&tid].process;
     // The last thread's status is the group's (`synchronize_group_exit`).
     if kernel.processes[&pid].threads.len() == 1 {
@@ -42,13 +42,8 @@ pub(super) fn exit_group(
     arguments: Args,
 ) -> Outcome {
     let pid = kernel.threads[&tid].process;
-    kernel.end_process(cx, pid, exit_status(arguments[0] as i32));
+    kernel.end_process(cx, pid, crate::wait::exited(arguments[0] as i32));
     Outcome::Gone
-}
-
-/// The wait status of a process that exited with `status`: its low byte, shifted, as Linux reports it.
-fn exit_status(status: i32) -> i32 {
-    (status & 0xff) << 8
 }
 
 /// The most strings `execve` takes in each list (`MAX_ARG_STRINGS`).

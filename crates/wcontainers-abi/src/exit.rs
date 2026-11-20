@@ -10,6 +10,10 @@ pub const SYSTEM_CALL_ARGUMENT_COUNT: usize = 6;
 /// (<https://man7.org/linux/man-pages/man2/syscall.2.html>); its arguments are x0 onwards.
 pub const SYSTEM_CALL_NUMBER_REGISTER: usize = 8;
 
+/// What a shell, and `docker run`, adds to a signal's number for the status of a process the
+/// signal ended (POSIX XCU 2.8.2).
+pub const SIGNALLED_EXIT_BASE: i32 = 128;
+
 /// One system call as the guest made it: the number from x8 and the raw values from x0 to x5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SystemCallRequest {

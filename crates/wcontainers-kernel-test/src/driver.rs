@@ -573,11 +573,11 @@ where
 
 /// The exit code `docker run` gives for a wait status.
 pub fn exit_code(wait_status: i32) -> i32 {
-    let signal = wait_status & 0x7f;
-    if signal == 0 {
-        (wait_status >> 8) & 0xff
-    } else {
-        128 + signal
+    match wcontainers_kernel::wait::decode(wait_status) {
+        wcontainers_kernel::wait::Ended::Exited(code) => code,
+        wcontainers_kernel::wait::Ended::Killed { signal, .. } => {
+            wcontainers_abi::SIGNALLED_EXIT_BASE + signal
+        }
     }
 }
 

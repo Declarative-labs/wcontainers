@@ -491,12 +491,13 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
             if options & WEXITED == 0 {
                 continue;
             }
-            let (code, value) = if status & 0x7f == 0 {
-                (CLD_EXITED, (status >> 8) & 0xff)
-            } else if status & 0x80 != 0 {
-                (CLD_DUMPED, status & 0x7f)
-            } else {
-                (CLD_KILLED, status & 0x7f)
+            let (code, value) = match crate::wait::decode(status) {
+                crate::wait::Ended::Exited(code) => (CLD_EXITED, code),
+                crate::wait::Ended::Killed {
+                    signal,
+                    core_dumped: true,
+                } => (CLD_DUMPED, signal),
+                crate::wait::Ended::Killed { signal, .. } => (CLD_KILLED, signal),
             };
             if !keep {
                 kernel.reap(child);
@@ -516,7 +517,7 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
                 }
                 return Ok(Found::Child {
                     pid: child,
-                    status: ((signal as i32) << 8) | 0x7f,
+                    status: crate::wait::stopped(signal as i32),
                     code: CLD_STOPPED,
                     value: signal as i32,
                 });
@@ -527,7 +528,7 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
                 }
                 return Ok(Found::Child {
                     pid: child,
-                    status: 0xffff,
+                    status: crate::wait::WAIT_CONTINUED,
                     code: CLD_CONTINUED,
                     value: SIGCONT as i32,
                 });
