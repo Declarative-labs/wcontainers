@@ -22,7 +22,11 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   answer as Linux's stop makes it answer (the brief's 03:00 and 04:00 rules) and measured the
   speed with no hook implemented unchanged (+0.05 % user CPU, 12 alternating rounds). The first
   independent check of S3 found four blocking and three minor problems; run 4 settled them (see
-  "S3 first check findings"). What is left: the next independent check.
+  "S3 first check findings"). The second check found three blocking and five minor problems;
+  run 5 settled them (see "S3 second check findings"). What is left: the reference's verdicts
+  for run 5 (the new tests against Docker and the whole suite), which could not be run: Docker
+  Desktop on the Mac starts no container since about 04:30 Pacific and the ARM machine is gone
+  (see "Measurements", S3 run 5). Then the next independent check.
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -179,6 +183,56 @@ The check (scratch streams/s3check, its own program s3check.c and test s3check.r
 - Minor, the check could not read its whole-suite result: this run's suite is in "Measurements".
 The new tests are tests/away.rs with guest/away.c, compared with the reference where nothing is
 taken.
+
+## S3 second check findings, settled in run 5
+
+The check (scratch streams/s3check2, its own program s3chk.c and test s3chk.rs) found:
+- Blocking, the memory and file blocks of a context away were dropped when the last process on
+  the kernel sharing them ended (a forked child's end dropped the parent's program file block; a
+  `CLONE_VM` child's end dropped the memory). Now the kernel keeps a weak reference to the map
+  of each context taken or copied off it, with its memory, until it is put back here
+  (`Kernel::maps_away`, `live_maps_away`): `memory_in_use_elsewhere`, the release of file
+  blocks, a file's block moved or cut, `writably_mapped` (memfd seals) and System V
+  attachments count those maps. Also found while fixing it: a child that ended while its
+  parent's context was away was reaped at once, as if it had no parent; now it stays a zombie for
+  the parent, its SIGCHLD is kept (`ProcessAway::signals`) and sent when the parent is back,
+  and a parent that does not want its children's zombies reaps them on its return. Tests
+  `a_parent_away_while_its_forked_child_ends_goes_on_when_it_is_back` and
+  `a_parent_away_while_a_child_in_its_memory_ends_goes_on_when_it_is_back` (away.c `leave`,
+  with a memory file shared with the child).
+- Blocking, a process taken inside its own `on_shared_memory_mapping` was announced its next
+  piece, with a handle that panicked. Now `announce_sharing` keeps what each process was told in
+  step piece by piece (updated before each hook), skips a process that left, and stops when a
+  hook started a new round; `announce` and `announce_start` fire no hook for a process taken in
+  an earlier hook of the same moment (sharing or kernel-write hooks); a watch touch on a process
+  that left finds no watch. `resume_process` makes the kernel compare what the process maps with
+  what it was told at its next hook, so it is told the rest then. Test
+  `a_process_taken_in_its_own_sharing_hook_is_told_the_rest_when_it_is_back` (away.c `pieces`:
+  every hook reads `info()`, each end names what was told, all end, the second piece told after
+  the process is back).
+- Blocking, the test host did not run S3's operations or hooks. The recorder now implements both
+  sharing hooks and runs `memory_id`, `copy_process_context`, `suspend_tasks` of none and
+  `send_signal` of number 0 in every hook; it accepts `SharedNotWritable` when writing back a
+  page of a read-only shared mapping (as documented). New test
+  `every_operation_of_the_handle_is_legal_in_the_shared_memory_hooks` (embedder.c `sharing`).
+  Taking a process inside a hook is in the suspend tests, as the document now says.
+- Minor, `send_signal` to a task away was dropped. Now it is kept as tgkill's is. Test
+  `a_signal_the_embedder_sends_to_a_task_away_waits_for_it` (away.c `sent`).
+- Minor, a socket wait with `SO_RCVTIMEO` or `SO_SNDTIMEO` restarted after a stop or a handler.
+  Now `wait_room` answers EINTR when the socket has a timeout (`sock_intr_errno`). Tests
+  `a_socket_wait_with_a_receive_timeout_taken_off_answers_as_a_stop_makes_it_answer` and
+  `a_socket_wait_with_a_receive_timeout_is_not_restarted_after_a_handler` (away.c `socket`);
+  the table in the interface document says so.
+- Minor, the context could carry pieces not yet told: settled with the second finding.
+- Minor, no task runs on a second kernel: unchanged, as the ruling asks for one kernel (see
+  "Departures"). The first finding's fix also covers a context resumed on a second kernel
+  sharing the executor, as far as the first kernel goes: the first keeps the memory while the
+  map lives.
+- Minor, the reference's verdicts were owed: still owed (Docker and the ARM machine down again).
+Each new test fails without its fix (checked on this Mac with the expected output written from
+the program in place of the reference's: SIGSEGV, "the kernel is idle with nothing to wake it",
+the panic at system.rs:341, "read 1" and "recv -1 Resource temporarily unavailable"; scratch
+streams/negative.sh and negative.log).
 
 ## How to run
 
@@ -807,6 +861,24 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 5, tests (this Mac, 05:45 to 06:20 Pacific, load 2 to 3): Docker Desktop started no
+  container (58 in "Created", `docker run ... alpine echo hi` never returned, from at least 05:45
+  to 06:20; the check saw the same from 04:30), the ARM machine could not be reached
+  (`arm-run --status`), and the x86 machine cannot run ARM64 containers (exec format error). So
+  no verdict against the reference was produced this run. Instead the away tests were run on our
+  side against the output written from the program (scratch streams/positive.sh, positive.log,
+  8 seeds): the 11 tests of away.rs that do not need two outputs passed (the kill test was not
+  run this way); the sharing-hook operations test ran its 3 seeds without a panic, output not
+  compared. Unit tests of abi, kernel and literals, fmt and clippy with warnings denied over the
+  three crates passed on the x86 machine (scratch streams/s3e/units.log; the literal workspace
+  test fails there for want of .git, as its manual says); the literal check passes on this Mac.
+- S3 run 5, speed with no hook implemented (x86 machine, load 70 to 96 on 192 threads, other
+  tracks' jobs running, 06:25 Pacific; scratch streams/s3e/speed.log): tests/shell.rs
+  `runs_repeat_for_a_seed` (ours only) at c22154df and at 6ac2d63b, alternately, 13 rounds,
+  round 0 a warm-up, pinned to cores 0 to 9. User CPU, rounds 1 to 12: before mean 4.685 s
+  (median 4.70), after mean 4.480 s (median 4.60), after faster in 6 of 12. Noise at this load is
+  about 15 % between rounds, so this says only that no slowdown shows; the memory binary used
+  before needs the reference and could not run.
 - S3 run 4, tests (tree 814edab1 with its tests and docs): on the ARM machine fmt and clippy with
   warnings denied over the three crates passed, the new tests/away.rs passed with 8 seeds (6
   tests, 48 runs; the known failure ignored, and failing when run with 3 seeds: "read 1" against
@@ -980,6 +1052,7 @@ Found on the way, fixed:
 - After S3's third run: unchanged, 7577 lines (same per crate); the check passes on this Mac
   (exit 0, scratch streams/literals-s3r3.log). The literal check does not read the C guests.
 - After S3's fourth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
+- After S3's fifth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -1015,6 +1088,13 @@ anything shipped.
   meanwhile (the ignored known-failure test in tests/away.rs); `kill` of a process whose context
   is away answers ESRCH (a signal to a process on no kernel of the embedder's knowing is the
   embedder's to carry), while a wait for it waits as for a stopped child.
+- S3 run 5: a context the embedder drops instead of putting back lets go of its file blocks at
+  the kernel's next release, but its executor memory is left to the executor: once its map is
+  gone the kernel cannot tell whether another kernel still runs in that memory. A dropped context
+  also leaves its parent waiting for it. Linux has no such case; the ruling has no call to end a
+  context.
+- S3 run 5: a SIGCHLD for a parent whose context is away is kept on the kernel it left and sent
+  when the context comes back to that kernel; a parent resumed on another kernel is not told.
 - S3 run 4: `ProcessContext::origin()` and `ContextOrigin` are additions to the ruled interface:
   the handle's `suspend_process` has no room for none, so a process that cannot leave from inside
   a hook answers a copy, and the embedder has to be able to tell.
@@ -1114,6 +1194,11 @@ anything shipped.
   the reference program closed itself.
 
 ## For the orchestrator
+
+- Run 5: Docker Desktop on this Mac starts no container since about 04:30 Pacific (58 in
+  "Created"), and the ARM machine is unreachable; the reference's verdicts for S3's run 5 (and
+  the second check's) are owed. Once either works: `RUST_TEST_THREADS=3 nix develop -c cargo test
+  -j 4 -p wcontainers-kernel-test --test away --test embedder`, then the whole suite.
 
 - For the owner (S3 run 4): `ProcessContext::origin() -> ContextOrigin { Suspended, Copied }` is
   new (names suggested): through a hook's handle, a process whose own thread is in the middle of
