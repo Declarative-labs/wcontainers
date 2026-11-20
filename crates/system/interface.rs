@@ -26,7 +26,7 @@ pub trait System:
 {
 }
 
-/// The system call proxy and the hooks on processes, as ruled.
+/// The system call proxy and the hooks on processes.
 pub trait ProcessTracer: Sync {
     type ProcessState: Clone + Send;
 
@@ -106,7 +106,7 @@ pub trait ProcessTracer: Sync {
     fn on_inspection_ended<P: Process<State = Self::ProcessState>>(&self, process: P) {}
 }
 
-/// The source of the ids of processes and threads, as ruled.
+/// The source of the ids of processes and threads.
 pub trait TaskIdSource: Sync {
     fn allocate_task_id(&self, previous: TaskId) -> TaskId {
         wcontainers_kernel::task_id_after(previous)
@@ -114,35 +114,35 @@ pub trait TaskIdSource: Sync {
     fn free_task_id(&self, id: TaskId);
 }
 
-/// The embedder's side of each of the kernel's streams, as ruled.
+/// The embedder's side of each of the kernel's streams.
 pub trait StreamPeer: Sync {
     fn send_stream(&self, end: End, bytes: &[u8]);
     fn credit_stream(&self, end: End, bytes: u64);
     fn close_stream(&self, end: End);
 }
 
-/// The monotonic clock and the wall clock, as abi's `Host` has them today and not yet ruled.
+/// The monotonic clock and the wall clock.
 pub trait Clock: Sync {
     fn monotonic_nanoseconds(&self) -> u64;
     fn realtime_nanoseconds(&self) -> u64;
 }
 
-/// A source of random bytes, as abi's `Host` has it today and not yet ruled.
+/// The source of random bytes.
 pub trait RandomSource: Sync {
     fn fill_random_bytes(&self, into: &mut [u8]);
 }
 
-/// The log of the kernel's warnings, as abi's `Host` has it today and not yet ruled.
+/// The log of the kernel's warnings.
 pub trait WarningLog: Sync {
     fn warn(&self, warning: Warning<'_>);
 }
 
-/// The server of the container's files over FUSE, as abi's `Host` has it today and not yet ruled.
+/// The server of the container's files over FUSE.
 pub trait FileServer: Sync {
     fn send_backend(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 }
 
-/// The network outside the container, as abi's `Host` has it today and not yet ruled.
+/// The network outside the container.
 pub trait Network: Sync {
     fn connect(
         &self,
@@ -159,7 +159,7 @@ pub trait Network: Sync {
     fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError>;
 }
 
-/// The resolver of names to addresses, as abi's `Host` has it today and not yet ruled.
+/// The resolver of names to addresses.
 pub trait NameResolver: Sync {
     fn look_up(&self, request: u64, name: &str) -> Result<(), HostError>;
 }
