@@ -61,7 +61,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   run 10 built 2 MiB entries by reservation and measured the contiguous bit (no gain, not kept); the benchmark set takes no
   block, so the bar is as in run 9 (below, "N4 run 10"). Run 11 measured the page test again (no measurable cycles now, so decision 14 would
   not move the bar), built load-time addresses (address places; code moved between movable pages is what translating
-  there gives) and kept translations in the monitor, in memory and in files of a directory (below, "N4 run 11").
+  there gives) and kept translations in the monitor, in memory and in files of a directory (below, "N4 run 11"). Run 12
+wrote how the kernel's own writes meet the dirty marks and watches, and built a return's last target compared in line
+(run 7's option (b)): fib -16% and sort -10% cycles, the compute part +33.67% [+33.21 .. +34.68], still failing
+against +21.2%; the system-call part passes at 89.2 ns (below, "N4 run 12").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -88,6 +91,68 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 12 (2026-11-19): a return's last target
+
+Start: origin/main and origin/phase-1-literals had nothing new; no answer in the brief or the orchestrator's notes to
+the asks below. Logs are in scratch native/n4r13. Lint and the platform-free tests ran on the rented ARM64 machine
+(arm2.log); what needs Hypervisor.framework, Docker or a git checkout ran on the Mac (-j 4).
+
+Written first (the brief's item of 2026-11-19 and the owner's names since): plan 5.3 now says how the kernel's own
+writes into a process's memory count for `take_dirty_memory` and fire `on_watched_memory_accessing` before they are
+made, and names the tests to build with the watches (N5 on; nothing of the interface is built here). Plan 5.3 and the
+Departures say why loaded translations are not shared between processes (a question for the orchestrator, below).
+
+Looked at: the native code of fib and matrix (a scratch dump, not kept). fib's second recursive call is a loop around its
+one call site, so nearly every return goes where the last went. A toy in fib's shape on the host (n4r13/returns.c,
+returns.log, wall time, load 16) put the return through the slot at +27.5 to +39.6% over plain bl/ret, and a return
+compared in line with its last target at -0.2 to +3.2%. Run 7's option (a) turned out unsound (see "For the
+orchestrator").
+
+Built (plan 3.2, "A return's last target", a departure): run 7's option (b) for `ret`. Changes: guest-cpu
+`InsideCall::LastTarget`; arm64 `mirror::LAST_TARGET_*`, `carry::last_target` and three more link words; the inside's
+`Resolved::LastTarget` and `NativeCpu::make_last_target`, the run going on in host code after the call; the monitor's
+link words; the test runner and the carry test take the new call. Measured against run 11's build in alternating
+pairs, 6 pairs, load 11 to 16, every run on performance cores but a few of fib's (n4r13/ab-lasttarget.log; calls.c with
+one image for both, since the two folders held different builds of it): cycles fib 0.836, sort 0.904, calls.c 0.888,
+matrix 0.961, interpret 1.014, sieve, hash, walk and search within 1.4%; instructions fib 0.887, calls.c 0.882, sort
+1.008, the rest within 0.1%. New test: code.c's last part, a written caller whose callee's return came back twice is
+rewritten where the return lands, and the return must reach the new code (the kernel test compares it with the
+reference and the WebAssembly side).
+
+Tests after the change, on the Mac (mac1.log, load 10 to 20, 17:20 to 17:26): carry passes; forced interrupts 3746 over
+8 functions at 3 look-aheads, 0 failed; the kernel test alike with the reference and the WebAssembly side at none and
+256 and the benchmark set's count at every stop the same at both; the differential test at three look-aheads with new
+seeds, 0 failing each: none 32,254 cases (seed 0x6e34131301), bounded 16 32,315 (0x6e341313016), bounded 256 32,570
+(0x6e3413130256); busybox's 56 commands as the reference at none and 256, and at whole page; floor, probe (0 forms of
+16 bytes or fewer differ, 44 larger as before), registers, exits (4 programs both modes, 0 failed, 424 and 426
+pieces), the inside's and the policy crate's tests and the literal check's tests pass; the literal check exits 0.
+The kernel test with code.c's new part (kernel2.log, whole-page2.log): alike at none and 256 and at none and whole
+page, "9 9 10" as the reference, "code changed after it ran" 5 on both sides (the test's expected count went from 4 to 5
+for the new change). Clippy with warnings denied is clean for arm64, guest-cpu (with and without default features), the
+translator (native feature), the inside (all targets and its softfloat target) on the rented ARM64 machine, where
+those crates' tests and the monitor's lib and tests/kept.rs pass (arm2.log), and for the monitor (all targets) on the
+Mac; rustfmt clean. Carry, interrupts, the first kernel run and the differential test at none ran before a last edit of
+the inside that changed no behaviour (where the call's state is carried, for clippy); the kernel test ran again after
+it.
+
+Speed bar after (n4r13/speed.log and speed.jsonl, 17:28 to 17:32, load 11 to 14, 15 pairs, look-ahead 256, seed 1, 2000
+resamples): compute part +33.67% [+33.21 .. +34.68], FAILS against +21.2% (run 11: +38.80%). Native against plain,
+cycles (instructions): fib +26.3 (+65.6), sieve +17.5 (+31.8), hash +3.1 (+27.2), sort +62.3 (+146.1), interpret +96.5
+(+105.1), matrix +39.3 (+66.1), walk +18.8 (+81.5), search +26.2 (+26.6); calls +47.0 (+91.9). Untranslated against
+plain, cycles: fib -3.8, sieve +6.9, hash -2.5, sort -3.1, interpret -6.2, matrix -16.3, walk +18.8, search -10.1, calls
+-18.7. Share on performance cores 62 to 100% (interpret's lowest). System-call part: 186.6 ns a call, the kernel's share
+97.4 ns, the back end's 89.2 ns [86.7 .. 92.1], PASSES against 100 ns.
+
+What N4 still needs, in order:
+1. The compute part of the bar (+33.67% against +21.2%): what is left is mostly interpret's dispatch (a jump through a
+   register whose target changes every time: +96.5%), sort's indirect calls and returns to two sites (+62.3%) and
+   matrix (+39.3%, whose page test costs no measurable cycles since run 6). The same last target for `blr` (sort's
+   comparison) is the next thing this track can try; beyond it the bar needs a ruling (see "For the orchestrator").
+2. Loaded translations shared between processes: a question for the orchestrator (Departures).
+3. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none, 256 and whole
+   page).
 
 ## N4 run 11 (2026-11-19): the page test measured again; load-time addresses and kept translations
 
@@ -2304,6 +2369,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 12: plan 3.2 makes every return the jump through its target's slot. As built, a return through a register
+  that is not withheld first compares its target with its last target in line and goes there by a direct branch the
+  inside links (run 7's option (b), asked of the orchestrator since run 7 with no answer); the slot is the miss's way.
+  It trades nothing of run speed (fib -16.4%, sort -9.6%, calls.c -11.2% cycles, nothing slower beyond the noise) for
+  a second path in every return and a patch at its first miss. Plan 3.2 says so.
+
 - N4 run 12: plan 5.3 says a fork's child shares the parent's loaded translations and its mirror's slot pages. As
   built, every process loads its own pieces (from the monitor's kept translations, so nothing is translated again) and
   fills its own mirror: the inside links every direct exit within its process, which is right only for a process that
@@ -2501,9 +2572,11 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   (n4r13/returns.c and returns.log, wall time only, 7 rounds, load 16) gives per run of fib(36): the return as built
   +27.5 to +39.6% over plain bl/ret, option (b)'s hit path -0.2 to +3.2% (a first run at load 15 to 18: +31 to +48%
   and +4 to +10%). So the return as built is most of fib's +48.6%
-  cycles, and (b) is expected (not measured natively) to take fib to about +20% and to help sort and calls.c. It adds a
-  second path to every return (the compare in line, the slot on a miss) and one patch of the site by the inside at its
-  first miss. This track will build it as a departure unless told otherwise. (3) Loaded translations shared between
+  cycles. Built as a departure (plan 3.2, "A return's last target"): in alternating pairs fib -16.4%, sort -9.6%, calls.c
+  -11.2% cycles. It adds a second path to every return (the compare in line, the slot on a miss) and one patch of the
+  site by the inside at its first miss; please confirm or rule. The compute part is now +33.67% [+33.21 .. +34.68]
+  against +21.2%; what is left is mostly interpret's dispatch (+96.5%), sort (+62.3%) and matrix (+39.3%), so the bar
+  still needs a ruling on the bar itself or on a different design for jumps through a register. (3) Loaded translations shared between
   processes (plan 5.3) are not built: see Departures; sharing frames needs exits through slots past a loaded
   translation (a speed trade) or code frames copied on a link. Which, if either?
 

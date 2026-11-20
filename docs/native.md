@@ -252,6 +252,23 @@ rewritten) would change only that function (brief).
   was taken out again. A call builds x30 in place and leaves through its target's exit, and a return is the
   jump ending in `br t`, not `ret t` (a `ret` with no stub is foreseen from a return-address stack holding none
   of the guest's: fib went from +544% to +102% cycles and calls.c from +481% to +68% when it became a `br`).
+- **A return's last target, ARM64** (N4 run 12, a departure: run 7's option (b)). A `ret` through a register
+  that is not withheld starts with its last target compared in line: three moves of a guest address into t
+  (`movz`, then a slot's two `movk`s), `eor t, t, xN`, `cbnz t` to a call into the inside, and a direct `b`,
+  which is the hit's way; the jump through the slot above follows the call and is the miss's way
+  (`mirror::LAST_TARGET_*` name the words' places). As translated, the moves give zero and the `b` goes on to
+  the jump, so a piece runs correctly before anything is made. At the first miss the call (`LastTarget`)
+  finds the target itself in t; the inside writes it into the moves, points the test past the call (so the
+  call is made once), and makes the `b` an exit to that target, linked while a piece is loaded there and
+  unlinked when it is dropped, as every direct exit is. A target at or above the ceiling or not aligned is
+  not made one. Every word before the `b` and the call are on the return's near side, so a stop there is the
+  return not yet made; the `b` and the slot's `br` are its commit points alike. Why: fib's second recursive call
+  is a loop around its one call site, so nearly every return goes where the last one went, and a toy in fib's
+  shape on the host measured the return through the slot at +27.5 to +39.6% against plain `bl`/`ret` and the
+  hit at -0.2 to +3.2% (wall time, n4r13/returns.log). Measured in alternating pairs against run 11's build,
+  6 pairs, load 11 to 16 (n4r13/ab-lasttarget.log): cycles fib -16.4%, sort -9.6%, calls.c -11.2%, the other
+  workloads within 4%. A return whose target changes every time (an interpreter's) pays six words more on the
+  miss's way.
 - **The mirror's reach.** The mirror covers guest addresses below 2^45 (32 TiB), so the native ARM64 back
   end's address ceiling (`Cpu::address_space`, abi/cpu.rs:34-35) is 2^45, under the container's width of 2^48,
   as the brief's ruling on ceilings allows (section 6.2, K2; decision 9).
