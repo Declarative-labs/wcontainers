@@ -66,7 +66,10 @@ wrote how the kernel's own writes meet the dirty marks and watches, and built a 
 (run 7's option (b)): fib -16% and sort -10% cycles, the compute part +33.67% [+33.21 .. +34.68], still failing
 against +21.2%; the system-call part passes at 89.2 ns (below, "N4 run 12"). Run 13 gave a call through a register
 the same last target (sort -22% cycles): the compute part is +27.94% [+27.41 .. +28.81], still failing against +21.2%;
-the system-call part passes at 89.5 ns (below, "N4 run 13").
+the system-call part passes at 89.5 ns (below, "N4 run 13"). Run 14 itemized interpret's extra instructions per
+bytecode operation and measured decision 14's page test again (left out, interpret 18% slower, matrix 10% faster): no
+known change, nor any ruling asked for so far, brings interpret under the +29.5% that would let the compute part pass
+(below, "N4 run 14").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -93,6 +96,68 @@ the system-call part passes at 89.5 ns (below, "N4 run 13").
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 14 (2026-11-19): interpret's instructions itemized; the page test measured again
+
+Start: origin/main and origin/phase-1-literals had nothing new; no answer in the brief or the orchestrator's notes to
+the asks of runs 9 to 13. No code was committed in this run, so the suites and the speed bar were not run again (their
+inputs are run 13's, whose suites all passed); the literal check exits 0 (n4r15/literals.log). Files are in scratch native/n4r15.
+
+Looked at: interpret's native pieces at look-ahead 256 with the count (interp.lst; made by a scratch test, zz_dump.rs,
+not kept, run on the rented ARM64 machine from the image's code page), against the guest's own code (objdump of
+target/tmp/interpret), operation by operation over one turn of the bytecode loop (count.txt):
+- Per bytecode operation the hot path is 16.75 host instructions plain and 36.1 native (one turn of the loop: 201 and
+  433, ratio 2.15; run 13 measured 2.05 for the whole run, the outer loop and the start included). The 19.3 extra
+  are: the jump through the dispatch register 9.0 (46%: five words before the `br`, four in the slot), page tests 4.2
+  (22%: two or three words before each 8- or 16-byte stack access), the count's adds 3.1 (16%: one per piece, and each
+  operation runs three pieces, the dispatch's head, its jump and the case), the jump table's `adr` built as three moves
+  2.0 (10%; its value is a guest address the code may be moved under), and the linked exit from the head's piece to the
+  jump's piece 1.1 (6%; the head ends at its backward `b.hi`).
+- These are instruction shares, not cycle shares. Both sides run at about the same IPC as built (run 13's speed.jsonl:
+  plain 3.97 to 4.24, native 4.14 to 4.33), but taking instructions out does not take cycles out in proportion: below,
+  the page test left out removes 11% of interpret's instructions and makes it 18% slower. What else sets interpret's
+  cycles (where its code falls, how its two indirect branches meet in the predictor) is not measured: this Mac gives no
+  branch-miss counts without root.
+
+Measured: decision 14's page test left out for every access of 16 bytes or fewer, against the head's build, in
+alternating pairs (ab.py, 8 pairs, load 7 to 12, every run on performance cores; ab/head15 and ab/nopage15, a build
+with that one condition changed, not kept; n4r15/ab-nopage.log). Cycles (instructions) B/A: interpret 1.181 (0.891),
+matrix 0.897 (0.752), sort 0.983 (0.892), walk 1.003 (0.741), fib 1.000, sieve 0.994, hash 1.000, search 0.990, calls
+0.994 (each 1.000). This agrees with run 11's figures (interpret 1.141, matrix 1.027 with its B side then on efficiency
+cores). Applied to run 13's medians (computed, not a bar run) the compute part would be +28.4%, worse than +27.9% as
+built, because interpret slows; +25.7% if interpret were unchanged.
+
+Measured, to tell the test's work from where the code falls: the in-line words of that same page test replaced by as
+many `nop`s, its out-of-line tails gone (ab/nops15, n4r15/ab-nops.log, 8 pairs, load 10 to 14): interpret 1.006, matrix
+0.925, sort 1.004, walk 1.007 cycles, instructions unchanged. So interpret's 18% above comes from its code being
+shorter (where its words and branches fall), not from the test's work, and most of matrix's gain is the test's work
+and tails. Then every piece started on a 64-byte boundary in the code area (ab/align15, n4r15/ab-align.log, 8 pairs,
+load 8 to 12): matrix 0.913, fib 0.989, interpret 0.990, calls 0.991, sieve 1.016, sort 1.010, the rest within 0.4%;
+about -1.1% on the geometric mean (computed). Not kept: the gain is matrix's alone, sieve and sort lose, and run 13's
+loop toy put matrix's best loop head 48 bytes into a 128-byte line, not at a line's start, so it is where one loop
+happens to fall, not a rule. All three builds were scratch builds of the head with one change, reverted.
+
+What the compute part needs: with the other seven workloads as in run 13, the geometric mean meets +21.2% when
+interpret is at or under +29.5% (computed from run 13's medians). No change of this track and no ruling asked for so far
+is expected to get it there: by instruction count the jump through a table of host addresses with the page test left
+out would still leave about +66% (+55% with the head and jump pieces merged, which run 13 measured 8.7% slower), and the
+page test left out, measured, makes interpret slower.
+
+Looked at and not built, as unsound or too costly: an instruction abort in place of the jump's ceiling test (an
+out-of-reach target would land in the code region, which the guest's level can run); slots of one direct `b` to code
+kept in gaps beside each guest page's slots (needs the mirror four times as large, a ceiling of 2^43, and gives about
+two words a jump).
+
+The share on performance cores that the speed test prints for interpret (15 to 76% a run, every side) does not move its
+cycles (1.20 to 1.28 billion plain at any share), and ab.py saw 100% for it in run 13 and here; the figure is recorded
+but does not explain the ratio.
+
+What N4 still needs, in order:
+1. The compute part of the bar (+27.94% against +21.2%, run 13): needs a ruling (see "For the orchestrator").
+2. Loaded translations shared between processes: a question for the orchestrator (Departures).
+3. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none, 256 and whole
+   page).
 
 ## N4 run 13 (2026-11-19): a call's last target
 
@@ -2634,6 +2699,16 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 14: interpret's native code runs 2.15 times the plain host instructions per bytecode operation; the extra is
+  the jump through a register (46%), the page test (22%), the count's adds (16%, three pieces an operation), the jump
+  table's address built (10%) and a linked exit (6%). Instruction shares are not cycle shares: leaving out the page test
+  for accesses of 16 bytes or fewer (decision 14) takes 11% of interpret's instructions and makes it 18% slower, matrix
+  10% faster, the rest within 2% (8 alternating pairs), so with it the compute part would be about +28.4%, no better;
+  the same words as `nop`s leave interpret unchanged, so what it loses is where its code falls, not the test.
+  The compute part passes, the others unchanged, only with interpret at or under +29.5%, which nothing known gets near.
+  So the bar needs a ruling on the bar itself (for example a higher figure, or interpreter-style dispatch judged on its
+  own); which?
 
 - N4 run 13: (1) The last target is now also made for a call through a register (sort -22% cycles in alternating
   pairs, nothing slower); please confirm it with run 12's for returns (Departures). (2) The compute part is +27.94%
