@@ -2683,99 +2683,123 @@ written in its section 5.3.
 ## 12. Tests and the bar
 
 The test system gives every process (`Serial`, `Exact`) unless a test says otherwise. That is what the
-kernel test crate's runs are today: one thread at a time, counted turns. It says that it orders
-entries, so its kernel is a recorded kernel. Tests in free turns against the reference use a system
-that does not.
+kernel test crate's runs are today: one thread at a time, counted turns. It makes its repeatable order
+with one worker and the interrupter (section 11). Tests in free turns against the reference use a system
+that does neither. Until the two kernel primitives for replay exist (4.6, known fault 2), no test here
+replays a recording; the tests that did in the form before are moved to T8 and rewritten per process.
 
 - **Nothing changes with one processor.** With every process (`Serial`, `Exact`) and one processor,
   every test of the kernel test crate gives the same verdict as before, with and without `--features
   runtime`, at full, none and bounded look-ahead, and `repeats` still repeats. Checked as J1 checked it:
   the `test ...` lines from both commits kept and their `diff` empty. The same suites also pass against
   the reference with every process (`Serial`, `None`), in free turns.
-- **Groups in parallel.** The same crate's tests that run several processes pass with several processors
-  and free turns, against the reference.
-- **Exact replay with every process (`Serial`, `Exact`).** A test system records a run with several
-  processors (the order of entries, the host's answers, each stop's position), then replays it with the
-  replayer of 4.6. Every thread's registers at every entry, a hash of every memory at every entry, and
-  every answer of `getcpu` are the same. Run over seeds, with one worker, with fewer and with more than
-  the recording had.
-- **`External`.** With every process (`Serial`, `External`):
-  - the kernel test crate's programs that have one thread and take no signal while they compute replay
-    every time, over seeds and worker counts, with every digest equal and every byte handed to the
-    system equal;
-  - a threaded program written to depend on where its threads take turns is recorded and replayed over
-    many seeds. Each replay either has every digest equal, or is thrown away and says at which entry.
-    No replay is accepted that handed the system a different byte;
-  - **a kernel is recorded whole.** A process given `None` beside them, in the recorded kernel: it
-    runs in force `External`, the counter of section 3 says so, and the recording system is asked
-    about every one of its entries. The run replays as above, also when that process writes a pipe
-    the others read. The sixth check's case is one of the runs: one processor, two processes that
-    wait and wake by turns, and a third given `None` that only computes, with the lengths of its
-    turns varied by the seed between the recording and the replay. The replay makes the recording's
-    choices and never waits;
-  - the same programs in a kernel whose system does not order entries: the system's count of
-    questions is zero for every process, whatever each was given.
-- **A replay that has left its recording ends.** A recording is replayed from a log that was changed
-  on purpose, one change at a time: two choices swapped; a return's kind of exit changed; a digest
-  changed; a thread's return put after that thread's end. Each replay ends within a bounded number of
-  entries with "replay thrown away" and the kind of difference (4.6). None waits. In T1 the first,
-  second and fourth, with every process `Exact`; the digest in T8.
-- **The config in force.** Two processes given different configs come to share a file mapping, and
-  later stop sharing it. Until `resume` exists, a build for tests gives a forked child its own config.
-  - In a kernel that is not recorded, one given `None` and one `Exact` (T1):
-    `Process::execution_config()` answers what each was given throughout. The config in force and
-    both counters change at the `mmap` and back.
-  - The hook `on_execution_config_in_force_changing` fires once for each process whose config in force
-    changes, before the mapping is made. At a join the test build finds every thread of both groups
-    at a kernel entry of its own.
-  - In a recorded kernel, from T8 on, since it needs a process below `Exact` there: a process given
-    `External` (and one given `None`, which is in force `External`) joins an `Exact` neighbour while
-    both run. The test system asks for a container stop in the hook and saves the container at it
-    (`System::stopped`, rt/lib.rs:156-158). From the join on, that process's entries are recorded with
-    positions (from code with the count, once the translator has it; in counted turns until then).
-    Restored from the save, the two replay exactly.
-  - The same run with a test system that does nothing in the hook: the neighbour replays exactly up
-    to the join's entry, and the test says so. It claims nothing beyond it.
-  - In T1 a recorded kernel is given a first process with `None` or `External`: the start fails with
-    the error that says `External` is not built.
-- **Groups joined while both run.** Two processes of two `Serial` groups each compute on a processor of
+- **Processes in parallel.** The same crate's tests that run several processes pass with several
+  processors and free turns, against the reference.
+- **Repeatable with one worker.** The test system with one worker and four processors runs the kernel
+  test crate's multi-process programs twice from one seed, and then once from each of many seeds. Two
+  runs from one seed have the same order of entries, the same position at each entry, the same
+  answer from every `getcpu`, and every thread's registers and a hash of every memory the same at
+  every entry. With every process (`Serial`, `Exact`).
+- **Replay per process** (T8, once the primitives exist). A test system logs, for each process, its
+  system call results through the proxy, the kernel's writes into it, its signals with their
+  positions, and its threads' turns. It then runs each process alone, its system calls that bring
+  something in answered from its log and the others run for real (4.6), with its neighbours not run at
+  all. For a process given `Exact`: its registers and a hash of its memory are the same at every
+  system call and every logged position.
+  - A process given `None` writes a pipe that an `Exact` process reads, and only computes between
+    writes, with the lengths of its turns varied by the seed. The `Exact` process replays alone. The
+    `None` process's code has no count, no hook of the system is called for it but the proxy's
+    defaults, and nobody logs it. (The sixth check's case, which needed the whole kernel recorded, is
+    this test's ancestor; it now passes by construction, because the reader's read is in its log.)
+  - A `Serial` process with two threads that wait and wake each other through a futex, and one that
+    takes turns with a sibling that only computes, replays alone (decision 17 says how its turns are
+    followed).
+  - **`External`.** The kernel test crate's programs that have one thread and take no signal while they
+    compute replay every time, with every request equal to the log's and every byte a `write` hands
+    out equal. A threaded program written to depend on where its threads take turns replays many
+    times: each replay either matches at every request, or is thrown away and says at which request.
+    No replay is accepted that handed out a different byte.
+  - **A replay that has left its recording ends.** A log is changed on purpose, one change at a time: a
+    request's number; one argument; the bytes of a `write`; a result. Each replay ends at the first
+    request that differs, with "replay thrown away" and the kind of difference. None waits.
+- **A neighbour's guarantee never reaches a process.** In one kernel, a process given `None` and one
+  given `Exact` come to share a file mapping, and later stop sharing it. `Process::execution_config()`
+  answers what each was given throughout; the `None` process's code is never translated again (the
+  cache key's count field does not change for it); the shared-memory hooks fire once for each process
+  at the `mmap` and at the `munmap`, with the same `MemoryObject` and offset, and not for a mapping no
+  process can write. Until the resume calls exist, a build for tests gives a forked child its own
+  config. In T1, with both `Serial`.
+- **The one scheduling rule** (section 3). From T2 on, where `Parallel` exists. Over seeds, with the
+  test build's pause points, and in every run of the stress schedule the count "Serial task handed out
+  beside an overlapper" (section 5) stays at zero:
+  - *the reader's kernel work* (the mixed-ordering check's first case). A (`Serial`, one thread) and B
+    (`Parallel`, four threads) map one file with `MAP_SHARED`. A adds 1 to a word with its
+    architecture's atomic add, in a loop; B's threads add 1 to the same word with `FUTEX_WAKE_OP`.
+    The test build pauses a B thread after it has entered the kernel and before it has the kernel's
+    lock, while A is handed out. No addition is lost: the word ends at the sum of all. On the
+    WebAssembly executor the same with a 128 bit compare and swap in place of the add;
+  - *readers held for a writer's turn* (the second case). A only computes, beside B's threads, with
+    one processor more than B has threads and then one fewer. A third process that only computes
+    makes progress throughout, and no stop lock is ever held when a kernel lock is asked for (the
+    executor's test build checks the lock order);
+  - *a writer that waits for ever* (the third case). A is ready behind B's four threads, which only
+    compute, on four processors. A runs within ten slices, and goes on getting its fair share;
+  - *the three ways*: the same programs given both `Serial`, mixed, and both `Parallel` each match the
+    reference;
+  - *one memory, two forms asked*: a child made with `CLONE_VM`, given `Parallel` while its parent
+    was given `Serial`, runs `Serial` code and takes turns with its parent. Counted;
+  - *executor limits*: each limit of section 3 counted once per process and warned once, and the
+    process's threads then never run beside each other;
+  - *the copy at each switch* (T2's WebAssembly executor, once built): A and B alternate through a
+    shared page that each writes and reads back between switches; every value each reads is the last
+    the other wrote before the switch.
+- **A woken call reads its arguments once** (4.4). A thread of a `Serial` process parks in `ppoll`
+  with an array of descriptors in its memory, and its sibling changes the array while it waits; the
+  call that runs again acts on the array as it first read it, as the reference does. In T1. In T2 the
+  same in a `Parallel` process, and with the array in memory a `Parallel` overlapper writes.
+- **Memories that come to overlap while both run.** Two `Serial` processes each compute on a processor of
   their own. One has a file mapped privately and reads it in a loop. The other maps the same file
   shared and writable, and writes it. Then the other way round: the running one has the file mapped
   shared and has written pages it has not yet left with, and the other maps it privately. Over seeds,
   with the test build's pause points on both sides of the `mmap`:
-  - "two threads of a Serial group running" (section 5) stays at zero, and the try-lock of 7.2 never
-    fires;
+  - "Serial task handed out beside an overlapper" (section 5) stays at zero, and the try-lock of 7.2
+    never fires;
   - the `mmap` returns only after the other process's thread has made an entry, and the mapper then
     sees every store the other made before that;
-  - "group called in to be joined" counts each join once;
-  - the run replays exactly (with both given `Exact`), the call-in's entry among its entries;
+  - "tasks called in for a new overlap" counts each new overlap once;
+  - the run repeats with one worker from one seed, the call-in's entry among its entries;
+  - from T2 on, the same with one side given `Parallel` with two threads;
   - the same with `shmat`, and with an exec of a file that another process has mapped shared and
     writable. Each matches the reference.
-- **Two call-ins that want each other's groups.** The sixth check's case, as guest programs. Process
+- **Two call-ins that want each other's memories.** The sixth check's case, as guest programs. Process
   P1 has two threads and maps file g; process P2 has one and maps file f. A thread of P1 calls `write`
   on f in a loop while P2's thread calls `write` on g in a loop, and P1's other thread computes. With
   two processors and with four, over seeds, with the test build's pause points after each call has
   parked and after each thread has come in:
   - both loops finish, each `write` lands whole, and every mapped byte matches the reference;
-  - "two threads of a Serial group running" stays at zero and the try-lock of 7.2 never fires;
+  - "Serial task handed out beside an overlapper" stays at zero and the try-lock of 7.2 never fires;
   - a build for tests checks at every lock release that no call-in is pending with nothing in the
     kernel left to move it: every pending call either has a running thread still asked in, or its
     thread is a waiter that `next` would choose. Counted "call-in with nothing to move it", which
     stays at zero in every run of the stress schedule;
-  - the same shape with two `mmap` calls that each join the other's group, with `process_vm_writev`
-    both ways, and with a waiter that is sent `SIGKILL` while it waits: its mark comes off and the
-    other group runs on;
+  - the same shape with two `mmap` calls that each make an overlap with the other's memory, with
+    `process_vm_writev` both ways, and with a waiter that is sent `SIGKILL` while it waits: its mark
+    comes off and the other process runs on;
+  - from T2 on, the same with P2 given `Parallel` with two threads and sharing a file with P1, so that
+    a call-in's mark, a mark for a `Serial` task due a turn and a `Parallel` waiter held back while a
+    `Serial` overlapper is handed out are all in one run (the shapes the redone model must cover,
+    known fault 1);
   - from T4 on, two threads of one (`Parallel`, `Exact`) process that call `mprotect` at the same
-    time, each calling its own group in;
-  - recorded with every process `Exact` and replayed with one worker and with more: each choice that
-    ran a waiter's call and handed nobody out is in the log at its place.
+    time, each calling its own memory in;
+  - repeated with one worker from one seed: each choice that ran a waiter's call and handed nobody out
+    is at the same place both times.
 - **No thread waits behind its own sibling.** In free turns, with no slice timer running for a thread
   alone on its processor, with one processor and with four:
   - a `Serial` process whose thread A only computes and never makes a system call, while its sibling
     B sleeps a millisecond a hundred times and then ends the process with `exit_group`. The process
     ends, in no more than ten times the reference's time (the margin is for this machine's load and
     is the orchestrator's to set, as for T1's scaling test);
-  - the same with B waiting in `read` on a pipe that a process of another group writes a byte to a
+  - the same with B waiting in `read` on a pipe that another process writes a byte to a
     hundred times;
   - the same with A pinned to processor 0 and B to processor 1;
   - the same with B a batch thread (`SCHED_BATCH`), for which the wake-up comparison always says no;
@@ -2786,9 +2810,9 @@ that does not.
 - **A choice that hands nobody out.** Two processes wait in `read` on one pipe and a third writes one
   byte: both are woken, the first chosen takes the byte, and the second's call runs again when it is
   chosen and parks again. And a thread is chosen with a fatal signal waiting for it, which ends it.
-  Recorded with several processors and replayed with one worker and with more: each such choice is
-  in the log at the same place, and every thread's registers and memory are the same at every entry
-  after it.
+  Run twice with one worker and four processors from one seed: each such choice is at the same place,
+  and every thread's registers and memory are the same at every entry after it. What the call that
+  ran again read and wrote reaches the proxy and `on_memory_written_by_kernel` as its own thread's.
 - **The kernel called from inside a hook.** A test system keeps a reference to the kernel and calls
   `kernel.process(id)` from a hook, from `on_processor_needed`, from `on_deadline_changed` and from
   `arrived`: each answers the error, and none waits. It calls another entry point from a hook: the
@@ -2797,16 +2821,18 @@ that does not.
 - **The kernel called from inside guest code.** A test system calls `kernel.process(id)` from its
   clock's answer, from `ran` when the clock hook calls it, and from `cpu_warning`: each panics and
   names the call, with the kernel's lock free and with it held by another worker, and none waits. The
-  same `ran` called at a kernel entry does not panic. In T1 in a `Serial` group; in T2 also in a
-  `Parallel` group whose other thread calls `mprotect` in a loop, where the earlier form would have
+  same `ran` called at a kernel entry does not panic. In T1 in a `Serial` process; in T2 also in a
+  `Parallel` process whose other thread calls `mprotect` in a loop, where the earlier form would have
   hung.
-- **Reaching across groups.** Guest programs for each case of 4.5 where one group reaches another: a
+- **Reaching across processes.** Guest programs for each case of 4.5 where one process reaches another: a
   writer through a shared mapping beside a reader through a private mapping of the same file; a `write`
   to a file another process maps; a file made shorter, and a file made longer, while another process
   maps and runs it; a signal that ends a process whose thread is running. Each matches the reference,
-  and each replays exactly.
+  and each repeats with one worker from one seed. Each write into another process's memory fires
+  `on_memory_written_by_kernel` for that process with the exact range, and a watched range there fires
+  `on_watched_memory_accessing` before the write (section 8).
 - **No request to stop is lost.** A process that only computes, alone on its processor and with no
-  timer, is sent `SIGKILL` from another group, over many seeds. A build of the executor for tests pauses
+  timer, is sent `SIGKILL` from another process, over many seeds. A build of the executor for tests pauses
   the target's worker, by the seed, at each place where today's loop writes over the stop word: after
   the hand-out, after a fault is settled, after a rerun, after each answer to carry on, and in the stop
   hook (wt/lib.rs:2283, :1786). The process always dies. The same test with a group called in for its
@@ -2815,14 +2841,17 @@ that does not.
   neither bit is lost.
 - **No processor idles with a thread it could run.** Guest programs with no timer set, in free turns,
   over seeds. Each finishes, and makes the progress the reference makes:
-  - a process that only computes maps a file that another process writes in a loop, so its group is
+  - a process that only computes maps a file that another process writes in a loop, so its memory is
     called in again and again while its processor goes idle. It keeps computing;
-  - in a `Serial` group, one thread is pinned to processor 1 and waits on a futex. The other, on
+  - in a `Serial` process, one thread is pinned to processor 1 and waits on a futex. The other, on
     processor 0, wakes it and then parks on a futex only the first can wake;
   - a ready thread pinned to a busy processor has its mask widened by another thread to hold an idle
     one. It runs at once;
   - from T4 on: eight threads of a (`Parallel`, `Exact`) process on eight processors, one of which
-    calls `mprotect` in a loop. All eight keep running between the calls.
+    calls `mprotect` in a loop. All eight keep running between the calls;
+  - from T2 on: a `Serial` process that sleeps a millisecond at a time beside a `Parallel` process of
+    four threads that share a file with it and only compute, on four processors. Each time the
+    `Serial` one sleeps, all four `Parallel` threads are handed out again.
   In every run of the stress schedule the test build's count "a processor left idle with a thread it
   could run" (section 5) is zero.
 - **Timers and slices.** Read from the kernel's counters, against the reference for what the guest
@@ -2837,25 +2866,23 @@ that does not.
 - **A process's signal finds a thread.** `SIGTERM` with a handler is sent to a process. The test
   build pauses the thread the kernel picked between the pick and its next entry, which is
   `pthread_sigmask` blocking the signal in one run and `pthread_exit` in another. The handler runs
-  on a sibling: in T1 one that is parked in `read` in a `Serial` group, in T2 one that only computes
-  in a `Parallel` group. Matches the reference.
+  on a sibling: in T1 one that is parked in `read` in a `Serial` process, in T2 one that only computes
+  in a `Parallel` process. Matches the reference. `on_signal_delivering` fires once, in the entry of
+  the thread that takes it.
 - **The executor's lock rule.** Every run of the stress schedule has the try-lock of 7.2 on: reaching a
   `Serial` process's lock from a worker that does not have it panics. Two runs aim at it:
-  - a thread of a `Serial` group is paused after it last read its stop word and before it has the
-    kernel's lock, and its group is called in from another group during the pause;
-  - the call that wanted the group runs again on the worker of the thread that came in last, and on
+  - a thread of a `Serial` process is paused after it last read its stop word and before it has the
+    kernel's lock, and its memory is called in from another process during the pause;
+  - the call that wanted the memory runs again on the worker of the thread that came in last, and on
     another worker, by the seed;
-  - a thread of a `Serial` group is told to leave (another thread runs next; nothing to run; an entry
-    told `Later`), and its worker is paused after the answer and before the executor has let the
+  - a thread of a `Serial` process is told to leave (another thread runs next; nothing to run), and its
+    worker is paused after the answer and before the executor has let the
     process's lock go. Another worker's entry that reaches that process is waiting for the kernel's
     lock. It gets the lock only after the process's lock is free (4.2, the handle in `Leave`).
 - **A worker for each processor.** A container told more processors than the host has cores (16 on
   the x86 laptop held to four cores with `taskset`, cores 2 and 8 left out): `run_until_finished`
   starts 16 workers, a thread pinned to processor 15 runs and reads 15 from `getcpu`, and the
   multi-process programs pass against the reference.
-- **One worker, several processors, no log.** The test system with one worker and four processors
-  runs the kernel test crate's multi-process programs twice from one seed. The order of entries, each
-  entry's position and every answer of `getcpu` are the same, through the same `run` (section 11).
 - **Processors and masks.** A thread pinned to each processor in turn, by itself and by another thread
   while it runs, reads `getcpu` and its `rseq` area and never sees a processor outside its mask. A
   child inherits the mask. Matches the reference.
@@ -2896,8 +2923,9 @@ that does not.
     to its block: no store is undone.
 - **Under a stress schedule.** The test system asks random running threads in at random times, varies
   the number of processors and of workers, and delays entries at random, all from a seed. Each program
-  runs over many seeds. With several workers a seed does not make a run repeat (section 11), so every
-  such run is recorded, and a failure in a group in force `Exact` is replayed from its log.
+  runs over many seeds. With several workers a seed does not make a run repeat (section 11), so a
+  failure there is kept with its seed, its counters and the test build's trace, and tried again with one
+  worker from the same seed. Replaying it from logs waits for T8.
 - **Ordering tests.** Small two-thread tests of memory ordering, many rounds each, as guest programs
   through the translator and also as hand-written modules run directly in each WebAssembly compiler:
   - the four standard ones (store buffering, message passing, load buffering, independent reads of
@@ -2939,7 +2967,11 @@ that does not.
     lock replaced by one that does nothing (the lock's kind is a type parameter, 4.2). The no-lock build
     is within the spread between identical runs of the commit before: this checks that nothing but the
     lock was added (4.2). The milestone less the no-lock build is the lock with its holder's word
-    (4.2), reported against decision 7's figures. It is the one cost the owner is asked to accept;
+    (4.2), reported against decision 7's figures. It is the one cost the owner is asked to accept.
+    The proxy's two hooks and the hook for the kernel's writes, with their default bodies, are in all
+    three builds once the interface track has added them; the commit before them, against the commit
+    after, with the same loops, is their cost, reported beside the lock's. It is not this plan's to
+    accept or refuse, but it lands on the same system call (4.2);
   - **threaded programs run `Serial`, from T2 on.** T2 changes how a `Serial` process with several
     threads runs in the executor (a store for each thread, code instantiated in each store at first
     use, another lock scheme: 7.2, 7.5), and nothing above has two threads in it. So, on this Mac and
@@ -2960,7 +2992,9 @@ that does not.
   round more).
 - **Speed-up** is measured, with machine and load, on a real build with parallel jobs and on a threaded
   program in each runtime, at 1, 2, 4, 8 and 16 processors, with the time spent waiting for the kernel's
-  lock, the group stops by reason and the groups called in by reason.
+  lock, the group stops by reason and the memories called in by reason. From T2 on, the same for a
+  `Serial` process beside a `Parallel` one that share a file, given both `Serial`, mixed and both
+  `Parallel`, with the call-ins and hand-outs at each switch counted (section 3's expected cost).
 
 ## 13. Milestones
 
