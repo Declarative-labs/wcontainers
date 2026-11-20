@@ -4,27 +4,28 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 13 (2026-11-20). Complete but for two items waiting on others, each named below; handed
-to G8's independent check. Both candidates are measured on the SPIR-V corpus, piglit's, bgfx's and
-dEQP's GLSL, Godot's Compatibility renderer and Godot's RenderingDevice shaders; candidate B leads
-on every count and on time, and is the route (The choice, below; final). Run 13: the timed choice
-over the whole corpus read and recorded; route B fixes for cubes (a cube array's size, storage
-cubes); the harness's limits closed where they could be (multisampled textures filled, a reference
-that does not end on the seeded inputs held on the next seeds), the rest explained (Harness
-limits). Dolphin is left out (below).
+G8 run 14 (2026-11-20). Complete but for one item waiting on the owner's decision, named below;
+handed to G8's independent check again. Both candidates are measured on the SPIR-V corpus,
+piglit's, bgfx's and dEQP's GLSL, Godot's Compatibility renderer and Godot's RenderingDevice
+shaders; candidate B leads on every count and on time, and is the route (The choice, below;
+final). Run 14 fixed the findings of G8's check: the 15.4 rewrites are now made on route B's
+output by the shaders crate's `rewrite` (`direct::rewrite`), each with corpus programs using it;
+the GLSL bridge reports the atomic counter buffer size st/mesa does (48 refused programs now
+compile) and route B takes GLSL's workgroup memory; the last two closable harness limits are
+closed (a fragment input block, multisampled textures on llvmpipe). Dolphin is left out (below).
 
 Waiting on others (G8's bar, as the orchestrator ruled on 2026-11-19 night):
-- The rewrites of 15.4 on the route's output (formatless storage, gathers with offsets known only
-  at run time, arrays of textures, samplers and combined image samplers indexed at run time).
-  Cause: the shaders crate has no public entry point for them. Owner: the shaders track (asked in
-  the brief of 2026-11-19 night; its branch tip f97bec1b, unchanged at the start of run 13, has
-  only `convert` for DXBC and DXIL). Nothing else stands in the way: the route's output is a naga
-  module with its reflection, the form that entry point is to take.
 - robustBufferAccess's three steps (15.4). Cause: `HelperValue::BufferRange` is a proposed
   interface change of 15.7 and one of the owner's open decisions of 15.9 (not on the shared line
-  at 3195d728 nor on any graphics branch at the start of run 13). Owner: the owner, then the
-  interface track. Step 2 (storage as runtime-sized arrays of words, 32-bit accesses) is already
-  what the bridge makes of OpenGL's buffers (Done); steps 1 and 3 need the helper value.
+  nor on any graphics branch at the start of run 14). Owner: the owner, then the interface track.
+  Step 2 (storage as runtime-sized arrays of words, 32-bit accesses) is already what the bridge
+  makes of OpenGL's buffers (Done); steps 1 and 3 need the helper value.
+
+Not a bar item, waiting on the shaders track: 20 of Godot's RenderingDevice programs with arrays
+of textures (`gi.glsl` and kin) reach the shaders crate's `rewrite`, which validates without
+`Capabilities::IMMEDIATES` and so refuses their push constants ("rewrite: invalid: ...
+IMMEDIATES"); route B's own validation adds it. Asked under Requests to other tracks (the
+`capabilities` request of run 4, now also for `rewrite`).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -360,8 +361,8 @@ Done:
   vertex program). Checked to see differences: with every sample read as sample 0 (temporary, on
   the x86 machine's copy) `deferred.frag` differed; with samples 0 and 1, 2 and 3 swapped none did
   (each program averages over its samples); Godot's read a seeded sample count, at most 1 on the
-  seed (expected, not confirmed). The GLSL side (the one dEQP item) and multisampled depth
-  textures are not filled (Harness limits).
+  seed (expected, not confirmed). Since run 14 llvmpipe's side too (below); multisampled depth
+  textures are not filled (no corpus program reads one).
 - A reference that does not end on the seeded inputs (run 13; `corpus/run.rs`): a child writes
   `REFERENCE_ENDED` to its errors once the reference has run, so a child stopped at the time limit
   is told apart. Stopped before it: the reference did not end (a loop whose bound or step comes from
@@ -369,6 +370,55 @@ Done:
   and the seed used is recorded with the route's result (`inputs_seed`). Stopped after it: the
   route's module did not end where the reference did, a difference. The six `irradiancecube.frag`
   and Godot's `canvas_sdf.glsl#MODE_LOAD_SHRINK` now match on route B, on a later seed.
+- The 15.4 rewrites on route B's output (run 14; `direct::route`, `direct::rewrite`): route B
+  keeps an array of textures, samplers or storage images as naga's `BindingArray`, writes a
+  gather's offset known only at run time as the gather's offset, and declares a storage image
+  without a format as `r32float`, `r32sint` or `r32uint` by its texel's kind, listing its slots
+  (`Rewrites`). `direct::rewrite(routed, bindings, &variant, &route_key)` calls
+  `wcontainers_shaders::rewrite` (arrays split into a binding an element, gathers moved to a
+  shifted coordinate, each named storage slot given the bound view's format) and gives the module
+  with `cache::rewritten_key` and the bindings. A formatless slot the variant does not name is
+  refused by name, and so is a variant asking for more than 15.4's rewrites (those read the stage
+  values, which the driver's reflection holds: G9, G10). `direct::module` keeps refusing the
+  three by name for callers that do not rewrite. The corpus run rewrites where a module needs it,
+  each formatless slot bound as the four 32-bit components of its kind; the comparison joins a
+  split array's elements again on the reference's side (`Resource::first_element`), and on
+  OpenGL's side feeds element k through the uniform `name[k]`. Corpus programs using each, all
+  matched (run 14): arrays of textures and samplers 19 piglit (`sampler_array_indexing` and
+  kin), 4 Godot RD (`volumetric_fog_process`), 1 Sascha Willems (`texturemipmapgen`); formatless
+  storage 2 Godot RD (`fsr2_accumulate_pass`, `fsr2_rcas_pass`), 3 Slang compute samples, 6
+  piglit; a gather at a run-time offset, piglit's `fs-textureGatherOffset-uniform-array-offset`.
+  Held by `tests/glsl_reference.rs` (a program of an array read at a run-time index, a gather at a
+  run-time offset and a formatless storage image: matched; with element k fed through
+  `name[k+1]` on OpenGL's side, temporarily, 64 values differed). One known failure, ignored with
+  its reason: the same array read at a run-time and at a constant index in one program; each read
+  alone matches, and llvmpipe's constant read gives 0 and 4.0, values no seeded texel holds (all
+  lie in [-2, 2)); whether llvmpipe or the comparison's OpenGL set-up is at fault is not yet
+  known. llvmpipe also aborts in LLVM ("Cannot select ... sint_to_fp") on a gather at a run-time
+  offset from an array element; the test gathers from a single sampler.
+- Atomic counters (run 14): the bridge reports `MaxAtomicBufferSize` (4 bytes a counter, st/mesa's
+  4,096 counters without hardware counters), `MaxCombinedAtomicBuffers`,
+  `MaxCombinedAtomicCounters` and `ARB_shader_atomic_counter_ops` (core in OpenGL 4.6); before,
+  the size was 0 and Mesa refused every `atomic_uint` (48 corpus programs). Each atomic counter
+  buffer is named (`GlslNameKind::AtomicCounterBuffer`: its storage block's program binding and
+  its OpenGL binding point), and a storage index no access reaches (an atomic counter buffer's
+  gap) gets no variable. The comparison binds llvmpipe's atomic counter buffers
+  (`GL_ATOMIC_COUNTER_BUFFER` reflection), seeded, beside the program's storage blocks.
+- Workgroup memory in GLSL (run 14): Mesa's linker makes it byte offsets (`load_shared`,
+  `store_shared`, the shared atomics); the bridge makes it one workgroup array of words and each
+  access 32-bit derefs of it, as for OpenGL's buffers. Held by `tests/glsl_reference.rs` (a
+  program of atomic counters in two buffers, `atomicCounterAdd` and `Max`, workgroup arrays and an
+  atomic on workgroup memory: matched; with the workgroup atomic made a maximum, temporarily, 16
+  values differed; with the two counter buffers bound swapped on llvmpipe, 4).
+- An implicit level outside the fragment stage is level 0 in route B (run 14; WGSL allows implicit
+  levels only there): piglit's `border-color` and the vertex programs of `sampler_array_indexing`
+  match.
+- A fragment input that is a block (run 14; `interface.rs`): its members are fed at the locations
+  after the block's, one after another (`meshshader/meshshader.frag` matches on seeds 1 to 4).
+- Multisampled textures on llvmpipe (run 14; `Llvmpipe::fill_samples`): a draw a layer into the
+  texture with a fragment program run a sample at a time reading its texel from a storage
+  buffer, in the order lavapipe's fill takes (dEQP's
+  `oes_texture_storage_multisample_2d_array` matches on seeds 1 to 4).
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -595,8 +645,46 @@ start and 3.7 at the end, 732 s, most of it the references that do not end, held
   `irradiancecube.frag` on seed 0x5eed + 1 or + 3, `canvas_sdf.glsl#MODE_LOAD_SHRINK` on + 3. No
   outcome changed in any other way (`scripts/outcome_changes.py`).
 
+Run 14, the same 18,222 items after run 14's changes (`results/run14/nir-results-r14b.jsonl`;
+x86-64 machine, 180 children, load 11.4 at the start and 3.3 at the end, 731 s; `r14a` is the
+same run before the harness limits, the implicit level and `ARB_shader_atomic_counter_ops`):
+- In all: 12,284 items reach a route (up from 12,234: the atomic counter programs). Route B
+  converts 11,894 and matches 11,732 (up from 11,651), 154 differ, 8 not compared; route A
+  matches 1,013, 7 differ, 147 not compared.
+- By source, route B: piglit 1,417 (up from 1,350), Godot RD 397 (up from 391), Sascha Willems
+  788 (up from 783), dEQP 8,579 (up from 8,576), bgfx 318, Godot's Compatibility shaders 232.
+- The rewrites (the programs that failed for them in run 13): arrays of textures and samplers 19
+  piglit, 4 Godot RD and 1 Sascha Willems match; 20 Godot RD wait on `rewrite`'s validation
+  (IMMEDIATES, above); refused by name by the shaders crate, `ResourceArray` 6 (arrays of
+  buffers, of 2D array textures, of storage images in piglit's out-of-bounds tests) and
+  `ResourceArrayPair` 2 (the descriptor heap sample). Formatless storage: 2 Godot RD, 3 Slang
+  samples and 6 piglit match; 1 differs (below). The run-time gather offset: 1 piglit matches.
+- The 48 atomic counter programs and the workgroup programs: all compile now; most match
+  (`arb_compute_shader/execution`, `arb_shader_atomic_counters`, `arb_gl_spirv` atomic uints,
+  dEQP's two `max_fragment_atomic_counter*`); refused by name: signed minimum and maximum on
+  storage or workgroup words (4: route B keeps words as u32, naga's signed atomics need i32),
+  `load_workgroup_size` 1, `image_deref_atomic` 1, `load_helper_invocation` 1. 26 still need
+  extensions OpenGL 4.6 does not have (`GL_NV_shader_atomic_int64`, float atomics).
+- The one new difference: piglit's `imageStore-array` writes `tex[idx]` with `idx` a seeded
+  uniform in [-4, 4), past the array's two elements on most seeds (undefined); with the index
+  clamped to the array in a probe copy (not kept) it matches on seeds 1 to 4. Left as a
+  difference with this reason, as piglit's other out-of-range indices are.
+- Differences depend on the seed (from G8's check, seed 90210): bgfx's `cs_atmo_transmittance`
+  takes `sqrt` of a seeded negative and clamps the NaN (the class of piglit's NaN through clamp)
+  and differs on that seed, while the three Godot RD differences explained by a seeded zero
+  (`sdfgi_debug_probes` 0 and 1, `fsr2_tcr_autogen`) match there.
+- Candidate A on GLSL (from G8's check, information): A converts a GLSL compute probe of shared
+  memory and gives wrong values; A is not chosen and fails most GLSL. It shows the GLSL comparison
+  catches a wrong route.
+- The 8 not compared: the 5 harness limits below (2 state values, 2 uniforms llvmpipe removes, 1
+  past llvmpipe's output components), `alpha_to_one` (G10's CTS), and 2 programs llvmpipe refuses
+  (`GL_ARB_bindless_texture`, `GL_ARB_compute_variable_group_size`).
+
 The choice (final; 15.3): the route is B (`nir-naga`, `src/direct.rs`). It follows from the
 counts, which are far apart on every source; the times agree with them.
+- Run 14's corpus run (above): B matches 11,732 programs, A 1,013; on the 1,012 both match, at
+  180 at once on a busy machine, A median 519 us, B median 448 us. The same order on every
+  source as run 13's, below.
 - Over the whole corpus (run 13's corpus run, 18,222 items, both routes, the comparison):
   B matches 11,651 programs, A 1,000. By source: SPIR-V samples B 783 and A 738; the Vulkan CTS's alpha_to_one vertex program 1 each; Godot's
   RenderingDevice SPIR-V B 391 and A 237; piglit B 1,350 and A 3; bgfx B 318 and A 21; dEQP
@@ -615,25 +703,19 @@ counts, which are far apart on every source; the times agree with them.
   ours) and 0.6 at the end, other tracks' and this track's runs beside it on other cores, 16,673 s
   wall): B converts 11,811 of 12,234 and matches 11,626; A converts 1,154 and matches 993. On the
   991 programs both match: A median 252 us, mean 404 us; B median 193 us, mean 250 us. B is ahead
-  on the count by 10,633 programs and 24 % faster at the median. Its counts are run 11's corpus
+  on the count by 10,633 programs and 23 % faster at the median (193 us against 252 us). Its counts are run 11's corpus
   run's exactly (run 12's and 13's fixes came after).
 - Run 4's timed choice, on the SPIR-V corpus (ten cores, load 5.5 to 3.2, before the Zink patch):
   A 726, B 773 match; on the 725 both match, A median 219 us, B median 107 us.
 - Dolphin is not in the corpus (Next 4); the choice does not wait on it: B leads on every source.
 
-Harness limits left, each with why it is not closed (run 13; programs route B converts but the
+Harness limits left, each with why it is not closed (run 14; programs route B converts but the
 comparison does not hold, of 18,222 items):
-- A fragment input that is a block (1: `meshshader/meshshader.frag`, fed by a mesh shader, a stage
-  the common form lacks). The feeder is written from the program's inputs and writes no block;
-  splitting a block into its members' locations is the way to close it, left because its one
-  program can only be fed by a stage the corpus counts as absent.
-- A multisampled texture on OpenGL's side (1: dEQP `es32/android_extension_pack.test#extension_directive.oes_texture_storage_multisample_2d_array`)
-  and multisampled depth textures (0 programs): OpenGL also copies no texels into one, so it needs
-  a draw like lavapipe's on llvmpipe; left for its one program.
 - Fixed-function state values (2 piglit: `glsl-fs-normalmatrix`, `glsl-vs-ff-frag`, which read
   `gl_NormalMatrix` and its kin): their values are what st/mesa computes from OpenGL's matrices
-  (an inverse transpose), which is G9's state tracking; the bridge also names them with an empty
-  name (a fault to fix in G9, which reports them). Not compared until then.
+  (an inverse transpose), which is G9's state tracking. Not compared until then. Open fault of
+  this crate's bridge: these state values reach the comparison with an empty name (seen again in
+  run 14), though Mesa names a state parameter by its state string; not yet traced.
 - A uniform llvmpipe's linker removes and the route's program reads (2 dEQP: `linkage.test#varying_7`,
   `varying.rules.vertex_use_fragment_use`, `u_false`): OpenGL has no value for it, and inventing one
   would compare nothing. Left not compared.
@@ -646,9 +728,8 @@ Next (after G8's check):
 1. G9, the OpenGL driver (15.8). It hands the route NIR made with the bridge's compiler options and
    st/mesa's variants; its own corpus run holds those variants, the fixed-function state values
    above among them.
-2. When the shaders track has its entry point: the 15.4 rewrites on route B's output; Godot's
-   RenderingDevice programs then give corpus programs for arrays of textures (21) and formatless
-   storage (2).
+2. When the shaders crate's `rewrite` validates with `Capabilities::IMMEDIATES`: rerun the
+   corpus; 20 Godot RD programs with arrays of textures should then reach the comparison.
 3. When `HelperValue::BufferRange` is decided: robustBufferAccess's steps 1 and 3; add
    `dEQP-VK.robustness.buffer_access` to `corpus/cts-programs`' groups and lower those programs
    before both runs.
@@ -680,7 +761,8 @@ Next (after G8's check):
   aborting on GLSL in route A, each abort a core dump the machine's `apport` writes).
   `WC_NIR_SHADERS=<n>` takes a seeded sample: for the independent check,
   `WC_NIR_TIMING_CORES=0-9 WC_NIR_SHADERS=2000 crates/wcontainers-nir/corpus/choose
-  $CARGO_TARGET_DIR/nir-choice-check.jsonl` (run 13: 1691 s; B 1,285 match, A 119). A reference
+  $CARGO_TARGET_DIR/nir-choice-check.jsonl` (run 13: 1691 s; B 1,285 match, A 119; run 14's code
+  adds B matches among the atomic counter and rewrite programs, and leaves A's as they were). A reference
   that does not end on the seeded inputs is held on up to four seeds, two minutes each, so a
   sample with such programs takes longer.
 - The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
@@ -762,6 +844,10 @@ Next (after G8's check):
 
 ## Measurements
 
+- The whole corpus run (run 14, 18,222 items, 180 children, x86-64 machine, load 11.4 at the
+  start and 3.3 at the end): 731 s. Time per shader to the validated common form at 180 at once
+  on the 1,012 shaders both routes match: A median 519 us, mean 790 us; B median 448 us, mean
+  564 us.
 - The whole corpus run (run 13, 18,222 items, 172 children on cores 10-95 and 106-191, x86-64
   machine, load 14.3 at the start and 3.7 at the end, the timed choice on cores 0-9 beside it):
   732 s, up from 251 s: the references that do not end are now run on up to four seeds, two
@@ -1016,6 +1102,13 @@ Next (after G8's check):
   before; the seed used is in the results.
 - Dolphin is left out of G8's corpus (run 13): no permissively licensed boot image was found, as
   the orchestrator's ruling of 2026-11-19 night requires; the choice is final without it.
+- `direct::rewrite` takes only 15.4's part of a variant key (storage formats, texels through a
+  buffer) and refuses the rest by name (run 14): the other rewrites read the program's stage
+  values, which the driver's reflection holds (G9, G10); it gives the bindings, not a whole
+  `Reflection`, so nothing reflected is left empty and passed on as if filled.
+- A storage image without a format is declared `r32float`, `r32sint` or `r32uint` by its texel's
+  kind until the variant names the bound view's format (run 14): the shaders crate's contract
+  asks for any format of the texel's kind.
 
 ## Interface changes
 
@@ -1029,9 +1122,14 @@ None.
 - Shaders track (a finding): naga's SPIR-V reader fails on HLSL's row-major array of matrices once
   it is decorated (`shadowmappingcascade/scene.frag`, "invalid access As" on candidate A); not needed
   by route B.
-- Shaders track: a public entry point applying `variant::apply` and its kin to a naga module already in
-  the common form (stage, reflection, variant key), so the NIR route takes the Direct3D rewrites from
-  one place (15.4) instead of a copy.
+- Shaders track (run 14): `wcontainers_shaders::rewrite` validates without
+  `Capabilities::IMMEDIATES`, so a module with push constants is refused ("rewrite: invalid: ...
+  IMMEDIATES is not supported"): 20 of Godot's RenderingDevice programs with arrays of textures
+  (`gi.glsl` and kin). The same as the `capabilities` request below, for `rewrite`'s validation.
+- Shaders track (run 14, information): `rewrite` recomputes `sampled_pairs` only when it splits
+  an array; a module with none keeps the pairs given. The NIR route gives none (its driver makes
+  the reflection), so a public `sampled_pairs` of a module, or `rewrite` always recomputing them,
+  would let G9 take them from one place.
 - Interface track: `pub const fn stage_set(stage: ShaderStage) -> u32` in `reflect.rs` beside
   `helper_binding` (vertex and compute 0, fragment 1, plan 6.4). The shaders crate writes the rule as
   a literal in `lower.rs`; the NIR route defines `wcontainers_nir::bind::stage_set` until the
