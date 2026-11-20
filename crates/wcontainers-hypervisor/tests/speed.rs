@@ -2,8 +2,8 @@
 //! ARM64 Linux program, run plainly on the host and in the kernel inside the machine, in alternating pairs, every run
 //! its own process, measured by the cycles and instructions of the whole process (`proc_pid_rusage`). The plain run
 //! maps the program's segments at their own addresses and answers its system calls (write and exit) at a
-//! breakpoint put where each `svc` was, so both sides run the workloads' code as the same bytes at the same
-//! addresses. The bar: the geometric mean over the eight workloads of each one's median cycles ratio, with a 95%
+//! breakpoint put where each `svc` was in a copy of the image written before any run, so both sides run the
+//! workloads' code as the same bytes at the same addresses and the plain run does nothing a plain process does not. The bar: the geometric mean over the eight workloads of each one's median cycles ratio, with a 95%
 //! interval from a seeded bootstrap over the pairs, against E's cost plus ten points; when the interval holds the
 //! bar, the runs go on with twice the pairs, up to sixty. The system-call part: a program making a million getppid
 //! calls against the same program with a nop in each call's place, both in the kernel inside, in alternating pairs,
@@ -257,7 +257,15 @@ mod macos {
     pub fn main() {
         be_signed();
         match std::env::var(RUN_VARIABLE).as_deref() {
-            Ok(PLAIN) => run_plain(&std::fs::read(image_path()).expect("the program")),
+            Ok(PLAIN) => {
+                let path = image_path();
+                assert_eq!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some(PLAIN),
+                    "the plain run takes the copy plain_image wrote"
+                );
+                run_plain(&std::fs::read(path).expect("the program"))
+            }
             Ok(NATIVE) => run_native(),
             Ok(UNTRANSLATED) => {
                 run_untranslated(&std::fs::read(image_path()).expect("the program"))
@@ -276,8 +284,8 @@ mod macos {
     /// The program's output, kept by the plain run's system calls.
     static OUTPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-    /// Runs the program at EL0 on the host: its segments at their addresses with their permissions, each `svc` a
-    /// breakpoint whose handler answers the call.
+    /// Runs [`plain_image`]'s copy of the program at EL0 on the host: its segments at their addresses with their
+    /// permissions, each breakpoint's handler answering the call whose `svc` it stands for.
     fn run_plain(image: &[u8]) -> ! {
         let elf = ElfFile64::<Endianness>::parse(image).expect("an ELF image");
         let endian = elf.endian();
@@ -307,9 +315,6 @@ mod macos {
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), address as *mut u8, bytes.len())
             };
             let flags = header.p_flags(endian);
-            if flags & PF_X != 0 {
-                break_at_system_calls(address, bytes.len());
-            }
             let protection = [
                 (PF_R, libc::PROT_READ),
                 (PF_W, libc::PROT_WRITE),
@@ -361,22 +366,37 @@ mod macos {
         }
     }
 
-    /// Puts a breakpoint over every `svc` among the code words at `address`.
-    fn break_at_system_calls(address: u64, length: usize) {
-        assert!(
-            address.is_multiple_of(size_of::<u32>() as u64),
-            "code is word aligned"
-        );
-        let breakpoint = encode::exception(form::BRK, 0);
-        // SAFETY: the words are the segment's, mapped writable.
-        let words = unsafe {
-            std::slice::from_raw_parts_mut(address as *mut u32, length / size_of::<u32>())
+    /// Writes beside `image` the plain run's copy of it, a breakpoint over every `svc` of its code, so that the
+    /// plain run's own process decodes nothing.
+    fn plain_image(image: &Path) -> PathBuf {
+        let mut bytes = std::fs::read(image).expect("the program");
+        let code: Vec<std::ops::Range<usize>> = {
+            let elf = ElfFile64::<Endianness>::parse(&*bytes).expect("an ELF image");
+            let endian = elf.endian();
+            elf.elf_program_headers()
+                .iter()
+                .filter(|h| h.p_type(endian) == PT_LOAD && h.p_flags(endian) & PF_X != 0)
+                .map(|h| {
+                    let start = h.p_offset(endian) as usize;
+                    start..start + h.p_filesz(endian) as usize
+                })
+                .collect()
         };
-        for word in words {
-            if matches!(decode(*word), Instruction::Syscall) {
-                *word = breakpoint;
+        let breakpoint = encode::exception(form::BRK, 0).to_le_bytes();
+        for range in code {
+            assert!(
+                range.start.is_multiple_of(size_of::<u32>()),
+                "code is word aligned"
+            );
+            for word in bytes[range].as_chunks_mut().0 {
+                if matches!(decode(u32::from_le_bytes(*word)), Instruction::Syscall) {
+                    *word = breakpoint;
+                }
             }
         }
+        let path = image.with_extension(PLAIN);
+        std::fs::write(&path, bytes).expect("writing the plain run's image");
+        path
     }
 
     /// Answers the system call whose `svc` the breakpoint stands for.
@@ -605,6 +625,7 @@ mod macos {
     struct Program {
         name: String,
         image: PathBuf,
+        plain_image: PathBuf,
         in_bar: bool,
         pairs: Vec<Pair>,
         expected: Option<(i32, String)>,
@@ -624,9 +645,16 @@ mod macos {
     /// `raw`. The untranslated run goes last in a pair that starts plain and first in one that starts native.
     fn run_pairs(program: &mut Program, wanted: u64, insides: &Insides, raw: &mut std::fs::File) {
         let sides = [PLAIN, NATIVE, UNTRANSLATED];
+        let image = |side: &str| {
+            if side == PLAIN {
+                &program.plain_image
+            } else {
+                &program.image
+            }
+        };
         if program.pairs.is_empty() {
             for side in sides {
-                run(side, &program.image, insides.of(side));
+                run(side, image(side), insides.of(side));
             }
         }
         while (program.pairs.len() as u64) < wanted {
@@ -639,7 +667,7 @@ mod macos {
             let load = load_average();
             let mut runs: Vec<(&str, Run)> = order
                 .into_iter()
-                .map(|side| (side, run(side, &program.image, insides.of(side))))
+                .map(|side| (side, run(side, image(side), insides.of(side))))
                 .collect();
             let mut take = |side: &str| {
                 let at = runs
@@ -820,12 +848,17 @@ mod macos {
                 false,
             )))
             .filter(|(name, ..)| wanted_program(name))
-            .map(|(name, source, defines, in_bar)| Program {
-                name: name.to_owned(),
-                image: freestanding(PROGRAMS_DIRECTORY, name, source, &defines, Some(IMAGE_BASE)),
-                in_bar,
-                pairs: Vec::new(),
-                expected: None,
+            .map(|(name, source, defines, in_bar)| {
+                let image =
+                    freestanding(PROGRAMS_DIRECTORY, name, source, &defines, Some(IMAGE_BASE));
+                Program {
+                    name: name.to_owned(),
+                    plain_image: plain_image(&image),
+                    image,
+                    in_bar,
+                    pairs: Vec::new(),
+                    expected: None,
+                }
             })
             .collect();
         let raw_path =
