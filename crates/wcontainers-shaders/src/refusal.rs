@@ -93,6 +93,8 @@ pub const RENDER_TARGET_ARRAY_INDEX: &str = "RenderTargetArrayIndex";
 pub const RESOURCE_ARRAY: &str = "ResourceArray";
 pub const ROOT_SIGNATURE_LAYOUT: &str = "RootSignatureLayout";
 pub const SAMPLED_THROUGH_ARGUMENT: &str = "SampledThroughArgument";
+/// A texture sampled or gathered through a view of another kind than the program declares.
+pub const SAMPLED_VIEW_KIND: &str = "SampledViewKind";
 pub const SAMPLER_ARGUMENT: &str = "SamplerArgument";
 pub const SAMPLE_CLAMP: &str = "SampleClamp";
 pub const SAMPLE_COMPARE_BIAS: &str = "SampleCompareBias";
