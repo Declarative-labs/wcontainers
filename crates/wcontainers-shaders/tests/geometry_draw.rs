@@ -1004,20 +1004,22 @@ fn replayed(case: &Case) -> bool {
 }
 
 /// `case` through the replay route (`GeometryReplay`), as a front on a back end without compute
-/// draws it: the vertex shader's inputs as drawn, its draw bases from its helper block.
+/// draws it: the vertex shader's inputs as drawn, its draw bases from its helper block. With
+/// `stream`, what stream output wrote and the filled block; without, the picture.
 fn ours_replayed<B: Backend>(
     b: &mut B,
     case: &Case,
     vertices: &[f32],
     indices: &[u8],
-) -> Result<Vec<u8>, StageError> {
+    stream: Option<(&StreamOutput, &Bound)>,
+) -> Result<Made, StageError> {
     let vs_key = VariantKey {
         draw_base: DrawBaseSource::Helpers,
         ..Default::default()
     };
     let (vs, gs, ps) = linked(case, vs_key, VariantFlags::GEOMETRY_REPLAY);
     let gs = gs.expect("a geometry shader");
-    let mut replay = GeometryReplay::new(b, &vs, &gs).unwrap();
+    let mut replay = GeometryReplay::new(b, &vs, &gs, stream.map(|s| s.0))?;
     let vertex_buffer = buffer(b, bytes_of(vertices), BufferUsage::VERTEX);
     let mut layout = VertexLayoutDesc {
         streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
@@ -1082,6 +1084,23 @@ fn ours_replayed<B: Backend>(
     assert!(gs.reflection.helpers.is_empty());
     let geometry_set = b.create_binding_set(&geometry_entries).unwrap();
     let index_buffer = case.indexed.map(|_| buffer(b, indices, BufferUsage::INDEX));
+    // Stream output: buffers filled with a pattern, so bytes not written compare too.
+    let usage = BufferUsage::COPY_SRC | BufferUsage::COPY_DST;
+    let bound = stream.map_or(&TWO_BUFFERS, |s| s.1);
+    let targets: Vec<_> = bound
+        .sizes
+        .iter()
+        .map(|size| size.map(|size| (buffer(b, &vec![0xcd; size as usize], usage), size)))
+        .collect();
+    let mut start = [0u32; STREAM_FILLED_WORDS];
+    start[..STREAM_BUFFERS].copy_from_slice(&bound.start);
+    let start: Vec<u8> = start.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let filled = buffer(b, &start, usage);
+    let whole = |buffer, size| BufferRange {
+        buffer,
+        offset: 0,
+        size,
+    };
     let range = match case.indexed {
         Some(base_vertex) => DrawRange::Indexed {
             first: case.first,
@@ -1116,12 +1135,44 @@ fn ours_replayed<B: Backend>(
                 geometry_sets: [Some(&geometry_set), None, None, None],
                 topology: case.topology,
                 range,
+                stream_output: stream.map(|_| StreamTargets {
+                    buffers: std::array::from_fn(|i| {
+                        targets[i].as_ref().map(|(t, size)| whole(t, *size))
+                    }),
+                    filled: whole(&filled, start.len() as u64),
+                }),
             },
         )?
         .expect("primitives");
+    if stream.is_some() {
+        let mut read = |buffer, size: u64| {
+            let mut out = vec![0; size as usize];
+            b.read_back_now(
+                &ReadSource::Buffer {
+                    buffer,
+                    offset: 0,
+                    size,
+                },
+                &mut out,
+            )
+            .unwrap();
+            out
+        };
+        let streamed = targets
+            .iter()
+            .flatten()
+            .map(|(t, size)| read(t, *size))
+            .collect();
+        let words = read(&filled, start.len() as u64)
+            .chunks(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect();
+        replay.destroy(b);
+        return Ok(Made::Streamed(streamed, words));
+    }
     let out = picture(b, replay.passthrough(), &replay.vertex_layout(), &ps, &last);
     replay.destroy(b);
-    Ok(out)
+    Ok(Made::Picture(out))
 }
 
 /// Real Direct3D 11's stream output of `case` (`gs` empty: from the vertex shader) under `so` into
@@ -1483,33 +1534,110 @@ fn stream_output_matches_direct3d() {
                 unreachable!()
             };
             compared += 1;
-            let apart: Vec<usize> = reference
-                .iter()
-                .zip(&streamed)
-                .map(|(a, b)| a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count())
-                .collect();
-            let counts = [
-                u64::from(words[STREAM_BUFFERS]),
-                u64::from(words[STREAM_BUFFERS + 1]),
-            ];
-            eprintln!(
-                "{name}: direct3d wrote {} of {} primitives, ours {} of {}; words apart per buffer {apart:?}",
-                statistics[0], statistics[1], counts[0], counts[1]
-            );
-            for (b, (a, o)) in reference.iter().zip(&streamed).enumerate() {
-                for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
-                    if x != y {
-                        let x = u32::from_le_bytes(x.try_into().unwrap());
-                        let y = u32::from_le_bytes(y.try_into().unwrap());
-                        eprintln!(
-                            "  buffer {b} word {w}: direct3d {x:#010x} ({}), ours {y:#010x} ({})",
-                            f32::from_bits(x),
-                            f32::from_bits(y)
-                        );
-                    }
-                }
+            if !streamed_alike(&name, &reference, statistics, &streamed, &words) {
+                failures.push(name);
             }
-            if apart.iter().any(|&n| n > 0) || counts != statistics || statistics[0] == 0 {
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Whether ours wrote what Direct3D wrote (`reference`, its statistics written and made), every word
+/// of every buffer and both counts; prints the counts and each word apart.
+fn streamed_alike(
+    name: &str,
+    reference: &[Vec<u8>],
+    statistics: [u64; 2],
+    streamed: &[Vec<u8>],
+    words: &[u32],
+) -> bool {
+    let apart: Vec<usize> = reference
+        .iter()
+        .zip(streamed)
+        .map(|(a, b)| a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count())
+        .collect();
+    let counts = [
+        u64::from(words[STREAM_BUFFERS]),
+        u64::from(words[STREAM_BUFFERS + 1]),
+    ];
+    eprintln!(
+        "{name}: direct3d wrote {} of {} primitives, ours {} of {}; words apart per buffer {apart:?}",
+        statistics[0], statistics[1], counts[0], counts[1]
+    );
+    for (b, (a, o)) in reference.iter().zip(streamed).enumerate() {
+        for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
+            if x != y {
+                let x = u32::from_le_bytes(x.try_into().unwrap());
+                let y = u32::from_le_bytes(y.try_into().unwrap());
+                eprintln!(
+                    "  buffer {b} word {w}: direct3d {x:#010x} ({}), ours {y:#010x} ({})",
+                    f32::from_bits(x),
+                    f32::from_bits(y)
+                );
+            }
+        }
+    }
+    apart.iter().all(|&n| n == 0) && counts == statistics && statistics[0] != 0
+}
+
+/// Stream output after a geometry shader through the replay route on the WebGL 2 back end (ANGLE
+/// on the same GPU), against real Direct3D 11: the geometry cases of
+/// [`stream_output_matches_direct3d`]; those the route refuses must be refused by name.
+#[test]
+fn stream_output_after_replay_matches_direct3d() {
+    let mut backend = webgl();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in STREAMED.iter().filter(|c| !c.gs.is_empty()) {
+            let indices = indices(seed, case);
+            let name = format!(
+                "seed {seed} {} {:?} {} from {} x{}{}",
+                case.gs,
+                case.topology,
+                case.count,
+                case.first,
+                case.instances,
+                case.indexed
+                    .map(|b| format!(" indexed, base {b}"))
+                    .unwrap_or_default()
+            );
+            let so = declaration(case.gs);
+            let made = ours_replayed(
+                &mut backend,
+                case,
+                &vertices,
+                &indices,
+                Some((&so, &TWO_BUFFERS)),
+            );
+            if !replayed(case) {
+                match made {
+                    Err(StageError::Unsupported(reason)) => eprintln!("{name}: refused, {reason}"),
+                    _ => failures.push(format!("{name}: not refused by name")),
+                }
+                continue;
+            }
+            let Made::Streamed(streamed, words) = made.unwrap() else {
+                unreachable!()
+            };
+            let (reference, statistics) =
+                direct3d_streamed(&gpu, case, &vertices, &indices, (&so, &TWO_BUFFERS), 1);
+            compared += 1;
+            if !streamed_alike(&name, &reference, statistics[0], &streamed, &words) {
                 failures.push(name);
             }
         }
@@ -1833,7 +1961,7 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                     .unwrap_or_default()
             );
             let indices = indices(seed, case);
-            let made = ours_replayed(&mut backend, case, &vertices, &indices);
+            let made = ours_replayed(&mut backend, case, &vertices, &indices, None);
             if !replayed(case) {
                 match made {
                     Err(StageError::Unsupported(reason)) => eprintln!("{name}: refused, {reason}"),
@@ -1846,7 +1974,9 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                 .chunks(4)
                 .filter(|t| *t != &reference[..4])
                 .count();
-            let picture = made.unwrap();
+            let Made::Picture(picture) = made.unwrap() else {
+                unreachable!()
+            };
             let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
             // As on the compute route: clipped in the pixel program, attributes round apart by a step
             // or two.

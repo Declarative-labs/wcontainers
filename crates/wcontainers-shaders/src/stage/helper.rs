@@ -359,7 +359,8 @@ const NOT_A_HULL_SHADER: &str = "not a hull shader";
 pub(super) const NOT_A_GEOMETRY_SHADER: &str = "not a geometry shader";
 const STREAM_OUTPUT_ENTRIES: &str = "StreamOutputEntries";
 /// A filled sizes block without the words of every stream the shader writes.
-const STREAM_FILLED_SIZE: &str = "the filled sizes block shorter than the shader's streams";
+pub(super) const STREAM_FILLED_SIZE: &str =
+    "the filled sizes block shorter than the shader's streams";
 const STREAM_OUTPUT_SYSTEM_VALUE: &str = "StreamOutputSystemValue";
 /// Stream output of a vertex stage drawn with adjacency.
 const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
@@ -373,11 +374,44 @@ const CULL_DISTANCE_STREAM_LOCATIONS: &str = "CullDistanceStreamLocations";
 /// The stream output program and its declaration's elements.
 struct Stream<B: Backend> {
     program: B::Program,
-    /// Each element's stream, and its first words in the program's table ([`StreamEntry`]).
     entries: Vec<(u8, [u32; ENTRY_WORDS])>,
     strides: [u32; STREAM_BUFFERS],
-    /// The stream each buffer takes (stream 0 for a buffer no element names).
     buffer_streams: [u8; STREAM_BUFFERS],
+}
+
+/// A stream output declaration's elements located in the records of the stage whose outputs are
+/// streamed.
+pub(super) struct StreamDeclaration {
+    /// Each element's stream, and its first words in the program's table ([`StreamEntry`]).
+    pub(super) entries: Vec<(u8, [u32; ENTRY_WORDS])>,
+    /// Each buffer's bytes per vertex.
+    pub(super) strides: [u32; STREAM_BUFFERS],
+    /// The stream each buffer takes (stream 0 for a buffer no element names).
+    pub(super) buffer_streams: [u8; STREAM_BUFFERS],
+}
+
+/// An element of a [`StreamDeclaration`]: its buffer, first record word, word count and byte
+/// offset in the buffer's vertex.
+pub(super) struct StreamElement {
+    pub(super) buffer: usize,
+    pub(super) word: u32,
+    pub(super) count: u32,
+    pub(super) offset: u32,
+}
+
+impl StreamDeclaration {
+    /// The elements of stream `stream`.
+    pub(super) fn elements(&self, stream: u8) -> impl Iterator<Item = StreamElement> + '_ {
+        let field = |packed: u32, shift: u32| (packed >> shift) & u32::from(u8::MAX);
+        self.entries.iter().filter(move |(s, _)| *s == stream).map(
+            move |(_, [packed, offset, slot])| StreamElement {
+                buffer: field(*packed, 0) as usize,
+                word: slot * crate::build::VEC4 + field(*packed, PACKED_FIRST_SHIFT),
+                count: field(*packed, PACKED_COUNT_SHIFT),
+                offset: *offset,
+            },
+        )
+    }
 }
 
 /// The stream output program's values (`stream_out.wgsl`'s `Values`), read through its layout.
@@ -1811,6 +1845,23 @@ fn stream_parts<B: Backend>(
     outputs: &[StageValue],
     streams: u32,
 ) -> Result<Stream<B>, StageError> {
+    let declared = stream_declaration(so, outputs, streams)?;
+    let shader = backend.create_shader(&super::stream_program()?)?;
+    Ok(Stream {
+        program: backend.create_program(&Program::Compute(&shader))?,
+        entries: declared.entries,
+        strides: declared.strides,
+        buffer_streams: declared.buffer_streams,
+    })
+}
+
+/// `so`'s elements located in the records of the stage whose `outputs` are streamed, `streams` the
+/// streams it writes.
+pub(super) fn stream_declaration(
+    so: &StreamOutput,
+    outputs: &[StageValue],
+    streams: u32,
+) -> Result<StreamDeclaration, StageError> {
     let locations = super::locations(outputs);
     let mut ends = [0u32; STREAM_BUFFERS];
     let mut entries = Vec::new();
@@ -1866,9 +1917,7 @@ fn stream_parts<B: Backend>(
             return Err(StageError::Declaration);
         }
     }
-    let shader = backend.create_shader(&super::stream_program()?)?;
-    Ok(Stream {
-        program: backend.create_program(&Program::Compute(&shader))?,
+    Ok(StreamDeclaration {
         entries,
         strides,
         buffer_streams: buffer_streams.map(|s| s.unwrap_or(0)),

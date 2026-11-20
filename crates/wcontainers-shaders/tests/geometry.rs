@@ -134,7 +134,8 @@ fn geometry_shaders_have_a_replay_form() {
             "{name}"
         );
         assert_eq!(wgsl(&c.modules[1]), wgsl(&compute.modules[1]), "{name}");
-        // A slot per record slot the pass-through reads, then the position.
+        // A slot per record slot the pass-through reads, whether the slot's primitive is whole, then
+        // the position.
         let passthrough_slots = c.modules[1].module.entry_points[0].function.arguments.len();
         let result = c.modules[0].module.entry_points[0]
             .function
@@ -145,7 +146,7 @@ fn geometry_shaders_have_a_replay_form() {
         else {
             panic!("{name}: the replay form's outputs");
         };
-        assert_eq!(members.len(), passthrough_slots + 1, "{name}");
+        assert_eq!(members.len(), passthrough_slots + 2, "{name}");
         let settings = wcontainers_gpu_webgl::glsl::GlslSettings {
             flip_y: false,
             noperspective: true,
