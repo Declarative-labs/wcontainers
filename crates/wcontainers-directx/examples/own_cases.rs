@@ -12,7 +12,8 @@
 //! `msaa_lines` (lines under `MultisampleEnable`, each pixel's covered samples counted),
 //! `aliased_msaa_lines` (the same lines without it),
 //! `biased_lines` (a constant depth bias on a line and points), `staged_bias` (the same bias on
-//! what geometry and tessellation stages rasterise), `aa_lines` (alpha-antialiased lines
+//! what geometry and tessellation stages rasterise), `unshaded` (depth-only draws without a
+//! pixel shader, depth clamped and clipped), `aa_lines` (alpha-antialiased lines
 //! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip) and
 //! `format_support` (both words of every format's support). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
@@ -1275,6 +1276,83 @@ fn main() -> windows::core::Result<()> {
                 }
                 print(&format!("{name} depth"), &depth, texel);
             }
+        }
+        "unshaded" => {
+            // Depth-only draws without a pixel shader or a target, with depth clipping off (each
+            // depth clamped to its viewport's range) and on, into 32-bit float depth cleared to
+            // 0.5; each draw covers a quarter of the depth buffer through its own viewport.
+            let full = vs(FULL);
+            let depth = make(
+                &Tex {
+                    w: 16,
+                    h: 4,
+                    format: DXGI_FORMAT_R32_TYPELESS,
+                    samples: 1,
+                    bind: D3D11_BIND_DEPTH_STENCIL,
+                },
+                None,
+            )?;
+            let mut dsv = None;
+            let desc = D3D11_DEPTH_STENCIL_VIEW_DESC {
+                Format: DXGI_FORMAT_D32_FLOAT,
+                ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
+                ..Default::default()
+            };
+            unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
+            let mut always = None;
+            let dss = D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: true.into(),
+                DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: D3D11_COMPARISON_ALWAYS,
+                ..Default::default()
+            };
+            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            let raster = |clip: bool| {
+                let desc = D3D11_RASTERIZER_DESC {
+                    FillMode: D3D11_FILL_SOLID,
+                    CullMode: D3D11_CULL_NONE,
+                    DepthClipEnable: clip.into(),
+                    ..Default::default()
+                };
+                let mut out = None;
+                unsafe { device.CreateRasterizerState(&desc, Some(&mut out)).unwrap() };
+                out
+            };
+            let (clamped, clipped) = (raster(false), raster(true));
+            unsafe {
+                context.ClearDepthStencilView(dsv.as_ref().unwrap(), D3D11_CLEAR_DEPTH.0, 0.5, 0);
+                context.OMSetRenderTargets(None, dsv.as_ref());
+                context.OMSetDepthStencilState(always.as_ref(), 0);
+                context.VSSetShader(full.as_ref(), None);
+                context.PSSetShader(None, None);
+            }
+            for (x, y, z, state) in [
+                (0.0, 0.0, 1.5, &clamped),
+                (8.0, 0.0, -0.5, &clamped),
+                (0.0, 2.0, 1.5, &clipped),
+                (8.0, 2.0, 0.25, &clamped),
+            ] {
+                let c = constants([z, 0.0, 0.0, 0.0]);
+                unsafe {
+                    context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                        TopLeftX: x,
+                        TopLeftY: y,
+                        Width: 8.0,
+                        Height: 2.0,
+                        MinDepth: 0.25,
+                        MaxDepth: 0.75,
+                    }]));
+                    context.RSSetState(state.as_ref());
+                    context.VSSetConstantBuffers(0, Some(std::slice::from_ref(&c)));
+                    context.Draw(3, 0);
+                }
+            }
+            unsafe {
+                context.RSSetState(None);
+                context.OMSetDepthStencilState(None, 0);
+                context.OMSetRenderTargets(None, None);
+            }
+            print("unshaded depth", &depth, 4);
         }
         "staged_bias" => {
             // A constant depth bias on what geometry and tessellation stages rasterise: triangles

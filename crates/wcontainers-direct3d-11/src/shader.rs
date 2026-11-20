@@ -856,6 +856,14 @@ pub fn convert_variant(
     answer(raw(bytecode, expected, key)?, 1)
 }
 
+/// The pixel program of a draw without a pixel shader whose variant `key` needs one.
+pub fn pixel_program_for_variant(key: &VariantKey) -> Result<Converted> {
+    answer(
+        wcontainers_shaders::builtin::pixel_program_for_variant(key),
+        1,
+    )
+}
+
 /// Converts a geometry shader as `key` asks: its compute form, which the stage helper runs, and the
 /// vertex program drawing what it made.
 pub fn convert_geometry(bytecode: &[u8], key: &VariantKey) -> Result<Converted> {
