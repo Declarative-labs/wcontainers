@@ -62,7 +62,7 @@ const TEXEL_KIND: &str = "TEXEL_KIND";
 const FILL_VERTEX: &str = "cover";
 const FILL_FRAGMENT: &str = "fill";
 /// The vertices of the covering triangle.
-const FILL_VERTICES: u32 = 3;
+pub const FILL_VERTICES: u32 = 3;
 
 /// One array element of a descriptor.
 #[derive(Clone, Debug)]

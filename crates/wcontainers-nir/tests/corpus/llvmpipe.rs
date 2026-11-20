@@ -4,7 +4,7 @@
 //! `glUniform*` and uniform and storage blocks bound by their index.
 
 use crate::interface::Kind;
-use crate::lavapipe::Image;
+use crate::lavapipe::{FILL_VERTICES, Image};
 use ash::vk;
 use glow::HasContext;
 use khronos_egl as egl;
@@ -326,7 +326,6 @@ void main() {
     gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
 }
 ";
-const FILL_VERTICES: i32 = 3;
 /// `glTexStorage3DMultisample`, which glow does not have.
 type TexStorage3DMultisample = unsafe extern "C" fn(u32, i32, u32, i32, i32, i32, u8);
 /// `glClientActiveTexture` and `glEnableClientState`.
@@ -1162,7 +1161,7 @@ void main() {{
                     image.extent.width,
                     image.extent.height,
                 );
-                gl.draw_arrays(glow::TRIANGLES, 0, FILL_VERTICES);
+                gl.draw_arrays(glow::TRIANGLES, 0, size(FILL_VERTICES)?);
             }
             gl.memory_barrier(glow::ALL_BARRIER_BITS);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);

@@ -3345,6 +3345,9 @@ impl Builder<'_> {
     }
 }
 
+/// Why [`rewrite`] failed where the shaders crate gave no module.
+const NO_MODULE: &str = "the shaders crate's rewrite gave no module";
+
 /// The shaders crate's rewrites of plan 15.4 on route B's module: arrays of textures, storage
 /// textures and samplers split into a binding an element, gathers at offsets known only at run
 /// time moved into their coordinates, and each storage texture whose slot `variant` names given
@@ -3395,6 +3398,6 @@ pub fn rewrite(
     let module = converted
         .modules
         .pop()
-        .ok_or_else(|| ConvertError::Rewrite("no module".into()))?;
+        .ok_or_else(|| ConvertError::Rewrite(NO_MODULE.into()))?;
     Ok((module, converted.reflection.bindings))
 }
