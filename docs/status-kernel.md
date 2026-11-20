@@ -4322,9 +4322,11 @@ K6c, after the twelfth run (replaces the tenth run's list below):
    threshold, still running at the run's end; `arm-run --fetch kernel-b /work/jobs/kernel-b/<id>/log`
    if the follower stopped) and fix any failure first. Delete the ARM machine's
    /work/target/kernel-b afterwards (a second build folder made for that run).
-2. Rerun on the ARM machine at the final code, with `LTP_LIMIT=7200`, every row of
-   ltp/ours-20260930-a67cd731.tsv that is a timeout (dio30, fsx22, ADSP037, 038, 073, 074,
-   shmctl05 twice, keyctl01) and then the whole comparison once more at the final code (about 90
+2. The timeouts of ltp/ours-20260930-a67cd731.tsv (dio30, fsx22, ADSP037, 038, 073, 074,
+   shmctl05 twice) run at 7579e667 with `LTP_LIMIT=7200` on the ARM machine, job
+   kernel/20261120-002010-877064, results in target/ltp-k6c12/slow.tsv there (fetch with
+   `arm-run --fetch kernel target/ltp-k6c12 <scratch>/kernel/k6c12/`; if the machine was lost,
+   the job's command is in `arm-run --status kernel`). Then run the whole comparison once more at the final code (about 90
    minutes at 8 jobs), as the multiplier and the mapping search changed after a67cd731. ADSP0xx
    (aiodio_sparse) took 85 to 164 s on the repeatable clock and over 900 s on the machine's: find
    why before calling them slow.
