@@ -1,0 +1,26 @@
+# Answers a decision model gave about the names in this workspace. `cargo reviewable check` asks only
+# for names it has no answer for, and removes names the code no longer has. Commit this file.
+# To dispute a wrong answer, add `disputed = "why, in one line"` to its line. The owner may write
+# `corrected = "<one of the choices>"` instead, which stands in for the model's answer.
+
+[hook-form]
+question = "An event hook is named as given in the state. What form is the verb in the name?"
+
+[hook-form.choices]
+present_participle = "The verb is a present participle, such as starting or accessing."
+past_participle = "The verb is a past participle, such as ended or written."
+neither = "Neither: the name has no participle."
+
+[hook-form.answers]
+
+[verb-position]
+question = "A Rust method is named as given in the state. Where is the verb in the name?"
+
+[verb-position.choices]
+first_word = "The first word of the name is a verb."
+later_word = "The name contains a verb, but it is not the first word."
+no_verb = "The name contains no verb; it is a noun phrase."
+
+[verb-position.answers]
+has_a_name = { answer = "first_word", confidence = 0.9860928630142378, model = "perplexity/pplx-decider-v1.2-20261016" }
+name = { answer = "no_verb", confidence = 0.938830509132994, model = "perplexity/pplx-decider-v1.2-20261016" }
