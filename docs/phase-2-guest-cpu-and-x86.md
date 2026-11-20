@@ -473,13 +473,16 @@ the translator, the runners and the tests use them with it on. Each CPU crate de
 public functions take the guest as a type parameter:
 
 ```rust
-pub fn translate<G: Guest>(blob: &[u8], code: Range<u64>, starts: &[u64], look_ahead: LookAhead,
-    optimise: Optimise, host: G::Host, offer: G::Offer) -> Result<Translation, Error>;
+pub fn translate<G: Guest>(blob: &[u8], code: Range<u64>, link_address: Option<u64>, starts: &[u64],
+    look_ahead: LookAhead, optimise: Optimise, host: G::Host, offer: G::Offer)
+    -> Result<Translation, Error>;
 pub fn thread_module<G: Guest>() -> Vec<u8>;
 ```
 
-`translate_omitting` and `translate_in_modules` take the same type parameter and the same `host` and `offer`
-arguments. Every use is monomorphised; nothing of a guest is reached through `dyn`, so nothing is looked
+`translate_omitting` and `translate_in_modules` take the same type parameter and the same `link_address`,
+`host` and `offer` arguments. `link_address` (added at X6f) is where the blob's first byte is linked for a
+program linked at a fixed address (ELF `ET_EXEC`), `None` for code that may be loaded anywhere; it only adds
+entries (section 3.4, "Addresses the code builds") and is part of the cache key. Every use is monomorphised; nothing of a guest is reached through `dyn`, so nothing is looked
 up at run time. ARM64's small per-instruction queries are marked `#[inline]` so they inline across the
 crate boundary (release builds have no LTO), and the translator walks only the flag states a set holds, not
 every bit of the `u128`. Measured at X1 (old and new alternating, one thread, python and busybox at three
@@ -709,7 +712,9 @@ pub trait Guest: Personality {
     /// not change. x86 needs only `i`. RV64GC walks `before` back one instruction, since with 2- and
     /// 4-byte instructions the one before cannot be found by reading the blob backwards.
     fn built_address(at: u64, i: &Self::Instruction, blob: &[u8], code: Range<u64>,
-        before: impl Fn(u64) -> Option<(u64, Self::Instruction)>) -> Option<u64>;
+        before: impl Fn(u64) -> Option<(u64, Self::Instruction)>) -> Option<BuiltAddress>;
+    // BuiltAddress::Offset(blob offset), built relative to the instruction, or
+    // BuiltAddress::Absolute(address), written out in it (X6f).
     /// The targets of the jump through `reg` at blob offset `at`, made from a switch statement, as blob
     /// offsets, each once, in table order. The CPU gathers the instructions before the jump itself:
     /// `before(o)` is the function's instruction that falls through into offset `o` (with its offset, a
@@ -1131,15 +1136,24 @@ on the walk's path: the two differ when the add is a jump target the walk first 
 walk records each offset once), and reading the slot is what today's translator does, so the X1 output
 stays the same. It finds x86 `lea r, [rip + d]` alone and RISC-V `auipc` plus `addi` (2 or 4
 bytes apart) through `before`.
-- Known limit (found by the independent check of X6): x86 code built for a fixed address takes a function's
-  address as an absolute immediate (`mov edi, imm32`, as musl's `_start_c` passes `main`), and a translation
-  of blob offsets does not know the address the blob is linked at, so such a function is not an entry of
-  the translation made ahead of time; it is translated when reached, at bounded look-ahead. Following those
-  immediates needs that address as an input of the translation and of its cache key, a change to the
-  translator's interface that the owner should rule on. Until then x86's rare-path C programs are tested
-  built both ways, and only the position independent build (`lea` for every address in code) has `main` and
-  what it calls in the full translation. ARM64 builds every address in code relative to pc and does not
-  meet this. (Addresses held only in data, such as a C++ vtable, are found by neither CPU's walk.)
+- Absolute addresses (X6f, the owner's ruling on what the independent check of X6 found): x86 code built
+  for a fixed address takes a function's address as an absolute immediate (`mov edi, imm32`, as musl's
+  `_start_c` passes `main`). `built_address` returns `BuiltAddress::Offset` for an address built relative to
+  the instruction and `BuiltAddress::Absolute` for one written out in it: on x86 `mov` and `push` of a 32-
+  or 64-bit immediate, to a register or to memory. The translator turns an absolute one into a blob offset
+  only when it is given the program's link address (`translate`'s `link_address`, the address of the blob's
+  first byte, from the ELF of a program of type `ET_EXEC`), and the found offset is an entry like any other
+  built address ("built addresses" among `Translation::found`). The output still holds no absolute address
+  and runs wherever it is loaded; the link address only adds entries, so it is part of the cache key. A
+  constant that only looks like an address in the code gives an extra entry, which costs a cut function and
+  nothing else. ARM64 builds every address in code relative to pc and returns only offsets, so its output
+  does not change (checked byte for byte at X6f). The runtime passes no link address yet (the ELF's type does
+  not reach its translation); the test runners and the browser runner pass it for every fixed blob, and
+  x86's rare-path C programs, built both ways, have `main` in the full translation in both
+  (`main_is_in_the_full_translation_x86_64`). Still not found by either CPU's walk: addresses held only in
+  data, such as a C++ vtable or an entry of the global offset table (rustc's x86 start code and, as far as
+  seen, ARM64's position independent start code take `main` from it), and code reached at run time is
+  translated with no link address (bounded look-ahead follows no built address).
 
 Switches (T9, T10). `jump_table` gets the jump's offset, the blob and `before`, a way to walk the function's
 own instructions back from the jump. ARM64 reads its window backwards from the blob exactly as today (so its
@@ -1150,8 +1164,8 @@ guest computed is exact even when the guest changed its table in memory at run t
 through the lookup), and it needs no second kind of table. On x86 a table then has one entry per byte of the
 span its targets cover, so spans reach the 65,520-entry limit sooner; a table over the limit falls back to the
 lookup with the existing counter "jump through a register not recognised". Tables whose entries are absolute
-addresses (non-PIE x86 code: `jmp [T + rax*8]`) need the load address the translator never sees, so they also
-go through the lookup, counted the same way. How often either happens is measured on the x86 real binaries at
+addresses (non-PIE x86 code: `jmp [T + rax*8]`) would need the link address, which the translator has had
+since X6f but does not use for tables, so they also go through the lookup, counted the same way. How often either happens is measured on the x86 real binaries at
 X9; only if it is common is indexing by case number brought back for a decision.
 
 The lookup array (T11). One i32 slot per `ALIGN` bytes of guest code: ARM64 one per 4 bytes (as today), x86
@@ -2099,8 +2113,9 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   code and makes the stopped thread give up its WebAssembly frames and carry on from its registers;
   `written_by_another.c` spins in code on a page of its own until another
   thread writes the immediate it compares (on the reference a thread made by `clone`, here the runner at the
-  first stop on that page). Without giving up the frames the thread spins in the dropped piece for ever,
-  which the test was seen to do. Translating from any byte address: a start or an entry found whose
+  first stop on that page). Without giving up the frames the thread spins in the dropped piece for ever;
+  the test gives each run two minutes (`SPIN_TIME_LIMIT`, then a watchdog raises the stop flag and the next
+  stop fails the test), and with the frames kept by hand it fails so (X6f). Translating from any byte address: a start or an entry found whose
   instruction runs past the end of the code gets no piece at full and bounded look-ahead, as at none (it is
   translated from memory when reached); before X6 such an entry stopped the translator, found by x86's
   validity test from every byte address. The "Frames" rule, in both runners: when `load_code` locks a page
@@ -3147,6 +3162,13 @@ Measured throughout, recorded with machine and load: translation speed, output s
   section 7.3) must equal the translated side's. Pass bar: those tests pass at every
   look-ahead, in wasmtime and Chrome, with the native output (the trap-flag blobs with the reference's
   stop).
+- **X6f, the link address of a fixed-address program** (the owner's ruling on X6's limit): the translator
+  is given the program's link address from its ELF, follows absolute immediates through it (section 3.4,
+  "Addresses the code builds"), and the address is in the cache key; the runtime's call changes only as far
+  as it must to compile. Pass bar: the rare-path C programs built fixed and position independent both have
+  `main` in the full translation; they still match the reference at every look-ahead in wasmtime and
+  Chrome; ARM64's output is byte for byte the same; the benchmark set timed before and after as alternating
+  pairs.
 - **X7, x87 and MMX.** The x87 hook with `X87DoubleExtended`, precision control by rounding to odd,
   `fsqrt` by section 5.8's root, the
   transcendental instructions with `astro-float`, MMX registers, `fxsave` and `fxrstor`. Pass
@@ -3168,8 +3190,10 @@ Measured throughout, recorded with machine and load: translation speed, output s
   a SIGTRAP handler, faults and `int3` under TF, TF kept across `rt_sigreturn`) and `run10/rf.c` (RF in
   fault frames only) as programs whose output must equal the reference's (`run10/tf.out`, `run10/rf.out`
   apart from addresses); the CPU side's part of code written without
-  announcement for the kernel's writes and shared pages (section 5.7) with its three tests; the address
-  limit and its designed-answers test.
+  announcement for the kernel's writes and shared pages (section 5.7) with its three tests, and a test of
+  another thread writing code while this one is inside a system call (the test runners' `Paused::write`
+  takes only a stop pause today and refuses a write at a system call's); the address limit and its
+  designed-answers test.
 
 The long runs to the pass bars of section 1 are started by the orchestrator at the end of the track, each
 one command recorded in the status file.

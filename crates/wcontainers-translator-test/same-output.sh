@@ -39,6 +39,10 @@ if grep -q 'PROBE_ANSWERS' "$tree/crates/wcontainers-translator-test/src/guest/m
 else
   sed -e 's/G::PROBE_ANSWERS/[0i32, 1, 2, 3]/' crates/wcontainers-translator-test/tests/output.rs > "$output"
 fi
+# A commit from before the translator took a link address is given none: ARM64 never builds an absolute one.
+if ! grep -q 'link_address' "$tree/crates/wcontainers-translator/src/code.rs"; then
+  sed -e '/\.link_address,$/d' "$output" > "$output.adapted" && mv "$output.adapted" "$output"
+fi
 before=$dir/lists/${base:0:12}
 now=$dir/lists/now
 mkdir -p "$before" "$now"
