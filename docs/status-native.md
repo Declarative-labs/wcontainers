@@ -132,8 +132,10 @@ exit 0 each) the monitor's lib 7 tests, carry, forced interrupts 3443 over 8 fun
 probe (0 forms of 16 bytes or fewer differ, 44 larger as before), registers, and the inside's, the policy crate's and
 the literal check's tests (342 passed); on the rented ARM64 machine (n4r11/arm4.log) the translator with and without
 the native feature, guest-cpu and arm64 tests (19 passed) and their clippy, with and without default features, clean.
-Only the speed test's compute part fails, as in run 9 (not rerun: the benchmark set's code and memory mapping are
-unchanged by this run, measured by the alternating pairs above).
+Only the speed test's compute part fails, as in run 9. It was not rerun whole: this run's final build against run 9's in
+alternating pairs (n4r11/ab-final.log, 4 pairs, load 6 to 9, every run on performance cores but one of hash's) gives
+cycles fib 0.999, sieve 0.998, hash 1.007, sort 1.000, interpret 1.006, matrix 1.001, walk 1.003, search 1.004, calls
+1.015, every instruction count within 0.12%, so run 9's figures stand.
 
 What N4 still needs, in order:
 1. The compute part of the bar (+37.71% against +21.2%, run 9): calls, returns and jumps through a register and the
