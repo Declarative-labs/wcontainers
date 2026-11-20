@@ -10,14 +10,15 @@ use naga::{
     SampleLevel, Scalar, Span, Statement, StorageAccess, StructMember, Type, TypeInner, VectorSize,
 };
 use wcontainers_gpu::{
-    AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, HELPER_SET,
-    HelperSlot, HelperValue, LinkedValues, Reflection, ShaderStage, SlotKind, StageExtras,
-    VariantFlags, VariantKey, helper_binding,
+    AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, Format,
+    HELPER_SET, HelperSlot, HelperValue, LinkedValues, Reflection, ShaderStage, SlotKind,
+    StageExtras, VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::ConvertError;
 
 mod constants;
+mod decoded;
 mod early;
 mod filter;
 mod layers;
@@ -64,6 +65,7 @@ pub(crate) fn apply(
         || variant.mirror_once_in_shader != 0
         || variant.filter_in_shader != 0
         || variant.border_in_shader != 0
+        || !variant.decoded.is_empty()
     {
         samples(
             module,
@@ -74,7 +76,7 @@ pub(crate) fn apply(
             &mut clamps,
         )?;
     }
-    if variant.min_lod_clamped != 0 {
+    if variant.min_lod_clamped != 0 || !variant.decoded.is_empty() {
         loads(
             module,
             stage,
@@ -85,9 +87,10 @@ pub(crate) fn apply(
         )?;
     }
     if variant.flags.contains(VariantFlags::TEXTURE_INFO) {
-        texture_info(module, stage, reflection, &mut outlined)?;
+        texture_info(module, stage, &variant.decoded, reflection, &mut outlined)?;
     }
     outlined.finish(module);
+    decoded::retype(module, &variant.decoded, reflection)?;
     if variant.constants_as_texture != 0 {
         // Drops the pointers into the buffers' old variables, and the variables.
         naga::compact::compact(module, naga::compact::KeepUnused::No);
@@ -1881,7 +1884,7 @@ fn owners(module: &Module) -> Vec<(usize, &Function)> {
 }
 
 /// The type of each of `exprs` in `f`, added to the module's types.
-fn types_of(
+pub(crate) fn types_of(
     module: &mut Module,
     f: &Function,
     exprs: &[Handle<Expression>],
@@ -1972,9 +1975,10 @@ fn samples(
         biased: bool,
         clamped: Option<(u32, Handle<Type>)>,
         mirrored: bool,
-        /// Filtered in the program: by its texture (`filter_in_shader`) or its sampler
+        /// Filtered in the program: by its texture (`filter_in_shader`, `decoded`) or its sampler
         /// (`border_in_shader`).
         filtered: Option<bool>,
+        decoded: Option<Format>,
     }
     let mut sites = Vec::new();
     // Pairs sampled natively and pairs only filtered in the program, which leave the reflection.
@@ -2016,8 +2020,10 @@ fn samples(
                         ..
                     }
                 );
-            let by_texture = !compared_depth
-                && texture.is_some_and(|r| in_texture_set(variant.filter_in_shader, r));
+            let decoded = decoded::format_of(&variant.decoded, texture);
+            let by_texture = decoded.is_some()
+                || !compared_depth
+                    && texture.is_some_and(|r| in_texture_set(variant.filter_in_shader, r));
             let by_sampler = in_sampler_set(variant.border_in_shader);
             let filtered = (by_texture || by_sampler).then_some(by_texture);
             if let Some(r) = texture {
@@ -2038,6 +2044,7 @@ fn samples(
                     clamped,
                     mirrored,
                     filtered,
+                    decoded,
                 });
             }
         }
@@ -2083,6 +2090,7 @@ fn samples(
                     state,
                     bias: bias_at,
                     clamp,
+                    decoded: site.decoded,
                 },
             )?;
             continue;
@@ -2518,7 +2526,9 @@ fn min_lod_zero(
     )
 }
 
-/// Loads of textures in `min_lod_clamped` read zero where the clamp leaves their level out.
+/// Loads of textures in `min_lod_clamped` read zero where the clamp leaves their level out; loads of
+/// textures in `decoded` read the integer texel from the slot's variable, which [`decoded::retype`]
+/// then declares as integers, and decode it.
 fn loads(
     module: &mut Module,
     stage: ShaderStage,
@@ -2538,13 +2548,15 @@ fn loads(
             let Some(r) = slot_of(module, reflection, g, SlotKind::Texture) else {
                 continue;
             };
-            if r < 128 && variant.min_lod_clamped & (1 << r) != 0 {
-                sites.push((owner, h, r));
+            let clamped = r < u128::BITS && variant.min_lod_clamped & (1 << r) != 0;
+            let decoded = decoded::format_of(&variant.decoded, Some(r));
+            if clamped || decoded.is_some() {
+                sites.push((owner, h, r, g, clamped, decoded));
             }
         }
     }
-    for (owner, h, texture) in sites {
-        let clamp_at = min_lod_helper(module, reflection, stage, texture, clamps);
+    for (owner, h, texture, g, clamped, decoded) in sites {
+        let clamp_at = clamped.then(|| min_lod_helper(module, reflection, stage, texture, clamps));
         let f = function(module, owner).clone();
         let Expression::ImageLoad {
             image,
@@ -2564,7 +2576,7 @@ fn loads(
         let types = types_of(module, &f, &operands)?;
         let result = *types.last().unwrap();
         let mut callee = Function {
-            name: Some(format!("load_clamped_{texture}")),
+            name: Some(format!("{LOAD_FUNCTION}{texture}")),
             result: Some(FunctionResult {
                 ty: result,
                 binding: None,
@@ -2573,8 +2585,13 @@ fn loads(
         };
         let mut body = Block::new();
         let n = operands.len() - 1;
+        // A decoded slot's variable is read directly, as its type changes after.
+        let first = usize::from(decoded.is_some());
         let mut args = Vec::new();
-        for (i, &ty) in types[..n].iter().enumerate() {
+        if decoded.is_some() {
+            args.push(push(&mut callee, &mut body, Expression::GlobalVariable(g)));
+        }
+        for (i, &ty) in types[first..n].iter().enumerate() {
             callee.arguments.push(FunctionArgument {
                 name: None,
                 ty,
@@ -2596,7 +2613,7 @@ fn loads(
         let array_index = take(array_index);
         let sample = take(sample);
         let level = take(level);
-        let value = push(
+        let mut value = push(
             &mut callee,
             &mut body,
             Expression::ImageLoad {
@@ -2607,25 +2624,33 @@ fn loads(
                 level,
             },
         );
-        let read = match level {
-            Some(l) => push(
-                &mut callee,
-                &mut body,
-                Expression::As {
-                    expr: l,
-                    kind: naga::ScalarKind::Float,
-                    convert: Some(4),
-                },
-            ),
-            None => f32_lit(&mut callee, 0.0),
-        };
-        let value = min_lod_zero(&mut callee, &mut body, clamp_at, Some(read), result, value);
+        if let Some(format) = decoded {
+            value = decoded::texel(&mut callee, &mut body, value, format, result)?;
+        }
+        if let Some(clamp_at) = clamp_at {
+            let read = match level {
+                Some(l) => push(
+                    &mut callee,
+                    &mut body,
+                    Expression::As {
+                        expr: l,
+                        kind: naga::ScalarKind::Float,
+                        convert: Some(crate::build::F32_WIDTH),
+                    },
+                ),
+                None => f32_lit(&mut callee, 0.0),
+            };
+            value = min_lod_zero(&mut callee, &mut body, clamp_at, Some(read), result, value);
+        }
         body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
         callee.body = body;
-        outlined.add(owner, h, callee, operands[..n].to_vec());
+        outlined.add(owner, h, callee, operands[first..n].to_vec());
     }
     Ok(())
 }
+
+/// The name of the function loading from a texture slot, before the slot.
+const LOAD_FUNCTION: &str = "load_";
 
 /// The name of the function giving a texture slot's size under [`VariantFlags::TEXTURE_INFO`], before
 /// the slot.
@@ -2642,10 +2667,12 @@ enum TextureInfo {
 }
 
 /// Texture level and sample counts read from the helper block instead of asked of the texture, and
-/// sizes zero where the helper's level count leaves the level asked out.
+/// sizes zero where the helper's level count leaves the level asked out. A slot in `decoded` is read
+/// through its variable, whose type changes after.
 fn texture_info(
     module: &mut Module,
     stage: ShaderStage,
+    decoded: &[(u32, Format)],
     reflection: &mut Reflection,
     outlined: &mut Outlined,
 ) -> Result<()> {
@@ -2673,10 +2700,10 @@ fn texture_info(
                     ));
                 }
             };
-            sites.push((owner, h, image, r, info));
+            sites.push((owner, h, image, g, r, info));
         }
     }
-    for (owner, h, image, texture, info) in sites {
+    for (owner, h, image, g, texture, info) in sites {
         let value = match info {
             TextureInfo::Samples => HelperValue::TextureSamples { texture },
             TextureInfo::Levels | TextureInfo::Size(_) => HelperValue::TextureLevels { texture },
@@ -2715,8 +2742,12 @@ fn texture_info(
         };
         let mut body = Block::new();
         let arguments = operands.len() - 1;
+        let first = usize::from(decoded::format_of(decoded, Some(texture)).is_some());
         let mut args = Vec::new();
-        for (i, &ty) in types[..arguments].iter().enumerate() {
+        if first > 0 {
+            args.push(push(&mut callee, &mut body, Expression::GlobalVariable(g)));
+        }
+        for (i, &ty) in types[first..arguments].iter().enumerate() {
             callee.arguments.push(FunctionArgument {
                 name: None,
                 ty,
@@ -2775,7 +2806,7 @@ fn texture_info(
         );
         body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
         callee.body = body;
-        outlined.add(owner, h, callee, operands[..arguments].to_vec());
+        outlined.add(owner, h, callee, operands[first..arguments].to_vec());
     }
     Ok(())
 }

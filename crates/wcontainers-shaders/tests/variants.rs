@@ -450,9 +450,35 @@ fn targets_of_another_type_take_the_outputs_bits() {
     )
     .unwrap();
     assert_eq!(wgsl(&plain), wgsl(&same));
+    // Normalised targets stored as the integers of the same bits: the output is encoded.
+    for (format, kind) in [
+        (Format::Rgba8Unorm, ScalarKind::Uint),
+        (Format::R16Unorm, ScalarKind::Uint),
+        (Format::Rg16Snorm, ScalarKind::Sint),
+    ] {
+        for c in both(&code, &target(format, false)) {
+            assert_eq!(scalar(&c), [kind], "{format:?}");
+            let text = wgsl(&c);
+            assert!(!text.contains("bitcast<vec4<"), "{text}");
+            glsl(&c).unwrap_or_else(|e| panic!("{format:?}: {e}\n{text}"));
+        }
+    }
+    let integer = read("tests/own/ps_integer.dxbc");
+    let got = convert(
+        Source::Dxbc(&integer),
+        &target(Format::R16Unorm, false),
+        None,
+    )
+    .map(|_| ());
+    assert_eq!(
+        got,
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::TARGETS_IN_SHADER
+        ))
+    );
     for (key, name) in [
         (
-            target(Format::Rgba8Unorm, false),
+            target(Format::Bgra8Unorm, false),
             wcontainers_shaders::refusal::NORM_AS_INTEGER,
         ),
         (
@@ -1039,6 +1065,91 @@ fn filtering_in_the_program_reads_texels_with_loads() {
     );
 }
 
+/// A texture a front stores as the integer format of the same bits (`decoded`) is declared as that
+/// format on both routes, read only by loads (samples and gathers filtered from them, size queries
+/// kept), and written by both back ends; a format with no such integer format, or a texture that
+/// is not a single-sampled float one, is refused by name.
+#[test]
+fn decoded_textures_are_read_as_integers() {
+    let refused = |name| Err(ConvertError::Unsupported(name));
+    for (format, texels) in [
+        (Format::R16Unorm, "u32"),
+        (Format::Rg16Snorm, "i32"),
+        (Format::Rgba8Snorm, "i32"),
+        (Format::Rgb10a2Unorm, "u32"),
+    ] {
+        for flags in [VariantFlags::empty(), VariantFlags::TEXTURE_INFO] {
+            let key = VariantKey {
+                decoded: vec![(0, format)],
+                lod_bias: 1,
+                flags,
+                ..Default::default()
+            };
+            for c in both(&own_pair("ps_filter"), &key) {
+                assert!(c.reflection.sampled_pairs.is_empty());
+                let text = wgsl(&c);
+                assert!(text.contains(&format!("texture_2d<{texels}>")), "{text}");
+                assert!(!text.contains("texture_2d<f32>"), "{text}");
+                assert!(!text.contains("textureSample"), "{text}");
+                assert!(text.contains("textureDimensions"), "{text}");
+                if flags.contains(VariantFlags::TEXTURE_INFO) {
+                    glsl(&c).unwrap_or_else(|e| panic!("{format:?}: {e}\n{text}"));
+                }
+            }
+        }
+    }
+    let every = VariantKey {
+        decoded: (0..8).map(|slot| (slot, Format::Rgba16Unorm)).collect(),
+        flags: VariantFlags::TEXTURE_INFO,
+        ..Default::default()
+    };
+    for name in [
+        "samplers.ps_gather",
+        "samplers.ps_sample",
+        "textures.ps_2d_array",
+        "textures.ps_3d",
+        "textures.ps_mips",
+    ] {
+        let c = convert(
+            Source::Dxbc(&rig(&format!("dxbc/{name}.dxbc"))),
+            &every,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let text = wgsl(&c);
+        for float in [
+            "texture_2d<f32>",
+            "texture_2d_array<f32>",
+            "texture_3d<f32>",
+        ] {
+            assert!(!text.contains(float), "{name}: {text}");
+        }
+        glsl(&c).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    let [dxbc, dxil] = own_pair("ps_filter");
+    for format in [Format::Bgra8Unorm, Format::R32Float, Format::Rgba8Uint] {
+        let key = VariantKey {
+            decoded: vec![(0, format)],
+            ..Default::default()
+        };
+        for source in [Source::Dxbc(&dxbc), Source::Dxil(&dxil)] {
+            assert_eq!(
+                convert(source, &key, None).map(|_| ()),
+                refused(wcontainers_shaders::refusal::DECODED_FORMAT),
+                "{format:?}"
+            );
+        }
+    }
+    let key = VariantKey {
+        decoded: vec![(0, Format::R16Unorm)],
+        ..Default::default()
+    };
+    assert_eq!(
+        convert(Source::Dxbc(&own_pair("ps_shadow")[0]), &key, None).map(|_| ()),
+        refused(wcontainers_shaders::refusal::DECODED_TEXTURE)
+    );
+}
+
 /// A four-channel float storage texture both read and written (shader model 6's half writes) has
 /// no read-write storage form in WebGPU: plain, it is refused by name; through a buffer, it is
 /// read and written there.
@@ -1173,7 +1284,7 @@ fn buffer_array_ranges() -> Vec<(SlotKind, u32, std::ops::Range<u32>)> {
 
 /// Arrays of constant buffers and typed buffers (DXBC shader model 5.1), two declared without a
 /// length: every element a binding at its register, sized by the root signature's ranges, and
-/// refused by name without them. The DXIL route refuses arrays of typed buffers by name.
+/// refused by name without them. The DXIL route refuses arrays of constant buffers by name.
 #[test]
 fn buffer_arrays_are_a_binding_per_element() {
     let code = read("tests/own/cs_buffer_array.dxbc");
@@ -1225,6 +1336,62 @@ fn buffer_arrays_are_a_binding_per_element() {
         .err(),
         Some(ConvertError::Unsupported(
             wcontainers_shaders::refusal::RESOURCE_ARRAY
+        ))
+    );
+}
+
+/// Arrays of typed buffers alone (`cs_typed_array`), one of each kind declared without a length, by
+/// both routes: every element a binding at its register, sized by the root signature's ranges, and
+/// refused by name without them or past the slots a kind holds.
+#[test]
+fn typed_buffer_arrays_are_a_binding_per_element_on_both_routes() {
+    let ranges = vec![(SlotKind::Texture, 0, 0..5), (SlotKind::Storage, 0, 0..3)];
+    let formats = |n: u32| (0..n).map(|r| (r, Format::R32Uint)).collect();
+    let key = VariantKey {
+        texel_buffers: wcontainers_gpu::TexelBufferRoute::Storage,
+        texel_formats: formats(5),
+        storage_formats: formats(3),
+        register_ranges: ranges.clone(),
+        ..Default::default()
+    };
+    let dxbc = read("tests/own/cs_typed_array.dxbc");
+    let dxil = read("tests/own/cs_typed_array.dxil");
+    for source in [Source::Dxbc(&dxbc), Source::Dxil(&dxil)] {
+        let c = convert(source, &key, None).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+        for (kind, n) in [(SlotKind::Texture, 5), (SlotKind::Storage, 3)] {
+            for register in 0..n {
+                let b = c
+                    .reflection
+                    .bindings
+                    .iter()
+                    .find(|b| b.kind == kind && b.register == register)
+                    .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
+                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+            }
+        }
+        let without = VariantKey {
+            register_ranges: Vec::new(),
+            ..key.clone()
+        };
+        assert_eq!(
+            convert(source, &without, None).err(),
+            Some(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::UNBOUNDED_RESOURCE_ARRAY
+            ))
+        );
+    }
+    // Past the storage slots: the DXIL route refuses before making the elements.
+    let past = VariantKey {
+        register_ranges: vec![
+            ranges[0].clone(),
+            (SlotKind::Storage, 0, 0..SlotKind::Storage.slots() + 1),
+        ],
+        ..key
+    };
+    assert_eq!(
+        convert(Source::Dxil(&dxil), &past, None).err(),
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::BINDINGS_BEYOND_LIMIT
         ))
     );
 }

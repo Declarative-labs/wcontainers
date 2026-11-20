@@ -3,8 +3,10 @@
 //! through the same sampler, and against the back ends' own samplers where they have the sampler's
 //! state natively. `ps_filter` samples a 16 by 16 texture of five levels over a quad in perspective
 //! (magnified at the bottom, minified at the top, the coordinate from -1 to 2) six ways: implicit
-//! level, bias, explicit level, gradients, a texel offset and a gather. An R32_FLOAT texture (which
-//! WebGPU cannot filter, the reason for the variant) and an RGBA8 one.
+//! level, bias, explicit level, gradients, a texel offset and a gather, or loads the texel under it
+//! after asking the texture's size. An R32_FLOAT texture (which WebGPU cannot filter, the reason for
+//! the variant), an RGBA8 one, and normalised ones the back ends hold as the integer format of the
+//! same bits, read through `VariantKey::decoded` (`NormAsInteger`).
 //!
 //! Each case is a seeded sampler state: filters, address modes, border colour, bias, level range and
 //! anisotropy (`WCONTAINERS_FILTER_SEED`, default 1; `WCONTAINERS_FILTER_CASES` draws that many seeds
@@ -34,13 +36,24 @@ const TEX: u32 = 16;
 const LEVELS: u32 = 5;
 const LEVEL_MODE: &str = "level";
 const GATHER_MODE: &str = "gather";
-const MODES: [&str; 6] = [
+const LOAD_MODE: &str = "load";
+const MODES: [&str; 7] = [
     "implicit",
     "bias",
     LEVEL_MODE,
     "gradients",
     "offset",
     GATHER_MODE,
+    LOAD_MODE,
+];
+
+/// The normalised formats drawn, each with the integer format of the same bits a front stores it as
+/// where the back end lacks it.
+const DECODED: [(Format, Format); 4] = [
+    (Format::R16Unorm, Format::R16Uint),
+    (Format::Rg16Snorm, Format::Rg16Sint),
+    (Format::Rgba16Unorm, Format::Rgba16Uint),
+    (Format::Rgba8Snorm, Format::Rgba8Sint),
 ];
 
 /// One sampler state and how `ps_filter` is asked to sample.
@@ -89,7 +102,7 @@ impl Case {
     /// Whether sampling in mode `name` filters over an anisotropic footprint: the modes that take
     /// the level of detail from derivatives, with anisotropy above 1.
     fn anisotropic_footprint(&self, name: &str) -> bool {
-        self.anisotropy > 1 && !matches!(name, LEVEL_MODE | GATHER_MODE)
+        self.anisotropy > 1 && !matches!(name, LEVEL_MODE | GATHER_MODE | LOAD_MODE)
     }
 
     fn params(&self, mode: u32) -> Vec<u8> {
@@ -169,16 +182,13 @@ impl Case {
             HelperValue::BorderColor { .. } => self.border.map(f32::to_bits).to_vec(),
             HelperValue::LodBias { .. } => vec![self.bias.to_bits()],
             HelperValue::TextureLevels { .. } => vec![LEVELS],
-            HelperValue::TextureComponents { .. } => match format {
-                Format::R32Float => vec![0b0001],
-                _ => vec![0b1111],
-            },
+            HelperValue::TextureComponents { .. } => vec![format.components()],
             other => panic!("no value for {other:?}"),
         }
     }
 }
 
-/// The texture's levels: seeded values in [0, 1], as R32_FLOAT or RGBA8.
+/// The texture's levels: seeded values in [0, 1] for R32_FLOAT, seeded bytes for the others.
 fn levels(format: Format, seed: u64) -> Vec<Vec<u8>> {
     let mut rng = fastrand::Rng::with_seed(seed ^ 0x5eed);
     (0..LEVELS)
@@ -186,7 +196,7 @@ fn levels(format: Format, seed: u64) -> Vec<Vec<u8>> {
             let texels = (TEX >> n) * (TEX >> n);
             match format {
                 Format::R32Float => (0..texels).flat_map(|_| rng.f32().to_le_bytes()).collect(),
-                _ => (0..texels * 4).map(|_| rng.u8(..)).collect(),
+                _ => (0..texels * format.block().2).map(|_| rng.u8(..)).collect(),
             }
         })
         .collect()
@@ -528,22 +538,33 @@ fn filtering_in_the_program_matches_direct3d() {
     for case_seed in seed..seed + cases {
         let case = Case::new(case_seed);
         println!("case {case_seed}: {case:?}");
-        for format in [Format::R32Float, Format::Rgba8Unorm] {
+        let decoded = DECODED.iter().map(|&(format, _)| format);
+        for format in [Format::R32Float, Format::Rgba8Unorm]
+            .into_iter()
+            .chain(decoded)
+        {
             let texels = levels(format, case_seed);
-            // R32_FLOAT is filtered by its texture's bit, RGBA8 by the sampler's border bit.
-            let key = if format == Format::R32Float {
-                VariantKey {
+            // R32_FLOAT is filtered by its texture's bit, RGBA8 by the sampler's border bit, and the
+            // normalised formats are decoded from their integer formats and filtered in the program.
+            let stored = DECODED.iter().find(|&&(f, _)| f == format).map(|&(_, s)| s);
+            let key = match (format, stored) {
+                (_, Some(_)) => VariantKey {
+                    decoded: vec![(0, format)],
+                    lod_bias: 1,
+                    ..Default::default()
+                },
+                (Format::R32Float, None) => VariantKey {
                     filter_in_shader: 1,
                     lod_bias: 1,
                     ..Default::default()
-                }
-            } else {
-                VariantKey {
+                },
+                _ => VariantKey {
                     border_in_shader: 1,
                     lod_bias: 1,
                     ..Default::default()
-                }
+                },
             };
+            let stored = stored.unwrap_or(format);
             for (mode, name) in MODES.iter().enumerate() {
                 let mode = mode as u32;
                 let reference = direct3d_11(&d3d, format, &texels, &case, mode);
@@ -569,9 +590,9 @@ fn filtering_in_the_program_matches_direct3d() {
                                 ..case.clone()
                             };
                             if back_end == "webgpu" {
-                                ours(&mut gpu, route, format, &texels, &moved, mode, &key, None)
+                                ours(&mut gpu, route, stored, &texels, &moved, mode, &key, None)
                             } else {
-                                ours(&mut gl, route, format, &texels, &moved, mode, &gl_key, None)
+                                ours(&mut gl, route, stored, &texels, &moved, mode, &gl_key, None)
                             }
                         };
                         let picture = draw(0.0);

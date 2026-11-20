@@ -148,17 +148,35 @@ fn variants_draw_as_the_native_feature_does() {
 
         // A target of another type than the program's output: the output's bits written as the
         // target's type, against real Direct3D 11 drawing the same program into that target. fxc's
-        // ps_integer (uint4, no dxc build) into a float target too.
+        // ps_integer (uint4, no dxc build) into a float target too. Normalised targets the back
+        // ends hold as the integer format of the same bits (`NormAsInteger`): the output encoded
+        // into those integers, against Direct3D 11 drawing into the normalised format, both back
+        // ends; each target cleared to zero.
         {
-            let mut cases = vec![("ps_textured", Format::Rgba32Uint, code.clone())];
+            let mut cases = vec![(
+                "ps_textured",
+                Format::Rgba32Uint,
+                Format::Rgba32Uint,
+                code.clone(),
+            )];
             if !dxil {
                 cases.push((
                     "ps_integer",
                     Format::Rgba32Float,
+                    Format::Rgba32Float,
                     [code[0].clone(), bytecode("ps_integer.dxbc")],
                 ));
             }
-            for (ps, format, code) in cases {
+            for (format, stored) in [
+                (Format::R16Unorm, Format::R16Uint),
+                (Format::Rg16Snorm, Format::Rg16Sint),
+                (Format::Rgba16Unorm, Format::Rgba16Uint),
+                (Format::Rgba8Snorm, Format::Rgba8Sint),
+            ] {
+                cases.push(("ps_textured", format, stored, code.clone()));
+            }
+            for (ps, format, stored, code) in cases {
+                let normalised = format != stored;
                 let (reference, _) = direct3d_11(
                     &d3d,
                     "vs_transform",
@@ -166,27 +184,39 @@ fn variants_draw_as_the_native_feature_does() {
                     format,
                     [1.0, 0.75, 0.5, 1.5],
                     true,
-                    &Reference::default(),
+                    &Reference {
+                        cleared_to_zero: normalised,
+                        ..Default::default()
+                    },
                 );
                 let mut variant = grid_draw(&code, dxil, &grid);
-                variant.format = format;
+                variant.format = stored;
                 variant.clear = match format {
-                    Format::Rgba32Uint => [0; 4],
-                    _ => CLEAR.map(f32::to_bits),
+                    Format::Rgba32Float => CLEAR.map(f32::to_bits),
+                    _ => [0; 4],
                 };
                 variant.setup.ps_key.targets_in_shader = vec![TargetInShader {
                     target: 0,
                     format,
                     combine: false,
                 }];
-                let texels = ours(&mut gpu, &variant, ProvokingVertex::First);
-                results.push(compare(
-                    format!("targets_in_shader {ps} {format:?} {route} webgpu"),
-                    &reference,
-                    &texels,
-                    Format::Rgba32Uint,
-                    (0, 0),
-                ));
+                let mut drawn = vec![("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First))];
+                if normalised {
+                    drawn.push(("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)));
+                }
+                // Direct3D lets a float's conversion to a normalised code be off by
+                // D3D11_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP, and the GPU's render targets use it (ties
+                // of the 16-bit codes, for one); the program rounds to nearest, within half a code,
+                // so the two may be a code apart in any texel.
+                let tolerance = (0.5 + D3D11_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP).floor() as u64;
+                for (back_end, texels) in drawn {
+                    let name = format!("targets_in_shader {ps} {format:?} {route} {back_end}");
+                    let (format, allowed) = match normalised {
+                        true => (stored, ((SIZE * SIZE) as usize, tolerance)),
+                        false => (Format::Rgba32Uint, (0, 0)),
+                    };
+                    results.push(compare(name, &reference, &texels, format, allowed));
+                }
             }
         }
 
@@ -1376,9 +1406,14 @@ fn typed_buffers_draw_as_direct3d_does() {
             s ^= s << 17;
             (s >> 16) as u32
         };
+        // Every second seed binds each view of the other kind, which Direct3D reads by its bits.
+        let (first, second) = match seed % 2 {
+            0 => (&uints, &floats),
+            _ => (&floats, &uints),
+        };
         let formats = [
-            floats[next() as usize % floats.len()],
-            uints[next() as usize % uints.len()],
+            first[next() as usize % first.len()],
+            second[next() as usize % second.len()],
         ];
         let texel_buffers: Vec<TexelData> = formats
             .iter()

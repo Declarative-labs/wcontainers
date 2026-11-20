@@ -3,13 +3,14 @@ cs_buffer_array.dxil	unsupported ResourceArray
 cs_decrement.dxil	ok ; glsl absent compute
 cs_divide.dxil	ok ; glsl absent compute
 cs_escape.dxil	ok ; glsl absent compute
-cs_image_array.dxil	ok views:R32Uint ; glsl absent compute
-cs_images.dxil	unsupported StorageFormatKind (with views)
-cs_one_d.dxil	unsupported StorageFormatKind (with views)
+cs_image_array.dxil	ok views:R32Float ; glsl absent compute
+cs_images.dxil	ok views:R32Float ; glsl absent compute
+cs_one_d.dxil	ok views:R32Float ; glsl absent compute
 cs_readonly.dxil	ok ; glsl absent compute
 cs_shared.dxil	ok ; glsl absent compute
-cs_texels.dxil	unsupported TypedBufferFormatKind (with views)
-cs_through.dxil	unsupported StorageFormatKind (with views)
+cs_texels.dxil	ok views:R32Float ; glsl absent compute
+cs_through.dxil	ok views:R32Float through ; glsl absent compute
+cs_typed_array.dxil	unsupported UnboundedResourceArray
 gs_adjacent.dxil	unsupported DxilGeometryShader
 gs_clip.dxil	unsupported DxilGeometryShader
 gs_cut.dxil	unsupported DxilGeometryShader
@@ -63,7 +64,7 @@ ps_signed.dxil	ok ; glsl compiles
 ps_spaces.dxil	ok ; glsl compiles
 ps_special.dxil	ok ; glsl compiles
 ps_table.dxil	ok ; glsl compiles
-ps_texels.dxil	unsupported TypedBufferFormatKind (with views)
+ps_texels.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 ps_textured.dxil	ok ; glsl compiles
 ps_two.dxil	ok ; glsl compiles
 ps_twospaces.dxil	ok ; glsl compiles

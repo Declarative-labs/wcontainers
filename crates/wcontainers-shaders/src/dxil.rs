@@ -283,9 +283,11 @@ pub(crate) fn lower(
     };
     let mut module = widths::read(&spirv, &options)?;
     nonfinite::calls(&mut module)?;
-    arrays::split(&mut module, &mut resources, &mut declared)?;
+    arrays::split(&mut module, &mut resources, &mut declared, variant)?;
     depth::widen(&mut module)?;
     one_d::as_two_d(&mut module, &declared)?;
+    // Before the atomics' stand-ins are made, as it moves the module's functions.
+    components::rows(&mut module)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
     for (_, v) in module.global_variables.iter_mut() {
@@ -297,7 +299,6 @@ pub(crate) fn lower(
     }
     sample_mask_input(&mut module);
     sample_mask_output(&mut module);
-    components::rows(&mut module)?;
     unconverted(&module)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
@@ -1705,8 +1706,8 @@ fn bindings(
         let &[class, space, register] = resources
             .get(binding.binding as usize)
             .ok_or_else(|| ConvertError::Malformed("a binding past the resource list".into()))?;
-        let kind = slot_kind(binding.group)
-            .ok_or_else(|| ConvertError::Malformed("a resource of no class".into()))?;
+        let kind =
+            slot_kind(binding.group).ok_or_else(|| ConvertError::Malformed(NO_CLASS.into()))?;
         if binding.group != class && !(binding.group == COUNTER && class == STORAGE) {
             return Err(ConvertError::Malformed(
                 "a resource of another class".into(),
@@ -1757,6 +1758,9 @@ fn bindings(
 }
 
 /// The slot kind of a resource class (`cpp/boundary.h`).
+/// Why a resource is malformed: its class is none of Direct3D's.
+const NO_CLASS: &str = "a resource of no class";
+
 fn slot_kind(class: u32) -> Option<SlotKind> {
     match class {
         CONSTANTS => Some(SlotKind::Uniform),

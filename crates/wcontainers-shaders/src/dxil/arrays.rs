@@ -1,6 +1,7 @@
-//! Arrays of textures and storage textures (`Texture2D t[8] : register(t0)`): WebGPU has no binding
-//! arrays, so each element becomes a texture of its own at its own register, as Direct3D 12 numbers
-//! a range. An element picked by a constant is that texture; one read after a pick at run time is a
+//! Arrays of textures, storage textures and typed buffers (`Texture2D t[8] : register(t0)`): WebGPU
+//! has no binding arrays, so each element becomes a resource of its own at its own register, as
+//! Direct3D 12 numbers a range; an array declared without a length takes the rest of the root
+//! signature's range holding its first register (`VariantKey::register_ranges`). An element picked by a constant is that texture; one read after a pick at run time is a
 //! call of a function that switches on the index and uses the element it names, and a store to one
 //! is a switch in place.
 
@@ -12,6 +13,7 @@ use naga::{
     Handle, ImageClass, ImageDimension, ImageQuery, Literal, LocalVariable, Module, Range,
     ResourceBinding, SampleLevel, Span, Statement, SwitchCase, SwitchValue, Type, TypeInner,
 };
+use wcontainers_gpu::VariantKey;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -137,14 +139,29 @@ fn constant_index(module: &Module, f: &Function, e: Handle<Expression>) -> Optio
     }
 }
 
-/// Splits every array of textures and storage textures into its elements, numbered after the
-/// resources `resources` lists, and rewrites the uses. Runs right after reading: it moves the
-/// module's functions and compacts it. Arrays of anything else stay refused.
+/// Splits every array of textures, storage textures and typed buffers into its elements, numbered
+/// after the resources `resources` lists, and rewrites the uses. Runs right after reading: it moves
+/// the module's functions and compacts it. Arrays of anything else stay refused.
 pub(super) fn split(
     module: &mut Module,
     resources: &mut Resources,
     declared: &mut Vec<super::images::Declared>,
+    variant: &VariantKey,
 ) -> Result<()> {
+    // An array of constant or structured buffers, which the reader takes as one buffer holding an
+    // array, stays refused.
+    let buffers = module.global_variables.iter().any(|(_, v)| {
+        v.binding.is_some()
+            && matches!(
+                v.space,
+                naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. }
+            )
+            && matches!(module.types[v.ty].inner, TypeInner::Array { base, .. }
+                if matches!(module.types[base].inner, TypeInner::Struct { .. }))
+    });
+    if buffers {
+        return Err(refused());
+    }
     let mut arrays: Vec<(Handle<GlobalVariable>, Vec<Handle<GlobalVariable>>)> = Vec::new();
     let found: Vec<_> = module
         .global_variables
@@ -158,30 +175,33 @@ pub(super) fn split(
         return Ok(());
     }
     for (g, base, size, binding) in found {
-        let ArraySize::Constant(n) = size else {
-            return Err(refused());
-        };
-        // Typed buffers were read as 1D images (`images::prepare`); they stay refused.
+        let binding = binding.ok_or(refused())?;
+        // Typed buffers were read as 1D images (`images::prepare`).
+        let buffer = super::images::typed_buffer_at(declared, binding);
         match module.types[base].inner {
             TypeInner::Image {
                 dim,
                 class:
                     ImageClass::Sampled { .. } | ImageClass::Depth { .. } | ImageClass::Storage { .. },
                 ..
-            } if dim != ImageDimension::D1 => {}
+            } if dim != ImageDimension::D1 || buffer => {}
             _ => return Err(refused()),
         }
-        let binding = binding.ok_or(refused())?;
         let &[class, space, register] =
             resources
                 .get(binding.binding as usize)
                 .ok_or(ConvertError::Malformed(
                     "a binding past the resource list".into(),
                 ))?;
+        let n = match size {
+            ArraySize::Constant(n) => n.get(),
+            ArraySize::Dynamic => unbounded_length(variant, class, space, register)?,
+            _ => return Err(refused()),
+        };
         let mut elements = Vec::new();
         let first = resources.len() as u32;
-        super::images::declare_elements(declared, binding, first..first + n.get());
-        for i in 0..n.get() {
+        super::images::declare_elements(declared, binding, first..first + n);
+        for i in 0..n {
             resources.push([class, space, register + i]);
             elements.push(module.global_variables.append(
                 GlobalVariable {
@@ -434,6 +454,27 @@ struct Pick {
     access: Handle<Expression>,
     elements: usize,
     index: Handle<Expression>,
+}
+
+/// The length of an array declared without one: the rest of the root signature's range of its kind
+/// and space holding its first register. No more elements than the kind's slots hold.
+fn unbounded_length(variant: &VariantKey, class: u32, space: u32, register: u32) -> Result<u32> {
+    let kind =
+        super::slot_kind(class).ok_or_else(|| ConvertError::Malformed(super::NO_CLASS.into()))?;
+    let length = variant
+        .register_ranges
+        .iter()
+        .find(|(k, s, range)| *k == kind && *s == space && range.contains(&register))
+        .map(|(_, _, range)| range.end - register)
+        .ok_or(ConvertError::Unsupported(
+            crate::refusal::UNBOUNDED_RESOURCE_ARRAY,
+        ))?;
+    if length > kind.slots() {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::BINDINGS_BEYOND_LIMIT,
+        ));
+    }
+    Ok(length)
 }
 
 fn is_signed(inner: &TypeInner) -> bool {

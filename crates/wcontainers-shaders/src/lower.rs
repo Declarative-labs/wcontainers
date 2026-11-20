@@ -196,6 +196,11 @@ struct Io {
     stream: u32,
 }
 
+/// Why a load's result is malformed: it is no scalar or vector.
+const LOAD_NOT_VECTOR: &str = "a load's type that is no scalar or vector";
+/// Why a storage texture operation is malformed: its texture is not a storage view.
+const NOT_STORAGE_VIEW: &str = "a texture that is not a storage view";
+
 /// An output of a geometry stream past the first in another stage.
 const STREAM_OUTSIDE_GEOMETRY: &str = "a stream outside a geometry shader";
 
@@ -843,7 +848,7 @@ impl<'a> Lowering<'a> {
             .basic()
             .ok_or_else(|| malformed("typed buffer type".into()))?;
         let declared = Self::scalar(member.scalar)?;
-        let layout = TexelBuffer::layout(format, declared.kind)?;
+        let layout = TexelBuffer::layout(format)?;
         let ir = self.ir;
         let written = storage
             && ir.ops.iter().any(|o| {
@@ -855,7 +860,7 @@ impl<'a> Lowering<'a> {
                 dim: ImageDimension::D2,
                 arrayed: false,
                 class: ImageClass::Sampled {
-                    kind: declared.kind,
+                    kind: TexelBuffer::view_kind(&layout),
                     multi: false,
                 },
             })
@@ -895,7 +900,16 @@ impl<'a> Lowering<'a> {
         } else {
             TexelPlace::Words
         };
-        let buffer = TexelBuffer::declared(var, layout, atomic, place, stage, self.set, binding);
+        let buffer = TexelBuffer::declared(
+            var,
+            layout,
+            declared.kind,
+            atomic,
+            place,
+            stage,
+            self.set,
+            binding,
+        );
         self.texels.insert(self.place(id), buffer);
         Ok(())
     }
@@ -937,12 +951,9 @@ impl<'a> Lowering<'a> {
             .basic()
             .ok_or_else(|| malformed("storage image type".into()))?;
         let declared = Self::scalar(member.scalar)?;
-        let layout = TexelBuffer::layout(format, declared.kind).map_err(|e| match e {
+        let layout = TexelBuffer::layout(format).map_err(|e| match e {
             ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_ABSENT) => {
                 unsupported(crate::refusal::STORAGE_FORMAT_ABSENT)
-            }
-            ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_KIND) => {
-                unsupported(crate::refusal::STORAGE_FORMAT_KIND)
             }
             e => e,
         })?;
@@ -979,7 +990,16 @@ impl<'a> Lowering<'a> {
             _ => ShaderStage::Compute,
         };
         let place = TexelPlace::Image(register);
-        let buffer = TexelBuffer::declared(var, layout, atomic, place, stage, self.set, binding);
+        let buffer = TexelBuffer::declared(
+            var,
+            layout,
+            declared.kind,
+            atomic,
+            place,
+            stage,
+            self.set,
+            binding,
+        );
         self.texels.insert(self.place(id), buffer);
         Ok(())
     }
@@ -1002,13 +1022,6 @@ impl<'a> Lowering<'a> {
             .1;
         let format =
             storage_format(format).ok_or(unsupported(crate::refusal::STORAGE_FORMAT_ABSENT))?;
-        let member = op
-            .ty
-            .basic()
-            .ok_or_else(|| malformed("storage image type".into()))?;
-        if Self::scalar(member.scalar)?.kind != storage_kind(format) {
-            return Err(unsupported(crate::refusal::STORAGE_FORMAT_KIND));
-        }
         let flags = op
             .lits
             .get(ir::resource_literal::UAV_FLAGS)
@@ -4567,10 +4580,35 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         if res.depth {
             return self.depth_vec4(b, v, op);
         }
+        if res.storage {
+            // A view of another kind than the declaration's is read by its bits, as Direct3D does.
+            let view = self.storage_scalar(res.var)?;
+            let member = op
+                .ty
+                .basic()
+                .ok_or_else(|| malformed(LOAD_NOT_VECTOR.into()))?;
+            let declared = Lowering::scalar(member.scalar)?;
+            return Ok(self.e.bitcast(&mut self.f, b, v, view, declared));
+        }
         Ok(v)
     }
 
-    /// A store to a storage texture: the value made the four components of the format's kind.
+    /// The scalar of a storage texture's format.
+    fn storage_scalar(&self, var: Handle<GlobalVariable>) -> Result<Scalar> {
+        match self.l.module.types[self.l.module.global_variables[var].ty].inner {
+            TypeInner::Image {
+                class: ImageClass::Storage { format, .. },
+                ..
+            } => Ok(Scalar {
+                kind: storage_kind(format),
+                ..Scalar::U32
+            }),
+            _ => Err(malformed(NOT_STORAGE_VIEW.into())),
+        }
+    }
+
+    /// A store to a storage texture: the value made the four components of the format's kind, by
+    /// its bits.
     fn image_store(&mut self, b: &mut Block, op: &Op) -> Result<()> {
         let r = &op.refs;
         let res = self.image(r[0])?;
@@ -4579,18 +4617,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let image = self.add(b, Expression::GlobalVariable(res.var));
         let array_index = self.layer(b, r[1])?;
         let coordinate = self.coords(b, k, r[2], false)?;
-        let kind = match self.l.module.types[self.l.module.global_variables[res.var].ty].inner {
-            TypeInner::Image {
-                class: ImageClass::Storage { format, .. },
-                ..
-            } => storage_kind(format),
-            _ => {
-                return Err(malformed(
-                    "store to a texture that is not a storage view".into(),
-                ));
-            }
-        };
-        let s = Scalar { kind, width: 4 };
+        let s = self.storage_scalar(res.var)?;
         let v = self.get_as(b, r[3], s)?;
         let n = self.basic_of(r[3])?.size;
         let value = if n == 4 {

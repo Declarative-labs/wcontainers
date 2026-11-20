@@ -125,7 +125,7 @@ hlsl+attrout-semantics-6-ps.dxbc	ok ; glsl compiles
 hlsl+barriers-1-cs.dxbc	ok ; glsl absent compute
 hlsl+barriers-2-ps.dxbc	ok ; glsl compiles
 hlsl+barriers-3-cs.dxbc	ok views:R32Float ; glsl absent compute
-hlsl+barriers-4-cs.dxbc	ok views:R32Uint ; glsl absent compute
+hlsl+barriers-4-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+bitwise-1-ps.dxbc	ok ; glsl compiles
 hlsl+bitwise-10-ps.dxbc	ok ; glsl compiles
 hlsl+bitwise-11-ps.dxbc	ok ; glsl compiles
@@ -280,10 +280,10 @@ hlsl+color-clamping-7-vs.dxbc	ok ; glsl compiles
 hlsl+combined-samplers-12-ps.dxbc	ok ; glsl compiles
 hlsl+comma-1-ps.dxbc	ok ; glsl compiles
 hlsl+compute-1-cs.dxbc	ok views:R32Float ; glsl absent compute
-hlsl+compute-2-cs.dxbc	ok views:R32Uint ; glsl absent compute
-hlsl+compute-3-cs.dxbc	ok views:R32Uint ; glsl absent compute
-hlsl+compute-4-cs.dxbc	ok views:R32Uint ; glsl absent compute
-hlsl+compute-5-cs.dxbc	ok views:R32Uint ; glsl absent compute
+hlsl+compute-2-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+compute-3-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+compute-4-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+compute-5-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+conditional-1-ps.dxbc	ok ; glsl compiles
 hlsl+conditional-10-ps.dxbc	ok ; glsl compiles
 hlsl+conditional-11-ps.dxbc	ok ; glsl compiles
@@ -308,7 +308,7 @@ hlsl+constructgswithso-1-ps.dxbc	ok ; glsl compiles
 hlsl+constructgswithso-3-ps.dxbc	ok ; glsl compiles
 hlsl+constructgswithso-5-ps.dxbc	ok ; glsl compiles
 hlsl+coverage-1-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+coverage-2-ps.dxbc	ok views:R32Uint through ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+hlsl+coverage-2-ps.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+cross-1-ps.dxbc	ok ; glsl compiles
 hlsl+cross-2-ps.dxbc	ok ; glsl compiles
 hlsl+d3dcolor-to-ubyte4-1-ps.dxbc	ok ; glsl compiles
@@ -916,7 +916,7 @@ hlsl+ps1-sampler-1-vs.dxbc	ok ; glsl compiles
 hlsl+ps1-sampler-4-vs.dxbc	ok ; glsl compiles
 hlsl+ps1-sampler-5-vs.dxbc	ok ; glsl compiles
 hlsl+rasteriser-ordered-views-1-vs.dxbc	ok ; glsl compiles
-hlsl+rasteriser-ordered-views-2-ps.dxbc	ok views:R32Uint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+hlsl+rasteriser-ordered-views-2-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+rasteriser-ordered-views-3-ps.dxbc	unsupported RasterizerOrderedView (with views)
 hlsl+rasteriser-ordered-views-4-ps.dxbc	unsupported RasterizerOrderedView (with views)
 hlsl+rasteriser-ordered-views-5-ps.dxbc	unsupported RasterizerOrderedView
@@ -1374,8 +1374,8 @@ hlsl+texture-load-typed-1-ps.dxbc	ok ; glsl compiles
 hlsl+texture-load-typed-2-ps.dxbc	ok ; glsl compiles
 hlsl+tgsm-10-cs.dxbc	ok ; glsl absent compute
 hlsl+tgsm-11-cs.dxbc	ok ; glsl absent compute
-hlsl+tgsm-12-cs.dxbc	unsupported TypedBufferFormatKind (with views)
-hlsl+tgsm-13-cs.dxbc	unsupported TypedBufferFormatKind (with views)
+hlsl+tgsm-12-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+tgsm-13-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+tgsm-14-cs.dxbc	ok ; glsl absent compute
 hlsl+tgsm-15-cs.dxbc	ok ; glsl absent compute
 hlsl+tgsm-16-cs.dxbc	ok ; glsl absent compute
@@ -1412,22 +1412,22 @@ hlsl+type-names-4-ps.dxbc	ok ; glsl compiles
 hlsl+type-names-5-ps.dxbc	ok ; glsl compiles
 hlsl+type-names-6-ps.dxbc	ok ; glsl compiles
 hlsl+type-names-7-ps.dxbc	ok ; glsl compiles
-hlsl+uav-atomics-1-cs.dxbc	ok views:R32Uint ; glsl absent compute
-hlsl+uav-atomics-2-cs.dxbc	ok views:R32Sint ; glsl absent compute
-hlsl+uav-atomics-3-cs.dxbc	ok views:R32Uint through ; glsl absent compute
-hlsl+uav-atomics-4-cs.dxbc	ok views:R32Sint through ; glsl absent compute
-hlsl+uav-atomics-5-cs.dxbc	unsupported TypedBufferFormatKind (with views)
-hlsl+uav-atomics-6-cs.dxbc	unsupported TypedBufferFormatKind (with views)
+hlsl+uav-atomics-1-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-2-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-atomics-3-cs.dxbc	ok views:R32Float through ; glsl absent compute
+hlsl+uav-atomics-4-cs.dxbc	ok views:R32Float through ; glsl absent compute
+hlsl+uav-atomics-5-cs.dxbc	unsupported AtomicSignedness (with views)
+hlsl+uav-atomics-6-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+uav-atomics-7-cs.dxbc	ok ; glsl absent compute
 hlsl+uav-counter-1-cs.dxbc	ok ; glsl absent compute
 hlsl+uav-counter-2-cs.dxbc	ok ; glsl absent compute
-hlsl+uav-counter-3-cs.dxbc	ok views:R32Uint ; glsl absent compute
-hlsl+uav-counter-4-cs.dxbc	ok views:R32Uint ; glsl absent compute
+hlsl+uav-counter-3-cs.dxbc	ok views:R32Float ; glsl absent compute
+hlsl+uav-counter-4-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+uav-load-1-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+uav-out-param-1-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+uav-out-param-2-cs.dxbc	ok views:R32Float ; glsl absent compute
 hlsl+uav-rwbuffer-1-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-hlsl+uav-rwbuffer-11-ps.dxbc	ok views:R32Sint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+hlsl+uav-rwbuffer-11-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+uav-rwbuffer-12-ps.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+uav-rwbuffer-2-ps.dxbc	unsupported RasterizerOrderedView (with views)
 hlsl+uav-rwbuffer-4-ps.dxbc	ok ; glsl compiles

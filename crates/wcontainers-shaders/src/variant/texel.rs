@@ -4,7 +4,9 @@
 //! to the view's place and length from [`HelperValue::TexelBufferView`]: elements at or past the
 //! length read zero (the defaults in components the format lacks) and take no writes, and atomic
 //! operations on them do nothing and return zero. Elements narrower than a word are written by
-//! compare-exchange on their word, so neighbours written at the same time are kept.
+//! compare-exchange on their word, so neighbours written at the same time are kept. A program
+//! declaring another scalar kind than the view's format reads and writes the view's values by their
+//! bits, as Direct3D gives them.
 
 use alloc::vec;
 use naga::{AtomicFunction, BinaryOperator as B, ScalarKind};
@@ -86,6 +88,8 @@ pub(crate) struct TexelBuffer {
     var: Handle<GlobalVariable>,
     name: String,
     kind: Kind,
+    /// The scalar kind the program declares, which loads give and stores take.
+    declared: ScalarKind,
     components: Vec<Component>,
     size: u32,
     /// The scalar of atomic words, where the words are atomic.
@@ -103,18 +107,17 @@ pub(crate) struct TexelBuffer {
 }
 
 impl TexelBuffer {
-    /// The bound view's format as the declaration (of scalar kind `declared`) reads it.
-    pub(crate) fn layout(format: Format, declared: ScalarKind) -> Result<Layout> {
+    /// The bound view's format.
+    pub(crate) fn layout(format: Format) -> Result<Layout> {
         let v = vertex_format(format).ok_or(ConvertError::Unsupported(
             crate::refusal::TYPED_BUFFER_FORMAT_ABSENT,
         ))?;
-        let (kind, components, size) = layout(v);
-        if natural(kind).kind != declared {
-            return Err(ConvertError::Unsupported(
-                crate::refusal::TYPED_BUFFER_FORMAT_KIND,
-            ));
-        }
-        Ok((kind, components, size))
+        Ok(layout(v))
+    }
+
+    /// The scalar kind the view's format reads as, which a texture holding it is sampled as.
+    pub(crate) fn view_kind((kind, ..): &Layout) -> ScalarKind {
+        natural(*kind).kind
     }
 
     /// The words' type: atomic where an atomic operation uses them (of `atomic`) or where elements
@@ -137,6 +140,7 @@ impl TexelBuffer {
     pub(crate) fn declared(
         var: Handle<GlobalVariable>,
         (kind, components, size): Layout,
+        declared: ScalarKind,
         atomic: Option<Scalar>,
         place: TexelPlace,
         stage: ShaderStage,
@@ -147,6 +151,7 @@ impl TexelBuffer {
             var,
             name: format!("texels_{set}_{binding}"),
             kind,
+            declared,
             components,
             size,
             atomic,
@@ -163,9 +168,20 @@ impl TexelBuffer {
         }
     }
 
-    /// The scalar loads give and stores take.
+    /// The scalar loads give and stores take: the program's.
     pub(crate) fn scalar(&self) -> Scalar {
-        natural(self.kind)
+        Scalar {
+            kind: self.declared,
+            ..natural(self.kind)
+        }
+    }
+
+    /// `v`, of the view's scalar, as the program's by its bits.
+    fn as_declared(&self, b: &mut Builder, v: Expr) -> Expr {
+        match natural(self.kind).kind == self.declared {
+            true => v,
+            false => b.bitcast(v, self.declared),
+        }
     }
 
     /// Whether elements are narrower than a word, so writes need atomic words.
@@ -321,7 +337,7 @@ impl TexelBuffer {
         }
     }
 
-    /// `texels_<set>_<binding>_load(index) -> vec4` of the format's scalar.
+    /// `texels_<set>_<binding>_load(index) -> vec4` of the program's scalar.
     pub(crate) fn load(
         &mut self,
         module: &mut Module,
@@ -330,8 +346,9 @@ impl TexelBuffer {
         if let Some(f) = self.load {
             return f;
         }
-        let natural = self.scalar();
-        let out = build::vec4(module, natural);
+        let natural = natural(self.kind);
+        let read_ty = build::vec4(module, natural);
+        let out = build::vec4(module, self.scalar());
         let u32_ty = scalar(module, Scalar::U32);
         let mut b = Builder::new(&format!("{}_load", self.name));
         b.f.arguments.push(FunctionArgument {
@@ -365,8 +382,9 @@ impl TexelBuffer {
                 sample: None,
                 level: Some(level),
             });
-            let zero = self.past_length(&mut b, out, natural);
+            let zero = self.past_length(&mut b, read_ty, natural);
             let value = b.select(inside, read, zero);
+            let value = self.as_declared(&mut b, value);
             b.ret(Some(value));
             let f = module.functions.append(b.finish(), Span::UNDEFINED);
             self.load = Some(f);
@@ -400,9 +418,10 @@ impl TexelBuffer {
         for i in values.len() as u32..VEC4 {
             values.push(b.expr(Expression::Literal(literal(natural, (i == ALPHA) as u32))));
         }
-        let read = b.compose(out, values);
-        let zero = self.past_length(&mut b, out, natural);
+        let read = b.compose(read_ty, values);
+        let zero = self.past_length(&mut b, read_ty, natural);
         let value = b.select(inside, read, zero);
+        let value = self.as_declared(&mut b, value);
         b.ret(Some(value));
         let f = module.functions.append(b.finish(), Span::UNDEFINED);
         self.load = Some(f);
@@ -446,7 +465,7 @@ impl TexelBuffer {
         f
     }
 
-    /// `texels_<set>_<binding>_store(index, value: vec4)` of the format's scalar.
+    /// `texels_<set>_<binding>_store(index, value: vec4)` of the program's scalar.
     pub(crate) fn store(
         &mut self,
         module: &mut Module,
@@ -455,8 +474,7 @@ impl TexelBuffer {
         if let Some(f) = self.store {
             return f;
         }
-        let natural = self.scalar();
-        let value_ty = build::vec4(module, natural);
+        let value_ty = build::vec4(module, self.scalar());
         let u32_ty = scalar(module, Scalar::U32);
         let mut b = Builder::new(&format!("{}_store", self.name));
         for (name, ty) in [("index", u32_ty), ("value", value_ty)] {
@@ -468,6 +486,10 @@ impl TexelBuffer {
         }
         let index = b.argument(0);
         let value = b.argument(1);
+        let value = match natural(self.kind).kind == self.declared {
+            true => value,
+            false => b.bitcast(value, natural(self.kind).kind),
+        };
         let (offset, length) = self.view(module, reflection, &mut b);
         let inside = b.binary(B::Less, index, length);
         b.open();
@@ -593,9 +615,9 @@ impl TexelBuffer {
         if let Some(&(_, f)) = self.atomics.iter().find(|(c, _)| *c == code) {
             return Ok(f);
         }
-        // Float views exchange their bits as u32 words.
-        let natural = self.scalar();
-        let ty = scalar(module, natural);
+        // The program's values; float ones exchange their bits as u32 words.
+        let declared = self.scalar();
+        let ty = scalar(module, declared);
         let u32_ty = scalar(module, Scalar::U32);
         let compared = matches!(fun, AtomicFunction::Exchange { compare: Some(_) });
         let mut b = Builder::new(&format!("{}_atomic_{code}", self.name));
@@ -617,7 +639,7 @@ impl TexelBuffer {
         }
         b.f.result = Some(FunctionResult { ty, binding: None });
         let index = b.argument(0);
-        let as_word = |b: &mut Builder, v: Expr| match natural == s {
+        let as_word = |b: &mut Builder, v: Expr| match declared == s {
             true => v,
             false => b.bitcast(v, s.kind),
         };
@@ -632,7 +654,7 @@ impl TexelBuffer {
             }
             other => other,
         };
-        let zero = b.expr(Expression::Literal(literal(natural, 0)));
+        let zero = b.expr(Expression::Literal(literal(declared, 0)));
         let out = b.local(ty, Some(zero));
         let (offset, length) = self.view(module, reflection, &mut b);
         let inside = b.binary(B::Less, index, length);
@@ -660,9 +682,9 @@ impl TexelBuffer {
             result: Some(result),
         });
         let old = if compared { b.field(result, 0) } else { result };
-        let old = match natural == s {
+        let old = match declared == s {
             true => old,
-            false => b.bitcast(old, natural.kind),
+            false => b.bitcast(old, declared.kind),
         };
         b.store(out, old);
         let accept = b.close();
@@ -716,7 +738,7 @@ fn natural(kind: Kind) -> Scalar {
 /// 3.2.2 and 3.2.3): integers clamped to the format's range; normalised values with NaN as zero,
 /// clamped, scaled and rounded half away from zero; floats rounded toward zero, keeping NaN and
 /// infinities, past the largest finite value giving it, an unsigned format's negatives zero.
-fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) -> Expr {
+pub(super) fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) -> Expr {
     let lit = |f: &mut Function, l: Literal| {
         f.expressions
             .append(Expression::Literal(l), Span::UNDEFINED)

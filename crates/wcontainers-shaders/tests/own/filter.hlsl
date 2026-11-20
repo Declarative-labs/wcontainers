@@ -1,7 +1,7 @@
 // Shaders for filtering in the program (tests/filter_draw.rs): a plane in perspective, near at the
 // bottom (wider than the target) and six times as far at the top, so one draw magnifies and minifies,
 // with a texture coordinate running from -1 to 2; the pixel shader samples in the way the constants
-// pick.
+// pick, or loads the texel under the coordinate wrapped into the texture.
 cbuffer Params : register(b0) {
     uint mode;
     float value;
@@ -42,5 +42,10 @@ float4 ps_filter(FilterOut i) : SV_Target {
     if (mode == 4) {
         return t.Sample(s, i.uv, int2(1, -2));
     }
-    return t.Gather(s, i.uv);
+    if (mode == 5) {
+        return t.Gather(s, i.uv);
+    }
+    uint width, height;
+    t.GetDimensions(width, height);
+    return t.Load(int3(int2(frac(i.uv) * float2(width, height)), 0));
 }

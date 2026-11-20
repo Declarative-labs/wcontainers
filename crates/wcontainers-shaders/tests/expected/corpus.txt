@@ -57,7 +57,7 @@
 056_ps_code_6.dxbc	ok ; glsl compiles
 057_ps_color_code_1.dxbc	ok ; glsl compiles
 058_ps_depth_code.dxbc	ok ; glsl compiles
-059_ps_code_7.dxbc	ok views:R32Sint through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+059_ps_code_7.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 060_ps_code_8.dxbc	ok ; glsl compiles
 061_ps_code_9.dxbc	ok ; glsl compiles
 062_ps_partial_input_code.dxbc	ok ; glsl compiles
@@ -107,15 +107,15 @@
 106_ps_code_ddy_fine.dxbc	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 107_ps_last_register_code.dxbc	ok ; glsl compiles
 108_ps_ld_2d_float_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-109_ps_ld_2d_uint_code.dxbc	ok views:R32Uint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-110_ps_ld_2d_int_code.dxbc	ok views:R32Sint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-111_ps_ld_2d_uint_arr_code.dxbc	ok views:R32Uint ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+109_ps_ld_2d_uint_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+110_ps_ld_2d_int_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+111_ps_ld_2d_uint_arr_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 112_cs_1_thread_code.dxbc	ok views:R32Float ; glsl absent compute
 113_cs_1_group_code.dxbc	ok views:R32Float ; glsl absent compute
 114_cs_1_store_code.dxbc	ok views:R32Float ; glsl absent compute
 115_cs_dispatch_id_code.dxbc	ok views:R32Float ; glsl absent compute
 116_cs_group_index_code.dxbc	ok views:R32Float ; glsl absent compute
-117_cs_store_int_code.dxbc	ok views:R32Sint ; glsl absent compute
+117_cs_store_int_code.dxbc	ok views:R32Float ; glsl absent compute
 118_cs_store_float_code.dxbc	ok views:R32Float ; glsl absent compute
 119_cs_store_unorm_code.dxbc	ok views:R32Float ; glsl absent compute
 120_cs_store_snorm_code.dxbc	ok views:R32Float ; glsl absent compute
@@ -162,7 +162,7 @@
 161_gather4_po_c_code.dxbc	ok ; glsl compiles
 162_vs_code_11.dxbc	ok ; glsl compiles
 163_ps_code_21.dxbc	ok ; glsl compiles
-164_ps_code_22.dxbc	ok views:R32Sint through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+164_ps_code_22.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 165_ps_depth_le_code.dxbc	ok ; glsl compiles
 166_ps_depth_ge_code.dxbc	ok ; glsl compiles
 167_hs_code.dxbc	ok ; glsl absent compute
