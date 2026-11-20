@@ -18,6 +18,7 @@ use wcontainers_gpu::{
     VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, Viewport, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
+use wcontainers_graphics_test::d3d12;
 use wcontainers_shaders::stage::{
     FinalDraw, GeometryReplay, InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT,
     ReplayDraw, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw, StageError, StageIndex,
@@ -468,14 +469,50 @@ fn stream_counts(words: &[u32], stream: usize) -> [u64; 2] {
     [u64::from(words[at]), u64::from(words[at + 1])]
 }
 
-/// Whether ours streamed what Direct3D did: every word of every buffer and each stream's counts.
-fn streamed_equal(reference: &[Vec<u8>], statistics: &[[u64; 2]], made: &Made) -> bool {
+/// Units in the last place a float dxc's build computes may differ by from Direct3D 12's: Direct3D
+/// and the back ends' compilers alike may contract a multiply and an add and divide by a constant's
+/// reciprocal, each its own way (gap A21); the largest measured.
+const CONTRACTED_ULPS: u32 = 4;
+
+/// Whether `ours` differs from Direct3D's word `theirs` beyond what `route`'s build allows: dxc's
+/// may be [`CONTRACTED_ULPS`] apart where both are normal floats of one sign, which the integers the
+/// tests stream (small, so subnormal as floats) never are.
+fn word_apart(route: Route, theirs: &[u8], ours: &[u8]) -> bool {
+    let [a, b] = [theirs, ours].map(|w| f32::from_le_bytes(w.try_into().unwrap()));
+    let contracted = route == Route::Dxil
+        && a.is_normal()
+        && b.is_normal()
+        && a.is_sign_negative() == b.is_sign_negative()
+        && a.to_bits().abs_diff(b.to_bits()) <= CONTRACTED_ULPS;
+    theirs != ours && !contracted
+}
+
+/// Words of `ours` apart from Direct3D's `theirs`, by [`word_apart`].
+fn words_apart(route: Route, theirs: &[u8], ours: &[u8]) -> usize {
+    theirs
+        .chunks(4)
+        .zip(ours.chunks(4))
+        .filter(|(x, y)| word_apart(route, x, y))
+        .count()
+}
+
+/// Whether ours streamed what Direct3D did: every word of every buffer (by [`word_apart`]) and each
+/// stream's counts.
+fn streamed_equal(
+    route: Route,
+    reference: &[Vec<u8>],
+    statistics: &[[u64; 2]],
+    made: &Made,
+) -> bool {
     let (streamed, words) = match made {
         Made::Streamed(streamed, words) => (streamed, words),
         Made::Nothing => return statistics.iter().all(|counts| *counts == [0, 0]),
         Made::Picture(_) => return false,
     };
-    reference.iter().zip(streamed).all(|(a, b)| a == b)
+    reference
+        .iter()
+        .zip(streamed)
+        .all(|(a, b)| words_apart(route, a, b) == 0)
         && statistics
             .iter()
             .enumerate()
@@ -1343,6 +1380,329 @@ fn ours_replayed<B: Backend>(
     Ok(Made::Picture(out))
 }
 
+/// The devices stream output is compared against: Direct3D 11 runs fxc's builds, Direct3D 12 dxc's.
+struct References {
+    d3d11: Gpu,
+    d3d12: d3d12::Gpu,
+}
+
+fn references() -> References {
+    References {
+        d3d11: d3d11::create(
+            wcontainers_graphics_test::Driver::Hardware,
+            false,
+            &[D3D_FEATURE_LEVEL_11_0],
+        )
+        .unwrap(),
+        d3d12: d3d12::create(wcontainers_graphics_test::Driver::Hardware, false).unwrap(),
+    }
+}
+
+/// Each of `cases` as fxc builds its programs, then as dxc does.
+fn on_both_routes(cases: &[Case]) -> Vec<Case> {
+    Route::BOTH
+        .iter()
+        .flat_map(|&route| cases.iter().map(move |&c| Case { route, ..c }))
+        .collect()
+}
+
+/// Real Direct3D's stream output of `case` as its route's compiler builds it: fxc's build on
+/// Direct3D 11, dxc's on Direct3D 12.
+fn reference_streamed(
+    gpus: &References,
+    case: &Case,
+    vertices: &[f32],
+    indices: &[u8],
+    output: (&StreamOutput, &Bound),
+    streams: usize,
+) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
+    match case.route {
+        Route::Dxbc => direct3d_streamed(&gpus.d3d11, case, vertices, indices, output, streams),
+        Route::Dxil => direct3d12_streamed(&gpus.d3d12, case, vertices, indices, output, streams),
+    }
+}
+
+/// The primitive type a Direct3D 12 pipeline declares for `t`.
+fn d3d12_topology_type(
+    t: InputTopology,
+) -> windows::Win32::Graphics::Direct3D12::D3D12_PRIMITIVE_TOPOLOGY_TYPE {
+    use windows::Win32::Graphics::Direct3D12::*;
+    match t {
+        InputTopology::PointList => D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT,
+        InputTopology::LineList
+        | InputTopology::LineStrip
+        | InputTopology::LineListAdjacency
+        | InputTopology::LineStripAdjacency => D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE,
+        InputTopology::PatchList(_) => D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH,
+        _ => D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+    }
+}
+
+/// Real Direct3D 12's stream output of `case` from dxc's builds, as [`direct3d_streamed`] has
+/// Direct3D 11's: each bound buffer starts filled with the same bytes and its filled size at the
+/// bound start, and an unbound buffer is a view at no address.
+fn direct3d12_streamed(
+    gpu: &d3d12::Gpu,
+    case: &Case,
+    vertices: &[f32],
+    indices: &[u8],
+    (so, bound): (&StreamOutput, &Bound),
+    streams: usize,
+) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
+    use windows::Win32::Graphics::Direct3D12::*;
+    let ext = case.route.extension();
+    let vs = bytecode(&format!("vs_geometry.{ext}"));
+    let gs = (!case.gs.is_empty()).then(|| bytecode(&format!("{}.{ext}", case.gs)));
+    let root = gpu
+        .root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
+            Version: D3D_ROOT_SIGNATURE_VERSION_1_0,
+            Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
+                Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
+                    NumParameters: 1,
+                    pParameters: &D3D12_ROOT_PARAMETER {
+                        ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                        Anonymous: D3D12_ROOT_PARAMETER_0 {
+                            Descriptor: D3D12_ROOT_DESCRIPTOR::default(),
+                        },
+                        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                    },
+                    Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                        | D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT,
+                    ..Default::default()
+                },
+            },
+        })
+        .unwrap();
+    let names: Vec<std::ffi::CString> = so
+        .entries
+        .iter()
+        .map(|e| std::ffi::CString::new(e.semantic.clone().unwrap_or_default()).unwrap())
+        .collect();
+    let entries: Vec<D3D12_SO_DECLARATION_ENTRY> = so
+        .entries
+        .iter()
+        .zip(&names)
+        .map(|(e, name)| D3D12_SO_DECLARATION_ENTRY {
+            Stream: e.stream.into(),
+            SemanticName: match e.semantic {
+                Some(_) => windows::core::PCSTR(name.as_ptr().cast()),
+                None => windows::core::PCSTR::null(),
+            },
+            SemanticIndex: e.semantic_index,
+            StartComponent: e.start_component,
+            ComponentCount: e.component_count,
+            OutputSlot: e.slot,
+        })
+        .collect();
+    let strides = &so.strides[..so
+        .strides
+        .iter()
+        .rposition(|&s| s != 0)
+        .map_or(0, |i| i + 1)];
+    let layout = [
+        d3d12::element(s!("POSITION"), DXGI_FORMAT_R32G32B32_FLOAT, 0),
+        d3d12::element(s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 12),
+    ];
+    let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+        pRootSignature: unsafe { std::mem::transmute_copy(&root) },
+        VS: d3d12::bytecode(&vs),
+        GS: gs.as_deref().map(d3d12::bytecode).unwrap_or_default(),
+        StreamOutput: D3D12_STREAM_OUTPUT_DESC {
+            pSODeclaration: entries.as_ptr(),
+            NumEntries: entries.len() as u32,
+            pBufferStrides: strides.as_ptr(),
+            NumStrides: strides.len() as u32,
+            RasterizedStream: D3D12_SO_NO_RASTERIZED_STREAM,
+        },
+        SampleMask: u32::MAX,
+        RasterizerState: D3D12_RASTERIZER_DESC {
+            FillMode: D3D12_FILL_MODE_SOLID,
+            CullMode: D3D12_CULL_MODE_NONE,
+            DepthClipEnable: true.into(),
+            ..Default::default()
+        },
+        InputLayout: D3D12_INPUT_LAYOUT_DESC {
+            pInputElementDescs: layout.as_ptr(),
+            NumElements: layout.len() as u32,
+        },
+        PrimitiveTopologyType: d3d12_topology_type(case.topology),
+        // Direct3D 11 cuts every indexed strip at the largest index.
+        IBStripCutValue: match strip(case.topology) {
+            true => D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF,
+            false => D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+        },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        ..Default::default()
+    };
+    let pipeline: ID3D12PipelineState =
+        unsafe { gpu.device.CreateGraphicsPipelineState(&desc) }.unwrap();
+    let mut heap: Option<ID3D12QueryHeap> = None;
+    unsafe {
+        gpu.device.CreateQueryHeap(
+            &D3D12_QUERY_HEAP_DESC {
+                Type: D3D12_QUERY_HEAP_TYPE_SO_STATISTICS,
+                Count: streams as u32,
+                NodeMask: 0,
+            },
+            &mut heap,
+        )
+    }
+    .unwrap();
+    let heap = heap.unwrap();
+    let query_types = [
+        D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0,
+        D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1,
+        D3D12_QUERY_TYPE_SO_STATISTICS_STREAM2,
+        D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3,
+    ];
+    let statistics_bytes = size_of::<D3D12_QUERY_DATA_SO_STATISTICS>();
+    let results = gpu
+        .committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &d3d12::buffer_desc((statistics_bytes * streams) as u64),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            None,
+        )
+        .unwrap();
+    // Each bound buffer and its filled size (a u64), copied in from upload buffers.
+    let targets: Vec<Option<(ID3D12Resource, ID3D12Resource, u64)>> = bound
+        .sizes
+        .iter()
+        .zip(bound.start)
+        .map(|(size, start)| {
+            size.map(|size| {
+                let made = |bytes: &[u8]| {
+                    let resource = gpu
+                        .committed(
+                            D3D12_HEAP_TYPE_DEFAULT,
+                            &d3d12::buffer_desc(bytes.len() as u64),
+                            D3D12_RESOURCE_STATE_COPY_DEST,
+                            None,
+                        )
+                        .unwrap();
+                    let from = gpu.upload(bytes).unwrap();
+                    unsafe {
+                        gpu.list
+                            .CopyBufferRegion(&resource, 0, &from, 0, bytes.len() as u64);
+                        gpu.list.ResourceBarrier(&[d3d12::transition(
+                            &resource,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
+                            D3D12_RESOURCE_STATE_STREAM_OUT,
+                        )]);
+                    }
+                    gpu.keep(&from);
+                    resource
+                };
+                let buffer = made(&vec![0xcd; size as usize]);
+                let filled = made(&u64::from(start).to_le_bytes());
+                (buffer, filled, size)
+            })
+        })
+        .collect();
+    let views: Vec<D3D12_STREAM_OUTPUT_BUFFER_VIEW> = targets
+        .iter()
+        .map(|t| match t {
+            Some((buffer, filled, size)) => D3D12_STREAM_OUTPUT_BUFFER_VIEW {
+                BufferLocation: unsafe { buffer.GetGPUVirtualAddress() },
+                SizeInBytes: *size,
+                BufferFilledSizeLocation: unsafe { filled.GetGPUVirtualAddress() },
+            },
+            None => D3D12_STREAM_OUTPUT_BUFFER_VIEW::default(),
+        })
+        .collect();
+    let vertex_buffer = gpu.upload(bytes_of(vertices)).unwrap();
+    let constant_buffer = gpu.upload(&constants()).unwrap();
+    let index_buffer = gpu.upload(indices).unwrap();
+    let list = &gpu.list;
+    unsafe {
+        list.SetGraphicsRootSignature(&root);
+        list.SetPipelineState(&pipeline);
+        list.SetGraphicsRootConstantBufferView(0, constant_buffer.GetGPUVirtualAddress());
+        list.IASetPrimitiveTopology(d3d_topology(case.topology));
+        list.IASetVertexBuffers(
+            0,
+            Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: vertex_buffer.GetGPUVirtualAddress(),
+                SizeInBytes: size_of_val(vertices) as u32,
+                StrideInBytes: COLOURED_VERTEX_BYTES,
+            }]),
+        );
+        list.SOSetTargets(0, Some(&views));
+        for (s, &query) in query_types[..streams].iter().enumerate() {
+            list.BeginQuery(&heap, query, s as u32);
+        }
+        match case.indexed {
+            Some(base) => {
+                list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+                    BufferLocation: index_buffer.GetGPUVirtualAddress(),
+                    SizeInBytes: indices.len() as u32,
+                    Format: DXGI_FORMAT_R16_UINT,
+                }));
+                list.DrawIndexedInstanced(
+                    case.count,
+                    case.instances,
+                    case.first,
+                    base,
+                    case.first_instance,
+                );
+            }
+            None => list.DrawInstanced(case.count, case.instances, case.first, case.first_instance),
+        }
+        for (s, &query) in query_types[..streams].iter().enumerate() {
+            list.EndQuery(&heap, query, s as u32);
+            list.ResolveQueryData(
+                &heap,
+                query,
+                s as u32,
+                1,
+                &results,
+                (s * statistics_bytes) as u64,
+            );
+        }
+        list.SOSetTargets(0, None);
+    }
+    for resource in [&vertex_buffer, &constant_buffer, &index_buffer] {
+        gpu.keep(resource);
+    }
+    let read = gpu
+        .read_buffer(
+            &results,
+            (statistics_bytes * streams) as u64,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )
+        .unwrap();
+    let statistics = read
+        .chunks(statistics_bytes)
+        .map(|c| {
+            let word = |offset: usize| {
+                u64::from_le_bytes(c[offset..][..size_of::<u64>()].try_into().unwrap())
+            };
+            [
+                word(std::mem::offset_of!(
+                    D3D12_QUERY_DATA_SO_STATISTICS,
+                    NumPrimitivesWritten
+                )),
+                word(std::mem::offset_of!(
+                    D3D12_QUERY_DATA_SO_STATISTICS,
+                    PrimitivesStorageNeeded
+                )),
+            ]
+        })
+        .collect();
+    let bytes = targets
+        .iter()
+        .flatten()
+        .map(|(buffer, _, size)| {
+            gpu.read_buffer(buffer, *size, D3D12_RESOURCE_STATE_STREAM_OUT)
+                .unwrap()
+        })
+        .collect();
+    (bytes, statistics)
+}
+
 /// Real Direct3D 11's stream output of `case` (`gs` empty: from the vertex shader) under `so` into
 /// the `bound` buffers, nothing drawn: the bound buffers' bytes, and each of the first `streams`
 /// streams' primitives written and needed.
@@ -1669,12 +2029,7 @@ const STREAMED: [Case; 14] = [
 #[test]
 fn stream_output_matches_direct3d() {
     let mut backend = webgpu();
-    let gpu = d3d11::create(
-        wcontainers_graphics_test::Driver::Hardware,
-        false,
-        &[D3D_FEATURE_LEVEL_11_0],
-    )
-    .unwrap();
+    let gpus = references();
     let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
         .map(|s| s.parse().unwrap())
         .unwrap_or(1);
@@ -1685,9 +2040,10 @@ fn stream_output_matches_direct3d() {
     let mut compared = 0;
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for case in &STREAMED {
+        for case in &on_both_routes(&STREAMED) {
             let name = format!(
-                "seed {seed} {} {:?} {} from {} x{}{}",
+                "seed {seed} {:?} {} {:?} {} from {} x{}{}",
+                case.route,
                 if case.gs.is_empty() {
                     "vertex"
                 } else {
@@ -1705,7 +2061,9 @@ fn stream_output_matches_direct3d() {
             let Ok((indices, (reference, statistics))) = scene(
                 case.indexed.is_some(),
                 |attempt| indices(seed, case, attempt),
-                |indices| direct3d_streamed(&gpu, case, &vertices, indices, (&so, &TWO_BUFFERS), 1),
+                |indices| {
+                    reference_streamed(&gpus, case, &vertices, indices, (&so, &TWO_BUFFERS), 1)
+                },
                 |(_, statistics)| statistics[0][0] != 0,
                 |indices, (reference, statistics)| {
                     let made = ours(
@@ -1716,7 +2074,7 @@ fn stream_output_matches_direct3d() {
                         Some((&so, &TWO_BUFFERS)),
                         None,
                     );
-                    streamed_equal(reference, statistics, &made)
+                    streamed_equal(case.route, reference, statistics, &made)
                 },
             )
             .map_err(|e| failures.push(format!("{name}: {e}"))) else {
@@ -1734,7 +2092,7 @@ fn stream_output_matches_direct3d() {
                 unreachable!()
             };
             compared += 1;
-            if !streamed_alike(&name, &reference, statistics, &streamed, &words) {
+            if !streamed_alike(&name, case.route, &reference, statistics, &streamed, &words) {
                 failures.push(name);
             }
         }
@@ -1744,9 +2102,11 @@ fn stream_output_matches_direct3d() {
 }
 
 /// Whether ours wrote what Direct3D wrote (`reference`, its statistics written and made), every word
-/// of every buffer and both counts; prints the counts and each word apart.
+/// of every buffer (by [`word_apart`]) and both counts; prints the counts and each word that
+/// differs, apart or not.
 fn streamed_alike(
     name: &str,
+    route: Route,
     reference: &[Vec<u8>],
     statistics: [u64; 2],
     streamed: &[Vec<u8>],
@@ -1755,7 +2115,7 @@ fn streamed_alike(
     let apart: Vec<usize> = reference
         .iter()
         .zip(streamed)
-        .map(|(a, b)| a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count())
+        .map(|(a, b)| words_apart(route, a, b))
         .collect();
     let counts = stream_counts(words, 0);
     eprintln!(
@@ -1784,12 +2144,7 @@ fn streamed_alike(
 #[test]
 fn stream_output_after_replay_matches_direct3d() {
     let mut backend = webgl();
-    let gpu = d3d11::create(
-        wcontainers_graphics_test::Driver::Hardware,
-        false,
-        &[D3D_FEATURE_LEVEL_11_0],
-    )
-    .unwrap();
+    let gpus = references();
     let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
         .map(|s| s.parse().unwrap())
         .unwrap_or(1);
@@ -1800,9 +2155,10 @@ fn stream_output_after_replay_matches_direct3d() {
     let mut compared = 0;
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for case in &STREAMED {
+        for case in &on_both_routes(&STREAMED) {
             let name = format!(
-                "seed {seed} {} {:?} {} from {} x{}{}",
+                "seed {seed} {:?} {} {:?} {} from {} x{}{}",
+                case.route,
                 if case.gs.is_empty() {
                     "vertex"
                 } else {
@@ -1820,7 +2176,9 @@ fn stream_output_after_replay_matches_direct3d() {
             let Ok((indices, (reference, statistics))) = scene(
                 case.indexed.is_some(),
                 |attempt| indices(seed, case, attempt),
-                |indices| direct3d_streamed(&gpu, case, &vertices, indices, (&so, &TWO_BUFFERS), 1),
+                |indices| {
+                    reference_streamed(&gpus, case, &vertices, indices, (&so, &TWO_BUFFERS), 1)
+                },
                 |(_, statistics)| statistics[0][0] != 0,
                 |indices, (reference, statistics)| {
                     match ours_replayed(
@@ -1830,7 +2188,7 @@ fn stream_output_after_replay_matches_direct3d() {
                         indices,
                         Some((&so, &TWO_BUFFERS)),
                     ) {
-                        Ok(made) => streamed_equal(reference, statistics, &made),
+                        Ok(made) => streamed_equal(case.route, reference, statistics, &made),
                         // Its refusal is checked on the list compared.
                         Err(_) => !replayed(case),
                     }
@@ -1858,7 +2216,14 @@ fn stream_output_after_replay_matches_direct3d() {
                 continue;
             };
             compared += 1;
-            if !streamed_alike(&name, &reference, statistics[0], &streamed, &words) {
+            if !streamed_alike(
+                &name,
+                case.route,
+                &reference,
+                statistics[0],
+                &streamed,
+                &words,
+            ) {
                 failures.push(name);
             }
         }
@@ -1937,12 +2302,7 @@ const STREAMS_CASES: [Case; 2] = [
 #[test]
 fn streams_past_the_first_match_direct3d() {
     let mut backend = webgpu();
-    let gpu = d3d11::create(
-        wcontainers_graphics_test::Driver::Hardware,
-        false,
-        &[D3D_FEATURE_LEVEL_11_0],
-    )
-    .unwrap();
+    let gpus = references();
     let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
         .map(|s| s.parse().unwrap())
         .unwrap_or(1);
@@ -1950,21 +2310,22 @@ fn streams_past_the_first_match_direct3d() {
         .map(|s| s.parse().unwrap())
         .unwrap_or(4);
     let so = streams_declaration();
+    let mut known = Vec::new();
     let mut failures = Vec::new();
     let mut compared = 0;
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
-        for case in &STREAMS_CASES {
+        for case in &on_both_routes(&STREAMS_CASES) {
             for (b, bound) in STREAMS_BOUND.iter().enumerate() {
                 let name = format!(
-                    "seed {seed} {} from {} x{}, buffers {b}",
-                    case.count, case.first, case.instances
+                    "seed {seed} {:?} {} from {} x{}, buffers {b}",
+                    case.route, case.count, case.first, case.instances
                 );
                 let Ok((indices, (reference, statistics))) = scene(
                     case.indexed.is_some(),
                     |attempt| indices(seed, case, attempt),
                     |indices| {
-                        direct3d_streamed(&gpu, case, &vertices, indices, (&so, bound), STREAMS)
+                        reference_streamed(&gpus, case, &vertices, indices, (&so, bound), STREAMS)
                     },
                     |(_, statistics)| statistics.iter().any(|s| s[0] != 0),
                     |indices, (reference, statistics)| {
@@ -1976,7 +2337,7 @@ fn streams_past_the_first_match_direct3d() {
                             Some((&so, bound)),
                             None,
                         );
-                        streamed_equal(reference, statistics, &made)
+                        streamed_equal(case.route, reference, statistics, &made)
                     },
                 )
                 .map_err(|e| failures.push(format!("{name}: {e}"))) else {
@@ -1998,7 +2359,7 @@ fn streams_past_the_first_match_direct3d() {
                 let apart: Vec<usize> = reference
                     .iter()
                     .zip(&streamed)
-                    .map(|(a, b)| a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count())
+                    .map(|(a, b)| words_apart(case.route, a, b))
                     .collect();
                 eprintln!(
                     "{name}: direct3d written and made per stream {statistics:?}, ours {counts:?}; \
@@ -2028,13 +2389,32 @@ fn streams_past_the_first_match_direct3d() {
                     false => counts[s] == statistics[s],
                 });
                 let wrote_all = statistics.iter().all(|s| s[1] > 0);
-                if apart.iter().any(|&n| n > 0) || !agree || !wrote_all {
+                // Direct3D 12 writes zeros for stream 0 of dxc's four-stream build, every count and
+                // every other stream's words equal (gap A22): known where only the first buffer is
+                // apart and each of its words apart is a zero of Direct3D's.
+                let first_zeroed = case.route == Route::Dxil
+                    && apart.iter().skip(1).all(|&n| n == 0)
+                    && reference[0]
+                        .chunks(4)
+                        .zip(streamed[0].chunks(4))
+                        .filter(|(x, y)| word_apart(case.route, x, y))
+                        .all(|(x, _)| x.iter().all(|&byte| byte == 0));
+                if !agree || !wrote_all {
+                    failures.push(name);
+                } else if apart[0] > 0 && first_zeroed {
+                    eprintln!("{name}: known, stream 0 zeros in direct3d 12's buffer");
+                    known.push(name);
+                } else if apart.iter().any(|&n| n > 0) {
                     failures.push(name);
                 }
             }
         }
     }
-    eprintln!("{compared} comparisons, {} failed", failures.len());
+    eprintln!(
+        "{compared} comparisons, {} failed, {} known (stream 0 zeroed by direct3d 12)",
+        failures.len(),
+        known.len()
+    );
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
