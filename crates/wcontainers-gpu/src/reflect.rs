@@ -480,6 +480,11 @@ bitflags! {
         /// primitive naming a layer at or past [`HelperValue::LayerCount`] in the run of layer 0
         /// ([`crate::SlowPath::LayerSplit`]). The front sets it in both programs' keys.
         const LAYER_FROM_STAGE = 1 << 15;
+        /// A geometry shader made a vertex program run once per output vertex slot, for back ends
+        /// without [`crate::Features::COMPUTE`]: it reads the vertex stage's captured outputs from a
+        /// texture and writes the one vertex its slot keeps, which is captured in turn and drawn by the
+        /// geometry stage's pass-through ([`crate::SlowPath::GeometryAsReplay`]).
+        const GEOMETRY_REPLAY = 1 << 16;
     }
 }
 
