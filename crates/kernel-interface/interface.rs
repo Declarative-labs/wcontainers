@@ -53,6 +53,7 @@ pub trait Process {
     fn execution_config(&self) -> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>;
     fn state(&mut self) -> &mut Self::State;
     fn memory_id(&self) -> MemoryId;
+    fn processor_features(&self) -> &ProcessorFeatures;
 
     fn read_memory(
         &mut self,
