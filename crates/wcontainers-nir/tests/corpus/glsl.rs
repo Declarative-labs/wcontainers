@@ -19,8 +19,8 @@ use crate::interface::{COMPONENT_BYTES, Kind, Ty};
 const BYTES_A_WORD: usize = COMPONENT_BYTES as usize;
 use crate::lavapipe::{self, Attribute, Element, Job, Lavapipe};
 use crate::llvmpipe::{
-    AttributeSlot, Block, DrawOptions, Llvmpipe, Reflection, SampledTexture, StageValue,
-    UniformValue, Variable, VertexAttribute,
+    AttributeSlot, Block, ComputeInputs, DrawOptions, Llvmpipe, Reflection, SampledTexture,
+    StageValue, SubroutineChoice, UniformValue, Variable, VertexAttribute,
 };
 use ash::vk;
 use naga::Module;
@@ -167,16 +167,38 @@ fn named(names: &[GlslName], kind: GlslNameKind, at: u32) -> Option<&GlslName> {
     names.iter().find(|n| n.kind == kind && n.at == at)
 }
 
-/// The words of uniform buffer 0: each default-block uniform's values at the bridge's words.
+/// The words of uniform buffer 0 of a stage: each default-block uniform's values and each
+/// subroutine uniform's chosen indices at the bridge's words.
 fn default_block(
     size: usize,
+    stage: Stage,
     names: &[GlslName],
-    values: &[UniformValue],
+    inputs: &GlInputs,
 ) -> Result<Vec<u8>, String> {
     let mut bytes = vec![0; size];
     for name in names {
         let state = match name.kind {
             GlslNameKind::Uniform => None,
+            GlslNameKind::SubroutineUniform => {
+                let Some((_, _, chosen)) = inputs
+                    .subroutine_words
+                    .iter()
+                    .find(|(s, n, _)| *s == stage && n == &name.name)
+                else {
+                    return Err(format!(
+                        "the subroutine uniform {} has no subroutine from OpenGL here",
+                        name.name
+                    ));
+                };
+                for (i, &index) in (0..).zip(chosen) {
+                    let at = (name.at as usize + i) * BYTES_A_WORD;
+                    bytes
+                        .get_mut(at..at + BYTES_A_WORD)
+                        .ok_or_else(|| format!("{} lies past uniform buffer 0", name.name))?
+                        .copy_from_slice(&index.to_le_bytes());
+                }
+                continue;
+            }
             GlslNameKind::FragCoordYTransform => Some(FRAG_COORD_Y_TRANSFORM),
             GlslNameKind::PointCoordYTransform => Some(POINT_COORD_Y_TRANSFORM),
             GlslNameKind::OtherState => {
@@ -194,7 +216,11 @@ fn default_block(
             }
             continue;
         }
-        let Some(value) = values.iter().find(|v| bare(&v.variable.name) == name.name) else {
+        let Some(value) = inputs
+            .values
+            .iter()
+            .find(|v| bare(&v.variable.name) == name.name)
+        else {
             return Err(format!(
                 "the uniform {} has no value from OpenGL here",
                 name.name
@@ -225,6 +251,10 @@ struct GlInputs<'a> {
     storage_blocks: Vec<(Vec<u8>, Vec<Option<Kind>>)>,
     /// Each sampler's texture, made from the first route resource that reads it.
     sampled: Vec<SampledTexture>,
+    /// Each stage's subroutine, chosen from the seed, for each subroutine uniform location.
+    subroutines: Vec<SubroutineChoice>,
+    /// The same choices by stage and subroutine uniform name, element after element.
+    subroutine_words: Vec<(Stage, String, Vec<u32>)>,
 }
 
 impl GlInputs<'_> {
@@ -262,6 +292,35 @@ fn gl_inputs<'a>(
         let words = (0..count).map(|_| scalar(rng, ty)).collect();
         values.push(UniformValue { variable: v, words });
     }
+    let mut subroutines: Vec<SubroutineChoice> = Vec::new();
+    let mut subroutine_words = Vec::new();
+    for u in &gl.subroutine_uniforms {
+        if u.compatible.is_empty() {
+            return Err(format!(
+                "the subroutine uniform {} has no subroutine",
+                u.name
+            ));
+        }
+        let chosen: Vec<u32> = (0..u.array_size)
+            .map(|_| u.compatible[rng.random_range(0..u.compatible.len())])
+            .collect();
+        let at = if let Some(at) = subroutines.iter().position(|c| c.stage == u.stage) {
+            at
+        } else {
+            subroutines.push(SubroutineChoice {
+                stage: u.stage,
+                indices: Vec::new(),
+            });
+            subroutines.len() - 1
+        };
+        let indices = &mut subroutines[at].indices;
+        let end = (u.location + u.array_size) as usize;
+        if indices.len() < end {
+            indices.resize(end, 0);
+        }
+        indices[u.location as usize..end].copy_from_slice(&chosen);
+        subroutine_words.push((u.stage, bare(&u.name).to_owned(), chosen));
+    }
     let block_contents = |rng: &mut ChaCha8Rng, blocks: &[Block], members: &[Variable]| {
         (0..)
             .zip(blocks)
@@ -276,6 +335,8 @@ fn gl_inputs<'a>(
         uniform_blocks: block_contents(rng, &gl.uniform_blocks, &gl.uniforms)?,
         storage_blocks: block_contents(rng, &gl.storage_blocks, &gl.buffer_variables)?,
         sampled: Vec::new(),
+        subroutines,
+        subroutine_words,
     })
 }
 
@@ -340,6 +401,7 @@ fn route_resources(
     rng: &mut ChaCha8Rng,
     module: &Module,
     reflection: &[ReflectedBinding],
+    stage: Stage,
     names: &[GlslName],
     gl: &Reflection,
     inputs: &mut GlInputs,
@@ -380,7 +442,7 @@ fn route_resources(
         };
         let Some(name) = named(names, kind, binding) else {
             if kind == GlslNameKind::UniformBlock {
-                *bytes = default_block(bytes.len(), names, &inputs.values)?;
+                *bytes = default_block(bytes.len(), stage, names, inputs)?;
                 continue;
             }
             return Err(format!(
@@ -480,21 +542,27 @@ pub fn compare_compute(
         Ok(i) => i,
         Err(e) => return not_run(e),
     };
-    let (resources, storage_of) =
-        match route_resources(&mut rng, module, reflection, names, &gl, &mut inputs) {
-            Ok(r) => r,
-            Err(e) => return not_run(e),
-        };
-    let gl_run = || {
-        llvmpipe.compute(
-            program,
-            &inputs.values,
-            &inputs.uniform_bytes(),
-            &inputs.storage_bytes(),
-            &inputs.sampled,
-            [COMPUTE_GROUPS, 1, 1],
-        )
+    let (resources, storage_of) = match route_resources(
+        &mut rng,
+        module,
+        reflection,
+        Stage::Compute,
+        names,
+        &gl,
+        &mut inputs,
+    ) {
+        Ok(r) => r,
+        Err(e) => return not_run(e),
     };
+    let (uniform_bytes, storage_bytes) = (inputs.uniform_bytes(), inputs.storage_bytes());
+    let dispatched = ComputeInputs {
+        uniforms: &inputs.values,
+        subroutines: &inputs.subroutines,
+        uniform_blocks: &uniform_bytes,
+        storage_blocks: &storage_bytes,
+        sampled: &inputs.sampled,
+    };
+    let gl_run = || llvmpipe.compute(program, &dispatched, [COMPUTE_GROUPS, 1, 1]);
     let (first, again) = match (gl_run(), gl_run()) {
         (Ok(a), Ok(b)) => (a, b),
         (Err(e), _) | (_, Err(e)) => return not_run(e),
@@ -1020,11 +1088,12 @@ pub fn compare_draw(
     };
     let mut resources = Vec::new();
     let mut storage_of = Vec::new();
-    for stage in [vertex, fragment] {
+    for (stage, kind) in [(vertex, Stage::Vertex), (fragment, Stage::Fragment)] {
         match route_resources(
             &mut rng,
             stage.module,
             stage.reflection,
+            kind,
             stage.names,
             &gl,
             &mut inputs,
@@ -1044,6 +1113,7 @@ pub fn compare_draw(
     let (uniform_bytes, storage_bytes) = (inputs.uniform_bytes(), inputs.storage_bytes());
     let draw = DrawOptions {
         uniforms: &inputs.values,
+        subroutines: &inputs.subroutines,
         uniform_blocks: &uniform_bytes,
         storage_blocks: &storage_bytes,
         sampled: &inputs.sampled,

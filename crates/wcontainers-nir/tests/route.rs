@@ -337,3 +337,26 @@ fn a_vertex_program_without_a_position_gets_one_outside_every_clip_volume() {
         Some(naga::Binding::BuiltIn(naga::BuiltIn::Position { .. }))
     )));
 }
+
+const SUBROUTINES: &str = "#version 450
+subroutine vec4 Shade(vec4 c);
+subroutine(Shade) vec4 keep(vec4 c) { return c; }
+subroutine(Shade) vec4 invert(vec4 c) { return 1.0 - c; }
+subroutine uniform Shade shades[2];
+uniform vec4 base;
+layout(location = 0) out vec4 colour;
+void main() { colour = shades[0](base) + shades[1](base); }
+";
+
+#[test]
+fn a_subroutine_uniform_is_named_by_its_api_name_with_a_word_an_element() {
+    let stages = Nir::from_glsl(&[(Stage::Fragment, SUBROUTINES)]).unwrap();
+    let elements = 2;
+    let named: Vec<_> = stages[0]
+        .names
+        .iter()
+        .filter(|n| n.kind == GlslNameKind::SubroutineUniform)
+        .map(|n| (n.name.as_str(), n.count))
+        .collect();
+    assert_eq!(named, [("shades", elements)]);
+}

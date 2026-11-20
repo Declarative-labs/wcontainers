@@ -267,6 +267,23 @@ name_stage_values(nir_shader *nir, struct wc_glsl_names *names)
    return added;
 }
 
+/* The length of Mesa's name prefix of a subroutine uniform (MESA_SUBROUTINE_PREFIX_LEN in
+ * main/shaderobj.h, which the standalone scaffolding cannot include): "__subu_", the stage's
+ * letter, "_". */
+#define WC_SUBROUTINE_PREFIX_LEN 9
+
+/* Whether a uniform parameter is a subroutine uniform (Mesa's name for it carries the stage's
+ * subroutine prefix). */
+static bool
+subroutine_uniform(struct gl_program *prog, const struct gl_program_parameter *p)
+{
+   if (!prog->sh.data || p->UniformStorageIndex >= prog->sh.data->NumUniformStorage)
+      return false;
+   const struct gl_uniform_storage *u = &prog->sh.data->UniformStorage[p->UniformStorageIndex];
+   return glsl_type_is_subroutine(glsl_without_array(u->type)) && p->Name &&
+          strlen(p->Name) > WC_SUBROUTINE_PREFIX_LEN;
+}
+
 /* Each default-block uniform's words and each state value's, from the stage's parameters. */
 static bool
 name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
@@ -276,7 +293,11 @@ name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
    for (unsigned i = 0; i < params->NumParameters; i++) {
       struct gl_program_parameter *p = &params->Parameters[i];
       enum wc_glsl_name_kind kind;
-      if (p->Type == PROGRAM_UNIFORM)
+      const char *name = p->Name;
+      if (p->Type == PROGRAM_UNIFORM && subroutine_uniform(prog, p)) {
+         kind = WC_GLSL_SUBROUTINE_UNIFORM;
+         name += WC_SUBROUTINE_PREFIX_LEN;
+      } else if (p->Type == PROGRAM_UNIFORM)
          kind = WC_GLSL_UNIFORM;
       else if (p->Type != PROGRAM_STATE_VAR)
          continue;
@@ -288,12 +309,13 @@ name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
          kind = WC_GLSL_OTHER_STATE;
       /* A matrix or an array has a parameter a column or element, one after another: one name. */
       struct wc_glsl_name *last = names->count ? &names->data[names->count - 1] : NULL;
-      if (kind == WC_GLSL_UNIFORM && last && last->kind == kind && p->Name &&
-          strcmp(last->name, p->Name) == 0 && last->at + last->count == p->ValueOffset) {
+      bool uniform = kind == WC_GLSL_UNIFORM || kind == WC_GLSL_SUBROUTINE_UNIFORM;
+      if (uniform && last && last->kind == kind && name && strcmp(last->name, name) == 0 &&
+          last->at + last->count == p->ValueOffset) {
          last->count += p->Size;
          continue;
       }
-      added &= add_name(names, kind, p->Name, NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED,
+      added &= add_name(names, kind, name, NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED,
                         p->ValueOffset, p->Size);
    }
    return added;

@@ -84,6 +84,9 @@ struct nir_shader *wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_
 enum wc_glsl_name_kind {
    /* A default-block uniform: `at` its first word in uniform buffer 0, `count` its words. */
    WC_GLSL_UNIFORM,
+   /* A subroutine uniform by its API name, as WC_GLSL_UNIFORM: each element's word holds the
+    * index of the subroutine chosen for it. */
+   WC_GLSL_SUBROUTINE_UNIFORM,
    /* The state values st/mesa fills (`at` the first of their four words), and any other state
     * value, named by Mesa's state string. */
    WC_GLSL_FRAG_COORD_Y_TRANSFORM,

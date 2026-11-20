@@ -79,6 +79,9 @@ struct Bytes {
 pub enum GlslNameKind {
     /// A default-block uniform: `at` its first word in uniform buffer 0, `count` its words.
     Uniform,
+    /// A subroutine uniform by its API name, as `Uniform`: each element's word holds the index of
+    /// the subroutine chosen for it.
+    SubroutineUniform,
     /// `STATE_FB_WPOS_Y_TRANSFORM`'s four words at `at`.
     FragCoordYTransform,
     /// `STATE_FB_PNTC_Y_TRANSFORM`'s four words at `at`.

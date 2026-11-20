@@ -95,6 +95,25 @@ pub struct Block {
     pub size: u32,
 }
 
+/// A subroutine uniform of one stage: its location, elements and the indices of the subroutines
+/// it may be set to.
+#[derive(Clone, Debug)]
+pub struct SubroutineUniform {
+    pub stage: Stage,
+    pub name: String,
+    pub location: u32,
+    pub array_size: u32,
+    pub compatible: Vec<u32>,
+}
+
+/// The subroutine chosen for each subroutine uniform location of one stage
+/// (`glUniformSubroutinesuiv`'s indices).
+#[derive(Clone, Debug)]
+pub struct SubroutineChoice {
+    pub stage: Stage,
+    pub indices: Vec<u32>,
+}
+
 /// A stage input or output of a program (`GL_PROGRAM_INPUT`, `GL_PROGRAM_OUTPUT`); location -1
 /// for OpenGL's own.
 #[derive(Clone, Debug)]
@@ -134,9 +153,19 @@ pub struct Drawn {
     pub storage: Vec<Vec<u8>>,
 }
 
+/// What a dispatch takes.
+pub struct ComputeInputs<'a> {
+    pub uniforms: &'a [UniformValue<'a>],
+    pub subroutines: &'a [SubroutineChoice],
+    pub uniform_blocks: &'a [Vec<u8>],
+    pub storage_blocks: &'a [Vec<u8>],
+    pub sampled: &'a [SampledTexture],
+}
+
 /// What a draw takes.
 pub struct DrawOptions<'a> {
     pub uniforms: &'a [UniformValue<'a>],
+    pub subroutines: &'a [SubroutineChoice],
     pub uniform_blocks: &'a [Vec<u8>],
     pub storage_blocks: &'a [Vec<u8>],
     pub sampled: &'a [SampledTexture],
@@ -160,6 +189,7 @@ pub struct Reflection {
     pub buffer_variables: Vec<Variable>,
     pub inputs: Vec<StageValue>,
     pub outputs: Vec<StageValue>,
+    pub subroutine_uniforms: Vec<SubroutineUniform>,
 }
 
 /// A texture a sampler or image uniform reads: the uniform's name and type, the texels as the
@@ -271,6 +301,7 @@ type GetProgramInterfaceiv = unsafe extern "C" fn(u32, u32, u32, *mut i32);
 type GetProgramResourceiv =
     unsafe extern "C" fn(u32, u32, u32, i32, *const u32, i32, *mut i32, *mut i32);
 type GetProgramResourceName = unsafe extern "C" fn(u32, u32, u32, i32, *mut i32, *mut c_char);
+type UniformSubroutinesuiv = unsafe extern "C" fn(u32, i32, *const u32);
 /// `glClipControl` and `glClampColor`.
 type SetTwo = unsafe extern "C" fn(u32, u32);
 /// `glProgramParameteri` and `glFramebufferParameteri`.
@@ -306,6 +337,7 @@ pub struct Llvmpipe {
     get_program_interface: GetProgramInterfaceiv,
     get_program_resource: GetProgramResourceiv,
     get_program_resource_name: GetProgramResourceName,
+    uniform_subroutines: UniformSubroutinesuiv,
     clip_control: SetTwo,
     clamp_color: SetTwo,
     program_parameter: Parameteri,
@@ -400,6 +432,7 @@ impl Llvmpipe {
             get_program_interface,
             get_program_resource,
             get_program_resource_name,
+            uniform_subroutines,
             clip_control,
             clamp_color,
             program_parameter,
@@ -414,6 +447,9 @@ impl Llvmpipe {
                 )?),
                 std::mem::transmute::<*const c_void, GetProgramResourceName>(raw(
                     "glGetProgramResourceName",
+                )?),
+                std::mem::transmute::<*const c_void, UniformSubroutinesuiv>(raw(
+                    "glUniformSubroutinesuiv",
                 )?),
                 std::mem::transmute::<*const c_void, SetTwo>(raw("glClipControl")?),
                 std::mem::transmute::<*const c_void, SetTwo>(raw("glClampColor")?),
@@ -448,6 +484,7 @@ impl Llvmpipe {
             get_program_interface,
             get_program_resource,
             get_program_resource_name,
+            uniform_subroutines,
             clip_control,
             clamp_color,
             program_parameter,
@@ -649,6 +686,52 @@ impl Llvmpipe {
             .collect()
     }
 
+    fn subroutine_uniforms(&self, program: glow::Program) -> Vec<SubroutineUniform> {
+        let interfaces = [
+            (Stage::Vertex, glow::VERTEX_SUBROUTINE_UNIFORM),
+            (Stage::Fragment, glow::FRAGMENT_SUBROUTINE_UNIFORM),
+            (Stage::Compute, glow::COMPUTE_SUBROUTINE_UNIFORM),
+        ];
+        let properties = [
+            glow::LOCATION,
+            glow::ARRAY_SIZE,
+            glow::NUM_COMPATIBLE_SUBROUTINES,
+        ];
+        let mut found = Vec::new();
+        for (stage, interface) in interfaces {
+            for (index, name) in (0..).zip(self.resources(program, interface)) {
+                let [location, array_size, count] =
+                    self.resource(program, interface, index, &properties)[..]
+                else {
+                    unreachable!("one value a property")
+                };
+                let mut compatible = vec![0; usize::try_from(count).unwrap_or(0)];
+                let room = i32::try_from(compatible.len()).unwrap_or(i32::MAX);
+                // SAFETY: room for every compatible subroutine's index.
+                unsafe {
+                    (self.get_program_resource)(
+                        program.0.get(),
+                        interface,
+                        index,
+                        1,
+                        &glow::COMPATIBLE_SUBROUTINES,
+                        room,
+                        std::ptr::null_mut(),
+                        compatible.as_mut_ptr(),
+                    );
+                }
+                found.push(SubroutineUniform {
+                    stage,
+                    name,
+                    location: u32::try_from(location).unwrap_or(0),
+                    array_size: u32::try_from(array_size).unwrap_or(1).max(1),
+                    compatible: compatible.into_iter().map(i32::cast_unsigned).collect(),
+                });
+            }
+        }
+        found
+    }
+
     pub fn reflect(&self, program: glow::Program) -> Reflection {
         Reflection {
             uniforms: self.variables(program, glow::UNIFORM),
@@ -657,6 +740,7 @@ impl Llvmpipe {
             buffer_variables: self.variables(program, glow::BUFFER_VARIABLE),
             inputs: self.stage_values(program, glow::PROGRAM_INPUT),
             outputs: self.stage_values(program, glow::PROGRAM_OUTPUT),
+            subroutine_uniforms: self.subroutine_uniforms(program),
         }
     }
 
@@ -896,6 +980,7 @@ impl Llvmpipe {
         &self,
         program: glow::Program,
         uniforms: &[UniformValue],
+        subroutines: &[SubroutineChoice],
         uniform_blocks: &[Vec<u8>],
         storage_blocks: &[Vec<u8>],
         sampled: &[SampledTexture],
@@ -905,6 +990,14 @@ impl Llvmpipe {
         unsafe {
             gl.use_program(Some(program));
             self.set_uniforms(program, uniforms)?;
+            for choice in subroutines {
+                let count = i32::try_from(choice.indices.len()).map_err(|e| e.to_string())?;
+                (self.uniform_subroutines)(
+                    shader_type(choice.stage),
+                    count,
+                    choice.indices.as_ptr(),
+                );
+            }
             let mut bound = Bound::default();
             for (i, bytes) in (0..).zip(uniform_blocks) {
                 gl.uniform_block_binding(program, i, i);
@@ -978,22 +1071,25 @@ impl Llvmpipe {
         }
     }
 
-    /// Dispatches `groups` of the compute program with the given uniforms and blocks (block i
-    /// bound at i), and gives each storage block's bytes afterwards.
+    /// Dispatches `groups` of the compute program with the given inputs (block i bound at i),
+    /// and gives each storage block's bytes afterwards.
     pub fn compute(
         &self,
         program: glow::Program,
-        uniforms: &[UniformValue],
-        uniform_blocks: &[Vec<u8>],
-        storage_blocks: &[Vec<u8>],
-        sampled: &[SampledTexture],
+        inputs: &ComputeInputs,
         groups: [u32; 3],
     ) -> Result<Vec<Vec<u8>>, Error> {
-        let bound =
-            self.bind_program(program, uniforms, uniform_blocks, storage_blocks, sampled)?;
+        let bound = self.bind_program(
+            program,
+            inputs.uniforms,
+            inputs.subroutines,
+            inputs.uniform_blocks,
+            inputs.storage_blocks,
+            inputs.sampled,
+        )?;
         // SAFETY: a dispatch of the program in use.
         unsafe { self.gl.dispatch_compute(groups[0], groups[1], groups[2]) };
-        self.finish(bound, storage_blocks)
+        self.finish(bound, inputs.storage_blocks)
     }
 
     /// Draws `points` points with the program, into colour targets one row of `points` texels
@@ -1005,6 +1101,7 @@ impl Llvmpipe {
         let bound = self.bind_program(
             program,
             options.uniforms,
+            options.subroutines,
             options.uniform_blocks,
             options.storage_blocks,
             options.sampled,
