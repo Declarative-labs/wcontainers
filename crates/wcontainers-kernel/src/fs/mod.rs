@@ -190,6 +190,9 @@ fn sys_not_built(counters: &crate::counters::Counters, at_root: bool, name: &[u8
     }
 }
 
+/// What `d_path` adds to the path of a removed file.
+pub(crate) const DELETED: &str = " (deleted)";
+
 impl FileSystem {
     pub fn read_only(&self) -> bool {
         self.flags & crate::linux_extra::ST_RDONLY != 0
@@ -1558,7 +1561,7 @@ impl<'a> Walk<'a> {
     pub fn path_of(&self, node: &Node) -> Option<Vec<u8>> {
         let (mut path, _) = self.ascend(node, true).ok()?;
         if node.borrow().nlink == 0 {
-            path.extend_from_slice(b" (deleted)");
+            path.extend_from_slice(DELETED.as_bytes());
         }
         Some(path)
     }

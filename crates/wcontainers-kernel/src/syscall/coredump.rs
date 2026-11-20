@@ -553,7 +553,7 @@ fn mapped_files(kernel: &Kernel, pid: Pid) -> Vec<u8> {
             } => {
                 let mut name = path.clone();
                 if node.borrow().shown_deleted() {
-                    name.extend_from_slice(b" (deleted)");
+                    name.extend_from_slice(crate::fs::DELETED.as_bytes());
                 }
                 (*offset, name)
             }

@@ -1,11 +1,14 @@
 // execveat: its refusals and checks, then a chain of programs started by path, by a directory
 // descriptor, by the program's own descriptor and by a script's descriptor. Each stage prints its
-// arguments, its name and its program; the last argument says which stage it is.
+// arguments, its name and its program; the last argument says which stage it is. The chain ends
+// with a copy of the program in a memory file whose own descriptor is open for writing.
 
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -83,6 +86,16 @@ int main(int argc, char **argv) {
         close(script);
         script = open("/tmp/script.sh", O_RDONLY);
         printf("script %ld\n", execveat_(script, "", four, AT_EMPTY_PATH));
+    } else if (!strcmp(stage, "four")) {
+        char *five[] = {"x", "five", 0};
+        int program = open("/wc/execveat", O_RDONLY);
+        int memory = memfd_create("program", 0);
+        char chunk[65536];
+        long n;
+        while ((n = read(program, chunk, sizeof chunk)) > 0)
+            write(memory, chunk, n);
+        close(program);
+        printf("memory file %ld\n", execveat_(memory, "", five, AT_EMPTY_PATH));
     }
     return 0;
 }

@@ -1504,7 +1504,13 @@ pub(crate) fn link_target(
             let (process, thread) = linked(view, task)?;
             let fs = thread.fs.borrow();
             match link {
-                ProcessLink::Exe => Ok(process.executable.1.clone()),
+                ProcessLink::Exe => {
+                    let mut path = process.executable.1.clone();
+                    if process.executable.0.borrow().shown_deleted() {
+                        path.extend_from_slice(crate::fs::DELETED.as_bytes());
+                    }
+                    Ok(path)
+                }
                 ProcessLink::Cwd => Ok(walk.path_of(&fs.cwd).unwrap_or_default()),
                 ProcessLink::Root => Ok(walk.path_of(&fs.root).unwrap_or_default()),
             }
@@ -1531,7 +1537,7 @@ pub(crate) fn link_target(
                 }
                 _ if inode.shown_deleted() || file.unnamed() => {
                     let mut path = file.path.clone();
-                    path.extend_from_slice(b" (deleted)");
+                    path.extend_from_slice(crate::fs::DELETED.as_bytes());
                     path
                 }
                 _ => file.path.clone(),
@@ -1956,7 +1962,7 @@ pub(crate) fn map_line(mapping: &crate::memory::Mapping) -> MapLine {
         } => {
             let inode = node.borrow();
             let deleted = if inode.shown_deleted() {
-                " (deleted)"
+                crate::fs::DELETED
             } else {
                 ""
             };
