@@ -29,8 +29,9 @@ use wcontainers_gpu::{
 mod helper;
 mod tessellate;
 pub use helper::{
-    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, StageDraw, StageError, StageIndex,
-    Stages, StreamOutput, StreamOutputEntry, StreamTargets, TessellatedDraw,
+    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw,
+    StageError, StageIndex, Stages, StreamOutput, StreamOutputEntry, StreamTargets,
+    TessellatedDraw,
 };
 pub use tessellate::{Tessellation, Tessellator};
 
@@ -88,8 +89,16 @@ pub(crate) mod word {
     /// Control points per patch in the API draw, which the hull stage steps by: a patch may have more
     /// than the hull shader declares, which then reads the first of them.
     pub const PATCH_POINTS: u32 = 11;
-    pub const COUNT_OF: u32 = 12;
+    /// 1 when an indexed strip was made an indexed list ([`super::strip_program`]): the first word at
+    /// `INDICES_BINDING` is the listed indices' total, and the draw's places past it up to `COUNT`
+    /// hold no vertex: the vertex stage writes their records outside every clip volume, the
+    /// geometry stage closes their slots and stream output skips their primitives.
+    pub const LISTED_TOTAL: u32 = 12;
+    pub const COUNT_OF: u32 = 13;
 }
+
+/// The position's w of a record that no clip volume holds.
+pub(crate) const OUTSIDE_W: f32 = -1.0;
 
 pub(crate) fn binding(binding: u32) -> ResourceBinding {
     ResourceBinding {
@@ -244,6 +253,22 @@ pub fn stream_program() -> Result<wcontainers_gpu::ShaderModule> {
         entry_point: crate::ENTRY_POINT.into(),
         stage: wcontainers_gpu::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
+    })
+}
+
+const STRIP_PROGRAM: &str = include_str!("stage/strips.wgsl");
+
+/// The program listing an indexed strip's primitives (`strips.wgsl`), which [`Stages`] runs before the
+/// vertex stage of an indexed strip.
+pub fn strip_program() -> Result<wcontainers_gpu::ShaderModule> {
+    let module = naga::front::wgsl::parse_str(STRIP_PROGRAM)
+        .map_err(|e| ConvertError::Malformed(format!("the strip program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: crate::ENTRY_POINT.into(),
+        stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(STRIP_PROGRAM.as_bytes()).as_bytes(),
     })
 }
 
@@ -961,6 +986,45 @@ pub(crate) fn vertex_as_compute(
     let count = value(&mut b, v, word::COUNT);
     let past = b.binary(BinaryOperator::GreaterEqual, x, count);
     b.when(past, |b| b.ret(None));
+    let (clip, cull) = if distances {
+        (clip, cull)
+    } else {
+        (None, None)
+    };
+    let distance_count = |d: Option<(Option<u32>, u32)>| d.map_or(0, |(_, n)| distance_slots(n));
+    let slot_count = locations.len() as u32 + distance_count(clip) + distance_count(cull);
+    let per = b.u32(slot_count + 1);
+    let before = b.mul(instance, count);
+    let r = b.add(before, x);
+    let record = b.mul(r, per);
+    // An indexed strip made a list: the places past its listed indices hold no vertex.
+    let listed_total = value(&mut b, v, word::LISTED_TOTAL);
+    let zero = b.u32(0);
+    let capped = b.binary(BinaryOperator::NotEqual, listed_total, zero);
+    let total = {
+        let p = b.global(indices);
+        let p = b.at(p, zero);
+        b.load(p)
+    };
+    let beyond = b.binary(BinaryOperator::GreaterEqual, x, total);
+    let none = b.binary(BinaryOperator::LogicalAnd, capped, beyond);
+    b.when(none, |b| {
+        for slot in 0..=slot_count {
+            let value = if slot == 0 {
+                let zero = b.u32(0);
+                let w = b.u32(OUTSIDE_W.to_bits());
+                b.compose(uvec4, alloc::vec![zero, zero, zero, w])
+            } else {
+                b.expr(naga::Expression::ZeroValue(uvec4))
+            };
+            let s = b.u32(slot);
+            let at = b.add(record, s);
+            let p = b.global(vertices);
+            let p = b.at(p, at);
+            b.store(p, value);
+        }
+        b.ret(None);
+    });
     let first = value(&mut b, v, word::FIRST);
     let place = b.add(first, x);
     let number = b.local(u32_ty, Some(place));
@@ -1003,17 +1067,6 @@ pub(crate) fn vertex_as_compute(
         })
         .collect();
     let out = b.call(callee, passed, true).unwrap();
-    let before = b.mul(instance, count);
-    let r = b.add(before, x);
-    let (clip, cull) = if distances {
-        (clip, cull)
-    } else {
-        (None, None)
-    };
-    let distance_count = |d: Option<(Option<u32>, u32)>| d.map_or(0, |(_, n)| distance_slots(n));
-    let slot_count = locations.len() as u32 + distance_count(clip) + distance_count(cull);
-    let per = b.u32(slot_count + 1);
-    let record = b.mul(r, per);
     let write = |b: &mut Builder, slot: u32, value: Option<(Option<u32>, ScalarKind, u32)>| {
         let value = match value {
             Some((member, kind, size)) => {
@@ -1276,10 +1329,12 @@ pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> 
     let passed: Vec<(ScalarKind, Binding)> = locations(&reflection.outputs)
         .into_iter()
         .map(|loc| {
+            // The drawn stream's value where several streams place one there.
             let value = reflection
                 .outputs
                 .iter()
-                .find(|v| v.system.is_none() && v.location == loc)
+                .filter(|v| v.system.is_none() && v.location == loc)
+                .min_by_key(|v| v.stream)
                 .expect("a listed location");
             let kind = match value.scalar {
                 ValueKind::Float => ScalarKind::Float,

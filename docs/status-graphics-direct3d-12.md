@@ -6,11 +6,24 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-G5 is declared complete for the independent check (run 44, 2026-11-19): everything on its pass
-bar is done or on the written gap list, and nothing on that list is the front's own unfinished
-part. Run 44 changed no code: no branch it merges (the shared line, webgpu, webgl,
-direct3d-11, shaders, rig, phase-1-literals) had anything new since run 43, so run 43's full
-rerun at 4518fd0e is the current result (the code is the same; only this file changed since).
+G5 is declared complete for the independent check again (run 45, 2026-11-19). The independent
+check of run 44 found six items; run 45 fixed each or wrote it down:
+- Depth bias on lines and points (blocking): drawn unbiased, as real Direct3D 12 draws them
+  (new case `line-bias`: unbiased and biased lines, points and triangles; real and ours both
+  bias the triangle only). A bias with no topology type stays refused by name.
+- Abilities of 11_0 the front serves only through the back end (wireframe, depth clamping, a
+  depth bias clamp, independent blending, a partial sample mask): feature level 11_0 now needs
+  them (`LEVEL_11_0_FIXED_FUNCTION`), so no device reports 11_0 while refusing them; the plan's
+  routes for the first two are not built ("Gap list", Departures, "Next" 2).
+- Debugging annotations (`BeginEvent`, `SetMarker`, `EndEvent` on lists and queues): do nothing,
+  as Direct3D 12 with no tool attached (new case `markers`).
+- Vertex strides other than the layout's packed ones: the claim that no combination is built at
+  a draw is corrected (what each subject does, "Shader cache"); recording them is "Next" 2.
+- The feature comparison: the one served answer above real is named in it, so it passes and a
+  new one would fail it.
+- The stale departure on array slices and viewports: replaced.
+- A back end that lost its device (Godot's 3D platformer's validation errors): the front now
+  removes the device at the next `ExecuteCommandLists`, `Present` or `GetDeviceRemovedReason`.
 
 The pass bar, item by item, with where each is shown:
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080: 186 of
@@ -24,30 +37,34 @@ The pass bar, item by item, with where each is shown:
   one item of the WebGPU back end ("Asked of other tracks"; with that change applied for one run,
   1 of 518,400 pixels beyond 8 per compared frame).
 - CheckFeatureSupport answering as section 9 says: the own program's `features` case against
-  real Direct3D 12, one answer beyond real and served ("CheckFeatureSupport and the front's
-  refusals"), and the crates' tests of section 9's answers.
+  real Direct3D 12, none beyond real but the one named served answer ("CheckFeatureSupport and
+  the front's refusals"), and the crates' tests of section 9's answers.
 - The queue, fence, query, predication, placed-resource and indirect cases against real
-  Direct3D 12: the own program's 30 cases, all equal ("The pass bar's cases").
+  Direct3D 12: the own program's 32 cases, all equal ("The pass bar's cases").
 - The rig's Direct3D 12 scenes, beyond the bar: 95 outputs pass, 22 fail, 3 absent, each named
   ("Scenes").
 
-Run 43's results (2026-11-19, desktop shared with other tracks, load not taken; scratch run43/;
-`bin/all43.sh 1` at 4518fd0e): the literal check passes (lit1.log, lit5.log after the baseline
-was pruned); lint clean (lint1.log); the crates' 50 tests pass (test1.log: 48 of the two crates,
-2 of the interface's slow paths); test files 186 of 198 (full1.log, fail1.txt); own cases 30 of
-30 equal, draw 0 of 4096 pixels beyond 1, `antialiased-lines` 0 of 4096 pixels beyond 63,
-largest difference 38 (check1.log); shader runner 214 of 302, the same 88 failing files as runs
-37 to 42 (runner1.log, rfail1.txt); scenes 95 pass, 22 fail, 3 absent (scenes1.log,
-sfail1.txt); Wine's five dxgi tests 3 pass, 2 fail (dxgi1.log); Microsoft's two samples (2.6 and
-2.5 s) and Godot's 2D platformer (4.3 s) equal real (p1-*.log); Godot's 3D platformer stops at
-the back end's sRGB view (p1-godot-platformer-3d-d3d12-output.log); bgfx 37 727 to 791 pixels
-beyond 8 of 20,480 allowed, the overlay's text (p1-bgfx37.log); fence round trip `--alone` under
-"Measurements". Every full run from 35 to 43 (run 40 ran none) gave the same 12 failing test files; each run's logs are in
-scratch run<N>/ and its record in git (the commits "recorded run N of g5 ...").
+Run 45's results (2026-11-19, desktop shared with other tracks; scratch run45/; `bin/all45.sh 2`
+at a46949cf with the rig patch applied, then `bin/own45.sh 4` at 865ff52a, the case file's last
+change): the literal check passes (lit2.log); lint clean (lint2.log, lint4.log); the crates' 52
+tests pass (test2.log: 50 of the two crates, 2 of the interface's slow paths); test files 186 of
+198, the same 12 failing as runs 35 to 44 (full2.log, logs-full2); own program (check4.log):
+32 of 32 cases equal, draw 0 of 4096 pixels beyond 1, features 192 of 872 differ and none beyond
+real, outputs 22 of 110 and answers 7 of 40 differ, none beyond real, `antialiased-lines` 0 of
+4096 beyond 63, largest difference 38; shader runner 214 of 302, the same 88 failing files
+(runner2.log); scenes 95 pass, 22 fail, 3 absent, the same outputs as run 43 (scenes2.log,
+sfail2.txt); Wine's five dxgi tests 3 pass, 2 fail (dxgi2.log); Microsoft's two samples and
+Godot's 2D platformer equal real (p2-samples.log, p2-godot.log); bgfx 37 865 to 887 pixels
+beyond 8 of 20,480 allowed (p2-bgfx37.log); Godot's 3D platformer now gets
+`DXGI_ERROR_DEVICE_REMOVED` after the back end's first validation error and crashes in its own
+code on the null buffers that follow (exit 0xc0000005, p2-godot-platformer-3d-d3d12-output.log;
+before run 45 it drew white frames with every call succeeding); fence round trip `--alone`
+(alone2.log, processor load 1% before and after): real mean 1 us, largest 9 us; ours mean 17 us,
+largest 111 us.
 
-For the independent check, one command each (scratch `bin/all43.sh <n>` runs them all; "How to
+For the independent check, one command each (scratch `bin/all45.sh <n>` runs them all; "How to
 run" gives each by hand): a sample of the test files with `wine-tests run --dll ...` naming
-tests; the 30 cases with `check_d3d12 cases`; the real programs with `bin/real43.sh <n>`
+tests; the 32 cases with `check_d3d12 cases`; the real programs with `bin/real45.sh <n>`
 (Microsoft's two samples, Godot's two platformers, bgfx 37; other bgfx examples by
 `bgfx-compare.ps1`, "Real program"). Before running the test files,
 apply scratch run20/rig-wine-run-fix.patch to tools/graphics-rig/desktop/wine-run.ps1 (the rig's
@@ -130,9 +147,13 @@ record is in git ("recorded run N of g5").
   cache file before the first device (`examples/directx/cache.rs`), in the directory
   `WC_GPU_CACHE` names, under the Direct3D 11 library's name for it (`<exe stem>-<16 hex digits
   of BLAKE3 of the lower-case full path>.wcgpu`), so a run decodes what earlier runs converted;
-  without the variable conversions are kept for the process only. No state combinations are
-  recorded: pipelines are built when created (`prepare`), as plan section 8 says Direct3D 12
-  allows. Refused conversions are not kept and are tried again. Test tests/cache.rs (its own
+  without the variable conversions are kept for the process only. Pipelines are built when
+  created (`prepare`), as plan section 8 says Direct3D 12 allows, with the strides of the input
+  layout's packed elements, since Direct3D 12 gives strides only at `IASetVertexBuffers`. A draw
+  binding other strides (padded or interleaved streams) builds its pipeline at that draw
+  (`PipelineMiss`, counted and warned: the independent check of run 44 saw it on its `strip` and
+  `blend` programs), and no state combination is recorded, so it misses again in every run
+  (Next). Refused conversions are not kept and are tried again. Test tests/cache.rs (its own
   binary: the cache is the process's). Measured under "Real program".
 - Sequential blit swap chains (run 26, infrastructure crate): `DXGI_SWAP_EFFECT_SEQUENTIAL`
   with several buffers gives out every buffer (`chain.buffer(i)`), as DXGI does; at each present,
@@ -467,22 +488,31 @@ components (`StreamOutAsCompute`). `R32_FLOAT`, `R24_UNORM_X8_TYPELESS` and
 `R32_FLOAT_X8X24_TYPELESS` now equal real Direct3D 12's answers. One answer is beyond real
 Direct3D 12 on the RTX 3080: `R32G32B32_FLOAT` sampled and gathered, which the WebGPU back end
 now declares (it stores the format as `rgba32float` and filters it); the format tables leave it
-optional, and it is served, so it stays.
+optional, and it is served, so it stays. Run 45: the comparison names those two bits as served
+(`SERVED_BEYOND_REAL` in check_d3d12.rs), so it passes and any other answer above real fails it.
 
 The answers are plan section 9's (tests `webgpu_reports_11_0_and_tier_1`,
-`resource_tables_give_tier_3_but_not_11_1`, `no_device_without_compute_11_0_sizes_or_d32_s8_targets`;
-the own program's `features` against real Direct3D 12: the one answer beyond it above, none
-other). The front still refuses
-by name a few things feature level 11_0 allows; every one is in the gap list's "Refused by name
-in the front" (the independent check of run 34 found three missing there: views of 1D textures,
-constant buffer views past their buffer's end, adjacency without a geometry shader; run 35
-serves all three, below, and lists what is still refused of them). A program meeting a refusal
-gets E_NOTIMPL or a removed device, never a fake success.
+`resource_tables_give_tier_3_but_not_11_1`, `no_device_without_compute_11_0_sizes_or_d32_s8_targets`,
+`no_device_without_the_raster_and_blend_abilities_of_11_0`; the own program's
+`features` against real Direct3D 12). Feature level 11_0 also needs, since run 45, the raster and
+blend abilities the front draws only through the back end's own (`LEVEL_11_0_FIXED_FUNCTION`:
+`POLYGON_MODE`, `DEPTH_CLAMP`, `DEPTH_BIAS_CLAMP`, `INDEPENDENT_BLEND`, `SAMPLE_MASK`); without
+one, `D3D12CreateDevice` fails as on hardware below 11_0 (Departures; the independent check of
+run 44 found the front reporting 11_0 while refusing them). wgpu on the RTX 3080 has all five.
+Depth bias on lines and points is dropped, as real Direct3D 12 draws them (case `line-bias`), no
+longer refused. The front still refuses by name a few things feature level 11_0 allows; every
+one is in the gap list's "Refused by name in the front". A program meeting a refusal gets
+E_NOTIMPL or a removed device, never a fake success.
 
 ## The pass bar's cases against real Direct3D 12 (own program)
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
-compares the lines (`examples/check/cases.rs`). Run 43: 30 of 30 equal and the one picture
+compares the lines (`examples/check/cases.rs`). Run 45: 32 of 32 equal and the one picture
+within its tolerance (run45/check4.log); new are `line-bias` (lines, points and triangles at
+depth 0.5, each unbiased and with a `DepthBias` of 100000, into D32 depth cleared to 0.503:
+real and ours draw both lines and both point sets and only the unbiased triangle) and `markers`
+(debugging annotations on a list and a queue, then `Close` and a clear: `Close` succeeds and the
+clear lands on both). Run 43: 30 of 30 equal and the one picture
 within its tolerance (run43/check1.log, "0 of 30 cases differ"). Run 41: 30 of 30 equal and the one picture
 within its tolerance (run41/check1.log). Run 39: 29 of 29 equal (run39/check2.log, the
 new `layers` among them; features, outputs and answers as run 34). Run 34: 28 of 28 equal (run34/check1.log;
@@ -561,8 +591,9 @@ fails. Since the rig's run of 2026-11-17 19:11 (its commit 4ffedc6), tests that 
 checks on real Direct3D 12 are counted too, held to every other check, so the counted set is
 198 (it was 193).
 
-The files, as of run 43 (2026-11-19, desktop shared with other tracks; scratch run43/full1.log,
-fail1.txt, logs-full1/; libraries at 4518fd0e, which run 44 did not change): 186 of 198.
+The files, as of run 45 (2026-11-19, desktop shared with other tracks; scratch run45/full2.log,
+logs-full2/; libraries at a46949cf): 186 of 198, the same 12 failing as in run 43 (run43/
+full1.log, fail1.txt).
 - d3d12 (Wine's): 10 of 10 pass.
 - vkd3d-d3d12_invalid_usage: 3 of 3 pass.
 - vkd3d-hlsl_d3d12: 9 of 9 pass.
@@ -846,7 +877,7 @@ debug builds, whole runs of 120 frames.
   driver's (harmless, absent in a container; `bgfx-run.ps1 <name> <seconds> ours nonvapi`
   keeps it out); a Rust panic in the library shows as 0xc0000409.
 
-## Gap list (the pass bar's written list, as of run 44)
+## Gap list (the pass bar's written list, as of run 45)
 
 Every failing test file, shader runner file and real-program difference is one of: an absent
 feature (reported absent as Direct3D 12 expects, or refused by name where Direct3D 12 has no
@@ -954,7 +985,11 @@ applied again for one run (run 41, run41/g3d1.log), frames 10, 60 and 120 were a
 of 518,400 pixels beyond 8 each, largest difference 48 at 921,317, and nothing of ours refused
 but `QueryVideoMemoryInfo`; the line pipeline is now made but draws in none of the 120 frames
 (its warning, "antialiased lines drawn as covered rectangles", is not printed), so it is not
-that pixel. The pixel is not traced.
+that pixel. The pixel is not traced. Without the back end's change, the back end records the
+first validation error as a lost device; since run 45 the front reads that at each
+`ExecuteCommandLists`, `Present` and `GetDeviceRemovedReason` and removes the device (plan 4.10;
+the independent check of run 44 found Godot drawing white frames while every call but `Present`
+succeeded; test `a_back_end_that_lost_its_device_removes_it`).
 
 The rig's Direct3D 12 scenes: see "Scenes" for every failing output and its cause (shaders
 track items, and three differences measured in run 36 to be the driver's Vulkan path: the
@@ -993,6 +1028,19 @@ program"; draws split per layer or viewport while a query runs, into target view
 layer counts or into a 3D texture's view; shader resource and (since run 36) unordered access
 views of another dimension than the program declares, but one-layer 2D arrays bound to 2D
 declarations, which are bound as 2D views.
+
+Abilities of 11_0 the front draws only through the back end's own, outside the pass bar (wgpu on
+the RTX 3080 has all of them), since run 45 required for feature level 11_0
+(`LEVEL_11_0_FIXED_FUNCTION`): without one, `D3D12CreateDevice` fails as on hardware below
+11_0, so no pipeline is refused for it. Wireframe needs `POLYGON_MODE` (browsers' WebGPU has no
+polygon mode; the plan's route, `FillModeConverted`, is built in neither Direct3D front);
+depth clamping needs `DEPTH_CLAMP` (WebGPU's optional `depth-clip-control`; the plan's route,
+`DepthClampInShader`, is built in the Direct3D 11 front only, and here it could not be compared
+with real Direct3D 12, as the desktop's back end has the feature); a depth bias clamp, independent
+blending and a partial sample mask are core WebGPU. Before run 45 the front reported 11_0 on any
+back end and refused such pipelines by name (the independent check of run 44). Depth bias on
+lines and points is no longer refused: real Direct3D 12 draws them unbiased, and so does the
+front (case `line-bias`).
 
 ## Asked of other tracks
 
@@ -1065,8 +1113,13 @@ run 36).
    Check whether the rig fixed its comparison (`tools/graphics-rig/desktop/wine-run.ps1`, "How
    to run"); until it does, apply the one-line patch uncommitted for the run and never commit
    that file.
-2. The independent check of G5, declared ready in run 44; next, fix only what it finds. Then,
-   after each shaders merge, rerun everything (scratch bin/all43.sh <n>: the literal check,
+2. The independent check of G5 (run 44's) found six items; run 45 fixed them or wrote them
+   here. Left from it, beyond the pass bar: state combinations a program's other vertex strides
+   need, recorded in the cache file so later runs build them ahead (as the Direct3D 11 front
+   records its combinations); `FillModeConverted` and `DepthClampInShader` in this front, each
+   with a way to compare it with real Direct3D 12 on a back end without the feature, after which
+   `LEVEL_11_0_FIXED_FUNCTION` loses that feature. Then,
+   after each shaders merge, rerun everything (scratch bin/all45.sh <n>: the literal check,
    lint, the crates' tests, every test file, the own program, the shader runner, the scenes,
    the five dxgi tests, the real programs and the `--alone` fence timing), reclassify the runner
    (bin/classify30.py) and read the refusals. The front's part as other tracks' items land: a
@@ -1637,6 +1690,18 @@ on a branch this one merges.
 
 ## Departures from the plan
 
+- Run 45: plan section 9 gives WebGPU feature level 11_0 with wireframe through
+  `FillModeConverted` and depth clamping through `DepthClampInShader`. Neither route is built in
+  this front, so feature level 11_0 now also needs `POLYGON_MODE` and `DEPTH_CLAMP` (with
+  `DEPTH_BIAS_CLAMP`, `INDEPENDENT_BLEND` and `SAMPLE_MASK`, which WebGPU always has), and on a
+  back end without them `D3D12CreateDevice` fails as on hardware below 11_0. Browsers' WebGPU has
+  no polygon mode, so it gets no Direct3D 12 device until `FillModeConverted` is built ("Next" 2).
+  Section 9's rule (report only levels whose required features are served) wins over its WebGPU
+  line; no build of this front runs on a browser yet.
+- Run 45: plan 5.7 and section 9 route depth bias on lines and points through
+  `DepthBiasInShader`. Real Direct3D 12 on the RTX 3080 draws them unbiased (case `line-bias`, as
+  the Direct3D 11 track measured for Direct3D 11), so the front draws them without the bias.
+
 - Run 41: the own program's cases are compared line for line, exactly; `antialiased-lines` is
   compared as a picture within 63 of 255 per channel instead. Direct3D 12 leaves the alpha-based
   line filter to the implementation (the RTX 3080 and WARP differ by up to 128, measured by the
@@ -1830,13 +1895,13 @@ Run 10's entries:
 - Typeless `R32` and `R16` textures allowing depth-stencil views are stored as `Depth32Float` and
   `Depth16Unorm` (as `R24G8` and `R32G8X24` already were); `R32_FLOAT` and `R16_UNORM` views of
   them read the depth. Before, such depth views failed on WebGPU (Godot's `D16` targets).
-- A draw writes a target view's first array slice only, and gets the first viewport and scissor
-  only: no stage can choose another (`SV_RenderTargetArrayIndex` and `SV_ViewportArrayIndex` from
-  the vertex stage are reported absent, geometry shaders are refused). Clears, with or without
-  rectangles, cover every slice of the view. A depth view made with no description covers every
-  slice.
+- Clears, with or without rectangles, cover every slice of the view. A depth view made with no
+  description covers every slice. (Which slice and viewport a draw uses: "Layered geometry
+  shaders".)
 - A pipeline with no primitive topology type (run 11: taken, as real Direct3D 12 takes it) builds
-  nothing ahead; its draws' topologies decide. Depth bias with no type is refused as for lines.
+  nothing ahead; its draws' topologies decide. A depth bias with no type is refused by name: the
+  front cannot tell whether its draws are triangles, which Direct3D biases, or lines and points,
+  which it draws unbiased.
 
 The next entries came with run 8's patch, committed in run 9 (d89ad8d).
 - Views reinterpreting a typeless texture's bits (run 8) get a twin texture in the view's format,

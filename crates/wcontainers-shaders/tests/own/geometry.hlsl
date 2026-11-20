@@ -203,3 +203,53 @@ CullOut vs_cull(float3 position : POSITION, float4 colour : COLOR0, uint vertex 
 float4 ps_geometry(GsOut i) : SV_Target0 {
     return float4(i.colour.rgb, 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
 }
+
+struct StreamPlaced {
+    float4 position : SV_Position;
+    float4 colour : COLOR0;
+};
+
+struct StreamIds {
+    nointerpolation uint4 ids : TEXCOORD0;
+};
+
+struct StreamMixed {
+    nointerpolation uint4 ids : TEXCOORD0;
+    float4 colour : COLOR0;
+};
+
+struct StreamPlace {
+    float2 place : TEXCOORD1;
+};
+
+// Each point written to four streams, to each as many times as its vertex number picks: positioned
+// points to stream 0, values alone to the others, two of them named in two streams.
+[maxvertexcount(12)]
+void gs_streams(point GsIn p[1], uint primitive : SV_PrimitiveID,
+                inout PointStream<StreamPlaced> s0, inout PointStream<StreamIds> s1,
+                inout PointStream<StreamMixed> s2, inout PointStream<StreamPlace> s3) {
+    uint v = p[0].ids.x;
+    for (uint i = 0; i < v % 3; i++) {
+        StreamPlaced o;
+        o.position = p[0].position + float4(i * size.x, 0.0, 0.0, 0.0);
+        o.colour = p[0].colour * tint;
+        s0.Append(o);
+    }
+    for (uint j = 0; j < (v / 3) % 4; j++) {
+        StreamIds o;
+        o.ids = uint4(p[0].ids, primitive, j);
+        s1.Append(o);
+    }
+    if ((v & 1) == 0) {
+        StreamMixed o;
+        o.ids = uint4(primitive, v, p[0].ids.y, 7);
+        o.colour = p[0].colour + tint;
+        s2.Append(o);
+        s2.RestartStrip();
+    }
+    for (uint k = 0; k < min(v % 5, 3); k++) {
+        StreamPlace o;
+        o.place = p[0].position.xy * float(k + 1);
+        s3.Append(o);
+    }
+}

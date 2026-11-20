@@ -239,6 +239,10 @@ pub struct StageValue {
     pub location: u32,
     /// The first component the value takes in its location.
     pub component: u8,
+    /// The geometry stream of a geometry shader's output (Direct3D's `OSG5` stream), 0 for every
+    /// other value: the drawn stream's outputs link to the pixel stage, the others feed stream
+    /// output alone.
+    pub stream: u8,
 }
 
 /// What a stage needs beyond its bindings and values.
