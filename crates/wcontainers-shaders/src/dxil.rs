@@ -1,10 +1,10 @@
 //! DXIL through dxil-spirv (C++, built by `build.rs`) to SPIR-V, read by naga's SPIR-V reader, then
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
-mod arrays;
+pub(crate) mod arrays;
 mod components;
 mod depth;
-mod images;
+pub(crate) mod images;
 mod nonfinite;
 mod one_d;
 mod registers;
@@ -1112,16 +1112,16 @@ fn all_functions(module: &Module) -> Vec<Function> {
 /// One expression to be computed by a helper: the function holding it (an index into functions,
 /// then entry points), the expression, and the run-time operands passed to the helper with their
 /// types.
-struct Read {
-    function: usize,
-    user: Handle<Expression>,
-    passed: Vec<(Handle<Expression>, Handle<Type>)>,
+pub(crate) struct Read {
+    pub(crate) function: usize,
+    pub(crate) user: Handle<Expression>,
+    pub(crate) passed: Vec<(Handle<Expression>, Handle<Type>)>,
 }
 
 /// Makes each expression of `found` (function index, expression) a call of the helper `build` makes
 /// for it, which takes the expression's operands that are neither constants nor globals. Each
 /// function's operands are typed after `stand_in` edits a copy of it with its expressions of `found`.
-fn outline(
+pub(crate) fn outline(
     module: &mut Module,
     found: &[(usize, Handle<Expression>)],
     stand_in: impl Fn(&mut Function, &[Handle<Expression>]),
