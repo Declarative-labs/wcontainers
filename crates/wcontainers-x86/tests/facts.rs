@@ -63,11 +63,12 @@ fn what_may_vary_between_cpus() {
         (&[0x66, 0x0f, 0x3a, 0x41, 0xc1, 0x33], true),
         (&[0x66, 0x0f, 0xf7, 0xc1], true),
         (&[0x0f, 0xae, 0x13], true),
-        // Fully defined: addps, sqrtsd, cvttsd2si, stmxcsr.
+        // Fully defined: addps, sqrtsd, cvttsd2si.
         (&[0x0f, 0x58, 0xc1], false),
         (&[0xf2, 0x0f, 0x51, 0xc1], false),
         (&[0xf2, 0x48, 0x0f, 0x2c, 0xc1], false),
-        (&[0x0f, 0xae, 0x1b], false),
+        // stmxcsr, which stores MXCSR's flags as last written while they are not kept.
+        (&[0x0f, 0xae, 0x1b], true),
         // Answered by design: rdtsc, rdtscp, cpuid; popf holds AC clear and does not step on TF.
         (&[0x0f, 0x31], true),
         (&[0x0f, 0x01, 0xf9], true),

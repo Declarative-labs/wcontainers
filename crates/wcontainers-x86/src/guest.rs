@@ -988,6 +988,9 @@ impl Guest for X86_64 {
             // manual: implementation dependent); ldmxcsr refuses MXCSR's bit 17, which AMD's misaligned
             // SSE mode takes.
             Dpps | Dppd | Maskmovdqu | Ldmxcsr => true,
+            // While MXCSR's flags are not kept, these store them as last written, not as the CPU raised them.
+            Stmxcsr | Vstmxcsr | Fxsave | Fxsave64 | Xsave | Xsave64 | Xsavec | Xsavec64
+            | Xsaveopt | Xsaveopt64 => true,
             // Intel ignores an operand-size prefix on a near branch; AMD takes it as 16 bits, with another
             // length, a truncated target and a 2-byte return address.
             Jmp | Call | Ret | Jrcxz | Jecxz | Loop | Loope | Loopne if i.operand_size_prefix => {
