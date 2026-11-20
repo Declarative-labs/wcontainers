@@ -183,7 +183,11 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   the source, and nothing is announced for them; a call that maps the same part of the same
   source at the same place again announces nothing either. Every end names exactly a range
   announced before with the same source and offset, ends first: a change that ends one mapping and
-  starts another announces the ending first.
+  starts another announces the ending first. What the kernel counts as told is kept piece by
+  piece, as each hook fires: a process a hook takes off the kernel (from any hook, its own sharing
+  hook included) carries in its context exactly the pieces it was told, is announced nothing
+  more while it is away, and is told the rest (starts and ends) at the kernel's next hook after
+  `resume_process`.
 - Only sources some process may write through a mapping are announced: a shared mapping whose
   file was opened for writing (Linux's `VM_MAYWRITE`, whatever `mprotect` allows now). When a
   source that no mapping could write through gets one that can, every process already mapping
@@ -229,12 +233,19 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 
 ### The kernel's guarantees
 
-- A hook fires only when every operation on its process is legal: the process is whole, and nothing
-  the hook can do on it conflicts with what the kernel is doing.
+- A hook fires only when every operation on its process is legal: the process is whole and on
+  the kernel, and nothing the hook can do on it conflicts with what the kernel is doing. A hook
+  about a process that an earlier hook of the same moment took off the kernel does not fire (the
+  rest of its shared memory is announced when it is back, a call it was about to make is asked
+  again when it makes the call again).
 - Hooks never nest. A hook is handed only a `Process`, which holds no way back to the embedder, so
   nothing done through it can announce another hook; the test host checks this by running every
-  operation of the handle inside every hook, and reports a hook called while another runs rather
-  than waiting on its own lock.
+  operation of the handle inside every hook it implements (in the life-cycle, task id and shared
+  memory tests: `info`, `execution_config`, the memory reads, writes and watches, `memory_id`,
+  `copy_process_context`, `suspend_tasks` of none, and `send_signal` of number 0, which is
+  counted and not sent), and reports a hook called while another runs rather than waiting on its
+  own lock. Taking a process or tasks from inside hooks is run by the suspend tests (from
+  `intercept_system_call_request`, `on_signal_delivering` and `on_shared_memory_mapping`).
 - The kernel touches a program's memory before a system call has any effect, so a watch fires while
   the call can still be repeated (see "Watches and system calls").
 - A hook is synchronous; an embedder that works asynchronously returns and finishes later through
@@ -325,8 +336,9 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
   thread runs again; between steps, `Kernel::next` then answers `Next::Idle` with a time of 0, as
   for a watch changed between steps. From there it is any other signal: a thread blocked in an
   interruptible call is woken and the call answers EINTR or restarts by its handler's
-  `SA_RESTART`; a thread waiting on a watch acts on it once the watches change. A signal that
-  names no thread of the process, has a number outside 1 to 64, or does not fit the receiving
+  `SA_RESTART`; a thread waiting on a watch acts on it once the watches change; a task of the
+  process taken off the kernel keeps it, as it keeps one from `tgkill`, and acts on it when it is
+  put back. A signal that names no thread of the process (on the kernel or taken off it), has a number outside 1 to 64, or does not fit the receiving
   user's queue is not sent, counted (`signal from the embedder not sent`, with its number) and
   warned. The record must be built from zero, as Linux's `clear_siginfo` builds one: the kernel
   reads it whole, and in Rust the bytes of a union member never written are not readable.
@@ -507,9 +519,9 @@ pub enum ContextOrigin { Suspended, Copied }
   request is announced again). Per call, from the restart codes in Linux's source and signal(7),
   "Interruption of system calls by signal handlers" and "by stop signals":
   - Run again from the start, having had no effect (`ERESTARTSYS`, `ERESTARTNOINTR`,
-    `ERESTARTNOHAND` with no handler): a read or write that has moved nothing (pipes, sockets,
-    terminals, eventfd, signalfd, inotify, splice), the open of a named pipe, `wait4` and
-    `waitid`, `accept`, `connect`, `flock` and `F_SETLKW`, a futex wait with no timeout (it checks
+    `ERESTARTNOHAND` with no handler): a read or write that has moved nothing (pipes, sockets with
+    no timeout, terminals, eventfd, signalfd, inotify, splice), the open of a named pipe, `wait4`
+    and `waitid`, `accept`, `connect`, `flock` and `F_SETLKW`, a futex wait with no timeout (it checks
     the number again, and answers EAGAIN if it changed) and the priority-inheritance lock, a message
     queue send or receive (their times are absolute), `pause`, `rt_sigsuspend`,
     `clock_nanosleep` with `TIMER_ABSTIME`.
@@ -520,7 +532,11 @@ pub enum ContextOrigin { Suspended, Copied }
     `sendmmsg` and `recvmmsg` the messages done; a futex waiter a wake had already chosen answers
     0; a semaphore operation already done and a message already handed over answer as done.
   - Answer EINTR, as Linux does after a stop even with no handler: `epoll_wait` and
-    `epoll_pwait`, `semop` and `semtimedop`, `rt_sigtimedwait`.
+    `epoll_pwait`, `semop` and `semtimedop`, `rt_sigtimedwait`, and a socket wait for data, room
+    or a connection on a socket with `SO_RCVTIMEO` or `SO_SNDTIMEO` set (Linux's
+    `sock_intr_errno`; with a handler too, whatever its `SA_RESTART`). Tests:
+    `a_socket_wait_with_a_receive_timeout_taken_off_answers_as_a_stop_makes_it_answer` and
+    `a_socket_wait_with_a_receive_timeout_is_not_restarted_after_a_handler` (away.c `socket`).
   The test `a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer`
   (stopped.c) takes a process's threads in a futex wait, a futex wait already woken, a sleep, a
   write half done, a semaphore operation, `epoll_wait` and a pipe read, changes and wakes the futex
@@ -550,8 +566,20 @@ pub enum ContextOrigin { Suspended, Copied }
     there.
   The tests in tests/away.rs (guest/away.c) take a child's main thread while it joins a worker that
   then ends, a child's thread in a read while its parent sends SIGTERM or SIGKILL and closes the
-  pipe, and a thread in a read while its own timer fires, and compare the output with the
-  reference, where nothing is taken.
+  pipe, a thread in a read while its own timer fires, and one while the embedder sends it a
+  signal (`send_signal`), and compare the output with the reference, where nothing is taken (and
+  the program sends the signal itself).
+- What a context away maps stays in use on the kernel it left, as a stopped process's memory does
+  in Linux: its executor memory is not dropped when the last process on the kernel that shares it
+  ends (a `CLONE_VM` child), the blocks of the files it maps are kept and follow the file (moved
+  to a larger block, cut at a new end), a System V segment it attaches stays attached
+  (`shm_nattch`), and a memory file it maps writable cannot be sealed against writes. The kernel
+  keeps a weak reference to each map that left it, taken or copied, until the context is put back
+  on it; so a context the embedder drops instead of putting back lets go of its file blocks, but
+  its executor memory is left to the executor (the kernel no longer knows whether another kernel
+  runs in it). Tests: `a_parent_away_while_its_forked_child_ends_goes_on_when_it_is_back` and
+  `a_parent_away_while_a_child_in_its_memory_ends_goes_on_when_it_is_back` (away.c `leave`: the
+  parent's program file and a memory file it shares with the child, then a child in its memory).
 - A process whose context is taken off the kernel is still its parent's child there: `wait4` and
   `waitid` for it wait (with `WNOHANG` they answer 0), as for a stopped child with nothing to
   report, and when the parent ends it goes to the reaper, which the context takes when it comes
