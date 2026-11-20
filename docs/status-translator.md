@@ -184,8 +184,11 @@ Third run of T3 (2026-11-19 20:30 to 22:00 local):
   in wasmtime 0.998 to 1.001 on every workload but fib, 1.006, from one round (4.907 s against 4.802 s; the
   other three within 3 ms). Fib alone again, 6 rounds, load 5 to 9 (`t3/pairs-7-fib.log`): wasmtime 1.000
   (new faster in 4 of 6), Chrome 0.999. Translator output for the benchmark set and busybox byte for byte the
-  same as at 91616539 (`tests/output.rs` on the rented x86 machine, lists in `t3/out`), which was the same as
-  97fff482's.
+  same as at 91616539 (`tests/output.rs` on the rented x86 machine, lists in `t3/out`). It is not the same as
+  97fff482's (corrected in the fifth run, from the independent check's lists): b4384452 put a range check at
+  every unrecognised jump site, so four of the benchmark set's modules differ (the benchmark program and its
+  WORKLOAD5 build, full, for speed and for size: 295,182 to 295,230, 124,539 to 124,571, 64,800 to 64,848 and
+  35,076 to 35,108 bytes). These pairs compared that changed code with 97fff482's, not identical code.
 - Literals, fix list steps 6, 13, 16, 21 and 22 in the arm64 crate, each output-neutral: c3cf197e (float byte
   sizes from `size_of`, the formats' fraction and exponent widths from rustc_apfloat, the float hook's operand
   count named once and its parameter list built from it), c94a9289 (the float hook's operation code as a
@@ -219,7 +222,9 @@ Fourth run of T3 (2026-11-19 23:00 local to 2026-11-20), the independent check's
   against the 1,200 expected) and passes with it. The check's program `check_calls.c` (tail calls through a
   table of three functions, -O2, full): 0 counted (11,752 at 48c65565, as the check measured). busybox awk,
   `wcon` on the rented x86 machine, load 26 to 28 (`t3/awk-r4.log`): outputs as before; wcon's summary 3,
-  none and 2 for the three commands (4, none and 3 before).
+  none and 2 for the three commands (4, none and 3 before). The single figures vary from run to run (the
+  independent check, at the same code: exact counts 2, 0 and 4, summary 1, none and 3; b4384452: exact 5, 0
+  and 4), so the remainder is a range: exact 2 to 5, 0, and 4; summary 1 to 4, none, 2 to 3.
 - Switch cases in another part of a cut function (b4384452's third part) now have a test (486ee285,
   `programs/cut_switch.c`: 48 cases of 64 branches each, every case twice, -O0 and -O2, full for speed and
   size): no slow path, Linux's output. The check's `check_big.c` gives 0 counted and still 1,622 translations
@@ -231,8 +236,9 @@ Fourth run of T3 (2026-11-19 23:00 local to 2026-11-20), the independent check's
   was 8,159 at the merge (fc5f55ca) and 8,113 after the init (65ba8f8a), not 7,944 as the third run wrote
   (that was the second run's start).
 - The translator's output (tests/output.rs on the rented x86 machine, `t3/r4/out`) against the third run's:
-  busybox the same; the benchmark set differs in one module (full, for speed, 295,230 to 295,240 bytes, and
-  full for size), from the new entry test at a jump through a register.
+  busybox the same; the benchmark set differs in four modules, from the new entry test at a jump through a
+  register: the benchmark program and its WORKLOAD5 build, full, each for speed (295,230 to 295,240 and 64,848
+  to 64,858 bytes) and for size (124,571 to 124,591 and 35,108 to 35,128).
 - Which commit each rerun proves. Merged code: layer 2, 100,000 programs, and layer 3, 5,287 compared, at
   97fff482; layer 1, 10,000 cases a form, at 65ba8f8a (see above). Final code, this run, at 4117dcd3 (the
   translator as at c2bafa58), new seed 400:
@@ -2954,10 +2960,20 @@ contract's bits, in both runners).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
-- T3: a switch case in another part of a cut function is reached through the lookup, and since it is no
-  part's entry its piece is made at run time (bounded look-ahead, counted "translated at run time"). The
-  check's `check_big.c` (48 cases of 64 branches, 600 calls, -O2, full) makes 1,622 translations at run time (this
-  run's count; the check measured 9.3 s for them, the same since f6e760ae). Making such cases entries of their part would remove it; not done.
+- T3: a switch whose code has no bound check before its table (the compiler proved the index's range, as for
+  `k % 48` or an argument of a static function whose every caller it sees) is left unrecognised, as the
+  table's length cannot be known. Its cases are never found, so each is made at run time once (bounded
+  look-ahead, counted "translated at run time", warned), and the jump to them goes through the lookup with no
+  count at each run, because the target lies past the explored function (only the code before the jump).
+  Measured with `cut_switch.c`'s `cut` static (as at 486ee285), -O2, full: 1,190 translations at run time, 0
+  counted unrecognised; with `cut` not static the compiler checks the bound, the switch is recognised and 3
+  remain (the C library's, as at -O0). The independent check's `check_big.c` (`switch (k % 48)`, 1,622 at run
+  time) is expected to be this case; not measured separately. Recognising it needs the index's range from the
+  code before the jump (an `and` mask, a remainder); not done. (Earlier runs put this down to switch cases in
+  another part of a cut function: wrong, such cases are entries of their part.)
+- T3: a function cut in two because it is too large for an engine (`halves`, a second plan with more starts)
+  becomes separate functions for the unrecognised jump's range check, unlike a function cut for
+  `FUNCTION_BLOCKS`, whose parts share their whole function's span.
 - M5: pieces made at run time from the middle of a function (after a lost stack, a go to address or a
   forgotten piece) do not recognise switch tables or prove loops the way the function's full piece does: much
   slower on unwinder-heavy code (figures under "M5, first run"), counted and warned.
@@ -3259,9 +3275,11 @@ contract's bits, in both runners).
   it. Pages past the table are clamped to that byte.
 - A recognised jump table that reaches a target not in its table counts as "jump through a register not
   recognised" (it goes through the lookup like one).
-- Every executed jump through a register that is not recognised calls the warn hook (counted per
-  execution, as every slow path is). Tail calls through function pointers (common in the C library) pay a
-  host call each time.
+- An executed jump through a register that no table explains calls the warn hook (counted per execution, as
+  every slow path is) when its target lies inside its function, in its own part or another of a function cut
+  in parts, other than the function's entry. A jump to outside it, or to its entry, is a tail call through
+  the lookup, not counted (since b4384452, c2bafa58 and e26b3c23; before, every one was counted, and tail
+  calls through function pointers, common in the C library, paid a host call each time).
 - Layer 2 compares against the real CPU only for the first `WC_LAYER2_NATIVE` cases, because the
   reference runs one blob per container; full against none is compared for every case.
 - Layer 2 writes `mrs`/`msr nzcv` as raw words, because dynasm has no name for the register.
