@@ -242,7 +242,9 @@ Fourth run of T3 (2026-11-19 23:00 local to 2026-11-20), the independent check's
     10 to 17, 606 s: 0 failing (8,329 faulted, 1,781 left to an address at full) (`t3/r4/rerun.log`).
   - Layer 3 on the same machine, 1,000 programs from case 0, 100 in Chrome, 12 jobs, load 14 to 19, 838 s: 866
     compared (82 also in Chrome), 134 did not end in time on Linux, 0 failing.
-- Layer 3, 4,500 more programs from case 1,000: running at the time of writing (arm-run job translator-rerun/20261120-074459-325067).
+  - Layer 3 again, 4,500 programs from case 1,000, 45 in Chrome, 12 jobs, load 10 to 18, 5,537 s: 3,937
+    compared (42 also in Chrome), 563 did not end in time on Linux, 0 failing (`t3/r4/layer3b.log`). With the
+    1,000 before: 4,803 compared on the final code, 0 failing.
 - The whole suite of the four crates at 4117dcd3, debug, rented ARM64 machine, 07:18 to 07:43 UTC, load 7 to
   20 (`t3/r4/suite.log`): 99 passed, 10 ignored, 2 failed, both layer 1's `MSR_SR_systemmove` (the Graviton's
   FPSR difference); layer 1's verdict is the Mac's, above.
@@ -2713,7 +2715,7 @@ contract's bits, in both runners).
 
 - T3, fourth run (final code, 4117dcd3, seed 400): layer 1 on the Mac, 1,215 forms x 1,000 cases, 10 a form
   in Chrome, 1,000 words in no form; layer 2, 25,000 programs, all on the CPU, 5 in Chrome; layer 3, 1,000
-  programs (866 compared) and then 4,500 more from case 1,000 (see "T3", fourth run); the whole suite of the
+  programs and then 4,500 more from case 1,000, 4,803 compared (see "T3", fourth run); the whole suite of the
   four crates (debug, defaults); the changed program tests; busybox awk's three commands; 4 rounds of speed
   pairs. Earlier T3 runs' cases are in the "T3" section.
 - P1, release unless said: after the merge, every test of the three crates (debug, 69 passed, 7 ignored).
