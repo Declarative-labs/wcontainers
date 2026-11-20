@@ -298,7 +298,7 @@ pub fn capture_program(
                 .collect::<Result<_>>()?,
             _ => return Err(ConvertError::Malformed(VERTEX_OUTPUTS.into())),
         };
-    inner.name = Some(VERTEX_SHADER_FUNCTION.into());
+    inner.name = Some(CAPTURED_FUNCTION.into());
     let callee = module.functions.append(inner, Span::UNDEFINED);
     let uvec4 = build::vec4(&mut module, Scalar::U32);
     let vec4 = build::vec4(&mut module, Scalar::F32);
@@ -568,10 +568,10 @@ const OUTPUTS_TYPE: &str = "Outputs";
 const VERTEX_RECORDS: &[u8] = b"vertex records";
 /// The key part of [`capture_program`]'s module.
 const CAPTURED_RECORDS: &[u8] = b"captured records";
-/// The function a vertex program's entry point becomes when wrapped.
-const VERTEX_SHADER_FUNCTION: &str = "vertex_shader";
+/// The function the vertex program's entry point becomes in [`capture_program`].
+const CAPTURED_FUNCTION: &str = "captured_vertex_shader";
 /// The position's member in [`capture_program`]'s outputs.
-const POSITION_MEMBER: &str = "position";
+pub(crate) const POSITION_MEMBER: &str = "position";
 const DOMAIN_RECORDS: &[u8] = b"domain records";
 /// Names in the helper's programs: its values block's type and variable, the vertex compute form's
 /// index and record variables, its invocation argument, and the output type of a vertex program
@@ -579,8 +579,8 @@ const DOMAIN_RECORDS: &[u8] = b"domain records";
 const VALUES_TYPE: &str = "StageValues";
 const VALUES_VARIABLE: &str = "stage_values";
 const INDICES_VARIABLE: &str = "stage_indices";
-const VERTICES_VARIABLE: &str = "stage_vertices";
-const ID_ARGUMENT: &str = "id";
+pub(crate) const VERTICES_VARIABLE: &str = "stage_vertices";
+pub(crate) const ID_ARGUMENT: &str = "id";
 const POSITIONED_OUTPUTS_TYPE: &str = "PositionedOutputs";
 /// Refusals of a vertex program by the compute form, and what is malformed in one.
 pub const VERTEX_INPUT_NOT_PULLED: &str = "VertexInputNotPulled";
@@ -1096,7 +1096,7 @@ pub(crate) fn vertex_as_compute(
         _ => return Err(ConvertError::Malformed(VERTEX_OUTPUTS.into())),
     }
     let position = position.ok_or(ConvertError::Unsupported(VERTEX_WITHOUT_POSITION))?;
-    inner.name = Some(VERTEX_SHADER_FUNCTION.into());
+    inner.name = Some("vertex_shader".into());
     let callee = module.functions.append(inner, Span::UNDEFINED);
 
     let values = values(&mut module);
@@ -1341,7 +1341,7 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
         r.binding = None;
     }
     let returns = inner.result.is_some();
-    inner.name = Some(VERTEX_SHADER_FUNCTION.into());
+    inner.name = Some("vertex_shader".into());
     let callee = module.functions.append(inner, Span::UNDEFINED);
     let vec4 = build::vec4(module, Scalar::F32);
 

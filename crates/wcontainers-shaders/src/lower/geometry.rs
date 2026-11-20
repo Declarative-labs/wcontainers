@@ -105,6 +105,20 @@ const EMIT: &str = "gs_emit";
 const POSITION_SLOT: u32 = 0;
 /// The replay form's outputs.
 const REPLAY_OUTPUTS_TYPE: &str = "ReplayOutputs";
+/// The replay form's private variables, in `Replay`'s order.
+const REPLAY_VARIABLES: [&str; 7] = [
+    "gs_kept",
+    "gs_slot",
+    "gs_corner",
+    "gs_wanted",
+    "gs_strip_start",
+    "gs_slot_start",
+    "gs_whole",
+];
+/// The replay form's arguments.
+const VERTEX_ARGUMENT: &str = "replay_vertex";
+const INSTANCE_ARGUMENT: &str = "replay_instance";
+const INPUT_WITHOUT_TYPE: &str = "an input without a type";
 
 /// A geometry shader's counts its entry points step by.
 #[derive(Clone, Copy)]
@@ -274,7 +288,7 @@ impl Lowering<'_> {
             );
             build::global(
                 m,
-                "stage_vertices",
+                stage::VERTICES_VARIABLE,
                 AddressSpace::Handle,
                 Some(stage::binding(stage::VERTICES_BINDING)),
                 texture,
@@ -283,7 +297,7 @@ impl Lowering<'_> {
             let vertex_array = build::runtime_array(m, uvec4, stage::SLOT_BYTES);
             build::global(
                 m,
-                "stage_vertices",
+                stage::VERTICES_VARIABLE,
                 AddressSpace::Storage {
                     access: StorageAccess::LOAD,
                 },
@@ -319,15 +333,16 @@ impl Lowering<'_> {
                 },
                 Span::UNDEFINED,
             );
+            let [kept, slot, corner, wanted, strip_start, slot_start, whole] = REPLAY_VARIABLES;
             Form::Replay(Replay {
                 coordinate,
-                kept: private(m, "gs_kept", kept_ty),
-                slot: private(m, "gs_slot", u32_ty),
-                corner: private(m, "gs_corner", u32_ty),
-                wanted: private(m, "gs_wanted", u32_ty),
-                strip_start: private(m, "gs_strip_start", u32_ty),
-                slot_start: private(m, "gs_slot_start", u32_ty),
-                whole: private(m, "gs_whole", bool_ty),
+                kept: private(m, kept, kept_ty),
+                slot: private(m, slot, u32_ty),
+                corner: private(m, corner, u32_ty),
+                wanted: private(m, wanted, u32_ty),
+                strip_start: private(m, strip_start, u32_ty),
+                slot_start: private(m, slot_start, u32_ty),
+                whole: private(m, whole, bool_ty),
             })
         } else {
             let word_array = build::runtime_array(m, u32_ty, build::WORD);
@@ -797,8 +812,8 @@ impl Lowering<'_> {
         };
         let mut b = Builder::new(crate::ENTRY_POINT);
         for (name, built) in [
-            ("vertex", BuiltIn::VertexIndex),
-            ("instance", BuiltIn::InstanceIndex),
+            (VERTEX_ARGUMENT, BuiltIn::VertexIndex),
+            (INSTANCE_ARGUMENT, BuiltIn::InstanceIndex),
         ] {
             b.f.arguments.push(FunctionArgument {
                 name: Some(name.into()),
@@ -899,7 +914,7 @@ impl Lowering<'_> {
             components.push(b.field(kept, i));
         }
         members.push(naga::StructMember {
-            name: Some("position".into()),
+            name: Some(stage::POSITION_MEMBER.into()),
             ty: vec4,
             binding: Some(Binding::BuiltIn(BuiltIn::Position { invariant: false })),
             offset: stage::SLOT_BYTES * slots,
@@ -941,10 +956,10 @@ impl Lowering<'_> {
         let outputs = self.geometry_locations(false)?;
         let out_words = stage::record_words(outputs.len() + self.extra_slots()?);
 
-        let uvec3 = self.vec_ty(3, Scalar::U32)?;
+        let uvec3 = self.vec_ty(naga::VectorSize::Tri as u8, Scalar::U32)?;
         let mut b = Builder::new(crate::ENTRY_POINT);
         b.f.arguments.push(FunctionArgument {
-            name: Some("id".into()),
+            name: Some(stage::ID_ARGUMENT.into()),
             ty: uvec3,
             binding: Some(Binding::BuiltIn(BuiltIn::GlobalInvocationId)),
         });
@@ -1012,8 +1027,8 @@ impl Lowering<'_> {
             let kk = b.u32(k);
             let list = b.add(list_first, kk);
             let even_k = b.add(prim, kk);
-            let along = if n == 3 && k > 0 {
-                let other = b.u32(3 - k);
+            let along = if n == stage::TRIANGLE_VERTICES && k > 0 {
+                let other = b.u32(stage::TRIANGLE_VERTICES - k);
                 let odd_k = b.add(prim, other);
                 b.select(is_odd, odd_k, even_k)
             } else {
@@ -1114,7 +1129,7 @@ impl Lowering<'_> {
                 .ty
                 .members
                 .first()
-                .ok_or_else(|| malformed("an input without a type".into()))?;
+                .ok_or_else(|| malformed(INPUT_WITHOUT_TYPE.into()))?;
             let to = Self::scalar(member.scalar)?;
             let system = match (location, bi) {
                 (Some(_), None) => None,
