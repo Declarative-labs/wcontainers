@@ -1,10 +1,305 @@
-# Answers a decision model gave about the names in this workspace. `cargo reviewable check` asks only
-# for names it has no answer for, and removes names the code no longer has. Commit this file.
+# Answers a decision model gave about the names and doc comment summaries in this workspace.
+# `cargo reviewable check` asks only for what it has no answer for, and removes what the code no
+# longer has. Commit this file.
 # To dispute a wrong answer, add `disputed = "why, in one line"` to its line. The owner may write
 # `corrected = "<one of the choices>"` instead, which stands in for the model's answer.
 
+[function-summary]
+question = "The first sentence of the documentation of a Rust function is given in the state. What form is the verb it starts with?"
+subject = "summary"
+
+[function-summary.choices]
+third_person_verb = 'A verb in the third person singular present, such as "Returns" or "Creates".'
+imperative_verb = 'A verb in the imperative or base form, such as "Return" or "Create".'
+other = 'It does not start with a verb: a noun phrase, or a sentence with its own subject such as "This function returns ...".'
+
+[function-summary.answers]
+"Accepts connections to a published port; nothing reaches a port not published." = { answer = "third_person_verb", confidence = 0.9251189249574078, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Addresses the lookup table has been given a piece for, in this thread instance." = { answer = "other", confidence = 0.7821352867278917, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Adds a measured time under a reason, without a warning: a measurement, not a slow path." = { answer = "third_person_verb", confidence = 0.9524189800647888, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Adds a name for `node` in `directory`, keeping the link counts right." = { answer = "third_person_verb", confidence = 0.9080850443081848, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Adds a name with a new position, in place of what the name held." = { answer = "third_person_verb", confidence = 0.9169926586525912, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Adds a slot of spliced bytes, which no write adds to." = { answer = "third_person_verb", confidence = 0.9530792939840074, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Adds bytes to the last slot (the merge step)." = { answer = "third_person_verb", confidence = 0.8845818620787798, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Adds image files to a kernel's root before it starts." = { answer = "third_person_verb", confidence = 0.9495484867612582, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Announces a hook about process `pid` to the embedder, after what the kernel wrote before." = { answer = "third_person_verb", confidence = 0.9854505117363772, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Announces that another process has finished reading this one's internal state." = { answer = "third_person_verb", confidence = 0.979809521552198, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Answers a notice that asked for one (NOTIFY_REPLY, which has no answer itself)." = { answer = "third_person_verb", confidence = 0.8104805692896312, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Appends while another thread truncates the file: the inode is held across each." = { answer = "third_person_verb", confidence = 0.6854522699457635, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Arm's `RecipEstimate` of the 9 bit value in `a`, pushed." = { answer = "other", confidence = 0.7545402597230597, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Arm's `RecipEstimate`: a 9 bit estimate of 1/x for x = a/512, a in 256 to 511." = { answer = "other", confidence = 0.8497589634557858, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Arm's `RecipSqrtEstimate`: a 9 bit estimate of 1/sqrt(x) for a in 128 to 511." = { answer = "other", confidence = 0.8290780646124618, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Arms a timer at `at` on its clock." = { answer = "third_person_verb", confidence = 0.8499780080017021, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Arms or disarms a timer and starts its overrun count again (`posix_timer_set_common`)." = { answer = "third_person_verb", confidence = 0.49151769193587885, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"As [`Self::send_to_process`], telling the sender as [`Self::queue_to_thread`] does." = { answer = "other", confidence = 0.6492331778688369, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`assert_same_output_seeded`], with the reference on one CPU like the made-up machine." = { answer = "other", confidence = 0.8811183619076468, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`assert_same_streams`], with the file backend mounted at `backend` (`/` for the root)." = { answer = "other", confidence = 0.8659413699305957, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`changed`], for an event through a path that was `unlinked`." = { answer = "other", confidence = 0.5933579585410241, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`released`], for a socket or an embryo a listener held (whose other end is reset)." = { answer = "other", confidence = 0.6639372921252303, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`run_embedder_below`], with the buffer at `buffer` and a failure to start given back." = { answer = "other", confidence = 0.8924311935449363, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`run_injected`], on a kernel [`prepare`] made for the container." = { answer = "other", confidence = 0.8189210605571032, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`run_injected`], with the client of the container's standard streams." = { answer = "other", confidence = 0.867282447020206, model = "perplexity/pplx-decider-v1.2-20261016" }
+'As [`run_ours_seeded`], with the root file system on the backend (`Some("/")`) or in memory.' = { answer = "other", confidence = 0.8549938163826655, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`run_ours_seeded`], with what the test does at the kernel's hooks." = { answer = "other", confidence = 0.86021768197037, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`run_ours`], with the run's seed and saved and brought back `saves` times." = { answer = "other", confidence = 0.7454410778869924, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`run_ours`], with the run's seed and what it has done to it." = { answer = "other", confidence = 0.8396518387225039, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`run_ours`], with the seed the run's choices come from." = { answer = "other", confidence = 0.8602652191083423, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`same_on_backend`], with the backend opening files for the page cache if `cached`." = { answer = "other", confidence = 0.8637794119131733, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As [`truncate_node_unwatched`], telling the inode's inotify watches." = { answer = "other", confidence = 0.5508353931655888, model = "perplexity/pplx-decider-v1.2-20261016" }
+"As `send`; a timer's signal (`timer`) is queued in the timer's place, not charged again." = { answer = "other", confidence = 0.9025810637306668, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Attributes and access control lists read as root and as another user, on both kinds of backend." = { answer = "other", confidence = 0.9218665128921948, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Builds every test whose name `wanted` accepts into `out`, each in its own directory." = { answer = "third_person_verb", confidence = 0.8931930414589984, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Builds the server once into `out/wc-backend/` and returns the directory holding it." = { answer = "third_person_verb", confidence = 0.9484825686726543, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Bytes below the ceiling that new mappings can still take before a request crosses it." = { answer = "other", confidence = 0.9885128126624866, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Bytes of address space the process has mapped." = { answer = "other", confidence = 0.9910668610266978, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Bytes out of an end, never more than the credit the embedder gave on it." = { answer = "other", confidence = 0.2267894684576268, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Bytes the call reads to learn what else it touches, once touched; false if unreadable." = { answer = "other", confidence = 0.6364667010060082, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Bytes the kernel may still send on an end." = { answer = "other", confidence = 0.7181423339012867, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Bytes waiting to be read (`FIONREAD`)." = { answer = "other", confidence = 0.936932349022102, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Changes what a fully mapped range allows, as `mprotect` does." = { answer = "third_person_verb", confidence = 0.8548929948771239, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Charges the thread that ran for the time since it was handed out." = { answer = "third_person_verb", confidence = 0.8861570880787695, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks a program as Linux does when it is installed; every refusal is EINVAL." = { answer = "third_person_verb", confidence = 0.9459492204468112, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks a signal set size argument, which must be Linux's 8 bytes." = { answer = "third_person_verb", confidence = 0.9638524726898664, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks every run gave no warning but those `allowed`." = { answer = "third_person_verb", confidence = 0.912554546653868, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that a run warned of nothing but `allowed`." = { answer = "third_person_verb", confidence = 0.8586886268368966, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that an id handed out and not freed is not handed out next." = { answer = "third_person_verb", confidence = 0.8997889435204038, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that freeing one id does not let the next allocation hand out another still held." = { answer = "third_person_verb", confidence = 0.9067726600831588, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that resuming no tasks hands none back." = { answer = "third_person_verb", confidence = 0.917052554430052, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that suspending an empty batch takes no task." = { answer = "third_person_verb", confidence = 0.8911757607769253, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that the monotonic clock never goes backwards between two reads." = { answer = "third_person_verb", confidence = 0.8684279956432008, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks that two fills of random bytes differ." = { answer = "third_person_verb", confidence = 0.8446563464064049, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Checks the chain from `tip` down to `stop`, and every other side merged into it." = { answer = "third_person_verb", confidence = 0.926064036539828, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Chooses the thread to run, or says why none can run." = { answer = "third_person_verb", confidence = 0.9595012949539756, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Clears a finished call's slot; a named pipe's open still waiting gives up its end." = { answer = "third_person_verb", confidence = 0.8237767269738482, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Closes every descriptor for process `closer`, as the end of a table's last holder does." = { answer = "third_person_verb", confidence = 0.973979628078484, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Closes every descriptor marked close-on-exec, as `execve` does in process `closer`." = { answer = "third_person_verb", confidence = 0.9600773279848718, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Closes the end a named pipe's waiting open held, which the other end may wait on." = { answer = "third_person_verb", confidence = 0.9059019977672343, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Closes the host connections let go since the last flush." = { answer = "third_person_verb", confidence = 0.8339271452302919, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Conditions on the sign of a result when V is clear or not asked: mi and lt, pl and ge, gt, le." = { answer = "other", confidence = 0.9302177999995428, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Copies as much of `bytes` as can be written, a page at a time, as a partial `copy_to_user`." = { answer = "third_person_verb", confidence = 0.9111804559445914, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Copies between `bytes` and the pages from byte `address` on, one page at a time." = { answer = "third_person_verb", confidence = 0.8594376024991879, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Counts a change to a mapped backend file's bytes, so answers asked before it are not taken." = { answer = "third_person_verb", confidence = 0.9585109739476022, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Counts a lookup in `/sys` of a name Linux has there; detail: its index in [`SYS_ENTRIES`]." = { answer = "third_person_verb", confidence = 0.8736309644069634, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Counts a lookup that found nothing when Linux has the name there." = { answer = "third_person_verb", confidence = 0.8511901055423072, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Counts and warns of every noted occurrence." = { answer = "third_person_verb", confidence = 0.895082213510124, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Counts one occurrence and warns the host." = { answer = "third_person_verb", confidence = 0.9114875148383882, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Counts the file's pages against a tmpfs from now on." = { answer = "third_person_verb", confidence = 0.952315891843336, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Csmith's headers, copied where Docker can read them." = { answer = "other", confidence = 0.8999141679482237, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Deals with why a thread came back." = { answer = "third_person_verb", confidence = 0.9332263832878378, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Destroys removed segments nothing shows (`shm_destroy`)." = { answer = "third_person_verb", confidence = 0.8883525202591963, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Devices opened from it are refused (`nodev`)." = { answer = "other", confidence = 0.9239454383640776, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Digits that are shell syntax, not a value." = { answer = "other", confidence = 0.9172102584689348, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Drops a signal from every pending set of a process, as setting an action that ignores it does." = { answer = "third_person_verb", confidence = 0.9464577238460992, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Drops every instance of the signals in `set`." = { answer = "third_person_verb", confidence = 0.865196796975773, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Drops the pages `keep` refuses, giving them back to tmpfs." = { answer = "third_person_verb", confidence = 0.9521475886810424, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Drops the signals in `set` from every pending set of a process." = { answer = "third_person_verb", confidence = 0.8122320375838858, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Ends a sleep on a CPU clock: its timer goes." = { answer = "third_person_verb", confidence = 0.8486091844473657, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Ends a thread's wait; it goes in line and its call runs again when its turn comes." = { answer = "third_person_verb", confidence = 0.9237583704281932, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Ends every host connection of a socket whose last descriptor went." = { answer = "third_person_verb", confidence = 0.9573104471738934, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Ends one thread of a process that has others." = { answer = "third_person_verb", confidence = 0.9317892222604316, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Ends the watches of `[start, end)`, whose pages a fork's child gets fresh." = { answer = "third_person_verb", confidence = 0.8993878629372153, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Evaluates every constant's value in place." = { answer = "third_person_verb", confidence = 0.9729477921308884, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Files in other languages are not read at all." = { answer = "other", confidence = 0.9756463296275776, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Fills Linux's `stat` for an inode." = { answer = "third_person_verb", confidence = 0.9249025451564046, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Fills one new slot with at most a page." = { answer = "third_person_verb", confidence = 0.8800276243277785, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Finds a file to run by path from the process's point of view, with Linux's checks." = { answer = "third_person_verb", confidence = 0.9641808810337218, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Finishes sending on a TCP connection to the outside." = { answer = "third_person_verb", confidence = 0.907934882585642, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Fires every wall clock timer due by the time the kernel was entered." = { answer = "third_person_verb", confidence = 0.916197135149201, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Follows a node while it is a symbolic link, relative to the directory it was found in." = { answer = "third_person_verb", confidence = 0.863066726710239, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Forgets the watches and the record of `[start, end)`, which is unmapped." = { answer = "third_person_verb", confidence = 0.918406880851453, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Formats Rust source as `cargo fmt` would, so generated files stay unchanged by it." = { answer = "third_person_verb", confidence = 0.8989839166040231, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives `tid`, out of line, the CPU, measuring how long it waited since it was woken." = { answer = "third_person_verb", confidence = 0.8997608537753895, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives a backend file a block of `length` bytes holding the pages its old one held." = { answer = "third_person_verb", confidence = 0.9346937279611192, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives a parent its descriptor for a child or thread it just made (CLONE_PIDFD), close on exec." = { answer = "third_person_verb", confidence = 0.9554837596632642, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives a socket that has none a port of its own (`inet_autobind`)." = { answer = "third_person_verb", confidence = 0.905612350998095, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives a thread's credentials a new serial after a change Linux commits (`commit_creds`)." = { answer = "third_person_verb", confidence = 0.9814757189921012, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives back pages `fallocate` reserved in this call, when it fails part way." = { answer = "third_person_verb", confidence = 0.9597314797472734, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives back space [`Self::reserve_xattr`] took, when the attribute was not set after all." = { answer = "third_person_verb", confidence = 0.9713252186807978, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives back to the embedder the numbers let go of that nothing carries any more." = { answer = "third_person_verb", confidence = 0.953989646568869, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives the structures in [`BYTES`] zerocopy's derives." = { answer = "third_person_verb", confidence = 0.8991733245662769, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Gives up a file this table's process held outside a descriptor." = { answer = "third_person_verb", confidence = 0.9408971586406172, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Hands a network event to the socket or lookup it is for; false if none waits for it." = { answer = "third_person_verb", confidence = 0.8477506733168121, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Hands the backend the messages made since the last time, counting each by its opcode." = { answer = "third_person_verb", confidence = 0.927015844515778, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Hands the event to `deliver` in the boundary's form." = { answer = "third_person_verb", confidence = 0.8602333865624238, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Hands the host the connections released since the last call." = { answer = "third_person_verb", confidence = 0.951886470106676, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Hands the server one request." = { answer = "third_person_verb", confidence = 0.9163556924426258, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Holds the pipe's lock while the call waits (it parked)." = { answer = "third_person_verb", confidence = 0.933720618885035, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Instructions that only compute; their meaning above leaves `next` to the end of [`emit`]." = { answer = "other", confidence = 0.926141841071847, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Its entries' list in [`LINUX_ENTRIES`]." = { answer = "other", confidence = 0.9178900658011542, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Its protocol's name, which its inode's dentry carries (`sk_prot_creator->name`)." = { answer = "other", confidence = 0.9730129447420716, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Its size as read: the header and the name with its zero, padded." = { answer = "other", confidence = 0.949274017949868, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Keeps the attributes of a `/proc` entry Linux keeps them for, for its next lookup." = { answer = "third_person_verb", confidence = 0.9838645968964612, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Lanes and bytes of a same-width shape." = { answer = "other", confidence = 0.4909486665806255, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Lanes of a same-width operation and the bytes of its result." = { answer = "other", confidence = 0.94872876547282, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Lets go of an end's file, as a close of it." = { answer = "imperative_verb", confidence = 0.2113769800111776, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Lets go of the access control lists held (`forget_all_cached_acls`)." = { answer = "third_person_verb", confidence = 0.4242171703863946, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Lets go of the locks a call held: whoever waits for one tries again." = { answer = "third_person_verb", confidence = 0.11449725688082288, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Lines of words drawn from `seed`, `bytes` long or a little more." = { answer = "other", confidence = 0.866903421172506, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `PAGE_ALIGN` of a length a program passes: it wraps, so the last page's lengths become 0." = { answer = "other", confidence = 0.8131627160054052, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `__checkparam_dl`: deadline parameters that make sense." = { answer = "other", confidence = 0.9714552477976204, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `cap_emulate_setxuid`: what a change of user numbers does to the powers." = { answer = "other", confidence = 0.9659933724342744, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `cap_task_fix_setuid` for `setfsuid`: leaving root drops the file powers." = { answer = "other", confidence = 0.8648280467578637, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `check_prep_vma`: what a range of `mapping` must allow before it is resized or moved." = { answer = "other", confidence = 0.9580324389232782, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `chk_code_allowed`: the codes classic BPF has." = { answer = "other", confidence = 0.9496644515649664, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `do_execveat_common`." = { answer = "other", confidence = 0.941400545983996, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `do_mmap`: maps `file` (or anonymous memory) at `offset`, which is page aligned." = { answer = "other", confidence = 0.7973057902471461, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `do_mprotect_pkey`." = { answer = "other", confidence = 0.9436005902845304, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `do_sendfile`, in its order: the input, its offset, the output, then the transfer." = { answer = "other", confidence = 0.8658207176912873, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `do_vfs_ioctl`, and `file_ioctl` for regular files." = { answer = "other", confidence = 0.9355500977381584, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `do_vmi_munmap`: the range must lie below `TASK_SIZE` before its length is rounded up." = { answer = "other", confidence = 0.9316395679583084, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `f_modown`: the owner, with the caller's users when it names one." = { answer = "other", confidence = 0.8738005423467354, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `generic_file_rw_checks`." = { answer = "other", confidence = 0.9366619486291752, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `get_unused_fd_flags` before an open: EMFILE when no descriptor is free below the limit." = { answer = "other", confidence = 0.8719809129426994, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `ipcperms`: whether the caller is granted every access `flag`'s permission bits ask." = { answer = "other", confidence = 0.9422677986903611, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `kill_something_info`." = { answer = "other", confidence = 0.9538566699501436, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `may_write_xattr`: a process's directory in `/proc` is immutable." = { answer = "other", confidence = 0.9067349960402536, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `mremap_at`: resizing where the range is, or moving it if it must grow and may move." = { answer = "other", confidence = 0.9468040007015036, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `mremap_to`: moving the range to a new address, given or chosen." = { answer = "other", confidence = 0.8569783364058275, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `posix_locks_conflict`." = { answer = "other", confidence = 0.9147960558979424, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `posix_same_owner`." = { answer = "other", confidence = 0.9336088003227244, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS ([`crate::fs::proc::ptrace_may_read`])." = { answer = "other", confidence = 0.8006038183945455, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `rw_verify_area`: the range must end within the largest file offset." = { answer = "other", confidence = 0.9426607359005028, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `seccomp_set_mode_filter`, in its order." = { answer = "other", confidence = 0.8242484792776243, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `touch_atime` itself, which a splice also makes for a device it read." = { answer = "other", confidence = 0.9261882154158586, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's `xattr_permission`." = { answer = "other", confidence = 0.9428372559020776, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's checks on a file to run (`do_open_execat`), for a file already found." = { answer = "other", confidence = 0.8151492550817127, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's own `ctype` table (`lib/ctype.c`), which counts Latin-1 letters." = { answer = "other", confidence = 0.9437068508865962, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Listeners listen outside again after the container is saved and brought back on a new host." = { answer = "other", confidence = 0.8848780346719889, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Lists that fail the check when they hold a finding the baseline does not accept." = { answer = "other", confidence = 0.15494447141417625, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Locks or unlocks a range, every page of which is mapped." = { answer = "third_person_verb", confidence = 0.6643565531550027, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Locks or unlocks every mapping." = { answer = "third_person_verb", confidence = 0.3498924069589832, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Looks a name up in a directory of the tree." = { answer = "third_person_verb", confidence = 0.8858363629945823, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Makes a file mapping show its file's block, except at a private mapping's own copies." = { answer = "third_person_verb", confidence = 0.724537825199811, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Makes a new inode in a directory of a tmpfs." = { answer = "third_person_verb", confidence = 0.7911139186445976, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Makes an inode in a directory as a call from `tid` would." = { answer = "third_person_verb", confidence = 0.8454185468393997, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Makes the bytes of a file of the process information tree." = { answer = "third_person_verb", confidence = 0.789565337467765, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Makes the bytes of a file of the tree." = { answer = "third_person_verb", confidence = 0.9128072467074356, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Makes the inode for an entry found in `parent` under `name`." = { answer = "third_person_verb", confidence = 0.4072706012113953, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Makes unicorn's mappings over `[start, end)` match the page table again." = { answer = "third_person_verb", confidence = 0.6543469133257046, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Maps the block over the parts of `mapping` that show its file." = { answer = "third_person_verb", confidence = 0.834991872494395, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Marks the lock on `channel` as held by `tid`'s call until it ends." = { answer = "third_person_verb", confidence = 0.9368566817920184, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Meets a range; a null address or nothing touches nothing." = { answer = "third_person_verb", confidence = 0.7684946862326054, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Meets the embedder's watches on what `rseq_fixup` touches; false if the thread must wait." = { answer = "third_person_verb", confidence = 0.9484162499712744, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Meets the watches on a range; false if the call must wait." = { answer = "third_person_verb", confidence = 0.9116781541509766, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Mounts the root of a file system on a directory." = { answer = "third_person_verb", confidence = 0.8413081757456836, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Moves a waiter to the end of another futex's queue (`requeue_futex`), as `waiter` now is." = { answer = "third_person_verb", confidence = 0.6790943695083225, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Moves the bytes the block holds back into the file's own memory, ending the block." = { answer = "third_person_verb", confidence = 0.841309394606762, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Moves the clocks forward to a time on the monotonic clock, as if the host had waited." = { answer = "third_person_verb", confidence = 0.5796735399584442, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Names an end whose file comes later; credit given on it before then is kept." = { answer = "third_person_verb", confidence = 0.8019830867470946, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Names of the non-generic structures and unions in a bindings file." = { answer = "other", confidence = 0.8991541278709775, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Nanoseconds on a clock that never goes backwards." = { answer = "other", confidence = 0.9612546632590798, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Nanoseconds since 1970 by the wall clock." = { answer = "other", confidence = 0.9682578128645823, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes a new open file of a pipe's end." = { answer = "third_person_verb", confidence = 0.8996104157987952, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes a wake on `channel`: if an end's pipe or terminal is on it, something moved." = { answer = "third_person_verb", confidence = 0.9195854869557591, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes an occurrence to count at the next [`Counters::flush`]." = { answer = "third_person_verb", confidence = 0.8056726160356527, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes an open file of one of its ends, which has seen `seen_writers` writers opened." = { answer = "third_person_verb", confidence = 0.8673622167497221, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes that a local socket's queue holds descriptors." = { answer = "third_person_verb", confidence = 0.8639084137216381, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes that the pages over `[start, end)` may hold bytes." = { answer = "third_person_verb", confidence = 0.8180750962519696, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes that the process wrote `[start, end)`, if the embedder keeps a record." = { answer = "third_person_verb", confidence = 0.8968315524204881, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes the numbers a process carried, which may be let go of with it." = { answer = "third_person_verb", confidence = 0.9354698618569406, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Numbers in the gaps of Linux's list are refused with EPERM by Docker's default seccomp profile." = { answer = "other", confidence = 0.9648926281587472, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Offsets that cut the `i`th function in two, as starts." = { answer = "other", confidence = 0.7994443240710103, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Pages a change may touch: the blob's pages and the page after it, the stack and the page below it." = { answer = "other", confidence = 0.929088826339006, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Pages a writer may fill." = { answer = "other", confidence = 0.8621309197229435, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Parks a thread in its call until `channel` changes, its deadline comes or a signal arrives." = { answer = "third_person_verb", confidence = 0.8659454379043352, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Parks a wait that found nothing yet, unless a signal ends it first." = { answer = "third_person_verb", confidence = 0.8676078584881228, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Paths never compared: what Docker makes or mounts, and the test programs' directory." = { answer = "other", confidence = 0.9285645835045429, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Pollers of a queue wait on its inode." = { answer = "other", confidence = 0.8502959203104963, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Punches a hole in `[offset, end)`: its bytes read as zero and its whole pages are given back." = { answer = "third_person_verb", confidence = 0.8659923983644464, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts a container's files in a new kernel's root, unless the root is on the backend." = { answer = "third_person_verb", confidence = 0.9570904102106574, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts a file at the lowest free descriptor at or above `minimum`." = { answer = "third_person_verb", confidence = 0.9116493901504432, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts a new child in line to run (`wake_up_new_task`)." = { answer = "third_person_verb", confidence = 0.9252236056279676, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts a slot into the output pipe." = { answer = "third_person_verb", confidence = 0.9282904696051296, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts a value whose space is reserved in place of the old one, giving the old one's back." = { answer = "third_person_verb", confidence = 0.9148867813018832, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts a waiting operation in its queue, as `__do_semtimedop` does." = { answer = "third_person_verb", confidence = 0.9564223734833068, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts an opened file in the lowest free descriptor." = { answer = "third_person_verb", confidence = 0.9502017249371906, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Puts another inode under an existing name, keeping its position, at the head of the list." = { answer = "third_person_verb", confidence = 0.9324588428688092, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Queues a thread's next entry on a futex." = { answer = "third_person_verb", confidence = 0.9502918839996336, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads a null-terminated list of string pointers, as `execve`'s `count` does." = { answer = "third_person_verb", confidence = 0.9589422244669634, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads a results file." = { answer = "third_person_verb", confidence = 0.8285669802219837, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads a sleep's duration, checked as Linux's `timespec64_valid` does." = { answer = "third_person_verb", confidence = 0.9893055899714112, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads the files of a tar archive in order." = { answer = "third_person_verb", confidence = 0.908795394201978, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads the manifest of every crate folder (relative to `root`, which is canonical)." = { answer = "third_person_verb", confidence = 0.9329219561411916, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads the server's next message, waiting for it; none when no answer is to come." = { answer = "third_person_verb", confidence = 0.9405066388428208, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads the strings a list points to, each taking its room, as `copy_strings` does." = { answer = "third_person_verb", confidence = 0.9661206278837176, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reads what [`encode`] wrote." = { answer = "third_person_verb", confidence = 0.975386057155278, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Records a literal; `message` says it is text shown to a person that holds no value." = { answer = "third_person_verb", confidence = 0.8268187411199797, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Removes a name of a file that is not a directory, after `may_delete`'s checks (`vfs_unlink`)." = { answer = "third_person_verb", confidence = 0.9775752932901278, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Removes an extended attribute, giving back its space." = { answer = "third_person_verb", confidence = 0.9628811196232768, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Replaces a process's program with a loaded image, as the last part of `execve` does." = { answer = "third_person_verb", confidence = 0.9711170473482676, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Reserves a page for `fallocate` if it holds none; `false` when tmpfs is full." = { answer = "third_person_verb", confidence = 0.9700252229580656, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Resolves a symbolic link's target found in `at`, following the last part." = { answer = "third_person_verb", confidence = 0.8948469074616255, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Rewrites one bindings file so its layouts hold on every target." = { answer = "third_person_verb", confidence = 0.8741284365577441, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs `f` on every item on rayon's threads (as many as `RAYON_NUM_THREADS` says, or one per core)." = { answer = "third_person_verb", confidence = 0.7952820199860575, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs `f` with a path walker from the point of view of thread `tid`." = { answer = "third_person_verb", confidence = 0.6876717831762437, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs `work` on every item with `jobs` items at a time, and returns the results in order." = { answer = "third_person_verb", confidence = 0.8893223553415931, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs a command of the reference image on our kernel, found on the image's PATH as Docker finds it." = { answer = "third_person_verb", confidence = 0.8861680141833769, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs a container on our kernel and the stand-in CPU until its first process ends." = { answer = "third_person_verb", confidence = 0.8146649617205682, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs a system call, the first time or again after its thread was woken." = { answer = "third_person_verb", confidence = 0.705784226882954, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs each command in both runners and compares, reporting every command that differs." = { answer = "third_person_verb", confidence = 0.7155127199301663, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs embedder.c in `mode` on our kernel with the test's hooks." = { answer = "third_person_verb", confidence = 0.7798734495655096, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs every operation of the handle inside a hook, which no other hook may surround." = { answer = "third_person_verb", confidence = 0.8405642547556608, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs git in a folder, as the check does." = { answer = "third_person_verb", confidence = 0.8757483219705573, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Runs git with the tests' identity." = { answer = "third_person_verb", confidence = 0.818189046674228, model = "perplexity/pplx-decider-v1.2-20261016" }
+"SIGCHLD's information: the child, its user, how it changed and its CPU time in ticks." = { answer = "other", confidence = 0.8909103162648471, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Scans a whole file." = { answer = "third_person_verb", confidence = 0.714863986576114, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Scans the workspace under `root` with the baseline's policy." = { answer = "third_person_verb", confidence = 0.9532133413772944, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends `signal` from the caller to a process, after the permission check." = { answer = "third_person_verb", confidence = 0.9315562342012258, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends a message whose answer nothing waits for." = { answer = "third_person_verb", confidence = 0.9464633121414784, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends a signal to a whole process (`kill`)." = { answer = "third_person_verb", confidence = 0.9565840748020008, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends a signal to every live process of a group; false if it has none." = { answer = "third_person_verb", confidence = 0.9434801463861732, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends bytes of a TCP connection to the outside, as much as the host takes now." = { answer = "third_person_verb", confidence = 0.9515853741043616, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends bytes out of an end, within its credit." = { answer = "third_person_verb", confidence = 0.9321791764507948, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends each thread of `child` that asked for one its parent death signal." = { answer = "third_person_verb", confidence = 0.976386033752996, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends one datagram to an outside destination through the socket's host connection for it." = { answer = "third_person_verb", confidence = 0.9519917384635528, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sends the signals keys and size changes raised, and wakes whoever waits on the pair." = { answer = "third_person_verb", confidence = 0.9743628116635942, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Serves messages from standard input, each reply to standard output, until the input ends." = { answer = "third_person_verb", confidence = 0.9426906354385336, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Serves through Linux's FUSE at `at` while `command` runs there, then ends with its status." = { answer = "third_person_verb", confidence = 0.9673857593570068, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sets the `comm` name from a path's last part, as `execve` does." = { answer = "third_person_verb", confidence = 0.9035514736109675, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sets the `comm` name to the bytes up to the first zero, as `PR_SET_NAME` does." = { answer = "third_person_verb", confidence = 0.8825198767999313, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sets the alternate stack from a frame, as `do_sigaltstack` would, ignoring a refusal." = { answer = "third_person_verb", confidence = 0.8937045330784257, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sets the limits, as mounting with `size=` and `nr_inodes=` does." = { answer = "third_person_verb", confidence = 0.9607234274980988, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Sets what a fork does with a range, every page of which is mapped." = { answer = "third_person_verb", confidence = 0.8752896693272888, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Slots in use." = { answer = "other", confidence = 0.8448816578782556, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Starts a host connection for `socket` to `to`; its number." = { answer = "third_person_verb", confidence = 0.9452176315677449, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Stops and removes a container by name, whatever state it is in." = { answer = "third_person_verb", confidence = 0.8002084220633288, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Stores and post-indexed loads through one base, the last crossing onto a page that allows nothing." = { answer = "third_person_verb", confidence = 0.4126247638524129, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Stores bytes at `offset` into a reader's buffers, across them as `copy_to_iter` does." = { answer = "third_person_verb", confidence = 0.9684191029462776, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Stores bytes at `offset` into a reader's buffers, across them." = { answer = "third_person_verb", confidence = 0.9327028996227054, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes a thread off the CPU and out of line, as when its process stops or it ends." = { answer = "third_person_verb", confidence = 0.9652167368878491, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes a thread out of line; returns whether it was waiting for its turn." = { answer = "third_person_verb", confidence = 0.9391573210242882, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes a thread out, wherever it is; returns whether it was there." = { answer = "third_person_verb", confidence = 0.9488695471748172, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes a thread's waits away, as its end does." = { answer = "third_person_verb", confidence = 0.8873061399722597, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes a waiter out of a futex's queue by its place in it." = { answer = "third_person_verb", confidence = 0.961504002104978, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes a zombie away for good, adding its times to its parent's children's." = { answer = "third_person_verb", confidence = 0.9287124524597852, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes room for one string and its terminating zero (`bprm_hit_stack_limit`)." = { answer = "third_person_verb", confidence = 0.93872819826352, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes the watches of `[start, end)` along to pages a move is about to take there." = { answer = "third_person_verb", confidence = 0.9213899626775516, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Takes the watches of `[start, end)`, by their pages' offsets from `start`." = { answer = "third_person_verb", confidence = 0.9159998354138938, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Tells the CPU side again what every mapping's pages over `[start, end)` allow." = { answer = "third_person_verb", confidence = 0.9362323113539244, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Tells the CPU side what a mapping's pages allow, and that its code may run." = { answer = "third_person_verb", confidence = 0.9698552627242374, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Tells the CPU side what a mapping's pages allow." = { answer = "third_person_verb", confidence = 0.965389082269717, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Tells the woken threads how their operations ended and wakes them." = { answer = "third_person_verb", confidence = 0.97633977322227, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Tries a waiting operation again." = { answer = "third_person_verb", confidence = 0.9443780641510146, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Turns a generated call into real arguments." = { answer = "third_person_verb", confidence = 0.9382166433852118, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Unmaps a range, as `munmap` does." = { answer = "third_person_verb", confidence = 0.7424032572074292, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Values that are plain arithmetic (the free numbers) and never matched to a constant." = { answer = "other", confidence = 0.8185211442638615, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Visits the value of the constant whose name is at `at`." = { answer = "third_person_verb", confidence = 0.911185791257054, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Waits for a connect to finish, as `inet_wait_for_connect`." = { answer = "third_person_verb", confidence = 0.9591750741039472, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Waits for room or a peer: EAGAIN when nonblocking, else parked on the socket." = { answer = "third_person_verb", confidence = 0.8930807225090359, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Wakes a waiter taken off its queue." = { answer = "third_person_verb", confidence = 0.8552811427612991, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Wakes the first thread still waiting in `epoll_wait` on the instance; whether there was one." = { answer = "third_person_verb", confidence = 0.7994981429799937, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Wakes the threads of `pid`'s process parked on its children." = { answer = "third_person_verb", confidence = 0.6771072048754252, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Wakes the threads whose deadline has come by the time the kernel was entered." = { answer = "third_person_verb", confidence = 0.8557037030533732, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Watches one thread's accesses and not its siblings'; refused where the executor cannot." = { answer = "third_person_verb", confidence = 0.8812884739193875, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Writers that find a pipe full wait together until its reader comes." = { answer = "other", confidence = 0.9338909323633194, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Writes `bytes` at `offset`, in as many messages as the backend's largest takes; how many it took." = { answer = "third_person_verb", confidence = 0.9195872465372666, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Writes the starting stack as Linux lays it out and returns the stack pointer, which points at `argc`." = { answer = "third_person_verb", confidence = 0.9765195441963704, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Zeroes the adjustments every undo list holds for set `id`, of one semaphore or all." = { answer = "third_person_verb", confidence = 0.8933738076376287, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Zeroes the parts of a range that held something before, and marks it all as used." = { answer = "third_person_verb", confidence = 0.935521563765862, model = "perplexity/pplx-decider-v1.2-20261016" }
+
 [hook-form]
 question = "An event hook is named as given in the state. What form is the verb in the name?"
+subject = "name"
 
 [hook-form.choices]
 present_participle = "The verb is a present participle, such as starting or accessing."
@@ -25,8 +320,372 @@ on_signal_delivering = { answer = "present_participle", confidence = 0.993951617
 on_thread_starting = { answer = "present_participle", confidence = 0.9864652239692312, model = "perplexity/pplx-decider-v1.2-20261016" }
 on_watched_memory_accessing = { answer = "present_participle", confidence = 0.70280039259201, model = "perplexity/pplx-decider-v1.2-20261016" }
 
+[type-summary]
+question = "The first sentence of the documentation of a Rust type is given in the state. What grammatical form is it?"
+subject = "summary"
+
+[type-summary.choices]
+noun_phrase = 'A noun phrase that names what the type is, such as "A contiguous growable array type."'
+sentence_with_a_verb = 'A clause built on a main verb, with or without a subject, such as "This type holds the elements." or "Represents a set of flags."'
+other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
+
+[type-summary.answers]
+"A Linux error number, such as `ENOENT`." = { answer = "noun_phrase", confidence = 0.9884238511415996, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A UDP datagram's port unreachable error, as `ip_icmp_error` and `ipv6_icmp_error` queue it." = { answer = "noun_phrase", confidence = 0.7601074959117021, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A WebAssembly comparison of two values of one width." = { answer = "noun_phrase", confidence = 0.9764149974348236, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A `msghdr` as `copy_msghdr_from_user` reads it, with its vector." = { answer = "noun_phrase", confidence = 0.7004976976493223, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A block of pages that several memories can map and then see each other's writes to." = { answer = "noun_phrase", confidence = 0.8794445011244797, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A block of shared pages, in host memory that lives until the block is dropped." = { answer = "noun_phrase", confidence = 0.9198844341150904, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A call that ends with a value or an error." = { answer = "noun_phrase", confidence = 0.929833378390116, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A call that may also end its thread, park it or replace its registers." = { answer = "noun_phrase", confidence = 0.7746668844230805, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A call's memory as the walk over what it touches sees it." = { answer = "noun_phrase", confidence = 0.532441340883239, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A call's six raw arguments." = { answer = "noun_phrase", confidence = 0.9746611555368804, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A change in a child's state that `wait` with `WUNTRACED` or `WCONTINUED` reports once." = { answer = "noun_phrase", confidence = 0.7768661230353764, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A child's information when it starts and when it is about to end." = { answer = "noun_phrase", confidence = 0.7276155559912039, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A closed TCP connection holding its port a while." = { answer = "noun_phrase", confidence = 0.8567386227745684, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A constant's initialiser, lowered to what evaluation needs, so it can leave the parsing thread." = { answer = "noun_phrase", confidence = 0.7301676924602514, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A container a runtime made, run by whoever holds it." = { answer = "noun_phrase", confidence = 0.5578704946368886, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A container port this machine accepts connections for." = { answer = "noun_phrase", confidence = 0.5147587507774904, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A count for each [`Reason`], by its number." = { answer = "noun_phrase", confidence = 0.9100667722278502, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A device the kernel has a driver for, found by its device number." = { answer = "noun_phrase", confidence = 0.8666333591253614, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A directory entry to list: name, inode number, type, its own position and the one after it." = { answer = "noun_phrase", confidence = 0.8074298922745026, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A file added to the root file system before the container starts, as an image's layers hold it." = { answer = "noun_phrase", confidence = 0.8018187447073651, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A flat blob and how much of its start is code." = { answer = "noun_phrase", confidence = 0.8769290009511631, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A function may call only functions with lower numbers, so calls always end." = { answer = "sentence_with_a_verb", confidence = 0.7857931472705947, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A general register operand, with register number 31 already resolved to what the encoding means." = { answer = "noun_phrase", confidence = 0.9321605585954552, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A global or a local." = { answer = "noun_phrase", confidence = 0.8456623631169226, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A group through x28 with a call between its accesses `before` and `after`." = { answer = "noun_phrase", confidence = 0.7697451018565982, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A handle that interrupts a container's run from any thread." = { answer = "noun_phrase", confidence = 0.8513425254750554, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A handle to one process of a kernel." = { answer = "noun_phrase", confidence = 0.9789268291901584, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A host function a meaning calls directly." = { answer = "noun_phrase", confidence = 0.2528559400514632, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"A line and a column in a file." = { answer = "noun_phrase", confidence = 0.9851120580169808, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A loop over memory: its counter and the access it makes each turn." = { answer = "noun_phrase", confidence = 0.9228419997731272, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A loop that has a copy without the checks of `regions`." = { answer = "noun_phrase", confidence = 0.9262612702329164, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A mark found in a file, with where it is." = { answer = "noun_phrase", confidence = 0.9208765433448176, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A mark that may stand, the findings it covers, and its reason." = { answer = "noun_phrase", confidence = 0.8745679218043004, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A message (Linux's `msg_msg`): its type and text." = { answer = "noun_phrase", confidence = 0.9418272468989838, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A message queue (Linux's `msg_queue`)." = { answer = "noun_phrase", confidence = 0.9745250991214554, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A message queue's status (`struct msqid64_ds`)." = { answer = "noun_phrase", confidence = 0.9759100603818576, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A message to send: its bytes, its destination, what it carries and its flags." = { answer = "noun_phrase", confidence = 0.9525307108042608, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A module's file and the folder of its own child modules." = { answer = "noun_phrase", confidence = 0.9663973461138542, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A multiset of baseline lines: the same literal may sit twice in one item." = { answer = "noun_phrase", confidence = 0.9633545379790546, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A name query waiting for the host's lookup." = { answer = "noun_phrase", confidence = 0.9098480084600452, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A netlink socket's own state." = { answer = "noun_phrase", confidence = 0.9528181609305828, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A pair of terminals, `/dev/pts/<index>` being the slave." = { answer = "noun_phrase", confidence = 0.9139853543742597, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A point in time, as the guest sees it." = { answer = "noun_phrase", confidence = 0.9326466525251138, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A process or thread id: one space for both, as Linux's `pid_t`." = { answer = "noun_phrase", confidence = 0.9298216857810284, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A process to tell when a message comes to the empty queue (`notify_owner` and `notify`)." = { answer = "noun_phrase", confidence = 0.9053351900679356, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A program placed in a new memory, ready to replace the process's old one." = { answer = "noun_phrase", confidence = 0.8270169885840662, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A queue (`struct mqueue_inode_info`)." = { answer = "noun_phrase", confidence = 0.9495630879228576, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A queue's attributes (`struct mq_attr`)." = { answer = "noun_phrase", confidence = 0.9526720285962392, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A queue's limits (`struct mq_attr`'s first fields)." = { answer = "noun_phrase", confidence = 0.9269041124039478, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A range the kernel wrote into a memory for a thread, not yet told to the embedder." = { answer = "noun_phrase", confidence = 0.8962570153737647, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A received datagram's header and route, for the control messages its receiver asks for." = { answer = "noun_phrase", confidence = 0.9182670953098436, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A receiver parked in `msgrcv`, in the order receivers came (`msg_receiver`)." = { answer = "noun_phrase", confidence = 0.7950747794596181, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals." = { answer = "noun_phrase", confidence = 0.818017780638823, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A request made and not yet handed to the host." = { answer = "noun_phrase", confidence = 0.8299246590485558, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A restartable sequence's description (`struct rseq_cs`)." = { answer = "noun_phrase", confidence = 0.961434512325477, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A run of instructions entered only at its start and left only at its end." = { answer = "noun_phrase", confidence = 0.8244995199368728, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A run on our kernel: what the program did, and what the kernel reported along the way." = { answer = "noun_phrase", confidence = 0.6975317420900617, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A runner of guest threads with its own translator settings." = { answer = "noun_phrase", confidence = 0.9616925798431752, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A running reference that takes layer 1 cases one at a time." = { answer = "noun_phrase", confidence = 0.8339615627984077, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A segment's status (`struct shmid64_ds`)." = { answer = "noun_phrase", confidence = 0.9708790376423596, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A semaphore set (`struct sem_array`)." = { answer = "noun_phrase", confidence = 0.9786740445733476, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A semaphore set's status (`struct semid64_ds`)." = { answer = "noun_phrase", confidence = 0.9781695110414024, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A sender waiting for room, with its message." = { answer = "noun_phrase", confidence = 0.8405137665783179, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A shared memory segment (Linux's `shmid_kernel`)." = { answer = "noun_phrase", confidence = 0.9835269342141142, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A short-lived view of what the kernel keeps for one process." = { answer = "noun_phrase", confidence = 0.9730398680284053, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A signal waiting to be acted on, with the `siginfo` a handler or `sigtimedwait` is given." = { answer = "noun_phrase", confidence = 0.8216028077775238, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A source of random bytes, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.8718939424902746, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A system register that unprivileged code may read or write and that we answer." = { answer = "noun_phrase", confidence = 0.903531694451474, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A value read at the loop's entry: a constant or a register that the loop does not write." = { answer = "noun_phrase", confidence = 0.7348074229471183, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A value that literals and constants can share." = { answer = "noun_phrase", confidence = 0.8113055469613357, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A waiting `semop` (`struct sem_queue`)." = { answer = "noun_phrase", confidence = 0.9518008817440684, model = "perplexity/pplx-decider-v1.2-20261016" }
+"A watch as its inode holds it." = { answer = "noun_phrase", confidence = 0.19733338514118975, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"An ARM64 condition code, 0 to 15 (eq, ne, cs, cc, mi, pl, vs, vc, hi, ls, ge, lt, gt, le, al, nv)." = { answer = "noun_phrase", confidence = 0.9757407332277964, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An ELF file header and program header as Linux reads them." = { answer = "noun_phrase", confidence = 0.4583800650990056, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"An ELF file placed in memory." = { answer = "noun_phrase", confidence = 0.8233551409557499, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An address and port, IPv4 addresses held as IPv4-mapped IPv6 ones." = { answer = "noun_phrase", confidence = 0.8835010914405704, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An address map, shared by the processes made with CLONE_VM." = { answer = "noun_phrase", confidence = 0.9106330931716738, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An answer a call had, with the request it answers." = { answer = "noun_phrase", confidence = 0.6505861794538704, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An event descriptor's counter, and whether reads take one at a time (EFD_SEMAPHORE)." = { answer = "noun_phrase", confidence = 0.7605912006223972, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An event owed to the kernel." = { answer = "noun_phrase", confidence = 0.8908451880353333, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An executor that can watch one thread and not its siblings." = { answer = "noun_phrase", confidence = 0.9403266352958276, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An inode of the backend: its node number there, and what keeps its place in the tree." = { answer = "noun_phrase", confidence = 0.9036155210271232, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An interface of the made-up network." = { answer = "noun_phrase", confidence = 0.9445564586355258, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An internet socket's own state beside the common [`Socket`]'s." = { answer = "noun_phrase", confidence = 0.934826123800426, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An item's key: its descriptor number and its open file's address (`epoll_filefd`)." = { answer = "noun_phrase", confidence = 0.6294653544705622, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An object's key, owners, mode and identifier (Linux's `kern_ipc_perm`)." = { answer = "noun_phrase", confidence = 0.9111217165192088, model = "perplexity/pplx-decider-v1.2-20261016" }
+"An object's owners and mode as the `*ctl` calls show them (`struct ipc64_perm`)." = { answer = "noun_phrase", confidence = 0.8928760916181535, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Asks for the written pages when a child starts and again when it ends." = { answer = "sentence_with_a_verb", confidence = 0.9497037191934812, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Bytes relative to the stack pointer whose pages are known to allow reading and writing." = { answer = "noun_phrase", confidence = 0.8803522209769316, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Called at every pause of the thread." = { answer = "other", confidence = 0.5867472434184643, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Constants by value, for naming what a literal restates." = { answer = "noun_phrase", confidence = 0.2958343859082179, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Counts of what the runs did, printed so a run says how strong it was." = { answer = "noun_phrase", confidence = 0.31836490564217085, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Decoded instructions by offset." = { answer = "other", confidence = 0.11563035556001187, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Every end the embedder has not closed." = { answer = "sentence_with_a_verb", confidence = 0.6776118815838371, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Every futex with waiters." = { answer = "noun_phrase", confidence = 0.713349135124189, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Every mapped range of one process, and where the next ones go." = { answer = "noun_phrase", confidence = 0.5756938496247088, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Every register of one guest thread." = { answer = "noun_phrase", confidence = 0.9391390798065186, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Every slow path, with the fixed name its counter and warning carry." = { answer = "noun_phrase", confidence = 0.27731916355021036, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Every timer in the container." = { answer = "noun_phrase", confidence = 0.846377467704778, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Everything one scan of the tree found." = { answer = "noun_phrase", confidence = 0.29391398090151366, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a comparison's NZCV answers a compare instruction." = { answer = "noun_phrase", confidence = 0.1608577714625518, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a file of the tree makes its bytes." = { answer = "noun_phrase", confidence = 0.20596264861378696, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a flag setting that is kept lazily looks, so setters of one shape can share locals." = { answer = "noun_phrase", confidence = 0.25427592540307636, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a floating point value is rounded to an integer." = { answer = "noun_phrase", confidence = 0.2712599160711149, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a group access uses its base: an offset, or pre- or post-indexing that moves the base." = { answer = "noun_phrase", confidence = 0.4640816148054866, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a piece carries on when the stop hook says so." = { answer = "noun_phrase", confidence = 0.14711414467451217, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a receiver chooses a message (`convert_mode`), with the type it names." = { answer = "noun_phrase", confidence = 0.28140084877322424, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a register operand is widened before use: unsigned or signed, from 8, 16, 32 or 64 bits." = { answer = "noun_phrase", confidence = 0.5866124210478556, model = "perplexity/pplx-decider-v1.2-20261016" }
+"How a run with changes is made." = { answer = "other", confidence = 0.39116503779442247, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a system call ended for its thread." = { answer = "noun_phrase", confidence = 0.12214532313005735, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How a thread continues." = { answer = "other", confidence = 0.22316537122857727, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How far exploring a function may go." = { answer = "noun_phrase", confidence = 0.2995060966893997, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How far into what a container has shown the waiting steps have found what they waited for." = { answer = "sentence_with_a_verb", confidence = 0.16096287368246395, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How much code the translator sees at once." = { answer = "noun_phrase", confidence = 0.60233747922797, model = "perplexity/pplx-decider-v1.2-20261016" }
+"How one process is run." = { answer = "other", confidence = 0.3553957699896206, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How one run went, for comparing: each time the thread came back, and the output." = { answer = "other", confidence = 0.3440763346025929, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How the container's first process starts, as `docker run` gives it." = { answer = "noun_phrase", confidence = 0.2930700886678153, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"How the threads of one process are run." = { answer = "other", confidence = 0.28613459298059024, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Keeps a record of written pages and watches one page of the buffer, by index, in every child." = { answer = "sentence_with_a_verb", confidence = 0.9839821052220304, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Labels the whole program refers to, and jump tables to place after the code." = { answer = "noun_phrase", confidence = 0.2123483850548791, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Lanewise float vector operations." = { answer = "noun_phrase", confidence = 0.8378732275901505, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Linux's own record of a signal." = { answer = "noun_phrase", confidence = 0.9663933730042984, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Notes every request and response the proxy is asked about, changing nothing." = { answer = "sentence_with_a_verb", confidence = 0.9444441082850537, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One ARM64 Linux system call and whether the kernel has built it." = { answer = "noun_phrase", confidence = 0.7580896673704953, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One binary as the translator sees it." = { answer = "noun_phrase", confidence = 0.659165159155843, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One call: its number and six raw arguments." = { answer = "noun_phrase", confidence = 0.4646926248743733, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One case: operands as v128 constants, the operation, and the bits Arm gives." = { answer = "noun_phrase", confidence = 0.3958408310036063, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One change of the file on a first-parent chain." = { answer = "noun_phrase", confidence = 0.9730659345406986, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One code module and where its pieces start." = { answer = "noun_phrase", confidence = 0.8618506755002127, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One connection to the world outside the container." = { answer = "noun_phrase", confidence = 0.9070435803853854, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One decoded instruction." = { answer = "noun_phrase", confidence = 0.9375912512876746, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One directory entry READDIR gave: the node number, the position after it, its type and name." = { answer = "sentence_with_a_verb", confidence = 0.66399410849206, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One encoding of one instruction." = { answer = "noun_phrase", confidence = 0.9357062995762258, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One file of an image." = { answer = "noun_phrase", confidence = 0.9615544701608434, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One file of the root file system as it is now, for comparing what a container left behind." = { answer = "noun_phrase", confidence = 0.8293523586723885, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One file or directory of the tree." = { answer = "noun_phrase", confidence = 0.9612911996618168, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One file system instance: its device number and the numbers it gives its inodes." = { answer = "noun_phrase", confidence = 0.7051948668021488, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One file the generator writes, relative to the workspace root, and what it holds." = { answer = "noun_phrase", confidence = 0.7764169129541345, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One held range, or a request for one." = { answer = "noun_phrase", confidence = 0.8225714210219988, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One hook or task id call as a test saw it." = { answer = "sentence_with_a_verb", confidence = 0.12851310648462808, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One input of an element by element operation." = { answer = "noun_phrase", confidence = 0.94333511277016, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One instance." = { answer = "noun_phrase", confidence = 0.7497063282104434, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One mount, in the order the container's mounts were made." = { answer = "noun_phrase", confidence = 0.6289041513097163, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One netlink message being built." = { answer = "noun_phrase", confidence = 0.2772474300150375, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One of the four condition flags." = { answer = "noun_phrase", confidence = 0.959809920604849, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One open file description: what `open` makes, shared by `dup` and kept across `exec`." = { answer = "noun_phrase", confidence = 0.6370151895564754, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One operation of `semop` (`struct sembuf`)." = { answer = "noun_phrase", confidence = 0.96120557747628, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One operation on elements of `size` bytes, as the meaning passes it to the hook." = { answer = "noun_phrase", confidence = 0.6455753480386889, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One page of a pipe: the bytes written into it, and how many of them have been read." = { answer = "noun_phrase", confidence = 0.83498918041284, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One piece the lookup table holds, with the functions only it calls (its loop pieces)." = { answer = "noun_phrase", confidence = 0.42066701699978665, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One printed finding." = { answer = "noun_phrase", confidence = 0.9337957056320074, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One process of a kernel, for as long as the borrow lasts." = { answer = "noun_phrase", confidence = 0.770440796583528, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One process's memory as a system call sees it." = { answer = "noun_phrase", confidence = 0.6984115438377487, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One program file found by path." = { answer = "noun_phrase", confidence = 0.18986073761805292, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One queued event." = { answer = "noun_phrase", confidence = 0.9283639684597478, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One register's place in the thread block." = { answer = "noun_phrase", confidence = 0.9206810749406568, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One request sent to the file backend, chosen by the kernel." = { answer = "noun_phrase", confidence = 0.3678650210638176, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One route (`fib_dump_info`, `rt6_fill_node`)." = { answer = "noun_phrase", confidence = 0.5414243345599193, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One running server, reached over its container's standard streams." = { answer = "noun_phrase", confidence = 0.33113439440473, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One semaphore (`struct sem`) and the waiting operations on it alone." = { answer = "noun_phrase", confidence = 0.7727772453297936, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One set's adjustments in an undo list (`struct sem_undo`)." = { answer = "noun_phrase", confidence = 0.8862742569371465, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One slow path that was taken, reported so that it is never silent." = { answer = "other", confidence = 0.13493784759422317, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One socket." = { answer = "noun_phrase", confidence = 0.92037327266913, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One step of what the client does." = { answer = "noun_phrase", confidence = 0.8071212641674541, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One straight-line instruction." = { answer = "noun_phrase", confidence = 0.937900389741934, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One system call as the guest made it: the number from x8 and the raw values from x0 to x5." = { answer = "noun_phrase", confidence = 0.2890083877462171, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"One test program of the suite." = { answer = "noun_phrase", confidence = 0.9564284562395808, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One test: a line of a `runtest` file, its name and the shell command that runs it." = { answer = "noun_phrase", confidence = 0.8296444435351332, model = "perplexity/pplx-decider-v1.2-20261016" }
+"One warning the kernel gave, with its reason and detail." = { answer = "noun_phrase", confidence = 0.8448337493440922, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Operand width of an integer instruction." = { answer = "noun_phrase", confidence = 0.9504017444005264, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Records each `on_process_outgrown`: the bytes asked for and the distance left to the ceiling." = { answer = "sentence_with_a_verb", confidence = 0.9485303269576736, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Records what the kernel wrote in each child." = { answer = "sentence_with_a_verb", confidence = 0.9511521803794092, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Size, policy, flags, nice, priority, runtime, deadline, period, and a byte past the end." = { answer = "noun_phrase", confidence = 0.4984041946479502, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Something of the interface that is not built yet, by name." = { answer = "noun_phrase", confidence = 0.5695894856314663, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The `n_tty` line discipline's state (`struct n_tty_data`)." = { answer = "noun_phrase", confidence = 0.96335266504207, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The accesses of a process's memory that come back to the embedder." = { answer = "noun_phrase", confidence = 0.7079975660788823, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The addresses a process may use: from [`LOWEST_ADDRESS`] up to, not including, `end`." = { answer = "noun_phrase", confidence = 0.6298735694267709, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The answer to a system call: its value, or the error it fails with." = { answer = "noun_phrase", confidence = 0.8402916934503142, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The blob and where its code is." = { answer = "noun_phrase", confidence = 0.7986263543308275, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The bytes a frame is made of, each at its address, written in Linux's order." = { answer = "noun_phrase", confidence = 0.8168326859098469, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The calling thread's memory as the walk sees it." = { answer = "noun_phrase", confidence = 0.8332120970274385, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The carry into an addition." = { answer = "noun_phrase", confidence = 0.9201209820559262, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The commands, each named by its variant in lower case." = { answer = "noun_phrase", confidence = 0.6557757042509917, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The connection to one backend, reachable from every inode on it." = { answer = "noun_phrase", confidence = 0.8667417219503922, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The connections to the outside and the name lookups under way." = { answer = "noun_phrase", confidence = 0.6001323310110115, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The container's IPC namespace." = { answer = "noun_phrase", confidence = 0.987968162472188, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The default counter's numbers, but `answer` on the `at`-th ask." = { answer = "noun_phrase", confidence = 0.5411965141861403, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The device a file lives on." = { answer = "noun_phrase", confidence = 0.8471644402931754, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The embedder of a kernel, as the union of every concern below." = { answer = "noun_phrase", confidence = 0.9193096206565716, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The embedder's side of each of the kernel's streams, as ruled." = { answer = "noun_phrase", confidence = 0.8260451985444773, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The embedder's watches on one memory's pages, and the pages written since it last asked." = { answer = "sentence_with_a_verb", confidence = 0.48793483868118986, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"The fields of one word of one form." = { answer = "noun_phrase", confidence = 0.9119979463591804, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The files of `/proc/net` built here." = { answer = "sentence_with_a_verb", confidence = 0.3760021578786624, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"The first fields of `struct rseq`, up to the address of the current sequence." = { answer = "noun_phrase", confidence = 0.875557528607624, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The functions of a full or bounded translation, found and planned, ready to be emitted in groups." = { answer = "noun_phrase", confidence = 0.7263213744558109, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The guarantee a run of a process gives about running it again from the same inputs." = { answer = "noun_phrase", confidence = 0.9000740195125163, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The host's streams and the seeded choices of a run, as [`act`] needs them." = { answer = "noun_phrase", confidence = 0.8476796581730702, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The id of a System V shared memory segment." = { answer = "noun_phrase", confidence = 0.963017612596462, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The kernel's file systems that exist from the start." = { answer = "noun_phrase", confidence = 0.805813486461057, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The kernel's own number for a shared anonymous memory." = { answer = "noun_phrase", confidence = 0.9663355449740147, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The kernel's side of one end." = { answer = "noun_phrase", confidence = 0.9601886292795888, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The keys of the literals in a file's text, given its path relative to the root." = { answer = "noun_phrase", confidence = 0.8638127105599146, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The kind of a watched access." = { answer = "noun_phrase", confidence = 0.9137526274678456, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The limits `IPC_INFO` shows (`struct shminfo64`)." = { answer = "noun_phrase", confidence = 0.6026632666369568, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The log of the kernel's warnings, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.750107077661189, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The machine as a container's programs see it." = { answer = "noun_phrase", confidence = 0.7500002068939292, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The memory behind a shared mapping, as the embedder addresses it." = { answer = "noun_phrase", confidence = 0.8513563891848696, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The monotonic clock and the wall clock, as abi's `Host` has them today and not yet ruled." = { answer = "noun_phrase", confidence = 0.5688255913667686, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The namespace's semaphore sets and undo lists." = { answer = "noun_phrase", confidence = 0.9288799929307636, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The network outside the container, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.6547295955662994, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The number of a file on its device." = { answer = "noun_phrase", confidence = 0.9697976742678656, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The one memory access of a load or store: where, how many bytes in all, and whether it writes." = { answer = "noun_phrase", confidence = 0.8631205442471835, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The owner of processes, which suspends and resumes their tasks and their contexts." = { answer = "noun_phrase", confidence = 0.6755535548668101, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The parameter names of every function a file defines." = { answer = "noun_phrase", confidence = 0.959019900007934, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The permission bits, owner and time of a file added before the container starts." = { answer = "noun_phrase", confidence = 0.881353184683055, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The ports in use: every socket holding one, and closed connections still holding theirs." = { answer = "noun_phrase", confidence = 0.6191075307055248, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The protocols with ports." = { answer = "noun_phrase", confidence = 0.9643197391159556, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The raw bits of a format's parts." = { answer = "noun_phrase", confidence = 0.9362891645101348, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The reason a run of a container returned." = { answer = "noun_phrase", confidence = 0.888520244883806, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The reason the embedder's read or write of a process's memory failed." = { answer = "noun_phrase", confidence = 0.7800960363142386, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The resolver of names to addresses, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.7169392635268045, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The result of walking all but the last part of a path." = { answer = "noun_phrase", confidence = 0.9319495482318372, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The root files of a crate's targets, relative to the workspace root, whatever their extension." = { answer = "noun_phrase", confidence = 0.95136500891716, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The run queue: runnable threads that are not running, by virtual runtime." = { answer = "noun_phrase", confidence = 0.7041314507816377, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The runner in a long-lived reference container, taking one sequence at a time." = { answer = "noun_phrase", confidence = 0.6312076876588809, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The second source of an arithmetic or logical instruction." = { answer = "noun_phrase", confidence = 0.9835286302696262, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The server of the container's files over FUSE, as abi's `Host` has it today and not yet ruled." = { answer = "noun_phrase", confidence = 0.8720160694826203, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The shape of an AdvSIMD data processing instruction." = { answer = "noun_phrase", confidence = 0.96607870249836, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The size of a type, as far as it does not depend on the target." = { answer = "noun_phrase", confidence = 0.9080863106168524, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The source of the ids of processes and threads, as ruled." = { answer = "noun_phrase", confidence = 0.8126558587334177, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The stand-in CPU side." = { answer = "noun_phrase", confidence = 0.938655204932314, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The state of a file on the shared anonymous inode." = { answer = "noun_phrase", confidence = 0.9628225258680864, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The state of one named counter." = { answer = "noun_phrase", confidence = 0.9819623543578488, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The system call proxy and the hooks on processes, as ruled." = { answer = "noun_phrase", confidence = 0.6926736150274139, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The terminal side an open file reads and writes, and whether a hangup cut the file off." = { answer = "noun_phrase", confidence = 0.7056250286161694, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The test host's side of the ends." = { answer = "noun_phrase", confidence = 0.8634862661159044, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The way one process is run." = { answer = "noun_phrase", confidence = 0.6944445988108082, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The way the threads of one process are run." = { answer = "noun_phrase", confidence = 0.7795637384412226, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Threads to wake with how their operations ended, in Linux's `wake_q` order." = { answer = "noun_phrase", confidence = 0.8048748911882317, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Tries to write into a child's read-only shared page at its start." = { answer = "sentence_with_a_verb", confidence = 0.926455844703441, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Vector registers in an access through sp." = { answer = "noun_phrase", confidence = 0.12836046731654926, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What INIT's answer settled." = { answer = "noun_phrase", confidence = 0.2162559217813191, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What [`versioned`] needs to know about the function." = { answer = "noun_phrase", confidence = 0.3410536293348058, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What `IPC_INFO` and `MSG_INFO` show of message queues (`struct msginfo`)." = { answer = "noun_phrase", confidence = 0.459235482984844, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What `IPC_INFO` and `SEM_INFO` show of semaphores (`struct seminfo`)." = { answer = "noun_phrase", confidence = 0.3242311448923864, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What `SHM_INFO` shows (`struct shm_info`)." = { answer = "sentence_with_a_verb", confidence = 0.23152947322393297, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What `execve` does to a process's identity." = { answer = "noun_phrase", confidence = 0.3705401633065647, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What `restart_syscall` runs again." = { answer = "sentence_with_a_verb", confidence = 0.47298607256792863, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What `setattr` changes, as FUSE's `FATTR_*` bits say." = { answer = "noun_phrase", confidence = 0.32411883551081005, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What `waitid` reports of a child: its number, the `siginfo` code and status, its user and use." = { answer = "noun_phrase", confidence = 0.7212239898877225, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a `policy` line of the baseline does to the path it names." = { answer = "noun_phrase", confidence = 0.457237942621097, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a call asks the scheduler for, as Linux's `sched_attr`; no policy keeps the current one." = { answer = "noun_phrase", confidence = 0.36694815436761186, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a call calls." = { answer = "noun_phrase", confidence = 0.21306850522214063, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a call into the kernel may use besides the kernel's own state." = { answer = "noun_phrase", confidence = 0.5218810129893793, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a check before a memory access does." = { answer = "noun_phrase", confidence = 0.1466310887413172, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a container starts with: its files and its first process." = { answer = "noun_phrase", confidence = 0.501463493554178, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a file is, for comparing: type and permission bits, owner, group, and contents." = { answer = "noun_phrase", confidence = 0.304226738350614, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a file is, which decides the list its literals go to." = { answer = "noun_phrase", confidence = 0.2237827061563575, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a first-parent chain says about its own start." = { answer = "noun_phrase", confidence = 0.739597802406058, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a fork does with a mapping: by default the child gets a copy (or, shared, the same pages)." = { answer = "other", confidence = 0.12824907867426613, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a memory access does, for the permission check." = { answer = "noun_phrase", confidence = 0.12020349741301777, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a memory access was trying to do." = { answer = "noun_phrase", confidence = 0.3547661668357411, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a new inode starts as." = { answer = "sentence_with_a_verb", confidence = 0.17171120925856198, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a parked call waits for, besides its deadline and a signal." = { answer = "noun_phrase", confidence = 0.6370552727318538, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a pause function may look at and change while the thread is paused." = { answer = "noun_phrase", confidence = 0.5559773584533402, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a program did, in a form both runners produce." = { answer = "noun_phrase", confidence = 0.5644060238231597, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a program did: its output and exit status." = { answer = "noun_phrase", confidence = 0.6130211270619079, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a program is built against." = { answer = "noun_phrase", confidence = 0.3433814318388602, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a program named: an endpoint, or AF_UNSPEC." = { answer = "sentence_with_a_verb", confidence = 0.08249054329437948, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a query needs." = { answer = "noun_phrase", confidence = 0.5716226563878803, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a range holds, for `/proc/<pid>/maps` and for what happens past the end of a file." = { answer = "noun_phrase", confidence = 0.1739740899530355, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a receive gives back besides its bytes." = { answer = "noun_phrase", confidence = 0.5553146784066966, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a run has done to it at moments drawn from its seed, besides where its turns end." = { answer = "noun_phrase", confidence = 0.24889940119086984, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a run of a process guarantees about running it again from the same inputs." = { answer = "noun_phrase", confidence = 0.6570966139694235, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a run printed, and whether a check passed." = { answer = "noun_phrase", confidence = 0.5757140459237446, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a send's control messages set for its datagram." = { answer = "noun_phrase", confidence = 0.5042710057950318, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What a signal does when its handler is the default." = { answer = "noun_phrase", confidence = 0.363343496842303, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a single instruction atomic does to memory with the register's value." = { answer = "noun_phrase", confidence = 0.245945759149012, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a socket on a port takes: IPv4 addresses (all, or one) and IPv6 ones." = { answer = "noun_phrase", confidence = 0.27099643274053353, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a stop check or write back sets `pc` to." = { answer = "noun_phrase", confidence = 0.1303187057292431, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a system call answers: its value, or the error it fails with." = { answer = "noun_phrase", confidence = 0.4851201067826425, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a system call does in this runner." = { answer = "noun_phrase", confidence = 0.2411766250473997, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a timer's time is measured on." = { answer = "noun_phrase", confidence = 0.31556183371584867, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a vector immediate does with its register." = { answer = "noun_phrase", confidence = 0.27860058046111236, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a wait found." = { answer = "sentence_with_a_verb", confidence = 0.1932931832848692, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a walk through `/proc` needs to know about the kernel." = { answer = "noun_phrase", confidence = 0.3460726862030249, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a watched access was." = { answer = "noun_phrase", confidence = 0.15173613930536087, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What a write to a file of the tree does." = { answer = "noun_phrase", confidence = 0.17646633702108414, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What an answer from the backend did." = { answer = "noun_phrase", confidence = 0.4718571024397384, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What an attribute call names: a path, followed or not, or an open file." = { answer = "noun_phrase", confidence = 0.689930676784622, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What an owner's number names (Linux's `PIDTYPE_PID`, `PIDTYPE_TGID`, `PIDTYPE_PGID`)." = { answer = "noun_phrase", confidence = 0.5928338489371194, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What comes between popping a frame and accessing below sp." = { answer = "sentence_with_a_verb", confidence = 0.38421087667339, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What each bare local name in a function body is given to as an argument." = { answer = "noun_phrase", confidence = 0.5590568114200962, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What happened in Chrome: the program's output and status, and the runner's report." = { answer = "noun_phrase", confidence = 0.6860011202675934, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What happened on the real CPU." = { answer = "noun_phrase", confidence = 0.22285933719356177, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What kind of literal a finding is." = { answer = "noun_phrase", confidence = 0.5559283197451197, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What literals a file holds, to tell a literal that new rules found from one added with them." = { answer = "noun_phrase", confidence = 0.21473755467080097, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What loading code modules in Chrome took." = { answer = "noun_phrase", confidence = 0.20784038216455217, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What making a file's bytes may read besides the tree itself." = { answer = "noun_phrase", confidence = 0.4190659298523346, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What one instruction does to the registers and to control flow." = { answer = "noun_phrase", confidence = 0.39613935383167465, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What one thread's end touches: its lock list and the word that tells joiners it is gone." = { answer = "noun_phrase", confidence = 0.2955404534844564, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What scanning one file gives." = { answer = "noun_phrase", confidence = 0.24013333732840808, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What stopped the emulator, recorded by its hooks." = { answer = "noun_phrase", confidence = 0.14243946866034102, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the analysis of one function decides." = { answer = "sentence_with_a_verb", confidence = 0.11797450215712656, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the check of one access (or of a group of accesses through one base) covers, in every turn." = { answer = "noun_phrase", confidence = 0.4453696685062517, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the client is and does." = { answer = "noun_phrase", confidence = 0.3359846285142391, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the driver asks of a host's hooks when the kernel has nothing to run." = { answer = "noun_phrase", confidence = 0.5447238418654745, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What the file a program starts from says about the credentials it runs with." = { answer = "noun_phrase", confidence = 0.5513338297028912, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What the first process's descriptors 0 to 2 are, as `docker run` gives them." = { answer = "noun_phrase", confidence = 0.554104318472621, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What the guest is told about the machine besides its CPU features." = { answer = "noun_phrase", confidence = 0.6844294014196058, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What the kernel keeps for a process, read when asked." = { answer = "sentence_with_a_verb", confidence = 0.127312488546551, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the kernel wants done next." = { answer = "noun_phrase", confidence = 0.4146701897047867, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the kernel was announced writing: the process, the thread, the range." = { answer = "sentence_with_a_verb", confidence = 0.183401910784575, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the reference's client has shown: its output (or all its terminal shows) and its error." = { answer = "noun_phrase", confidence = 0.1619657681980922, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the server sent: an answer to a request, or a notice nobody asked for." = { answer = "noun_phrase", confidence = 0.31495496232019543, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the test host changes as the kernel asks." = { answer = "sentence_with_a_verb", confidence = 0.24916019214046253, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What the translator did with a case, in the reference's terms." = { answer = "noun_phrase", confidence = 0.645982073233562, model = "perplexity/pplx-decider-v1.2-20261016" }
+"What the two runs did, for the caller to count." = { answer = "noun_phrase", confidence = 0.2020745888640944, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"What was injected into one run." = { answer = "noun_phrase", confidence = 0.1457762080847519, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"When a wait ends anyway: none, or a time on the monotonic clock." = { answer = "other", confidence = 0.317478016196245, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a call's bytes are: the caller's buffers, or the kernel's own (a splice or sendfile)." = { answer = "other", confidence = 0.2450120380031303, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a constant can be seen from: an implementation of a trait's constant, and other crates." = { answer = "other", confidence = 0.23810629759272944, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a constant is defined, which decides how it is matched and reported." = { answer = "other", confidence = 0.1469111026187339, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a datagram goes by the interface and source its packet information name." = { answer = "other", confidence = 0.11015279974448268, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a flat blob and its stack go in guest memory, the same for every runner." = { answer = "other", confidence = 0.09985442236043134, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a group of accesses through one register starts." = { answer = "sentence_with_a_verb", confidence = 0.1360009941025919, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a signal goes once sent." = { answer = "noun_phrase", confidence = 0.21998640051078913, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where a walk starts and what it may not go above." = { answer = "noun_phrase", confidence = 0.4066774594871107, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where control can go after an instruction, as far as the instruction itself says." = { answer = "noun_phrase", confidence = 0.056429778203431945, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where control goes." = { answer = "sentence_with_a_verb", confidence = 0.34379594857507745, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where emission stands: the instruction, its block, and what is known there." = { answer = "noun_phrase", confidence = 0.5474471800667073, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Where the flags are known to be at a point: a set of [`FlagState`] bits, one bit when it is known which." = { answer = "noun_phrase", confidence = 0.26077548565945696, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where the kernel's file systems get their device and inode numbers." = { answer = "sentence_with_a_verb", confidence = 0.2902431244221262, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where the permission table is: its place in the state memory and its length in pages." = { answer = "noun_phrase", confidence = 0.07925803944447181, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Where the thread is paused when the pause function runs." = { answer = "sentence_with_a_verb", confidence = 0.534529219777373, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Which accesses need a check, where the stack's frame is checked, and the calls a frame is kept across." = { answer = "noun_phrase", confidence = 0.44770735541315193, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Which accesses of a process's pages come back to the embedder." = { answer = "sentence_with_a_verb", confidence = 0.2043080976681762, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Which bytes of the arena and the play area hold values no two machines share." = { answer = "sentence_with_a_verb", confidence = 0.3533219396500027, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Which side of which object the kernel holds for an end." = { answer = "noun_phrase", confidence = 0.3140698297817171, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Which threads a call ends." = { answer = "sentence_with_a_verb", confidence = 0.3988616261205379, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Who asks, as the request header names them." = { answer = "sentence_with_a_verb", confidence = 0.3717390297409251, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Who holds a record lock (Linux's `fl_owner`)." = { answer = "sentence_with_a_verb", confidence = 0.3543353542015813, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Whom a POSIX timer tells when it fires." = { answer = "sentence_with_a_verb", confidence = 0.2683794042003006, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Whom a descriptor's signal goes to (`do_pidfd_send_signal`'s `type`)." = { answer = "noun_phrase", confidence = 0.45838511289673706, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Why `run` came back." = { answer = "noun_phrase", confidence = 0.16140778609096898, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Why a mark cannot stand, when that is visible from the mark alone." = { answer = "sentence_with_a_verb", confidence = 0.142998497112741, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Why a program could not be started." = { answer = "noun_phrase", confidence = 0.592471516404541, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Why a run on our kernel gave no outcome." = { answer = "noun_phrase", confidence = 0.1109722155412133, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Why an instruction stops the thread." = { answer = "noun_phrase", confidence = 0.4934709212167306, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+"Why the embedder's read or write of a process's memory failed." = { answer = "noun_phrase", confidence = 0.6098758703359015, model = "perplexity/pplx-decider-v1.2-20261016" }
+"Why the instruction at `pc` stopped the thread." = { answer = "noun_phrase", confidence = 0.63738161774228, model = "perplexity/pplx-decider-v1.2-20261016" }
+"`times`'s structure (`linux/times.h`), which linux-raw-sys does not generate." = { answer = "noun_phrase", confidence = 0.6231379148619892, model = "perplexity/pplx-decider-v1.2-20261016" }
+
 [verb-position]
 question = "A Rust method is named as given in the state. Where is the verb in the name?"
+subject = "name"
 
 [verb-position.choices]
 first_word = "The first word of the name is a verb."
@@ -84,6 +743,7 @@ all = { answer = "no_verb", confidence = 0.5974752103670484, model = "perplexity
 allocate = { answer = "first_word", confidence = 0.9829210900063462, model = "perplexity/pplx-decider-v1.2-20261016" }
 allocate_id = { answer = "first_word", confidence = 0.9932746717028088, model = "perplexity/pplx-decider-v1.2-20261016" }
 allocate_task_id = { answer = "first_word", confidence = 0.989410387257527, model = "perplexity/pplx-decider-v1.2-20261016" }
+allocate_task_ids_apart = { answer = "first_word", confidence = 0.980220194769024, model = "perplexity/pplx-decider-v1.2-20261016" }
 allowed = { answer = "first_word", confidence = 0.8570494763150057, model = "perplexity/pplx-decider-v1.2-20261016" }
 alpine = { answer = "no_verb", confidence = 0.9261250694305524, model = "perplexity/pplx-decider-v1.2-20261016" }
 alternate_stack = { answer = "first_word", confidence = 0.6649558116661679, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -407,7 +1067,7 @@ created = { answer = "first_word", confidence = 0.7906383223807262, model = "per
 credentials = { answer = "no_verb", confidence = 0.9841878012727384, model = "perplexity/pplx-decider-v1.2-20261016" }
 credit = { answer = "first_word", confidence = 0.5805527488117654, model = "perplexity/pplx-decider-v1.2-20261016" }
 credit_for_end = { answer = "first_word", confidence = 0.36747757880933896, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
-credit_stream = { answer = "no_verb", confidence = 0.3310174237425758, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+credit_stream = { answer = "no_verb", confidence = 0.3310174237425758, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true, disputed = "credit is the verb, as in credit an account: the kernel credits the embedder bytes on a stream; the name is ruled" }
 crosses_ceiling = { answer = "first_word", confidence = 0.9576325637365736, model = "perplexity/pplx-decider-v1.2-20261016" }
 csmith = { answer = "no_verb", confidence = 0.9125855922549732, model = "perplexity/pplx-decider-v1.2-20261016" }
 csmith_include = { answer = "later_word", confidence = 0.6826284298373287, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -626,6 +1286,8 @@ files = { answer = "no_verb", confidence = 0.9713224943278004, model = "perplexi
 files_mut = { answer = "no_verb", confidence = 0.7741201762780798, model = "perplexity/pplx-decider-v1.2-20261016" }
 files_released = { answer = "later_word", confidence = 0.976578403944346, model = "perplexity/pplx-decider-v1.2-20261016" }
 fill = { answer = "first_word", confidence = 0.9850893656922431, model = "perplexity/pplx-decider-v1.2-20261016" }
+fill_random_bytes = { answer = "first_word", confidence = 0.990969242007983, model = "perplexity/pplx-decider-v1.2-20261016" }
+fill_random_bytes_differently = { answer = "first_word", confidence = 0.9834588613742148, model = "perplexity/pplx-decider-v1.2-20261016" }
 filter = { answer = "first_word", confidence = 0.825388248022221, model = "perplexity/pplx-decider-v1.2-20261016" }
 filter_call = { answer = "first_word", confidence = 0.6477607836065202, model = "perplexity/pplx-decider-v1.2-20261016" }
 filter_program = { answer = "first_word", confidence = 0.9246933037372612, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -719,6 +1381,7 @@ free_inodes = { answer = "no_verb", confidence = 0.7211235266905618, model = "pe
 free_lit = { answer = "first_word", confidence = 0.740613833698977, model = "perplexity/pplx-decider-v1.2-20261016" }
 free_pages = { answer = "first_word", confidence = 0.4153902837240275, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 free_task_id = { answer = "first_word", confidence = 0.8684978032900572, model = "perplexity/pplx-decider-v1.2-20261016" }
+free_task_id_alone = { answer = "first_word", confidence = 0.8575367891428095, model = "perplexity/pplx-decider-v1.2-20261016" }
 fremovexattr = { answer = "no_verb", confidence = 0.19358654156111413, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 fresh = { answer = "no_verb", confidence = 0.4697840475459324, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 fresh_thread = { answer = "no_verb", confidence = 0.4349703325350461, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
@@ -1666,6 +2329,7 @@ read_in = { answer = "first_word", confidence = 0.9715493974238144, model = "per
 read_into = { answer = "first_word", confidence = 0.9855140976787224, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_limits = { answer = "first_word", confidence = 0.9894162376978772, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_memory = { answer = "first_word", confidence = 0.9943571621546357, model = "perplexity/pplx-decider-v1.2-20261016" }
+read_monotonic_clock_forward = { answer = "first_word", confidence = 0.9583364720081508, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_name = { answer = "first_word", confidence = 0.9954468475757196, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_only = { answer = "first_word", confidence = 0.7455253425082334, model = "perplexity/pplx-decider-v1.2-20261016" }
 read_pages = { answer = "first_word", confidence = 0.9958320438151498, model = "perplexity/pplx-decider-v1.2-20261016" }
@@ -1949,6 +2613,7 @@ semget = { answer = "later_word", confidence = 0.47847259152876953, model = "per
 semop = { answer = "no_verb", confidence = 0.7085057159539321, model = "perplexity/pplx-decider-v1.2-20261016" }
 semtimedop = { answer = "first_word", confidence = 0.294410618607768, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
 send = { answer = "first_word", confidence = 0.9881093255919876, model = "perplexity/pplx-decider-v1.2-20261016" }
+send_backend = { answer = "first_word", confidence = 0.9864645210151008, model = "perplexity/pplx-decider-v1.2-20261016" }
 send_bytes = { answer = "first_word", confidence = 0.9977409705005365, model = "perplexity/pplx-decider-v1.2-20261016" }
 send_datagram = { answer = "first_word", confidence = 0.9976068851649572, model = "perplexity/pplx-decider-v1.2-20261016" }
 send_events = { answer = "first_word", confidence = 0.9943682454929011, model = "perplexity/pplx-decider-v1.2-20261016" }
