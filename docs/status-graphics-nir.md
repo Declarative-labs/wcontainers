@@ -429,6 +429,8 @@ Next, in this order:
 
 - A quick look at one shader: copy it alone into a folder and point `WC_NIR_CORPUS` there with
   `WC_NIR_DUMP` set; `nix shell nixpkgs#spirv-tools -c spirv-dis` reads the dumps.
+- Run 8 fetched VK-GL-CTS's shader library data (sparse, at 5bb4c7e8) and a sparse bgfx on the
+  x86 machine under `/work/probes` to read their formats; both deleted at the end of the run.
 - Kept between runs: a shallow clone of the pinned Mesa for reading on the Mac
   (`pyro-parked/wcontainers-scratch/graphics-nir/mesa-src`, 560 MB, no build output; logs beside it in
   `logs/`), and the Mesa build and cargo target on the x86 machine (`/work/target/graphics-nir`).
@@ -641,7 +643,7 @@ None.
 
 ## Literal check
 
-Run 8: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0; a first
+Run 8: exit 0 at the run's last code commit, 9e0a7c6e's parent (x86-64 machine, from a git bundle; marks 0; a first
 try found the GLSL version directive named twice, in `glsl.rs` and the new `bgfx.rs`: now imported);
 wcontainers-nir still has no baseline lines. Run 7: exit 0 at the run's last code commit (x86-64 machine, from a git bundle of the branch; marks
 0); wcontainers-nir still has no baseline lines. Run 6: exit 0 at 4294fcf0 (x86-64 machine, from a git bundle; marks 0; the 18 changes that could
