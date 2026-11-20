@@ -472,7 +472,7 @@ pub(super) fn checks() -> Vec<Check> {
 }
 
 /// The page of data after the code page of the programs below.
-const DATA: u64 = 0x40_1000;
+use crate::programs::PAGE_AFTER_LOAD as DATA;
 
 /// Start with the registers the reference does not clear at zero and x5 at `DATA`.
 fn start(ops: &mut Ops) {

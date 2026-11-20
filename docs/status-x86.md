@@ -3193,9 +3193,30 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
-- X5 run 8: layer 2's shared generator lets only a group's last access load into its base. ARM64's layer 2
-  programs therefore differ from earlier runs' at the same seed; ARM64's layer 2 was run again at 10,000
-  (seed 9391, 0 failing).
+- X6 run 1 (replaces X5 run 8's entry): layer 2's shared generator lets only a group's last access load
+  into its base only for a guest whose calls write return addresses into memory (`ReturnAddress::Stack`,
+  x86). The class of programs x86's layer 2 no longer makes: an access through a base register that an
+  earlier access of the same group has just loaded from memory (pointer chasing inside a group); only a
+  write-back changes a base inside a group there. Why it stays after X6: such a chase can follow a pushed
+  return address and write over the program's own code, which then runs bytes no layer 1 case defines
+  (layer 2's own invariant, "a store this many bytes from the area's start", fails on it: seed 24621 case
+  11616 with the restriction lifted, X6 run 1). Code written without announcement is tested by its own
+  programs (`written_code`, `self_written`) instead. ARM64 (return addresses in a register) makes these
+  programs again, the same programs per seed as before X5 run 8.
+- X6 run 1: the flat blobs' linker script starts writable data (from `.dynamic` on) on a page of its own,
+  as a linker's writable segment does, so no page of a test blob holds both code and data the program
+  writes (plan 5.7, "As built at X6"). Every blob built from C changes layout, ARM64's too.
+- X6 run 1: the trap flag blob's system call is a `write` of no bytes, not `getpid` as plan 9 said: the
+  stand-in kernel answers no `getpid`, and the reference's pid would differ in rax anyway.
+- X6 run 1: x86's hand-made change programs read below rsp past the 128-byte red zone, not just below rsp:
+  x86's frame checks cover the red zone, so the contract's frame exception includes it (contract.rs and
+  plan 5.7 say so now).
+- X6 run 1: the plan's three programs that write code with no announcement are `written_code.c` (another
+  page), and `self_written.c` (the loop writing its next instruction's immediate, and an instruction writing
+  its own first byte); a program whose thread changes code another thread runs waits for threads (X10).
+- X6 run 1: while single stepping, the host runner's stop hook does not call the pause function or count
+  "stopped by the flag" (plan 5.1 lets another reason be dealt with first; the test runner's only other
+  reasons are its own pauses).
 - X5 run 7: a far `call` writes its cs slot before it checks the return address's slot, so the brief's "one
   permission check before anything changes" does not hold for it: the reference CPU leaves cs written when
   only the second push faults, and matching the CPU is what makes the state exact.

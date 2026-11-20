@@ -693,6 +693,9 @@ pub struct HookDone {
     pub reason: Option<u32>,
 }
 
+/// The name of the slow path [`Reason::CodeWrittenWithoutAnnouncement`].
+pub const CODE_WRITTEN_WITHOUT_ANNOUNCEMENT: &str = "code written without announcement";
+
 /// Every slow path of the translated code and its runners, with the fixed name its counter and warning
 /// carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -770,7 +773,7 @@ impl Reason {
             Reason::FaultWithoutExactRegisters => "fault without exact registers",
             Reason::LoopNotProven => "loop not proven",
             Reason::StackNearlyFull => "engine stack nearly full",
-            Reason::CodeWrittenWithoutAnnouncement => "code written without announcement",
+            Reason::CodeWrittenWithoutAnnouncement => CODE_WRITTEN_WITHOUT_ANNOUNCEMENT,
         }
     }
 }

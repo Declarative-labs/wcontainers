@@ -13,8 +13,18 @@ use wcontainers_x86::{R15, XMM_BYTES};
 
 type Asm = Result<(), IcedError>;
 
+/// The programs' names.
+const GROUP_ACROSS_SYSCALL: &str = "group-across-syscall";
+const LOOP_HOLDING_SYSCALL: &str = "loop-holding-syscall";
+const GROUP_ACROSS_CALL: &str = "group-across-call";
+const LOOP_HOLDING_CALL: &str = "loop-holding-call";
+const BELOW_SP_ACROSS_SYSCALL: &str = "below-sp-across-syscall";
+const BELOW_SP_IN_A_LOOP: &str = "below-sp-in-a-loop";
+const LONGEST_ACCESS_LOAD: &str = "longest-access-load";
+const LONGEST_ACCESS_STORE: &str = "longest-access-store";
+
 /// The page of data after the code page of the programs.
-const DATA: u64 = LOAD + PAGE_SIZE;
+use crate::programs::PAGE_AFTER_LOAD as DATA;
 /// The page below the one rsp is moved to, in the middle of the stack.
 const BELOW: u64 = (STACK_TOP - STACK_BYTES / 2) / PAGE_SIZE * PAGE_SIZE;
 /// The bytes of the frame made and popped there.
@@ -24,7 +34,7 @@ const FRAME: i32 = 256;
 const BELOW_RED_ZONE: i32 = <X86_64 as wcontainers_guest_cpu::Guest>::RED_ZONE as i32 + WORD;
 /// Turns of the loops the changes land in; the change comes at the head after the first.
 const TURNS: u32 = 4;
-const WORD: i32 = size_of::<u64>() as i32;
+use super::assemble::WORD;
 
 /// A system call that writes nothing.
 fn write_nothing(a: &mut CodeAssembler) -> Asm {
@@ -85,7 +95,7 @@ fn pop_a_frame_at_below(a: &mut CodeAssembler) -> Asm {
 
 pub(super) fn changes() -> Vec<Change> {
     let mut out = Vec::new();
-    let mut at_syscall = |name: &str, page, write: &dyn Fn(&mut CodeAssembler) -> Asm| {
+    let mut at_syscall = |name: &'static str, page, write: &dyn Fn(&mut CodeAssembler) -> Asm| {
         let (blob, _) = program(name, |a, _| write(a));
         out.push(Change {
             blob,
@@ -94,13 +104,13 @@ pub(super) fn changes() -> Vec<Change> {
         });
     };
     // Two loads through one base with a system call between them: the second is checked again.
-    at_syscall("group-across-syscall", DATA, &|a| {
+    at_syscall(GROUP_ACROSS_SYSCALL, DATA, &|a| {
         a.mov(r8, qword_ptr(rbx))?;
         write_nothing(a)?;
         a.mov(r9, qword_ptr(rbx + WORD))
     });
     // A loop that loads through a base and then makes a system call: the next turn's load is checked again.
-    at_syscall("loop-holding-syscall", DATA, &|a| {
+    at_syscall(LOOP_HOLDING_SYSCALL, DATA, &|a| {
         let mut top = a.create_label();
         a.mov(r15d, TURNS - 1)?;
         a.set_label(&mut top)?;
@@ -111,7 +121,7 @@ pub(super) fn changes() -> Vec<Change> {
         a.jne(top)
     });
     // Two loads through one base with a call between them whose callee makes a system call.
-    at_syscall("group-across-call", DATA, &|a| {
+    at_syscall(GROUP_ACROSS_CALL, DATA, &|a| {
         let (mut f, mut end) = (a.create_label(), a.create_label());
         a.mov(r8, qword_ptr(rbx))?;
         a.call(f)?;
@@ -122,7 +132,7 @@ pub(super) fn changes() -> Vec<Change> {
         a.nop()
     });
     // A loop over memory holding a call whose callee makes a system call.
-    at_syscall("loop-holding-call", DATA, &|a| {
+    at_syscall(LOOP_HOLDING_CALL, DATA, &|a| {
         let (mut f, mut top, mut end) = (a.create_label(), a.create_label(), a.create_label());
         a.mov(r15d, TURNS - 1)?;
         a.set_label(&mut top)?;
@@ -138,14 +148,14 @@ pub(super) fn changes() -> Vec<Change> {
     });
     // Below rsp once a frame is popped is no frame: a change there at a system call is seen at the next
     // access.
-    at_syscall("below-sp-across-syscall", BELOW, &|a| {
+    at_syscall(BELOW_SP_ACROSS_SYSCALL, BELOW, &|a| {
         pop_a_frame_at_below(a)?;
         write_nothing(a)?;
         a.mov(r9, qword_ptr(rsp - BELOW_RED_ZONE))?;
         a.mov(rsp, rbp)
     });
     // The same with the access in a loop and the change at its first stop.
-    let (blob, head) = program("below-sp-in-a-loop", |a, head| {
+    let (blob, head) = program(BELOW_SP_IN_A_LOOP, |a, head| {
         pop_a_frame_at_below(a)?;
         a.mov(r15d, TURNS)?;
         a.set_label(head)?;
@@ -167,9 +177,9 @@ pub(super) fn changes() -> Vec<Change> {
     let first = DATA + PAGE_SIZE - u64::from(TURNS) * XMM_BYTES as u64 + XMM_BYTES as u64 / 2;
     for load in [true, false] {
         let name = if load {
-            "longest-access-load"
+            LONGEST_ACCESS_LOAD
         } else {
-            "longest-access-store"
+            LONGEST_ACCESS_STORE
         };
         let (blob, head) = program(name, |a, head| {
             a.mov(rdi, first)?;

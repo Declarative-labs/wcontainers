@@ -248,8 +248,15 @@ pub extern "C" fn cpu_step(kind: u32, pc: i64) -> i32 {
     STEPS.iter().position(|s| *s == step).unwrap() as i32
 }
 
-/// The answers of `Guest::step`, in the order the contract names them.
+/// The answers of `Guest::step`, in the order the contract names them (`STEP_NAMES`).
 const STEPS: [Step; 4] = [Step::Off, Step::Run, Step::Exact, Step::Trap];
+/// The names runner.js gives the answers of `Guest::step`.
+const STEP_NAMES: [&str; 4] = ["off", "run", "exact", "trap"];
+/// Keys of the contract that runner.js reads.
+const UNWIND_GO_TO_EXACT_KEY: &str = "unwindGoToExact";
+const STEPS_KEY: &str = "steps";
+const CPU_STEPS_KEY: &str = "cpuSteps";
+const CODE_CHANGES_DETECTED_KEY: &str = "codeChangesDetected";
 
 // Every hook's arguments fit `cpu_hook`'s and its results `HookDone`'s.
 const _: () = {
@@ -331,7 +338,7 @@ pub extern "C" fn contract() -> i32 {
             })
         })
         .collect();
-    let description = serde_json::json!({
+    let mut description = serde_json::json!({
         "env": ENV,
         "hooks": HOOKS,
         "thread": THREAD,
@@ -350,10 +357,6 @@ pub extern "C" fn contract() -> i32 {
         "run": RUN,
         "bound": wcontainers_translator::BOUND,
         "unwindLeave": UNWIND_LEAVE,
-        "unwindGoToExact": UNWIND_GO_TO_EXACT,
-        "steps": ["off", "run", "exact", "trap"],
-        "cpuSteps": G::STEPS,
-        "codeChangesDetected": G::CODE_CHANGES == wcontainers_guest_cpu::CodeChanges::Detected,
         "hookSyscall": HOOK_SYSCALL,
         "hookStop": HOOK_STOP,
         "hookMemoryFault": HOOK_MEMORY_FAULT,
@@ -387,5 +390,18 @@ pub extern "C" fn contract() -> i32 {
         "pcOffset": G::PC_OFFSET,
         "flagsWordOffset": G::FLAGS_WORD_OFFSET,
     });
+    let detected = G::CODE_CHANGES == wcontainers_guest_cpu::CodeChanges::Detected;
+    let more = description.as_object_mut().expect("an object");
+    for (key, value) in [
+        (
+            UNWIND_GO_TO_EXACT_KEY,
+            serde_json::json!(UNWIND_GO_TO_EXACT),
+        ),
+        (STEPS_KEY, serde_json::json!(STEP_NAMES)),
+        (CPU_STEPS_KEY, serde_json::json!(G::STEPS)),
+        (CODE_CHANGES_DETECTED_KEY, serde_json::json!(detected)),
+    ] {
+        more.insert(key.into(), value);
+    }
     answer(description.to_string().into_bytes())
 }

@@ -20,6 +20,8 @@ fn target() -> PathBuf {
 
 /// Where the page's runs keep their files, under the browser build.
 const CASES: &str = "cases";
+/// The kind of stop the browser runner reports for a single step of the trap flag.
+const SINGLE_STEP: &str = "single step";
 
 /// A new directory for one run of the page, under this process's and this call's numbers so that runs at the
 /// same time never share files; the caller removes it when the run has ended.
@@ -222,7 +224,7 @@ fn run_in_chrome<G: GuestTest>(
         Some("memory fault") => 128 + 11,
         Some("alignment") => 128 + 7,
         Some("undefined" | "unsupported") => 128 + 4,
-        Some("breakpoint" | "single step") => 128 + 5,
+        Some("breakpoint" | SINGLE_STEP) => 128 + 5,
         Some("divide error" | "float exception") => 128 + 8,
         Some("general protection" | "overflow") => 128 + 11,
         Some("stack fault") => 128 + 7,

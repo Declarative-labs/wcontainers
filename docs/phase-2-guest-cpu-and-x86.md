@@ -1535,6 +1535,13 @@ Tests (section 7 gives the detail):
     instruction running was such a one, `step` clears `StepHeld` and answers `Exact` for the next
     instruction instead of `Trap`, so the trap comes after that one. `StepHeld` is cleared whenever an
     instruction starts to run alone, so a stale 1 from a `mov ss` run without TF does nothing.
+  - As built at X6: the three words are `X86Private::step`, `step_held` and `step_at`; only `StepHeld` is a
+    control, since only `mov ss`'s meaning writes it (`pop ss` does not exist in 64-bit mode). `popf` and
+    `iretq` count "trap flag set by the program: single steps". At a stop the runners ask `step` before
+    anything else; while it answers `Run`, `Exact` or `Trap` the stop is the step's alone (no pause, no
+    "stopped by the flag"). Both runners answer `StepAt::Kernel` after each system call the stand-in answers
+    and before each entry into `run`; the browser through the export `cpu_step(kind, pc)` on the copy of the
+    thread's state at `cpu_state`.
   - What the stop hook returns: at X6 it returns the unwind payload, as the memory fault hook does
     (section 5.7): 0 to carry on, `UNWIND_LEAVE` to leave, `UNWIND_GO_TO_EXACT` to run the instruction at pc
     alone; its call sites unwind with what it returns. ARM64's runners return only 0 and `UNWIND_LEAVE`, so
@@ -2052,6 +2059,23 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
 - ARM64 keeps `ic ivau`; `CODE_CHANGES` tells the runner which policy to use.
 - Expected and unmeasured: a JIT that keeps pages writable and executable while writing code next to
   running code would fault often. The counter shows it; a measurement on such a program comes at X6.
+- **As built at X6.** A translation says which blob bytes it was made from (`Translation::read`: every
+  instruction it decoded and every jump table it read, `JumpTable::read` from `Guest::jump_table`). The
+  runners keep the marks as write locks with a reason, one bit per reason on each page (`LOCK_CODE` first),
+  beside what the kernel last allowed; the table's byte leaves the write bits out while any lock is held, so
+  a later reason (tracking written pages, copying a page aside) needs no second mechanism. Every page of a
+  translation's bytes is locked when its pieces are instantiated, but the exact piece made under the exact
+  mark. The step drops whole translations, not single pieces: every translation (made ahead of time or at
+  run time) whose bytes touch the page loses all its pieces from the lookup, since a piece's code may rest
+  on what its translation learnt of other code there (flags a callee leaves, its frame). An exact piece made
+  under the mark is not kept for reuse, since its page may be written unseen. The test runner's kernel
+  writes (`Machine::write`) take the step. Measured: a page holding both code and data the program writes
+  costs a fault, a drop and a translation for every write to that data, so a flat test blob whose data
+  shared the last page of its code ran many times slower and kept every dropped translation's instances
+  (the store frees none); linkers put writable data on pages of its own, and the flat blobs now do the same
+  (`flat.ld`). The contract's frame exception covers the red zone (`Guest::RED_ZONE`): x86's frame checks
+  include it, so a change to a page under rsp within 128 bytes is noticed at the next function entry, and
+  x86's hand-made change programs read past it.
 
 ### 5.8 Floating point: SSE and x87
 
@@ -3078,7 +3102,8 @@ Measured throughout, recorded with machine and load: translation speed, output s
   (section 5.1: TF in `Rflags`, `raise_stop`, `Guest::step` and its private words, the stop hook returning
   the unwind payload, in both runners), with trap-flag blobs run on the reference and translated and their
   stops and registers compared: `popf` setting TF before a `nop`, a `jmp`, a `call`, a `ret`, a `syscall`
-  (getpid; the stop comes after the instruction after it), a `popf` that clears TF, a `rep movsb` (one
+  (a `write` of no bytes, which the runners' stand-in kernel answers as Linux does, where `getpid` would differ;
+  the stop comes after the instruction after it), a `popf` that clears TF, a `rep movsb` (one
   element, rip on the instruction), `mov ss` (held back one instruction) and an `iretq` setting TF; each
   stops by SIGTRAP `TRAP_TRACE`, and the blob runner's record of the stop (rip and the general registers,
   section 7.3) must equal the translated side's. Pass bar: those tests pass at every

@@ -307,6 +307,9 @@ pub struct Ran {
     pub status: i32,
 }
 
+/// The page after the first page of a blob: the data of the hand-made programs whose code fits one page.
+pub const PAGE_AFTER_LOAD: u64 = LOAD + PAGE_SIZE;
+
 /// Where a flat blob and its stack go in guest memory, the same for every runner.
 pub struct Placement {
     /// Size of guest memory: everything up to the top of the stack.
@@ -464,11 +467,10 @@ pub fn ran<G: GuestTest>(
         Stopped::Exit(Exit::MemoryFault { .. }) => 128 + 11,
         Stopped::Exit(Exit::AlignmentFault { .. }) => 128 + 7,
         Stopped::Exit(Exit::IllegalInstruction) => 128 + 4,
-        Stopped::Exit(Exit::Breakpoint { .. }) => 128 + 5,
+        Stopped::Exit(Exit::Breakpoint { .. }) | Stopped::Fault(Fault::SingleStep) => 128 + 5,
         Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => 128 + 8,
         Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => 128 + 11,
         Stopped::Fault(Fault::Stack) => 128 + 7,
-        Stopped::Fault(Fault::SingleStep) => 128 + 5,
         other => {
             let pc = u64::from_le_bytes(
                 zerocopy::IntoBytes::as_bytes(registers)[G::PC_OFFSET..][..8]
