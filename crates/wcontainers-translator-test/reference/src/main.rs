@@ -27,15 +27,15 @@ const EMPTY_INPUT: &str = "/dev/null";
 const NZCV: u64 = 0xf000_0000;
 
 /// The registers the guest starts with: x0 to x30, sp, pc, pstate, thread pointer.
-static mut GUEST: [u64; 35] = [0; 35];
+static mut GUEST: [u64; LANDED_REGISTERS] = [0; LANDED_REGISTERS];
 /// The registers where control landed, in the same order.
-static mut LANDED: [u64; 35] = [0; 35];
+static mut LANDED: [u64; LANDED_REGISTERS] = [0; LANDED_REGISTERS];
 /// v0 to v31 the guest starts with, and where control landed.
-static mut GUEST_VECTORS: [u128; 32] = [0; 32];
-static mut LANDED_VECTORS: [u128; 32] = [0; 32];
+static mut GUEST_VECTORS: [u128; VECTOR_REGISTERS] = [0; VECTOR_REGISTERS];
+static mut LANDED_VECTORS: [u128; VECTOR_REGISTERS] = [0; VECTOR_REGISTERS];
 /// FPSR and FPCR the guest starts with, and where control landed.
-static mut GUEST_FLOAT: [u32; 2] = [0; 2];
-static mut LANDED_FLOAT: [u32; 2] = [0; 2];
+static mut GUEST_FLOAT: [u32; FLOAT_REGISTERS] = [0; FLOAT_REGISTERS];
+static mut LANDED_FLOAT: [u32; FLOAT_REGISTERS] = [0; FLOAT_REGISTERS];
 static mut SIGNAL: [u64; 3] = [0; 3];
 static mut HOST: core::mem::MaybeUninit<libc::mcontext_t> = core::mem::MaybeUninit::uninit();
 static mut HOST_THREAD_POINTER: u64 = 0;
@@ -52,7 +52,7 @@ fn set_thread_pointer(value: u64) {
 
 /// v0 to v31 in a signal frame: in the FPSIMD record that starts the frame's extra space, which Linux puts
 /// 288 bytes into `uc_mcontext` (`struct sigcontext`).
-unsafe fn frame_vectors(uc: *mut libc::ucontext_t) -> *mut [u128; 32] {
+unsafe fn frame_vectors(uc: *mut libc::ucontext_t) -> *mut [u128; VECTOR_REGISTERS] {
     const FPSIMD_MAGIC: u32 = 0x4650_8001;
     unsafe {
         let record = (&raw mut (*uc).uc_mcontext as *mut u8).add(288);
@@ -61,13 +61,16 @@ unsafe fn frame_vectors(uc: *mut libc::ucontext_t) -> *mut [u128; 32] {
             FPSIMD_MAGIC,
             "the signal frame starts with the FPSIMD record"
         );
-        record.add(16) as *mut [u128; 32]
+        record.add(16) as *mut [u128; VECTOR_REGISTERS]
     }
 }
 
 /// FPSR and FPCR in a signal frame: right after the FPSIMD record's header.
-unsafe fn frame_float(uc: *mut libc::ucontext_t) -> *mut [u32; 2] {
-    unsafe { (frame_vectors(uc) as *mut u8).sub(8) as *mut [u32; 2] }
+unsafe fn frame_float(uc: *mut libc::ucontext_t) -> *mut [u32; FLOAT_REGISTERS] {
+    unsafe {
+        (frame_vectors(uc) as *mut u8).sub(size_of::<[u32; FLOAT_REGISTERS]>())
+            as *mut [u32; FLOAT_REGISTERS]
+    }
 }
 
 /// Entry: keep the host's frame, put the guest's registers in its place.
@@ -77,13 +80,15 @@ extern "C" fn enter(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut libc:
         (*addr_of_mut!(HOST)).write(core::ptr::read(&uc.uc_mcontext));
         HOST_THREAD_POINTER = thread_pointer();
         let guest = &*addr_of!(GUEST);
-        uc.uc_mcontext.regs.copy_from_slice(&guest[..31]);
-        uc.uc_mcontext.sp = guest[31];
-        uc.uc_mcontext.pc = guest[32];
-        uc.uc_mcontext.pstate = (uc.uc_mcontext.pstate & !NZCV) | (guest[33] & NZCV);
+        uc.uc_mcontext
+            .regs
+            .copy_from_slice(&guest[..GENERAL_REGISTERS]);
+        uc.uc_mcontext.sp = guest[CASE_SP];
+        uc.uc_mcontext.pc = guest[LANDED_PC];
+        uc.uc_mcontext.pstate = (uc.uc_mcontext.pstate & !NZCV) | (guest[LANDED_FLAGS] & NZCV);
         frame_vectors(uc).write_unaligned(*addr_of!(GUEST_VECTORS));
         frame_float(uc).write_unaligned(*addr_of!(GUEST_FLOAT));
-        set_thread_pointer(guest[34]);
+        set_thread_pointer(guest[LANDED_THREAD_POINTER]);
     }
 }
 
@@ -94,11 +99,11 @@ extern "C" fn land(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mu
         set_thread_pointer(HOST_THREAD_POINTER);
         let uc = &mut *(context as *mut libc::ucontext_t);
         let landed = &mut *addr_of_mut!(LANDED);
-        landed[..31].copy_from_slice(&uc.uc_mcontext.regs);
-        landed[31] = uc.uc_mcontext.sp;
-        landed[32] = uc.uc_mcontext.pc;
-        landed[33] = uc.uc_mcontext.pstate & NZCV;
-        landed[34] = guest_thread_pointer;
+        landed[..GENERAL_REGISTERS].copy_from_slice(&uc.uc_mcontext.regs);
+        landed[CASE_SP] = uc.uc_mcontext.sp;
+        landed[LANDED_PC] = uc.uc_mcontext.pc;
+        landed[LANDED_FLAGS] = uc.uc_mcontext.pstate & NZCV;
+        landed[LANDED_THREAD_POINTER] = guest_thread_pointer;
         *addr_of_mut!(LANDED_VECTORS) = frame_vectors(uc).read_unaligned();
         *addr_of_mut!(LANDED_FLOAT) = frame_float(uc).read_unaligned();
         SIGNAL = [
@@ -241,7 +246,7 @@ fn timer(microseconds: i64) {
 }
 
 fn word(bytes: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+    u64::from_le_bytes(bytes[at..][..size_of::<u64>()].try_into().unwrap())
 }
 
 fn cases() {
@@ -272,7 +277,7 @@ fn cases() {
     let mut expected = vec![0u8; DATA_BYTES as usize];
     while input.read_exact(&mut request).is_ok() {
         let instruction = u32::from_le_bytes(request[..4].try_into().unwrap());
-        let seed = word(&request, 4);
+        let seed = word(&request, REQUEST_SEED_AT);
         fill(seed, &mut expected);
         protect(
             DATA + DATA_WRITABLE,
@@ -290,22 +295,23 @@ fn cases() {
 
         unsafe {
             let guest = &mut *addr_of_mut!(GUEST);
-            for (i, value) in guest.iter_mut().take(32).enumerate() {
-                *value = word(&request, 12 + 8 * i);
+            let register = |i: usize| word(&request, REQUEST_REGISTERS_AT + size_of::<u64>() * i);
+            for (i, value) in guest[..=CASE_SP].iter_mut().enumerate() {
+                *value = register(i);
             }
-            guest[32] = CODE;
-            guest[33] = word(&request, 12 + 8 * 32);
-            guest[34] = word(&request, 12 + 8 * 33);
+            guest[LANDED_PC] = CODE;
+            guest[LANDED_FLAGS] = register(REQUEST_FLAGS);
+            guest[LANDED_THREAD_POINTER] = register(REQUEST_THREAD_POINTER);
             let vectors = &mut *addr_of_mut!(GUEST_VECTORS);
             for (i, value) in vectors.iter_mut().enumerate() {
-                let at = 12 + 8 * 34 + 16 * i;
-                *value = u128::from_le_bytes(request[at..at + 16].try_into().unwrap());
+                let at = REQUEST_VECTORS_AT + size_of::<u128>() * i;
+                *value =
+                    u128::from_le_bytes(request[at..][..size_of::<u128>()].try_into().unwrap());
             }
-            let at = 12 + 8 * 34 + 16 * 32;
-            *addr_of_mut!(GUEST_FLOAT) = [
-                u32::from_le_bytes(request[at..at + 4].try_into().unwrap()),
-                u32::from_le_bytes(request[at + 4..at + 8].try_into().unwrap()),
-            ];
+            for (i, value) in (*addr_of_mut!(GUEST_FLOAT)).iter_mut().enumerate() {
+                let at = REQUEST_FLOAT_AT + size_of::<u32>() * i;
+                *value = u32::from_le_bytes(request[at..][..size_of::<u32>()].try_into().unwrap());
+            }
             timer(500_000);
             libc::raise(libc::SIGUSR1);
             timer(0);
@@ -319,7 +325,7 @@ fn cases() {
             .filter(|(_, (now, before))| now != before)
             .map(|(i, (now, _))| (i as u32, *now))
             .collect();
-        let mut result = Vec::with_capacity(RESULT_HEADER_BYTES + 5 * changed.len());
+        let mut result = Vec::with_capacity(RESULT_HEADER_BYTES + CHANGE_BYTES * changed.len());
         let signal = unsafe { *addr_of!(SIGNAL) };
         result.extend_from_slice(&(signal[0] as u32).to_le_bytes());
         result.extend_from_slice(&(signal[1] as u32).to_le_bytes());
@@ -374,9 +380,9 @@ fn blob(path: &str, load: u64, stack_top: u64, stack_bytes: u64, headers: Option
     handle(libc::SIGUSR1, enter);
     unsafe {
         let guest = &mut *addr_of_mut!(GUEST);
-        *guest = [0; 35];
-        guest[31] = sp;
-        guest[32] = load;
+        *guest = [0; LANDED_REGISTERS];
+        guest[CASE_SP] = sp;
+        guest[LANDED_PC] = load;
         // A program that does not end in this time ends as if killed by SIGALRM (random programs may
         // loop). In Docker the runner is the first process, which a signal's default action never kills,
         // so a handler ends it.

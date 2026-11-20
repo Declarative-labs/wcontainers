@@ -17,7 +17,7 @@ use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
     Case, Stop, cases, compare, compare_outcome, covered, translated, translated_in_chrome,
 };
-use wcontainers_translator_test::layout::{CODE, DATA};
+use wcontainers_translator_test::layout::{CASE_SP, CODE, DATA};
 use wcontainers_translator_test::reference::Cases;
 use wcontainers_translator_test::seeded;
 
@@ -135,7 +135,7 @@ fn alignment_faults_match_the_cpu() {
     for (word, sp, expected) in cases {
         let mut registers = [0u64; 34];
         registers[1] = target;
-        registers[31] = sp;
+        registers[CASE_SP] = sp;
         let case = Case {
             word,
             registers,
@@ -222,7 +222,7 @@ fn step_edges_match_the_cpu() {
                 vectors[1] = a;
                 vectors[2] = b;
                 let mut registers = [0u64; 34];
-                registers[31] = DATA + PAGE_SIZE;
+                registers[CASE_SP] = DATA + PAGE_SIZE;
                 let case = Case {
                     word,
                     registers,
@@ -253,7 +253,7 @@ fn words_in_no_form_are_illegal_as_on_the_cpu() {
     });
     let result = runner.run(&unallocated, |word| {
         let mut registers = [0u64; 34];
-        registers[31] = DATA + PAGE_SIZE;
+        registers[CASE_SP] = DATA + PAGE_SIZE;
         let case = Case {
             word,
             registers,
@@ -279,7 +279,7 @@ fn designed_answers_and_faults() {
         let mut registers = [0u64; 34];
         registers[1] = x1;
         registers[2] = x2;
-        registers[31] = DATA + PAGE_SIZE;
+        registers[CASE_SP] = DATA + PAGE_SIZE;
         translated(&Case {
             word,
             registers,

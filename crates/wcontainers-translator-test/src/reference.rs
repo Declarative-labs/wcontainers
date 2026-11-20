@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
+use wcontainers_abi::RegisterBlock;
+use zerocopy::FromBytes;
 
 /// The Docker image the reference runs in.
 pub const IMAGE: &str = "alpine:latest";
@@ -141,12 +143,22 @@ pub struct Landed {
     pub code: u32,
     pub address: u64,
     /// x0 to x30, sp, pc, flags, thread pointer.
-    pub registers: [u64; 35],
-    pub vectors: [u128; 32],
+    pub registers: [u64; LANDED_REGISTERS],
+    pub vectors: [u128; VECTOR_REGISTERS],
     /// FPSR and FPCR.
-    pub float: [u32; 2],
+    pub float: [u32; FLOAT_REGISTERS],
     /// Changed data bytes: offset from `DATA`, new value.
     pub changed: Vec<(u32, u8)>,
+}
+
+const _: () = assert!(
+    GENERAL_REGISTERS == RegisterBlock::ZERO.x.len()
+        && VECTOR_REGISTERS == RegisterBlock::ZERO.v.len()
+);
+
+/// The value at byte `at` of `bytes`, little endian as on every host here.
+fn value_at<T: FromBytes>(bytes: &[u8], at: usize) -> T {
+    T::read_from_prefix(&bytes[at..]).expect("a whole value").0
 }
 
 /// A running reference that takes layer 1 cases one at a time.
@@ -174,9 +186,9 @@ impl Cases {
         &mut self,
         word: u32,
         seed: u64,
-        registers: &[u64; 34],
-        vectors: &[u128; 32],
-        float: [u32; 2],
+        registers: &[u64; REQUEST_REGISTERS],
+        vectors: &[u128; VECTOR_REGISTERS],
+        float: [u32; FLOAT_REGISTERS],
     ) -> Landed {
         let mut request = Vec::with_capacity(REQUEST_BYTES);
         request.extend_from_slice(&word.to_le_bytes());
@@ -196,34 +208,23 @@ impl Cases {
         self.output
             .read_exact(&mut header)
             .expect("the reference answers");
-        let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let u64_at = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-        let mut landed = Landed {
-            signal: u32_at(0),
-            code: u32_at(4),
-            address: u64_at(8),
-            registers: [0; 35],
-            vectors: [0; 32],
-            float: [0; 2],
+        let landed = Landed {
+            signal: value_at(&header, 0),
+            code: value_at(&header, RESULT_CODE_AT),
+            address: value_at(&header, RESULT_ADDRESS_AT),
+            registers: value_at(&header, RESULT_REGISTERS_AT),
+            vectors: value_at(&header, RESULT_VECTORS_AT),
+            float: value_at(&header, RESULT_FLOAT_AT),
             changed: Vec::new(),
         };
-        for (i, value) in landed.registers.iter_mut().enumerate() {
-            *value = u64_at(16 + 8 * i);
-        }
-        for (i, value) in landed.vectors.iter_mut().enumerate() {
-            let at = 16 + 35 * 8 + 16 * i;
-            *value = u128::from_le_bytes(header[at..at + 16].try_into().unwrap());
-        }
-        let float_at = 16 + 35 * 8 + 32 * 16;
-        landed.float = [u32_at(float_at), u32_at(float_at + 4)];
-        let count = u32_at(float_at + 8) as usize;
-        let mut changes = vec![0u8; 5 * count];
+        let count: u32 = value_at(&header, RESULT_CHANGES_AT);
+        let mut changes = vec![0u8; CHANGE_BYTES * count as usize];
         self.output.read_exact(&mut changes).unwrap();
-        landed.changed = changes
-            .chunks(5)
-            .map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), c[4]))
+        let changed = changes
+            .chunks(CHANGE_BYTES)
+            .map(|c| (value_at(c, 0), c[size_of::<u32>()]))
             .collect();
-        landed
+        Landed { changed, ..landed }
     }
 }
 
