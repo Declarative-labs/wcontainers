@@ -6,6 +6,7 @@ use crate::compare::{self, CompareOptions, DEFAULT_SEED, SEED, Verdict};
 use crate::deqp;
 use crate::entry;
 use crate::glsl;
+use crate::godot;
 use crate::lavapipe;
 use crate::needs;
 use rand::SeedableRng;
@@ -142,6 +143,8 @@ fn shader_files(dir: &Path, out: &mut Vec<PathBuf>) {
             shader_files(&path, out);
         } else if path.extension().is_some_and(|e| e == deqp::EXTENSION) {
             out.extend(deqp::items(&path));
+        } else if godot::is_shader(&path) {
+            out.extend(godot::items(&path));
         } else if path
             .extension()
             .is_some_and(|e| e == SPIRV_EXTENSION || e == glsl::SHADER_TEST_EXTENSION)
@@ -394,6 +397,7 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
         .is_some_and(|e| e == glsl::SHADER_TEST_EXTENSION)
         || bgfx::is_desktop_shader(file)
         || deqp::sources(file).is_some()
+        || godot::sources(file).is_some()
     {
         return glsl_program(file, route);
     }
@@ -571,7 +575,7 @@ fn zink_route(
     }
 }
 
-/// A GLSL program (a piglit test, a bgfx shader or a dEQP case): its stages through Mesa's compiler, each through the route; a
+/// A GLSL program (a piglit test, a bgfx shader, a dEQP case or a Godot variant): its stages through Mesa's compiler, each through the route; a
 /// compute program dispatched, a vertex and fragment program drawn, held to llvmpipe.
 fn glsl_program(file: &Path, route: &str) -> ShaderResult {
     let mut result = ShaderResult {
@@ -582,6 +586,8 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
         routes: Vec::new(),
     };
     let sources = if let Some(sources) = deqp::sources(file) {
+        sources
+    } else if let Some(sources) = godot::sources(file) {
         sources
     } else if bgfx::is_desktop_shader(file) {
         bgfx::sources(&std::fs::read(file).expect("the file can be read"))

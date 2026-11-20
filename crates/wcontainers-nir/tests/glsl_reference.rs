@@ -25,6 +25,12 @@ mod glsl;
     dead_code,
     reason = "the corpus harness; this test runs one program through it"
 )]
+#[path = "corpus/godot.rs"]
+mod godot;
+#[allow(
+    dead_code,
+    reason = "the corpus harness; this test runs one program through it"
+)]
 #[path = "corpus/interface.rs"]
 mod interface;
 #[allow(
@@ -161,6 +167,47 @@ case pair
 end
 "#;
 
+/// A shader file in the format of Godot's Compatibility renderer, and a file it includes.
+const GODOT_SHADER: &str = "/* clang-format off */
+#[modes]
+
+mode_plain =
+mode_tinted = #define TINT \\n#define TINT_TWICE
+
+#[specializations]
+
+USE_FOG = false
+USE_LIGHT = true
+
+#[vertex]
+
+layout(location = 0) in vec2 vertex_attrib;
+out vec2 uv;
+#GLOBALS
+void main() {
+\tuv = vertex_attrib;
+\tgl_Position = vec4(vertex_attrib, 0.0, 1.0);
+}
+
+#[fragment]
+
+#include \"godot_inc.glsl\"
+in vec2 uv;
+uniform vec4 tint;
+layout(location = 0) out vec4 frag_color;
+void main() {
+#CODE : FRAGMENT
+\tfrag_color = shade(uv);
+#ifdef TINT_TWICE
+\tfrag_color *= tint * tint;
+#endif
+#ifdef USE_LIGHT
+\tfrag_color.a = float(MAX_VIEWS);
+#endif
+}
+";
+const GODOT_INCLUDED: &str = "vec4 shade(vec2 at) { return vec4(at, ViewIndex, 1.0); }\n";
+
 const TEST_FILE: &str = "[require]
 GLSL >= 4.30
 
@@ -244,6 +291,61 @@ fn a_deqp_library_file_gives_each_case_its_program() {
         let given: Vec<_> = program.iter().map(|(s, t)| (*s, t.as_str())).collect();
         Nir::from_glsl(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
     }
+}
+
+#[test]
+fn a_godot_shader_file_gives_each_variant_its_program() {
+    let folder = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("drivers/gles3/shaders");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("godot.glsl");
+    std::fs::write(&file, GODOT_SHADER).unwrap();
+    std::fs::write(folder.join("godot_inc.glsl"), GODOT_INCLUDED).unwrap();
+    assert!(godot::is_shader(&file));
+    let items: Vec<String> = godot::items(&file)
+        .iter()
+        .map(|i| i.display().to_string())
+        .collect();
+    let named = |v: &str| format!("{}#{v}", file.display());
+    assert_eq!(
+        items,
+        [
+            "MODE_PLAIN",
+            "MODE_PLAIN:USE_FOG",
+            "MODE_PLAIN:USE_LIGHT",
+            "MODE_TINTED",
+            "MODE_TINTED:USE_FOG",
+            "MODE_TINTED:USE_LIGHT"
+        ]
+        .map(named)
+    );
+    assert!(godot::items(&folder.join("godot_inc.glsl")).is_empty());
+    let program = godot::sources(std::path::Path::new(&named("MODE_TINTED:USE_FOG")))
+        .unwrap()
+        .unwrap();
+    let fragment = &program[1].1;
+    assert!(fragment.starts_with("#version 330\n#define USE_GLES_OVER_GL\n"));
+    assert!(fragment.contains("#define USE_FOG\n#define USE_LIGHT\n"));
+    assert!(fragment.contains("#define TINT \n#define TINT_TWICE\n"));
+    assert!(fragment.contains("vec4 shade(vec2 at)"));
+    assert!(!fragment.contains("#CODE"));
+    assert!(!program[0].1.contains("#GLOBALS"));
+    let plain = godot::sources(std::path::Path::new(&named("MODE_PLAIN:USE_LIGHT")))
+        .unwrap()
+        .unwrap();
+    assert!(!plain[1].1.contains("#define USE_LIGHT"));
+    for program in [&program, &plain] {
+        let given: Vec<_> = program.iter().map(|(s, t)| (*s, t.as_str())).collect();
+        Nir::from_glsl(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
+    }
+    let table = "# a comment\nscene.glsl #define A 1\\n\neffects/copy.glsl #define B\n";
+    assert_eq!(
+        godot::general_defines(table, std::path::Path::new("effects/copy.glsl")),
+        "#define B"
+    );
+    assert_eq!(
+        godot::general_defines(table, std::path::Path::new("sky.glsl")),
+        ""
+    );
 }
 
 #[test]

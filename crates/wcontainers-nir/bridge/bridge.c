@@ -301,10 +301,41 @@ round_array_layer(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
+/* A vertex program that writes no position (one feeding transform feedback) gets the position
+ * (0, 0, 0, -1), outside every clip volume, as the shaders crate gives a Direct3D one: the common
+ * form's vertex stage must write a position, and drawn it rasterises nothing. */
+static void
+clip_unpositioned(nir_shader *nir)
+{
+   if (nir->info.stage != MESA_SHADER_VERTEX)
+      return;
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   if (nir->info.outputs_written & VARYING_BIT_POS)
+      return;
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_builder b = nir_builder_at(nir_after_impl(impl));
+   nir_def *outside = nir_vec4(&b, nir_imm_float(&b, 0), nir_imm_float(&b, 0), nir_imm_float(&b, 0),
+                               nir_imm_float(&b, -1));
+   if (nir->info.io_lowered) {
+      nir_store_output(&b, outside, nir_imm_int(&b, 0), .base = nir->num_outputs++,
+                       .write_mask = BITFIELD_MASK(outside->num_components),
+                       .src_type = nir_type_float32,
+                       .io_semantics = (nir_io_semantics){.location = VARYING_SLOT_POS, .num_slots = 1});
+   } else {
+      nir_variable *position =
+         nir_variable_create(nir, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
+      position->data.location = VARYING_SLOT_POS;
+      nir_store_var(&b, position, outside, BITFIELD_MASK(outside->num_components));
+   }
+   nir_progress(true, impl, nir_metadata_control_flow);
+   nir_shader_gather_info(nir, impl);
+}
+
 enum wc_bind_result
 wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
                       const struct wc_slot_range ranges[WC_SLOT_KINDS], struct wc_bindings *bindings)
 {
+   clip_unpositioned(nir);
    nir_shader_instructions_pass(nir, round_array_layer, nir_metadata_control_flow, NULL);
    /* The common form's dispatches start at workgroup 0, and Vulkan has no global offset. */
    const nir_lower_compute_system_values_options from_zero = {0};

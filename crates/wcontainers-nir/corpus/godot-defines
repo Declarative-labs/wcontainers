@@ -1,0 +1,23 @@
+# The general defines Godot's Compatibility renderer initializes each shader with
+# (`ShaderGLES3::initialize`), at the commit `sources` pins and Godot's default project settings
+# (`servers/rendering/rendering_server.cpp`), as the corpus run reads Godot's shaders: one line a
+# shader file, as
+#   path  defines
+# where path is under `drivers/gles3/shaders` and the defines are Godot's text with `\n` between
+# lines. A file not listed has none. Where each value comes from:
+# - GLOBAL_SHADER_UNIFORM_TEXTURE_WIDTH_SHIFT: `GlobalShaderUniforms::TEXTURE_WIDTH_SHIFT`
+#   (`storage/material_storage.h`).
+# - scene (`rasterizer_scene_gles3.cpp`): `rendering/limits/opengl/max_renderable_lights` 32,
+#   `RendererSceneRender::MAX_DIRECTIONAL_LIGHTS` 8, `rendering/limits/opengl/max_lights_per_object`
+#   8, `rendering/reflections/sky_reflections/roughness_layers` 8 less one, `max_decals` 64;
+#   `force_vertex_shading` false and `specular_occlusion/enabled` true add nothing.
+# - sky: `sky_globals.max_directional_lights` 4.
+# - canvas (`rasterizer_canvas_gles3.cpp`): `max_lights_per_render` 256, as the uniform block limit
+#   our OpenGL reports (65536 bytes, `WC_GL_UNIFORM_BLOCK_BYTES`) is not below 65536.
+# - cubemap filter (`effects/cubemap_filter.cpp`): four times `sky_reflections/ggx_samples` 32.
+scene.glsl #define GLOBAL_SHADER_UNIFORM_TEXTURE_WIDTH_SHIFT 10\n\n#define MAX_LIGHT_DATA_STRUCTS 32\n\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS 8\n\n#define MAX_FORWARD_LIGHTS 8u\n\n#define MAX_ROUGHNESS_LOD 7.0\n\n#define MAX_DECALS 64\n
+sky.glsl #define GLOBAL_SHADER_UNIFORM_TEXTURE_WIDTH_SHIFT 10\n\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS 4\n
+canvas.glsl #define GLOBAL_SHADER_UNIFORM_TEXTURE_WIDTH_SHIFT 10\n#define MAX_LIGHTS 256\n
+tex_blit.glsl #define GLOBAL_SHADER_UNIFORM_TEXTURE_WIDTH_SHIFT 10\n
+particles.glsl #define GLOBAL_SHADER_UNIFORM_TEXTURE_WIDTH_SHIFT 10\n
+effects/cubemap_filter.glsl \n#define MAX_SAMPLE_COUNT 128\n

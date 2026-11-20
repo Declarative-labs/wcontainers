@@ -305,3 +305,35 @@ fn an_attribute_read_in_part_is_named_a_run_of_read_slots() {
     assert_eq!(placed("columns"), [(1, 0, 1), (3, 1, 1)]);
     assert_eq!(placed("corner"), [(0, 2, 1)]);
 }
+
+const UNPOSITIONED: &str = "#version 450
+layout(location = 0) in vec4 particle;
+layout(location = 0) out vec4 moved;
+void main() { moved = particle * 2.0; }
+";
+const UNPOSITIONED_FRAGMENT: &str = "#version 450
+layout(location = 0) in vec4 moved;
+layout(location = 0) out vec4 colour;
+void main() { colour = moved; }
+";
+
+#[test]
+fn a_vertex_program_without_a_position_gets_one_outside_every_clip_volume() {
+    let mut stages = Nir::from_glsl(&[
+        (Stage::Vertex, UNPOSITIONED),
+        (Stage::Fragment, UNPOSITIONED_FRAGMENT),
+    ])
+    .unwrap();
+    let vertex = &mut stages[0].nir;
+    vertex.to_common_form(Stage::Vertex).unwrap();
+    let module = wcontainers_nir::direct::module(vertex).unwrap();
+    wcontainers_nir::spirv::validate(&module).unwrap();
+    let result = module.entry_points[0].function.result.as_ref().unwrap();
+    let naga::TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
+        panic!("the outputs are a structure");
+    };
+    assert!(members.iter().any(|m| matches!(
+        m.binding,
+        Some(naga::Binding::BuiltIn(naga::BuiltIn::Position { .. }))
+    )));
+}

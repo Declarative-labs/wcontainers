@@ -18,6 +18,8 @@ mod entry;
 #[cfg(mesa)]
 mod glsl;
 #[cfg(mesa)]
+mod godot;
+#[cfg(mesa)]
 mod interface;
 #[cfg(mesa)]
 mod lavapipe;
