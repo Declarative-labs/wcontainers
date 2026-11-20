@@ -432,37 +432,6 @@ fn indices(seed: u64, case: &Case, attempt: u32) -> Vec<u8> {
     list()
 }
 
-/// Index lists drawn for one indexed scene before one that Direct3D draws nothing of is compared
-/// (and fails).
-const SCENE_ATTEMPTS: u32 = 16;
-
-/// The case's seeded indices and Direct3D's result for them (`reference`). An indexed scene whose
-/// result `drew` says is empty (restarts that leave no whole primitive, or primitives the shaders
-/// drop) is drawn again with the seed's next list, since an empty scene compares little; ours is
-/// drawn on each list passed over and must be `alike` Direct3D's empty result there.
-fn scene<T>(
-    seed: u64,
-    case: &Case,
-    mut reference: impl FnMut(&[u8]) -> T,
-    drew: impl Fn(&T) -> bool,
-    mut alike: impl FnMut(&[u8], &T) -> bool,
-) -> Result<(Vec<u8>, T), String> {
-    let mut attempt = 0;
-    loop {
-        let indices = indices(seed, case, attempt);
-        let result = reference(&indices);
-        if drew(&result) || case.indexed.is_none() || attempt + 1 == SCENE_ATTEMPTS {
-            return Ok((indices, result));
-        }
-        if !alike(&indices, &result) {
-            return Err(format!(
-                "index list {attempt}: direct3d drew nothing of it, ours something"
-            ));
-        }
-        attempt += 1;
-    }
-}
-
 /// The counts ours wrote for stream `stream`: primitives written and made.
 fn stream_counts(words: &[u32], stream: usize) -> [u64; 2] {
     let at = STREAM_BUFFERS + 2 * stream;
@@ -481,11 +450,6 @@ fn streamed_equal(reference: &[Vec<u8>], statistics: &[[u64; 2]], made: &Made) -
             .iter()
             .enumerate()
             .all(|(s, counts)| stream_counts(words, s) == *counts)
-}
-
-/// Texels a picture has drawn: those unlike the corner, which no case draws.
-fn drawn_texels(picture: &[u8]) -> usize {
-    picture.chunks(4).filter(|t| *t != &picture[..4]).count()
 }
 
 /// One strip index in this many is a restart, besides the one in the middle.
@@ -1689,8 +1653,8 @@ fn stream_output_matches_direct3d() {
             );
             let so = declaration(case.gs);
             let Ok((indices, (reference, statistics))) = scene(
-                seed,
-                case,
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
                 |indices| direct3d_streamed(&gpu, case, &vertices, indices, (&so, &TWO_BUFFERS), 1),
                 |(_, statistics)| statistics[0][0] != 0,
                 |indices, (reference, statistics)| {
@@ -1804,8 +1768,8 @@ fn stream_output_after_replay_matches_direct3d() {
             );
             let so = declaration(case.gs);
             let Ok((indices, (reference, statistics))) = scene(
-                seed,
-                case,
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
                 |indices| direct3d_streamed(&gpu, case, &vertices, indices, (&so, &TWO_BUFFERS), 1),
                 |(_, statistics)| statistics[0][0] != 0,
                 |indices, (reference, statistics)| {
@@ -1945,8 +1909,8 @@ fn streams_past_the_first_match_direct3d() {
                     case.count, case.first, case.instances
                 );
                 let Ok((indices, (reference, statistics))) = scene(
-                    seed,
-                    case,
+                    case.indexed.is_some(),
+                    |attempt| indices(seed, case, attempt),
                     |indices| {
                         direct3d_streamed(&gpu, case, &vertices, indices, (&so, bound), STREAMS)
                     },
@@ -2057,8 +2021,8 @@ fn geometry_shaders_draw_as_direct3d_does() {
                     .unwrap_or_default()
             );
             let Ok((indices, reference)) = scene(
-                seed,
-                case,
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
                 |indices| direct3d(&gpu, case, &vertices, indices, None),
                 |reference| drawn_texels(reference) != 0,
                 |indices, _| {
@@ -2208,8 +2172,8 @@ fn depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does() {
             // Texels Direct3D clamped to either end: none would leave the clamp unshown.
             let clamped = |t: &[u8]| depths(t).iter().filter(|z| range.contains(z)).count();
             let Ok((indices, reference)) = scene(
-                seed,
-                case,
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
                 |indices| direct3d(&gpu, case, &vertices, indices, Some(range)),
                 |reference| clamped(reference) != 0,
                 |indices, reference| {
@@ -2296,8 +2260,8 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                     .unwrap_or_default()
             );
             let Ok((indices, reference)) = scene(
-                seed,
-                case,
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
                 |indices| direct3d(&gpu, case, &vertices, indices, None),
                 |reference| drawn_texels(reference) != 0,
                 |indices, _| match ours_replayed(&mut backend, case, &vertices, indices, None) {

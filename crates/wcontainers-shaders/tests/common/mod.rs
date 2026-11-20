@@ -45,6 +45,43 @@ pub fn whole_strip_primitive(indices: &[u8], drawn: std::ops::Range<u32>, vertic
     })
 }
 
+/// Index lists drawn for one indexed scene before one that Direct3D draws nothing of is compared
+/// (and fails).
+pub const SCENE_ATTEMPTS: u32 = 16;
+
+/// A seeded scene's indices (`list` gives the seed's lists in order) and Direct3D's result for them
+/// (`reference`). An indexed scene whose result `drew` says is empty (restarts that leave no whole
+/// primitive, degenerate primitives, or primitives the shaders drop) is drawn again with the seed's
+/// next list, since an empty scene compares little; ours is drawn on each list passed over and must
+/// be `alike` Direct3D's empty result there.
+pub fn scene<T>(
+    indexed: bool,
+    list: impl Fn(u32) -> Vec<u8>,
+    mut reference: impl FnMut(&[u8]) -> T,
+    drew: impl Fn(&T) -> bool,
+    mut alike: impl FnMut(&[u8], &T) -> bool,
+) -> Result<(Vec<u8>, T), String> {
+    let mut attempt = 0;
+    loop {
+        let indices = list(attempt);
+        let result = reference(&indices);
+        if drew(&result) || !indexed || attempt + 1 == SCENE_ATTEMPTS {
+            return Ok((indices, result));
+        }
+        if !alike(&indices, &result) {
+            return Err(format!(
+                "index list {attempt}: direct3d drew nothing of it, ours something"
+            ));
+        }
+        attempt += 1;
+    }
+}
+
+/// Texels a picture has drawn: those unlike the corner, which no case draws.
+pub fn drawn_texels(picture: &[u8]) -> usize {
+    picture.chunks(4).filter(|t| *t != &picture[..4]).count()
+}
+
 pub fn bytecode(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
