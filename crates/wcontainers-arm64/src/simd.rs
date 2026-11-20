@@ -1122,7 +1122,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
 }
 
 /// Lanes of a same-width operation and the bytes of its result.
-fn width(shape: Shape) -> u8 {
+pub(crate) fn width(shape: Shape) -> u8 {
     if shape.scalar {
         shape.element
     } else if shape.q {

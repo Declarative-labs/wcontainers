@@ -1,27 +1,19 @@
 //! The meaning of AdvSIMD floating point, on the paths of [`crate::float`].
 
 use crate::Arm64;
-use crate::exact::Operation;
+use crate::exact::{
+    ESTIMATE_FRACTION_BITS, Operation, SQRT_ESTIMATE_BIASES, WORKING_FRACTION_BITS,
+};
 use crate::float::{
     Op, Source, binary_fast, by_hook, convert, from_integer, lanes, low, op, paths, round,
     step_fast, to_integer_fast,
 };
 use crate::instruction::*;
 use crate::meaning::{Emitter, Flag};
-use crate::simd::{Input, map, replace, split_pairs};
+use crate::simd::{Input, map, replace, split_pairs, width};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 
 /// Lanes and bytes of a same-width shape.
-fn width(shape: Shape) -> u8 {
-    if shape.scalar {
-        shape.element
-    } else if shape.q {
-        16
-    } else {
-        8
-    }
-}
-
 /// Copy a v128 local into a fresh one, applying a float op.
 fn applied<E: Emitter<Arm64> + ?Sized>(e: &mut E, x: u32, o: Op, size: u8) -> u32 {
     let y = e.local(ValType::V128);
@@ -472,7 +464,11 @@ fn recip_table<E: Emitter<Arm64> + ?Sized>(
     fraction: u32,
     r: u32,
 ) {
-    let (fraction_bits, exponent_bits): (i64, i64) = if size == 8 { (52, 11) } else { (23, 8) };
+    let (fraction_bits, exponent_bits) = crate::float::parts(size);
+    let (fraction_bits, exponent_bits) = (i64::from(fraction_bits), i64::from(exponent_bits));
+    let bias = (1 << (exponent_bits - 1)) - 1;
+    let w = i64::from(WORKING_FRACTION_BITS);
+    let estimate_bits = i64::from(ESTIMATE_FRACTION_BITS);
     let (f52, ex, scaled, result_exponent, estimate) = (
         e.local(ValType::I64),
         e.local(ValType::I64),
@@ -482,28 +478,28 @@ fn recip_table<E: Emitter<Arm64> + ?Sized>(
     );
     let mut s = e.sink();
     s.local_get(fraction)
-        .i64_const(52 - fraction_bits)
+        .i64_const(w - fraction_bits)
         .i64_shl()
         .local_set(f52);
     s.local_get(exponent).local_set(ex);
     // A denormal: normalise by one or two places.
     s.local_get(exponent).i64_eqz().if_(BlockType::Empty);
     s.local_get(f52)
-        .i64_const(51)
+        .i64_const(w - 1)
         .i64_shr_u()
         .i64_eqz()
         .if_(BlockType::Empty)
         .i64_const(-1)
         .local_set(ex)
         .local_get(f52)
-        .i64_const((1 << 50) - 1)
+        .i64_const((1 << (w - 2)) - 1)
         .i64_and()
         .i64_const(2)
         .i64_shl()
         .local_set(f52)
         .else_()
         .local_get(f52)
-        .i64_const((1 << 51) - 1)
+        .i64_const((1 << (w - 1)) - 1)
         .i64_and()
         .i64_const(1)
         .i64_shl()
@@ -511,20 +507,20 @@ fn recip_table<E: Emitter<Arm64> + ?Sized>(
         .end();
     s.end();
     s.local_get(f52)
-        .i64_const(44)
+        .i64_const(w - estimate_bits)
         .i64_shr_u()
-        .i64_const(256)
+        .i64_const(1 << estimate_bits)
         .i64_or()
         .local_set(scaled);
-    s.i64_const(if size == 8 { 2045 } else { 253 })
+    s.i64_const(2 * bias - 1)
         .local_get(ex)
         .i64_sub()
         .local_set(result_exponent);
     crate::simd::recip_estimate(e, scaled);
     let mut s = e.sink();
-    s.i64_const(0xff)
+    s.i64_const((1 << estimate_bits) - 1)
         .i64_and()
-        .i64_const(44)
+        .i64_const(w - estimate_bits)
         .i64_shl()
         .local_set(estimate);
     // Result exponent 0 or -1: a denormal result.
@@ -532,7 +528,7 @@ fn recip_table<E: Emitter<Arm64> + ?Sized>(
     s.local_get(estimate)
         .i64_const(1)
         .i64_shr_u()
-        .i64_const(1 << 51)
+        .i64_const(1 << (w - 1))
         .i64_or()
         .local_set(estimate);
     s.end();
@@ -543,7 +539,7 @@ fn recip_table<E: Emitter<Arm64> + ?Sized>(
     s.local_get(estimate)
         .i64_const(2)
         .i64_shr_u()
-        .i64_const(1 << 50)
+        .i64_const(1 << (w - 2))
         .i64_or()
         .local_set(estimate)
         .i64_const(0)
@@ -555,7 +551,7 @@ fn recip_table<E: Emitter<Arm64> + ?Sized>(
         .i64_const(fraction_bits)
         .i64_shl()
         .local_get(estimate)
-        .i64_const(52 - fraction_bits)
+        .i64_const(w - fraction_bits)
         .i64_shr_u()
         .i64_or()
         .local_set(r);
@@ -569,7 +565,11 @@ fn recip_sqrt_table<E: Emitter<Arm64> + ?Sized>(
     fraction: u32,
     r: u32,
 ) {
-    let (fraction_bits, exponent_bits): (i64, i64) = if size == 8 { (52, 11) } else { (23, 8) };
+    let (fraction_bits, exponent_bits) = crate::float::parts(size);
+    let (fraction_bits, exponent_bits) = (i64::from(fraction_bits), i64::from(exponent_bits));
+    let bias = (1 << (exponent_bits - 1)) - 1;
+    let w = i64::from(WORKING_FRACTION_BITS);
+    let estimate_bits = i64::from(ESTIMATE_FRACTION_BITS);
     let (f52, ex, scaled, shift) = (
         e.local(ValType::I64),
         e.local(ValType::I64),
@@ -578,7 +578,7 @@ fn recip_sqrt_table<E: Emitter<Arm64> + ?Sized>(
     );
     let mut s = e.sink();
     s.local_get(fraction)
-        .i64_const(52 - fraction_bits)
+        .i64_const(w - fraction_bits)
         .i64_shl()
         .local_set(f52);
     s.local_get(exponent).local_set(ex);
@@ -586,13 +586,13 @@ fn recip_sqrt_table<E: Emitter<Arm64> + ?Sized>(
     s.local_get(exponent).i64_eqz().if_(BlockType::Empty);
     s.local_get(f52)
         .i64_clz()
-        .i64_const(11)
+        .i64_const(i64::from(u64::BITS) - w - 1)
         .i64_sub()
         .local_set(shift);
     s.local_get(f52)
         .local_get(shift)
         .i64_shl()
-        .i64_const((1 << 52) - 1)
+        .i64_const((1 << w) - 1)
         .i64_and()
         .local_set(f52);
     s.local_get(ex)
@@ -604,14 +604,14 @@ fn recip_sqrt_table<E: Emitter<Arm64> + ?Sized>(
     s.end();
     // Even exponent: 01:fraction<51:44>; odd: 001:fraction<51:45>.
     s.local_get(f52)
-        .i64_const(44)
+        .i64_const(w - estimate_bits)
         .i64_shr_u()
-        .i64_const(256)
+        .i64_const(1 << estimate_bits)
         .i64_or()
         .local_get(f52)
-        .i64_const(45)
+        .i64_const(w - estimate_bits + 1)
         .i64_shr_u()
-        .i64_const(128)
+        .i64_const(1 << (estimate_bits - 1))
         .i64_or()
         .local_get(ex)
         .i64_const(1)
@@ -621,11 +621,11 @@ fn recip_sqrt_table<E: Emitter<Arm64> + ?Sized>(
         .local_set(scaled);
     crate::simd::recip_sqrt_estimate(e, scaled);
     let mut s = e.sink();
-    s.i64_const(0xff)
+    s.i64_const((1 << estimate_bits) - 1)
         .i64_and()
-        .i64_const(fraction_bits - 8)
+        .i64_const(fraction_bits - estimate_bits)
         .i64_shl()
-        .i64_const(if size == 8 { 3068 } else { 380 })
+        .i64_const(SQRT_ESTIMATE_BIASES * bias - 1)
         .local_get(ex)
         .i64_sub()
         .i64_const(1)

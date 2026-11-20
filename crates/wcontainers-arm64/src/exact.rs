@@ -956,10 +956,10 @@ pub(crate) fn format_parts<F: Float>() -> (u32, u32) {
 }
 
 /// The fraction bits the estimates work in: a double's.
-const WORKING_FRACTION_BITS: u32 = Double::PRECISION as u32 - 1;
+pub(crate) const WORKING_FRACTION_BITS: u32 = Double::PRECISION as u32 - 1;
 /// The bits below the leading one of the estimate tables' index and result (Arm's `RecipEstimate` and
 /// `RecipSqrtEstimate`).
-const ESTIMATE_FRACTION_BITS: u32 = 8;
+pub(crate) const ESTIMATE_FRACTION_BITS: u32 = 8;
 
 /// The estimate of a finite, normal-range, non-zero number's reciprocal, by Arm's `FPRecipEstimate`.
 fn reciprocal_estimate_bits<F: Float>(raw: u64) -> u64 {
@@ -995,7 +995,7 @@ fn reciprocal_estimate_bits<F: Float>(raw: u64) -> u64 {
 }
 
 /// How many biases Arm's `FPRSqrtEstimate` puts in its result's exponent before halving it.
-const SQRT_ESTIMATE_BIASES: i64 = 3;
+pub(crate) const SQRT_ESTIMATE_BIASES: i64 = 3;
 
 /// The estimate of a positive, finite, non-zero number's reciprocal square root, by Arm's
 /// `FPRSqrtEstimate`.

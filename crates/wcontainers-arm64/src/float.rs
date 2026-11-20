@@ -973,7 +973,7 @@ fn convert_bits<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8, to: 
 }
 
 /// Fraction and exponent bits of a size.
-fn parts(size: u8) -> (u32, u32) {
+pub(crate) fn parts(size: u8) -> (u32, u32) {
     match size {
         HALF => format_parts::<Half>(),
         SINGLE => format_parts::<Single>(),
