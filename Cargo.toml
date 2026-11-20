@@ -4,6 +4,7 @@ members = ["crates/*", "crates/executor/conformance", "crates/kernel-interface/c
 
 [workspace.metadata.reviewable]
 prefix = "wcontainers"
+off = ["comment-grammar"]
 
 [workspace.package]
 version = "0.1.0"
