@@ -9,8 +9,8 @@ GLSL and bgfx's GLSL; candidate B leads on every count (The choice, below). Run 
 invalid modules on piglit went from 126 to 25 (the 25 left are binding arrays the common form does
 not allow and vertex programs without a position, both honest); textures and OpenGL's own vertex
 arrays on the GLSL side of the comparison (piglit: 1310 match on route B, up from 1152, no new
-difference); bgfx's desktop GLSL shaders in the corpus (281 match on route B, 3 differ, explained
-below). dEQP's GLES programs, Godot, Dolphin, the rest of the SPIR-V corpus, the 15.4 rewrites
+difference; 1313 with storage images); bgfx's desktop GLSL shaders in the corpus (301 match on
+route B, 3 differ, explained below). dEQP's GLES programs, Godot, Dolphin, the rest of the SPIR-V corpus, the 15.4 rewrites
 and robustBufferAccess remain (Next).
 
 Done:
@@ -200,13 +200,17 @@ Done:
   `compare::resources` makes them) become an OpenGL texture of the view's target at its own unit
   (`SampledTexture`, `Llvmpipe::sampled_texture`: nearest, clamped to the edge, one level; a depth
   texture compared less or equal with its swizzle `RED` in all four, so llvmpipe's raw comparison
-  is compared); a sampler both stages read gets one set of texels. OpenGL's own attributes
+  is compared); a sampler both stages read gets one set of texels. Storage images the same way
+  (`GlslNameKind::Image`), bound with `glBindImageTexture` at the image unit of the same number
+  and read back with `glGetTexImage` after the work, after the storage blocks (`GlStorage`); the
+  route's storage image output compared word by word by its components' kind. OpenGL's own attributes
   (`gl_MultiTexCoord0..7`, `gl_Color`, `gl_Normal`, `gl_FogCoord`) are fed through OpenGL's own
   arrays (`AttributeSlot`; `glTexCoordPointer` and its kin). Held by `tests/glsl_reference.rs`
   (a compute program reading a 2D, a 3D unsigned, a cube, a 2D shadow and a 2D array signed
-  texture through `textureLod`, `texelFetch` and a comparison: matched). Checked to see
-  differences: with OpenGL's texels shifted by one texel (temporary, on the x86 machine's copy),
-  236 values differed.
+  texture through `textureLod`, `texelFetch` and a comparison, and loading and storing an `r32ui`
+  and an `rgba32f` image: matched). Checked to see differences (temporary changes on the x86
+  machine's copy): with OpenGL's texels shifted by one texel, 236 values differed; with the
+  images not read back, 80.
 - bgfx's desktop GLSL shaders in the corpus (run 8; `tests/corpus/bgfx.rs`): its compiled shaders
   (`examples/runtime/shaders/glsl/*.bin`, shaderc's format 12) read as bgfx's OpenGL renderer
   hands them to the driver (`#version 430` before a source without one); its `bgfx_ndc` uniform is
@@ -311,7 +315,9 @@ Run 8, with bgfx's 325 desktop GLSL shaders beside piglit and the SPIR-V corpus 
 - SPIR-V corpus: unchanged, A 728 match, B 773 match, 0 differ.
 - piglit: route B 1310 match (up from 1152), 17 differ (the same 17, same reasons), 17 not
   compared (subroutine uniforms 9, storage images 3, a state value with no name 2, and 3 drawn
-  programs llvmpipe or the bridge refused), 266 fail by name. Of B's failures, 25 are naga
+  programs llvmpipe or the bridge refused), 266 fail by name. With storage images (the last run,
+  `nir-results-r8e.jsonl`, load 7.8 at the start and 9.0 at the end, 250 s): 1313 match, 14 not
+  compared, the rest unchanged. Of B's failures, 25 are naga
   validation (21 binding arrays and 1 storage binding array the common form does not allow, 3
   vertex programs without a position); every other one is a named "not taken: ..." (`load_ubo` 94:
   64-bit, bindless and uniform block arrays indexed at run time; Mesa slots of other built-ins 17;
@@ -320,7 +326,9 @@ Run 8, with bgfx's 325 desktop GLSL shaders beside piglit and the SPIR-V corpus 
 - bgfx: 4 files refused by Mesa's compiler (3 compute programs over 256 invocations a group, 1
   needs `GL_ARB_shader_viewport_layer_array`). Route B 281 match, 3 differ, 23 not compared
   (storage images on the GLSL side 20, a storage format the harness does not make 3), 14 fail by
-  name (`ubitfield_extract` 6, a storage image of another format 5, `isign` 3). Route A 9 match.
+  name (`ubitfield_extract` 6, a storage image of another format 5, `isign` 3). Route A 9 match
+  (267 of its failures are Zink's compiler aborting on GLSL's lowered stage values). With storage
+  images (r8e): route B 301 match, 3 not compared (`rgba16f` storage, not made by the harness).
 - bgfx's 3 differences: `fs_hdr_bright` reads seeded texels as RGBE (`exp2(w * 255 - 128)`, with
   w in [-2, 2)), which overflows to infinity; llvmpipe gives 0 where the route gives NaN, and
   GLSL leaves operations on infinities to the implementation (the class of piglit's NaN through
@@ -348,10 +356,10 @@ Next, in this order:
    refused, as piglit's are. Pin it in `corpus/sources` with sparse paths (`fetch` takes them).
    Then Godot's Compatibility renderer (its `.glsl` files with Godot's section and variant
    markers) and Dolphin (it makes its shaders at run time, and is GPL: test data only).
-2. Storage images on the GLSL side (23 programs: 20 bgfx, 3 piglit): an OpenGL texture of the
-   route's format bound with `glBindImageTexture` at the unit `GlslNameKind::Image` names, read
-   back after and compared as the SPIR-V side does. Subroutine uniforms (9:
-   `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names).
+2. Subroutine uniforms (9: `glUniformSubroutinesuiv` with a compatible index, the route's word
+   from the bridge's names); `rgba16f` storage images in the harness (3 bgfx); route B's named
+   gaps that real programs hit (`ubitfield_extract`, `ibitfield_extract`, `bitfield_insert`,
+   `isign`, `frexp_exp`, `pack_*_split`: plain ALU operations naga has).
 3. The rest of the SPIR-V corpus (Godot Forward+; the shaders of
    `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and `dEQP-VK.robustness.buffer_access.*`),
    each pinned in `corpus/sources`. Then `corpus/choose` again over all of it for the final choice.
