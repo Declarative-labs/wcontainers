@@ -102,6 +102,9 @@ now checks constants a `movn` builds; the speed test's children no longer inheri
 +20.09% [+19.89 .. +20.32], a pass by its decision rule with about one point of headroom; by alternating pairs the
 build sits on the line (+19.3% to +21.3%) and one of four seeded layouts is over it (+22.8%), so the pass rests on this
 build's layout (below, "N4 run 25"). N4 is done by its bar's own words, for its independent check.
+- N4 passed its independent check at the line (the brief, 2026-11-20 12:10).
+- NH1 (can the processor keep the count: the experiment only) is done, for its independent check (below, "NH1
+  run 1"; the plan's section 4, "Can the processor keep the count?").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -130,6 +133,44 @@ build's layout (below, "N4 run 25"). N4 is done by its bar's own words, for its 
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## NH1 run 1 (2026-11-20): the host branch tally and the every-branch ratio
+
+Start (11:10, Mac load 7.2): origin/main and origin/phase-1-literals had nothing new. Files in scratch native/nh1
+(logs/, bins/, analyse.py, g4-branches.sh, section.md). Nothing of a fast path is built.
+
+- Built for the experiment (commits 06069bb5, 40cb6059, 7361a452): the function runner (tests/runner/function.rs)
+  can link exits and jump tables with the words the inside's loader writes, make last targets at the first miss as
+  the inside does, and records every landing with the guest instruction whose span holds it; the stepping test's
+  functions moved to tests/runner/functions.rs, shared by `interrupts` and the new `host_branches`, with one new
+  function (calls whose target changes every turn, and a leaf called from two places, so both last targets miss);
+  the inside keeps the count at the last stop and the native kernel program's `Ended` carries it (`events`), which
+  the speed test prints per workload.
+- The tally (Mac, Hypervisor.framework, `host_branches`, seed 0x14057b7ef767814f, 1 starting state, 29 cases x 36
+  variants, 0 with differing guest paths, 0.7 s, load 3.8 to 5.6): the totals, every host branch with no guest
+  branch behind it matched to the place the emitter writes it, its path and what changes it, and the answer, are in
+  the plan's section 4. In short: a count any output can reach from (host branches, position) alone needs
+  branches removed (piece exits, conditional exits' links and the loop's aligned-base copies change on hot paths
+  with the look-ahead and the data); a position converted by re-running the stretch keeps every branch, if the
+  counting translation is made to run the same branches as the one without the count (measured: `nest`'s settling
+  exits, 4 of 32, one more branch with the count; by reading: a known jump's table refused while the count is
+  ahead, and the look-ahead's halving for a too-large translation) and link state and last-target misses carry
+  corrections on their own ways (one word per exit; one add per miss and per conditional exit linked through its
+  `b`).
+- The ratio (rented Graviton4, bare metal, `perf stat -e r21:u,r08:u`, three runs each with identical counts, load
+  32 to 35 on 96 cores, 19:31 UTC; E's events from the speed test's native run on the Mac, look-ahead 256, load 4.9
+  to 6.4): every branch against E's events fib 1.461, sieve 1.255, hash 1.000, sort 1.089, interpret 1.027,
+  matrix 1.000, walk 1.000, search 1.000; geometric mean 1.094 (the counts are in the plan). The programs are the
+  speed test's own builds (sha1 in scratch native/nh1/bins/sha.txt), copied to that machine for the run and removed
+  from the checkout after it.
+- Not measured: the cost of counting every guest branch in software (the report's next step, round 3's script in
+  alternating pairs); whether `brk` counts in 0x21 on the G4 (the tally takes it as not, by Arm's definition).
+- Suites run for the change (Mac, -j 4): `host_branches`, `interrupts` (13,321 stops over 15 functions, 29 cases, 3
+  look-aheads, 0 failed, seed 0x14057b7ef767814f, load 3.8 to 5.2) and `native` (32,562 cases, 0 failing, seed
+  0x2545f4914f6cdd1d) pass; the speed test's native runs of the eight workloads ran with the new `Ended` (one pair
+  each, not a bar). Clippy with warnings denied for the monitor crate (all targets) on the Mac and for the inside
+  (all targets) on the rented ARM64 machine, format checked there; the literal check exits 0.
+- Left for the next build run (the brief, 12:10): a counter and a warning for the look-ahead's halving.
 
 ## N4 run 25 (2026-11-20): the next check's six findings; the bar with clean child environments
 
@@ -2750,6 +2791,13 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
   `WCONTAINERS_INTERRUPTS_SEED`, `WCONTAINERS_INTERRUPTS_STARTS` starting states per case, default 1; about
   a second per starting state) and `--test probe` (knobs `WCONTAINERS_PROBE_WORDS`, default 4, and `WCONTAINERS_PROBE_SEED`; about
   7 minutes);
+- NH1's host branch tally: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test host_branches` (knobs
+  `WCONTAINERS_BRANCHES_SEED`, `WCONTAINERS_BRANCHES_STARTS` starting states per case, default 1; under a second per
+  starting state); its summaries: `python3 scratch/native/nh1/analyse.py <log>`. Each workload's E events: the speed
+  test with `WCONTAINERS_SPEED_PAIRS=1` prints "the count's events" per workload; the every-branch side on the rented
+  ARM64 machine: copy the built programs (target/tmp/<workload>) and scratch native/nh1/g4-branches.sh into an
+  untracked folder of the checkout, `arm-run <checkout> --name native -- 'bash <folder>/g4-branches.sh <folder>'`,
+  and remove the folder;
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
 - N3's kernel and loop inside the machine against the same kernel, loop and policy on the WebAssembly CPU side, hello,
@@ -3125,6 +3173,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ./mirror` without the framework; the KVM runs as in kvm-laptop.out from ~/native-plan/vm on the laptop.
 
 ## Departures from the plan
+
+- NH1 (2026-11-20): the tally's runner maps no entry slots, so a jump into a slot is counted as the slot's one `br`
+  when its target has a piece and as the empty slot's `udf` when not (a slot's words are fixed by construction:
+  three moves and a `br`). The every-branch counts come from the programs run plainly on Linux on the G4, set beside
+  E's events from the Mac's native run of the same programs: a guest-level count under KVM with our translation does
+  not exist yet. The native kernel program's `Ended` gained `events` (the count at the last stop), a test program's
+  protocol, to read E's events at a program's end.
 
 - N4 run 25: plan section 8's speed method names real programs of the kernel's layer 2 (busybox, python, git) beside
   the benchmark set. They are not measured. A plain run of them needs an ARM64 Linux kernel on the host, and on the
