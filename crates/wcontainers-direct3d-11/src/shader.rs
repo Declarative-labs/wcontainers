@@ -922,17 +922,6 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
         {
             not_implemented("shaders that read helper constants the front does not write")
         }
-        // A program of this kind reset the display driver on the RTX 3080 (Wine's
-        // test_atomic_instructions); refused until its loop is shown to end.
-        Ok(c)
-            if c.reflection
-                .slow_paths
-                .contains(&wcontainers_gpu::SlowPath::AtomicExchangeLoop) =>
-        {
-            not_implemented(
-                "an atomic minimum or maximum of the other signedness (AtomicExchangeLoop)",
-            )
-        }
         Ok(c) => Ok(c),
         Err(e) => refusal(e),
     }
