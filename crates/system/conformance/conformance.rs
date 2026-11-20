@@ -3,7 +3,7 @@
 use core::mem::size_of;
 
 use wcontainers_kernel::TaskId;
-use wcontainers_system::{Clock, RandomSource, TaskIdSource};
+use wcontainers_system::{Clocks, RandomSource, TaskIdSource};
 
 /// Checks that an id handed out and not freed is not handed out next.
 pub fn allocate_task_ids_apart<S: TaskIdSource>(source: S) {
@@ -21,9 +21,9 @@ pub fn free_task_id_alone<S: TaskIdSource>(source: S) {
 }
 
 /// Checks that the monotonic clock never goes backwards between two reads.
-pub fn read_monotonic_clock_forward<C: Clock>(clock: C) {
-    let earlier = clock.monotonic_nanoseconds();
-    assert!(clock.monotonic_nanoseconds() >= earlier);
+pub fn read_monotonic_clock_forward<C: Clocks>(clocks: C) {
+    let earlier = clocks.monotonic_nanoseconds();
+    assert!(clocks.monotonic_nanoseconds() >= earlier);
 }
 
 /// Checks that two fills of random bytes differ.

@@ -16,7 +16,7 @@ pub trait System:
     ProcessTracer
     + TaskIdSource
     + StreamPeer
-    + Clock
+    + Clocks
     + RandomSource
     + WarningLog
     + FileServer
@@ -122,7 +122,7 @@ pub trait StreamPeer {
 }
 
 /// The monotonic clock and the wall clock.
-pub trait Clock {
+pub trait Clocks {
     fn monotonic_nanoseconds(&self) -> u64;
     fn realtime_nanoseconds(&self) -> u64;
 }
