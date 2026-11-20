@@ -18,17 +18,15 @@ use crate::{ConvertError, Converted};
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorWrites,
     CopyBufferTexture, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, Features, FillMode,
-    Format, FrontFace, GpuError, IndexBinding, MAX_BINDING_SETS, MAX_COLOR_TARGETS, Object, Origin,
-    Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, RingKind, ShaderModule,
-    ShaderStage, SlowPath, StageExtras, StageSet, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexLayoutDesc, ViewDimension,
-    Viewport, WriteMode,
+    Format, FrontFace, GpuError, IndexBinding, IndexFormat, MAX_BINDING_SETS, MAX_COLOR_TARGETS,
+    Object, Origin, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, RingKind,
+    ShaderModule, ShaderStage, SlowPath, StageExtras, StageSet, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexLayoutDesc,
+    ViewDimension, Viewport, WriteMode,
 };
 
 /// A strip with adjacency, which the capture cannot list.
 const ADJACENT_STRIP: &str = "GeometryReplayAdjacentStrip";
-/// An indexed strip: its restart indices make the captured primitives' count known on the GPU alone.
-const INDEXED_STRIP: &str = "GeometryReplayIndexedStrip";
 /// A record wider than one capture target holds.
 const RECORD_COMPONENTS: &str = "GeometryReplayComponents";
 /// Stream output from a geometry shader writing streams past the first, which the replay leaves out.
@@ -271,9 +269,30 @@ impl<B: Backend> GeometryReplay<B> {
         if n != self.input_vertices {
             return Err(StageError::TopologyMismatch);
         }
-        if strip && base_vertex.is_some() {
-            return Err(StageError::Unsupported(INDEXED_STRIP));
-        }
+        // An indexed strip, whose restart indices end strips, is listed on the host: its indices
+        // read back and each strip's primitives listed in Direct3D's order, then captured as a list.
+        let listed_strip = match (&draw.index, strip) {
+            (Some(index), true) => Some(listed_indices(backend, index, (first, count), n)?),
+            _ => None,
+        };
+        let listed_ring;
+        let mut index = draw.index;
+        let (first, count, strip, captured_as) = match &listed_strip {
+            Some(list) => {
+                let bytes = words_as_bytes(list);
+                let mut offset = [0u64];
+                listed_ring =
+                    backend.write_buffer_ring(RingKind::Indices, &[&bytes], WORD, &mut offset)?;
+                index = Some(IndexBinding {
+                    buffer: &listed_ring,
+                    offset: offset[0],
+                    format: IndexFormat::U32,
+                });
+                let count = u32::try_from(list.len()).map_err(|_| GpuError::OutOfMemory)?;
+                (0, count, false, list_topology(n))
+            }
+            None => (first, count, strip, captured_as),
+        };
         let primitives = match strip {
             false => count / n,
             true => (count + 1).saturating_sub(n),
@@ -322,7 +341,7 @@ impl<B: Backend> GeometryReplay<B> {
                 vertex_layout: draw.vertex_layout,
                 bindings: draw.vertex_sets,
                 vertex_buffers: draw.vertex_buffers,
-                index: draw.index,
+                index,
                 topology: captured_as,
                 restart: false,
                 viewports: &[CAPTURE_VIEWPORT],
@@ -646,6 +665,69 @@ fn stream_out<B: Backend>(
         WriteMode::Ordered,
     );
     Ok(())
+}
+
+/// The places `first` and `count` of `index`, read back, as an indexed list of the primitives of
+/// `vertices` each the strip makes, in the order the stage helper's strip program lists them
+/// (`strips.wgsl`): a restart index ends a strip, and odd triangles take their last two vertices
+/// swapped. The read covers whole words, as buffer copies do.
+fn listed_indices<B: Backend>(
+    backend: &mut B,
+    index: &IndexBinding<'_, B>,
+    (first, count): (u32, u32),
+    vertices: u32,
+) -> Result<Vec<u32>, StageError> {
+    let (size, restart) = match index.format {
+        IndexFormat::U8 => (size_of::<u8>() as u64, u32::from(u8::MAX)),
+        IndexFormat::U16 => (size_of::<u16>() as u64, u32::from(u16::MAX)),
+        IndexFormat::U32 => (size_of::<u32>() as u64, u32::MAX),
+    };
+    let start = index.offset + u64::from(first) * size;
+    let word = u64::from(WORD);
+    let from = start / word * word;
+    let end = (start + u64::from(count) * size).div_ceil(word) * word;
+    let mut bytes =
+        alloc::vec![0u8; usize::try_from(end - from).map_err(|_| GpuError::OutOfMemory)?];
+    backend.read_back_now(
+        &ReadSource::Buffer {
+            buffer: index.buffer,
+            offset: from,
+            size: end - from,
+        },
+        &mut bytes,
+    )?;
+    let skip = (start - from) as usize;
+    let indices: Vec<u32> = bytes[skip..]
+        .chunks_exact(size as usize)
+        .take(count as usize)
+        .map(|c| c.iter().rev().fold(0, |v, &b| v << u8::BITS | u32::from(b)))
+        .collect();
+    Ok(listed_strip(&indices, restart, vertices as usize))
+}
+
+/// The primitives of `vertices` each that a strip of `indices` makes, as an indexed list (see
+/// [`listed_indices`]).
+fn listed_strip(indices: &[u32], restart: u32, vertices: usize) -> Vec<u32> {
+    let mut list = Vec::new();
+    let mut start = 0;
+    for (i, &v) in indices.iter().enumerate() {
+        if v == restart {
+            start = i + 1;
+            continue;
+        }
+        let Some(primitive) = indices.get(i..i + vertices) else {
+            break;
+        };
+        if primitive.contains(&restart) {
+            continue;
+        }
+        let odd = vertices == TRIANGLE_VERTICES as usize && (i - start) % 2 != 0;
+        list.extend((0..vertices).map(|k| match odd && k != 0 {
+            true => primitive[vertices - k],
+            false => primitive[k],
+        }));
+    }
+    list
 }
 
 fn words_of(bytes: &[u8]) -> Vec<u32> {
