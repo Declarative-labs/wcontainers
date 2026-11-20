@@ -720,7 +720,18 @@ unsafe extern "C" fn set_constant_buffer<B: Backend>(
     let Some(stage) = context::stage(shader) else {
         return;
     };
-    let slot = &mut context.stages.get_mut(stage).constants[index as usize];
+    let Some(slot) = context
+        .stages
+        .get_mut(stage)
+        .constants
+        .get_mut(index as usize)
+    else {
+        // Unbinding a slot past those the screen reports leaves nothing to drop.
+        if buffer.is_null() {
+            return;
+        }
+        refuse("a uniform buffer past those the screen reports");
+    };
     let mut held = std::mem::replace(&mut slot.resource, std::ptr::null_mut());
     slot.bytes.clear();
     if !buffer.is_null() {
