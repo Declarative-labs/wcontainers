@@ -8,10 +8,46 @@ which reported the milestone complete; the independent check found it was not, r
 front's own and reported the milestone complete again, round 2, run 4 (2026-11-19) worked
 the independent check's findings on run 3 (Gap list), and round 2, run 5 (2026-11-19) did what
 was left of this front's own and reported the milestone complete for the independent check;
-the check found it was not, and round 2, run 6 (2026-11-19) worked its findings. The milestone
-is not complete (Gap list).
+the check found it was not, and round 2, run 6 (2026-11-19) worked its findings. Round 2, run 7
+(2026-11-19) ran Wine's dxgi file through our library for the first time and reported the
+milestone complete for the independent check, as the round's task asks: the bar's own words are
+still not met, and every item that keeps them from being met is in the Gap list with its cause
+and the track whose work it is.
 
 ## Where things stand
+
+G4 round 2, run 7 (2026-11-19, about 16:10 to 18:00 Pacific). Nothing new from the other tracks
+unblocks a gap, so the bar is where run 6 left it; this front's own items left were done or
+measured, and the milestone is reported complete for the independent check (header).
+- Merged origin/phase-2-graphics-shaders, -direct3d-12 and -webgpu (no conflict; the interface's
+  two new changes, the variant key's register ranges and the float clear's reason, needed nothing
+  here). The others had nothing new. None of them closes a gap: `StageIndexedStrip`,
+  `GeometryStreams`, `GeometryAsReplay`, the `B8G8R8X8_UNORM` vertex format and the two swap chain
+  fixes are not on any branch yet.
+- Wine's dxgi file through our dxgi.dll, for the first time (the check on run 5 asked): 4 of the
+  17 tests without a Direct3D 12 part pass, 1 at the first try; the other 13 by cause in the Gap
+  list (most are absences: one adapter, no WARP, no `IDXGIAdapter3`; three crash on a null out
+  pointer through the windows crate's form of a method returning a value). Fixed on the way: each
+  adapter enumeration (`EnumAdapters`, `EnumAdapters1`, `EnumAdapterByLuid`,
+  `EnumAdapterByGpuPreference`) gives a new adapter object whose parent is the enumerating factory,
+  `EnumAdapterByLuid` with a null out pointer answers `DXGI_ERROR_INVALID_CALL`,
+  `CheckFeatureSupport` of another feature or size answers `DXGI_ERROR_INVALID_CALL` (was
+  `E_INVALIDARG`), `FindClosestMatchingMode` refuses an unknown format without a device and only
+  one of width and height zero (Microsoft's page), and DXGI 1.0's factory (Direct3D 10's devices'
+  parent) now refuses `IDXGIFactory1` only, as Microsoft's page on `CreateDXGIFactory` says, where
+  it refused every later factory interface. Giving `CreateDXGIFactory`'s own factory the same 1.0
+  form passed test_create_factory but made chocolate-doom, a program of the bar, draw no frame the
+  rig counts and crash at exit (logs/r7f-programs.log, r7g-doom.log), so it was taken back out
+  (r7h-doom.log passes again); the cause is not found (Gap list).
+- Literals: 833 baseline lines to 812 (Literals). The runtime's library and entry point names
+  are named once, in the front's new `runtime` module, since the example `own_handled` cannot
+  link the library crate (its exports clash with d3d11.lib's).
+- Measured on the current tree (Measurements): the release modules are 13,899,776 bytes (WebGPU)
+  and 9,455,616 bytes (WebGL 2); building ahead is unchanged (Godot 3D: 61 recorded combinations
+  built at start, all 61 drawn; 124 built ahead at shaders' arrival, none drawn; 26 at their
+  first draw).
+- The whole bar at 9e0960d9 (logs/r7f-*), then the library, the programs and the dxgi file again
+  at 4658a6e1 (logs/r7i-*): see Measurements.
 
 G4 round 2, run 6 (2026-11-19, about 14:15 to 16:00 Pacific). Worked the independent check's
 findings on run 5. The milestone is not complete: Wine's tests still fail outside the absent
@@ -859,6 +895,13 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11, round 2 run 7 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
+  rigfix/wine.sh, code at 9e0960d9): 144 pass of 166 (logs/r7f-wine.log, 156.6 s of tests), the
+  same 22 failing as at run 6. d3d10core: 109 of 111 (logs/r7f-wine10.log, 94.6 s), the same 2.
+- dxgi (not on G4's bar), round 2 run 7, the 17 tests without a Direct3D 12 part through our
+  dxgi.dll (scratch run-dxgi.sh): 1 at 9e0960d9's parent (logs/r7c-dxgi.log), 4 at 9e0960d9
+  (r7e-dxgi.log), 3 at 4658a6e1 (r7i-dxgi.log; test_create_factory again failing, Gap list);
+  the rest in the Gap list.
 - d3d11, round 2 run 6 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
   rigfix/wine.sh, code at cab5afb4): 144 pass of 166 (logs/r6g-wine.log, 158.3 s of tests), the
   same 22 failing; test_atomic_instructions passes (90 checks) and is no longer quarantined.
@@ -980,7 +1023,10 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
 
 The gap list: its own section below ("Gap list").
 
-## Gap list (the pass bar's written list, G4 round 2 run 6)
+## Gap list (the pass bar's written list, G4 round 2 run 7)
+
+Run 7 changed nothing below but the dxgi file's paragraph (now run) and the Wine counts (the same
+22 and 2 failing tests at r7f). No other track's branch closes a gap yet.
 
 The independent check on run 5 ruled that the bar allows a gap only where a named absent
 feature stands behind it, whoever's work would fix the rest: so every "Failing" item below,
@@ -1038,13 +1084,47 @@ Wine's d3d10core file (2 failing of 111 at r6g, logs/r6g-wine10.log, as at r5e a
 test_desktop_window (the infrastructure crate's, as above). test_layered_rendering and
 test_clip_distance pass since this run.
 
-Wine's dxgi file: not run through this library. The rig has real Direct3D's verdicts for it
-(tools/graphics-rig/wine-baseline/dxgi-hardware.txt), but six of the eight display driver resets of
-2026-11-17 were dxgi_test.exe hanging the GPU through Direct3D 12 (docs/status-graphics-rig.md), and
-the file runs some tests on Direct3D 12 too, which this library does not serve. The check on
-run 5 pointed out that the rig runs chosen tests (dxgi:test_a/test_b), so the tests without a
-Direct3D 12 part can be run through our dxgi.dll: not done in run 6 (What comes next; Wine's
-dxgi.c is not yet in scratch to read which tests those are).
+Wine's dxgi file through our dxgi.dll (not on G4's bar, which names Wine's Direct3D 11 tests; run
+since run 7 because the check on run 5 asked; scratch run-dxgi.sh, Wine's dxgi.c in scratch
+winesrc/). The file takes its devices from d3d10_1.dll's `D3D10CreateDevice1`, its one import of
+that library, so a test-only forwarder of that one export to the library sits beside it
+(C:\wc\out\phase-2-graphics-direct3d-11\d3d10_1fwd, made by hand with link.exe; the system's
+d3d10_1.dll makes its devices through d3d11.dll's `D3D11CreateDeviceAndSwapChain`, which our entry
+point passes on to the system's for a system caller). Only the 17 tests without a Direct3D 12 part
+run. The six others the rig runs (test_swapchain_resize, test_swapchain_formats,
+test_swapchain_present_count, test_frame_latency_event, test_zero_size, test_colour_space_support)
+run a part on the system's Direct3D 12 with our adapter, the part whose tests hung the GPU on
+2026-11-17; an empty d3d12.dll beside the test to skip that part also takes away wgpu's Direct3D
+12 and so our back end (logs/r7b-dxgi.log: no device made). Passing: test_create_factory (at
+9e0960d9 only; below), test_private_data, test_object_wrapping, test_factory_check_feature_support.
+The others, by cause, all this library's DXGI shell unless named:
+- Absent, a second adapter (this library offers one adapter; real DXGI lists the Microsoft Basic
+  Render Driver second) and `IDXGIAdapter3` (video memory budgets, which no browser API reports;
+  `QueryInterface` answers `E_NOINTERFACE`): test_adapter_luid (65 checks of real DXGI's 80),
+  test_output_desc (38 of 45), test_query_video_memory_info (21 of 28),
+  test_video_memory_budget_notification (21 of 26), each failing no check.
+- Absent, WARP (`EnumWarpAdapter` answers `E_NOTIMPL`, warned): test_enum_warp_adapter, which
+  then crashes using the null adapter.
+- Not served: `IDXGIDevice::CreateSurface` (test_create_surface and test_parents, each crashing on
+  the null surface after `E_NOTIMPL`) and `IDXGIResource1::CreateSubresourceSurface`
+  (test_subresource_surface, 48 checks).
+- Not served: `CheckInterfaceSupport` answers `DXGI_ERROR_UNSUPPORTED` for `IDXGIDevice` and
+  `ID3D10Device`, having no user-mode driver version to give (test_check_interface_support, 6
+  checks).
+- Crashes on a null out pointer: the windows crate's form of a method that returns a value
+  (`GetDesc`, `EnumOutputs`, `GetMaximumFrameLatency`) writes through the pointer without checking
+  it, where DXGI answers `E_INVALIDARG` or `DXGI_ERROR_INVALID_CALL`: test_adapter_desc,
+  test_output, test_maximum_frame_latency (each crashes at the call with a null pointer, read from
+  the logs' last check and the source). A fix replaces those table entries with ones that check
+  first, as `restrict` does for DXGI 1.0's factory.
+- Fewer display modes (the infrastructure crate's `OutputDesc`, the Direct3D 12 track's):
+  test_find_closest_matching_mode runs 67 checks of real DXGI's 2055 and fails none.
+- test_create_factory (3 checks at 4658a6e1): `CreateDXGIFactory`'s factory answers
+  `IDXGIFactory1`, where Microsoft's page says DXGI 1.0's does not. Giving it the 1.0 form (the
+  table copy `restrict` makes) passed the test (r7e) but chocolate-doom, which takes its factory
+  from `CreateDXGIFactory`, then drew no frame the rig counts and crashed at exit (r7f, r7g), so
+  it was taken back out. Not proven why: the rig's census patches factory tables, and a copy of
+  the table may be what it misses.
 
 Differences from the RTX 3080 that Wine's verdicts do not show:
 - d3d11 test_clear_buffer_unordered_access_view passes through ours where real Direct3D fails
@@ -1167,15 +1247,17 @@ Refused where real Direct3D draws, found by the independent check:
 
 ## What comes next
 
+After G4 round 2 run 7: the independent check on the front as it stands. Then, in order:
+- Wine's dxgi file: the null-out-pointer crashes (check the pointer before the windows crate's
+  form writes it), `CreateSurface` and `CreateSubresourceSurface`, and why `CreateDXGIFactory`'s
+  1.0 form stops chocolate-doom under the rig (run it without the rig's census first); rerun with
+  scratch `run-dxgi.sh <label>`.
 After G4 round 2 run 6, in order:
 - Merge the other tracks; when the shaders track's stage helper takes indexed strips
   (`StageIndexedStrip`), un-ignore the indexed alpha-antialiased strip test; when it has
   `GeometryStreams` and `GeometryAsReplay`, rerun test_so_statistics_query and take WebGL 2 to
   10_0 (below); when the interface has the `B8G8R8X8_UNORM` vertex format and the
   infrastructure crate its two swap chain fixes, rerun both Wine files.
-- Wine's dxgi file through our dxgi.dll: copy Wine's dxgi.c into scratch winesrc, list the tests
-  without a Direct3D 12 part, run them as dxgi:test_a/test_b (never the quarantined
-  test_swapchain_backbuffer_index) and compare with wine-baseline/dxgi-hardware.txt.
 - Aliased lines into multisampled targets: a route drawing each line as the whole pixels the
   diamond rule picks (an interface and stage helper question; Gap list), then un-ignore its test.
 - The WebGL 2 build's 10_0: geometry shaders once the shaders crate's `GeometryAsReplay` form
@@ -1211,6 +1293,11 @@ Older items still open:
 
 ## How to run
 
+- Wine's dxgi file through our dxgi.dll (round 2 run 7): scratch `run-dxgi.sh <label>
+  [test_a/test_b]` builds the library and runs the 17 tests without a Direct3D 12 part (the
+  default) with our dxgi.dll, d3d11.dll and the library beside them and the test-only d3d10_1.dll
+  forwarder from C:\wc\out\phase-2-graphics-direct3d-11\d3d10_1fwd (remake it with link.exe from
+  its d3d10_1.def there if missing); logs/<label>-dxgi.log and <label>-dxgi-logs/.
 - Wine's tests (G4 run 13, until the rig's runner is fixed): scratch `rigfix/wine.sh --dll
   'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' d3d11[:test_a/test_b]` copies the
   rig's wine-run.ps1, fixed in one line, to C:\wc\out\phase-2-graphics-direct3d-11\rigfix and
@@ -1533,6 +1620,15 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
 
 ## Departures from the plan
 
+- Round 2 run 7: the names of Windows' Direct3D and DXGI runtime libraries and entry points live
+  in the front crate (`wcontainers_direct3d_11::runtime`), not in the library that serves them:
+  the example own_handled, which must name them, cannot link the library crate (its exported
+  entry points clash with d3d11.lib's), and a fact is defined once.
+- Round 2 run 7: Wine's dxgi file runs with a test-only d3d10_1.dll forwarding its one import
+  (`D3D10CreateDevice1`) to the library, made by hand on the desktop, not a forwarder the build
+  makes: d3d10_1.dll also exports the effects framework and reflection, which this library does
+  not serve, so a shipped forwarder would break programs importing those (as for d3d10.dll, run
+  21 below).
 - Round 2 run 6: the library reads `WEBGPU_OFF` (WebGPU features by their kebab-case names,
   taken as missing), beside the existing `WEBGL_OFF`, so that the routes browsers without a
   feature take are tested natively against real Direct3D (the listed case without
@@ -1869,6 +1965,31 @@ None in G4 runs 3 to 12.
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- Round 2 run 7 (desktop, RTX 3080, i9-9900K; through the queue, not alone, other tracks' jobs
+  sharing the machine; 16:57 to 17:28 and 17:29 to 17:50 Pacific). At 9e0960d9 (logs/r7f-*):
+  literal check exit 0; front 54 (plus 5 unit and 1 cache); the library suite did not build (the
+  example own_handled then linked the library crate; fixed at 4658a6e1); Wine's d3d11 file 144
+  of 166 (156.6 s) and d3d10core 109 of 111 (94.6 s), the same failing tests as at run 6; every
+  scene through the library 135 pass, 0 fail, 4 absent; the WebGL 2 build's scenes 2 pass, 0
+  fail, 137 absent; programs as at run 6 but chocolate-doom, which crashed (`CreateDXGIFactory`'s
+  1.0 form, taken back out). At 4658a6e1 (logs/r7i-*): literal check exit 0, lint of both builds
+  clean with warnings denied, front 54 + 5 + 1, library com 15 and programs 37 with 2 ignored
+  (Known failures); the 13 real programs: the three of the pass bar (godot-platformer-3d-d3d11,
+  chocolate-doom, atg-simplelightingpc) and 8 others match real Direct3D on every compared frame,
+  atg-simplecomputepc and atg-simplemsaa_pc differ as before; bgfx's 6 as before (5 pass or run to
+  the end, bgfx-26-occlusion's overlay); Wine's dxgi file 3 of 17 (r7i-dxgi.log, Gap list).
+- Same run, module size (section 10), release builds on the desktop at 17:19 and 17:21 from
+  9e0960d9's tree (logs/r7f-sizes.log): wcontainers_directx.dll is 13,899,776 bytes on WebGPU and
+  9,455,616 bytes on WebGL 2 (ANGLE not counted); the forwarders 1,024 bytes each. The commit
+  after it moves constants and takes code out, so the size is expected to be no larger (not
+  measured).
+- Same run, building-ahead hits (scratch run-warm.sh, the five programs run twice from one cache
+  directory, 17:22 to 17:27; logs/r7f-warm.log): Godot 3D on its warm start built its 61 recorded
+  combinations at start and drew all 61; 124 built ahead at shaders' arrival, none drawn; 26
+  built at their first draw. Godot 2D built 3 at start, drew 3, built 10 at first draw.
+  chocolate-doom crashed in both runs there (the 1.0 factory form above); its counts are not
+  from this run.
 
 - Round 2 run 5 (desktop, RTX 3080, i9-9900K; through the queue, not alone, other tracks' jobs
   sharing the machine, the Direct3D 12 and shaders tracks' among them; 12:08 to 13:00 Pacific).
@@ -2458,6 +2579,14 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Literals
 
+- Round 2 run 7: wcontainers-direct3d-11 567, wcontainers-directx 245 (812, from 833): the system
+  libraries and entry points the library passes other callers on to (dxgi.dll, d3d11.dll,
+  d3d10.dll, d3d10_1.dll, d3d10core.dll and their creation entry points) are named once in the
+  front's `runtime` module and used by the library, its tests and the example (20 lines), and one
+  stale line of the removed `AtomicExchangeLoop` refusal went. No line added, no mark. The check
+  exits 0 at 9e0960d9 (logs/r7f-literals.log) and at 4658a6e1 (r7i-literals.log). Left as before:
+  the export names in build.rs (a build script cannot import the crate it builds) and the
+  stream output target count (Asked).
 - Round 2 run 6: wcontainers-direct3d-11 568, wcontainers-directx 265 (833, from 836): the
   library's `WEBGL_OFF` is one constant beside `WEBGPU_OFF` (`com::FEATURES_OFF`), the two
   `CheckCounterInfo` lines went with their warnings, and the library's new warning takes the
