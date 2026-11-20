@@ -202,6 +202,40 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
+    /// Search's loops: x2 rounds, each over x1 bytes from x0 + 1 matching the round's low two bits, with a way out
+    /// of the inner loop back to the outer one and a way on from its branch back that comes back to it.
+    const NEST: [u32; 29] = [
+        0x2a1f03e9, // mov w9, wzr
+        0xaa1f03e8, // mov x8, xzr
+        0x9100040b, // add x11, x0, #1
+        0x14000004, // b to the cbz
+        0x11000529, // add w9, w9, #1
+        0x6b02013f, // cmp w9, w2
+        0x540002a0, // b.eq to the mov x0
+        0x34ffffa1, // cbz w1, back to the add w9
+        0x1200052d, // and w13, w9, #3
+        0xaa1f03ec, // mov x12, xzr
+        0xaa0b03ee, // mov x14, x11
+        0xaa0103ef, // mov x15, x1
+        0x14000005, // b to the ldurb
+        0xf10005ef, // subs x15, x15, #1
+        0x910005ce, // add x14, x14, #1
+        0x9100058c, // add x12, x12, #1
+        0x54fffe80, // b.eq back to the add w9
+        0x385ff1d0, // ldurb w16, [x14, #-1]
+        0x12000610, // and w16, w16, #3
+        0x6b1001bf, // cmp w13, w16
+        0x54ffff21, // b.ne back to the subs
+        0x394001d0, // ldrb w16, [x14]
+        0x12000610, // and w16, w16, #3
+        0x6b1001bf, // cmp w13, w16
+        0x9a8c03f0, // csel x16, xzr, x12, eq
+        0x8b080208, // add x8, x16, x8
+        0x17fffff3, // b back to the subs
+        0xaa0803e0, // mov x0, x8
+        0xd65f03c0, // ret
+    ];
+
     /// `clrex` between a load and a store exclusive: the store fails.
     const CLEARED: [u32; 4] = [
         0xc85f7c02, // ldxr x2, [x0]
@@ -478,6 +512,8 @@ mod macos {
     fn functions(seed: u64) -> Vec<(&'static str, &'static [u32], Vec<Case>)> {
         let start = |registers: &[(usize, u64)]| start(seed, registers);
         let words = 8;
+        // Every value of the two low bits a round matches.
+        let rounds = 4;
         let writable = DATA + PAGE_SIZE / 2;
         let read_only = DATA + DATA_WRITABLE + PAGE_SIZE / 2;
         let misaligned = writable + size_of::<u32>() as u64;
@@ -542,6 +578,11 @@ mod macos {
                     start(&[(0, writable), (1, misaligned), (3, words)]),
                     start(&[(0, writable), (1, crossing), (3, words)]),
                 ],
+            ),
+            (
+                "nest",
+                &NEST,
+                vec![start(&[(0, writable), (1, words), (2, rounds)])],
             ),
             ("float", &FLOAT, float_cases(seed, 8, 10, &[])),
             ("system", &SYSTEM, float_cases(seed, 13, 8, &system)),
