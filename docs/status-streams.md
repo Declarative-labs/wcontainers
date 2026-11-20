@@ -19,9 +19,9 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 - S3 (the orchestrator's 2026-11-20 section of the brief): all three parts are built and tested
   (signals as an input, shared memory announced per process with the memory id, and suspend and
   resume by task with a process context, the last in run 2); run 3 made a task taken in its call
-  answer as Linux's stop makes it answer (the brief's 03:00 and 04:00 rules). What is left: the
-  speed with no hook implemented shown unchanged or ruled on, and the independent check. See
-  "S3".
+  answer as Linux's stop makes it answer (the brief's 03:00 and 04:00 rules) and measured the
+  speed with no hook implemented unchanged (+0.05 % user CPU, 12 alternating rounds). What is
+  left: the independent check. See "S3".
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -766,6 +766,28 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 3, tests (tree c626d480 with its docs): the suspend test and the new stop test passed
+  on the ARM machine (3 seeds; 48 and 6 runs). Clippy with warnings denied over the three crates
+  and fmt passed there; the literal check passes on this Mac. Whole suite on the ARM machine
+  (the command in "How to run" with `-j $ARM_JOBS` and 12 test threads; scratch
+  streams/s3c/suite-arm.log, s3c/fetched/s3c-suite.log, 09:56 to 10:32 UTC, load 32 falling to
+  7): 585 passed, 27 failed, 6 ignored; the 27 failures are by name run 2's 27
+  (s3c/failed-arm.txt against s3b/failed-arm.txt), the new test the one more pass. The 20
+  binaries kept on the Mac (s3c/mac-tests.txt, s3c/mac-only.log, this Mac, 01:59 to 02:00
+  Pacific, load 4): 92 passed, 2 failed, `partial_copies_match_reference` and
+  `splice_holds_the_pipe`; run again 4 and 10 times, each failed once more, both on the
+  reference's side (the reference's urandom read once came up short, 15 bytes for 16; the
+  reference's terminal once echoed twice), and passed otherwise. Combined: 618 tests, none
+  failing by our side.
+- S3 run 3, speed with no hook implemented (ARM machine, scratch streams/s3c/speed.log, load 6.9
+  falling to 4.4, 10:33 to 10:40 UTC): the memory test binary of cefb66ab (S2 as merged,
+  streams-base, built in run 2) and of this run's tree (built alone), run alternately, 13
+  rounds, round 0 a warm-up. User CPU, rounds 1 to 12: before 11.876 11.868 12.083 12.114 11.866
+  11.915 11.914 12.077 12.065 12.112 12.067 12.097 (mean 12.005); after 12.062 11.964 11.967
+  12.042 12.053 12.036 12.056 12.044 11.942 11.936 12.047 11.977 (mean 12.011, +0.05 %), slower
+  in 5 of 12. Wall: mean 15.309 before, 15.288 after (-0.1 %). No difference beyond noise on a
+  quieter machine than run 1's and run 2's (load 10 to 31), whose +0.3 % and +0.5 % were inside
+  the base's own swing (11.87 to 12.11 here).
 - S3 run 2, tests: the suspend test passed on the ARM machine (3 seeds, then 6; with four
   threads and 24 orders, 3 seeds, 48 runs, at cab6b0bf). Clippy with warnings denied over the
   three crates and fmt passed on the x86 machine; the literal check passes on this Mac (exit 0,
@@ -892,6 +914,8 @@ Found on the way, fixed:
   2422, wcontainers-abi 3); the check passes on this Mac (exit 0). The new code's sizes and
   offsets are derived (`size_of::<SignalInformation>()`, the word size of `c_int`); the signal
   numbers in the tests are the generated constants.
+- After S3's third run: unchanged, 7577 lines (same per crate); the check passes on this Mac
+  (exit 0, scratch streams/literals-s3r3.log). The literal check does not read the C guests.
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -1021,6 +1045,14 @@ anything shipped.
   the reference program closed itself.
 
 ## For the orchestrator
+
+- For the owner (S3 run 3, the 04:00 rule): with Linux's stop as the model, a suspension is
+  visible to a program in the calls Linux answers EINTR after a stop (`epoll_wait`, `semop`,
+  `rt_sigtimedwait`) and in a write half done that answers its count; the 04:00 note listed
+  `epoll_wait` among calls that start again, but Linux and the reference answer EINTR. The
+  interruption is seen when the task is put back, not when it is taken (see "Departures").
+- For the orchestrator: Nix's zig 0.16.0 on the ARM machine also mislinks embedder.c once it
+  grows (undefined section symbols, as with fdinfo.c); the new test's program is its own file.
 
 - For the owner (design, found by S2's fourth check): the walk in syscall/touch.rs is a second,
   hand-kept description of what each call touches, beside the call's own copies; a difference is
