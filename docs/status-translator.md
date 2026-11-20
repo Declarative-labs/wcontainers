@@ -30,8 +30,9 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
 T3 is under way: main merged (the translator on the shared guest interface), the literal check adopted, the
-P2 check's findings answered, the register jump slow path fixed; the reruns on the merged code and the speed
-pairs are recorded under "T3".
+P2 check's findings answered, the register jump slow path fixed (busybox awk: millions to single figures),
+FPSR read first fixed; reruns on the merged code passing so far; one speed pair (interpret in Chrome) 4.8
+percent slower from a test runner change. See "T3" and "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
 
@@ -85,6 +86,39 @@ FPSR read first (the P2 check's first finding): see "For the orchestrator". New 
 `programs::float_status_read_first_matches_linux` (`programs/float_status.c`: flags read through mrs and
 fetestexcept after 1/0, overflow, underflow and sqrt(-1), never cleared; every level, every look-ahead, and
 Chrome).
+
+Reruns on the merged code (commit 97fff482, whose translator and arm64 crates are the merge's):
+- Layer 2, rented ARM64 machine, 12 jobs, load 26 to 32: 100,000 programs, seed 300 (four runs of 25,000 from
+  cases 0, 25,000, 50,000 and 75,000), every one also on the real CPU, 5 a run in Chrome: 0 failing; 34,217
+  faulted, 7,450 left to an address at full; 580 to 638 s a run. Same as before the merge: no mismatch.
+- Layer 3, same machine and job, seed 300, chunks of 500 from case 0, 5 a chunk in Chrome: at the time of
+  writing chunks 0 to 4 had passed, 2,200 compared, 0 failing (403 to 563 s a chunk); it runs on to 5,000
+  compared. Log: arm-run job translator/20261120-010956-2486238 (`arm-run --fetch translator
+  /work/jobs/translator/20261120-010956-2486238/log <dir>`), each chunk's output in the build directory's
+  `t3/layer3-<k>.log`.
+- Layer 1, the Mac, full bar (10,000 cases a form, 100 a form in Chrome), seed 300, 4 jobs, load 5 to 13: the
+  driver (`WC_LONG_DIR=.../translator/t3/layer1 WC_LONG_SEED=300 WC_LONG_LAYERS=1 WC_LONG_JOBS=4
+  WC_LONG_LIMIT=180`, on 65ba8f8a) had passed chunks 1 to 8 of 10 (9,720,000 cases, 0 mismatches, 872 to 970 s
+  a chunk) at the time of writing; ledger `translator/t3/layer1/ledger.txt`.
+
+Speed pairs (benchmark set, full look-ahead, every check, best of 3, wasmtime and Chrome; 97fff482's test
+binary against this branch's, alternating, order flipped each round, 4 rounds; rented ARM64 machine, load 22
+to 32; script `translator/t3/pairs.sh`, log `t3/pairs-1.log`, summary by `t3/pairs-summary.py`): every
+workload in wasmtime and every one in Chrome but one within 0.2 percent (new over old 0.999 to 1.002).
+Interpret in Chrome is 4.8 percent slower in every round (2.35 s against 2.46 s). Bisected: the translator's
+output is byte for byte the same (the benchmark set and thread module, `tests/output.rs`, at b4384452 and
+after), and each of the three translator changes removed alone leaves it slow, while b4384452 is fast; the
+cause is the two-line change to the test runner's `runner.js` in 06187cfd (the `keepFloatFlags` parameter and
+its store at the thread's start), which runs once. Why V8 runs the translated interpreter slower for it is not
+known; keeping the flag outside `run`'s scope did not help.
+
+T3, what is left:
+- Let layer 3's rerun reach 5,000 compared and layer 1's reach chunk 10; record both.
+- The Chrome interpret regression from `runner.js` (above): find the cause or give the starting FPSR
+  tracking to the Chrome runner another way, and pair again.
+- The whole suite of the four crates once on the final code (ARM64 machine, layer 1's tests on the Mac).
+- The literal fix list from step 5 on. Baseline: 8,159 lines on the merged tree, 8,113 after init, 8,037 now
+  (this track's crates 2,873 lines plus wcontainers-guest-cpu's 28).
 
 The P2 check's other findings, answered here: the Graviton's DC ZVA fault address (finding 2) is under "Known
 gaps"; the square root forms at 7,000 cases on the final code (finding 3) are covered by this milestone's
