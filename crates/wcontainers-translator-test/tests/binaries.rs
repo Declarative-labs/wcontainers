@@ -55,13 +55,14 @@ fn validate(wasm: &[u8]) {
 
 /// A binary translated at full look-ahead from every start its file offers.
 fn translated(binary: &Binary, optimise: Optimise) -> Translation {
-    wcontainers_translator::translate(
+    wcontainers_translator::translate::<wcontainers_arm64::Arm64>(
         &binary.image,
         binary.code.clone(),
         &binary.starts.all(),
         LookAhead::Full,
         optimise,
         probe(),
+        (),
     )
     .expect("translate")
 }

@@ -9,15 +9,39 @@ use crate::linux::errno;
 pub struct Errno(pub u32);
 
 impl Errno {
+    pub const EPROTONOSUPPORT: Self = Self(errno::EPROTONOSUPPORT);
+    pub const ESOCKTNOSUPPORT: Self = Self(errno::ESOCKTNOSUPPORT);
+    pub const EAFNOSUPPORT: Self = Self(errno::EAFNOSUPPORT);
+    pub const EADDRINUSE: Self = Self(errno::EADDRINUSE);
+    pub const ECONNREFUSED: Self = Self(errno::ECONNREFUSED);
+    pub const EPROTOTYPE: Self = Self(errno::EPROTOTYPE);
+    pub const EPROTO: Self = Self(errno::EPROTO);
+    pub const EISCONN: Self = Self(errno::EISCONN);
+    pub const ENOTCONN: Self = Self(errno::ENOTCONN);
+    pub const EDESTADDRREQ: Self = Self(errno::EDESTADDRREQ);
+    pub const ENOBUFS: Self = Self(errno::ENOBUFS);
+    pub const ENOPROTOOPT: Self = Self(errno::ENOPROTOOPT);
+    pub const ECONNRESET: Self = Self(errno::ECONNRESET);
+    pub const ECONNABORTED: Self = Self(errno::ECONNABORTED);
+    pub const EDOM: Self = Self(errno::EDOM);
+    pub const EADDRNOTAVAIL: Self = Self(errno::EADDRNOTAVAIL);
+    pub const ENETUNREACH: Self = Self(errno::ENETUNREACH);
+    pub const EHOSTUNREACH: Self = Self(errno::EHOSTUNREACH);
+    pub const EINPROGRESS: Self = Self(errno::EINPROGRESS);
+    pub const EALREADY: Self = Self(errno::EALREADY);
+    pub const ETOOMANYREFS: Self = Self(errno::ETOOMANYREFS);
     pub const E2BIG: Self = Self(errno::E2BIG);
     pub const EACCES: Self = Self(errno::EACCES);
     pub const EAGAIN: Self = Self(errno::EAGAIN);
     pub const EBADF: Self = Self(errno::EBADF);
     pub const EBUSY: Self = Self(errno::EBUSY);
+    pub const ECANCELED: Self = Self(errno::ECANCELED);
+    pub const EDEADLK: Self = Self(errno::EDEADLK);
     pub const ECHILD: Self = Self(errno::ECHILD);
     pub const EEXIST: Self = Self(errno::EEXIST);
     pub const EFAULT: Self = Self(errno::EFAULT);
     pub const EFBIG: Self = Self(errno::EFBIG);
+    pub const EIDRM: Self = Self(errno::EIDRM);
     pub const EINTR: Self = Self(errno::EINTR);
     pub const EINVAL: Self = Self(errno::EINVAL);
     pub const EIO: Self = Self(errno::EIO);
@@ -32,10 +56,13 @@ impl Errno {
     pub const ENOENT: Self = Self(errno::ENOENT);
     pub const ENOEXEC: Self = Self(errno::ENOEXEC);
     pub const ENOMEM: Self = Self(errno::ENOMEM);
+    pub const EMSGSIZE: Self = Self(errno::EMSGSIZE);
+    pub const ENOMSG: Self = Self(errno::ENOMSG);
     pub const ENOSPC: Self = Self(errno::ENOSPC);
     pub const ENOSYS: Self = Self(errno::ENOSYS);
     pub const ENOTDIR: Self = Self(errno::ENOTDIR);
     pub const ENOTEMPTY: Self = Self(errno::ENOTEMPTY);
+    pub const ENOTSOCK: Self = Self(errno::ENOTSOCK);
     pub const ENOTTY: Self = Self(errno::ENOTTY);
     pub const ENXIO: Self = Self(errno::ENXIO);
     pub const EOPNOTSUPP: Self = Self(errno::EOPNOTSUPP);
@@ -46,13 +73,42 @@ impl Errno {
     pub const EROFS: Self = Self(errno::EROFS);
     pub const ESPIPE: Self = Self(errno::ESPIPE);
     pub const ESRCH: Self = Self(errno::ESRCH);
+    pub const ETIMEDOUT: Self = Self(errno::ETIMEDOUT);
     pub const ETXTBSY: Self = Self(errno::ETXTBSY);
     pub const EXDEV: Self = Self(errno::EXDEV);
     pub const ENODATA: Self = Self(errno::ENODATA);
+    /// A call a signal interrupted: restarted unless a handler without `SA_RESTART` runs.
+    pub const ERESTARTSYS: Self = Self(crate::linux_extra::ERESTARTSYS);
+    /// Restarted whatever the handler.
+    pub const ERESTARTNOINTR: Self = Self(crate::linux_extra::ERESTARTNOINTR);
+    /// Restarted only when no handler runs.
+    pub const ERESTARTNOHAND: Self = Self(crate::linux_extra::ERESTARTNOHAND);
+    /// Continued by `restart_syscall` when no handler runs.
+    pub const ERESTART_RESTARTBLOCK: Self = Self(crate::linux_extra::ERESTART_RESTARTBLOCK);
+
+    /// Not an error: the call parked its thread and runs again when woken.
+    pub const PARKED: Self = Self(u32::MAX);
 
     /// The value a system call returns in x0 for this error.
     pub fn to_return(self) -> u64 {
         (-i64::from(self.0)) as u64
+    }
+
+    /// Whether a call's return value is an error (Linux's `IS_ERR_VALUE`: the last 4095 values).
+    pub fn is_error_return(value: u64) -> bool {
+        value >= (-4095i64) as u64
+    }
+
+    /// The restart answer a call's return value carries, if it is one.
+    pub fn restart_of(value: u64) -> Option<Self> {
+        use crate::linux_extra::*;
+        let code = (value as i64).checked_neg()?;
+        match u32::try_from(code).ok()? {
+            ERESTARTSYS | ERESTARTNOINTR | ERESTARTNOHAND | ERESTART_RESTARTBLOCK => {
+                Some(Self(code as u32))
+            }
+            _ => None,
+        }
     }
 }
 

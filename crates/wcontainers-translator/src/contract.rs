@@ -5,7 +5,7 @@
 //! thread module's table and put their pieces in it, in order from [`SLOT_BASE`], when instantiated.
 //!
 //! **Looking up an address.** The lookup table holds one slot per piece. An array of slots in the state
-//! memory ([`SLOTS`]), one i32 per 4 bytes of guest address from [`TABLE_BASE`], gives the slot of the piece
+//! memory ([`SLOTS`]), one i32 per `Guest::ALIGN` bytes of guest address from [`TABLE_BASE`], gives the slot of the piece
 //! for each address, 0 for none. The runner writes the array: each code module's pieces are
 //! [`crate::CodeModule::pieces`]. The array is per process; every thread's table must hold the same piece
 //! in the same slot, so a code module is instantiated with the same [`SLOT_BASE`] in every thread.
@@ -26,6 +26,9 @@
 //! thread making the change is already stopped, in its system call or hook. With one host thread this
 //! happens by itself, because only a stopped thread lets the kernel run.
 
+use wcontainers_guest_cpu::Guest;
+pub use wcontainers_guest_cpu::{Reason, TrapKind};
+
 /// Import module name for what the runner provides.
 pub const ENV: &str = "env";
 /// Import module name for the hooks the runner provides.
@@ -45,14 +48,16 @@ pub const STATE: &str = "state";
 pub const LOAD_ADDRESS: &str = "load_address";
 /// i32: the lookup table slot of the code module's first piece; the others follow in order.
 pub const SLOT_BASE: &str = "slot_base";
-/// i64: the guest address of the first entry of the array of slots. Entry `i` is for `table_base + 4 * i`.
+/// i64: the guest address of the first entry of the array of slots. Entry `i` is for
+/// `table_base + Guest::ALIGN * i`.
 pub const TABLE_BASE: &str = "table_base";
 /// i32: where in the state memory the array of slots starts.
 pub const SLOTS: &str = "slots";
-/// i64: the bytes of guest address, from [`TABLE_BASE`], the array of slots covers (4 for each entry).
+/// i64: the bytes of guest address, from [`TABLE_BASE`], the array of slots covers (`Guest::ALIGN` for each
+/// entry).
 pub const SLOTS_COVER: &str = "slots_cover";
-/// i32: where in the state memory this thread's block is (a [`wcontainers_abi::RegisterBlock`] followed by
-/// the stop flag), a multiple of 16.
+/// i32: where in the state memory this thread's block is (the guest's `Personality::Block` followed by the
+/// stop flag), a multiple of 16.
 pub const THREAD_BLOCK: &str = "thread_block";
 /// i32: where in the state memory the page permission table starts, one byte per page. It may change only
 /// while every thread of the process is stopped (see "When the permission table may change" in this module's documentation).
@@ -86,8 +91,9 @@ pub const UNWIND_DEEP: i32 = 3;
 /// can be found for an address. Takes and returns nothing.
 pub const RUN: &str = "run";
 
-/// Hook `(number, a0, a1, a2, a3, a4, a5: i64) -> i64`: a system call. The result goes to x0. Registers
-/// are saved and `pc` is the instruction after. To stop the thread, raise its stop flag and return.
+/// Hook `(number, a0, a1, a2, a3, a4, a5: i64) -> i64`: a system call, with the registers of
+/// `Guest::SYSCALL`. The result goes to its result register. Registers are saved and `pc` is the instruction
+/// after. To stop the thread, raise its stop flag and return.
 pub const HOOK_SYSCALL: &str = "syscall";
 /// Hook `() -> i32`: the stop flag was seen raised. Registers are saved and `pc` is the instruction about
 /// to run. Return 0 to carry on, anything else to leave.
@@ -103,31 +109,19 @@ pub const HOOK_MEMORY_FAULT: &str = "memory_fault";
 pub const HOOK_LOAD_CODE: &str = "load_code";
 /// Hook `(reason: i32, detail: i64)`: a slow path was taken; see [`Reason`].
 pub const HOOK_WARN: &str = "warn";
-/// Hook `(kind: i32, detail: i64)`: the instruction at `pc` stops the thread; see [`TrapKind`]. Registers
-/// are saved. The thread then leaves.
+/// Hook `(kind: i32, detail: i64)`: the instruction at `pc` (or the one before it, as the guest's trap
+/// says) stops the thread; see [`TrapKind`]. Registers are saved. The thread then leaves.
 pub const HOOK_TRAP: &str = "trap";
-/// Hook `(operation: i32, a: i64, b: i64, c: i64) -> i64`: one floating point operation in software,
-/// [`wcontainers_arm64::exact::run`] with this thread's FPCR, adding to its FPSR. It is a slow path: counted as
-/// "software fused multiply-add" when FPCR is zero and the flags are not kept (the host's engine does not
-/// fuse), else as "exact floating point requested". Registers are not saved.
-pub const HOOK_FLOAT: &str = "float";
-/// Hook `() -> i64`: the monotonic clock in nanoseconds, for the counter.
-pub const HOOK_CLOCK: &str = "clock";
-/// Hook `(address: i64)`: `ic ivau` says the code at the address may have changed. Registers are not saved.
-pub const HOOK_CODE_CHANGED: &str = "code_changed";
 
-/// Bytes a runner gives each thread at its block's place: the abi's block (registers, then the stop flag),
-/// then words of the CPU side's own, which start zero when the thread is made and which the kernel never
-/// sees.
-pub const THREAD_STATE_SIZE: usize = wcontainers_abi::THREAD_BLOCK_SIZE + 32;
-/// i32: not zero once the program wrote FPSR, so its flags are kept exact.
-pub const FLOAT_TRACKING: usize = wcontainers_abi::THREAD_BLOCK_SIZE;
-/// i32: the size of the access a load exclusive remembered, 0 for none.
-pub const EXCLUSIVE_BYTES: usize = FLOAT_TRACKING + 4;
-/// i64: the address it remembered.
-pub const EXCLUSIVE_ADDRESS: usize = FLOAT_TRACKING + 8;
-/// Two i64: the value it loaded.
-pub const EXCLUSIVE_VALUE: usize = FLOAT_TRACKING + 16;
+/// The export of a guest's probe module (`Guest::probe_module`) that gives the host answer.
+pub const PROBE: &str = "probe";
+// After these six, the guest's own hooks follow, as `Guest::HOOKS` names and types them.
+
+/// Bytes a runner gives each thread at its block's place: the block (registers, then the stop flag), then
+/// words of the CPU side's own, which start zero when the thread is made and which the kernel never sees.
+pub const fn thread_state_size<G: Guest>() -> usize {
+    G::BLOCK_SIZE + G::PRIVATE_BYTES
+}
 
 /// Permission table byte: the page may be read.
 pub const PAGE_READ: u8 = 1;
@@ -150,118 +144,21 @@ pub fn permission_byte(
     bits(this, PAGE_READ, PAGE_WRITE) | bits(next, NEXT_PAGE_READ, NEXT_PAGE_WRITE)
 }
 
-/// The bit of a piece's expected return address parameter that says the caller reads the flags from the
-/// thread block after the piece returns; without it a piece may return with the flags it set only in its
-/// locals. The rest of the parameter is the address the caller expects control back at.
-pub const FLAGS_WANTED: i64 = 1;
-
-/// The return address the bottom loop passes to the piece it calls (with [`FLAGS_WANTED`]). No return reaches
-/// it, because return targets are untagged and an untagged address with bit 55 clear has a top byte of zero.
-/// A return that does not go where its caller expects, when that caller is the bottom loop, sets `pc` to its
-/// target and returns: the function it returns to was in progress without its WebAssembly frame, and
-/// carries on from the bottom loop, counted as "continued after stack loss".
-pub const BOTTOM_RETURN: i64 = i64::MIN;
+// A piece's expected return address parameter is the address the caller expects control back at, with
+// `Guest::FLAGS_WANTED` set when the caller reads the flags from the thread block after the piece returns;
+// without it a piece may return with the flags it set only in its locals. The bottom loop passes
+// `Guest::UNREACHABLE_RETURN`, which no return reaches. A return that does not go where its caller expects,
+// when that caller is the bottom loop, sets `pc` to its target and returns: the function it returns to was
+// in progress without its WebAssembly frame, and carries on from the bottom loop, counted as "continued
+// after stack loss".
 
 /// Tuning number: the bytes of the engine's stack the pieces in progress may use before the next call leaves
 /// to the bottom loop ([`UNWIND_DEEP`]). The last parameter of every piece is an estimate of what its callers
 /// use.
 pub const STACK_BUDGET: i64 = 128 * 1024;
 
-/// Why the instruction at `pc` stopped the thread.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i32)]
-pub enum TrapKind {
-    /// Not an instruction of the CPU we present. Detail: the instruction word.
-    Undefined = 0,
-    /// An instruction of a feature we do not offer: illegal instruction, counted and warned. Detail: the
-    /// instruction word.
-    Unsupported = 1,
-    /// `brk`. Detail: its comment field.
-    Breakpoint = 2,
-    /// A load or store through a stack pointer that is not a multiple of 16, or a jump to an address that
-    /// is not a multiple of 4. Detail: that stack pointer or address.
-    Alignment = 3,
-}
-
-impl TrapKind {
-    pub fn from_i32(value: i32) -> Option<Self> {
-        [
-            Self::Undefined,
-            Self::Unsupported,
-            Self::Breakpoint,
-            Self::Alignment,
-        ]
-        .into_iter()
-        .find(|kind| *kind as i32 == value)
-    }
-}
-
 /// Tuning number: a slow path warns once per address (or number), when its count there reaches this.
 pub const WARNING_THRESHOLD: u64 = 1;
-
-/// Every slow path, with the fixed name its counter and warning carry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(i32)]
-pub enum Reason {
-    TranslatedAtRunTime = 0,
-    LeftToAddress = 1,
-    ContinuedAfterStackLoss = 2,
-    JumpThroughRegisterNotRecognised = 3,
-    SoftwareFusedMultiplyAdd = 4,
-    UnsupportedInstructionReached = 5,
-    SystemCallNotImplemented = 6,
-    ExactFloatingPointRequested = 7,
-    AddressAboveHostCap = 8,
-    StoppedByFlag = 9,
-    MemoryFault = 10,
-    FaultWithoutExactRegisters = 11,
-    /// A loop's accesses were not proven allowed at its entry, so it runs its copy with every check.
-    LoopNotProven = 12,
-    /// The engine's stack was nearly used up, so the thread left to the bottom loop ([`UNWIND_DEEP`]).
-    StackNearlyFull = 13,
-}
-
-impl Reason {
-    pub const ALL: [Reason; 14] = [
-        Reason::TranslatedAtRunTime,
-        Reason::LeftToAddress,
-        Reason::ContinuedAfterStackLoss,
-        Reason::JumpThroughRegisterNotRecognised,
-        Reason::SoftwareFusedMultiplyAdd,
-        Reason::UnsupportedInstructionReached,
-        Reason::SystemCallNotImplemented,
-        Reason::ExactFloatingPointRequested,
-        Reason::AddressAboveHostCap,
-        Reason::StoppedByFlag,
-        Reason::MemoryFault,
-        Reason::FaultWithoutExactRegisters,
-        Reason::LoopNotProven,
-        Reason::StackNearlyFull,
-    ];
-
-    pub fn from_i32(value: i32) -> Option<Self> {
-        Self::ALL.into_iter().find(|r| *r as i32 == value)
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Reason::TranslatedAtRunTime => "translated at run time",
-            Reason::LeftToAddress => "left to an address",
-            Reason::ContinuedAfterStackLoss => "continued after stack loss",
-            Reason::JumpThroughRegisterNotRecognised => "jump through a register not recognised",
-            Reason::SoftwareFusedMultiplyAdd => "software fused multiply-add",
-            Reason::UnsupportedInstructionReached => "unsupported instruction reached",
-            Reason::SystemCallNotImplemented => "system call not implemented",
-            Reason::ExactFloatingPointRequested => "exact floating point requested",
-            Reason::AddressAboveHostCap => "address above the host's cap",
-            Reason::StoppedByFlag => "stopped by the flag",
-            Reason::MemoryFault => "memory fault",
-            Reason::FaultWithoutExactRegisters => "fault without exact registers",
-            Reason::LoopNotProven => "loop not proven",
-            Reason::StackNearlyFull => "engine stack nearly full",
-        }
-    }
-}
 
 /// Name of the custom section describing a code module: format version (one byte, 3), look-ahead (one byte,
 /// 0 for none, 1 for full, 2 for bounded), what it is optimised for (one byte, 0 for speed, 1 for size), the

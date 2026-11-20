@@ -40,8 +40,9 @@ pub(super) fn brk(
     tid: Tid,
     [address, ..]: Args,
 ) -> Result<u64, Errno> {
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     let old = map.brk;
     if address < map.brk_start {
         return Ok(old);
@@ -83,7 +84,7 @@ pub(super) fn brk(
         &process.limits,
         map.future_lock,
         (new_end - old_end) / PAGE_SIZE,
-        process.credentials.has(CAP_IPC_LOCK),
+        may_lock_any,
     ) {
         return Ok(old);
     }
@@ -95,6 +96,7 @@ pub(super) fn brk(
         shared: false,
         locked: map.future_lock,
         grows_down: false,
+        on_fork: crate::memory::OnFork::default(),
         backing: Backing::Heap,
     };
     if map.insert(cx.cpu, process.memory, heap).is_err() {
@@ -119,23 +121,39 @@ pub(super) fn mmap(
     let file = if flags & MAP_ANONYMOUS != 0 {
         None
     } else {
-        let file = kernel.process_of(tid).files.file(fd)?;
+        let file = kernel.call_file(tid, fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }
         Some(file)
     };
+    do_mmap(kernel, cx, tid, address, length, prot, flags, file, offset)
+}
+
+/// Linux's `do_mmap`: maps `file` (or anonymous memory) at `offset`, which is page aligned.
+#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+pub(super) fn do_mmap(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    length: u64,
+    prot: u64,
+    flags: u32,
+    file: Option<crate::file::FileRef>,
+    offset: u64,
+) -> Result<u64, Errno> {
     // `ksys_mmap_pgoff`: only a hugetlbfs file takes huge pages, and none can be made here.
     if flags & MAP_HUGETLB != 0 && file.is_some() {
         return Err(Errno::EINVAL);
     }
     if flags & MAP_HUGETLB != 0 {
-        kernel.counters.count(
+        return Err(kernel.counters.refuse_flag(
             cx.host,
-            reason::MEMORY_FLAG_NOT_IMPLEMENTED,
+            __NR_mmap,
             MAP_HUGETLB.into(),
-        );
-        return Err(Errno::ENOMEM);
+            Errno::ENOMEM,
+        ));
     }
     if length == 0 {
         return Err(Errno::EINVAL);
@@ -151,13 +169,24 @@ pub(super) fn mmap(
     {
         return Err(Errno::EOVERFLOW);
     }
-    let map = &kernel.process_of(tid).map;
+    let map = kernel.process_of(tid).map.borrow();
     let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+    // Past the host's address space and inside Linux's: the plan's small address space.
+    let above = address
+        .checked_add(length)
+        .is_some_and(|end| end > map.end && end <= TASK_SIZE);
+    let mut hint_above = false;
     let start = if fixed {
         if length > map.end || address > map.end - length {
+            if above {
+                drop(map);
+                kernel
+                    .counters
+                    .count(cx.host, crate::reason::ADDRESS_ABOVE_SPACE, address);
+            }
             return Err(Errno::ENOMEM);
         }
-        if address % PAGE_SIZE != 0 {
+        if !address.is_multiple_of(PAGE_SIZE) {
             return Err(Errno::EINVAL);
         }
         if address < LOWEST_ADDRESS {
@@ -173,6 +202,7 @@ pub(super) fn mmap(
         if hint != 0 && hint_fits {
             hint
         } else {
+            hint_above = hint != 0 && above;
             map.find_free(length).ok_or(Errno::ENOMEM)?
         }
     };
@@ -188,15 +218,21 @@ pub(super) fn mmap(
     } else {
         map.future_lock
     };
+    drop(map);
+    if hint_above {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::ADDRESS_ABOVE_SPACE, address);
+    }
     if flags & MAP_LOCKED != 0 && !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }
     let process = kernel.process_of(tid);
-    if !process.map.may_lock(
+    if !process.map.borrow().may_lock(
         &process.limits,
         locked,
         length / PAGE_SIZE,
-        process.credentials.has(CAP_IPC_LOCK),
+        kernel.credentials(tid).has(CAP_IPC_LOCK),
     ) {
         return Err(Errno::EAGAIN);
     }
@@ -216,6 +252,10 @@ pub(super) fn mmap(
     let mut allowed = Permissions::all();
     // What backs the mapping, with Linux's checks on the file; `/dev/zero` gives zeroed memory.
     let mut zero_device = None;
+    // A mapping of a backend file: the open file its bytes are read through.
+    let mut backend = None;
+    // A mapping of a socket: whether it is TCP's, whose `mmap` is asked after the limits.
+    let mut socket_tcp = None;
     let file = match file {
         None => None,
         Some(file) => {
@@ -245,11 +285,32 @@ pub(super) fn mmap(
             }
             let zero = matches!(inode.content, Content::Special)
                 && Device::from_number(inode.rdev) == Some(Device::Zero);
-            if !zero && !matches!(inode.content, Content::Regular(_)) {
+            // `fuse_file_mmap`: a shared mapping of a file opened for direct reads and writes is
+            // refused, as Linux refuses it.
+            if matches!(inode.content, Content::Backend(_)) {
+                let handle = file.backend.clone().ok_or(Errno::ENODEV)?;
+                if shared && !handle.may_map_shared() {
+                    return Err(Errno::ENODEV);
+                }
+                backend = Some(handle);
+            }
+            // A socket has an `mmap` (`sock_mmap`), so the checks after it come first; the
+            // protocol's refuses it later (`sock_no_mmap`).
+            let socket = matches!(inode.content, Content::Socket(_));
+            if !zero
+                && backend.is_none()
+                && !socket
+                && !matches!(inode.content, Content::Regular(_))
+            {
                 return Err(Errno::ENODEV);
             }
             if grows_down {
                 return Err(Errno::EINVAL);
+            }
+            if socket {
+                socket_tcp = Some(
+                    matches!(&inode.content, Content::Socket(socket) if socket.borrow().tcp()),
+                );
             }
             // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
             if let Content::Regular(regular) = &inode.content
@@ -267,20 +328,30 @@ pub(super) fn mmap(
             } else {
                 drop(inode);
                 // `shmem_mmap` counts mapping as reading the file.
-                super::io::accessed(kernel, cx, &node, file.flags);
+                if backend.is_none() && !socket {
+                    super::io::accessed(kernel, cx, &node, file.flags);
+                }
                 Some((node, file.path.clone()))
             }
         }
     };
+    // Linux's `shmem_zero_setup`: shared anonymous memory and shared `/dev/zero` are a shared
+    // mapping of a removed file on its internal tmpfs, from offset 0 for anonymous memory and where
+    // asked for `/dev/zero`, so a child sees the same pages.
+    // Shared anonymous memory starts at offset 0 of its file, whatever offset was given (`do_mmap`).
+    let offset = if shared && file.is_none() && zero_device.is_none() {
+        0
+    } else {
+        offset
+    };
+    let file = match file {
+        None if shared => Some((
+            shared_zero_file(kernel, cx, offset + length)?,
+            b"/dev/zero".to_vec(),
+        )),
+        file => file,
+    };
     let backing = match (&file, zero_device) {
-        // Linux's `shmem_zero_setup`: a removed file on its internal tmpfs, from offset 0 for
-        // anonymous memory and where asked for `/dev/zero`.
-        (None, zero) if shared => Backing::Zero {
-            device: kernel.files.memfd_fs.device,
-            ino: kernel.files.numbers.ino(),
-            offset: if zero.is_some() { offset } else { 0 },
-            name: b"/dev/zero (deleted)".to_vec(),
-        },
         // A private mapping of `/dev/zero` is anonymous memory that keeps the file
         // (`mmap_zero_private_success`).
         (None, Some((device, ino, path))) => Backing::Zero {
@@ -292,11 +363,26 @@ pub(super) fn mmap(
         (None, None) if droppable => Backing::Droppable,
         (None, None) => Backing::Anonymous,
         (Some((node, path)), _) => {
+            // The backend says where its file ends now, and its pages are read before anything
+            // changes, since the call runs again once they come.
+            if let Some(handle) = &backend {
+                crate::fs::backend::getattr(node, Some(handle.fh))?;
+                let writer = shared && allowed.contains(Permissions::WRITE);
+                crate::shared::backend_block(
+                    kernel,
+                    cx,
+                    node,
+                    Some(handle),
+                    offset + length,
+                    writer,
+                )?;
+            }
             let size = match &mut node.borrow_mut().content {
                 Content::Regular(regular) => {
                     regular.set_mapped();
                     regular.size()
                 }
+                Content::Backend(remote) => remote.size.get(),
                 _ => 0,
             };
             let file_pages = page_up(size).saturating_sub(offset);
@@ -305,11 +391,13 @@ pub(super) fn mmap(
                 path: path.clone(),
                 offset,
                 file_end: start + file_pages.min(length),
+                copied: alloc::collections::BTreeSet::new(),
             }
         }
     };
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     let mut mapping = Mapping {
         start,
         end: start + length,
@@ -318,6 +406,7 @@ pub(super) fn mmap(
         shared,
         locked,
         grows_down,
+        on_fork: crate::memory::OnFork::default(),
         backing,
     };
     // Within the limits, counting what a fixed mapping replaces.
@@ -330,69 +419,135 @@ pub(super) fn mmap(
     ) {
         return Err(Errno::ENOMEM);
     }
+    // `tcp_mmap`: a TCP socket maps for reading only, and never later for more; its pages come
+    // only from TCP_ZEROCOPY_RECEIVE (not built), so touching one is SIGBUS. Every other protocol
+    // has `sock_no_mmap`. The file's `mmap` runs after what a fixed mapping replaces was taken
+    // away, so a refusal leaves the range unmapped (`vms_abort_munmap_vmas`).
+    let refused = match socket_tcp {
+        Some(false) => Some(Errno::ENODEV),
+        Some(true) if permissions.intersects(Permissions::WRITE | Permissions::EXECUTE) => {
+            Some(Errno::EPERM)
+        }
+        _ => None,
+    };
+    if let Some(error) = refused {
+        if fixed {
+            let memory = process.memory;
+            unmap(&mut map, cx, memory, start, length)?;
+            drop(map);
+            crate::shared::release(kernel, cx);
+        }
+        return Err(error);
+    }
+    if socket_tcp == Some(true) {
+        mapping
+            .allowed
+            .remove(Permissions::WRITE | Permissions::EXECUTE);
+    }
     // A secret memory file is mapped only shared, and locked, within the limit on locked memory
     // (`secretmem_mmap`).
     if mapping.is_secret() {
         if !shared {
             return Err(Errno::EINVAL);
         }
-        if !map.may_lock(
-            &process.limits,
-            Lock::Now,
-            length / PAGE_SIZE,
-            process.credentials.has(CAP_IPC_LOCK),
-        ) {
+        if !map.may_lock(&process.limits, Lock::Now, length / PAGE_SIZE, may_lock_any) {
             return Err(Errno::EAGAIN);
         }
         mapping.locked = Lock::Now;
     }
+    // `mmap_region` takes the lock off a `VM_SPECIAL` mapping.
+    if mapping.is_special() {
+        mapping.locked = Lock::None;
+    }
     let memory = process.memory;
     map.insert(cx.cpu, memory, mapping.clone())?;
-    show_file(kernel, cx, memory, &mapping, start, length)?;
+    drop(map);
+    crate::shared::show(kernel, cx, memory, &mapping)?;
+    // `do_mmap`'s populate: a locked mapping, or one asked to be filled at once, is faulted in, and
+    // writing a private one copies its file pages.
+    if mapping.locked == Lock::Now || flags & (MAP_POPULATE | MAP_NONBLOCK) == MAP_POPULATE {
+        populate(kernel, cx, tid, start, start + length, true);
+    }
     crate::shared::release(kernel, cx);
     Ok(start)
 }
 
-/// Makes `[start, start + length)` of a file mapping show the file: its block of shared pages for a
-/// shared mapping, a copy of its bytes for a private one.
-fn show_file(
+/// Linux's `__mm_populate` over `[start, end)`, mapping by mapping in order until a page cannot be
+/// brought in (then on at the next mapping if `ignore_errors`): a writable private file mapping is
+/// faulted in for writing, which copies its file pages. Which pages are in memory is not tracked
+/// otherwise.
+fn populate(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    memory: wcontainers_abi::MemoryId,
-    mapping: &Mapping,
+    tid: Tid,
     start: u64,
-    length: u64,
-) -> Result<(), Errno> {
-    let Backing::File { node, offset, .. } = &mapping.backing else {
-        return Ok(());
-    };
-    let offset = offset + (start - mapping.start);
-    // A shared mapping beside private copies of the file, or a private copy of a file mapped shared,
-    // lets the file change unseen by the copies.
-    crate::shared::copies_stale(kernel, cx, node, !mapping.shared);
-    if mapping.shared {
-        crate::shared::attach(kernel, cx, node, memory, start, offset, length)
-    } else {
-        copy_file_pages(cx, memory, node, offset, start, length)
+    end: u64,
+    ignore_errors: bool,
+) {
+    let process = kernel.process_of_mut(tid);
+    let mut at = start;
+    while at < end {
+        let Some(mapping) = process.map.borrow().next_after(at).cloned() else {
+            return;
+        };
+        if mapping.start >= end {
+            return;
+        }
+        let from = mapping.start.max(at);
+        let to = mapping.end.min(end);
+        if mapping.permissions.is_empty() {
+            if !ignore_errors {
+                return;
+            }
+            at = to;
+            continue;
+        }
+        let reach = match &mapping.backing {
+            Backing::File { file_end, .. } => to.min(*file_end).max(from),
+            _ => to,
+        };
+        if mapping.permissions.contains(Permissions::WRITE)
+            && process
+                .map
+                .borrow_mut()
+                .copy_on_write(cx.cpu, process.memory, from, reach)
+                .is_err()
+        {
+            return;
+        }
+        if reach < to && !ignore_errors {
+            return;
+        }
+        at = to;
     }
 }
 
-/// Copies a file's bytes into a private mapping of it: the bytes from `offset` up to the mapping's
-/// length or the file's end. The rest is zero already.
-fn copy_file_pages(
+/// The removed file on the internal tmpfs that shared anonymous memory is (`shmem_kernel_file_setup`).
+fn shared_zero_file(
+    kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    memory: wcontainers_abi::MemoryId,
-    node: &crate::fs::Node,
-    offset: u64,
-    start: u64,
-    length: u64,
-) -> Result<(), Errno> {
-    let inode = node.borrow();
-    let Content::Regular(regular) = &inode.content else {
-        return Ok(());
-    };
-    let bytes = regular.read(cx.cpu, offset, length);
-    cx.cpu.write(memory, start, &bytes).map_err(errno::from_cpu)
+    size: u64,
+) -> Result<crate::fs::Node, Errno> {
+    let now = kernel.now(cx);
+    let ino = kernel.files.numbers.ino();
+    let mut regular = crate::fs::Regular::default();
+    regular.truncate(cx.cpu, size);
+    let node = crate::fs::new_inode(
+        kernel.files.memfd_fs.clone(),
+        ino,
+        crate::fs::New {
+            mode: S_IFREG | 0o777,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            now,
+            content: Content::Regular(regular),
+            parent: None,
+            name: b"dev/zero".to_vec(),
+        },
+    )?;
+    node.borrow_mut().nlink = 0;
+    Ok(node)
 }
 
 pub(super) fn munmap(
@@ -403,13 +558,19 @@ pub(super) fn munmap(
 ) -> Result<u64, Errno> {
     let address = crate::user::untagged(address);
     let process = kernel.process_of_mut(tid);
-    unmap(&mut process.map, cx, process.memory, address, length)?;
+    unmap(
+        &mut process.map.borrow_mut(),
+        cx,
+        process.memory,
+        address,
+        length,
+    )?;
     crate::shared::release(kernel, cx);
     Ok(0)
 }
 
 /// Linux's `do_vmi_munmap`: the range must lie below `TASK_SIZE` before its length is rounded up.
-fn unmap(
+pub(super) fn unmap(
     map: &mut crate::memory::AddressMap,
     cx: &mut Context<'_>,
     memory: wcontainers_abi::MemoryId,
@@ -480,13 +641,15 @@ fn protect(
         .ok_or(Errno::ENOMEM)?;
     let permissions = permissions(prot, true)?;
     let process = kernel.process_of_mut(tid);
-    if key != -1 && !key_allocated(&process.map, key) {
+    if key != -1 && !key_allocated(&process.map.borrow(), key) {
         return Err(Errno::EINVAL);
     }
     let first = process
         .map
+        .borrow()
         .next_after(address)
         .filter(|mapping| mapping.start < end)
+        .cloned()
         .ok_or(Errno::ENOMEM)?;
     let address = if grows == u64::from(PROT_GROWSDOWN) {
         if !first.grows_down {
@@ -507,6 +670,7 @@ fn protect(
     while at < end {
         let Some((stop, allowed, becomes_data)) = process
             .map
+            .borrow()
             .iter()
             .find(|mapping| mapping.start <= at && mapping.end > at)
             .map(|mapping| {
@@ -528,12 +692,14 @@ fn protect(
         if becomes_data
             && !process
                 .map
+                .borrow()
                 .may_expand(&process.limits, true, pages, (pages, 0))
         {
             return Err(Errno::ENOMEM);
         }
         process
             .map
+            .borrow_mut()
             .protect(cx.cpu, process.memory, at, stop, permissions)?;
         at = stop;
     }
@@ -579,10 +745,12 @@ pub(super) fn madvise(
         advice,
         MADV_COLLAPSE | MADV_GUARD_INSTALL | MADV_GUARD_REMOVE
     ) {
-        kernel
-            .counters
-            .count(cx.host, reason::ADVICE_NOT_BUILT, advice.into());
-        return Err(Errno::EINVAL);
+        return Err(kernel.counters.refuse(
+            cx.host,
+            reason::ADVICE_NOT_BUILT,
+            advice.into(),
+            Errno::EINVAL,
+        ));
     }
     if !known {
         return Err(Errno::EINVAL);
@@ -609,7 +777,7 @@ pub(super) fn madvise(
     // anonymous memory. Linux's `madvise_remove`, mapping by mapping.
     if advice == MADV_REMOVE {
         let mut at = address;
-        while let Some(mapping) = process.map.next_after(at).cloned() {
+        while let Some(mapping) = process.map.borrow().next_after(at).cloned() {
             if mapping.start >= end {
                 break;
             }
@@ -648,15 +816,16 @@ pub(super) fn madvise(
             }
             at = mapping.end;
         }
-        if !process.map.fully_mapped(address, end) {
+        if !process.map.borrow().fully_mapped(address, end) {
             return Err(Errno::ENOMEM);
         }
         return Ok(0);
     }
-    // Freeing lazily and wiping on fork are for private anonymous memory only.
-    if matches!(advice, MADV_FREE | MADV_WIPEONFORK)
+    // Freeing lazily is for private anonymous memory only.
+    if advice == MADV_FREE
         && process
             .map
+            .borrow_mut()
             .iter()
             .filter(|mapping| mapping.start < end && mapping.end > address)
             .any(|mapping| mapping.shared || matches!(mapping.backing, Backing::File { .. }))
@@ -666,7 +835,7 @@ pub(super) fn madvise(
     // Locked memory is neither dropped nor aged (`madvise_dontneed_free_valid_vma`,
     // `can_madv_lru_vma`), whatever gaps the range has.
     if matches!(advice, MADV_DONTNEED | MADV_FREE | MADV_COLD | MADV_PAGEOUT)
-        && process.map.iter().any(|mapping| {
+        && process.map.borrow().iter().any(|mapping| {
             mapping.start < end && mapping.end > address && mapping.locked != Lock::None
         })
     {
@@ -677,7 +846,7 @@ pub(super) fn madvise(
         // bytes in what they share.
         let mut at = address;
         while at < end {
-            let Some(mapping) = process.map.next_after(at).cloned() else {
+            let Some(mapping) = process.map.borrow().next_after(at).cloned() else {
                 break;
             };
             if mapping.start >= end {
@@ -685,12 +854,18 @@ pub(super) fn madvise(
             }
             let from = mapping.start.max(at);
             let to = mapping.end.min(end);
-            if !mapping.shared {
-                drop_pages(cx, process.memory, &mapping, from, to)?;
-            }
+            drop_pages(
+                cx,
+                process.memory,
+                &mut process.map.borrow_mut(),
+                &mapping,
+                from,
+                to,
+            )?;
             at = to;
         }
     }
+    let process = kernel.process_of_mut(tid);
     // Populating faults the pages in mapping by mapping (`madvise_populate`): a mapping that does not
     // allow the access is EINVAL, a gap before it ENOMEM.
     if matches!(advice, MADV_POPULATE_READ | MADV_POPULATE_WRITE) {
@@ -699,18 +874,70 @@ pub(super) fn madvise(
         } else {
             Permissions::READ
         };
+        // Writing a private file mapping's pages copies them; a page wholly past its file's end
+        // faults with SIGBUS, which is EFAULT here.
         let mut at = address;
         while at < end {
-            match process.map.find(at) {
-                None => return Err(Errno::ENOMEM),
-                Some(mapping) if !mapping.permissions.contains(wanted) => {
-                    return Err(Errno::EINVAL);
-                }
-                Some(mapping) => at = mapping.end,
+            let Some(mapping) = process.map.borrow().find(at).cloned() else {
+                return Err(Errno::ENOMEM);
+            };
+            if !mapping.permissions.contains(wanted) {
+                return Err(Errno::EINVAL);
             }
+            let to = mapping.end.min(end);
+            let reach = match &mapping.backing {
+                Backing::File { file_end, .. } => to.min(*file_end).max(at),
+                _ => to,
+            };
+            if advice == MADV_POPULATE_WRITE {
+                process
+                    .map
+                    .borrow_mut()
+                    .copy_on_write(cx.cpu, process.memory, at, reach)?;
+            }
+            if reach < to {
+                return Err(Errno::EFAULT);
+            }
+            at = mapping.end;
         }
     }
-    if !process.map.fully_mapped(address, end) {
+    // What a fork gives the child and whether a core dump holds it, mapping by mapping as
+    // `madvise_vma_behavior`: a mapping that refuses the advice ends the walk with the ones before it
+    // changed. Wiping is for private anonymous memory; droppable memory is always wiped and never
+    // dumped; the kernel's own pages (`VM_SPECIAL`) are never dumped.
+    let change: Option<fn(&mut crate::memory::OnFork)> = match advice {
+        MADV_DONTFORK => Some(|on_fork| on_fork.skip = true),
+        MADV_DOFORK => Some(|on_fork| on_fork.skip = false),
+        MADV_WIPEONFORK => Some(|on_fork| on_fork.wipe = true),
+        MADV_KEEPONFORK => Some(|on_fork| on_fork.wipe = false),
+        _ => None,
+    };
+    let mapped: Vec<(u64, u64, bool)> = process
+        .map
+        .borrow_mut()
+        .iter()
+        .filter(|mapping| mapping.start < end && mapping.end > address)
+        .map(|mapping| {
+            let refused = match advice {
+                MADV_WIPEONFORK => {
+                    mapping.shared || matches!(mapping.backing, Backing::File { .. })
+                }
+                MADV_KEEPONFORK => matches!(mapping.backing, Backing::Droppable),
+                MADV_DODUMP => matches!(mapping.backing, Backing::Droppable | Backing::Special(_)),
+                _ => false,
+            };
+            (mapping.start.max(address), mapping.end.min(end), refused)
+        })
+        .collect();
+    for (from, to, refused) in mapped {
+        if refused {
+            return Err(Errno::EINVAL);
+        }
+        if let Some(change) = change {
+            process.map.borrow_mut().set_on_fork(from, to, change);
+        }
+    }
+    if !process.map.borrow().fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
     }
     Ok(0)
@@ -761,15 +988,29 @@ pub(super) fn mremap(
     let mapping = kernel
         .process_of(tid)
         .map
+        .borrow()
         .find(old)
         .cloned()
         .ok_or(Errno::EFAULT)?;
     prepare(kernel, tid, &mapping, &request)?;
-    if to_new_address {
-        remap_to(kernel, cx, tid, &mapping, request)
-    } else {
-        remap_at(kernel, cx, tid, &mapping, request)
+    // A backend file's pages for the grown range are read before anything changes.
+    if let Backing::File { node, offset, .. } = &mapping.backing
+        && crate::fs::backend::remote(node).is_some()
+        && new_length > old_length
+    {
+        let end = offset + (old - mapping.start) + new_length;
+        crate::shared::backend_block(kernel, cx, node, None, end, false)?;
     }
+    let moved = if to_new_address {
+        remap_to(kernel, cx, tid, &mapping, request)?
+    } else {
+        remap_at(kernel, cx, tid, &mapping, request)?
+    };
+    // A file mapping that grew shows the file as far as it reaches now.
+    if let Backing::File { node, .. } = &mapping.backing {
+        crate::shared::changed(kernel, cx, node)?;
+    }
+    Ok(moved)
 }
 
 #[derive(Clone, Copy)]
@@ -806,18 +1047,23 @@ fn prepare(kernel: &Kernel, tid: Tid, mapping: &Mapping, request: &Remap) -> Res
     if new_length <= old_length {
         return Ok(());
     }
+    // `VM_DONTEXPAND`: a socket's mapping never grows.
+    if mapping.is_special() {
+        return Err(Errno::EFAULT);
+    }
     let process = kernel.process_of(tid);
     let growth = (new_length - old_length) / PAGE_SIZE;
-    if !process.map.may_lock(
+    if !process.map.borrow().may_lock(
         &process.limits,
         mapping.locked,
         growth,
-        process.credentials.has(CAP_IPC_LOCK),
+        kernel.credentials(tid).has(CAP_IPC_LOCK),
     ) {
         return Err(Errno::EAGAIN);
     }
     if !process
         .map
+        .borrow()
         .may_expand(&process.limits, mapping.is_data(), growth, (0, 0))
     {
         return Err(Errno::ENOMEM);
@@ -841,12 +1087,18 @@ fn remap_at(
     } = request;
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     if new_length == old_length {
         return Ok(old);
     }
     if new_length < old_length {
-        unmap(map, cx, memory, old + new_length, old_length - new_length)?;
+        unmap(
+            &mut map,
+            cx,
+            memory,
+            old + new_length,
+            old_length - new_length,
+        )?;
         return Ok(old);
     }
     // Grow in place when the range is the end of its mapping and the space after is free.
@@ -858,13 +1110,15 @@ fn remap_at(
             *file_end = (*file_end).min(grown_end).max(old_end);
         }
         map.insert(cx.cpu, memory, extra.clone())?;
-        show_file(kernel, cx, memory, &extra, old_end, grown_end - old_end)?;
+        drop(map);
+        crate::shared::show(kernel, cx, memory, &extra)?;
         return Ok(old);
     }
     if request.flags & MREMAP_MAYMOVE == 0 {
         return Err(Errno::ENOMEM);
     }
     let destination = map.find_free(new_length).ok_or(Errno::ENOMEM)?;
+    drop(map);
     move_range(cx, kernel, tid, mapping, request, destination)
 }
 
@@ -878,7 +1132,7 @@ fn remap_to(
 ) -> Result<u64, Errno> {
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     if request.flags & MREMAP_FIXED != 0 {
         let end = (request.new_address + request.new_length).min(map.end);
         if request.new_address < end {
@@ -887,7 +1141,7 @@ fn remap_to(
     }
     if request.new_length < request.old_length {
         unmap(
-            map,
+            &mut map,
             cx,
             memory,
             request.old + request.new_length,
@@ -923,6 +1177,7 @@ fn remap_to(
             map.find_free(request.new_length).ok_or(Errno::ENOMEM)?
         }
     };
+    drop(map);
     move_range(cx, kernel, tid, mapping, request, destination)
 }
 
@@ -941,7 +1196,7 @@ fn move_ranges(
     let mut last_end = None;
     let mut at = start;
     while at < end {
-        let Some(mapping) = kernel.process_of(tid).map.next_after(at).cloned() else {
+        let Some(mapping) = kernel.process_of(tid).map.borrow().next_after(at).cloned() else {
             break;
         };
         if mapping.start >= end {
@@ -992,10 +1247,11 @@ fn move_range(
     } = request;
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     let old_end = old + old_length;
-    // A shared file mapping shows its file wherever it goes; anything else takes its bytes along.
-    let kept = if mapping.shares_file() {
+    // A file mapping shows its file wherever it goes; its own pages, and anything else, take their
+    // bytes along.
+    let kept = if mapping.shared {
         0
     } else {
         old_length.min(new_length)
@@ -1012,51 +1268,52 @@ fn move_range(
         *file_end = shift((*file_end).clamp(old, old + new_length));
     }
     if request.flags & MREMAP_DONTUNMAP != 0 {
-        drop_pages(cx, memory, mapping, old, old_end)?;
+        drop_pages(cx, memory, &mut map, mapping, old, old_end)?;
     } else {
         map.unmap(cx.cpu, memory, old, old_end)?;
     }
     map.insert(cx.cpu, memory, moved.clone())?;
-    cx.cpu
-        .write(memory, destination, &bytes)
-        .map_err(errno::from_cpu)?;
-    let shown = destination + kept;
-    show_file(kernel, cx, memory, &moved, shown, moved.end - shown)?;
+    let kept_end = destination + kept;
+    for (from, to, own) in moved.runs() {
+        let to = to.min(kept_end);
+        if own && !moved.shared && from < to {
+            let at = (from - destination) as usize;
+            cx.cpu
+                .write(memory, from, &bytes[at..at + (to - from) as usize])
+                .map_err(errno::from_cpu)?;
+        }
+    }
+    drop(map);
+    crate::shared::show(kernel, cx, memory, &moved)?;
     crate::shared::release(kernel, cx);
     Ok(destination)
 }
 
 /// Puts a private range back to what it held before it was touched: zero, or the file's bytes. A
-/// shared file mapping's pages are the file's and stay.
+/// shared mapping's pages are what it shares and stay.
 fn drop_pages(
     cx: &mut Context<'_>,
     memory: wcontainers_abi::MemoryId,
+    map: &mut crate::memory::AddressMap,
     mapping: &Mapping,
     from: u64,
     to: u64,
 ) -> Result<(), Errno> {
-    if mapping.shares_file() {
+    if mapping.shared {
         return Ok(());
     }
-    cx.cpu
-        .zero(memory, from, to - from)
-        .map_err(errno::from_cpu)?;
-    if let Backing::File { node, offset, .. } = &mapping.backing {
-        copy_file_pages(
-            cx,
-            memory,
-            node,
-            offset + (from - mapping.start),
-            from,
-            to - from,
-        )?;
+    match &mapping.backing {
+        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to),
+        _ => cx
+            .cpu
+            .zero(memory, from, to - from)
+            .map_err(errno::from_cpu),
     }
-    Ok(())
 }
 
 pub(super) fn msync(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1071,7 +1328,7 @@ pub(super) fn msync(
     let end = address
         .checked_add(page_align(length))
         .ok_or(Errno::ENOMEM)?;
-    let map = &kernel.process_of(tid).map;
+    let map = kernel.process_of(tid).map.borrow();
     if flags & MS_INVALIDATE != 0
         && map.iter().any(|mapping| {
             mapping.start < end && mapping.end > address && mapping.locked != Lock::None
@@ -1079,7 +1336,44 @@ pub(super) fn msync(
     {
         return Err(Errno::EBUSY);
     }
-    if !map.fully_mapped(address, end) {
+    // `MS_SYNC` syncs each shared mapping of a backend file in the range (`vfs_fsync_range`):
+    // its pages written back, then FSYNC for the data, before a gap in the range is reported. A
+    // socket's file has no fsync: EINVAL at its mapping.
+    let fully = map.fully_mapped(address, end);
+    let mut refused = false;
+    let synced: Vec<(crate::fs::Node, u64, u64)> = map
+        .iter()
+        .filter(|mapping| {
+            flags & MS_SYNC != 0 && mapping.shared && mapping.start < end && mapping.end > address
+        })
+        .take_while(|mapping| {
+            refused = mapping.is_special();
+            !refused
+        })
+        .filter_map(|mapping| match &mapping.backing {
+            Backing::File { node, offset, .. } if crate::fs::backend::remote(node).is_some() => {
+                let from = offset + (mapping.start.max(address) - mapping.start);
+                let to = offset + (mapping.end.min(end) - mapping.start);
+                Some((node.clone(), from, to))
+            }
+            _ => None,
+        })
+        .collect();
+    drop(map);
+    for (node, from, to) in synced {
+        crate::shared::backend_write_back(kernel, cx, &node, from, to, true)?;
+        let handle = match &node.borrow().content {
+            Content::Backend(remote) => remote.pages.as_ref().map(|pages| pages.handle.clone()),
+            _ => None,
+        };
+        if let Some(handle) = handle {
+            crate::fs::backend::fsync(&handle, true)?;
+        }
+    }
+    if refused {
+        return Err(Errno::EINVAL);
+    }
+    if !fully {
         return Err(Errno::ENOMEM);
     }
     Ok(0)
@@ -1088,13 +1382,15 @@ pub(super) fn msync(
 /// Whether the caller may lock memory at all (Linux's `can_do_mlock`).
 fn can_lock(kernel: &Kernel, tid: Tid) -> bool {
     let process = kernel.process_of(tid);
-    process.limits[RLIMIT_MEMLOCK as usize].current != 0 || process.credentials.has(CAP_IPC_LOCK)
+    process.limits[RLIMIT_MEMLOCK as usize].current != 0
+        || kernel.credentials(tid).has(CAP_IPC_LOCK)
 }
 
 /// Linux's `do_mlock` and `apply_vma_lock_flags`: the whole range must be mapped and fit the limit on
 /// locked memory.
 fn lock_range(
     kernel: &mut Kernel,
+    cx: &mut Context<'_>,
     tid: Tid,
     address: u64,
     length: u64,
@@ -1106,13 +1402,15 @@ fn lock_range(
     }
     let length = page_align(length.wrapping_add(address % PAGE_SIZE));
     let start = page_down(address);
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
     if lock != Lock::None {
         let (locked, within) = process
             .map
+            .borrow()
             .locked_pages(start, start.saturating_add(length));
         let limit = process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE;
-        if locked + length / PAGE_SIZE - within > limit && !process.credentials.has(CAP_IPC_LOCK) {
+        if locked + length / PAGE_SIZE - within > limit && !may_lock_any {
             return Err(Errno::ENOMEM);
         }
     }
@@ -1120,21 +1418,35 @@ fn lock_range(
     if end == start {
         return Ok(0);
     }
-    if !process.map.fully_mapped(start, end) {
+    if !process.map.borrow().fully_mapped(start, end) {
         return Err(Errno::ENOMEM);
     }
-    process.map.set_lock(start, end, lock);
+    process.map.borrow_mut().set_lock(start, end, lock);
     // Linux's `__mm_populate`: bringing the pages in fails at one that cannot be read (no access, or
     // wholly past its file's end), and the call is ENOMEM though the range stays locked.
     let unreadable = process
         .map
+        .borrow_mut()
         .iter()
         .filter(|mapping| mapping.start < end && mapping.end > start)
         .any(|mapping| {
             mapping.permissions.is_empty()
                 || matches!(mapping.backing, Backing::File { file_end, .. } if file_end < end.min(mapping.end))
         });
-    if lock == Lock::Now && unreadable {
+    // Droppable memory that allows nothing is ENOMEM to either kind of lock (measured).
+    let droppable_closed = process.map.borrow().iter().any(|mapping| {
+        mapping.start < end
+            && mapping.end > start
+            && matches!(mapping.backing, Backing::Droppable)
+            && mapping.permissions.is_empty()
+    });
+    if lock == Lock::Now {
+        populate(kernel, cx, tid, start, end, false);
+        if unreadable {
+            return Err(Errno::ENOMEM);
+        }
+    }
+    if lock != Lock::None && droppable_closed {
         return Err(Errno::ENOMEM);
     }
     Ok(0)
@@ -1142,16 +1454,16 @@ fn lock_range(
 
 pub(super) fn mlock(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, ..]: Args,
 ) -> Result<u64, Errno> {
-    lock_range(kernel, tid, address, length, Lock::Now)
+    lock_range(kernel, cx, tid, address, length, Lock::Now)
 }
 
 pub(super) fn mlock2(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1164,22 +1476,22 @@ pub(super) fn mlock2(
     } else {
         Lock::Now
     };
-    lock_range(kernel, tid, address, length, lock)
+    lock_range(kernel, cx, tid, address, length, lock)
 }
 
 pub(super) fn munlock(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let address = crate::user::untagged(address);
-    lock_range(kernel, tid, address, length, Lock::None)
+    lock_range(kernel, cx, tid, address, length, Lock::None)
 }
 
 pub(super) fn mlockall(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1191,6 +1503,7 @@ pub(super) fn mlockall(
     if !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
     let lock = if flags & MCL_ONFAULT != 0 {
         Lock::OnFault
@@ -1198,19 +1511,20 @@ pub(super) fn mlockall(
         Lock::Now
     };
     if flags & MCL_CURRENT != 0 {
-        let total = process.map.pages_in(0, u64::MAX).0;
-        if total > process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE
-            && !process.credentials.has(CAP_IPC_LOCK)
-        {
+        let total = process.map.borrow().pages_in(0, u64::MAX).0;
+        if total > process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE && !may_lock_any {
             return Err(Errno::ENOMEM);
         }
-        process.map.set_lock_all(lock);
+        process.map.borrow_mut().set_lock_all(lock);
     }
-    process.map.future_lock = if flags & MCL_FUTURE != 0 {
+    process.map.borrow_mut().future_lock = if flags & MCL_FUTURE != 0 {
         lock
     } else {
         Lock::None
     };
+    if flags & MCL_CURRENT != 0 && lock == Lock::Now {
+        populate(kernel, cx, tid, 0, u64::MAX, true);
+    }
     Ok(0)
 }
 
@@ -1220,7 +1534,7 @@ pub(super) fn munlockall(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    let map = &mut kernel.process_of_mut(tid).map;
+    let mut map = kernel.process_of(tid).map.borrow_mut();
     map.set_lock_all(Lock::None);
     map.future_lock = Lock::None;
     Ok(0)
@@ -1251,12 +1565,14 @@ pub(super) fn mincore(
     let mut at = address;
     let mut written = 0;
     while at < end {
-        let Some(mapping) = kernel.process_of(tid).map.find(at) else {
+        let Some(mapping) = kernel.process_of(tid).map.borrow().find(at).cloned() else {
             return Err(Errno::ENOMEM);
         };
         let to = mapping.end.min(end);
         let count = (to - at) / PAGE_SIZE;
-        super::guest(kernel, cx, tid).write(vector + written, &vec![1u8; count as usize])?;
+        // A socket's mapping never holds a page here (none come without TCP_ZEROCOPY_RECEIVE).
+        let resident = u8::from(!mapping.is_special());
+        super::guest(kernel, cx, tid).write(vector + written, &vec![resident; count as usize])?;
         written += count;
         at = to;
     }
@@ -1293,8 +1609,8 @@ pub(super) fn pkey_free(
     [key, ..]: Args,
 ) -> Result<u64, Errno> {
     let key = key as i32;
-    let map = &mut kernel.process_of_mut(tid).map;
-    if !key_allocated(map, key) {
+    let mut map = kernel.process_of(tid).map.borrow_mut();
+    if !key_allocated(&map, key) {
         return Err(Errno::EINVAL);
     }
     map.protection_keys &= !(1 << key);
@@ -1371,17 +1687,17 @@ fn process_vm(
     };
     if target.process != kernel.threads[&tid].process {
         // Another process's memory needs Linux's `ptrace_may_access`, which comes with processes.
-        kernel.counters.count(
+        let number = if write {
+            __NR_process_vm_writev
+        } else {
+            __NR_process_vm_readv
+        };
+        return Err(kernel.counters.refuse(
             cx.host,
-            reason::NOT_IMPLEMENTED,
-            if write {
-                __NR_process_vm_writev
-            } else {
-                __NR_process_vm_readv
-            }
-            .into(),
-        );
-        return Err(Errno::ENOSYS);
+            reason::CROSS_PROCESS_NOT_BUILT,
+            number.into(),
+            Errno::ENOSYS,
+        ));
     }
     let mut guest = super::guest(kernel, cx, tid);
     let mut local = local.into_iter().filter(|(_, length)| *length > 0);
@@ -1395,7 +1711,7 @@ fn process_vm(
             continue;
         }
         let wanted = length.min(remaining);
-        let reach = guest.map.pinnable(base, wanted, write);
+        let reach = guest.map.borrow().pinnable(base, wanted, write);
         // Linux copies a page of the other side at a time, into as many local segments as it takes.
         let mut at = base;
         while at < base + reach {

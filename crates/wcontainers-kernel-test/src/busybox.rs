@@ -110,9 +110,9 @@ pub fn changes(
     out
 }
 
-/// Runs a command of the reference image on our kernel, found on the image's PATH as Docker finds it.
-pub fn run_ours(command: &[&str]) -> driver::Run {
-    let path = [
+/// Where Docker finds a command: the first directory of the image's PATH that has it.
+fn on_path(command: &str) -> String {
+    [
         "/usr/local/sbin",
         "/usr/local/bin",
         "/usr/sbin",
@@ -121,92 +121,106 @@ pub fn run_ours(command: &[&str]) -> driver::Run {
         "/bin",
     ]
     .iter()
-    .map(|directory| format!("{directory}/{}", command[0]))
+    .map(|directory| format!("{directory}/{command}"))
     .find(|path| {
         image::reference_image()
             .iter()
             .any(|file| format!("/{}", file.path) == *path)
     })
-    .unwrap_or_else(|| panic!("{} is not on the image's PATH", command[0]));
+    .unwrap_or_else(|| panic!("{command} is not on the image's PATH"))
+}
+
+/// Runs a command of the reference image on our kernel, found on the image's PATH as Docker finds it.
+pub fn run_ours(command: &[&str]) -> driver::Run {
+    run_ours_seeded(command, 0)
+}
+
+/// As [`run_ours`], with the seed the run's choices come from.
+pub fn run_ours_seeded(command: &[&str], seed: u64) -> driver::Run {
+    run_ours_on(command, seed, None)
+}
+
+/// As [`run_ours_seeded`], with the root file system on the backend (`Some("/")`) or in memory.
+fn run_ours_on(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Run {
+    let path = on_path(command[0]);
     let container = driver::Container {
         files: image::reference_image(),
         path: &path,
         arguments: command,
         environment: reference::ENVIRONMENT,
         working_directory: "/",
+        backend,
+        cached: false,
+        published: &[],
+        address_space: crate::standin::SPACE_32_BIT,
     };
-    driver::run(&container, 0)
+    driver::run(&container, seed)
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
 }
 
 /// Runs a command of the reference image (the first argument names it) as the container's first
-/// process in both runners, with `/` as the working directory, and asserts that output, exit status and
-/// the files changed are the same. Returns our run.
+/// process in the reference and on our kernel twice, with the root file system in memory and on
+/// the file backend, with `/` as the working directory, and asserts that output, exit status and
+/// the files changed are the same each time. Returns our run with the root in memory.
 pub fn compare(command: &[&str]) -> driver::Run {
-    // Found on the image's PATH, as Docker finds a command.
-    let path = [
-        "/usr/local/sbin",
-        "/usr/local/bin",
-        "/usr/sbin",
-        "/usr/bin",
-        "/sbin",
-        "/bin",
-    ]
-    .iter()
-    .map(|directory| format!("{directory}/{}", command[0]))
-    .find(|path| {
-        image::reference_image()
-            .iter()
-            .any(|file| format!("/{}", file.path) == *path)
-    })
-    .unwrap_or_else(|| panic!("{} is not on the image's PATH", command[0]));
     let base = shapes_of_image(image::reference_image());
-    let container = driver::Container {
-        files: image::reference_image(),
-        path: &path,
-        arguments: command,
-        environment: reference::ENVIRONMENT,
-        working_directory: "/",
-    };
-    let ours = driver::run(&container, 0)
-        .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"));
     let (theirs, their_files) = reference::run_command(command);
-    let our_changes = changes(&base, &shapes_of_kernel(&ours.files));
     let their_changes = changes(&base, &shapes_of_image(&their_files));
-    assert_eq!(
-        String::from_utf8_lossy(&ours.outcome.stdout),
-        String::from_utf8_lossy(&theirs.stdout),
-        "{command:?}: standard output"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&ours.outcome.stderr),
-        String::from_utf8_lossy(&theirs.stderr),
-        "{command:?}: standard error"
-    );
-    assert_eq!(
-        ours.outcome.exit_code, theirs.exit_code,
-        "{command:?}: exit code"
-    );
-    let differing: Vec<String> = our_changes
-        .keys()
-        .chain(their_changes.keys())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .filter(|path| our_changes.get(*path) != their_changes.get(*path))
-        .map(|path| {
-            format!(
-                "{path}: ours {}, theirs {}",
-                describe(our_changes.get(path)),
-                describe(their_changes.get(path))
-            )
-        })
-        .collect();
-    assert!(
-        differing.is_empty(),
-        "{command:?}: files changed differently:\n{}",
-        differing.join("\n")
-    );
-    ours
+    let mut runs = [None, Some("/")].map(|backend| {
+        let root = if backend.is_some() {
+            "root on the backend"
+        } else {
+            "root in memory"
+        };
+        let ours = run_ours_on(command, 0, backend);
+        let messages: u64 = ours
+            .counters
+            .iter()
+            .filter(|counter| counter.reason == wcontainers_kernel::reason::BACKEND_MESSAGE)
+            .map(|counter| counter.count)
+            .sum();
+        assert_eq!(
+            messages > 0,
+            backend.is_some(),
+            "{command:?}, {root}: {messages} messages to the backend"
+        );
+        let our_changes = changes(&base, &shapes_of_kernel(&ours.files));
+        assert_eq!(
+            String::from_utf8_lossy(&ours.outcome.stdout),
+            String::from_utf8_lossy(&theirs.stdout),
+            "{command:?}, {root}: standard output"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&ours.outcome.stderr),
+            String::from_utf8_lossy(&theirs.stderr),
+            "{command:?}, {root}: standard error"
+        );
+        assert_eq!(
+            ours.outcome.exit_code, theirs.exit_code,
+            "{command:?}, {root}: exit code"
+        );
+        let differing: Vec<String> = our_changes
+            .keys()
+            .chain(their_changes.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|path| our_changes.get(*path) != their_changes.get(*path))
+            .map(|path| {
+                format!(
+                    "{path}: ours {}, theirs {}",
+                    describe(our_changes.get(path)),
+                    describe(their_changes.get(path))
+                )
+            })
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "{command:?}, {root}: files changed differently:\n{}",
+            differing.join("\n")
+        );
+        Some(ours)
+    });
+    runs[0].take().expect("the run with the root in memory")
 }
 
 fn describe(change: Option<&Option<Shape>>) -> String {

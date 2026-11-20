@@ -65,7 +65,7 @@ int main(int argc, char **argv) {
         return private_mapping();
     }
     if (argc > 1 && strcmp(argv[1], "unbuilt") == 0) {
-        const char *paths[] = {"/proc/self/mountinfo", "/proc/sys/kernel/random/entropy_avail",
+        const char *paths[] = {"/proc/self/mountstats", "/proc/sys/kernel/random/entropy_avail",
                                "/proc/nonexistent"};
         for (int index = 0; index < 3; index++) {
             printf("%s: %d\n", paths[index], open(paths[index], O_RDONLY) >= 0);

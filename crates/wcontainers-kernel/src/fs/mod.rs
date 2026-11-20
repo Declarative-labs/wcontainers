@@ -4,7 +4,9 @@
 //! process information tree. An inode is shared through `Rc`, so an open file keeps an unlinked inode
 //! alive as on Linux.
 
+pub(crate) mod backend;
 pub(crate) mod dev;
+pub(crate) mod mounts;
 pub(crate) mod proc;
 
 use alloc::collections::BTreeMap;
@@ -14,7 +16,7 @@ use core::cell::RefCell;
 
 use alloc::vec;
 use core::cell::Cell;
-use wcontainers_abi::{Cpu, SharedId, Stream};
+use wcontainers_abi::{Cpu, SharedId};
 
 use crate::Errno;
 use crate::credentials::Credentials;
@@ -161,6 +163,26 @@ pub(crate) fn xattr_space(name: &[u8], value: &[u8]) -> u64 {
     40 + (name.len() + value.len()) as u64
 }
 
+/// The names a default container's `/sys` holds on Linux (the reference's, in its order).
+const SYS_ENTRIES: [&[u8]; 9] = [
+    b"block",
+    b"bus",
+    b"class",
+    b"dev",
+    b"devices",
+    b"firmware",
+    b"fs",
+    b"kernel",
+    b"module",
+];
+
+/// Counts a lookup in `/sys` of a name Linux has there; detail: its index in [`SYS_ENTRIES`].
+fn sys_not_built(counters: &crate::counters::Counters, name: &[u8]) {
+    if let Some(index) = SYS_ENTRIES.iter().position(|entry| *entry == name) {
+        counters.note(crate::reason::SYS_ENTRY_NOT_BUILT, index as u64);
+    }
+}
+
 impl FileSystem {
     pub fn read_only(&self) -> bool {
         self.flags & crate::linux_extra::ST_RDONLY != 0
@@ -171,11 +193,21 @@ impl FileSystem {
         self.flags & crate::linux_extra::ST_NODEV != 0
     }
 
-    /// Programs on it may not run (`noexec`).
-    /// Whether nothing on it may run: a `noexec` mount, or secret memory, whose file system says so
-    /// itself (`SB_I_NOEXEC`, measured) without showing it in statfs's flags.
+    /// Whether nothing on it may run: a `noexec` mount, or secret memory, pipes, process descriptors
+    /// and the anonymous inode, whose file systems say so themselves (`SB_I_NOEXEC`; measured)
+    /// without showing it in statfs's flags.
     pub fn no_execute(&self) -> bool {
-        self.flags & crate::linux_extra::ST_NOEXEC != 0 || self.kind == Kind::Secretmem
+        self.flags & crate::linux_extra::ST_NOEXEC != 0
+            || matches!(
+                self.kind,
+                Kind::Secretmem
+                    | Kind::Pipe
+                    | Kind::Pidfs
+                    | Kind::Anon
+                    | Kind::Mqueue
+                    | Kind::Sockfs
+                    | Kind::Nsfs
+            )
     }
 }
 
@@ -189,6 +221,20 @@ pub(crate) enum Kind {
     Pipe,
     /// Secret memory files, which only a shared mapping reaches (`memfd_secret`).
     Secretmem,
+    /// Process descriptors.
+    Pidfs,
+    /// The one anonymous inode many kinds of descriptor share (`anon_inodefs`).
+    Anon,
+    /// POSIX message queues, at `/dev/mqueue`.
+    Mqueue,
+    /// A file system outside the kernel, reached with FUSE messages.
+    Fuse,
+    /// Sockets, an inode each.
+    Sockfs,
+    /// Namespaces, as `/proc/<pid>/ns` opens them.
+    Nsfs,
+    /// The read-only sysfs at `/sys`, holding none of Linux's entries.
+    Sysfs,
 }
 
 impl Kind {
@@ -201,6 +247,24 @@ impl Kind {
         }
     }
 
+    /// The largest file the file system has (`s_maxbytes`): tmpfs's and the pseudo file systems'
+    /// (`pseudo_fs_fill_super`) `MAX_LFS_FILESIZE` (measured for pidfs, pipes, timer descriptors and
+    /// secret memory), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
+    pub fn max_bytes(self) -> u64 {
+        match self {
+            Kind::Tmpfs
+            | Kind::Pidfs
+            | Kind::Pipe
+            | Kind::Secretmem
+            | Kind::Anon
+            | Kind::Fuse
+            | Kind::Sockfs
+            | Kind::Nsfs
+            | Kind::Sysfs => i64::MAX as u64,
+            Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
+        }
+    }
+
     /// The magic number `statfs` reports.
     pub fn magic(self) -> u64 {
         match self {
@@ -209,6 +273,13 @@ impl Kind {
             Kind::Proc => PROC_SUPER_MAGIC.into(),
             Kind::Pipe => PIPEFS_MAGIC.into(),
             Kind::Secretmem => SECRETMEM_MAGIC.into(),
+            Kind::Pidfs => PID_FS_MAGIC.into(),
+            Kind::Anon => ANON_INODE_FS_MAGIC.into(),
+            Kind::Mqueue => crate::linux_extra::MQUEUE_MAGIC.into(),
+            Kind::Fuse => FUSE_SUPER_MAGIC.into(),
+            Kind::Sockfs => SOCKFS_MAGIC.into(),
+            Kind::Nsfs => NSFS_MAGIC.into(),
+            Kind::Sysfs => SYSFS_MAGIC.into(),
         }
     }
 }
@@ -232,7 +303,11 @@ pub(crate) struct Inode {
     pub content: Content,
     /// `flock` locks: the open file holding each, and whether it is exclusive. An entry whose open file
     /// is gone was released when it closed.
-    pub flocks: Vec<(alloc::rc::Weak<RefCell<crate::file::OpenFile>>, bool)>,
+    pub flocks: Vec<(
+        alloc::rc::Weak<RefCell<crate::file::OpenFile>>,
+        bool,
+        crate::process::Pid,
+    )>,
     /// Record locks (`fcntl`'s).
     pub record_locks: Vec<crate::locks::RecordLock>,
     /// Extended attributes by full name, for file systems that keep them.
@@ -241,6 +316,11 @@ pub(crate) struct Inode {
     pub fsflags: u32,
     /// How long data written is expected to live (`RWH_WRITE_LIFE_*`, Linux's `i_write_hint`).
     pub write_hint: u64,
+    /// The inotify watches on it.
+    pub watches: Vec<crate::syscall::inotify::Mark>,
+    /// Made by `O_TMPFILE` without `O_EXCL` and not linked yet, so a link may name it though it has
+    /// no links (`I_LINKABLE`).
+    pub linkable: bool,
 }
 
 impl Drop for Inode {
@@ -275,16 +355,32 @@ pub(crate) enum Content {
     Symlink(Vec<u8>),
     /// A device, a named pipe or a socket node; what opening it does depends on its type and number.
     Special,
-    /// One of the container's standard output pipes, read by the host.
-    HostStream(Stream),
+    /// A pipe: made by `pipe2`, a named pipe's while open, or one of the container's standard
+    /// output pipes, which the host reads.
+    Pipe(crate::pipe::Pipe),
     /// A file or directory of the process information tree, made when it is looked up.
     Proc(proc::Entry),
+    /// A process descriptor's file, naming a process by number while the process holds it, and
+    /// its wait status once it is reaped (`pidfs_exit`).
+    Pidfd(crate::process::Pid, Option<i32>),
+    /// The anonymous inode; what each file on it is lies in the file (`OpenFile::anon`).
+    Anon,
+    /// A POSIX message queue.
+    Mqueue(alloc::boxed::Box<crate::syscall::mqueue::MessageQueue>),
+    /// An inode of a file system outside the kernel, whatever its type.
+    Backend(backend::Remote),
+    /// A socket's own inode.
+    Socket(crate::syscall::socket::SocketRef),
+    /// A namespace's inode on nsfs.
+    Namespace(proc::Namespace),
 }
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
 pub(crate) struct Regular {
-    /// The file's bytes; those the block holds are stale here while there is one.
+    /// The file's first bytes, up to the last one written; the rest up to `size` read as zero. Those
+    /// the block holds are stale here while there is one.
     data: Vec<u8>,
+    size: u64,
     /// While a mapping shares the file: the block of shared pages holding its first bytes.
     pub block: Option<Block>,
     pub pages: alloc::collections::BTreeSet<u64>,
@@ -298,18 +394,34 @@ pub(crate) struct Regular {
     mapped: bool,
     /// The tmpfs its pages count against.
     space: Option<Rc<Space>>,
+    /// Whether it is a System V shared memory segment, whose mappings are never merged (Linux's
+    /// `shm_vm_ops` has a `close`).
+    pub segment: bool,
+}
+
+impl Content {
+    /// The block of shared pages a mapped file's mappings show, while it has one.
+    pub fn block(&self) -> Option<Block> {
+        match self {
+            Content::Regular(regular) => regular.block,
+            Content::Backend(remote) => remote.pages.as_ref().map(|pages| pages.block),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Regular {
     fn default() -> Self {
         Self {
             data: Vec::new(),
+            size: 0,
             block: None,
             pages: alloc::collections::BTreeSet::new(),
             allocated: alloc::collections::BTreeSet::new(),
             seals: F_SEAL_SEAL,
             mapped: false,
             space: None,
+            segment: false,
         }
     }
 }
@@ -402,7 +514,7 @@ impl Regular {
         }
         // Page by page, as `shmem_write_begin`: the seals, then a page from tmpfs if the file holds
         // none there.
-        let size = self.data.len() as u64;
+        let size = self.size;
         let end = offset + length;
         let mut free = self
             .space
@@ -434,7 +546,7 @@ impl Regular {
 
     /// Whether the seals allow a change of size (tmpfs's `shmem_setattr`).
     pub fn may_resize(&self, length: u64) -> Result<(), Errno> {
-        let size = self.data.len() as u64;
+        let size = self.size;
         if (length < size && self.seals & F_SEAL_SHRINK != 0)
             || (length > size && self.seals & F_SEAL_GROW != 0)
         {
@@ -447,19 +559,25 @@ impl Regular {
     pub fn with_bytes(bytes: Vec<u8>) -> Self {
         let mut regular = Self::default();
         regular.mark_written(0, bytes.len() as u64);
+        regular.size = bytes.len() as u64;
         regular.data = bytes;
         regular
     }
 
     pub fn size(&self) -> u64 {
-        self.data.len() as u64
+        self.size
     }
 
     /// Up to `count` bytes from `offset`, stopping at the end of the file.
     pub fn read(&self, cpu: &mut dyn Cpu, offset: u64, count: u64) -> Vec<u8> {
         let start = offset.min(self.size());
         let end = start.saturating_add(count).min(self.size());
-        let mut bytes = self.data[start as usize..end as usize].to_vec();
+        let mut bytes = vec![0; (end - start) as usize];
+        let held = (self.data.len() as u64).clamp(start, end);
+        if held > start {
+            bytes[..(held - start) as usize]
+                .copy_from_slice(&self.data[start as usize..held as usize]);
+        }
         if let Some(block) = self.block
             && start < block.length
         {
@@ -477,9 +595,10 @@ impl Regular {
 
     pub fn write(&mut self, cpu: &mut dyn Cpu, offset: u64, bytes: &[u8]) {
         let end = offset + bytes.len() as u64;
-        if self.size() < end {
+        if (self.data.len() as u64) < end {
             self.data.resize(end as usize, 0);
         }
+        self.size = self.size.max(end);
         self.data[offset as usize..end as usize].copy_from_slice(bytes);
         if let Some(block) = self.block
             && offset < block.length
@@ -518,7 +637,8 @@ impl Regular {
     /// Punches a hole in `[offset, end)`: its bytes read as zero and its whole pages are given back.
     pub fn punch(&mut self, cpu: &mut dyn Cpu, offset: u64, end: u64) {
         let (from, to) = (offset.min(self.size()), end.min(self.size()));
-        self.data[from as usize..to as usize].fill(0);
+        let held = self.data.len() as u64;
+        self.data[from.min(held) as usize..to.min(held) as usize].fill(0);
         self.zero_block(cpu, from, to);
         let first = offset.div_ceil(4096);
         let last = end / 4096;
@@ -543,7 +663,8 @@ impl Regular {
         {
             self.zero_block(cpu, length, block.length);
         }
-        self.data.resize(length as usize, 0);
+        self.data.truncate(length as usize);
+        self.size = length;
         let pages = length.div_ceil(4096);
         self.drop_pages(|page| page < pages);
     }
@@ -552,6 +673,9 @@ impl Regular {
     pub fn take_block(&mut self, cpu: &mut dyn Cpu) -> Option<Block> {
         let block = self.block.take()?;
         let end = block.length.min(self.size());
+        if (self.data.len() as u64) < end {
+            self.data.resize(end as usize, 0);
+        }
         cpu.shared_read(block.id, 0, &mut self.data[..end as usize])
             .expect("the block holds the file's first pages");
         Some(block)
@@ -693,6 +817,14 @@ impl Inode {
         self.mode & S_IFMT
     }
 
+    /// The block size `stat` reports: the backend's for its inodes, else the file system kind's.
+    pub fn block_size(&self) -> u32 {
+        match &self.content {
+            Content::Backend(remote) if remote.block_size.get() != 0 => remote.block_size.get(),
+            _ => self.fs.kind.block_size(),
+        }
+    }
+
     pub fn is_directory(&self) -> bool {
         self.file_type() == S_IFDIR
     }
@@ -715,11 +847,18 @@ impl Inode {
     pub fn size(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => file.size(),
-            Content::Directory(_) if self.fs.kind == Kind::Devpts => 0,
+            Content::Directory(_) if matches!(self.fs.kind, Kind::Devpts | Kind::Sysfs) => 0,
             Content::Directory(directory) => DIRENT_SIZE * (directory.len() as u64 + 2),
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
-            Content::Special | Content::HostStream(_) => 0,
+            Content::Mqueue(queue) => queue.size,
+            Content::Backend(remote) => remote.size.get(),
+            Content::Special
+            | Content::Pipe(_)
+            | Content::Pidfd(..)
+            | Content::Anon
+            | Content::Socket(_)
+            | Content::Namespace(_) => 0,
         }
     }
 
@@ -727,6 +866,7 @@ impl Inode {
     pub fn blocks(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => (file.pages.len() + file.allocated.len()) as u64 * 8,
+            Content::Backend(remote) => remote.blocks.get(),
             _ if self.has_long_target() => 8,
             _ => 0,
         }
@@ -791,6 +931,32 @@ impl Inode {
     /// Whether an open file of this inode takes direct I/O (Linux's `FMODE_CAN_ODIRECT`): only tmpfs's
     /// regular files do.
     /// A secret memory file: no reads, writes or positions, one size change, only shared mappings.
+    /// Whether it is a System V shared memory segment's file.
+    pub fn is_segment(&self) -> bool {
+        matches!(&self.content, Content::Regular(regular) if regular.segment)
+    }
+
+    /// An inode of process descriptors (regular inside, shown with no file type) or the anonymous
+    /// inode (with none): no attributes change and there is no `fallocate` (`pidfs_setattr`,
+    /// `anon_inode_setattr`; measured).
+    pub fn is_anonymous(&self) -> bool {
+        matches!(self.fs.kind, Kind::Pidfs | Kind::Anon)
+    }
+
+    /// The mode `stat` shows.
+    pub fn shown_mode(&self) -> u32 {
+        if self.is_anonymous() {
+            self.mode & !S_IFMT
+        } else {
+            self.mode
+        }
+    }
+
+    /// Whether nothing may change it (`IS_IMMUTABLE`).
+    pub fn immutable(&self) -> bool {
+        self.fsflags & FS_IMMUTABLE_FL != 0
+    }
+
     pub fn is_secret(&self) -> bool {
         self.fs.kind == Kind::Secretmem
     }
@@ -800,8 +966,14 @@ impl Inode {
         self.nlink == 0 || self.is_secret()
     }
 
+    /// Whether opening it with O_DIRECT is allowed (`FMODE_CAN_ODIRECT`): tmpfs's regular files
+    /// and the backend's (`fuse_open`).
     pub fn takes_direct_io(&self) -> bool {
-        self.fs.kind == Kind::Tmpfs && matches!(self.content, Content::Regular(_))
+        match self.content {
+            Content::Regular(_) => self.fs.kind == Kind::Tmpfs,
+            Content::Backend(_) => self.file_type() == S_IFREG,
+            _ => false,
+        }
     }
 
     /// The `d_type` of a directory entry for this inode.
@@ -819,6 +991,14 @@ impl Inode {
             credentials.uid
         };
         let mode = self.mode;
+        // `acl_permission_check`: another than the owner checks the access list when the group
+        // has bits, which a backend without FUSE_POSIX_ACL gives as none and the inode holds.
+        if uid != self.uid
+            && mode & 0o070 != 0
+            && let Some(remote) = backend::remote_of(self)
+        {
+            remote.acls.borrow_mut()[0].get_or_insert_with(Vec::new);
+        }
         let bits = if uid == self.uid {
             (mode >> 6) & 7
         } else if credentials.in_group(self.gid, use_fs_ids) {
@@ -852,10 +1032,14 @@ pub(crate) fn permission(
     mask: u32,
     caller: crate::process::Pid,
 ) -> Result<(), Errno> {
+    // `inode_permission`: nothing writes an immutable inode.
+    if mask & W_OK != 0 && inode.immutable() {
+        return Err(Errno::EPERM);
+    }
     if let Content::Proc(entry) = inode.content {
         match entry {
             proc::Entry::Process(_) if mask & W_OK != 0 => return Err(Errno::EPERM),
-            proc::Entry::Fds(pid) if pid == caller => return Ok(()),
+            proc::Entry::Fds(task) if task.pid == caller => return Ok(()),
             // `proc_sys_permission`: the root of `/proc/sys` may not be written and is otherwise open
             // to all; below it no file runs, and the table's bits decide with no power over them
             // (`test_perm`, by the effective ids).
@@ -1014,6 +1198,8 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         xattrs: BTreeMap::new(),
         fsflags: 0,
         write_hint: 0,
+        watches: Vec::new(),
+        linkable: false,
     })))
 }
 
@@ -1023,6 +1209,9 @@ pub(crate) struct Walk<'a> {
     pub root: &'a Node,
     pub credentials: &'a Credentials,
     pub proc: &'a proc::View<'a>,
+    /// The last descriptor link followed named a file opened through the kernel's own mount of
+    /// its file system (mq_open's), whose mount has no flags.
+    pub internal: core::cell::Cell<bool>,
 }
 
 /// The result of walking all but the last part of a path.
@@ -1081,9 +1270,15 @@ impl<'a> Walk<'a> {
                 return Ok((parent.directory, full));
             }
             let node = self.step(&parent.directory, &parent.name)?;
-            let target = match &node.borrow().content {
-                Content::Symlink(target) => Some(target.clone()),
-                _ => None,
+            let (target, remote_link) = match &node.borrow().content {
+                Content::Symlink(target) => (Some(target.clone()), false),
+                Content::Backend(_) => (None, node.borrow().file_type() == S_IFLNK),
+                _ => (None, false),
+            };
+            let target = if remote_link {
+                Some(backend::readlink(&node)?)
+            } else {
+                target
             };
             if let Some(target) = target {
                 self.may_follow(&parent.directory, &node.borrow())?;
@@ -1184,11 +1379,16 @@ impl<'a> Walk<'a> {
     }
 
     fn check_search(&self, directory: &Node) -> Result<(), Errno> {
+        backend::fresh(directory)?;
         let directory = directory.borrow();
         if !directory.is_directory() {
             return Err(Errno::ENOTDIR);
         }
-        permission(&directory, self.credentials, X_OK, self.proc.caller)
+        permission(&directory, self.credentials, X_OK, self.proc.caller)?;
+        if let Content::Proc(entry) = &directory.content {
+            proc::fdinfo_allowed(self.proc, entry, self.proc.caller_thread)?;
+        }
+        Ok(())
     }
 
     /// One step from a directory to a name in it, crossing mounts.
@@ -1197,7 +1397,8 @@ impl<'a> Walk<'a> {
         // file system sees the name.
         {
             let inode = directory.borrow();
-            if matches!(inode.content, Content::Directory(_))
+            if (matches!(inode.content, Content::Directory(_))
+                || matches!(inode.content, Content::Backend(_)) && inode.is_directory())
                 && inode.nlink == 0
                 && name != b"."
                 && name != b".."
@@ -1205,9 +1406,11 @@ impl<'a> Walk<'a> {
                 return Err(Errno::ENOENT);
             }
         }
-        // The length limit is each file system's own; the process information tree has none, so a
-        // long name there is simply not found.
-        if name.len() > NAME_MAX as usize && !matches!(directory.borrow().content, Content::Proc(_))
+        // The length limit is each file system's own; the process information tree and sysfs have
+        // none, so a long name there is simply not found.
+        if name.len() > NAME_MAX as usize
+            && !matches!(directory.borrow().content, Content::Proc(_))
+            && directory.borrow().fs.kind != Kind::Sysfs
         {
             return Err(Errno::ENAMETOOLONG);
         }
@@ -1232,7 +1435,19 @@ impl<'a> Walk<'a> {
         } else {
             let inode = directory.borrow();
             match &inode.content {
-                Content::Directory(entries) => entries.get(name).ok_or(Errno::ENOENT)?,
+                Content::Directory(entries) => match entries.get(name) {
+                    Some(found) => found,
+                    None => {
+                        if inode.fs.kind == Kind::Sysfs {
+                            sys_not_built(self.proc.counters, name);
+                        }
+                        return Err(Errno::ENOENT);
+                    }
+                },
+                Content::Backend(_) if inode.is_directory() => {
+                    drop(inode);
+                    backend::lookup(directory, name)?
+                }
                 Content::Proc(entry) => {
                     let entry = *entry;
                     drop(inode);
@@ -1270,6 +1485,11 @@ impl<'a> Walk<'a> {
                 Content::Symlink(target) => {
                     self.may_follow(directory, &inode)?;
                     target.clone()
+                }
+                Content::Backend(_) => {
+                    self.may_follow(directory, &inode)?;
+                    drop(inode);
+                    backend::readlink(&node)?
                 }
                 Content::Proc(entry) => {
                     let entry = *entry;

@@ -22,6 +22,11 @@ impl Host {
             arm_nans: answer & ARM_NANS != 0,
         }
     }
+
+    /// The probe's answer this host gives back.
+    pub fn answer(self) -> i32 {
+        (i32::from(self.fused_multiply_add) * FUSED) | (i32::from(self.arm_nans) * ARM_NANS)
+    }
 }
 
 fn splat32(bits: u32) -> i128 {

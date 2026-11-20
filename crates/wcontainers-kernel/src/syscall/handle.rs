@@ -11,7 +11,8 @@ use super::{Args, guest};
 use crate::fs::{Inode, Kind};
 use crate::linux::general::*;
 use crate::linux_extra::{
-    FILEID_INO32_GEN, FILEID_INO64_GEN, FILEID_INVALID, MAX_HANDLE_SZ, MNT_UNIQUE_ID_OFFSET,
+    FILEID_INO32_GEN, FILEID_INO64_GEN, FILEID_INVALID, FILEID_KERNFS, MAX_HANDLE_SZ,
+    MNT_UNIQUE_ID_OFFSET,
 };
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
@@ -28,19 +29,56 @@ pub(super) fn unique_mount_id(inode: &Inode) -> u64 {
 }
 
 /// The words of a file's handle and their type: tmpfs's own encoding (generation, then the inode
-/// number), or, only when asked for an identifier, the generic one other file systems get (the inode
-/// number, then a generation of 0).
-fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, [u32; 3]), Errno> {
+/// number), pidfs's (the inode number, `FILEID_KERNFS`), or, only when asked for an identifier, the
+/// generic one other file systems get (the inode number, then a generation of 0).
+pub(super) fn encode(
+    kernel: &Kernel,
+    inode: &Inode,
+    identifier: bool,
+) -> Result<(i32, Vec<u32>), Errno> {
     let ino = [inode.ino as u32, (inode.ino >> 32) as u32];
     match inode.fs.kind {
         Kind::Tmpfs => Ok((
             FILEID_INO32_GEN,
-            [generation(kernel, inode.ino), ino[0], ino[1]],
+            alloc::vec![generation(kernel, inode.ino), ino[0], ino[1]],
         )),
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem if identifier => {
-            Ok((FILEID_INO64_GEN, [ino[0], ino[1], 0]))
+        Kind::Pidfs => Ok((FILEID_KERNFS, ino.to_vec())),
+        // `nsfs_encode_fh`: the namespace's id (here its number), its type and its number.
+        Kind::Nsfs => {
+            let crate::fs::Content::Namespace(namespace) = inode.content else {
+                return Err(Errno::EOPNOTSUPP);
+            };
+            Ok((
+                crate::linux_extra::FILEID_NSFS,
+                alloc::vec![ino[0], ino[1], namespace.clone_flag(), ino[0]],
+            ))
         }
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem => Err(Errno::EOPNOTSUPP),
+        // `fuse_encode_fh`: the node number's high and low words and its generation.
+        Kind::Fuse => {
+            let nodeid = crate::fs::backend::remote_number(inode);
+            Ok((0x81, alloc::vec![(nodeid >> 32) as u32, nodeid as u32, 0]))
+        }
+        Kind::Proc
+        | Kind::Devpts
+        | Kind::Pipe
+        | Kind::Secretmem
+        | Kind::Anon
+        | Kind::Mqueue
+        | Kind::Sockfs
+            if identifier =>
+        {
+            Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 0]))
+        }
+        // kernfs's root has generation 1 (measured), and sysfs encodes no handles of its own.
+        Kind::Sysfs if identifier => Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 1])),
+        Kind::Sysfs => Err(Errno::EOPNOTSUPP),
+        Kind::Proc
+        | Kind::Devpts
+        | Kind::Pipe
+        | Kind::Secretmem
+        | Kind::Anon
+        | Kind::Mqueue
+        | Kind::Sockfs => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -102,9 +140,9 @@ pub(super) fn name_to_handle_at(
         }
     }
     let written = if flags & AT_HANDLE_MNT_ID_UNIQUE != 0 {
-        guest.write(mount, &unique_mount_id.to_le_bytes())
+        guest.put(mount, &unique_mount_id.to_le_bytes())
     } else {
-        guest.write(mount, &(mount_id as u32).to_le_bytes())
+        guest.put(mount, &(mount_id as u32).to_le_bytes())
     };
     written?;
     guest.write(handle, &out)?;

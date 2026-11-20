@@ -6,9 +6,16 @@ use std::path::Path;
 use wcontainers_kernel::reason;
 use wcontainers_kernel_test::{guest, run_both};
 
+/// Built once for all tests here: a program renamed over while a reference container starts it can be
+/// missing in the container's view of the shared directory.
 fn program() -> std::path::PathBuf {
-    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
-    guest::build("syscall", &["-nostdlib"], &out)
+    static PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+            guest::build("syscall", &["-nostdlib"], &out)
+        })
+        .clone()
 }
 
 #[test]
@@ -47,12 +54,9 @@ fn not_implemented_counts_and_warns() {
     let enosys = -(linux_raw_sys::errno::ENOSYS as i64);
     assert_eq!(run.outcome.stdout, format!("{enosys}\n").into_bytes());
     assert_eq!(run.outcome.exit_code, 0);
-    assert_eq!(run.warnings_besides_start().len(), 1);
-    assert_eq!(
-        run.warnings_besides_start()[0].reason,
-        reason::NOT_IMPLEMENTED
-    );
-    assert_eq!(run.warnings_besides_start()[0].detail, missing.number);
+    assert_eq!(run.warnings.len(), 1);
+    assert_eq!(run.warnings[0].reason, reason::NOT_IMPLEMENTED);
+    assert_eq!(run.warnings[0].detail, missing.number);
     let counter = run
         .counters
         .iter()
@@ -68,12 +72,9 @@ fn numbers_above_linux_calls_match_reference() {
     for (argument, detail) in [("1000", 1000), ("-1", u64::from(u32::MAX))] {
         let (ours, theirs) = run_both(&program(), &[argument]);
         assert_eq!(ours.outcome, theirs, "{argument}");
-        assert_eq!(ours.warnings_besides_start().len(), 1, "{argument}");
-        assert_eq!(
-            ours.warnings_besides_start()[0].reason,
-            reason::UNKNOWN_SYSCALL
-        );
-        assert_eq!(ours.warnings_besides_start()[0].detail, detail);
+        assert_eq!(ours.warnings.len(), 1, "{argument}");
+        assert_eq!(ours.warnings[0].reason, reason::UNKNOWN_SYSCALL);
+        assert_eq!(ours.warnings[0].detail, detail);
     }
 }
 
@@ -83,11 +84,7 @@ fn number_high_bits_are_ignored_as_in_reference() {
     let (ours, theirs) = run_both(&program(), &[&((1u64 << 32) | 64).to_string()]);
     assert_eq!(ours.outcome, theirs);
     assert_eq!(ours.outcome.stdout, b"0\n");
-    assert!(
-        ours.warnings_besides_start().is_empty(),
-        "{:?}",
-        ours.warnings
-    );
+    assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
 }
 
 /// Numbers in the gaps of Linux's list are refused with EPERM by Docker's default seccomp profile.

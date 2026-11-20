@@ -15,7 +15,7 @@ use crate::fs::{Content, Node};
 use crate::linux::auxvec::*;
 use crate::linux::general::{ARG_MAX, PATH_MAX, R_OK, S_IFLNK, S_IFMT, S_IFREG, X_OK};
 use crate::memory::{AddressMap, Backing, Mapping, STACK_LIMIT, page_down, page_up};
-use crate::process::{Pid, StartingStack};
+use crate::process::{StartingStack, Tid};
 use crate::{Context, Errno, Kernel, errno};
 
 /// Linux's `AT_PLATFORM` string on ARM64.
@@ -100,6 +100,8 @@ impl ArgumentRoom {
 pub(crate) struct Image {
     pub memory: MemoryId,
     pub map: AddressMap,
+    /// Where `[vvar]` starts, with the vDSO's code after it.
+    pub vdso: u64,
     pub registers: RegisterBlock,
     pub executable: (Node, Vec<u8>),
     pub starting_stack: StartingStack,
@@ -117,7 +119,13 @@ pub(crate) struct Program {
     node: Node,
     /// Its path from the root, with links followed.
     path: Vec<u8>,
+    /// Its bytes: all of a file in memory, the first `SCRIPT_LINE` of one on the backend (Linux's
+    /// `bprm->buf`), whose others are read when needed.
     bytes: Vec<u8>,
+    /// Its size.
+    size: u64,
+    /// A program on the backend: the open file it is read through, which its pages are kept by.
+    backend: Option<alloc::rc::Rc<crate::fs::backend::Handle>>,
     /// The caller may read it (Linux's `would_dump`).
     readable: bool,
     /// The new program could open it again by the name it was run by, as a script's interpreter
@@ -129,11 +137,11 @@ pub(crate) struct Program {
 pub(crate) fn open_program(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     path: &[u8],
 ) -> Result<Program, Errno> {
-    let cwd = kernel.processes[&pid].cwd.clone();
-    open_program_at(kernel, cpu, pid, &cwd, path, true)
+    let cwd = kernel.fs(tid).cwd.clone();
+    open_program_at(kernel, cpu, tid, &cwd, path, true)
 }
 
 /// Finds a file to run by a name the kernel made (`open_exec`): one that may be empty
@@ -141,21 +149,21 @@ pub(crate) fn open_program(
 fn open_named_program(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     path: &[u8],
 ) -> Result<Program, Errno> {
     if path.is_empty() {
-        let cwd = kernel.processes[&pid].cwd.clone();
-        return program_of(kernel, cpu, pid, cwd, Vec::new());
+        let cwd = kernel.fs(tid).cwd.clone();
+        return program_of(kernel, cpu, tid, cwd, Vec::new());
     }
-    open_program(kernel, cpu, pid, path)
+    open_program(kernel, cpu, tid, path)
 }
 
 /// The same from `start`; not following a link as the last part makes one ELOOP.
 pub(crate) fn open_program_at(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     start: &Node,
     path: &[u8],
     follow: bool,
@@ -163,7 +171,7 @@ pub(crate) fn open_program_at(
     // A trailing slash follows a last link whatever the flags say and asks for a directory, which
     // no program is (`open_last_lookups`, `do_open`).
     let trailing_slash = path.ends_with(b"/");
-    let (node, full) = kernel.with_walk(pid, |walk, _| {
+    let (node, full) = kernel.with_walk(tid, |walk, _| {
         if !follow
             && !trailing_slash
             && walk.resolve(start, path, false)?.borrow().file_type() == S_IFLNK
@@ -175,18 +183,18 @@ pub(crate) fn open_program_at(
     if trailing_slash && !node.borrow().is_directory() {
         return Err(Errno::ENOTDIR);
     }
-    program_of(kernel, cpu, pid, node, full)
+    program_of(kernel, cpu, tid, node, full)
 }
 
 /// Linux's checks on a file to run (`do_open_execat`), for a file already found.
 pub(crate) fn program_of(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     node: Node,
     path: Vec<u8>,
 ) -> Result<Program, Errno> {
-    let credentials = &kernel.processes[&pid].credentials;
+    let credentials = kernel.credentials(tid);
     let inode = node.borrow();
     if inode.mode & S_IFMT != S_IFREG || inode.fs.no_execute() {
         return Err(Errno::EACCES);
@@ -194,22 +202,42 @@ pub(crate) fn program_of(
     if !inode.permits(credentials, X_OK, true) {
         return Err(Errno::EACCES);
     }
-    let bytes = match &inode.content {
-        Content::Regular(file) => file.bytes(cpu),
+    let readable = inode.permits(credentials, R_OK, true);
+    let size = match &inode.content {
+        Content::Backend(remote) => Some(remote.size.get()),
+        _ => None,
+    };
+    let (bytes, backend) = match (&inode.content, size) {
+        (Content::Regular(file), _) => {
+            let bytes = file.bytes(cpu);
+            drop(inode);
+            (bytes, None)
+        }
+        // A program on the backend is opened there (`do_open_execat`) and its first bytes read
+        // (`prepare_binprm`).
+        (Content::Backend(_), Some(size)) => {
+            drop(inode);
+            let handle = crate::fs::backend::open(
+                &node,
+                crate::linux::general::O_RDONLY | crate::linux::general::O_LARGEFILE,
+            )?;
+            let head = crate::fs::backend::read(&handle, 0, size.min(SCRIPT_LINE as u64))?;
+            (head, Some(handle))
+        }
         _ => return Err(Errno::EACCES),
     };
-    let readable = inode.permits(credentials, R_OK, true);
-    drop(inode);
     Ok(Program {
         node,
         path,
+        size: size.unwrap_or(bytes.len() as u64),
         bytes,
+        backend,
         readable,
         reopenable: true,
     })
 }
 
-/// Loads the program at `path` into a new memory for process `pid`. Nothing about the process changes;
+/// Loads the program at `path` into a new memory for thread `tid`'s process. Nothing about the process changes;
 /// on failure nothing is left behind.
 #[allow(
     clippy::too_many_arguments,
@@ -218,7 +246,7 @@ pub(crate) fn program_of(
 pub(crate) fn load(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    pid: Pid,
+    tid: Tid,
     path: &[u8],
     program: Program,
     arguments: Vec<Vec<u8>>,
@@ -257,15 +285,15 @@ pub(crate) fn load(
         new_arguments.push(file_name.clone());
         new_arguments.extend(arguments.into_iter().skip(1));
         arguments = new_arguments;
-        program = open_named_program(kernel, cx.cpu, pid, &interpreter)?;
+        program = open_named_program(kernel, cx.cpu, tid, &interpreter)?;
         readable &= program.readable;
         file_name = interpreter;
     }
-    let memory = cx.cpu.memory_new().map_err(errno::from_cpu)?;
+    let memory = cx.cpu.memory_new().map_err(|error| cx.cpu_error(error))?;
     let result = place(
         kernel,
         cx,
-        pid,
+        tid,
         memory,
         program,
         path,
@@ -324,20 +352,31 @@ fn parse_script_line(bytes: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), Errno> 
     Ok((string(name), argument.map(string)))
 }
 
-/// Bytes of a file from `offset`, as many as it has up to `length`, as Linux's `kernel_read`: an
-/// offset a file position cannot hold is EINVAL (`rw_verify_area`).
-fn file_bytes(bytes: &[u8], offset: u64, length: u64) -> Result<&[u8], Errno> {
+/// Bytes of a program from `offset`, as many as it has up to `length`, as Linux's `kernel_read`:
+/// an offset a file position cannot hold is EINVAL (`rw_verify_area`). Those past what it holds
+/// are read from the backend, which parks the call until they come.
+fn file_bytes(program: &Program, offset: u64, length: u64) -> Result<Vec<u8>, Errno> {
     let end = offset
         .checked_add(length)
         .filter(|end| *end <= i64::MAX as u64)
         .ok_or(Errno::EINVAL)?;
+    let bytes = &program.bytes;
+    if let Some(handle) = &program.backend
+        && end > bytes.len() as u64
+    {
+        let end = end.min(program.size);
+        if offset >= end {
+            return Ok(Vec::new());
+        }
+        return crate::fs::backend::read(handle, offset, end - offset);
+    }
     let clamp = |at: u64| usize::try_from(at).unwrap_or(usize::MAX).min(bytes.len());
-    Ok(&bytes[clamp(offset).min(clamp(end))..clamp(end)])
+    Ok(bytes[clamp(offset).min(clamp(end))..clamp(end)].to_vec())
 }
 
 /// The same, all of it or EIO (`elf_read`).
-fn elf_read(bytes: &[u8], offset: u64, length: u64) -> Result<&[u8], Errno> {
-    let read = file_bytes(bytes, offset, length)?;
+fn elf_read(program: &Program, offset: u64, length: u64) -> Result<Vec<u8>, Errno> {
+    let read = file_bytes(program, offset, length)?;
     if read.len() as u64 != length {
         return Err(Errno::EIO);
     }
@@ -355,27 +394,36 @@ fn file_header(bytes: &[u8]) -> Header {
 }
 
 /// The program headers, as Linux's `load_elf_phdrs`: entries of Linux's size, at least one and at
-/// most 64 KiB of them, all in the file.
-fn program_headers(bytes: &[u8], header: &Header) -> Option<Vec<Segment>> {
+/// most 64 KiB of them, all in the file; `invalid` if not. A read the backend is asked for parks.
+fn program_headers(
+    program: &Program,
+    header: &Header,
+    invalid: Errno,
+) -> Result<Vec<Segment>, Errno> {
     let endian = LittleEndian;
     if usize::from(header.e_phentsize(endian)) != size_of::<Segment>() {
-        return None;
+        return Err(invalid);
     }
     let count = usize::from(header.e_phnum(endian));
     let size = (size_of::<Segment>() * count) as u64;
     if size == 0 || size > 65536 {
-        return None;
+        return Err(invalid);
     }
-    let raw = elf_read(bytes, header.e_phoff(endian), size).ok()?;
-    let (segments, _) = object::pod::slice_from_bytes::<Segment>(raw, count).ok()?;
-    Some(segments.to_vec())
+    let raw = match elf_read(program, header.e_phoff(endian), size) {
+        Ok(raw) => raw,
+        Err(Errno::PARKED) => return Err(Errno::PARKED),
+        Err(_) => return Err(invalid),
+    };
+    let (segments, _) =
+        object::pod::slice_from_bytes::<Segment>(&raw, count).map_err(|()| invalid)?;
+    Ok(segments.to_vec())
 }
 
 /// Linux's `parse_elf_properties` and arm64's `arch_parse_elf_property` on the file whose properties
 /// count (the loader's when there is one): one GNU property note of at most 1 KiB whose properties
 /// are whole, sorted and unique. The CPU has no branch target identification, so what they ask for
 /// changes nothing.
-fn check_properties(bytes: &[u8], segment: Option<&Segment>) -> Result<(), Errno> {
+fn check_properties(program: &Program, segment: Option<&Segment>) -> Result<(), Errno> {
     let Some(segment) = segment else {
         return Ok(());
     };
@@ -386,7 +434,7 @@ fn check_properties(bytes: &[u8], segment: Option<&Segment>) -> Result<(), Errno
     if segment.p_filesz(endian) > 1024 {
         return Err(Errno::ENOEXEC);
     }
-    let note = file_bytes(bytes, segment.p_offset(endian), segment.p_filesz(endian))?;
+    let note = file_bytes(program, segment.p_offset(endian), segment.p_filesz(endian))?;
     if note.len() < NOTE_HEADER + 4 {
         return Err(Errno::EIO);
     }
@@ -444,7 +492,7 @@ struct Placed {
 fn place(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    pid: Pid,
+    tid: Tid,
     memory: MemoryId,
     program: Program,
     exec_path: &[u8],
@@ -464,7 +512,7 @@ fn place(
     {
         return Err(Errno::ENOEXEC.into());
     }
-    let segments = program_headers(&program.bytes, &header).ok_or(Errno::ENOEXEC)?;
+    let segments = program_headers(&program, &header, Errno::ENOEXEC)?;
     let mut property = None;
     let mut interpreter = None;
     for segment in &segments {
@@ -475,14 +523,14 @@ fn place(
                 if !(2..=u64::from(PATH_MAX)).contains(&size) {
                     return Err(Errno::ENOEXEC.into());
                 }
-                let name = elf_read(&program.bytes, segment.p_offset(endian), size)?;
+                let name = elf_read(&program, segment.p_offset(endian), size)?;
                 let (last, name) = name.split_last().expect("two bytes at least");
                 if *last != 0 {
                     return Err(Errno::ENOEXEC.into());
                 }
                 let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
-                let found = open_named_program(kernel, cx.cpu, pid, name)?;
-                elf_read(&found.bytes, 0, size_of::<Header>() as u64)?;
+                let found = open_named_program(kernel, cx.cpu, tid, name)?;
+                elf_read(&found, 0, size_of::<Header>() as u64)?;
                 interpreter = Some(found);
                 break;
             }
@@ -495,7 +543,7 @@ fn place(
             if header.e_ident.magic != elf::ELFMAG || header.e_machine(endian) != elf::EM_AARCH64 {
                 return Err(Errno::ELIBBAD.into());
             }
-            let segments = program_headers(&found.bytes, &header).ok_or(Errno::ELIBBAD)?;
+            let segments = program_headers(&found, &header, Errno::ELIBBAD)?;
             property = segments
                 .iter()
                 .rfind(|segment| segment.p_type(endian) == elf::PT_GNU_PROPERTY)
@@ -504,9 +552,7 @@ fn place(
         }
         None => None,
     };
-    let properties_of = interpreter
-        .as_ref()
-        .map_or(&program.bytes, |(found, ..)| &found.bytes);
+    let properties_of = interpreter.as_ref().map_or(&program, |(found, ..)| found);
     check_properties(properties_of, property.as_ref())?;
     // Where Linux puts a program that can be placed anywhere: two thirds of the way up.
     let bias = if header.e_type(endian) == elf::ET_EXEC {
@@ -518,28 +564,68 @@ fn place(
         && interpreter
             .as_ref()
             .is_none_or(|(program, ..)| program.readable);
+    let nosuid = program.node.borrow().fs.flags & crate::linux_extra::ST_NOSUID != 0;
+    // A program on the backend has its file capabilities read there (`get_vfs_caps_from_disk`,
+    // into a buffer of the larger form's size), unless its mount ignores them.
+    let backend_capabilities = if crate::fs::backend::remote(&program.node).is_some() && !nosuid {
+        match crate::fs::backend::getxattr(
+            &program.node,
+            crate::syscall::CAPABILITY,
+            size_of::<crate::linux::general::vfs_ns_cap_data>() as u32,
+        ) {
+            Ok(value) => Some(value),
+            Err(Errno::ENODATA | Errno::EOPNOTSUPP) => None,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        None
+    };
     let after = {
         let inode = program.node.borrow();
-        kernel.processes[&pid]
-            .credentials
+        let capabilities = match &backend_capabilities {
+            Some(value) => Some(value.as_slice()),
+            None => inode
+                .xattrs
+                .get(crate::syscall::CAPABILITY)
+                .map(Vec::as_slice),
+        };
+        kernel
+            .credentials(tid)
             .for_program(&crate::credentials::ProgramFile {
                 mode: inode.mode,
                 uid: inode.uid,
                 gid: inode.gid,
-                nosuid: inode.fs.flags & crate::linux_extra::ST_NOSUID != 0,
-                capabilities: inode
-                    .xattrs
-                    .get(crate::syscall::CAPABILITY)
-                    .map(Vec::as_slice),
+                nosuid,
+                capabilities,
             })?
+    };
+    let main_tails = segment_tails(&program, &segments)?;
+    let interpreter_tails = match &interpreter {
+        Some((found, _, segments)) => segment_tails(found, segments)?,
+        None => Vec::new(),
     };
     // The point of no return: from here a failure kills the process.
     let main_path = program.path.clone();
+    // A program on the backend shows its pages as Linux's page cache, each read when touched.
+    for placed in core::iter::once(&program).chain(interpreter.as_ref().map(|(found, ..)| found)) {
+        if let Some(handle) = &placed.backend {
+            crate::shared::backend_block(
+                kernel,
+                cx,
+                &placed.node,
+                Some(handle),
+                placed.size,
+                false,
+            )
+            .map_err(fatal)?;
+        }
+    }
     let main = place_elf(
         cx,
         memory,
         &mut map,
         (&program, &header, &segments),
+        &main_tails,
         &main_path,
         Some(bias),
     )
@@ -555,6 +641,7 @@ fn place(
                 memory,
                 &mut map,
                 (found, header, segments),
+                &interpreter_tails,
                 &found.path,
                 None,
             )
@@ -563,6 +650,8 @@ fn place(
         }
         None => (main.entry, 0),
     };
+    crate::shared::show_all(kernel, cx, memory, &map).map_err(fatal)?;
+    let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 
     let credentials = &after.credentials;
     let auxiliary = [
@@ -580,6 +669,8 @@ fn place(
         (AT_GID, credentials.gid.into()),
         (AT_EGID, credentials.egid.into()),
         (AT_SECURE, after.secure.into()),
+        (AT_SYSINFO_EHDR, vdso + crate::vdso::VVAR_PAGES * PAGE_SIZE),
+        (AT_MINSIGSTKSZ, crate::linux_extra::SIGNAL_MINSIGSTKSZ),
     ];
     let (sp, starting_stack) = build_stack(
         cx,
@@ -603,17 +694,12 @@ fn place(
             shared: false,
             locked: crate::memory::Lock::None,
             grows_down: true,
+            on_fork: crate::memory::OnFork::default(),
             backing: Backing::Stack,
         },
     )
     .map_err(fatal)?;
     // The stack's range was never used before, so making its mapping keeps the bytes just written.
-    // No vDSO yet (its page holds the signal return path), and no signal frame size to report.
-    for key in [AT_SYSINFO_EHDR, AT_MINSIGSTKSZ] {
-        kernel
-            .counters
-            .count(cx.host, crate::reason::AUXILIARY_MISSING, key.into());
-    }
     let mut registers = RegisterBlock::ZERO;
     registers.sp = sp;
     registers.pc = entry;
@@ -626,6 +712,7 @@ fn place(
     Ok(Image {
         memory,
         map,
+        vdso,
         registers,
         executable: (program.node, main_path),
         starting_stack,
@@ -635,17 +722,97 @@ fn place(
     })
 }
 
-/// Places one ELF file's loadable segments. With no bias given, the file goes wherever free space is,
-/// as `mmap` would put it.
+/// Maps `[vvar]` and the vDSO where `mmap` would put them, and writes the vDSO's code
+/// (`arch_setup_additional_pages`). The data pages hold nothing a program reads here.
+fn place_vdso(cx: &mut Context<'_>, memory: MemoryId, map: &mut AddressMap) -> Result<u64, Errno> {
+    use crate::vdso::{CODE_PAGES, VVAR_PAGES};
+    let length = (VVAR_PAGES + CODE_PAGES) * PAGE_SIZE;
+    let start = map.find_free(length).ok_or(Errno::ENOMEM)?;
+    let code = start + VVAR_PAGES * PAGE_SIZE;
+    let special = |start: u64, end: u64, permissions: Permissions, name: &'static str| Mapping {
+        start,
+        end,
+        permissions,
+        allowed: permissions | Permissions::READ,
+        shared: false,
+        locked: crate::memory::Lock::None,
+        grows_down: false,
+        on_fork: crate::memory::OnFork::default(),
+        backing: Backing::Special(name),
+    };
+    map.insert(
+        cx.cpu,
+        memory,
+        special(start, code, Permissions::READ, "[vvar]"),
+    )?;
+    map.insert(
+        cx.cpu,
+        memory,
+        special(
+            code,
+            start + length,
+            Permissions::READ | Permissions::EXECUTE,
+            "[vdso]",
+        ),
+    )?;
+    let image = crate::vdso::image();
+    cx.cpu
+        .write(memory, code, &image)
+        .map_err(errno::from_cpu)?;
+    cx.cpu.code_changed(
+        memory,
+        code,
+        CODE_PAGES * PAGE_SIZE,
+        &[code + crate::vdso::SIGTRAMP],
+    );
+    Ok(start)
+}
+
+/// The file bytes of the last page of each writable segment that zeroed memory follows within that
+/// page, by the page's offset in the file: Linux clears the rest of that page (`padzero`), which
+/// makes it the process's own copy. Read before anything changes, since the backend may be asked;
+/// two segments may end in one page, each with its own bytes of it.
+fn segment_tails(program: &Program, segments: &[Segment]) -> Result<Vec<(u64, Vec<u8>)>, Errno> {
+    let endian = LittleEndian;
+    let mut tails = Vec::new();
+    for segment in segments {
+        let offset = segment.p_offset(endian);
+        let address = segment.p_vaddr(endian);
+        let segment_file = segment.p_filesz(endian);
+        let file_end = address.wrapping_add(segment_file);
+        if segment.p_type(endian) != elf::PT_LOAD
+            || segment_file == 0
+            || segment.p_memsz(endian) <= segment_file
+            || !segment_permissions(segment.p_flags(endian).0).contains(Permissions::WRITE)
+            || file_end % PAGE_SIZE == 0
+        {
+            continue;
+        }
+        let Some(to) = offset.checked_add(segment_file) else {
+            continue;
+        };
+        let page_offset = page_down(offset) + (page_down(file_end) - page_down(address));
+        if page_offset < to && to <= program.size {
+            tails.push((
+                page_offset,
+                file_bytes(program, page_offset, to - page_offset)?,
+            ));
+        }
+    }
+    Ok(tails)
+}
+
+/// Places one ELF file's loadable segments, with the tails [`segment_tails`] read. With no bias
+/// given, the file goes wherever free space is, as `mmap` would put it.
 fn place_elf(
     cx: &mut Context<'_>,
     memory: MemoryId,
     map: &mut AddressMap,
     (program, header, segments): (&Program, &Header, &[Segment]),
+    tails: &[(u64, Vec<u8>)],
     path: &[u8],
     bias: Option<u64>,
 ) -> Result<Placed, Errno> {
-    let bytes = program.bytes.as_slice();
     let endian = LittleEndian;
     let loads: Vec<_> = segments
         .iter()
@@ -672,7 +839,7 @@ fn place_elf(
         (None, elf::ET_DYN) => map.find_free(span).ok_or(Errno::ENOMEM)? - lowest,
         _ => return Err(Errno::ENOEXEC),
     };
-    let file_size = bytes.len() as u64;
+    let file_size = program.size;
     let mut program_headers = 0;
     let phoff = header.e_phoff(endian);
     let mut end = 0;
@@ -702,7 +869,27 @@ fn place_elf(
             if to > file_size {
                 return Err(Errno::ENOEXEC);
             }
-            let available = (page_up(to).min(file_size) - from) as usize;
+            let available = page_up(to).min(file_size) - from;
+            // Linux clears the rest of the last file page only when zeroed data follows and the segment
+            // is writable (`padzero`), which makes that page the process's own copy.
+            let mut copied = alloc::collections::BTreeSet::new();
+            let last_page = page_down(file_end);
+            if segment_memory > segment_file
+                && permissions.contains(Permissions::WRITE)
+                && file_end != file_pages_end
+            {
+                let page_offset = from + (last_page - start);
+                copied.insert(page_offset / PAGE_SIZE);
+                let tail = tails
+                    .iter()
+                    .find(|(at, tail)| *at == page_offset && at + tail.len() as u64 == to)
+                    .map(|(_, tail)| tail.as_slice())
+                    .ok_or(Errno::EIO)?;
+                cx.cpu
+                    .write(memory, last_page, tail)
+                    .map_err(errno::from_cpu)?;
+            }
+            // The file's pages are shown once every segment is placed.
             map.insert(
                 cx.cpu,
                 memory,
@@ -714,28 +901,16 @@ fn place_elf(
                     shared: false,
                     locked: crate::memory::Lock::None,
                     grows_down: false,
+                    on_fork: crate::memory::OnFork::default(),
                     backing: Backing::File {
                         node: program.node.clone(),
                         path: path.to_vec(),
                         offset: from,
-                        file_end: start + page_up(available as u64),
+                        file_end: start + page_up(available),
+                        copied,
                     },
                 },
             )?;
-            cx.cpu
-                .write(
-                    memory,
-                    start,
-                    &bytes[from as usize..from as usize + available],
-                )
-                .map_err(errno::from_cpu)?;
-            // Linux clears the rest of the last file page only when zeroed data follows and the segment
-            // is writable (`padzero`).
-            if segment_memory > segment_file && permissions.contains(Permissions::WRITE) {
-                cx.cpu
-                    .zero(memory, file_end, file_pages_end - file_end)
-                    .map_err(errno::from_cpu)?;
-            }
         }
         if stop > file_pages_end {
             map.insert(
@@ -749,6 +924,7 @@ fn place_elf(
                     shared: false,
                     locked: crate::memory::Lock::None,
                     grows_down: false,
+                    on_fork: crate::memory::OnFork::default(),
                     backing: Backing::Anonymous,
                 },
             )?;

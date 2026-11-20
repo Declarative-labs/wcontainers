@@ -395,6 +395,8 @@ version = "0.1.0"
 dependencies = [
  "rustc_apfloat",
  "wasm-encoder",
+ "wcontainers-abi",
+ "wcontainers-guest-cpu",
  "yaxpeax-arch",
  "yaxpeax-arm",
 ]
@@ -406,7 +408,17 @@ dependencies = [
  "serde_json",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-guest-cpu",
  "wcontainers-translator",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-guest-cpu"
+version = "0.1.0"
+dependencies = [
+ "wasm-encoder",
+ "zerocopy",
 ]
 
 [[package]]
@@ -419,7 +431,7 @@ dependencies = [
  "rustc-hash",
  "wasm-encoder",
  "wcontainers-abi",
- "wcontainers-arm64",
+ "wcontainers-guest-cpu",
 ]
 
 [[package]]

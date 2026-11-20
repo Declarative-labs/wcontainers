@@ -1,5 +1,6 @@
 //! Runs wcontainers-kernel on a stand-in CPU and compares it with real ARM64 Linux.
 
+pub mod backend;
 pub mod buffer;
 pub mod busybox;
 pub mod driver;
@@ -7,7 +8,11 @@ pub mod generate;
 pub mod guest;
 pub mod image;
 pub mod layer1;
+pub mod libctest;
+pub mod ltp;
+pub mod network;
 pub mod reference;
+pub mod runtimes;
 pub mod standin;
 
 use std::path::Path;
@@ -36,6 +41,79 @@ pub fn run_both(program: &Path, arguments: &[&str]) -> (driver::Run, driver::Out
 /// Runs `path` with `arguments` (the first is its name) in a container of the reference image with
 /// `directory` at `/wc`.
 pub fn run_ours(directory: &Path, path: &str, arguments: &[&str]) -> driver::Run {
+    run_ours_saving(directory, path, arguments, 0, 0)
+}
+
+/// As [`run_ours`], with the run's seed and saved and brought back `saves` times.
+pub fn run_ours_saving(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    saves: usize,
+) -> driver::Run {
+    run_ours_wall_moved(directory, path, arguments, seed, saves, 0)
+}
+
+/// As [`run_ours_saving`], with the host's wall clock moved on `wall_step` nanoseconds against its
+/// monotonic clock at each save.
+pub fn run_ours_wall_moved(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    saves: usize,
+    wall_step: u64,
+) -> driver::Run {
+    let injections = driver::Injections {
+        saves,
+        wall_step,
+        ..Default::default()
+    };
+    run_ours_injected(directory, path, arguments, seed, injections)
+}
+
+/// As [`run_ours`], with the run's seed and what it has done to it.
+pub fn run_ours_injected(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    injections: driver::Injections,
+) -> driver::Run {
+    run_ours_on(directory, path, arguments, seed, injections, None, &[])
+}
+
+/// As [`run_ours_saving`], with ports of this machine's loopback reaching the container's as
+/// (container port, outside port), as `docker run -p` publishes them.
+pub fn run_ours_published(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    saves: usize,
+    published: &[(u16, u16)],
+) -> driver::Run {
+    let injections = driver::Injections {
+        saves,
+        ..Default::default()
+    };
+    run_ours_on(
+        directory, path, arguments, seed, injections, None, published,
+    )
+}
+
+/// As [`run_ours_injected`], with the root file system on the backend (`Some("/")`) or in memory,
+/// and the ports published.
+fn run_ours_on(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    injections: driver::Injections,
+    backend: Option<&str>,
+    published: &[(u16, u16)],
+) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, "wc"));
     let container = driver::Container {
@@ -44,8 +122,12 @@ pub fn run_ours(directory: &Path, path: &str, arguments: &[&str]) -> driver::Run
         arguments,
         environment: reference::ENVIRONMENT,
         working_directory: "/",
+        backend,
+        cached: false,
+        published,
+        address_space: standin::SPACE_32_BIT,
     };
-    driver::run(&container, 0)
+    driver::run_injected(&container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
 }
 
@@ -66,4 +148,88 @@ pub fn assert_same_output(out: &Path, name: &str, arguments: &[&str]) -> driver:
     assert!(differences.is_empty(), "{}", differences.join("\n"));
     assert_eq!(ours.outcome, theirs);
     ours
+}
+
+/// The seeds of the schedules a threaded program runs under: `SCHEDULE_SEEDS` of them (3 if unset)
+/// from `SCHEDULE_SEED` on (1 if unset). Each seed decides where every turn on the CPU ends.
+pub fn schedule_seeds() -> std::ops::Range<u64> {
+    let number = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let first = number("SCHEDULE_SEED", 1);
+    first..first + number("SCHEDULE_SEEDS", 3)
+}
+
+/// As [`assert_same_output`], with ours run under every seed of [`schedule_seeds`], and with
+/// `saves` saves at moments drawn from each seed; returns our runs.
+pub fn assert_same_output_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+) -> Vec<driver::Run> {
+    same_output_seeded(out, name, arguments, saves, reference::run, None)
+}
+
+/// As [`assert_same_output_seeded`], with ours on a root file system on the file backend, the
+/// image and the program unpacked into it.
+pub fn assert_same_output_on_backend_root_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+) -> Vec<driver::Run> {
+    same_output_seeded(out, name, arguments, saves, reference::run, Some("/"))
+}
+
+/// As [`assert_same_output_seeded`], with the reference on one CPU like the made-up machine.
+pub fn assert_same_output_one_cpu_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+) -> Vec<driver::Run> {
+    same_output_seeded(out, name, arguments, saves, reference::run_one_cpu, None)
+}
+
+fn same_output_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+    reference: fn(&Path, &[&str]) -> driver::Outcome,
+    backend: Option<&str>,
+) -> Vec<driver::Run> {
+    let program = guest::build(name, &[], out);
+    let theirs = reference(&program, arguments);
+    let path = format!(
+        "/wc/{}",
+        program.file_name().expect("a name").to_string_lossy()
+    );
+    let mut all = vec![path.as_str()];
+    all.extend_from_slice(arguments);
+    let directory = program.parent().expect("program has a directory");
+    let mut runs = Vec::new();
+    for seed in schedule_seeds() {
+        let injections = driver::Injections {
+            saves,
+            ..Default::default()
+        };
+        let ours = run_ours_on(directory, &path, &all, seed, injections, backend, &[]);
+        let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
+        let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
+        let differences: Vec<String> = ours_text
+            .lines()
+            .zip(theirs_text.lines())
+            .filter(|(our, their)| our != their)
+            .map(|(our, their)| format!("seed {seed}: ours {our:?}\ntheirs {their:?}"))
+            .collect();
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
+        assert_eq!(ours.outcome, theirs, "seed {seed}");
+        runs.push(ours);
+    }
+    runs
 }

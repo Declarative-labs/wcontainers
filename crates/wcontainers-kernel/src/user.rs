@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use wcontainers_abi::{Cpu, MemoryId, PAGE_SIZE, Permissions};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
-use crate::memory::AddressMap;
+use crate::memory::{AddressMap, Backing, page_down, page_up};
 use crate::process::{LIMITS, Limit};
 use crate::{Errno, errno};
 
@@ -29,7 +29,7 @@ pub(crate) fn access_ok(address: u64, length: u64) -> bool {
 pub(crate) struct Guest<'a> {
     pub cpu: &'a mut dyn Cpu,
     pub memory: MemoryId,
-    pub map: &'a mut AddressMap,
+    pub map: &'a core::cell::RefCell<AddressMap>,
     pub limits: &'a [Limit; LIMITS],
     /// Whether the process may lock memory past its limit (`CAP_IPC_LOCK`), for a locked stack's growth.
     pub may_lock_any: bool,
@@ -37,13 +37,16 @@ pub(crate) struct Guest<'a> {
 
 impl Guest<'_> {
     /// How many bytes from `address` on can be accessed as `wanted`, growing the stack as a fault there
-    /// would.
+    /// would. Pages of backend files in the range that are not read yet are asked for, and while
+    /// they are awaited nothing is accessible: the call sees a fault, and runs again once they came
+    /// (`Kernel::system_call`).
     pub fn accessible(&mut self, address: u64, length: u64, wanted: Permissions) -> u64 {
-        let done = self.map.accessible(address, length, wanted);
+        let mut done = self.map.borrow().accessible(address, length, wanted);
         if done < length
-            && self.map.find(address + done).is_none()
+            && self.map.borrow().find(address + done).is_none()
             && self
                 .map
+                .borrow_mut()
                 .grow_stack(
                     self.cpu,
                     self.memory,
@@ -53,9 +56,36 @@ impl Guest<'_> {
                 )
                 .unwrap_or(false)
         {
-            return self.map.accessible(address, length, wanted);
+            done = self.map.borrow().accessible(address, length, wanted);
+        }
+        if done > 0 && !self.read_in(address, address + done) {
+            return 0;
         }
         done
+    }
+
+    /// Asks for the pages of mapped backend files in `[start, end)` not read yet; whether all are
+    /// there.
+    fn read_in(&self, start: u64, end: u64) -> bool {
+        let map = self.map.borrow();
+        let mut there = true;
+        let mut at = start;
+        while at < end {
+            let Some(mapping) = map.find(at) else { break };
+            if let Backing::File { node, offset, .. } = &mapping.backing {
+                let to = mapping.end.min(end);
+                let page = |address: u64| (offset + (address - mapping.start)) / PAGE_SIZE;
+                let pages = page(page_down(at))..page(page_up(to));
+                if !crate::shared::unfilled(node, pages.clone()).is_empty() {
+                    // Read ahead as a fault would, so a copy in pieces waits once.
+                    let ahead = pages.start + crate::shared::readahead_pages(node);
+                    let reach = page(mapping.end).min(ahead).max(pages.end);
+                    there &= crate::shared::fill(node, pages.start..reach).is_ok();
+                }
+            }
+            at = mapping.end;
+        }
+        there
     }
 
     /// `copy_from_user` of the whole range, or `EFAULT`.
@@ -76,22 +106,102 @@ impl Guest<'_> {
         Ok(bytes)
     }
 
-    /// `copy_to_user` of the whole range, or `EFAULT`.
+    /// `copy_to_user` of the whole range from a kernel buffer aligned to 8 bytes, or `EFAULT` after
+    /// storing what arm64's copy routine stores before the fault.
     pub fn write(&mut self, address: u64, bytes: &[u8]) -> Result<(), Errno> {
+        self.write_from(address, bytes, 0)
+    }
+
+    /// `copy_to_user` from a kernel buffer at `source` (only its place within 16 bytes matters, as
+    /// the copy routine first aligns its loads): on a fault the stores made before it stay, and when
+    /// none was counted one byte is tried (`copy_to_user.S`'s fixup).
+    pub fn write_from(&mut self, address: u64, bytes: &[u8], source: u64) -> Result<(), Errno> {
+        if self.copy_out(address, bytes, source) == bytes.len() as u64 {
+            Ok(())
+        } else {
+            Err(Errno::EFAULT)
+        }
+    }
+
+    /// `write_from`'s copy, returning how many bytes it reports copied (`copy_to_iter`'s answer).
+    pub fn copy_out(&mut self, address: u64, bytes: &[u8], source: u64) -> u64 {
         let length = bytes.len() as u64;
         // Copying nothing succeeds wherever it points, as `copy_to_user` reports nothing uncopied.
         if length == 0 {
-            return Ok(());
+            return 0;
         }
         if !access_ok(address, length) {
+            return 0;
+        }
+        let writable = self.accessible(address, length, Permissions::WRITE);
+        let (stored, reported) = match stored_before_fault(length, writable, source) {
+            (stored, 0) => (stored.max(writable.min(1)), writable.min(1)),
+            counts => counts,
+        };
+        if stored > 0
+            && (self.copy_on_write(address, stored).is_err()
+                || self
+                    .cpu
+                    .write(self.memory, address, &bytes[..stored as usize])
+                    .is_err())
+        {
+            return 0;
+        }
+        reported
+    }
+
+    /// `put_user`: one store, made whole or not at all.
+    pub fn put(&mut self, address: u64, bytes: &[u8]) -> Result<(), Errno> {
+        let length = bytes.len() as u64;
+        if !access_ok(address, length)
+            || self.accessible(address, length, Permissions::WRITE) != length
+        {
             return Err(Errno::EFAULT);
         }
-        if self.accessible(address, length, Permissions::WRITE) != length {
-            return Err(Errno::EFAULT);
-        }
+        self.copy_on_write(address, length)?;
         self.cpu
             .write(self.memory, address, bytes)
             .map_err(errno::from_cpu)
+    }
+
+    /// `unsafe_put_user` stores in order, each at an offset from `address`, ending at the first that
+    /// faults. Returns how many were made.
+    pub fn put_each(&mut self, address: u64, stores: &[(u64, &[u8])]) -> usize {
+        let end = stores
+            .iter()
+            .map(|(offset, bytes)| offset + bytes.len() as u64)
+            .max()
+            .unwrap_or(0);
+        if !access_ok(address, end) {
+            return 0;
+        }
+        let writable = self.accessible(address, end, Permissions::WRITE);
+        let made = stores
+            .iter()
+            .position(|(offset, bytes)| offset + bytes.len() as u64 > writable)
+            .unwrap_or(stores.len());
+        for (offset, bytes) in &stores[..made] {
+            if self
+                .copy_on_write(address + offset, bytes.len() as u64)
+                .and_then(|()| {
+                    self.cpu
+                        .write(self.memory, address + offset, bytes)
+                        .map_err(errno::from_cpu)
+                })
+                .is_err()
+            {
+                return 0;
+            }
+        }
+        made
+    }
+
+    /// Makes the private file pages of a range about to be written the process's own copies, as a
+    /// write fault would.
+    fn copy_on_write(&mut self, address: u64, length: u64) -> Result<(), Errno> {
+        self.map
+            .borrow_mut()
+            .copy_on_write(self.cpu, self.memory, address, address + length)
     }
 
     /// Copies as much of `bytes` as can be written, a page at a time, as a partial `copy_to_user`.
@@ -100,10 +210,11 @@ impl Guest<'_> {
             return 0;
         }
         let length = self.accessible(address, bytes.len() as u64, Permissions::WRITE) as usize;
-        if self
-            .cpu
-            .write(self.memory, address, &bytes[..length])
-            .is_err()
+        if self.copy_on_write(address, length as u64).is_err()
+            || self
+                .cpu
+                .write(self.memory, address, &bytes[..length])
+                .is_err()
         {
             return 0;
         }
@@ -152,7 +263,10 @@ impl Guest<'_> {
                 length
             }
         };
-        if cleared > 0 && self.cpu.zero(self.memory, address, cleared).is_err() {
+        if cleared > 0
+            && (self.copy_on_write(address, cleared).is_err()
+                || self.cpu.zero(self.memory, address, cleared).is_err())
+        {
             return 0;
         }
         cleared
@@ -165,6 +279,7 @@ impl Guest<'_> {
         if length == 0 || from == to {
             return Ok(());
         }
+        self.copy_on_write(to, length)?;
         if from + length <= to || to + length <= from {
             let mut bytes = vec![0; length as usize];
             self.cpu
@@ -236,19 +351,46 @@ impl Guest<'_> {
         }
     }
 
-    /// A path argument, as `getname` reads it: at most `PATH_MAX` bytes with the zero, `ENOENT` if empty.
-    pub fn read_path(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
-        let path = self.read_string(address, crate::linux::general::PATH_MAX.into())?;
-        if path.is_empty() {
-            return Err(Errno::ENOENT);
-        }
-        Ok(path)
-    }
-
     /// A path argument that may be empty (for `AT_EMPTY_PATH`).
     pub fn read_path_maybe_empty(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
         self.read_string(address, crate::linux::general::PATH_MAX.into())
     }
+}
+
+/// How many of `count` bytes arm64's `copy_to_user` stores, and how many it reports copied, from a
+/// source at `source` when only the first `writable` bytes of the target can be written. Its stores
+/// go up through the target in order: pieces of 1, 2, 4 and 8 bytes that align the source (only when
+/// 16 or more are copied), pairs of 8 (`user_stp` is two `sttr`, and the target moves on only after
+/// both), then 8, 4, 2 and 1 for the rest. A store that would reach past `writable` faults whole
+/// (measured), and nothing after it is stored; the first half of a pair that faults stays stored but
+/// is not counted (measured).
+fn stored_before_fault(count: u64, writable: u64, source: u64) -> (u64, u64) {
+    let leading = if count < 16 {
+        0
+    } else {
+        source.wrapping_neg() & 15
+    };
+    let middle = (count - leading) & !15;
+    let pieces = [1, 2, 4, 8]
+        .into_iter()
+        .filter(|size| leading & size != 0)
+        .chain(core::iter::repeat_n(16, (middle / 16) as usize))
+        .chain(
+            [8, 4, 2, 1]
+                .into_iter()
+                .filter(|size| (count - leading) & 15 & size != 0),
+        );
+    let mut stored = 0;
+    for size in pieces {
+        if stored + size > writable {
+            if size == 16 && stored + 8 <= writable {
+                return (stored + 8, stored);
+            }
+            break;
+        }
+        stored += size;
+    }
+    (stored, stored)
 }
 
 /// ARM64 Linux's `copy_template.S` run on `bytes`: copies `count` bytes from offset `source` to

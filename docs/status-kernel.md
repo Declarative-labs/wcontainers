@@ -4,65 +4,966 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is complete. The seventh run closed it out; two independent checks
-followed. The eighth run fixed the first check's ten problems. The ninth run (the third close-out
-run) fixed the second check's six: ioctl's generic file requests, tmpfs's size and inode limits with
-statfs reporting them, writes to `/proc/<pid>/comm` and the other `/proc` writes, seeks on cmdline,
-environ and auxv, layer 1's narrow coverage of `/proc` files, ioctl and statfs, and sysinfo's free
-memory. It also made `/proc` files' bytes at Linux's moments (not at open) and access times move on
-reads. The tenth run (the fourth close-out run) fixed the third check's eight: random device reads,
-getrandom and sendfile now move the whole count; sendfile of nothing succeeds before the input is
-checked; `#!` lines are split as `load_script` splits them; `/proc` lists in Linux's order at Linux's
-positions; fcntl and prctl gained what one process uses (owners, signals, hints, queries, the parent's
-death signal, timer slack, the subreaper, huge page disabling, the saved auxiliary vector, the forms
-that need powers), record locks answered as Linux without file locking (built in the eleventh run); a fault with its signal
-ignored is no longer counted as a handler not run. Layer 1 now reaches the random devices. The
-eleventh run (the fifth close-out run) fixed the fourth check's five blocking problems: sleeps and
-waits now end as late as the thread's timer slack (seed 3141592 hung on a sleep with the largest
-slack, which the reference never ends); the loader follows Linux's error rules for the named loader
-(EIO, ELIBBAD, the property note) and kills the process with SIGSEGV after the point of no return; a
-start with no arguments gets an empty one; argument room is `bprm_stack_limits`'s; record locks are
-built (process and open file owners, joined and split ranges, let go at close); layer 1 compares the
-play area after each sequence's last call. Of the minor ones, prctl's ambient powers are built; the
-rest are recorded below with their reasons. The twelfth run (the sixth close-out run) found, by
-reading Linux's memory calls against ours and then through layer 1, that lengths in the last page
-must wrap to 0 as `PAGE_ALIGN` does (msync and mlock answered errors where Linux succeeds; an mremap
-shrink by such a length unmapped the whole address space), that arm64 Linux strips a top byte tag
-from the memory calls' addresses, and that `/dev/random` and the mounts files have their own poll
-masks; all fixed, with layer 1 now generating those lengths and tagged addresses. See Layer 1 for the
-fresh seeds. The thirteenth run (the seventh close-out run) fixed the fifth check's problems: layer 1
-let machine bytes (times, inode numbers, statfs's free inodes) feed later calls and let a sequence's
-filter act on the runners' own calls (both runners now zero a call's machine bytes after reporting it,
-and every filter lets the runners' own calls through); mmap now follows `do_mmap` for MAP_GROWSDOWN
-(refused for files and shared memory, a grows-down mapping that grows on a fault or copy below it,
-mprotect's PROT_GROWSDOWN), MAP_DROPPABLE, huge page size bits under MAP_SHARED_VALIDATE and
-MAP_HUGETLB on a plain file (EINVAL); madvise takes MADV_DONTNEED_LOCKED and counts the advice it does
-not build (MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE: EINVAL, as a Linux without them);
-statx reports the unique mount number when asked and each file system's own rules (devpts's as the
-generic ones); newfstatat and statx take a null path with AT_EMPTY_PATH (and with a descriptor ignore
-the other flags, as `vfs_fstatat` and `do_statx_fd` do, measured). Layer 1 then found a sysctl's
-vectored read sized segment by segment (Linux makes one buffer of the whole request: ENOMEM at 4 MiB,
-and EFAULT unless every byte made is copied out; fixed), and, once `/dev/pts` was in its paths,
-devpts's root taking new names like tmpfs (Linux's has only a lookup: EPERM, and EACCES for a file
-made by open or mknod; fixed), and FS_IOC_FSSETXATTR answering ENOTTY for extended flags Linux does
-not know on files that keep none (Linux refuses them first, EOPNOTSUPP; and it drops the report-only
-flags PREALLOC, ATOMICWRITES and HASATTR on tmpfs, measured; fixed), and sendfile from secret memory
-of nothing succeeding (Linux refuses secret memory as input even then, unless the output is a pipe,
-and as output at the first byte; measured; fixed). It also found a harness race under load 60 to 80:
-the reference's runner counted the arena's changed ranges and then wrote them in a second pass, while
-the reference kernel rewrote a registered rseq area's CPU number between the passes, which garbled
-the report (it now reports from one copy). Layer 1 now generates mmap's kinds and flags (all but the
-ones listed below), more advice, statx masks, null stat paths and `/dev/pts`. The alignment fault's
-BUS_ADRALN and address are still not kept (only a handler can read them; K2, see Known gaps); its
-visible behaviour, death by SIGBUS, matches. The one-million-sequence layer 1 run is not part of K1:
-by the orchestrator's ruling it runs once at the end of the kernel track. Next is K2.
+K6b (larger runtimes), fifth run: every finding of the K6b check is fixed (the Java test now
+reaches the safepoint poll's fault and checks it, the per-runtime lists of counted paths are
+complete, SO_PEEK_OFF on netlink, a sequenced packet send's pending error, /proc/filesystems,
+the runtime tests check their saves). See "K6b, fifth run" below.
+
+K6b (larger runtimes), fourth run: the layer 1 differences of seeds 6262617 and 6262620 are
+fixed (RWF_NOWAIT, listen on a named connected local socket), and the reference's layer 1
+runner waits for loopback packets to arrive after each call. See "K6b, fourth run" below.
+
+K6b (larger runtimes), third run:
+/sys is a read-only sysfs whose lookups of Linux's entries are
+counted, a mapped backend file's pages are read when first touched (by the program or by the
+kernel's copies) instead of whole, a program on the backend is read only where the loader needs
+it, Python's whole test_mmap runs (its LargeMmapTests too), and NS_GET_USERNS and NS_GET_PARENT
+are built. See "K6b, third run" just below.
+
+K6b (larger runtimes), second run: /proc/<pid>/ns and /proc/<pid>/mountinfo are built, the
+Python system test modules run with no test ignored, two whole-suite flakes (a guest program
+renamed under a starting container, the reference's per-user signal count shared with other
+containers) are fixed, and the runtimes' deliberate differences are written down as a gap list.
+See "K6b, second run" just below; "K6b, first run" holds what the runtimes run and take.
+
+K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
+the reference and on our kernel, one command each for a test, a group and the whole suite. See
+"K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6b, fifth run
+
+Fixed, each tested against the reference (the K6b check's findings):
+- Java safepoints: `Load` never read the armed polling page (no memory fault in any run). It
+  now ends with a thread in a loop that calls nothing, compiled after 2^21 rounds, while main
+  asks for three collections; the program prints that the thread was stopped for them, and
+  tests/java.rs checks that every run built a data abort's signal frame ("fault syndrome
+  approximated", detail 0x92000007), which without that loop the program never does. The
+  reference prints the same. Java's test: 128.8 s for both tests and three seeds each (load 15 at
+  the start, 32 at the end); Load 41.6 to 43.5 s a seed, about 26800 turns.
+- The runtime tests (python, node, go, java) now check that every run was saved as often as
+  asked (`runtimes::assert_same`).
+- SO_PEEK_OFF on a netlink socket (layer 1 seed 7373001): get and set are EOPNOTSUPP, as
+  netlink's operations have no `set_peek_off`; a set shorter than an int is EINVAL first.
+  guest/sockorder.c.
+- A local sequenced packet send (layer 1 seed 7373003) copies its control messages in (EFAULT),
+  then takes a pending error (ECONNRESET after the peer closed with unread messages), then wants
+  a connection (ENOTCONN), and only then reads the control messages (EINVAL), as
+  `____sys_sendmsg`, `unix_seqpacket_sendmsg` and `unix_dgram_sendmsg` do. Ours read them before
+  the error, and wanted a connection before copying them. guest/sockedges.c
+  `closed_with_unread` (malformed and unreachable control messages for each kind, and an
+  unconnected socket).
+- /proc/filesystems lists every file system that is built and registered in Linux, in Linux's
+  order: sysfs, tmpfs, proc, sockfs, pipefs, devpts, fuse, mqueue (it had tmpfs, proc and pipefs).
+  Those Linux has and this kernel does not are left out, as a Linux without them; mount needs
+  CAP_SYS_ADMIN, which a default container lacks. guest/mountinfo.c checks the lines of the
+  standard mounts' file systems, sockets' and pipes'.
+
+What each runtime hit that is counted, every reason and detail of the default three seeds with
+saves at 7577902 (each runtime's whole test binary with `--nocapture`, its "warned:" lines;
+scratch k6b5). The earlier lists in this file were incomplete:
+- Go: "address above the address space" (the arena hints from 0x4000000000 up; section 15),
+  "fault syndrome approximated" (0x92000007: its nil dereference recovered through SIGSEGV),
+  "prctl option not built" (1398164801, PR_SET_VMA: Go 1.25 names its mappings; EINVAL, as the
+  reference answers, measured by the check: linuxkit lacks CONFIG_ANON_VMA_NAME), "proc fields
+  not tracked" (3: /proc/self/mounts), "socket protocol not built" (8590000390, MPTCP; gap
+  list), "sys entry not built" (7: /sys/kernel, the huge page size), "tcp room modelled" (0).
+- Node, start-up and system.js alike: "address above the address space" (V8's hints), "proc
+  fields not tracked" (4: meminfo), "sys entry not built" (6: /sys/fs, its cgroup limits).
+- Java, start-up: "address above the address space", "backend pages written whole", "page
+  residency not tracked", "proc entry not built" (22: /proc/cgroups), "proc fields not tracked"
+  (4), "sys entry not built" (4, 6, 7: devices, fs, kernel). Load: the same and "fault syndrome
+  approximated" (0x92000007, the safepoint polls).
+- Python: system.py and the language modules "proc fields not tracked" (0: /proc/<pid>/stat);
+  the system modules the same, "backend pages written whole" and "page residency not tracked"
+  (test_mmap). Its tests passed in 2470.1 s (three tests, three seeds each, load 36 at the start
+  and 62 at the end, beside the layer 1 seeds and the whole suite): system.py 31.6 to 36.4 s a
+  seed, the language modules 261.7 to 336.2 s, the system modules 639.1 to 982.8 s.
+- Node's tests: 88.1 s (load 21 to 33), start-up 4.2 to 5.4 s a seed, system.js 26.2 to 31.5 s.
+  Go's: 11.5 s (load 13 to 16), 1.5 to 3.5 s a seed.
+
+Layer 1 at 7577902 (side by side with the Python tests, load 34 at the start, up to 89): the
+check's seeds 7373001 (30000 sequences, 526.4 s) and 7373003 (25000, 443.7 s) pass, and the
+fresh seeds 8484001, 8484002 and 8484003 (20000 each, 358.1, 358.1 and 358.8 s) pass.
+
+Whole suite at 7577902 (scratch k6b5/suite.log, a clean copy with its own build,
+`RUST_TEST_THREADS=4 cargo test --no-fail-fast -j 4 -p wcontainers-kernel -p
+wcontainers-kernel-test`, 61.5 minutes with the build, beside the Python tests and the layer 1
+seeds at first; load 56 at the start, 78 at the end): 214 passed, 0 failed, 6 ignored (the known
+ones, with their reasons).
+
+K6b is complete: every finding of the check is fixed and tested, every runtime matches the
+reference under three seeds with saves, the fresh layer 1 seeds pass with every fix in, and the
+whole suite passed.
+
+## K6b, fourth run
+
+Fixed, each tested against the reference:
+- Reads and writes that may not wait (RWF_NOWAIT, layer 1 seed 6262617: preadv2 on /dev/full,
+  ours EFAULT, the reference EOPNOTSUPP). /dev/full lacks FMODE_NOWAIT (null, zero, random and
+  urandom have it), so it is refused before any copy; so are the backend's regular files (FUSE
+  sets none; ours read them). Where the flag is taken, the call no longer waits: pipes, sockets
+  (MSG_DONTWAIT, as `sock_read_iter` and `sock_write_iter`), event, timer and signal descriptors
+  answer EAGAIN where they would wait (ours waited: a blocking pipe's read hung). The call's slot
+  holds `nowait` (Linux's IOCB_NOWAIT) for the run. guest/rwmodes.c now covers every device,
+  socket pairs, event, timer, signal, epoll, inotify, process descriptors, /proc directories,
+  unreachable buffers and blocking files that would wait; guest/backendfiles.c the backend.
+- listen on a local stream or sequenced packet socket that is named and connected (layer 1 seed
+  6262620: a socket pair's end bound to an automatic name): the reference answers 0 and changes
+  nothing (no SO_ACCEPTCONN, still connected; measured for socket pairs, connected and accepted
+  sockets, also after the peer closed); ours EINVAL. Unnamed it stays EINVAL. guest/sockedges.c
+  `connected_listens`.
+
+Layer 1 method: in a sequence that makes an internet socket, the reference's runner now waits
+after each call until every CPU's receive backlog is empty (see "For the independent check"), so
+the reference race of seed 6262614 (a loopback datagram handed over after sendto returned) no
+longer fails seeds. A probe of the backlog (scratch k6b4/src/softnet.c) saw it non-empty after
+490 of 200000 loopback sends (load about 25).
+
+Layer 1 seeds, 20000 sequences each, four side by side, load 23 at the start, 61 at the end:
+at 1af8108, 6262617 passed (339.3 s, the RWF_NOWAIT fix), 6262619 passed (339.3 s), 6262621
+passed (338.6 s); 6262620 failed (listen, fixed at 6c90da3). At 6c90da3 (every fix of this
+run in), four side by side, load 52 at the start, 39 at the end: 6262620 passed (332.4 s), and
+the fresh seeds 6262622 (332.5 s), 6262623 (332.3 s) and 6262624 (332.0 s) passed.
+
+Whole suite at the final kernel (b80a0d8; later commits change only tests and this file; scratch
+k6b4/suite.log, a clean copy with its own build, `RUST_TEST_THREADS=4 cargo test --no-fail-fast
+-j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, 42.5 minutes with the build, load 57 at
+the start, up to 120, 47 at the end): 213 passed, 6 ignored (the known ones, with their
+reasons), 1 failed: threads `clone_tables_match_reference`, the reference's known race (Known
+issues: the joiner is woken before the thread's undo list is undone; "now 4", ours 5). Its
+method is fixed: guest/clonetables.c now waits until the joined thread is gone from
+/proc/self/task, which Linux takes away only after `exit_sem`; the threads binary then passed
+whole (13 tests, load 36). The runtime tests passed under the default three seeds with saves:
+python 1611.0 s (3 tests), java 107.8 s, node 78.8 s, go 5.8 s (each binary's own time).
+
+K6b is complete: every runtime matches the reference under several seeds with saves, every fix
+is tested, the layer 1 seeds pass with every fix in, and the whole suite passed but for a
+reference race whose method is now fixed. What each runtime hits that is counted is under "K6b,
+third run" and the gap list under "K6b, second run"; this run changed none of it.
+
+## K6b, third run
+
+Built, each tested against the reference:
+- /sys (tests/sysfs.rs, guest/sysfs.c): a read-only sysfs is mounted at /sys as in a default
+  container (`ro,nosuid,nodev,noexec,relatime`, the file system's own options `ro`, between
+  /dev/pts and /dev/mqueue in the mount table; guest/mountinfo.c now checks its line). Its root
+  is inode 1, mode 0555, size 0, its own device, statfs SYSFS_MAGIC with no blocks or inodes;
+  every change is EROFS, rmdir of it EBUSY, opening it for writing EISDIR, a long name ENOENT
+  (no length limit, as kernfs), handles only as identifiers (FILEID_INO64_GEN with generation
+  1). It holds none of Linux's entries: looking up one the reference's /sys has (block, bus,
+  class, dev, devices, firmware, fs, kernel, module) is ENOENT, counted "sys entry not built"
+  (detail its index), tested by `sys_entries_not_built_are_counted`.
+- Pages of mapped backend files read when first touched (shared.rs, the fault in signal.rs, the
+  copies in user.rs): a mapping only makes the file's block; a page not read yet has no access,
+  and its first touch reads the 32 pages around it (Linux's read-around, the read-ahead INIT now
+  offers), with the thread waiting for the answer and then going on from the instruction. A
+  kernel copy (a path, a write from mapped bytes, a read into them) that reaches such pages asks
+  for them and 32 pages ahead, and the call runs again once they came, as a call that waits for
+  the backend; a call that had done part of its work first keeps its short result, counted
+  "copy short of backend pages". Answers asked before a change through the kernel are not taken
+  (Linux holds the page locked); a failed read makes the next touch SIGBUS and the one after read
+  again. Reads of a mapped file take held pages from the block and the rest from the backend;
+  writes reach only held pages; write-back sends only held pages; STORE notices hold the pages
+  they cover whole, RETRIEVE gives held pages up to the first missing one. The stand-in's restore
+  copies only a block's pages that hold anything. tests/backend.rs
+  `mapped_pages_read_when_touched_match_reference` (guest/backendmaps.c, with saves: 256 MiB at
+  5 GiB into a sparse file, a 1 GiB mapping, the kernel's copies, fork, private copies, writes
+  while mapped, truncation and SIGBUS).
+- A program on the backend is read only where the loader needs it: its first 256 bytes, then
+  its program headers, its loader's name, its property note and the tails of writable segments
+  (read before the point of no return); its pages come as touched. The counter "backend file
+  read whole when mapped" is gone.
+- Python's whole test_mmap (LargeMmapTests too: 2 GiB and 4 GiB boundaries, a 5 GiB offset, a
+  6 GiB file) now runs in the system modules; alone it matched in 48 s (seed 1 with saves, load
+  79).
+- nsfs's NS_GET_USERNS (a new descriptor, closed at exec, of the machine's user namespace; EPERM
+  for the user namespace itself) and NS_GET_PARENT (EPERM for pid and user, EINVAL for the
+  rest), guest/procns.c.
+
+Measured (scratch k6b3; each binary's own time for its tests and the default three seeds with
+saves, other runs beside it):
+- At f45c8e0 (pages read when touched, programs still read whole), load 50 to 80: go 7.1 s,
+  java 139.2 s, node 193.7 s; python 2394.4 s (system.py, the language modules and the system
+  modules with the whole test_mmap), all matching the reference.
+- At d8eafe8 (programs read in parts too), load 40 to 60: go 11.1 s, java 205.1 s, node 943.9 s,
+  all matching: each fault set the permissions of its whole mapping again (Node's 126 MB binary,
+  Java's lib/modules), many remaps on the stand-in per fault. At 4b05204 the permissions are set
+  again only around the pages that came: node for one seed 35.4 s (load 56), against about 49 s
+  a seed before this run (147.2 s for three).
+- What each runtime hit that is counted (from the runs' warnings; incomplete, the full lists
+  are under "K6b, fifth run"): Go "address above the
+  address space"; Java "address above the address space", "backend pages written whole", "page
+  residency not tracked", "proc entry not built" (22: /proc/cgroups), "proc fields not tracked"
+  (4), "sys entry not built" (4, 6, 7: devices, fs, kernel); Node "address above the address
+  space" and the rest as before; Python "proc fields not tracked" (0), "backend pages written
+  whole", "page residency not tracked" (test_mmap). Nothing is read whole any more.
+
+Layer 1 seed 6262615 found a kernel difference (fixed): a local datagram socket that sends to
+its peer after the peer closed loses what its own queue held (`unix_dgram_disconnected`, so the
+empty datagram the peer sent before closing is gone, EAGAIN), and the same when it connects to
+another socket; a live peer connected back is told ECONNRESET. The check applies whenever the
+target is its peer, named or not (`unix_peer(sk) == other`). guest/sockedges.c
+`dgram_disconnects`, tests/inet.rs `socket_edges_match_reference`.
+
+Layer 1 seed 6262616 found another (fixed at 7d48131): a peek at a local stream goes on to each
+next buffer even when it wants no more bytes (`unix_stream_read_generic`'s `goto again`), so a
+peek of no bytes with an urgent byte queued after others is EAGAIN; guest/sockedges.c
+`zero_reads`. Seeds at 7d48131 (20000 sequences each, side by side, load 23 at the start, 54 at
+the end): 6262616 passed (331.9 s), 6262618 passed (332.3 s); 6262617 failed (155.0 s), not yet
+fixed: preadv2 with RWF_NOWAIT at the current position on a descriptor from
+`openat(4, path, O_NOCTTY)` after `mknodat(path, S_IFIFO | 0600)`, setresgid and setresuid to
+1000: ours EFAULT, the reference EOPNOTSUPP (Linux checks FMODE_NOWAIT before any copy; the
+file it opened lacks it and ours does not see so). Next, item 1. Earlier, 6262615 passed 20000
+at 5783036 (330.9 s, load 12), and 6262612 and 6262613 at e6369dd (342.6 s and 343.7 s, load 61).
+
+Whole suite (scratch k6b3/suite.log, started at e6369dd, 4 test threads; later binaries were
+rebuilt with the fixes above while it ran, load 8 to 70): every binary through python passed
+but inet's `option_reads_and_socket_corners_match_reference` (the reference race below, fixed);
+python passed in it. It was still running (record locks) when this run stopped; the zig cache
+in ~/.cache/zig was then held by other tracks' builds for over ten minutes, which stalls guest
+builds (tests here can set ZIG_GLOBAL_CACHE_DIR to a scratch directory of their own).
+
+Reference races found by this run's whole-suite and layer 1 runs (load 55 to 70), each shown to
+be the reference's: Linux may hand a loopback datagram to its socket after sendto returns, when
+its receive work is deferred under load (ksoftirqd).
+- inet `option_reads_and_socket_corners_match_reference`: the reference had received none of 41
+  datagrams when guest/optreads.c drained them; the drain now waits until each is received or
+  told dropped (fixed in the test).
+- Layer 1 seed 6262614 failed once: a UDP socket bound at the loopback port, a datagram to
+  itself, then a nonblocking recvmsg: ours 3 bytes (MSG_TRUNC), the reference EAGAIN. A probe
+  of the same calls (scratch k6b3/udpself2.c) got the datagram in every form of the vectors,
+  and 20000 of 20000 times alone (load 58); the seed passed whole on its second run (423.0 s,
+  load 69). Not fixed in the method: the reference runner would have to wait for loopback
+  delivery after each send (Next).
+
+## K6b, second run
+
+Built, each tested against the reference:
+- /proc/<pid>/ns (tests/procns.rs `namespace_links_match_reference`, guest/procns.c): the
+  directory (0511) lists Linux's ten links in `ns_entries` order; each reads `type:[number]`
+  (the user and time namespaces are the machine's first, with Linux's fixed numbers; the others
+  are the container's own); following one gives an nsfs file (device 0:4, mode 0444, immutable,
+  so opening it for writing, truncating, chmod, chown and utimes are EPERM; read EINVAL, seek
+  ESPIPE, mmap ENODEV); `ptrace_may_access` is asked (EACCES); an ended process keeps only its
+  pid and user namespaces (ENOENT for the rest); `/proc/self/fd` shows `type:[number]`;
+  NS_GET_NSTYPE and NS_GET_OWNER_UID are built, NS_GET_USERNS and NS_GET_PARENT are counted
+  "ioctl request not built" (ENOTTY); name_to_handle_at gives nsfs's handle (type 0xf1).
+  setns and unshare stay EPERM (Docker's seccomp profile). Immutable inodes are now refused
+  writes and attribute changes in general (`inode_permission`, `notify_change`).
+- /proc/<pid>/mountinfo, and /proc/<pid>/mounts made from the same table (fs/mounts.rs): the
+  mounts the container makes, in Docker's order (root, /proc, /dev, /dev/pts, /dev/mqueue,
+  /dev/shm, the backend volumes, /proc/sys read-only), with their real devices and options
+  (tests/procns.rs `mount_tables_match_reference` and `..._on_backend_root`, guest/mountinfo.c:
+  every line agrees with stat and statvfs at its point, and the standard mounts' options, types,
+  sources and parents match the reference's lines). /proc/mounts now lists /dev/pts and
+  /proc/sys too. Docker's masks of /proc, /sys and /sys/fs/cgroup are not there (gap list
+  below; still counted "proc fields not tracked", detail 3).
+- O_TMPFILE (Python's tempfile asks for it): on tmpfs a file with no name is made and opened
+  (`shmem_tmpfile`), named `#` and its number for its descriptor's link (always shown deleted,
+  as its dentry never takes a name) and its directory's events; without O_EXCL one later link
+  may name it (`I_LINKABLE`, through /proc/self/fd with AT_SYMLINK_FOLLOW); /proc, devpts and
+  mqueue have none (EOPNOTSUPP). On the backend it is asked with FUSE_TMPFILE, which a backend
+  without it answers EOPNOTSUPP (the test server's case, as with Linux's FUSE and the same
+  server). tests/tmpfile.rs (guest/tmpfile.c, on /dev/shm in both), and guest/backendfiles.c.
+  ftruncate and fallocate now tell watches through the file, under the name it was opened by
+  (they told none for fallocate, and ftruncate only by the inode's current name).
+- Python's system test modules (tests/python.rs `system_test_modules_match_reference`) are no
+  longer ignored: test_posix's test_unshare_setns now opens /proc/self/ns/uts and gets EPERM from
+  unshare, as the reference. Its first run (seed 1, 620.9 s, load about 25) then differed only in
+  standard error: "reap_children() reaped child process 13" where ours said 8. A probe that
+  forks before each test (scratch k6b2/pyprobe) showed every process number off by exactly 5
+  from the start: in a Docker container the first program's first child is 7, as runc's init
+  (Go) made threads 2 to 6 in the container's namespace before it ran the program (measured
+  with a bare `python3 -c` fork). This is the container runtime, not the kernel; suite.py now
+  writes the suite's warnings with numbers as N (see Departures).
+
+Test fixes (the whole suite as a gate):
+- terminal `making_pairs` (reference found no /wc/tty): test binaries built the same guest
+  program and renamed it over the one a starting container was opening through Docker's shared
+  directory. A build whose bytes equal the program in place now leaves it there (guest.rs).
+- userlimits `queued_signals_match_reference` (reference stopped after 2, not 5): the queued
+  signal count is per user, and the reference's root is shared with every container on its
+  machine; the guest now switches to a user of its own (uid 61873) before queueing.
+- The previous run's local probe (tests/zprobe.rs, excluded from git) failed in whole-suite runs
+  for want of its variables; its tests are now ignored unless asked for.
+
+Whole-suite run at the final kernel (5671d96; scratch k6b2/suite.log; `--no-fail-fast`, 4 test
+threads, 45.5 minutes, load 56 at the start, up to 106, 101 at the end): 210 tests passed, 11
+ignored (the 6 known ones with their reasons and the 5 local probe tests), 1 failed: terminal
+`interactive_shell`, whose reference timed out after 20 s waiting for busybox sh's first prompt
+at load about 100 (guest/shpty.c's own limit). Ours was right; two reruns alone passed (load 86).
+The limit is now 120 s. The runtime tests passed under the default three seeds with saves:
+python 1799.4 s (system.py, the language modules and the system modules, none ignored), node
+147.2 s, java 141.5 s, go 7.0 s (each binary's time for all its tests and seeds).
+
+Layer 1, fresh seeds at the final kernel (5671d96; 7f26687 changed only this file), 20000
+sequences each: 6262609 (338.7 s) and 6262610 (338.9 s), side by side beside the whole suite,
+load 56 at the start and 48 at the end; 6262611 (362.4 s, load 54 at the start, 28 at the
+end). Earlier in the run 6262607 and 6262608 passed 20000 each at 6aea26e (338.4 s and 337.5 s,
+load 26), before O_TMPFILE and the ftruncate and fallocate events.
+
+Whole-suite run at 2d90fbe (started by the previous run, scratch k6b/suite3.log, load about 20,
+26 minutes): every test binary passed but three: terminal `making_pairs` and userlimits
+`queued_signals_match_reference` (both fixed above, the reference's races), and the local
+probe (above). The runtime tests passed under the default three seeds there: python 634.6 s
+(system.py and the language modules; the system modules were still ignored), node 138.2 s,
+java 101.2 s, go 6.4 s (each binary's own time for all its tests and seeds).
+
+What each runtime hit that is counted, and where it stands (seed 1; incomplete, the full lists
+are under "K6b, fifth run"):
+- Python: "backend file read whole when mapped" (its shared libraries; a counted slow path),
+  "proc fields not tracked" (0: /proc/<pid>/stat), "call flag not built" (openat O_TMPFILE,
+  detail 0x38_0040_4000: tempfile tries it in /tmp; now built, and the backend is asked, which
+  the test server cannot do, so Python falls back as it does on such a server).
+- Node: "address above the address space" (V8's hints; plan section 15), "backend file read
+  whole when mapped" (node itself, 126 MB), "proc fields not tracked" (4: meminfo).
+- Go: "address above the address space" (arena hints; section 15), "proc entry not built" for
+  /proc/self/mountinfo (now built), "socket protocol not built" (MPTCP; gap list), "tcp room
+  modelled", "backend file read whole when mapped".
+- Java: "address above the address space", "backend file read whole when mapped", "backend pages
+  written whole", "page residency not tracked", "proc entry not built" (/proc/cgroups; gap
+  list), "proc fields not tracked".
+
+Gap list (plan section 15) as the runtimes meet it; each is how Linux answers without the
+feature, counted where the kernel sees it:
+- Network, "not Linux's network stack": MPTCP. `socket(AF_INET or AF_INET6, SOCK_STREAM,
+  IPPROTO_MPTCP)` is EPROTONOSUPPORT, as Linux without CONFIG_MPTCP, counted "socket protocol
+  not built" (detail 8590000390). Go's listeners ask for it first and fall back to TCP.
+- "/proc and /sys describe a made-up machine and hold a chosen subset": /proc/cgroups (counted
+  "proc entry not built"), Docker's masks of /proc and /sys/firmware, and /sys's entries: /sys
+  is a read-only sysfs holding none (third run), so the cgroup2 hierarchy at /sys/fs/cgroup is
+  absent and mountinfo lists no cgroup2 mount. Java and Go read mountinfo to find cgroup limits;
+  finding none, they take the machine's (one CPU, its memory), as the reference's unlimited
+  default container gives them. A lookup of an entry Linux has there is counted "sys entry not
+  built" (Java: devices, fs and kernel; Go: kernel; Node: fs).
+- "The address space is small": mappings asked above it are placed lower, counted "address
+  above the address space" (Node, Go, Java); Java needs the 64 bit host's 16 GiB.
+- "More than one CPU": the runtimes see one CPU (Go's GOMAXPROCS, Java's processors).
+
+## K6b, first run
+
+The K6a check's findings, each tested against the reference:
+- mmap of a socket checks RLIMIT_DATA and RLIMIT_AS before the protocol refuses it (ENOMEM
+  first, `mmap_region`); TCP's read-only rule comes after the limits too. Layer 1 seed 7272701
+  then found one more (fixed): a sequenced packet socket gives its pending error (ECONNRESET
+  after the peer closed with unread messages) to its next send first, as
+  `unix_seqpacket_sendmsg`; seed 7272701 then passed 30000 sequences (472.7 s, load 10.8 to 17).
+- TCP sendmsg reads its control messages only in ESTABLISHED or CLOSE_WAIT: shut for writing
+  (FIN_WAIT, SHUT_RDWR, LAST_ACK) it is EPIPE first.
+- SO_RCVLOWAT: negative is INT_MAX; TCP's is capped at half a set receive buffer, or at half of
+  tcp_rmem's largest (33554432, measured) and then grows the buffer to twice the mark with the
+  window clamp at the mark (`tcp_set_rcvlowat` at the starting scaling ratio); readers that now
+  have enough are woken (`tcp_data_ready`).
+- UDP's UDPLITE_SEND_CSCOV, UDPLITE_RECV_CSCOV and UDP_ENCAP read 0 as Linux's
+  `udp_lib_getsockopt`; setting the first two is ENOPROTOOPT (UDP-Lite's alone), UDP_ENCAP's set
+  stays counted. The status's earlier claim that every other option number was answered was
+  from hand-picked lists (guest/optreads.c), not a sweep; it is corrected under Not built.
+- Single routes are looked up in the route table (longest prefix): 127.255.255.255 is
+  RTN_BROADCAST with RTCF_BROADCAST, a group is RTCF_LOCAL only while eth0 is a member (the
+  all-hosts group always, `ip_check_mc_rcu`), and NETLINK_GET_STRICT_CHK checks questions as
+  `inet_rtm_valid_getroute_req` and `inet6_rtm_valid_getroute_req` do. The all-hosts group now
+  also reaches sockets on its port that take every group (it was dropped before).
+- mq_notify with SIGEV_THREAD is built: the cookie goes to the named netlink socket (EINVAL for
+  another socket, ENOTSOCK for a non-socket), marked NOTIFY_WOKENUP by the first message and
+  NOTIFY_REMOVED when the request is taken away (mq_notify(NULL), the owner's close), from port
+  0 with empty credentials; musl's own SIGEV_THREAD works (guest/posixmq.c). The attached
+  cookie is not charged to the socket's receive memory, as netlink here keeps none.
+- LTP harness: a verdict for an exit code with bits the library never sets is `exit<code>`
+  (trace_sched01's 255 now matches the bar's line); the comparison lists reference tests our
+  results lack ("not run"); unit tests for parse, verdict, results lines, warnings and the
+  comparison (`cargo test -p wcontainers-kernel-test --lib ltp`).
+- LTP suite: every runtest group but crashme (whose crash02 forks without bound on the shared
+  reference machine); see Departures. The reference run of the added groups was started in the
+  background (scratch k6b/reference-all.tsv, 3 jobs).
+- The LTP image: the release is checked against its sha256, Debian's packages come from
+  snapshot.debian.org at 20261117T210000Z and the runtime packages are pinned by version. A
+  rebuild gave the same /opt/ltp as the bar's image except testcases/bin/memtoy (one of 2877
+  files; it embeds its build time).
+- TCP_FASTOPEN_CONNECT is 0 or 1 and only while closed (EINVAL), found by the new counter test
+  (tests/inet.rs `options_not_acted_on_are_counted`, which checks the "not acted on" counts).
+- The K6a status said 177 of the 314 broken syscalls tests were "Failed to acquire device": 182
+  are (177 new-API tests and 5 legacy ones: linkat02, mknodat, rename11, renameat01,
+  umount2_01).
+- sigpick (threads `process_signal_takers_match_reference`): the K6a fix holds; 6 of 6 runs
+  alone passed (load about 15).
+- Layer 1, fresh seeds with every fix in (kernel at e90a141, 20000 sequences each): 6262603
+  (311.1 s, load 20.6 at the start), 6262604 and 6262605 (325.2 s each, side by side, load 14.2)
+  passed. Before the last fix 6262601 and 6262602 passed 20000 each (318 s, load 22) and
+  6262603 found the last one: a fixed mapping a socket refuses leaves its range unmapped, as
+  Linux's `mmap_region` has already taken the old mappings away (guest/sockedges.c).
+
+The larger runtimes (layer 2, src/runtimes.rs, tests python.rs, node.rs, go.rs, java.rs):
+- Each image is pinned by digest and used unmodified: python:3.13-alpine, node:22-alpine,
+  eclipse-temurin:21-jre-alpine; the Go program is built by golang:1.25-alpine and runs on
+  alpine:3.22, the Java program is compiled by eclipse-temurin:21-jdk-alpine. The programs are
+  in crates/wcontainers-kernel-test/runtimes/. CPython's own `Lib/test` comes from the source
+  release the image was built from, checked against the image's own PYTHON_SHA256.
+- The reference runs the command in a default container of the image with the directory at
+  `/wc`; ours runs it with the image's files and the directory on the file backend (root on the
+  backend, files opened for the page cache), with Docker's environment order (PATH, HOSTNAME,
+  the image's others, HOME), on a host with 64 bit memories (16 GiB, Chrome's cap: the stand-in
+  now takes the address space per container, `standin::SPACE_64_BIT`; other tests keep 4 GiB).
+  Each seed of `SCHEDULE_SEEDS` (3 by default) runs with saves at moments up to 20000 turns
+  apart (`Injections::save_gap`).
+- One command: `nix develop -c cargo test -p wcontainers-kernel-test --test python --test node
+  --test go --test java` (`SCHEDULE_SEEDS`, 3 by default, and `SCHEDULE_SEED` choose the seeds).
+  Each seed's run has two saves (one for the start-ups) at moments at most a third of the run's
+  measured turns apart (`runtimes::Saves`), so they fall through the run.
+- Under the default three seeds with saves (head 688ff43, load 16 at the start, beside a layer 1
+  run and the Python runs): Go (seeds 1 to 3: 6.6, 4.8, 5.9 s; 5770, 5410, 5533 turns; two
+  saves each), Java start-up (27.5, 23.6, 22.3 s; one save each) and `Load` (53.3, 42.1, 37.4 s;
+  23959 to 24643 turns; two saves each), Node start-up (17.6, 18.3, 18.4 s) and `system.js`
+  (55.7, 43.5, 39.0 s; 19549 to 19806 turns; two saves each) all match the reference.
+- What each does and takes (seed 1 of the first runs, measured; load 15 to 30; turns are the
+  run's turns on the CPU side):
+  - Python `system.py` (subprocess, fork, pipes, threads with locks, queues, conditions, barriers
+    and timers, TCP and UDP over IPv4 and IPv6 on loopback, a socket pair, name lookup, the file
+    system: walk, copytree, symlinks, modes, sparse files, rmtree): matches; 28 to 30 s, 11469
+    turns.
+  - Python test suite, language modules (test_bool, list, dict, tuple, struct, functools,
+    collections, string, generators, with, contextlib, re; each test's outcome printed): matches
+    with two saves; 196 s, 39724 turns.
+  - Python test suite, system modules (test_posix, fileio, file, tempfile, shutil, glob, pty,
+    test_mmap.MmapTests, epoll): all match but one (Next, item 1); 525 s, 196692 turns.
+  - Under three seeds with two saves each: Python `system.py` (22.1, 22.5, 21.7 s; about 11450
+    turns) and the language modules (158.8, 159.4, 204.0 s; about 39950 turns) match.
+  - Node start-up (`node -e`): matches; 17 to 19 s, 1942 turns. Node `system.js` (timers, child
+    processes with exec, spawn, fork with IPC and a killed child, four worker threads with a
+    SharedArrayBuffer and Atomics, file streams and pipeline, fs.watch, an HTTP server and
+    keep-alive client on loopback): matches with two saves; 42 to 47 s, 20587 turns.
+  - Go program (a ring of 1000 goroutines, 64 goroutines on a mutex, work over GOMAXPROCS 4
+    threads, a condition, timers and tickers; 50 TCP clients through the poller, 4 MiB over IPv6
+    with deadlines, UDP; SIGUSR1, SIGUSR2 and SIGCHLD through signal.Notify, a child through
+    os/exec with pidfds, an ignored SIGHUP, a nil dereference recovered through the SIGSEGV
+    handler, a killed child; a directory): matches; 4.6 s, 6392 turns.
+  - Java start-up (`java -version`): matches; 25 s, 6502 turns. Java `Load` (a fixed pool of 4
+    threads, synchronized, ReentrantLock, atomics, ConcurrentHashMap, wait and interrupt; four
+    threads allocating under G1 with a 64 MiB heap while others hold some, then System.gc):
+    matches with two saves; 50 s, 24372 turns. It never read the armed polling page (no memory
+    fault in any run, found by the K6b check); the fifth run added a compiled loop that does.
+- Kernel fixes these runs found, each with a test against the reference:
+  - Node's fs.watch on the backend root: inotify watches now hold their inodes (a backend inode
+    was dropped between lookups, so a watch never heard of a later lookup's events), and the
+    backend's open with O_CREAT, link, and attribute changes tell watches, under the name the
+    backend answered (guest/inotify.c on a backend root is now close; see Known issues).
+  - Go's os/exec read of a child's output never ended: the last writer of a pipe going woke no
+    edge-triggered epoll item (`pipe_release` wakes every waiter, keyless); tests/processes.rs
+    `a_child_started_as_go_starts_one_matches_reference` (guest/spawnpipe.c: clone with
+    CLONE_VM, CLONE_VFORK and CLONE_PIDFD, an edge-triggered epoll, waitid on the pidfd).
+  - Java on a 32 bit host's 4 GiB: HotSpot on ARM64 places its compressed class space at a
+    multiple of 4 GiB, which a 4 GiB address space has none of ("Could not allocate compressed
+    class space"). It runs on the 64 bit host's 16 GiB. Mappings asked above the address space
+    are now counted ("address above the address space", detail the address): Node and Java ask
+    many hints there, placed elsewhere.
+  - /proc/sys/net/core/somaxconn (4096; Go's net package reads it for listen) and
+    /proc/<pid>/coredump_filter (HotSpot reads and writes it; per process, kept by fork and exec,
+    written as `kstrtouint` reads a number in base 0; tests procwrite
+    `coredump_filter_matches_reference`, proclist lists /proc/sys/net and its core).
+- What each runtime hit that is counted (seed 1; incomplete, the full lists are under "K6b,
+  fifth run"):
+  - Python: "backend file read whole when mapped" (its shared libraries), "proc fields not
+    tracked" (0: /proc/<pid>/stat).
+  - Node: "address above the address space" (V8's random hints), "backend file read whole when
+    mapped" (node itself, 126 MB), "proc fields not tracked" (4: meminfo).
+  - Go: "address above the address space" (the runtime's arena hints from 0x4000000000 up),
+    "proc entry not built" (1049: /proc/self/mountinfo), "socket protocol not built"
+    (8590000390), "tcp room modelled", "backend file read whole when mapped".
+  - Java: "address above the address space", "backend file read whole when mapped" (lib/modules
+    and the class data archive), "backend pages written whole", "page residency not tracked",
+    "proc entry not built" (22: /proc/cgroups; 1066: coredump_filter, now built), "proc fields
+    not tracked" (4).
+
+K0 to K4 are done. K5 (sockets and network) is built: every part of its milestone exists and is
+tested against the reference. The eighth run fixed every finding of the seventh run's check (the
+unstable deferred accept test, six option corners, connects to oneself, IPV6_ADDRFORM, the
+neighbour table, layer 1's missing calls, stale status entries) and one layer 1 find
+(SCM_PIDFD's order); the end-of-milestone seeds are under Measurements. What remains are single
+corner differences and options not built, each counted, listed under Next for later runs. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
+and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
+commit fdf7001 (git history); what they built is summarised here.
+
+## K6a, first run
+
+The K5 check's ten findings (orchestrator's k5-open-findings.json), each tested against the
+reference (tests/inet.rs `option_reads_and_socket_corners_match_reference`, guest/optreads.c;
+`route_questions_and_rules_match_reference`, guest/routeget.c):
+- TCP sendmsg reads its control messages only once connected (`sk_stream_wait_connect` first):
+  an unconnected socket with a bad cmsg_len is EPIPE, as Linux (layer 1 seed 9595101's find).
+- Route questions: RTM_GETROUTE of one address (`ip route get`, IPv4 and ::1, RTM_F_FIB_MATCH,
+  RTA_OIF), and the RTM_GETRULE dump (IPv4's three rules, multicast routing's, IPv6's two) as
+  measured; a single RTM_GETRULE is EOPNOTSUPP as Linux.
+- Socket options Linux answers: every SOL_SOCKET one of the check's list (SO_DEBUG, SO_NO_CHECK,
+  SO_BSDCOMPAT, SO_GET_FILTER, SO_RXQ_OVFL with its drop counts, SO_WIFI_STATUS, SO_NOFCS,
+  SO_LOCK_FILTER, SO_SELECT_ERR_QUEUE with POLLPRI, SO_MAX_PACING_RATE, SO_BPF_EXTENSIONS,
+  SO_INCOMING_NAPI_ID, SO_COOKIE, SO_PEERGROUPS, SO_PREFER_BUSY_POLL, SO_NETNS_COOKIE,
+  SO_BUF_LOCK, SO_RESERVE_MEM's read, SO_TXREHASH, SO_DETACH_FILTER) and the TCP, IP and IPv6
+  ones of the list as read on fresh and connected sockets; what is still not built is named
+  under "Not built" ("socket option not built"). UDP now counts its drops (/proc/net/udp's
+  column too) and takes a datagram as 7.0's `__udp_enqueue_schedule_skb` does (room for its
+  true size, or an empty queue), found by the new test. IPv6's route MTU is 65536 (IPV6_MTU
+  read 65535 before).
+- SO_PASSSEC on internet sockets is EOPNOTSUPP; TCP poll wants SO_RCVLOWAT's bytes (or a full
+  receive buffer); a second automatic bind of a named local socket is 0.
+- TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN, TCP_TX_DELAY, a paced SO_MAX_PACING_RATE and TCP's
+  MSG_MORE are counted "socket option not acted on" (warned); the counter "recvmmsg returned
+  early" is gone: recvmmsg's and sendmmsg's later messages wait as Linux's do (the thread's call
+  slot keeps the messages done, `Call::messages`).
+- Netlink protocols other than route, ping sockets and AF_PACKET stay refused and counted; they
+  are now named under "Not built" (ping and packet sockets are section 15's raw packets).
+- sigpick's reference race: musl's fork blocks every signal until it returns in the parent, so a
+  child that signalled at once could find the main thread blocking it. The child now waits for
+  the parent's word; 8 of 8 runs passed alone (load about 20).
+
+The Linux Test Project (layer 3):
+- Release 20260930 (the newest, September 2026), built with glibc on Debian trixie (pinned by
+  digest): glibc is the C library the project is written and tested for; its musl build drops
+  tests that do not build there. `crates/wcontainers-kernel-test/ltp/build.sh <scratch>` builds
+  the image wc-kernel-ltp:20260930 (suite at /opt/ltp, binaries stripped) and leaves its files
+  as `docker export` gives them in `<scratch>/ltp-20260930.tar` (718 MB). Kept in scratch:
+  pyro-parked/wcontainers-scratch/kernel/ltp. The build took 83 s for the compile (load ~25).
+- One command each (`src/bin/ltp.rs`, `src/ltp.rs`):
+  `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test --bin ltp -- reference|ours <results> [group | group:test | test]...`
+  (no names: the whole suite), and `... --bin ltp -- compare <reference results> <our results>`.
+  `LTP_JOBS` (4), `LTP_SEED` (1; our runs' schedules), `LTP_LIMIT` (seconds per test: 900 ours,
+  1800 reference). A results file that exists is continued. Each test runs `/bin/sh -c
+  <runtest command>` as the first process of a container of its own, with the same environment
+  in both (a default container's plus LTPROOT, TMPDIR and the suite's bin on PATH). Results are
+  one line per test: id, verdict (pass, fail, broken, skipped, warning from the exit code the
+  library ORs together; timeout, hang, crash or unsupported when there was none), exit code,
+  seconds, and on ours the kernel's warnings. Logs under `<results>.logs/`.
+- On ours the image is loaded once into a prepared kernel (`driver::prepare`) and each test runs
+  in a process forked from it, so a kernel crash or a hang ends only that test; the clock is the
+  repeatable one, so the suite's own timeouts are in the guest's time.
+  A watchdog in each test's process calls a run that ends no turn for 120 s a hang (stuck in
+  one call or turn); one still ending turns at the time limit is a timeout (slower than the
+  limit on the stand-in, not a difference of behaviour). The comparison groups differences by
+  cause: a crash of the kernel, a hang, a timeout, a part not built (a warning that no test
+  whose verdict matches gave), and else a wrong answer.
+- The bar (reference, measured): 2694 tests in 26 groups; 1243 pass, 153 fail, 548 broken, 746
+  skipped, 3 warning, 1 exit 255 (sched:trace_sched01). syscalls alone: 1552 tests, 973 pass,
+  49 fail, 314 broken (177 of them "Failed to acquire device": no loop devices in a default
+  container), 213 skipped, 3 warning. Results: crates/wcontainers-kernel-test/ltp/
+  reference-20260930.tsv (the bar; logs in scratch ltp/reference-1.tsv.logs).
+  Run with 5 jobs, load 20 to 30; the tests' own times add to 11622 s.
+- First whole run on ours (scratch ltp/ours-1.tsv, compare-1.txt), mostly at 931c5a3 to
+  e7b79ef (the tests that crashed or hung were run again after their fixes): 2310 of 2694
+  verdicts matched, 384 differed: 1 kernel crash (pty02, then fixed), 15 slower than the
+  limit, 79 a part not built, 289 wrong answers. Kernel crashes and hangs it found, each fixed
+  with a test against the reference:
+  - kill06, kill08: SIGKILL to one's own process group ended the sender's thread before the
+    other members were signalled, and the next lookup of the sender panicked (tests/processes.rs
+    `killing_own_group_matches_reference`, guest/groupkill.c).
+  - clock_gettime01 waited for ever for `/proc/self/stat`'s user time, always 0: the stat file
+    now shows the process's CPU time and its reaped children's (guest/cputime.c).
+  - pipeio_1 to _8: two writers that found a pipe full woke each other for ever inside the
+    kernel (both wait on the pipe's one channel and each woke it before waiting); a writer now
+    wakes readers only for bytes it added (tests/processes.rs
+    `writers_waiting_on_a_full_pipe_match_reference`, guest/pipewriters.c).
+  - pty02: a canonical terminal in EXTPROC mode reads past its line end, and the count of what
+    it holds overflowed; it wraps as Linux's unsigned difference does (tests/terminal.rs
+    `extproc_reads_match_reference`, guest/ttyextproc.c).
+- The first comparison with every fix in (second whole run, all at 8a3d41f, 3 jobs, LTP_LIMIT
+  300, load 20 to 35; crates/wcontainers-kernel-test/ltp/ours-20260930-8a3d41f.tsv, logs and
+  compare-2.txt in scratch ltp/): 2308 of 2694 verdicts match,
+  386 differ. By cause: no kernel crash, no hang, 18 slower than the time limit on the stand-in
+  (fs growfiles, rwtest and iogen, cve-2011-0999, cve-2017-17052, mtest06_3, shm_test01 and
+  others that take 30 s to 5 min natively), 79 a part not built, 289 wrong answers. By group:
+  syscalls 188, hugetlb 56, cve 41, sysfs 18, mm 18, fs 13, kernel_misc 11, syscalls-ipc 9,
+  crypto 8, controllers 8, sched 5, pty 4, can 3, containers 2, uevent 1, capability 1. The most
+  common: reference pass and ours broken (94), reference broken and ours skipped (87), reference
+  skipped and ours broken (83). The largest single cause is the missing `/proc/config.gz` (see
+  Next). Ours: 1054 pass, 178 fail, 639 broken, 798 skipped, 7 warning, 18 timeout.
+
+
+- Local sockets of every kind (stream, datagram, sequenced packets), names (paths and abstract),
+  listening, SCM_RIGHTS and SCM_CREDENTIALS, options and buffer limits as Linux; a connect by path
+  moves the socket node's access time.
+- epoll in full (level, edge, one-shot, exclusive, nesting, keyed wakes), poll, select and their
+  signal-mask forms over every descriptor kind; eventfd2; signalfd; inotify on the in-memory file
+  systems and the backend.
+- TCP and UDP over IPv4 and IPv6 between the container's own addresses, wholly in the kernel
+  (syscall/socket/inet.rs): ports, TIME_WAIT, connect states, resets, shutdown, poll and options at
+  every level with defaults measured on the reference. sendmmsg and recvmmsg.
+- Netlink route dumps (links, addresses, routes), the interface ioctls, FIONREAD and SIOCOUTQ,
+  from a made-up lo and eth0 (src/network.rs: eth0 172.17.0.2/16, gateway 172.17.0.1).
+- The outside through the Host hooks (syscall/socket/outside.rs): TCP connects and UDP flows;
+  bytes pulled into the kernel's own queue so poll answers locally; a name server at 127.0.0.11
+  answered with simple-dns through `Host::look_up`. After a restore outside connections read as
+  reset (plan section 12).
+- Third run:
+  - Accepting from outside: a TCP listener bound to the any address that takes IPv4 or to eth0's
+    address asks `Host::listen` for its port; each `ConnectionReady` on it is taken with
+    `Host::accept` into its backlog while there is room (and again after an accept makes room).
+    The accepted end is at eth0's address and its peer is the gateway with a random port, as
+    measured for Docker's published ports. Listeners listen again after a restore. A host that
+    refuses is counted "listening outside failed" and the socket listens inside alone. The test
+    host publishes ports as `docker run -p 127.0.0.1:outer:inner` does
+    (`driver::Container::published`, `run_ours_published`, `reference::run_published`).
+  - /proc/net (syscall/socket/procnet.rs): `/proc/net` links to `self/net`; each process
+    directory has `net` with dev, if_inet6, route, tcp, tcp6, udp, udp6 and unix in Linux's
+    formats (padding, states, queues, timers, inodes, local sockets' flags, states and reference
+    counts). The rest of Linux's names there are counted "proc entry not built". busybox netstat,
+    route and ifconfig read them.
+  - splice and sendfile with sockets at either end (a pipe into a socket in one message, a socket
+    into a pipe as a read; sendfile into a socket through its private pipe, a send that waits
+    resuming after what was sent). SPLICE_F_NONBLOCK keeps only local stream sockets from waiting
+    (measured). Socket calls take their bytes from the caller or from the kernel (`socket::Data`).
+  - UDP control messages: IP_PKTINFO, IP_RECVTTL, IP_RECVTOS, IPV6_RECVPKTINFO,
+    IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS, in Linux's order, with eth0's index for eth0's address;
+    control messages that do not fit are cut to the room as `put_cmsg` does.
+  - Receive timestamps: SO_TIMESTAMP and SO_TIMESTAMPNS, old and new, set and read back as
+    `sock_set_timestamp` and `sk_getsockopt` (measured); a packet is stamped as it is queued for
+    a receiver that asked, a datagram that came before is stamped as it is read, TCP gives the
+    last buffer's time and local streams none (measured). SO_TIMESTAMPING is still counted.
+  - inotify: IN_EXCL_UNLINK (events through an unlinked open file skip such watches), an
+    exchange sends two pairs of moves, a replaced target gets IN_ATTRIB then IN_DELETE_SELF at
+    its end, IN_MOVE_SELF and IN_DELETE_SELF carry no IN_ISDIR (measured), renames on the backend
+    send their events too, and a renamed file is told of under its new name.
+  - UDP true sizes measured (the small head cache: 896 bytes for small datagrams, the payload in
+    pages past SKB_MAX_ALLOC); the local sockets' model is unchanged (measured to differ).
+  - A TCP connection's FIN counts in its receive queue until the end is read, as Linux shows it.
+
+- Fourth run:
+  - Urgent bytes on local streams (MSG_OOB) as Linux 7.0 with CONFIG_AF_UNIX_OOB: the last byte
+    of a send is the receiver's mark (`Packet::urgent`), read out of band once (it stays in the
+    queue emptied), a read stops at the mark and passes an unread urgent byte (dropping it unless
+    SO_OOBINLINE; Linux's queued count keeps it, `skipped_urgent`), SIOCATMARK, POLLPRI, SIGURG
+    to the file's owner (`send_urgent_signal`) and a chosen signal with POLL_PRI.
+  - I/O signals from local sockets with O_ASYNC (`wake_async`): data, room after a send found
+    none, a peer's shutdown and close, a connection on a listener; none for data while a reader
+    waits (internet and netlink sockets' since the fifth run).
+  - SO_PEERPIDFD, SO_PASSPIDFD with SCM_PIDFD (a process reaped since gets a descriptor that
+    names it gone), SO_PASSRIGHTS (EPERM to senders of descriptors), SO_INQ with SCM_INQ;
+    SO_PASSCRED, SO_PASSPIDFD and SO_PASSRIGHTS refused on internet sockets as Linux. A message
+    carries credentials only when either end passes them or the receiver is not yet accepted
+    (`unix_maybe_add_creds`), else the overflow ids.
+  - The `system.sockprotoname` attribute of every socket's inode, and sockfs's refusals of other
+    names (a removal of a `security.` name is EAGAIN, measured).
+  - Internet sends read their control messages where Linux does: TCP the socket level only, UDP
+    over IPv4 also IP_TTL and IP_TOS, which the datagram carries; descriptors and credentials are
+    passed over; what is not built (marks, priorities, transmit times, IPv4 options and packet
+    information, IPv6 messages) is refused and counted.
+  - Found by layer 1 once it reached sockets (below) and fixed, each measured: fsync on a socket
+    (EINVAL), socketpair writes its numbers before it makes anything, accept4's and connect's
+    order of checks, sendto and recvfrom check the buffer before the descriptor, a stream read of
+    nothing from an empty queue waits (EAGAIN), epoll_pwait takes the descriptor first, sendfile
+    from a socket into a non-pipe is EINVAL, a read of nothing from a socket is 0, UDP's length
+    and urgent flag come first and a datagram that cannot be copied out is dropped, a local
+    connect finds the listener before its own state, a datagram's bytes are taken before its
+    receiver is looked up, a nonblocking read of a datagram socket shut for reading is EAGAIN, a
+    send to a receiver shut for reading is EPIPE for every kind, only streams send SIGPIPE,
+    every socket-level option is at least an int, and a local socket answers other levels with
+    EOPNOTSUPP before reading the length. TCP's MSG_OOB on receive is EINVAL (no urgent byte can
+    come), a send of nothing with it is 0, and an unconnected socket fails before the refusal.
+    Later in the run: an event descriptor's write takes exactly eight bytes and a vector is
+    written a segment at a time (measured: 13, 16 and 4+4 are EINVAL; pwritev2 with flags is
+    EOPNOTSUPP), eventfd's poll has no RDNORM or WRNORM, UDP peeks start at SO_PEEK_OFF, epoll
+    answers EPIOCSPARAMS and EPIOCGPARAMS (kept, nothing busy-polls here) and EINVAL to other
+    requests, a stream send that faults part way returns what went, a local datagram that cannot
+    be copied out is gone, a failed stream read with SO_PASSCRED still writes empty credentials
+    into the control area, an internet protocol's option writes its length before its value and
+    answers an unknown level before reading the length, mmap of a socket checks MAP_GROWSDOWN
+    before ENODEV, MSG_ERRQUEUE on an internet socket is EAGAIN, preadv2 with flags on inotify is
+    EOPNOTSUPP. Last: a stream send of nothing sends no descriptor either (measured), sequenced
+    packets check their connection before control messages and urgent flags, inotify refuses
+    O_PATH descriptors with EBADF, an IPv6 UDP socket sends to an IPv4 address through IPv4's
+    checks and control messages, IPv6, TCP and UDP options take a negative length as unsigned,
+    and an empty IPv4 option value is 0 (IP_TTL's is EINVAL).
+
+- Fifth run (each against the reference):
+  - I/O signals from internet and netlink sockets with O_ASYNC (`wake_async` for every family):
+    data (`sock_def_readable`; TCP's only while the receiver's buffer had room, as bytes past it
+    are still on their way under Linux's window), a TCP FIN (`tcp_fin`'s POLL_IN or POLL_HUP,
+    then the data wake), a finished connect (POLL_OUT), a connection on a listener, errors and
+    resets (`sock_def_error_report`, POLL_ERR), room after a send found none
+    (`sk_stream_write_space`, `sock_def_write_space`), netlink replies, the name server's answers
+    and the outside's bytes, ends, refusals and room. A waiting TCP reader's data sends none
+    (`sk_wait_data`). The counter "socket i/o signals not built" is gone.
+  - Netlink dumps come a part at a time (`netlink_dump`): the first at the request, the next
+    once a read leaves the queue at most half full (a peek too); a second dump while one runs is
+    EBUSY; a read that faults still takes its message; MSG_OOB on a read is EOPNOTSUPP; poll
+    has EPOLLWRBAND.
+  - `mmap` of a TCP socket (`tcp_mmap`): read only (EPERM for writing or running, and mprotect
+    can never add them), no pages, so a touch is SIGBUS; never locked or grown (EFAULT),
+    `mincore` shows nothing resident, msync with MS_SYNC of a shared one is EINVAL (sockfs has
+    no fsync); `/proc/<pid>/maps` names it `socket:[inode]`. Other sockets stay ENODEV.
+  - UDP's error queue under IP_RECVERR and IPV6_RECVERR: a datagram to a port nothing holds
+    queues a port unreachable error (520 bytes of it over IPv4, 1184 over IPv6, measured) and
+    sets the socket's error, connected or not; MSG_ERRQUEUE reads take it (a peek too), name its
+    destination, give the error message's own control messages (packet information with no
+    local address, TTL 64 and TOS 0xc0, or hop limit 64 and class 0) and then the extended error
+    with its offender; the socket's error becomes the next queued one's or none; poll shows
+    EPOLLERR while any is queued; turning the option off empties the queue. An IPv6 socket
+    sending to an IPv4 address goes by IP_RECVERR. A refusal from outside to such a socket sets
+    its error but queues nothing, counted "outside datagram error not queued" (the host does
+    not say what the datagram held).
+  - IPv4 packet information is kept for a datagram only if its receiver asked for it when it
+    came (`ipv4_pktinfo_prepare`): asked for later, it names no interface or local address.
+  - Local sockets passed over themselves: when a local socket is released, cycles of local
+    sockets that only the queues of such sockets hold are collected (`unix_gc`) and what their
+    queues carry is let go; releases cascade within one call (a socket's queue, a collected
+    cycle). A user with more descriptors in flight than its RLIMIT_NOFILE sends no more
+    (ETOOMANYREFS, `too_many_unix_fds`), unless it has CAP_SYS_RESOURCE or CAP_SYS_ADMIN.
+  - TCP's urgent data between the container's own sockets (`tcp_mark_urg`, `tcp_check_urg`,
+    `tcp_recv_urg`): the last byte of a MSG_OOB send is the receiver's mark; a read stops before
+    it, and one at it reads it with SO_OOBINLINE or else passes over it (the urgent data ends);
+    MSG_OOB reads it once (a peek leaves it; no room gives 0 with MSG_TRUNC; EINVAL with none,
+    inline or once read); a second urgent byte makes the first ordinary, or drops it when it is
+    next and not inline; SIOCATMARK, POLLPRI while unread, POLLIN wanting a byte past an
+    urgent one at the front, FIONREAD counting only up to it (`tcp_inq`), SIGURG to the owner.
+    To the outside a send with MSG_OOB and bytes is still refused (the hooks carry no urgent
+    data), counted "call flag not built".
+  - Layer 1 found (fixed, measured): MSG_OOB reads on netlink sockets, a mapping of a TCP
+    socket, netlink's EPOLLWRBAND, packet information asked for after a datagram came, a pending
+    error before a queued local datagram or sequenced packet (`__skb_try_recv_datagram`), an IPv6
+    UDP socket connecting to a `sockaddr_in` (`__ip6_datagram_connect`; EAFNOSUPPORT for
+    IPV6_V6ONLY), an empty netlink message (ENODATA), netlink's option levels refused before
+    the value or length is read (ENOPROTOOPT), and a nonblocking read of a UDP socket shut for
+    reading (EAGAIN; a waiting one ends with 0), netlink's urgent and empty messages refused
+    before their control messages are read, descriptors refused with EINVAL on sockets that
+    are not local (`__scm_send`), a local datagram socket's end read giving no credentials or
+    process descriptor (and SCM_PIDFD wanting a sender before it looks for room), and sendfile
+    from a socket into a pipe reading the socket (`sock_splice_read`; EAGAIN when empty),
+    netlink's shutdown EOPNOTSUPP before the mode is checked, local datagram and sequenced
+    packet peeks starting at SO_PEEK_OFF past whole messages (the offset moving on with peeks
+    and back with reads), UDP corking, and a process's `/proc/<pid>` directory naming it to
+    pidfd_send_signal (`tgid_pidfd_to_pid`; not to the other process descriptor calls, nor a
+    `task/<tid>` directory: EBADF).
+  - UDP corking (`up->pending`): MSG_MORE or UDP_CORK hold a datagram; later sends add to it
+    whatever destination they name (over UDP's largest is EMSGSIZE, a fault part way EFAULT,
+    and both drop it), and the first send without MSG_MORE, or UDP_CORK turned off, sends it.
+    UDP_NO_CHECK6_TX and UDP_NO_CHECK6_RX are kept (no wire, no checksums); UDP_SEGMENT,
+    UDP_GRO and UDP_ENCAP are counted "socket option not built" (ENOPROTOOPT, as a Linux
+    without them).
+
+- Sixth run (each against the reference):
+  - TCP_INFO (`tcp_get_info`, 280 bytes as Linux 7.0): a fresh socket's and a listener's
+    exactly as Linux (a listener's queue and limit, a fresh socket's starting values and
+    `tcp_jiffies32` times); a connection's from a model of this TCP's traffic (`Traffic` in
+    syscall/socket/inet.rs: every segment arrives and is acknowledged at once, a send goes in
+    segments of the MSS, each data segment and FIN draws one acknowledgement; the handshake's
+    numbers, options, window scales, MSS, windows and MTUs are Linux's on loopback, measured).
+    Round trips, rates and the RTO are a fixed short loopback round trip. Counted "tcp info
+    modelled". TCP_MAXSEG gives the same MSS (32741 or 32732 for a connector until the other end
+    has sent, 32768 after and for an accepted end, as measured). TCP refuses a negative option
+    length (EINVAL), where IPv6 and UDP take it as unsigned.
+  - Internet send control messages: IP_PKTINFO and IPV6_PKTINFO (a source must be the
+    container's own and not multicast or broadcast, ENETUNREACH or EINVAL; an interface must
+    exist, ENODEV; IPv6 has no route out of eth0; a loopback source cannot leave through eth0;
+    through lo every destination is delivered inside, with lo's index; to a loopback address out
+    of eth0 the datagram is lost), an IPv6 socket's IPv6 packet information naming an IPv4
+    address for an IPv4 destination, IP_PROTOCOL (checked, raw sockets only), IPV6_HOPLIMIT,
+    IPV6_TCLASS (-1 sends 255, measured), IPV6_DONTFRAG, IPV6_FLOWINFO (checked; labels are
+    sent only with IPV6_FLOWINFO_SEND), SO_MARK and SO_PRIORITY (CAP_NET_RAW or CAP_NET_ADMIN,
+    or priorities 0 to 6), SCM_TXTIME (with SO_TXTIME). IPv4 options (IP_RETOPTS), IPv6
+    extension headers and send timestamps stay refused and counted.
+  - SO_MARK and SO_PRIORITY as Linux: root in Docker has CAP_NET_RAW, so both are set (they were
+    EPERM before, which was wrong); IP_TOS sets the priority it gives when it changes
+    (`rt_tos2priority`); SO_RCVMARK and SO_RCVPRIORITY give a UDP datagram's mark and priority
+    after its timestamp; SO_TXTIME set and read (CLOCK_MONOTONIC, or others with
+    CAP_NET_ADMIN: EPERM in Docker). An IPv6 socket's own IP_TTL and IP_TOS apply to its
+    datagrams over IPv4.
+  - UDP_SEGMENT as an option and a control message (`udp_cmsg_send` reads UDP's messages
+    first): a longer datagram goes as segments, at most 128 (EINVAL past), each a datagram to
+    its receiver or to the outside; a receiver with UDP_GRO takes it whole with a UDP_GRO
+    message naming the segment size (`udp_unexpected_gso`). UDP_ENCAP stays counted (IPsec and
+    L2TP encapsulation need the kernel's IPsec, which is not built).
+  - SO_TIMESTAMPING (old and new): the flags checked and kept as `sock_set_timestamping` (an
+    int or `struct so_timestamping`; unknown bits, OPT_ID_TCP without OPT_ID, OPT_STATS without
+    OPT_TSONLY, OPT_ID on an unconnected TCP socket: EINVAL; a bound clock: EOPNOTSUPP) and read
+    back; software receive timestamps (SCM_TIMESTAMPING: the time and two empty ones) on UDP,
+    TCP (the last buffer's) and local datagrams beside SO_TIMESTAMP, as measured; hardware flags
+    are kept and give nothing, as on Linux's loopback. Software send timestamps on UDP with
+    OPT_TSONLY: per datagram that leaves, a SCHED then a SND entry on the error queue (ENOMSG,
+    SO_EE_ORIGIN_TIMESTAMPING, no bytes, SCM_TIMESTAMPING before IP_RECVERR or IPV6_RECVERR,
+    EPOLLERR while queued, the socket's error left alone), keyed by OPT_ID's count of sends that
+    asked for any send timestamp (hardware ones too) or by SCM_TS_OPT_ID, as an option and per
+    send (measured). Local and netlink sockets take the flags and make none, as Linux. TCP's
+    send timestamps, TX_COMPLETION and copies of the packet (no OPT_TSONLY) are refused and
+    counted.
+  - A connect waiting for a full backlog's room (SYN_SENT) gives TCP_MAXSEG 524 and TCP_INFO's
+    SYN-sent values (measured).
+  - IPv4 multicast and broadcast inside the container: IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP,
+    MCAST_JOIN_GROUP and MCAST_LEAVE_GROUP (`ip_mc_join_group`'s checks; at most 20 groups,
+    ENOBUFS; EPROTO on TCP), IP_MULTICAST_IF (an address, `ip_mreq` or `ip_mreqn`), a group's
+    datagram given to every socket on its port bound to the any address or the group (connected
+    to none or the sender) that joined it on the interface it left by or takes every group
+    (IP_MULTICAST_ALL), while some socket joined it there and the sender loops it back, with
+    IP_MULTICAST_TTL; broadcasts (255.255.255.255 and eth0's) need SO_BROADCAST (EACCES) and go
+    to every socket on the port. The copies the outside would get are not sent, counted
+    "multicast or broadcast not sent outside" (the host carries neither). They were dropped
+    without a count before.
+  - statfs through `/proc/self/fd/N` of an mq_open queue gives the kernel's own mount's flags
+    (the walk keeps whether the last descriptor link followed named such a file), fixing the
+    fifth run's open layer 1 difference (seed 5050446).
+
+- Seventh run (each against the reference):
+  - `/proc/<pid>/fdinfo` (syscall/fdinfo.rs): the directory (0555, listed and positioned as
+    `fd`, refused with EACCES to a caller that may not trace the process, at lookup and open),
+    each file (0444, made at each read, ENOENT once its descriptor is closed) with `pos`,
+    `flags` (O_CLOEXEC from the descriptor), `mnt_id`, `ino`, the locks taken through the file
+    (`show_fd_locks`: its flock, then its POSIX locks of this table and OFD locks, as
+    `/proc/locks` prints them), and each kind's lines: eventfd's count, number (the lowest free,
+    `eventfd_ida`) and semaphore flag; epoll's items (events with ERR and HUP, a fired one-shot
+    item's 0x40000000); inotify's watches newest first with the watched inode, kernel device
+    number, mask and file handle (as `name_to_handle_at` with AT_HANDLE_FID); signalfd's mask;
+    timerfd's clock, unread expirations, settime flags and time left; a process descriptor's
+    `Pid` and `NSpid` (-1 once reaped); local sockets' `scm_fds` (descriptors in flight to it,
+    or to its connections not yet accepted); the pseudo-terminal master's `tty-index`. Record
+    locks now keep the file they were taken through (`flc_file`) and a joined lock keeps the
+    held one's taker and file (`posix_lock_inode` grows the held lock); flock keeps its taker.
+  - TCP_DEFER_ACCEPT: set as seconds of whole SYN-ACK retransmits (`secs_to_retrans` and back:
+    2 reads 3, 1000 reads 1087, at most 29887); a listener with it holds each new connection
+    (`acked` request) out of its accept queue until data or a FIN comes or the deferral ends
+    (accepted at exactly the value read back, measured 1 s and 3 s), while its held requests are
+    not over its backlog (past it Linux answers with SYN cookies, which are not held); data or
+    a FIN finding the accept queue full stays held and tries again 200 ms later (the client's
+    retransmit after TCP_RTO_MIN; Linux doubles that wait at each try, here it stays 200 ms), a
+    deferral's end finding it full tries at the next SYN-ACK timer; a reset drops a held
+    connection; a closed listener drops held ones without a reset; held ones show in
+    `/proc/net/tcp` as SYN_RECV requests (`get_openreq4`: timer 1, time to the next SYN-ACK
+    timer, timers fired); an accepted socket reads 0. Connections from outside are not held
+    (counted "outside connection not deferred").
+  - Found by the end-of-milestone seed 5050453 (fixed, measured): a named pipe opened by its
+    path refuses RWF_NOWAIT (EOPNOTSUPP), where a pipe from `pipe2` takes it (guest/rwmodes.c
+    now has one).
+
+- Eighth run (the seventh run's check, each against the reference):
+  - TCP_DEFER_ACCEPT: when a listener closes, its held connections go without a word, as
+    `inet_csk_listen_stop` drops requests; a client's next send draws a reset (its write
+    succeeds, its next read is ECONNRESET), and a client whose data or FIN was dropped while
+    the accept queue was full gets the reset at its retransmit (the timer on the client). The
+    seventh run sent a FIN instead.
+  - Options read back as Linux keeps them: SO_BUSY_POLL (never negative) and SO_INCOMING_CPU
+    keep their values; TCP_LINGER2 of 0 reads as `tcp_fin_timeout` (60); TCP_WINDOW_CLAMP is
+    set at the handshake to half the receive buffer unless a smaller clamp was asked
+    (`tcp_init_buffer_space`), and 0 is refused (EINVAL) unless closed; TCP_QUICKACK is the
+    opposite of the pingpong model /proc/net/tcp shows, and setting it moves that model.
+  - SO_BINDTODEVICE and SO_BINDTOIFINDEX on every socket (`sock_setbindtodevice`,
+    `sock_bindtoindex_locked`, `sock_getbindtodevice`): the bound interface kept as its number;
+    names cut to 15 bytes, unknown ones ENODEV, empty or none lets go; any number not negative
+    is kept (unknown ones read back as ENODEV by name); a name reads back with its NUL and
+    wants room for 16 bytes (EINVAL); binding again wants CAP_NET_RAW.
+  - A TCP connect to the socket's own address and port with no listener there is a
+    simultaneous open: the socket is its own peer, reads what it writes, and its FIN and reset
+    come back to itself.
+  - IPV6_ADDRFORM: a connected IPv6 TCP or UDP socket whose peer is IPv4-mapped becomes an IPv4
+    socket (ENOTCONN unless established, EADDRNOTAVAIL for IPv6 peers or IPV6_V6ONLY, EINVAL
+    for other families, EBUSY for a corked UDP datagram); reading it gives AF_INET6 while
+    established.
+  - The neighbour table (`ip neigh`, RTM_GETNEIGH dumps, `Ports::neighbours`): each family's
+    first packet through lo makes Linux's loopback entry (0.0.0.0 on lo for IPv4, as ARP keys
+    every loopback neighbour, and ::1 for IPv6; NOARP, all-zero hardware address), with its
+    times since made and since TCP last confirmed it; NLMSG_DONE comes in the same read as
+    the entries (neighbours are not split as links, addresses and routes are). Entries that
+    packets leaving by eth0 make on Linux (the gateway's, groups', broadcasts') are not built:
+    a dump after such packets is counted "neighbour entries not built". Proxy dumps are empty.
+  - Found by layer 1 seed 5050458 (with the new calls; measured in scratch k5r8/pidfd):
+    SCM_PIDFD comes after SCM_RIGHTS in a read, and too little room left for it is MSG_CTRUNC
+    whether or not the message names its sender (`scm_pidfd_recv` checks the room first).
+  - Layer 1 generates sendmmsg (one or two send headers), recvmmsg (one receive header) and
+    epoll_pwait2 (a zero timeout).
+
+Tests added in the eighth run (each against the reference):
+- tests/inet.rs `option_corners_and_neighbours_match_reference` (guest/inetcorners.c: the
+  options above, the bound device by name and number on internet and local sockets, a
+  connection to oneself, IPV6_ADDRFORM on UDP and TCP, neighbour dumps of each family; eth0's
+  number differs between hosts, so it is shown as "eth0's").
+- guest/tcpdefer.c's last part waits 600 ms after the listener closes (past the client's
+  retransmit) and reads every client after writing: the reference raced there before (below).
+- guest/sockpidfd.c: descriptors with SO_PASSPIDFD set before and after the send, with room for
+  both messages and for one, on streams and datagrams.
+
+Tests added in the seventh run (each against the reference):
+- tests/procstatus.rs `fdinfo_matches_reference` (guest/fdinfo.c: every descriptor kind, locks
+  joined across two files, a user refused another's, a zombie's and a reaped child's process
+  descriptor, a descriptor closed after its fdinfo was opened; machine numbers checked against
+  statx, stat and name_to_handle_at and shown as "same").
+- tests/inet.rs `deferred_accepts_match_reference` (guest/tcpdefer.c: values, deferral ends at
+  1 s and 3 s, data and FIN before the end, a reset, six connects on a backlog of 2, the
+  listener closed under them).
+
+Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
+call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
+and those calls are at its end. The third run's claim that seed 5050003 had them among its calls
+was wrong. At K4's end the list had 257 entries, so only its last (timerfd_gettime) was never
+made. The kind is now a `u16`; seeds made before this make different sequences now.
+
+Tests added in the sixth run (each against the reference):
+- tests/inet.rs `tcp_info_matches_reference` (guest/tcpinfo.c: exact fields through a
+  connection's life over IPv4 and IPv6, timing fields only as plausible),
+  `send_control_messages_match_reference` (guest/inetsend.c, as root and a user),
+  `udp_segmentation_matches_reference` (guest/udpsegment.c), `timestamping_matches_reference`
+  (guest/timestamping.c; each receiver waits 100 ms after asking, as Linux turns stamping on
+  for the machine through deferred work), `multicast_and_broadcast_match_reference`
+  (guest/multicast.c).
+- Layer 1 sets SO_MARK, SO_PRIORITY, SO_RCVMARK, SO_RCVPRIORITY, SO_TXTIME and IP_TOS, and sends
+  IPv4 packet information naming 127.0.0.5 as the source.
+
+Tests added in the fifth run (each against the reference):
+- tests/inet.rs `io_signals_match_reference` (guest/inetasync.c: TCP connect, listener, data,
+  filling and draining, shut, reset, refused, chosen signals, a waiting reader; UDP data and
+  refusals; netlink dump parts, a second dump, a faulting read), `socket_mappings_match_reference`
+  (guest/tcpmap.c), `error_queue_matches_reference` (guest/recverr.c).
+- tests/inet.rs `orders_of_checks_match_reference` (guest/sockorder.c).
+- tests/inet.rs `tcp_urgent_data_matches_reference` (guest/tcpoob.c); guest/unixsock.c: a
+  pending error before queued messages; guest/udpcontrol.c: IPv6 sockets connecting to IPv4.
+- tests/unixsock.rs `cycles_are_collected_as_linux` (guest/unixgc.c: a socket in its own queue,
+  two pairs in each other's, a cycle reached from an open socket, ETOOMANYREFS at a limit of 16).
+  Linux collects on a work queue at the release of any local socket on the whole machine (other
+  containers' too), so the test shows only states after the program released one, waiting up to
+  10 s for the pipe's end.
+- guest/udpcontrol.c: packet information asked for after datagrams came; guest/pollmask.c:
+  fresh netlink, UDP and TCP sockets.
+
+Tests added in the fourth run (each against the reference):
+- tests/unixsock.rs `urgent_bytes_and_io_signals_match_reference` (guest/unixoob.c: the mark,
+  peeks, two urgent bytes, inline, descriptors with an urgent byte, epoll and poll for POLLPRI,
+  SIGURG, O_ASYNC signals with and without a chosen signal, a reader waiting in a read, SIGPIPE
+  by kind, a listener closed with a connection waiting) and
+  `process_descriptor_and_queue_options_match_reference` (guest/sockpidfd.c: SO_PEERPIDFD of a
+  pair, a child and a reaped child, SCM_PIDFD with and without room and with credentials,
+  SO_PASSRIGHTS, SO_INQ, the protocol name attribute and attribute rights as root and a user).
+- tests/inet.rs `urgent_flags_match_reference` (guest/inetoob.c).
+- guest/epoll.c: event descriptor write and read sizes and poll bits, epoll's requests;
+  guest/unixoob.c: a long write over a buffer that ends part way; guest/sockpidfd.c: failed
+  reads with credentials asked for, a datagram read into a bad buffer.
+- Layer 1 makes accept4, sendmsg and recvmsg (headers in the arena with destinations, vectors and
+  control messages: descriptors, credentials, a bare header, IP_TTL; receives with room from none
+  to 128 bytes, their control area zeroed by both runners after each call, the sender's process
+  number and times masked), more socket options (SO_OOBINLINE, SO_PEEK_OFF, SO_PASSPIDFD,
+  SO_PEERPIDFD, SO_PASSRIGHTS, SO_INQ, timestamps, SO_LINGER, IP_PKTINFO, IP_RECVTTL,
+  IP_RECVTOS, IPV6_RECVPKTINFO). A quarter of the sequences start with a local socket pair of one
+  kind and a message from one end, ended by a recvmsg at the other; an eighth with a UDP socket at
+  127.0.0.1:5099 that sends itself a datagram, ended by a recvmsg. The test prints how many sends
+  with control messages and receives went well.
+
+Tests added in the third run (each against the reference):
+- tests/outside.rs `servers_inside_accept_clients_outside_as_linux` and
+  `listeners_listen_again_after_a_restore` (guest/outsideserve.c; seed 1's save falls after the
+  listens and before the clients, checked by tracing the test host's listens once).
+- tests/inet.rs `proc_net_matches_reference` (guest/procnet.c: machine-specific numbers shown as
+  what they are), `transfers_with_sockets_match_reference` (guest/sockxfer.c),
+  `datagram_control_messages_match_reference` (guest/udpcontrol.c),
+  `receive_timestamps_match_reference` (guest/timestamps.c: each time checked to fall between
+  the send and the receive).
+- tests/netprograms.rs `socket_and_route_tables` (busybox netstat -tulnp, netstat -lx, route -n,
+  ifconfig lo).
+- guest/inotify.c: unlinked files with IN_EXCL_UNLINK, exchanges, a replaced target.
+
+Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
+turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
+instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
 Needs Docker running; the reference uses alpine:3.22. Containers are named `wc-kernel-*` and removed.
 
 Layer 1 long run (one command, for the orchestrator):
-`LAYER1_CASES=1000000 LAYER1_SEED=<n> nix develop -c cargo test -p wcontainers-kernel-test --test layer1`
+`LAYER1_CASES=1000000 LAYER1_SEED=<n> nix develop -c cargo test -p wcontainers-kernel-test --test layer1 -- --exact sequences_match_reference`
+(without the filter the two backend tests run too, at their own counts). On the backend:
+`LAYER1_BACKEND_CASES=<count>` with `sequences_on_backend_match_reference`, `LAYER1_CACHED_CASES=<count>`
+with `sequences_on_cached_backend_match_reference`, the same `LAYER1_SEED`.
 `LAYER1_CASES` is the number of sequences (default 64), `LAYER1_SEED` the seed (default 0). A failure is
 shrunk and printed call by call with the seed; shrinking stops after 30 minutes (a step whose sequence
 waits costs the reference's deadline). A sequence that runs past 60 s in the reference is killed there
@@ -73,9 +974,17 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 
 Everything a reviewer should know about what is not compared, in one place.
 
+- K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
+  summary. The reference ran once, so its own flaky tests (timing tests under load, such as
+  clock_nanosleep02 failing there) are in the bar as they came. Our runs used LTP_LIMIT=300 for
+  the groups after syscalls in the first run and for the whole second run; a test past it is a
+  timeout, not a verdict. The first ~900 tests of the first run ran before the crash and hang
+  fixes; the second run (scratch ltp/ours-2.tsv) is wholly at 8a3d41f.
+
 Ignored tests (each attribute gives the reason):
 - busybox `root_file_system`: `ls -la /`, `ls -ln /etc`, `stat /etc`, `find /etc`, `du /etc/apk` show
-  the root file system's own kind (overlayfs over ext4 in the reference, tmpfs here until K4).
+  the root file system's own kind (overlayfs over ext4 in the reference; tmpfs here, in memory or
+  the backend server's directory).
 - align `unaligned_exclusive_matches_reference`: unicorn faults an exclusive load from an unaligned
   address, which the reference's hardware runs. A stand-in difference, not the kernel's.
 - align `misaligned_stack_pointer_matches_reference`: unicorn (QEMU) never checks stack pointer
@@ -84,16 +993,6 @@ Ignored tests (each attribute gives the reason):
 - memfd `huge_page_memory_files`: hugetlbfs is not built (see Partial).
 - cachestat `mapped_file_pages`: the page a private mapping's read fault brings into a tmpfs file is
   counted by the reference and not known here (counted "page residency not tracked").
-- proclist `thread_listings_are_a_subset_of_the_reference`: `/proc/<pid>/task` is not built (threads,
-  K3).
-- transfer `partial_copies_match_reference`: a read of a random device (or getrandom) into a buffer
-  that faults part way stops up to 15 bytes short of the fault in the reference (measured: 88 where 96
-  bytes were writable; 1 where fewer than 8 were), by where arm64's copy routine had stored when the
-  fault came (the kernel's 64-byte block sits 8 bytes off 16-byte alignment); ours stops at the fault.
-  Reads of files and `/dev/zero` stop where Linux's do (measured).
-- procstatus `private_mapping_sees_later_writes`: a private file mapping is a copy made at mmap, so
-  pages it has not written do not see later writes to the file, as Linux's do (counted "private file
-  mapping is a copy"; procstatus `private_mapping_copy_is_counted` checks the counter).
 
 Comparisons that are subsets rather than equality, and why:
 - tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
@@ -108,8 +1007,7 @@ Comparisons that are subsets rather than equality, and why:
 - `/dev`, `/dev/pts` and `/dev/shm` are compared whole and in order with d_off (proclist
   `device_listings_match_the_reference`), except the link count of `..` of `/dev`, which is `/`.
 - tests/options.rs prints process numbers only as whether they are the caller's, its group or 0, and
-  checks PR_GET_AUXV's bytes against `/proc/self/auxv` on each side (the vector itself lacks the vDSO's
-  two entries here, a known gap).
+  checks PR_GET_AUXV's bytes against `/proc/self/auxv` on each side (the vector holds addresses).
 - tests/sharedmap.rs sorts `/proc/self/maps` (placement differs: no address randomization here).
 - tests/schedattr.rs shows time slices relative to the default (the CPU count differs).
 - tests/fileioctl.rs prints FIONREAD's value on standard output only as success: what waits unread in
@@ -169,23 +1067,50 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   both runners zero the whole range the call was given (up to the first page they cannot write, by
   process_vm_writev), and after a sendfile from one into a regular file they zero what it put there
   (pwrite at the output's old position); the reference's runner says when it did, and ours does the
-  same calls. The bytes are then compared (as zeros) with everything else. A read of one that moved less
-  than it was asked for (a fault part way) has its count not compared: where the copy stops differs (the
-  known failure above). The test prints how many calls put a random device's bytes somewhere.
+  same calls. The bytes are then compared (as zeros) with everything else, and the count of a read
+  that a fault cut short too. The test prints how many calls put a random device's bytes somewhere,
+  made or opened the named pipe, opened a pseudo-terminal, and how many children were made.
+- In sequences with a pseudo-terminal the reference's runner polls every descriptor (3 to 1023) twice
+  after each call, which our runner does not need (its terminals move bytes at once), so ppoll is let
+  through by those sequences' filters first; and writes are cut to 256 bytes, vectors to one segment,
+  and every open, F_SETFL and FIONBIO keep O_NONBLOCK (see "What layer 1 does not generate").
+- A child made by clone ends at once with status 7 on both sides and is waited for (not reaped)
+  after the call, so waitid is let through first by those sequences' filters. clone's and wait4's
+  values (process numbers), wait4's and waitid's resource use, and waitid's process number and
+  times are masked and zeroed.
 - Before each sequence both runners remake `/dev/null` once: the reference container's first
   `/dev/null` is held from outside the container once removed (measured: its inode is never given
   back), and the reference's runner remakes the devices after every sequence, so `/dev` always has one
   hidden inode there; ours is held by descriptor 0. Without this the inodes in use in `/dev` differ by
   one.
+- Both runners' callers ignore SIGPIPE, SIGIO and the signals F_SETSIG may choose (1, 5, 8, 22, 32,
+  64; guest/layer1.c and `IGNORED_SIGNALS` in layer1.rs), which Linux keeps from our caller (the
+  container's first process) and not from the reference's; so what Linux does for a first process
+  with these at their default is not compared, and rt_sigaction reads SIG_IGN for 1 and 64.
 
 What layer 1 does not generate, and why:
-- Named pipes (opening one waits; pipes are K2); descriptors 0 to 2 (the reference's runner reports
+- Terminal writes of more than 256 bytes, blocking terminal descriptors, a controlling terminal
+  (every open is O_NOCTTY, TIOCSCTTY and opens of the peer without it are not generated): Linux moves
+  a terminal's bytes from a work queue on another CPU, so how much a large write takes depends on when
+  that work runs; a blocking read would cost the reference's deadline; and a controlling terminal
+  brings job control signals that end the reference's caller and not ours. tests/terminal.rs covers
+  them.
+- A child that runs calls of its own (the child of clone ends at once), threads and shared tables
+  (CLONE_THREAD with what it needs, CLONE_FILES, CLONE_FS: a sequence is one thread's calls, and the
+  reference would run a thread on another CPU beside them; layer 2 compares them, tests/threads.rs and
+  libc-test), the priority inheriting futex calls that can take a lock (they write the caller's
+  thread number; tests/threads.rs compares them), CLONE_PARENT (our
+  caller is the first process, which Linux refuses it to), CLONE_PARENT_SETTID
+  (it writes a process number into the arena), waits without WNOHANG in sequences with a child.
+- Named pipes other than the one at `p` in the work directory, made at the start of a quarter of the
+  sequences; opens of it are nonblocking unless for reading and writing (a reopen through
+  `/proc/self/fd` could still wait, which both runners end at the reference's deadline); descriptors 0 to 2 (the reference's runner reports
   through them); process 1 and the caller's own group negated (our caller is process 1, so -1 means
   every process); memory lengths above 256 MiB that reach memory (our programs' own mappings lie higher in a 4 GiB
   space; lengths that wrap to 0 in the last page or overflow the address are generated, and one play
   address in four carries a top byte tag); ppoll and pselect6 without a timeout; flock waits (they wait for ever).
 - Signals whose default action ends or stops a process, and rt_sigaction on the signals kill sends
-  (our caller is the container's first process, which Linux protects; theirs is not; handlers are K2).
+  (our caller is the container's first process, which Linux protects; theirs is not).
 - RLIMIT_CPU and RLIMIT_FSIZE limits that can be reached, process limits that can be reached (Linux
   counts the user's processes machine-wide), stack limits above 1 GiB (our stack could grow into the
   play area), core size limits above zero (core dumps are not written, counted).
@@ -198,6 +1123,20 @@ What layer 1 does not generate, and why:
   instruction pointer (the runners' differ); alternate signal stacks that could hold either caller's
   stack pointer; rseq areas where other calls write.
 - brk (its values are addresses that differ by layout; tests/memory.rs and tests/limits.rs test it).
+- recvmmsg with more than one header (the arena holds one receive header for it; more would
+  read the generated values as headers), with a timeout or blocking (every receive is
+  nonblocking, so MSG_WAITFORONE, which only changes waiting, is not generated); sendmmsg with
+  more than two headers; epoll_pwait2 with a timeout other than zero (a sequence never waits).
+  tests/inet.rs (guest/inet.c) and tests/epoll.rs compare them.
+- Socket addresses read back (getsockname, getpeername, accept's and a receive's sender): an
+  automatic local name and an ephemeral port are random. Sends to the loopback port 5099 only from
+  the UDP socket a sequence starts with. tests/unixsock.rs and tests/inet.rs compare addresses.
+- Loopback timing: in a sequence that makes an internet socket the reference's runner, after each
+  call, waits until every CPU's receive backlog (/proc/net/softnet_stat's twelfth field) is seen
+  empty, up to 1 s, so a packet Linux handed to ksoftirqd under load has reached its receiver
+  before the next call; ours delivers at once. The child waits by spinning on a shared page (no
+  system call its filters could refuse). Where the file cannot be opened (ours: counted "proc
+  entry not built" once per runner) it does not wait.
 - CPU clock ids of process 1 (our caller is process 1, the reference's is not); those of the
   caller's own process and thread (encoded pid 0), of a missing process, and clock devices are
   generated. Sleeps on the profiling and user time CPU clocks: Linux samples those times at ticks, so
@@ -220,7 +1159,7 @@ What layer 1 does not generate, and why:
   open file forms, from eight requests in the arena that tests rewrite), but not F_SETLKW and
   F_OFD_SETLKW: in one process they wait only on another open file's lock, for ever, which costs the
   reference's 60 s deadline; tests/recordlocks.rs runs them where they do not wait.
-- prctl's PR_GET_AUXV is not generated (the vector holds addresses and lacks the vDSO's entries here);
+- prctl's PR_GET_AUXV is not generated (the vector holds addresses);
   tests/options.rs compares it. PR_SET_TIMERSLACK only with slacks up to 1 ms: where in a long slack
   the reference's sleep ends depends on other timers' interrupts (its load), and a slack past the
   reference's 60 s deadline ends the sequence there or not by load (see Known gaps). The check's seed
@@ -232,11 +1171,12 @@ What layer 1 does not generate, and why:
   the start (as unpacking an image does), `start(cpu, host, &Start { path, arguments, environment,
   working_directory, hostname, groups })`, `next`, `exit`, `event`, `counters`, `root_files()`,
   `system_calls()`.
-- Exits: system calls, stops, memory faults (stack growth, SIGSEGV, SIGBUS past a file's end),
-  `MemoryFaultWithoutRegisters` (SIGSEGV), `AlignmentFault` (SIGBUS as Linux's `do_sp_pc_abort`;
-  BUS_ADRALN and the address reach only a handler, and handlers run in K2), illegal instructions
-  (SIGILL), breakpoints (SIGTRAP). With no handler, or the signal ignored (a forced signal resets it), the
-  process dies of the signal as on Linux; with a handler it dies too, counted "signal handler not run".
+- Exits: system calls, stops, memory faults (stack growth, SIGSEGV with SEGV_MAPERR or SEGV_ACCERR,
+  SIGBUS BUS_ADRERR past a file's end), `MemoryFaultWithoutRegisters` (SIGSEGV, no handler),
+  `AlignmentFault` (SIGBUS BUS_ADRALN at the address, as `do_sp_pc_abort`), illegal instructions
+  (SIGILL ILL_ILLOPC at the pc), breakpoints (SIGTRAP TRAP_BRKPT at the pc). A fault's signal is forced
+  (`force_sig_fault`): a blocked or ignored one goes back to the default; a handler runs with the
+  fault's information and frame.
 - File layer (src/fs): inodes shared by `Rc`, mounts, path walk with symlinks (40 at most), `..`
   across mounts, `d_path` paths (a removed directory gets " (deleted)", one outside the caller's root
   its path from the top; getcwd's "(unreachable)" is separate), permission checks
@@ -250,7 +1190,7 @@ What layer 1 does not generate, and why:
   when there is none. `.`=0, `..`=1, end 2^31-1.
 - Mounts as `docker run` makes them: `/` (tmpfs here, see departures), `/proc`, `/dev` (tmpfs with
   null, zero, full, random, urandom, tty and Docker's links, made in runc's order so listings match),
-  `/dev/pts` (devpts, with ptmx), `/dev/shm` (tmpfs), `/dev/mqueue` as a plain directory. fd 0 is `/dev/null` opened read-write, fds 1 and 2 are
+  `/dev/pts` (devpts, with ptmx), `/dev/shm` (tmpfs), `/dev/mqueue` (mqueue). fd 0 is `/dev/null` opened read-write, fds 1 and 2 are
   pipes the host reads (as Docker's; no O_LARGEFILE, as Linux's `create_pipe_files`, measured).
 - Open files keep O_LARGEFILE from open as a 64 bit kernel sets it, except with O_PATH
   (`build_open_how`); F_GETFL reports the file's own flags. open, openat and openat2 take the
@@ -273,10 +1213,10 @@ What layer 1 does not generate, and why:
   FIONREAD, the random devices' `random_ioctl`; files with none answer ENOTTY as Linux does. tmpfs
   keeps its inode flags (no-dump and no-access-time can be set; immutable and append-only need
   CAP_LINUX_IMMUTABLE, which Docker's root lacks; statx shows them). FASYNC is set through a file's
-  `fasync` (pipes, random devices) by FIOASYNC and F_SETFL, and fcntl names an owner; no signal is
-  sent yet: the random devices signal only when the generator first becomes ready (before any
-  program), and the standard stream pipes would signal when Docker reads them (pipes and signal
-  delivery, K2; a known gap).
+  `fasync` (pipes, terminals, random devices) by FIOASYNC and F_SETFL, and fcntl names an owner;
+  pipes and terminals send I/O signals (K2's third run); the random devices signal only when the
+  generator first becomes ready (before any program), so never here. Terminals' requests are in
+  src/syscall/tty.rs and pidfs's in src/syscall/pidfd.rs.
 - Access times: reads, listings, `readlink` and mappings of tmpfs files move the access time as
   `touch_atime` does (`relatime` on `/`, `/dev/shm`; `strictatime` on `/dev`), except with O_NOATIME
   or the no-access-time flag.
@@ -309,12 +1249,11 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   Linux has that is not built is counted "proc entry not built"; opening stat, statm, status or
   mounts is counted "proc fields not tracked" (zeroed or missing fields, below).
 - Memory (src/memory.rs): ranges with what the program asked for, top-down placement below
-  end-128 MiB, reused ranges cleared, brk, mmap (anonymous, private file copies, `/dev/zero`, shared
-  file mappings through shared blocks), munmap, mprotect, madvise, mremap, msync, mlock family. Shared
+  end-128 MiB, reused ranges cleared, brk, mmap (anonymous, file mappings through the file's
+  shared block, private ones copied page by page at the first write, `/dev/zero`), munmap, mprotect, madvise, mremap, msync, mlock family. Shared
   anonymous memory and shared `/dev/zero` show in maps as Linux's removed `/dev/zero` on its internal
   tmpfs (device 0:1, an inode each, never merged with another), a private `/dev/zero` mapping as the
-  device's file. A change to a file a private mapping copied is counted "private file mapping is a
-  copy".
+  device's file.
   Pages wholly past a file's end are inaccessible (SIGBUS). The stack and MAP_GROWSDOWN memory grow
   on a fault (or a copy) below them as `expand_downwards` allows: 1 MiB clear of an accessible mapping
   below that does not grow down, within the stack, address space and locked memory limits; new
@@ -336,9 +1275,8 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   with no arguments gets an empty first one (`do_execveat_common`). The strings' room is
   `bprm_stack_limits`'s (a quarter of RLIMIT_STACK, at most 6 MiB, at least ARG_MAX, less a pointer
   each), taken in Linux's order: both lists counted, the file name, the environment, the arguments,
-  then a script's names. The auxiliary vector as the reference's, in its order, except
-  AT_SYSINFO_EHDR and AT_MINSIGSTKSZ (counted and warned at each start; they come with the vDSO and
-  signal frames in K2). Set-user and set-group bits, file capabilities, AT_SECURE, dumpability.
+  then a script's names. The auxiliary vector as the reference's, in its order,
+  AT_SYSINFO_EHDR and AT_MINSIGSTKSZ included. Set-user and set-group bits, file capabilities, AT_SECURE, dumpability.
 - Credentials: uid/euid/suid/fsuid and gids, supplementary groups (Docker's), Docker's 14 powers,
   Linux's rules for changing ids and what that does to powers and `dumpable`, capget/capset. Each
   change Linux commits (`commit_creds`: the id setters unless a no-op, setgroups, capset, keepcaps,
@@ -356,12 +1294,14 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   process and thread, any process, a thread of the caller's; profiling and user time at 1 ms
   resolution, scheduler time at 1 ns (measured); clock devices EINVAL, and EOPNOTSUPP for sleeps.
   Alarm clock sleeps refuse unknown flags and need CAP_WAKE_ALARM (EPERM in Docker), as measured.
-- Signals within one process (src/signal.rs): sent to itself, dropped if ignored, kept pending while
-  blocked, acted on when let through. The container's first process ignores signals it has no handler
-  for (`SIGNAL_UNKILLABLE`); faults still kill it. A signal that would need its handler run, or would
-  stop the process, is refused with ENOSYS and counted.
+- Signals (src/signal.rs, src/syscall/signals.rs): see "Where things stand". The container's first
+  process ignores signals it has no handler for (`SIGNAL_UNKILLABLE`); a fault's forced signal still
+  kills it.
 - Resource limits enforced: RLIMIT_FSIZE, RLIMIT_AS, RLIMIT_DATA (with `check_data_rlimit`),
-  RLIMIT_STACK, RLIMIT_MEMLOCK, RLIMIT_NOFILE. RLIMIT_CPU is kept, not enforced (needs timers, K3).
+  RLIMIT_STACK, RLIMIT_MEMLOCK, RLIMIT_NOFILE, RLIMIT_MSGQUEUE, RLIMIT_SIGPENDING, RLIMIT_NPROC,
+  RLIMIT_NICE and RLIMIT_RTPRIO (the priority calls), RLIMIT_CPU (K3's fourth run); RLIMIT_CORE, RLIMIT_RSS, RLIMIT_LOCKS and RLIMIT_RTTIME are kept and bind nothing here (no
+  core is written; Linux enforces neither RSS nor LOCKS; no real-time thread can exist, as Docker's
+  hard RLIMIT_RTPRIO is 0).
 - Docker's default seccomp profile (src/seccomp.rs), measured on the reference, and a program's own
   classic BPF filters, checked and run as Linux's.
 - Record locks (src/locks.rs) as `fs/locks.c` keeps them: one list per inode, a descriptor table's
@@ -369,8 +1309,8 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   joined and split, the first conflicting lock in list order reported by F_GETLK (an open file's with
   l_pid -1), let go when any descriptor of the file closes (not an O_PATH one) or, for an open file's,
   when its last reference goes; every check of `flock64_to_posix_lock`, `fcntl_getlk` and
-  `fcntl_setlk` in order. A wait (F_SETLKW) for another holder in the same process lasts until a signal
-  (K2), as on Linux.
+  `fcntl_setlk` in order. A wait (F_SETLKW) ends when the lock in its way is let go or changed, or by
+  a signal; one that would close a loop of holders is EDEADLK (`posix_locks_deadlock`).
 - flock between open files; extended attributes on tmpfs (src/syscall/xattr.rs); memfd_create with
   seals; memfd_secret; name_to_handle_at; rseq; membarrier; protection keys as on a CPU without
   permission overlays; sched_setattr family; process_vm_readv and process_vm_writev on the caller;
@@ -381,58 +1321,53 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (170): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
-clock_nanosleep, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit, exit_group,
-faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat,
-fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat, fstatfs, fsync,
-ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid, getgroups,
-getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
-getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill, lgetxattr,
-linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
-membarrier, memfd_create, memfd_secret, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap,
-mprotect, mremap, msync, munlock, munlockall, munmap, name_to_handle_at, nanosleep, newfstatat,
-openat, openat2, personality, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64, preadv,
-preadv2, prlimit64, process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev, pwritev2, read,
-readahead, readlinkat, readv, removexattr, renameat, renameat2, rseq, rt_sigaction, rt_sigpending,
-rt_sigprocmask, sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getattr,
-sched_getparam, sched_getscheduler, sched_rr_get_interval, sched_setaffinity, sched_setattr,
-sched_setparam, sched_setscheduler, sched_yield, seccomp, sendfile, set_robust_list,
-set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid, setpriority, setregid, setresgid,
-setresuid, setreuid, setrlimit, setsid, setuid, setxattr, sigaltstack, statfs, statx, symlinkat,
-sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, uname, unlinkat,
-utimensat, write, writev.
+Done (246): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+clock_nanosleep, clone, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit,
+exit_group, faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2,
+fchown, fchownat, fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat,
+fstatfs, fsync, ftruncate, futex, futex_requeue, futex_wait, futex_waitv, futex_wake, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
+getgroups, getitimer, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit,
+getrusage, getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill,
+lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
+membarrier, memfd_create, memfd_secret, mincore, mq_getsetattr, mq_notify, mq_open,
+mq_timedreceive, mq_timedsend, mq_unlink, mkdirat, mknodat, mlock, mlock2, mlockall, mmap,
+mprotect, mremap, msgctl, msgget, msgrcv, msgsnd, msync, munlock, munlockall, munmap, name_to_handle_at, nanosleep, newfstatat,
+openat, openat2, personality, pidfd_open, pidfd_send_signal, pipe2, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64,
+preadv, preadv2, prlimit64, process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev,
+pwritev2, process_mrelease, read, readahead, readlinkat, readv, removexattr, renameat, renameat2, restart_syscall,
+rseq, rt_sigaction, rt_sigpending, rt_sigprocmask, rt_sigqueueinfo, rt_sigreturn, rt_sigsuspend,
+rt_sigtimedwait, rt_tgsigqueueinfo, sched_get_priority_max, sched_get_priority_min,
+sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler, sched_rr_get_interval,
+sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler, sched_yield, seccomp,
+semctl, semget, semop, semtimedop, sendfile, set_robust_list, set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid,
+setitimer, setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr, shmat,
+shmctl, shmdt, shmget, sigaltstack, signalfd4, splice, statfs, statx, symlinkat, sync, sync_file_range, syncfs,
+sysinfo, tee, tgkill, timer_create, timer_delete, timer_getoverrun, timer_gettime,
+timer_settime, timerfd_create, timerfd_gettime, timerfd_settime, times, tkill, truncate, umask, uname, unlinkat, utimensat, vmsplice, wait4,
+waitid, write, writev.
 
 Partial (inside the list above), each with its reason:
-- fcntl: record locks are built (above); between processes (K2) a wait must also wake when a holder
-  lets go, and `posix_locks_deadlock` must refuse waits that close a loop (EDEADLK); within one process
-  neither can happen. Not built, each counted "fcntl command not built" and EINVAL (Linux's answer when
-  the feature is not configured): F_SETLEASE (leases: K2), F_NOTIFY (directory
-  notification signals: K2), F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG, and F_GETPIPE_SZ and
-  F_SETPIPE_SZ on the standard stream pipes (pipes: K2; on anything else they are EBADF as Linux's).
-  Built in the tenth run: owners (F_SETOWN, F_GETOWN, F_SETOWN_EX, F_GETOWN_EX), F_SETSIG and
-  F_GETSIG (no file here has an `fasync`, so no signal is ever sent, as on Linux for these files),
-  F_GET_RW_HINT and F_SET_RW_HINT, F_DUPFD_QUERY, F_CREATED_QUERY, F_GETLEASE (F_UNLCK: no lease can
-  be taken).
-- ioctl: terminals are K2 (no terminal can be opened yet, so their requests reach no file).
-  FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
+- fcntl: record locks are built (above), waits between processes and EDEADLK included. Not built,
+  each counted "fcntl command not built" and EINVAL (Linux's answer when the feature is not
+  configured): F_SETLEASE (leases), F_NOTIFY (directory notification signals), F_GETOWNER_UIDS,
+  F_GETDELEG and F_SETDELEG. Built: owners (F_SETOWN, F_GETOWN, F_SETOWN_EX, F_GETOWN_EX), F_SETSIG
+  and F_GETSIG (pipes and terminals send the chosen signal), F_GET_RW_HINT and F_SET_RW_HINT,
+  F_DUPFD_QUERY, F_CREATED_QUERY, F_GETLEASE (F_UNLCK: no lease can be taken), F_GETPIPE_SZ and
+  F_SETPIPE_SZ on every pipe (EBADF on anything else, as Linux's).
+- ioctl: terminals' requests are built (K2's second run), pidfs's (ninth run; its namespace files
+  counted). FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
   them they answer as tmpfs does (nothing to freeze or thaw, no block map) and what is given to the
   pool cannot change the host's generator.
 - mmap: MAP_HUGETLB on anonymous memory counted, ENOMEM (no huge pages; on a plain file EINVAL, as
-  Linux). MAP_DROPPABLE memory is never dropped (nothing presses on memory here) and must be wiped at
-  fork (K2). MAP_SHARED anonymous is private memory here,
-  exact while there is no fork (K2). A private file mapping is a copy made at mmap, so pages not yet
-  written do not see later changes to the file: counted "private file mapping is a copy" when such a
-  file is written, truncated or allocated, or is mapped both shared and private (the CPU side does not
-  say which pages were written, so the count includes pages a program had already written). MAP_SYNC
+  Linux). MAP_DROPPABLE memory is never dropped (nothing presses on memory here); it is wiped at
+  fork. MAP_SHARED anonymous is a shared mapping of
+  an internal file. A private file mapping copies a page at its first write (above). MAP_SYNC
   EOPNOTSUPP, as tmpfs.
-- openat, openat2: O_TMPFILE counted, EOPNOTSUPP; named pipes counted, ENXIO (pipes, K2); `/dev/ptmx`
-  counted, ENODEV (terminals, K2). openat2's restricted lookups (RESOLVE_NO_XDEV, NO_MAGICLINKS,
+- openat, openat2: O_TMPFILE counted, EOPNOTSUPP; devices by Docker's rules (EPERM; the console and
+  the tunnel counted, ENODEV). openat2's restricted lookups (RESOLVE_NO_XDEV, NO_MAGICLINKS,
   NO_SYMLINKS, BENEATH, IN_ROOT) are not built: counted "system call not implemented", ENOSYS, as a
   kernel before openat2 answers the whole call (Linux has had them as long as openat2); they need the
   path walk to refuse mount crossings, links and escapes, before K6's bar. RESOLVE_CACHED taken.
-- kill, tkill, tgkill: only to the caller itself; others ESRCH (no other process in K1).
-- execve, execveat: only from a process with one thread (threads, K3).
-- rt_sigaction, rt_sigprocmask, sigaltstack: handlers recorded, not run (K2).
 - getrusage, times, CPU-time clocks: CPU time is time not parked since the container started, all of
   it user time, never sampled at ticks as Linux's user and system times are (so a young process's
   profiling and user clocks are not 0 here as they may be there); with several threads (K3) a thread waiting for its turn would count. ru_maxrss is the
@@ -441,9 +1376,9 @@ Partial (inside the list above), each with its reason:
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
 - prctl: built: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, CAPBSET_DROP,
   GET/SET_NO_NEW_PRIVS, GET/SET_SECCOMP, CAP_AMBIENT (eleventh run: is-set, raise, lower, clear, with
-  `cap_task_prctl`'s checks), SET/GET_CHILD_SUBREAPER (kept; it acts on orphans, K2),
+  `cap_task_prctl`'s checks), SET/GET_CHILD_SUBREAPER (orphans go to the nearest subreaper),
   SET/GET_PDEATHSIG (kept per thread, cleared on a change of ids or a secure exec; sent when the parent
-  ends, K2), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
+  thread ends, even while its process goes on), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
   huge pages here), GET_MDWE (0: none can be set), GET_AUXV, GET_SECUREBITS (the keep-capabilities bit;
   the others cannot be set), SET_MM (EPERM without CAP_SYS_RESOURCE, which Docker's root lacks; the map
   size form), SET/GET_IO_FLUSHER (EPERM without CAP_SYS_RESOURCE). Not built, each counted "prctl
@@ -463,14 +1398,18 @@ Partial (inside the list above), each with its reason:
 - statfs, sysinfo, `/proc/meminfo`: pages a mapping's faults bring in are not known (counted); free
   memory is the made-up machine's size less every mapped and tmpfs page (counted "page residency not
   tracked"); `/proc/meminfo` has only some of Linux's lines (counted "proc fields not tracked", 4).
-- ppoll, pselect6: every file is always ready: Linux's default poll mask, readable only for
-  `/dev/random` (`random_poll`, the generator ready from the start) and the mounts files
-  (`mounts_poll`), invalid for O_PATH (in every select set, as `select_poll_one`); the host's pipes
-  always have room; a wait with nothing ready sleeps until its timeout, or for ever (until K2's signals). The
-  signal mask they take is read, not applied (K2).
-- flock: a wait for a conflicting lock never ends (one process).
-- sched_setscheduler, sched_setparam, sched_setattr: kept per thread with Linux's checks; nothing is
-  scheduled by them yet (K3). Custom slices kept; no utilisation clamps (EOPNOTSUPP, as the reference).
+- ppoll, pselect6: they park until a file's readiness may have changed (any change to a pipe,
+  terminal, queue, process descriptor or signal descriptor, any close), their deadline or a signal
+  (one watching no descriptor until its deadline or a signal only),
+  with their signal mask applied while they wait. Pipes, terminals, named pipes, message queues and
+  process and signal descriptors have their own poll; other files are always ready: Linux's default
+  poll mask, readable only for `/dev/random` (`random_poll`, the generator ready from the start) and
+  the mounts files (`mounts_poll`), invalid for O_PATH (in every select set, as `select_poll_one`);
+  the host's pipes always have room.
+- sched_setscheduler, sched_setparam, sched_setattr: kept per thread with Linux's checks. The fair
+  scheduler weighs nice values and SCHED_BATCH and SCHED_IDLE; the real-time and deadline policies
+  are kept but scheduled as normal threads (K3). Custom slices kept; no utilisation clamps
+  (EOPNOTSUPP, as the reference).
 - mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
 - madvise: MADV_COLLAPSE (making huge pages now: needs huge pages and knowing which pages a mapping
   holds), MADV_GUARD_INSTALL and MADV_GUARD_REMOVE (guard markers: pages that fault whatever their
@@ -481,14 +1420,24 @@ Partial (inside the list above), each with its reason:
 - mincore: every mapped page reported in memory, counted "page residency not tracked".
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
 - ioprio_get, ioprio_set: kept per thread; nothing does I/O by it.
-- seccomp: no listener (counted, EINVAL as a kernel without listeners); TRAP with a handler kills (K2).
-- rseq: a critical section is never aborted yet (signal delivery K2, preemption K3). The time slice
-  extension flag is counted and refused with EINVAL; the reference takes it.
-- process_vm_readv, process_vm_writev: only the caller's own process (the only one in K1).
+- seccomp: no listener (counted, EINVAL as a kernel without listeners). TRAP sends SIGSYS with the
+  call, its address and the filter's data.
+- rseq: the time slice extension flag is counted and refused with EINVAL; the reference takes it.
+- process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
+  `ptrace_may_access`, counted "call on another process not built", ENOSYS.
+- clone: namespaces are refused by Docker's profile as in the reference.
+- futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL.
+- process_mrelease never frees anything: there is no dying process to free.
+- pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
+- shmget: SHM_HUGETLB counted "call flag not built", ENOMEM (the reference, with no huge pages
+  reserved, answers ENOMEM). shmctl SHM_INFO's resident pages are those the kernel wrote (counted "page
+  residency not tracked"). A call that both adds and removes mappings of one segment (munmap of the
+  middle of an attachment: two pieces made, one closed) sets only the attach time; Linux sets both.
+- vmsplice: copies the pages when called (counted "vmsplice pages copied"); Linux's pipe holds the
+  caller's pages, so a later change to them shows in what is read.
 - Core dumps: not written (counted "core dump not written"; Linux writes `core` and sets 0x80 when the
   limit is above zero; the reference's default limit is 0).
-- sigaltstack: refuses a change while on the alternate stack; handlers need K2.
 
 Refused by Docker's profile as in the reference (65; they never reach the kernel there, so nothing to
 build): lookup_dcookie, umount2, mount, pivot_root, nfsservctl, quotactl, unshare, kexec_load,
@@ -502,25 +1451,17 @@ file_getattr, file_setattr, acct, vhangup, swapoff, init_module, finit_module, r
 fspick, fsmount, move_mount, sethostname, setdomainname, fanotify_init. (sethostname and
 setdomainname keep handlers the profile keeps out of reach.)
 
-Missing (90, each counted "system call not implemented" and ENOSYS), with what each needs:
-- Processes and waiting (K2): clone, wait4, waitid, ptrace (tracing is out of phase one), pidfd_open,
-  pidfd_send_signal, process_mrelease.
-- Signals (K2: handler frames and the vDSO return path): rt_sigreturn, rt_sigsuspend,
-  rt_sigtimedwait, rt_sigqueueinfo, rt_tgsigqueueinfo, restart_syscall, signalfd4.
-- Pipes and splicing (K2): pipe2, vmsplice, splice, tee.
-- Futexes (K3, with threads): futex, futex_waitv, futex_wake, futex_wait, futex_requeue.
-- Timers (K3, through the kernel's one timer queue): getitimer, setitimer, timer_create,
-  timer_gettime, timer_getoverrun, timer_settime, timer_delete, timerfd_create, timerfd_settime,
-  timerfd_gettime.
-- Waiting on many things (K5): epoll_create1, epoll_ctl, epoll_pwait, epoll_pwait2, eventfd2,
-  inotify_init1, inotify_add_watch, inotify_rm_watch, fanotify_mark.
-- Sockets (K5): socket, socketpair, bind, listen, accept, accept4, connect, getsockname, getpeername,
-  sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg, recvmmsg, sendmmsg.
-- Asynchronous I/O (K5 or later, needs the waiting design for many requests): io_setup, io_destroy,
+Built in K5 (26, in the Done count above): eventfd2, epoll_create1, epoll_ctl, epoll_pwait,
+epoll_pwait2, inotify_init1, inotify_add_watch, inotify_rm_watch, socket, socketpair, bind, listen,
+accept, accept4, connect, getsockname, getpeername, sendto, recvfrom, sendmsg, recvmsg, sendmmsg,
+recvmmsg, shutdown, setsockopt, getsockopt. Socket families: local (AF_UNIX), IPv4 and IPv6 (TCP
+and UDP), netlink (NETLINK_ROUTE); others counted "socket family not built".
+
+Missing (14, each counted "system call not implemented" and ENOSYS), with what each needs:
+- Processes: ptrace (tracing is out of phase one).
+- fanotify_mark (fanotify_init is refused by Docker's profile, so no group can exist; see Next).
+- Asynchronous I/O (needs the waiting design for many requests): io_setup, io_destroy,
   io_submit, io_cancel, io_getevents, io_pgetevents.
-- System V IPC and message queues (K2, shared between processes): mq_open, mq_unlink, mq_timedsend,
-  mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl,
-  semtimedop, semop, shmget, shmctl, shmat, shmdt.
 - Single-process calls not built, each before K6's bar: adjtimex and clock_adjtime (reading the
   clock's adjustment state: the made-up machine's values; setting needs CAP_SYS_TIME, which Docker's
   root lacks), remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping),
@@ -529,15 +1470,27 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
 
 ## Known gaps (with reasons)
 
-- `/proc/<pid>/task` is not built (threads, K3); listing it is ENOENT here (an ignored test shows it).
+- Lock waiters wait on one channel for all files: a change to any owner's record locks, or the last
+  close of an open file holding locks, wakes every lock waiter, where Linux wakes only those blocked
+  on the lock that changed. A waiter woken for nothing is out of `posix_locks_deadlock`'s loops until
+  its turn comes and it waits again, so a deadlock asked about in that window is not seen.
+- Poll and select waiters that watch descriptors share one channel: any object's change wakes them
+  all to look again, where Linux wakes only those on the changed file's wait queue. A waiter woken
+  for nothing that does not block a process signal may take it before the thread Linux's
+  `complete_signal` chose (seen only with `pause`, now fixed; one watching descriptors would need
+  per-file wait queues).
+- CPU timers and RLIMIT_CPU are looked at whenever a thread comes back from running (and its turn
+  ends when one is due); Linux looks at its timer tick, so there a limit already passed when it is set
+  takes up to a tick. tests/cpulimit.rs prints nothing in that window.
+
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
-  addresses and the pending signals are 0 (the loader knows the addresses but does not keep them;
-  pending signals are one set per thread here while Linux keeps shared and thread pending apart, K2).
+  addresses and the pending signals are 0 (the loader knows the addresses but does not keep them).
+
   statm shows only the size (resident pages are not known; text and data need the loader's addresses).
   `/proc/<pid>/status` has only some of Linux's lines (no memory, SigQ, SigPnd, ShdPnd or context
   switch lines). Each open of these is counted "proc fields not tracked". Built with K2's processes,
   before K6's bar.
-- About 330 of Linux's `/proc` entries are not built (mountinfo, mem, fdinfo, task, oom_score_adj,
+- About 330 of Linux's `/proc` entries are not built (mountinfo, mem, task, oom_score_adj,
   uid_map, smaps, entropy_avail and more; proclist prints them): ENOENT, counted "proc entry not
   built" with the entry in the detail. Those programs commonly read come before K6's bar.
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen
@@ -545,28 +1498,53 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
 - Inodes of `/proc` are made at each lookup. chown of a process's entries succeeds with no effect, as
   on Linux; utimensat on them succeeds with no effect (Linux keeps the times while the inode is
   cached). Entries outside the process directories keep their changes (above).
-- `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts, `/dev/pts`, `/dev/mqueue`
-  or `/sys` (counted "proc fields not tracked", detail 3).
-- RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; private file
-  mappings that see later file changes; O_TMPFILE.
-- K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
+- `/proc/<pid>/mounts` and `mountinfo` do not list Docker's masks of `/proc`, `/sys` or its
+  cgroup2 mount, or the files Docker binds over /etc/hostname, /etc/hosts and /etc/resolv.conf
+  (counted "proc fields not tracked", detail 3).
+- xattr space limits; huge page memory files.
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
-- No vDSO or vvar mapping yet (K2): Linux's vvar is VM_PFNMAP, so an madvise range that reaches it is
-  EINVAL there and ENOMEM or success here (measured in the reference).
+- An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
+  whether ours answers the same since the vDSO was built is not checked.
+- I/O signals not sent: a random device's (nothing is ever waited for there). At a terminal's hangup
+  Linux's `__tty_hangup` takes each file's `FASYNC` away before the line discipline's wakeup, so none
+  is expected there; not measured.
+  A fallback to SIGIO when a chosen real-time signal cannot be queued is not made.
+- The disciplines the reference has registered besides `n_tty` (3, 14, 27; 2 for a caller with
+  CAP_SYS_ADMIN) are not built: refused with EINVAL and counted, where the reference accepts them.
+- The reference has four CPUs, so a forked child runs at once beside its parent; here it waits for
+  the CPU under the fair scheduler. Tests wait for what a person would see (a job's program
+  running) rather than for time.
 - A `seq_file` with many records (maps, mounts) is made whole at the read from the start; Linux makes
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
-- A copy of the random devices' bytes (read, getrandom) to a buffer that faults part way stops at the
-  fault here and up to 15 bytes short of it in the reference (arm64's copy routine; an ignored test
-  shows it). Files and `/dev/zero` match.
+- The error queue (IP_RECVERR, IPV6_RECVERR, MSG_ERRQUEUE) holds UDP's port unreachable errors
+  and UDP's software send timestamps; TCP's send timestamps are not built (see Next), and an
+  outside destination's refusal is counted, not queued (the host does not say what was sent).
+- sendfile waiting for a terminal's room reads the rest of its round from the input again when it
+  runs again; Linux keeps the round in its private pipe, so a change to the input file during the
+  wait shows here and not there. splice from a pipe into a terminal holds the pipe's lock in Linux
+  while it waits, so other readers of that pipe wait too; here they do not.
+- Where the kernel's source of a copy lies within 16 bytes decides what a buffer that faults part
+  way receives; it is measured for the calls tests/partialcopy.rs makes and assumed aligned to 8
+  elsewhere (Linux's stack layout of each call is its compiler's). Calls Linux copies field by field
+  with `put_user` that are not listed under "Where things stand" are copied whole here.
 - sendfile into the standard stream pipes moves at most an empty pipe's worth (the host drains them);
   a reference pipe Docker has not drained holds less room.
-- busybox `su` fails here (`can't set groups: Function not implemented`): musl's `initgroups` asks
-  nscd through a socket, and sockets are K5; `adjtimex` fails (missing, above).
-- An alignment fault's BUS_ADRALN and address, and a memory fault's code and address, are not kept:
-  only a handler can read them, and they belong in the pending signal's information, which comes with
-  K2's signal queue and frames.
+- busybox `adjtimex` fails (missing, above). busybox `su` failed before K5 because musl's
+  `initgroups` asks nscd through a local socket; with sockets built it has not been run again.
+- A memory fault's syndrome in a handler's frame: whether the page was present and the level of the
+  missing table are Linux's page tables' own; given as a level 3 translation fault for a page that
+  allows nothing or is unmapped, a level 3 permission fault otherwise (counted "fault syndrome
+  approximated"; measured: the reference reported level 2 for an address in an empty 2 MiB region).
+  tests/sigframe.rs prints a translation fault's syndrome without its level.
+- PSTATE.BTYPE: the reference's CPU has BTI and its frames show BTYPE after an indirect branch
+  (measured 0x800 after a jump to a misaligned address); the made-up CPU has no BTI (HWCAP2 0) and the
+  register block keeps only the flags, so ours shows 0. tests/sigframe.rs prints only the flags.
+- Shared anonymous memory is an internal tmpfs file whose bytes are a `Vec` the size of the mapping,
+  as every tmpfs file here; a large shared reservation costs that much kernel memory at once.
+- A memory file's or tmpfs file's pages are not counted against user pipe limits; pipes' per-user
+  page limits (`pipe-user-pages-soft`) are not modelled.
 - Two opens of one `/proc` file are two inodes here (made at each lookup), so their open file locks
   (and flock locks) do not conflict as Linux's do.
 - An open file's record locks go at its last close here; Linux keeps them while a mapping still holds
@@ -581,9 +1559,192 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-15, thirteenth run: 63 passed, 8 ignored known failures)
+## Tests (counts and the last whole-suite run under Measurements)
 
-All pass except the ignored known failures listed above. Added in the thirteenth run:
+All pass except the ignored known failures listed above. Added in K4's fifth run: tests/backend.rs
+`truncations_and_appends_match_reference`, `transfers_match_reference` and
+`attributes_read_as_a_user_match_reference` (Built in K4's fifth run). Added in K3's fifth run: timers
+`cpu_clock_sleeps_match_reference` (guest/cpusleep.c, with 2 saves a seed: sleeps on the process's
+clock, another thread's and another process's, relative and absolute, passed and zero times, a
+handled signal with what is left, a bad address for it, a stop and continue); threads
+`priority_inheriting_futexes_match_reference` (guest/futexpi.c, with 3 saves a seed: every PI
+call's checks and their order, waiters on a condition requeued onto a held lock and handed it in
+turn, a free lock taken from the requeue, plain wakes and requeues on PI waiters, an owner ending
+with a waiter); guest/futexes.c a vector wait naming one futex twice, woken once and twice. Added in
+K3's fourth run: cpulimit
+(guest/cpulimit.c, RLIMIT_CPU's SIGXCPU and SIGKILL against the reference); terminal's ttylock now
+starts with `cat /dev/tty | cat`; clonevm checks the shared dumpable flag. Added in K3's first run (seeded ones run
+under `SCHEDULE_SEEDS` seeds, 3 by default; 4 to 6 were run by hand):
+- threads: guest/threads.c (pthread creation and joining, mutex counting, condition variables in
+  turn, barriers, read-write locks, semaphores, thread ids, robust locks after a thread's and a
+  child process's end, a priority inheriting mutex, process and thread directed signals with
+  per-thread masks and alternate stacks, the first thread leaving), the same saved 6 times per seed,
+  guest/futexes.c (every futex operation's checks, waits ended by wakes, time-outs on both clocks
+  and a signal, wakes by bits, requeue, wake-op, PI locks alone and handed between threads,
+  futex2, the thread id address) and guest/threadlife.c (clone flag combinations, the group's
+  status, exit_group from a thread, execve from a thread, stop and continue with a busy thread,
+  SIGTERM).
+- timers: guest/timers.c (interval timers on the real and CPU clocks, alarm, every POSIX timer
+  check, notifications, values, overruns, signals dropped after delete, a thread's timer, CPU clock
+  timers, timer descriptors with reads, poll, ticks and absolute times).
+- rwmodes (RWF_NOWAIT on every kind of file, fallocate modes 0 to 255), procsignals `continued`,
+  terminal `splice_holds_the_pipe`, rseqabort `preempted_sections_match_reference` (on one CPU).
+
+Added in K2's tenth run (each guest's
+reference output was read and checked against Linux's source):
+- zombie: guest/zombie.c: a child that has ended and is not yet reaped: stat's fields we know
+  (state, parent, group, session, terminal, priority, nice, threads, sizes, rsslim, masks, policy,
+  exit code), status lines, every process file's open and read, the three links and opens through
+  them, the `fd` directory, its CPU clocks, kill, tkill, tgkill and sigqueue, getpgid, getsid and
+  setpgid (it moves), prlimit get and set, affinity, priority, pidfd_open, process_vm_readv,
+  children's times before the reap; after the reap its clock and stat; a group whose only member has
+  ended (kill, joining it, setsid refused while it is unreaped).
+- turns: guest/turns.c against the reference on one CPU: a parent spinning on sched_yield until a
+  child has run (within 100 yields), yields until a blocked child is seen asleep, and a child that
+  only makes system calls beside one that must still run. The old kernel failed it.
+- userlimits: guest/userlimits.c: RLIMIT_SIGPENDING of 5 with sigqueue, kill and tkill of real-time
+  signals, a standard sigqueue, SIGCHLD, every signal taken with its code and value, the place given
+  back; RLIMIT_NPROC for root, after setuid, with another task of the user, over it at setuid (execve
+  refused twice), and beside a task that has ended and is not yet reaped.
+- unknown: fcntl commands and prctl options Linux does not know or has only for other architectures
+  (plain EINVAL, nothing counted), and two Linux has that are counted.
+- saving: `processes`, `deadlines` and guest/clockwatch.c (four processes sleeping, polling and
+  computing while the monotonic and boot clocks are checked) saved 8 times for each of 3 seeds.
+
+Added in K2's ninth run (each guest's reference output was read and checked against Linux's
+source):
+- deadlines: guest/deadlines.c: nanosleep, clock_nanosleep with an absolute time, ppoll, pselect6,
+  sigtimedwait, semtimedop and mq_timedreceive of 20 ms each while a child computes for ever (with
+  and without system calls in its loop), a sleep beside two such children, and a short sleep that
+  ends before a computing child does. Ours hung for ever before the fix.
+- lockwaits: guest/lockwaits.c: a record lock waiter woken by an unlock, two readers by a change to
+  read (a writer not), an unlock elsewhere leaving the waiter waiting, a close of another descriptor
+  and the holder's end waking it, loops of two and three processes refused with EDEADLK (and the
+  later try EAGAIN), a wait behind an open file's lock, an open file's wait, signals with and without
+  SA_RESTART; flock waiters woken by a conversion to shared, an unlock, the last close, and a signal.
+  Waiters are seen asleep through `/proc/<pid>/stat`'s state, so nothing depends on time.
+- orphans: guest/orphans.c: a group orphaned by its leader's end with a stopped member (SIGCONT and
+  SIGHUP reach it), a group whose outside parent is the first process (SIGTSTP stops its member), an
+  orphan made with exit signal SIGUSR1 reported to its new parent by SIGCHLD.
+- pidfd: PIDFD_GET_INFO of the caller in sizes 64, 72, 80 and 96 and with each mask bit, of a
+  running, ended, reaped and killed child, another user's child and one that may not dump; sizes,
+  directions and numbers refused, null and bad pointers, FS_IOC_GETVERSION; the namespace requests
+  with an argument, on ended and reaped children, another user's and an undumpable one. The caller's
+  own namespace requests are made but not printed (they give a descriptor in the reference); the test
+  checks they are counted.
+- posixmq: fstatfs of a queue from mq_open and of one opened by path.
+
+Added in K2's eighth run:
+- terminal `making_pairs`: TIOCSETD with 2 (EPERM), 4, -1 and 31 on both sides; `waiting_for_room`:
+  sendfile and splice into a full blocking terminal finish once the master is read, and a signal ends
+  a waiting sendfile with the part written (how much fits is not printed, see Departures).
+- sigio: close_range over a writer and two readers in both orders, dup2 over the writer, closes after
+  it; the terminal echo is read until whole (the reference's buffer work handed it over in two parts
+  once under load).
+- posixmq: preadv2 of a queue with RWF_HIPRI and with RWF_NOWAIT. signalfd and pidfd: an O_PATH
+  descriptor given to signalfd4, pidfd_send_signal and waitid.
+
+Added in K2's seventh run (each guest's
+reference output was read and checked against Linux's source):
+- sysvsem: semget's keys, sizes and limits, semop whole or not at all, operations naming a semaphore
+  twice, IPC_NOWAIT on the operation that blocks, the order waiting operations finish in (simple and
+  on several semaphores), waits for zero, GETNCNT and GETZCNT, timeouts, signals, stops, kills and
+  removal during waits, undo at exit (held to the range, cleared by SETVAL, shared by CLONE_SYSVSEM,
+  dropped with the set, left by a failed call), every semctl command, another user's permissions.
+- posixmq: mq_open's names, flags, modes and limits, the queue files and directory and what the file
+  calls do with them, sends and receives by priority, sizes, nonblocking and timed calls, waiting
+  receivers and senders handed messages in order, signals with and without SA_RESTART, a killed
+  waiter, notification by signal and its rules, attributes, unlinking, RLIMIT_MSGQUEUE (6 default
+  queues fit beside the others), another user.
+
+Before: Added in K2's sixth run (each guest's
+reference output was read and checked against Linux's source):
+- priorities: nice values and I/O priorities of one process, a group with a running child, an ended
+  child and another user's child, a user's processes, refusals and their order, inheritance by fork.
+- pidfd: pidfd_open's flags and refusals, the file (status, flags, link, file system, handle), poll
+  through a process's life, pidfd_send_signal in every scope and with information, waitid on a
+  descriptor (nonblocking, stops, continues), CLONE_PIDFD, process_mrelease, and every generic call
+  (attributes, truncation, fallocate, sync, mmap, reopen, exec, locks, splice) on a process descriptor
+  and a signal descriptor.
+- signalfd: the file, flags, sizes and refusals, reads of every information layout, several at once,
+  into a bad buffer, waits and polls woken by another process, the mask changed, inheritance by fork.
+- sysvmsg: msgget, msgsnd and msgrcv with every search and flag, limits, IPC_SET, the info commands,
+  three receivers handed messages in the order they waited (one E2BIG), a sender waiting for room, a
+  removal waking a receiver (EIDRM), a signal ending a wait (EINTR even with SA_RESTART), another
+  user's refusals.
+
+Added in K2's fourth run:
+- partialcopy: guest/partialcopy.c makes 47 kinds of call (stat family, statfs, uname, the clocks,
+  sysinfo, rusage, times, limits, signal masks and actions, pipe2, getcwd, scheduling, readlink of a
+  `/proc` link and a tmpfs link, getdents64, reads of a tmpfs file, a pipe, a terminal, `/proc` seq
+  files, cmdline, a sysctl, the random devices, getrandom, getresuid, getgroups, getcpu, wait4,
+  ppoll, pselect6, prctl, FIONREAD, sendfile's offset) with its buffer ending 0 to N bytes before a
+  read-only page, and prints the end of what each stored and whether it failed. Same output.
+- transfer `partial_copies_match_reference` is no longer ignored (it passes).
+- sigio: a terminal writer that found no room hears of it when the reader empties the other side,
+  once per write that found none.
+
+Added in K2's third run (each guest's reference output was read and checked against Linux's source):
+- privatemap: guest/privatemap.c: later writes by pwrite and by a shared mapping seen by pages not
+  written, the kernel's read into a page, MADV_DONTNEED, mprotect, MAP_POPULATE writable and read
+  only, MADV_POPULATE_WRITE and READ, mlock, truncation (SIGBUS for copies past the end, the pages
+  showing the file after growing), a punched hole, mremap, fork. procstatus
+  `private_mapping_sees_later_writes` now passes.
+- fifo: guest/fifo.c: nonblocking opens, read and write opens, ENXIO, polls before and after writers,
+  the buffer and its size dropped at the last close, stat, lseek, the `/proc` link, a reader waiting
+  for a forked writer, a nonblocking writer let in by a waiting reader, a signal ending a wait
+  (EINTR) and restarting it (SA_RESTART).
+- devopen: guest/devopen.c: device nodes made with mknod (EPERM outside Docker's rules); the tunnel's
+  counted ENODEV against the reference's working device.
+- rseqabort: guest/rseqabort.c (above).
+- sigio: guest/sigio.c: pipe readers and writers with SIGIO and F_SETSIG, a duplicate closed, the last
+  writer closed, SIGCHLD chosen (SI_SIGIO), O_ASYNC at open, a terminal's partial line, line end and
+  raw byte, a master taking the caller as owner (each terminal check polls first, as Linux's buffer
+  work runs later; the master's echo is read so its poll takes in the next input).
+
+Added in K2's second run:
+- terminal: guest/tty.c (one part per test): making pairs (the locked slave, stat of the slave and
+  the master, `/proc` links, TIOCGDEV, numbering, devpts's listing, TIOCGPTPEER, default settings,
+  window size, and the answers of TIOCSTI, TIOCEXCL, TIOCSETD, TIOCSIG, TIOCSCTTY, TIOCNOTTY,
+  TIOCVHANGUP, lseek and bad arguments); line editing (every editing key with each ECHO* setting,
+  control characters, tabs, high bytes, small reads, input flags, every output flag, echo columns
+  after output); non-canonical reads (raw settings, the switch back to canonical, VMIN and VTIME,
+  flushes, queue sizes); flow control and size (stop and start keys, TCOOFF/TCOON/TCIOFF/TCION, IXANY,
+  TIOCSWINSZ, packet mode's status bytes); closing (the master reading EIO after the slave closed and
+  again after it reopened, the slave hung up after the master closed, its node gone). guest/jobs.c:
+  sessions and controlling terminals, background reads and writes (SIGTTIN, SIGTTOU with TOSTOP and
+  for settings, ignored, blocked, orphaned), signal keys to the foreground group and its flush,
+  SIGWINCH, TIOCSIG, a hangup, a session leader's end, TIOCNOTTY. guest/shpty.c: `sh -i` with job
+  control on a terminal (commands come through a pipe so the shell does no line editing of its own;
+  busybox's line editing asks the terminal for the cursor and drops input read together with the
+  answer). Each guest was run three or four times in the reference with the same output; the
+  reference's buffer work is asynchronous, so the guests read the slave before the master (a read
+  that finds nothing waits for the work) and wait for echoes or polls where a race was seen.
+
+Added in K2's first run:
+- processes: guest/processes.c: memory after fork (shared anonymous memory, a shared file mapping,
+  private memory, MADV_DONTFORK and MADV_WIPEONFORK, vfork sharing), fork and exit statuses (exit,
+  SIGTERM, SIGSEGV, abort), wait with no children and a stranger, WNOHANG, waitid with WNOWAIT, vfork,
+  exec of `/bin/sh` in a child, five children reaped; pipes (sizes, FIONREAD, nonblocking ends,
+  filling, poll, F_SETPIPE_SZ, a child writing 300000 bytes, no reader with SIGPIPE ignored and
+  default, packet mode, bad flags); signals (a handler's code, SIGCHLD's information, pending while
+  blocked, a sleep interrupted with the time left, a read restarted with SA_RESTART and interrupted
+  without, stop and continue seen by waitpid, a group kill, sigtimedwait and sigqueue); an orphan
+  handed to the first process. Same output.
+- sigframe: guest/sigframe.c: the vDSO (magic, type, machine, maps lines), AT_MINSIGSTKSZ, frames for
+  a raised signal and for faults (write and read of an unmapped page, a read-only page, a page that
+  allows nothing, an undefined instruction, a breakpoint, a misaligned jump): code, fault address,
+  flags, records and syndromes, si_addr, the mask in the handler and in the frame, the alternate
+  stack, a one-shot handler, a re-entrant one, a handler that moves the pc past a fault, a handler
+  with no restorer returning through the vDSO, floating point kept. Same output.
+- saving: see "Where things stand".
+- shell `runs_repeat_for_a_seed`: four background pipelines run twice with one seed give the same
+  output and the same counters, down to the measured wake-to-run nanoseconds; two other seeds give the
+  same lines.
+- shell: busybox sh with pipelines, exit statuses through pipes, redirections, subshells, command
+  substitution, background jobs and wait, traps, kill, descriptors opened by exec. Same output, exit
+  code and files.
+Added in the thirteenth run:
 - mapflags: guest/mapflags.c: every kind of mmap with validated sharing and huge page sizes, MAP_SYNC,
   MAP_FIXED_NOREPLACE, an unknown bit, MAP_GROWSDOWN and MAP_HUGETLB on a file, `/dev/zero` and
   anonymous memory, droppable memory (locked, grows-down, populated, mlocked, dropped); a grows-down
@@ -693,6 +1854,141 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K3's fourth run: with woken calls run at their turn and the lock wake change in (head 39cd8a2),
+fresh seeds 3006, 3007 and 3008 passed 20000 sequences each (333 s each, three side by side beside
+the whole suite, load 12 at the start, 17 at the end). Then, with every fix of the milestone in
+(head 82981eb, after the dumpable and RLIMIT_CPU changes, which layer 1's prctl, setresuid and
+setrlimit reach), the milestone's three fresh seeds 3009, 3010 and 3011 passed 20000 sequences each
+(318 s each, three side by side beside the whole suite, load 48 at the start, 39 at the end). Seeds
+used: up to 737, the checks' seeds, 3001 to 3011.
+
+K3's third run, with its clone and credential changes in (before the deferred rerun, which was taken
+back): fresh seeds 3004 and 3005 passed 20000 sequences each (324 s each, side by side with 3003,
+load 23 at the start, 14 at the end). Seed 3003 found readv on a nonblocking timer descriptor with
+two buffers (4 and 4 bytes) answering EINVAL where Linux answers EAGAIN: a timer descriptor's read
+needs eight bytes in all and writes them across the buffers (measured with readv: 4+4, 0+8, 2+10
+and 3+5 read 8 bytes; 7+0 and 0+7 EINVAL); ours wanted the first buffer to hold all eight. Fixed
+(`signalfd::store` writes across buffers for both); 3003 then passed 20000 (307 s, load 18). These
+three count for K3 only if nothing after them changes what layer 1 reaches; the deferred rerun
+would (see Next).
+
+K2's ninth run: with the check's fixes in (head after the scheduler indexes), the check's seed 91003
+passed 30000 sequences (507 s, beside the others, load 35 at the start, 20 at the end), so the
+mqueue fstatfs fix holds. Fresh seeds 730 and 731 passed 20000; 729 found copy_file_range into a
+process descriptor at an output position past 2^31 answering 0 where Linux answers EFBIG
+(`generic_write_check_limits` runs even for nothing to copy, and a file opened without O_LARGEFILE
+is held to `MAX_NON_LFS`; ours skipped both). Fixed for every write path. With every fix in (head 1152610), seed 729 and the fresh seeds 732, 733 and 734 passed
+20000 sequences each (303 s each, four side by side beside 91003, load 19 at the start, 22 at the
+end). Seeds up to 734 are used.
+
+K2's eighth run: TIOCSETD's disciplines come from a table (see "Where things stand"). Seed 711 passed
+20000 after that fix (345 s alone, load 31 to 44). Then, with the terminal, pipe release and process
+state work in (head 54a857f, before the queue fix), seeds 721 and 723 passed 20000 (334 s and
+393 s, three side by side beside the whole suite, load 39 to 44); 722 found preadv2 with RWF_NOWAIT on a
+message queue (Linux's queue files have no iterating read, so `do_loop_readv_writev` refuses every
+flag but RWF_HIPRI before copying: EOPNOTSUPP; ours copied into a bad buffer: EFAULT). After that fix
+722 and 724 passed 20000 (330 s and 329 s, three side by side, load 20 to 36); 725 found signalfd4
+given an O_PATH descriptor (Linux's `fdget` passes over it: EBADF; ours EINVAL), and the process
+descriptor calls and mq_notify had the same fault; fixed (head b01b1de).
+With every fix in (head b01b1de), the milestone's three fresh seeds 726, 727 and 728 passed 20000
+sequences each (335 s each, four side by side with 725, which also passed, beside the whole suite;
+load 23 at the start, 52 at the end).
+
+K2's sixth run: with the fixes for 516, 517 and 518 in (head 603f689), those seeds passed 20000 each
+(335 to 344 s, three side by side, load 82 at the start, 40 to 48 at the end). Then process
+descriptors, signal descriptors and message queues are generated (see "Where things stand"). Seeds
+600, 601 and 602 (3000 each) found writev, fsync, fallocate and truncate on a process descriptor
+(Linux: no write, no fsync, pidfs's setattr refuses), signalfd4 reading its mask before its flags, and
+mmap of a process descriptor with PROT_EXEC (pidfs is `SB_I_NOEXEC`: EPERM); 603 to 605 (3000 each)
+found MSG_COPY loading the caller's buffer before the queue (EFAULT) and sendfile from a process
+descriptor (EINVAL even for nothing). All fixed; then 600 to 605 passed 3000 each (49 to 51 s, three
+side by side, load 14 to 40). At 20000 (head 1f9cffe, four side by side, load 16 to 37): 608 passed
+(339 s); 511, 606 and 607 found extended attributes on descriptors (Linux's security layer passes over
+private inodes, so `security.` names reach "no attributes": EOPNOTSUPP, measured). After that fix 511
+and 606 passed 20000 (330 s each, three side by side, load 9 at the start, 56 at the end); 607 then
+found a pipe's reading end showing O_DIRECT (only the writing end takes it, `create_pipe_files`;
+fixed); 607 then passed 20000 (350 s alone, load 62 at the start, 33 at the end; head 7d54a79). Seed 511's SHM_HUGETLB fix from the fifth run is confirmed by its pass.
+
+K2's fifth run: shmget, shmat, shmdt, shmctl, splice (twice), tee and vmsplice are generated.
+Segment identifiers differ between the runners (the reference's slots and sequence numbers carry
+over between sequences), so an argument `SEGMENT` is replaced by each runner with its sequence's last
+identifier from a successful shmget (4000, a slot neither reaches, before one), as `SELF` is; shmget's
+value, SHM_STAT's, IPC_INFO's and SHM_INFO's (the highest slot) and an unplaced shmat's are not
+compared, nor a status's sequence number, times and processes or SHM_INFO's resident pages. After
+each sequence the reference's runner removes every segment, each as its creator (and makes itself
+dumpable again, which the change of user took away and later sequences would inherit; seed 500
+found that). Sizes stay within our address space. splice, tee and vmsplice always carry
+SPLICE_F_NONBLOCK (vmsplice ignores O_NONBLOCK, and a named pipe opened for reading and writing is
+its own writer), and splice into a terminal is capped like write. Seed 500 (3000) also found our
+runner taking a failed shmget's error as an identifier. Seeds 500, 501 and 502 passed 3000 each
+(52 to 79 s, load 50 to 125). At 20000: seed 512 passed (466 s, beside the whole suite and two
+other runs, load 50 to 67); 513 passed (395 s, five side by side, load 25 to 95). Found and fixed:
+sendfile answers EOVERFLOW past the largest file of either side's file system (`MAX_NON_LFS` for
+pipefs, devpts and secret memory, whose `s_maxbytes` stays as `alloc_super` sets it; seed 511),
+TIOCGPTPEER with O_PATH gives a file even for a locked slave (no open is run; seed 510), shmat and
+shmdt keep an address's tag (the tagged address ABI leaves them out: ENOMEM, EINVAL; seeds 514,
+515), and the runners' links to pipes name each machine's own inode numbers, now not compared
+(seed 510). Then seeds 514 and 515 passed 20000 (335 s each, six side by side, load 30 to 85);
+511 found shmget's SHM_HUGETLB answering EPERM to a caller outside group 0 without CAP_IPC_LOCK
+(`can_do_hugetlb_shm`; fixed, not rerun). Open, not looked into yet: seed 516, madvise of a tagged
+address 0x5a00000071006000 with length 0x10000000 and advice 17: ours ENOMEM, theirs EINVAL; seed
+517, sendfile with the same descriptor as input and output and an offset from the arena: ours
+EINVAL, theirs EOVERFLOW; seed 518, ioprio_get of the caller after earlier calls: ours 24576, theirs
+16388. Each is replayable with `LAYER1_CASES=20000 LAYER1_SEED=<seed>`.
+
+K2's fourth run: seed 410 (statfs into a buffer that faults part way) passed 20000 after the copy
+fix (337 s, load about 60 to 90). Terminals generated (see "Where things stand"): seed 420 (1000)
+found O_DIRECT on `/dev/tty` and then a reference runner that did not put back `/dev/tty`, `/dev/ptmx`
+and `/dev/pts/ptmx` after a sequence changed them (the runner now remakes them); seed 423 (2000)
+found sendfile from a terminal and RWF_NOWAIT on one; all fixed, then 423 (2000) and 424, 425, 426
+(5000 each, 83 s, three side by side, load 50 to 90) passed with about 2500 terminal opens each.
+Fork generated: seed 427 (2000) found the reference's runner keeping the orphans of earlier
+sequences, which `kill(-1)` then reached (the runner now reaps them); seed 428 (5000) found a wait
+for stops alone answered 0 with only an ended child (Linux: ECHILD), and that the runner's wait for a
+child with no exit signal needs __WALL; seed 431 (5000) found sendfile into a terminal. All fixed;
+428, 429, 430, 431 and 432 passed 5000 each (82 to 86 s, load 50 to 90), with 100 to 300 children
+made per 5000 sequences. Then fresh seeds at 20000 (clone weighted three times): 440 found chroot
+into `/proc/sys` reaching `/proc/sys/dev/tty` (now built: `ldisc_autoload` and `legacy_tiocsti`,
+both 1, measured), 441 found sendfile from a terminal into a pipe (it reads the terminal as
+`copy_splice_read` does: EAGAIN when nonblocking and empty) and then a wait for process 3, a child's
+number here and no one's there (sequences with children now wait for 4000000 instead), 442 found
+`kill(-1)` refused for permission everywhere answering EPERM (Linux: 0, `kill_something_info`) and
+then a filter answering clone with ERRNO 0, which the reference's runner took for being the child
+(it now asks getpid). All fixed. Seed 440 passed 20000 before the last runner fix; with every fix in
+(head 99e83eb) seeds 441, 442 and the fresh 443 passed 20000 each (331 s each, three side by side,
+load 25 at the start, 63 at the end; about 10000 terminal opens and 1100 children each), and then the
+fresh 444 and 445 passed 20000 each (393 s and 333 s, side by side, load 104 at the start, 34 at the
+end). So the fresh 443, 444 and 445 passed with every fix in on head 99e83eb. Seeds up to 445 are used.
+
+K2's third run: with named pipes generated, seed 409 found that a named pipe opened with O_DIRECT
+answers its open's own error first (ENXIO) and EINVAL only after the open (`do_dentry_open`); seed
+410 found that locking droppable memory that allows nothing is ENOMEM (measured; readable droppable
+memory locks with no error and is not counted), then that the file memfd_create makes refuses
+O_DIRECT in F_SETFL (it is not opened through tmpfs's `open`, so lacks FMODE_CAN_ODIRECT; the same
+file opened again takes it). All fixed. Seeds 409, 412, 413 and 414 passed 20000 each before the last
+fix (memfd). With every fix in, the fresh seeds 415, 416 and 417 passed 20000 each (319 s each, four
+side by side, load 48 at the start, 12 at the end). Seed 410 then found one more difference, not
+fixed (see Next): statfs into a buffer that crosses into an unmapped page fails EFAULT in both, but
+Linux's `copy_to_user` has written the bytes before the fault and ours writes none (`Guest::write`
+is all or nothing). Seeds up to 417 are used.
+
+K2's second run: the milestone's fresh 20000-sequence seeds. Seeds 400 and 402 passed; 401 found that
+rt_sigqueueinfo read the whole 128-byte `siginfo` and checked the target first, where Linux copies
+the kernel's 48 bytes, then for a code whose layout it does not know (`known_siginfo_layout`) checks
+the other 80 bytes are zero (E2BIG) before anything else. Fixed. With every fix in, seed 401 and the
+fresh seeds 403, 404 and 405 passed 20000 each (320 s each, four side by side, load 84 at the start,
+31 at the end). Layer 1 still generates no terminal calls (see Next).
+
+K2's first run: with the new calls, seeds 300 (2000), 301 and 302 (3000 each) found three things:
+shared anonymous memory took mmap's offset (Linux starts it at 0), rt_tgsigqueueinfo compared the
+caller with the group, not the thread (EPERM first), and waitid writes the information's fields (zeros
+when nothing is found or it fails, EFAULT for a bad pointer) as its wrapper does; seed 303 found a
+pipe mapped with PROT_EXEC refused ENODEV where pipefs's SB_I_NOEXEC gives EPERM first. All fixed; 300
+(2000, 42 s, load 55 to 62), 301 and 302 (3000, 50 s each, three side by side, load 63 to 20) passed
+after their fixes. With every fix in (head 10645dd), seeds 303, 304 and 305 passed 3000 each (49 s
+each, three side by side, load 16 at the start, 10 at the end). The milestone's three fresh 20000
+seeds are not run yet (they run once at the milestone's end).
+
 Thirteenth run (seventh close-out), after the fifth check: with the harness fixes and the sysctl
 fix (head after 321c3cd's kernel work, before the generator was widened) the check's seeds 6060601 and
 6060602 passed 20000 each (303 s, two side by side, load 10 to 17); 6060606 had passed 20000 on the
@@ -793,42 +2089,465 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K6a, first run, end of the milestone's layer 1 bar: at 8a3d41f (every fix of the run in) the
+  fresh seeds 5050464, 5050465 and 5050466 passed 20000 sequences each (328.8 s, 328.5 s and
+  328.6 s, three side by side beside an LTP run of 3 jobs, load 19.9 at the start and 22.7 at
+  the end). Earlier in the run seed 5050463 passed 20000 at e7b79ef (310.5 s, load about 20).
+  Fresh seeds start at 5050467.
+- K6a, first run, whole suite of both crates at 8a3d41f (`cargo test -p wcontainers-kernel -p
+  wcontainers-kernel-test -- --test-threads=3`): 191 passed, 0 failed, 5 ignored, in 18 min 47 s,
+  beside an LTP run of 3 jobs (load 20.4 at the start, 21.8 at the end).
+- K6a, first run: the LTP image's build took 83 s for configure, compile and install (load
+  about 25). On ours most tests take 0.2 to 0.5 s each (the stand-in's speed with the
+  repeatable clock skipping sleeps); the reference takes about 1.6 s each with Docker's start.
+
+- K5, eighth run, end of the milestone's layer 1 bar: at 090feaf (every fix of the run in) the
+  fresh seeds 5050459, 5050460 and 5050461 passed 20000 sequences each (326 s each, three side
+  by side beside the whole suite's build, load 38.6 at the start and 67.0 at the end). Before
+  that, seed 5050458 found the SCM_PIDFD order (the first 3000 run, 38.6 s) and passed 3000
+  with it fixed (47.1 s, load about 33).
+- K5, eighth run: whole suite at d3cf740 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel -p wcontainers-kernel-test` in a clean copy with its own build, beside
+  the three seeds): 185 passed, 1 failed, 5 ignored, 17 min 24 s with the build, load 48.5 at
+  the start and 60.3 at the end. The failure was the run's own: the SCM_PIDFD change set
+  MSG_CTRUNC on a local datagram read that found its end (guest/sockorder.c), where Linux
+  gives such a read no control messages; fixed at b70a418.
+- K5, eighth run: whole suite at b70a418 (the run's last code; same command, clean copy, own
+  build, beside seed 5050462): 186 passed, 0 failed, 5 ignored, 17 min 3 s with the build,
+  load 84.1 at the start and 29.9 at the end. Seed 5050462 passed 20000 at b70a418 (335.6 s,
+  load 82.5 at the start, 48.5 at the end).
+
+- K5, seventh run: whole suite at 187f214 (the run's last code; same command, clean copy, own
+  build): 184 passed, 1 failed, 5 ignored, 21 min 51 s with the build (ten of them a hung
+  reference), load 24.8 at the start and 29.4 at the end. The failure is terminal's
+  `job_control`: the reference container hung (Known issues) and was removed; two reruns alone
+  passed.
+
+- K5, seventh run, end of the milestone's layer 1 bar: at 8e896aa seeds 5050454 and 5050455
+  passed 20000 each (325 s each) and 5050453 found RWF_NOWAIT on a named pipe (181 s), three
+  side by side, load 27 at the start and 35 to 61 at the end. With that fixed (187f214's
+  kernel) 5050453, 5050456 and 5050457 passed 20000 each (315 s each, three side by side, load
+  37 at the start and 14 at the end).
+- K5, seventh run: whole suite at 8e896aa (same command, clean copy, own build, beside the three
+  seeds): 184 passed, 1 failed, 5 ignored, 13 min 6 s with the build, load 27.3 at the start and
+  25.1 at the end. The failure is the reference's race in threads `clone_tables_match_reference`
+  (Known issues); two reruns alone passed.
+
+- K5, seventh run: whole suite at 2d60f92 (the sixth run's end; `RUST_TEST_THREADS=3 cargo
+  test --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test` in a clean copy
+  with its own build): 182 passed, 1 failed, 5 ignored, 13 min 39 s with the build, load 53.1
+  at the start and 26.6 at the end. The failure is busybox `system` crossing a minute's turn
+  (Known issues).
+
+- K5, sixth run, layer 1: seed 5050451 passed 3000 sequences at 47d0230 (51 s, load about 33);
+  the fifth run's open seed 5050446 passed 20000 with the statfs fix (338 s) and the fresh seed
+  5050452 passed 20000 at 9835ab5 (341 s), side by side, load about 30 to 40.
+- K5, fifth run, layer 1 at 20000 sequences each: on 3063305 (the fourth run's end) 5050423
+  passed, 5050422 and 5050424 found netlink's MSG_OOB read; on 5a254ef 5050422, 5050424 and
+  5050425 failed (netlink's MSG_OOB, then the late packet information); on f9509e3 5050424 and
+  5050426 passed (338 s and 339 s, three side by side, load 65 to 52), 5050425 found netlink's
+  EPOLLWRBAND; on 94f7d0d 5050429 passed (317 s, load 51 to 54), 5050427 found the pending
+  error before a queued sequenced packet and 5050428 the IPv6 connect to a `sockaddr_in`; on
+  8b58c43 5050430 (291 s), 5050431 (144 s) and 5050432 (59 s) found the empty netlink message,
+  the shut UDP read and netlink's getsockopt level (load 44 to 59); on 2aefa16 5050435 passed
+  (334 s, load 59 to 34), 5050433 and 5050434 found netlink's empty sendmsg with control
+  messages; on 60d3703 5050436 and 5050438 passed (332 s and 331 s, load 23 to 39), 5050437
+  found the credentials at a sequenced packet socket's end; on 77abb06 5050439 and 5050441
+  passed (337 s and 340 s, load 39 to 18), 5050440 found sendfile from a datagram socket; on
+  c1bf7c3 5050442 found netlink's shutdown, 5050443 UDP's MSG_MORE and 5050444 local datagram
+  peeks at SO_PEEK_OFF (71 to 282 s, load 38 to 53); on 619f3d0 5050445 passed (347 s),
+  5050446 found statfs of `/proc/self/fd/N` naming an mq_open queue (not fixed, see Next) and
+  5050447 pidfd_send_signal on `/proc/self` (load 46 to 78).
+- K5, fifth run, end of the milestone's layer 1 bar: on f73d3aa (every fix in) the fresh seeds
+  5050448, 5050449 and 5050450 passed 20000 sequences each (339 s, 336 s and 399 s, three side
+  by side, load 74 at the start and 49 at the end).
+- K5, fifth run: whole suite at f73d3aa (the run's last code; same command, clean copy, own
+  build): 177 passed, 1 failed, 5 ignored, 11 min 18 s with the build, load 22.8 at the start
+  and 27.8 at the end. The failure is the reference's known race in threads
+  `process_signal_takers_match_reference` (theirs "main willing: taken by thread 1", see Known
+  issues); two reruns alone passed.
+- K5, fifth run: whole suite at 619f3d0 (same command, clean copy, own build, beside three layer
+  1 runs): 178 passed, 0 failed, 5 ignored, 13 min 54 s with the build, load 25.6 at the start
+  and 56.3 at the end.
+- K5, fifth run: whole suite at 60d3703 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy with its own build, beside
+  three layer 1 runs): 178 passed, 0 failed, 5 ignored, 10 min 34 s with the build, load 27.7 at
+  the start and 35.1 at the end.
+- K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
+  --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
+  scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
+  59.6 at the start and 43.4 at the end.
+- K5, fourth run, layer 1 once sockets were reached: seeds 5050401 (1000), 5050402 (2000),
+  5050403 and 5050404 (3000) ran before the reach fix (no socket calls). After it, 5050405 to
+  5050417 each failed first and were fixed in turn (the findings under Where things stand); with
+  every fix in, 5050405 and 5050406 passed 2000, 5050411 to 5050417 passed 5000 each (70 to 117
+  s each, three side by side, load 15 to 40). At 10000: 5050421 passed at 6d071c7 (168 s), 5050418
+  passed with the fixes before 6d071c7's (171 s), and with every fix in (65ae145) 5050419 and
+  5050420 passed (170 s and 168 s, side by side, load 33 to 24).
+- K5, fourth run: whole suite at 65ae145 (every fix in; same command, clean copy, own build): 171
+  passed, 1 failed, 5 ignored, 10 min 45 s with the build, load 26.8 at the start and 34.1 at the
+  end. The failure is the reference's known race in threads `process_signal_takers_match_reference`
+  (theirs "main willing: taken by thread 1", see Known issues, K3 sixth run); two reruns alone
+  passed. Sequences report how many sends with control
+  messages and receives went well: about 100 to 300 and 300 to 4000 per 5000.
+
+- K4, fifth run, final, at head deb0e5c (every fix in): plain layer 1 seeds 4040510, 4040511,
+  4040512 each passed 20000 (328.1 s, 388.0 s, 327.3 s) and the harness's failing seed 4040506
+  passed 20000 (326.7 s), four side by side with the whole suite, load 17.8 at the start and 18.5 to
+  20.5 at the end. Whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`): 151 passed, 0 failed, 5 ignored, 6 min 53 s,
+  load 17.8 at the start and 17.4 at the end. Backend seed 4040116 and caching backend seed 4040315
+  each passed 2000 (116.8 s, 117.1 s, side by side, load 19.4 to 15.8).
+- K4, fifth run, at heads f7cf6fc to 717998b: backend seeds 4040113 to 4040115 and caching backend
+  seeds 4040312 (the directory seek seed, after its fix) to 4040314 each passed 2000 (139 to 192 s,
+  load 12 to 50). Plain 4040504 and 4040505 passed 20000 (328.0 s, 328.3 s) before the layer 1
+  harness fix. A whole-suite run at 717998b beside five other jobs (load 12 to 46) had two failures
+  of the reference's known races: terminal's `making_pairs` (`exec /wc/tty: no such file`, the
+  shared guest directory) and futexpi's print order (the woken waiter printed before the unlocking
+  thread); the final suite run above passed both.
+- K4, fifth run, at head aecc367 (the fourth run's end): plain layer 1 seeds 4040401, 4040402,
+  4040403 each passed 20000 (330.0 s, 330.7 s, 329.6 s; side by side with each other and the
+  suite; load 16.2 at the start, 28.6 at the end). Backend seed 4040111 passed 2000 (144.3 s,
+  load 15 to 25). Caching backend seed 4040311 failed (the access control list finding above).
+- K4, fifth run, at head c5b36f8 (lock, splice and list fixes in): plain layer 1 seeds 4040501,
+  4040502, 4040503 each passed 20000 (322.0 s, 322.4 s, 323.0 s; side by side with each other, the
+  suite and two backend runs; load 23.3 at the start, 30.6 at the end). Caching backend 4040311
+  passed 2000 (164.7 s); backend 4040112 passed 2000 (191.0 s); caching backend 4040312 failed (the
+  directory seek above). Whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`): 150 passed, 0 failed, 5 ignored, 8 min 18 s,
+  load 23.3 at the start and 17.1 at the end.
+- K4, third run: layer 1 on the backend seed 4040103 (failing before on statx) passed 2000
+  (1723.7 s; docker execs were slow then, load 14 to 18). On the backend that opens files for the
+  page cache (`sequences_on_cached_backend_match_reference`): seed 0 passed 32, 4040301 passed
+  2000 (1784.6 s, same time and load). With pipes, splice, tee and cachestat added to the backend
+  calls (head 3cad455): direct 4040104 passed 300 (20.3 s), 4040105 passed 2000 (123.5 s); cached
+  4040302 passed 300 (20.3 s), 4040303 passed 2000 (123.4 s); load 14 to 17.
+- K4, third run: the milestone's fresh plain layer 1 seeds with every fix in (kernel at a2b3fcf,
+  the same at 3cad455): 4040205, 4040206 and 4040207 each passed 20000 (326.6 s, 326.4 s,
+  326.2 s), run side by side with each other and with the whole suite, load 14.5 at the start
+  and 34.2 at the end.
+- K4, third run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`) at head 3cad455 beside the three layer 1 runs:
+  144 passed, 0 failed, 5 ignored, 6 min 47 s, load 15.0 at the start and 16.3 at the end.
+- K4, second run: layer 1 on the backend (`sequences_on_backend_match_reference`): seed 0 passed
+  300 (18.1 s); seed 4040101 passed 2000 (113.7 s), 4040102 passed 2000 (118.1 s), load 11 to 15.
+  Seed 4040103 failed at 2000 on statx with an empty mask (Known issues). Fresh plain layer 1 seed
+  4040201 passed 20000 (333.4 s, load about 11 to 15) at head 49f67c3 (before the direct IO read and
+  ACL read fixes, which touch only backend files).
+- K4, second run: the milestone's fresh layer 1 seeds at head ee59eab, every fix in: 4040202
+  passed 20000 (331.2 s), 4040203 passed 20000 (331.0 s), run side by side with the whole suite
+  (load 13.2 at the start, 17.0 at the end), and 4040204 passed 20000 (346.0 s, load 13.5 to 16.0).
+- K4, second run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p wcontainers-kernel
+  -p wcontainers-kernel-test`) at head ee59eab beside two layer 1 runs: 141 passed, 0 failed, 5
+  ignored, 6 min 29 s, load 13.8 at the start and 14.5 at the end.
+- K4, second run: `messages_per_call` gave the same counts as the first run's (below) with FLUSH at
+  every close.
+- K4, first run: layer 1 seed 9393002 (the check's failing seed) passed 30000 with the SIGPIPE fix
+  (478.4 s, load 13.5 at the start, 32.2 at the end). Fresh seed 4040001 passed 20000 at head
+  52212a9 (312.1 s, load 18.7 at the start, 12.7 at the end).
+- K4, first run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p wcontainers-kernel
+  -p wcontainers-kernel-test`) at head c4e2bc3, beside one layer 1 run: 135 passed, 0 failed, 6
+  ignored (one new: backend file mappings), 7 min 10 s, load 13.6 at the start and 14.0 at the end.
+- K4, first run: messages each kind of call sends to the backend, 100 of each less the setup,
+  measured by tests/backend.rs `messages_per_call` (seed 1; opcodes: 1 LOOKUP, 2 FORGET, 3 GETATTR,
+  9 MKDIR, 10 UNLINK, 11 RMDIR, 12 RENAME, 14 OPEN, 15 READ, 16 WRITE, 18 RELEASE, 25 FLUSH,
+  27 OPENDIR, 28 READDIR, 29 RELEASEDIR, 35 CREATE). Paths are `d/f` from the working directory, the
+  backend's root:
+  - stat: 2 LOOKUP, 1 GETATTR (the working directory's attributes for the search check).
+  - fstat: 1 GETATTR.
+  - open and close: 2 LOOKUP, 1 GETATTR, 1 OPEN, 1 FLUSH, 1 RELEASE.
+  - pread of 4 KiB: 1 READ. pwrite of 4 KiB: 1 WRITE.
+  - opendir, readdir to the end, closedir of 12 entries: 1 LOOKUP, 1 GETATTR, 1 OPENDIR, 2 READDIR,
+    1 FLUSH, 1 RELEASEDIR (no FLUSH since the fourth run, as Linux; measured again then, the other
+    kinds unchanged).
+  - create, close and unlink: 4 LOOKUP, 2 GETATTR, 1 CREATE, 1 FLUSH, 1 RELEASE, 1 UNLINK, 2 FORGET.
+  - mkdir and rmdir: 4 LOOKUP, 2 GETATTR, 1 MKDIR, 1 RMDIR, 2 FORGET.
+  - rename: 4 LOOKUP, 1 GETATTR, 1 RENAME.
+  The backend test (453 messages a run) takes about 1.1 s a seed including the reference container
+  (load about 15).
+
+- K3, sixth run: layer 1 fresh seeds 3030, 3031, 3032 at 20000 each, side by side (load 13 to 32):
+  3031 passed (318.4 s), 3032 passed (317.8 s), 3030 failed at its timer_create (fixed above).
+  Seed 3023 passed 20000 after the harness fix (313.8 s, load 13.8 to 14.3); the checker's seed
+  5150002 passed 25000 after the splice fix (384.7 s, load 36 to 120).
+- K3, sixth run, with every fix in (head after the timer charge): fresh layer 1 seeds 3033 and
+  3034 passed 20000 each (306.4 s and 306.3 s, side by side with the suite; load 31 to 144), and
+  3030 passed 20000 on rerun (317.0 s, load 67 to 32). Whole suite, same command as below: 129
+  passed, 1 failed, 5 ignored, 6 min 18 s, load 44.1 at the start and 25.0 at the end; the failure
+  was `process_signal_takers_match_reference`, where the one-CPU reference chose thread 1 (Known
+  issues).
+- K3, sixth run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p wcontainers-kernel
+  -p wcontainers-kernel-test`) at head 1712fe7, beside three layer 1 runs: 129 passed, 1 failed, 5
+  ignored, 6 min 6 s, load 15.8 at the start and 67.8 at the end. The failure was terminal's
+  `splice_holds_the_pipe` (ours printed `cat /dev/tty | cat`'s line once, the reference twice); it
+  passed 3 reruns alone (load 55). See Known issues.
+
+- K3, fifth run: layer 1 with every fix in, fresh seeds 3025, 3026 and 3027 passed 20000 sequences
+  each (304 to 307 s, four side by side with seed 3023; load 17 to 22). Along the way, 20000 each:
+  3013 and 3014 passed (before the sendfile fix); 3015, 3016, 3018, 3020, 3021 failed and were
+  fixed (above), then passed on rerun; 3017, 3019, 3022, 3024 passed; 3023 fails in a whole run
+  (Known issues). Seed 3012 passed 4000 (60.6 s, load 13.6) with the PI calls first generated.
+- K3, fifth run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`) at head 9bd0ea1: 124 passed, 1 failed, 5 ignored,
+  6 min 22 s, load 13.64 at the start and 17.08 at the end. The failure was the new futexpi guest's
+  print order (the reference ran the woken waiter before the unlocking thread printed); fixed in the
+  guest and passed 3 reruns. At head 96d35e3 (`RUST_TEST_THREADS=3`, beside layer 1 runs): 124
+  passed, 0 failed, 5 ignored, 6 min 28 s, load 17.26 at the start and 17.50 at the end.
+- K3, fifth run, libc-test at head a3b3e5e (with the varied speed of turns): the 43 thread, signal,
+  timer and IPC tests under seeds 300 to 309 (`SCHEDULE_SEEDS=10 SCHEDULE_SEED=300`), with and
+  without saves, and the rest under one seed, all matched the reference (3 tests passed); 501.8 s,
+  load 14.70 at the start, 26.65 at the end.
+- K3, fifth run: guest/cpusleep.c matched the reference under seeds 1 and 2 (harness, load 10 to
+  15); the check's timermix.c matched under seed 1 and differed under seed 2 in one line, "alarm
+  after 1us itimer" (a 1 µs timer read back by the next call: whether it has fired depends on the
+  time between two calls, 0.5 to 1.5 µs a turn on the repeatable clock; not in the suite).
+- K3, fourth run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`) with the deferred rerun in (head 39cd8a2): 119
+  passed, 1 failed, 5 ignored, 5 min 47 s, load 12.08 at the start, 16.20 at the end; the failure was
+  clonevm, whose new dumpable line was built before the kernel change (the reference shares the
+  flag). At the end (head 82981eb, `RUST_TEST_THREADS=3`, beside three layer 1 runs): 120 passed, 1
+  failed (sigio, the reference's known race: it counted 0 signals for the raw byte and 2 for the
+  output to the master; three reruns passed), 5 ignored; 6 min 1 s, load 47.08 at the start, 32.96
+  at the end.
+- K3, fourth run, libc-test at head 82981eb: the 43 thread, signal, timer and IPC tests under seeds
+  200 to 209 (`SCHEDULE_SEEDS=10 SCHEDULE_SEED=200`), without saves and with saves (430 runs each),
+  all matched the reference; 486 s, load 36.61 at the start, 57.72 at the end.
+- K3, fourth run: guest/cpulimit.c takes about 15 s here (2 s of guest CPU time at one instruction
+  a nanosecond, load 37 to 45); 2.3 s in the reference.
+- K3, third run, at its end (timerfd fix in): the whole suite passed but for sigio (119 passed, 1
+  failed, 5 ignored; 4 min 26 s, load 19.83 at the start, 13.74 at the end); sigio's reference
+  counted no signal for output to the master where ours, and three reruns of both, counted one (see
+  Known issues).
+- K3, third run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`, default case counts) with the clone and
+  credential changes: 119 passed, 1 failed (pidfd: PIDFD_GET_INFO gave the caller's ids, fixed and
+  pidfd run again alone, passed), 5 ignored; 4 min 42 s, load 35.10 at the start and 30.40 at the
+  end.
+- K3, second run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`, default case counts) passed: 118 tests, 0 failed,
+  5 ignored, about 212 s of test time, load 24.26 at the start and 16.56 at the end; again at the
+  end of the run with CLONE_VFORK threads: 118 passed, 0 failed, 5 ignored, about 244 s, load 24.85
+  at the start and 26.23 at the end.
+- K3, second run, libc-test: the 97 other tests under seed 1 and the 43 thread, signal, timer and
+  IPC tests under seeds 1 to 3 with and without 4 saves (129 runs each) matched (72.5 s for all
+  three, load about 33). Seeds 100 to 109 (430 runs each): without saves all matched (load about
+  33); with saves 11 differed before the wall clock fix (above) and all 430 matched after it (84 s,
+  load 24.26 at the start, 22.66 at the end). Typical times here: 3 to 30 ms a test, 1 to 3 s with
+  saves; raise-race 2.6 s, daemon-failure 5 s (2^20 dups).
+- K3, second run, guest/threadsched.c on the reference pinned to one CPU, three runs: identical
+  output each time, the weighted share and yield turns both within their bounds.
+
+- K3, first run: layer 1 seed 93103 (the K2 check's) passed 25000 sequences with the RWF_NOWAIT fix,
+  378.88 s beside other work (load 36.75 at the start, 29.12 at the end).
+- K3, first run: the whole suite (`cargo test --no-fail-fast -p wcontainers-kernel -p
+  wcontainers-kernel-test`, default case counts) passed with the stand-in fix: 111 tests passed, 0
+  failed, 6 ignored (the known failures), about two minutes, load 34.30 at the start and 17.43 at
+  the end. The run before it, without the fix, also passed (110 and 7 ignored).
+- K3, first run: the reference showed SIGCHLD already pending right after kill(SIGCONT) in one run
+  of guest/continued.c (the child ran on another CPU first), and not in earlier ones, so that line is
+  no longer compared; the test now checks the wait and the one CLD_CONTINUED signal only, and does
+  not tell the old behaviour (the signal sent inside kill) from the new. guest/procsig.c of the K2
+  check showed the difference by hand (above).
+- K3, first run, with the new futex and timer calls in layer 1: seed 3001 passed 2000 after three
+  fixes (31 s, load about 40); seed 3002 passed 6000 (93.17 s, load 18.56 at the start, 33.00 at
+  the end).
+
 All on this shared Mac; noisy, not benchmarks.
-- Thirteenth run: the whole test suite of both crates 88 s wall (load 13 to 18), 181 s (load 59 to
-  69); layer 1 20000 sequences: two side by side 303 s each (load 10 to 17), six side by side 322 s
-  (load 12 to 15), four side by side 334 to 384 s (load 34 to 83); 1500 sequences alone 23 s (load
-  15).
-- Twelfth run, layer 1 20000 sequences: three side by side 297 s each (load 20 to 14); five side by
-  side 320 s each (load 22 to 16); 3000 sequences alone 48 s (load 16 to 22). The whole test suite of
-  both crates: 88 s wall (load 10 to 20).
-- Tenth run, layer 1 20000 sequences, three side by side: 318 s each (load 4.6 to 10.2); 1500
-  sequences alone: 24 to 25 s (load about 5). The whole test suite of both crates: 77 s wall (load 9).
-- Ninth run, layer 1 20000 sequences, four side by side: 294 to 312 s each (load 8 to 15); three
-  side by side: 298 to 305 s (load 10 to 45). 4000 sequences, three side by side: 60 s each (load 27
-  to 44). The whole test suite of both crates passed under load 100 to 157 (not timed).
-- Eighth run, layer 1 20000 sequences, six side by side: 303 s each (load 18 to 20); two side by
-  side: 305 s each (load 8 to 17).
-- The whole test suite of both crates, eighth run: 69 s wall (load about 9).
-- Seventh run, layer 1 20000 sequences, three side by side: 294 to 311 s each (load 5 to 18).
-  Seeds 91 to 93: 301 s each (load 10 to 15).
-- Sixth run, layer 1 20000 sequences, three side by side: about 290 to 330 s each (load 6 to 15).
-- Fourth run, layer 1, 3000 sequences, seed 57: 85.6 s (load 5.8 to 9.5); the filter test: 2.0 s
-  (load about 10).
-- Third run, layer 1 20000 sequences, seed 48: 599 s (load 4 to 42).
-- busybox test binary (4 tests in parallel, about 85 commands, each in both runners): 11 to 18 s
-  (load about 7 to 15).
-- The whole test suite of both crates: 57 s (load 18 at the start, seventh run).
+- K2 and earlier: in this file at commit aecc367 (git history).
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
 
-- The root file system is in memory (tmpfs) in K1: the file backend is K4. Tests fill it from
-  `docker export` of the reference image with `Kernel::add_file`. What shows the file system's own kind
-  differs from the reference's overlayfs; those cases are known failures, and layer 1 stays off it.
+- K6b, second run: the Python suite runner (runtimes/python/suite.py) replaces numbers in the
+  test suite's own warnings with N before printing them. The warnings name process numbers,
+  and in the reference every process number is 5 higher than ours from the first fork on,
+  because runc's init threads took 2 to 6 in the container's namespace. The kernel is not
+  made to skip numbers to copy runc, whose thread count is its own.
+- K6b, third run: /sys is a read-only sysfs holding none of Linux's entries (plan section 15's
+  chosen subset, here empty); a lookup of a name the reference's /sys has is ENOENT and counted
+  "sys entry not built". Its root's link count is 2, where the reference's is 11 (2 and its nine
+  directories). The cgroup2 mount at /sys/fs/cgroup and Docker's tmpfs over /sys/firmware are
+  not there (gap list).
+- K6b, third run: a mapped backend file's block starts at the file's first page, so a mapping
+  far into a file makes a block that reaches it (lazily backed on the stand-in, and a host that
+  cannot make one that large answers ENOMEM). The plan does not say; a block starting at the
+  lowest page mapped would remove this.
+- K6b, third run: INIT now offers the backend 128 KiB of read-ahead (Linux's default,
+  `VM_READAHEAD_PAGES`), where it offered 0: a fault in a mapped file reads the 32 pages around
+  it as Linux's read-around does, and a kernel copy reads 32 pages ahead.
+
+- K6a, first run: the Linux Test Project runs in an image of its own (Debian trixie with glibc
+  and the suite at /opt/ltp), in the reference and on ours, not in alpine:3.22: glibc is what the
+  suite is built for. Each test runs as the first process of a container of its own (`/bin/sh -c`
+  its runtest line), not one after another in one container under runltp or kirk, so no test
+  sees another's leftovers and a kernel failure ends one test; the verdict is read from the exit
+  code as kirk reads it. The suite's own timeouts are left at their defaults (no LTP_TIMEOUT_MUL).
+- K6a, first run (narrowed in K6b's first run): the whole suite is every runtest group but
+  crashme (`ltp::LEFT_OUT`): its crash02 forks without bound, and the reference's machine is
+  shared with other containers and tracks. Everything else runs and skips itself as the plan
+  says; the bar grew from 2694 to 4226 tests (1532 added, measured with 3 jobs at load 11 to 30:
+  865 skipped, 249 pass, 144 broken, 135 fail, 99 exit127 for programs the image lacks, 40
+  warning; their own times add to 6199 s). The bar as a whole: 1611 skipped, 1492 pass, 692
+  broken, 288 fail, 99 exit127, 43 warning, 1 exit255.
+- K6b, first run: the larger runtimes run on a host with 64 bit memories (16 GiB, Chrome's
+  cap), as wasmtime (the phase's host) offers; Java's HotSpot cannot start on a 32 bit host's
+  4 GiB (its compressed class space wants a base at a multiple of 4 GiB; plan section 15, the
+  address space is small). Other tests keep the 32 bit host's 4 GiB.
+- K6b, first run: the runtimes' root is on the file backend opened for the page cache
+  (`cached`), so files map shared as on the reference's overlay; with direct reads and writes a
+  shared mapping is ENODEV as Linux's FUSE answers in that mode, which failed every test_mmap
+  test.
+- K6b, first run: CPython's own test suite is not in the official image (it removes `test`); the
+  matching source release's `Lib/test` is added at /wc/lib, checked against the image's own
+  checksum, so the image stays unmodified. What the tests print themselves (process numbers
+  among it) is not compared, only each test's outcome.
+- K6b, first run: the Go and Java programs are built by their own images (golang, the JDK) into
+  the test's directory; the Go program runs on alpine:3.22. Programs print nothing that depends
+  on time or the number of CPUs (the guest is told it has one, section 15): Node's timer check
+  and Java's processor count were taken out for that reason.
+- K6a, first run: on ours the root is the kernel's in-memory file system, which tests see as
+  tmpfs (`Using /tmp/LTP_... as tmpdir (tmpfs filesystem)`) where the reference's is overlayfs;
+  tests that choose by file system type can choose differently.
+- K6a, first run: netlink protocols other than route, ping sockets and AF_PACKET are left refused
+  and counted (the check's finding 9): ping and packet sockets fall under section 15's raw
+  packets; the netlink ones are listed under Not built and in Next.
+
+- K5, seventh run: eventfd's number in fdinfo is the lowest free among the container's event
+  descriptors; Linux's is the lowest free on the whole machine, so it differs from the
+  reference's whenever other containers hold some (the test shows it as N). epoll's items are
+  listed in this kernel's order (by descriptor); Linux's follow kernel addresses.
+- K5, eighth run: TCP_QUICKACK and /proc/net/tcp's pingpong flag are a model: an end enters
+  pingpong mode when it sends after it has received, and stays there; Linux enters it when it
+  sends within the delayed acknowledgement time of the last receive and leaves it when its
+  delayed acknowledgement timer fires (40 ms or more after unanswered data), so on Linux the
+  answer depends on timing.
+- K5, eighth run: the neighbour table holds only the loopback entries; its times are a model
+  (made at the first packet, confirmed at each TCP segment), where Linux's depend on when
+  acknowledgements come. Interface numbers differ from the reference's (see below), so a
+  socket bound by number to 2 is eth0 here and Docker Desktop's tunl0 there.
+- K5, seventh run: TCP_DEFER_ACCEPT is not applied to connections from outside (counted
+  "outside connection not deferred"): the host completes those and has no hook to hold one
+  back.
+
+- K5, sixth run: Linux stamps received packets once any socket on the machine asks for receive
+  timestamps (a global switch, turned on a moment later); here a packet is stamped when its
+  receiver asked, so SOF_TIMESTAMPING_SOFTWARE without RX_SOFTWARE reports a time only when the
+  receiver also has SO_TIMESTAMP, which is what a quiet Linux machine does.
+- K5, sixth run: TCP_INFO of a connection is a model (counted "tcp info modelled"): Linux's
+  round trips, rates, RTO, delayed acknowledgements, window growth and segment counts depend on
+  timing and load (retransmissions were measured on a loaded reference), so they cannot be
+  matched. The model is that every segment arrives and is acknowledged at once over a 10 us
+  round trip; what Linux gives the same on every quiet loopback run is given exactly.
+
+- K5, fifth run: Linux collects cycles of local sockets on a work queue when any local socket on
+  the machine is released (other containers' too), so when a cycle goes depends on the whole
+  machine; here it goes at once when a local socket of the container is released, which is
+  what a quiet Linux does. A TCP sender's data is told to the receiver's I/O signal only while
+  the receiver's queue holds less than its receive buffer (Linux's window keeps the rest on its
+  way and tells of it as it comes, which depends on timing). Netlink dumps are split into the
+  answers and NLMSG_DONE, where Linux splits by its own message sizes (ours carry fewer
+  attributes), so a dump takes two reads here and may take more on Linux.
+
+- K5, second run, the made-up network (plan section 15 allows it; these are its choices): lo
+  (1) and eth0 (2) only, where the reference's kernel (Docker Desktop's linuxkit) also shows
+  eight tunnel devices and numbers eth0 11; eth0 is 172.17.0.2/16 with hardware address
+  02:42:ac:11:00:02 and MTU 65535 (the reference's), where Docker gives each container its own
+  address and a random hardware address; traffic counters read zero (counted). The name server
+  is 127.0.0.11, as Docker's own for user networks, where the reference's default bridge names
+  Docker Desktop's 192.168.65.7. Tests hide what Docker chooses per container.
+- K5, second run, TCP between the container's own addresses: how much a connection holds is the
+  sender's SO_SNDBUF of unread bytes (counted "tcp room modelled" when a send finds none), where
+  Linux's depends on timing (windows, buffer growth); writable at two thirds empty as
+  `__sk_stream_is_writeable`. A connect to a full backlog waits and is completed by the accept
+  that makes room (counted "tcp connect waits for backlog room"), where Linux drops the SYN and
+  retries after 1, 3, 7 seconds and so on. Nagle and delayed acknowledgements are not modelled:
+  every send arrives at once. An end that closes first holds its port for TIME_WAIT from the
+  moment both FINs are sent, or from its release if the other end's FIN never came (Linux:
+  FIN_WAIT2, then TIME_WAIT). UDP true sizes are near Linux's, not equal (92 of 1000-byte
+  datagrams fill the reference's receive buffer).
+- K5, second run, the outside: a UDP socket has one host connection per outside destination
+  (the hooks carry no source address). What an outside connection's bytes look like to poll comes
+  from the kernel's own queue, pulled on `ConnectionReady` and at each read. Name queries are
+  answered with TTL 0 (the lookup hook gives none) and only for A and AAAA (others "not
+  implemented", counted). The test host maps `host.docker.internal` and its address to this
+  machine's loopback, so one server serves the reference and ours.
+- K5, second run: inotify's directory for a call by path is where the inode was made or last
+  moved to (inodes keep no other dentries), so after a hard link Linux may name the other link;
+  IN_DELETE_SELF waits for the last open file (descriptor tables are searched), not for
+  mappings.
+- K5, first run: a backend directory's later pages are listed with plain READDIR. Linux also
+  uses READDIRPLUS for them when a name in the directory was looked up afresh, or first
+  revalidated after READDIRPLUS made it, since its last listing (`FUSE_I_ADVISE_RDPLUS`); which
+  names Linux's dentry cache holds is not modelled. INIT asks for no lock flags and the kernel
+  sends no COPY_FILE_RANGE, IOCTL or POLL (above).
+
+- K4, fifth run: a backend inode holds its access control lists between reads, as Linux's
+  `i_acl` does, although the plan says the kernel caches nothing in phase one: without it, which
+  reads answer ENODATA and which EOPNOTSUPP differs from Linux (a permission check by another
+  user holds none). They are let go of at every LOOKUP, GETATTR and INVAL_INODE, as Linux does.
+
+- K4, fourth run: a backend file's writes hold its lock alone always; Linux shares it among
+  writes inside the file when the backend opened it with FOPEN_PARALLEL_DIRECT_WRITES (the first
+  backend does not). A shared file's position lock is taken whatever the file's count of holders
+  (Linux takes it only when shared); unshared, nothing else can wait for it, so nothing differs.
+- K4, fourth run: open with O_CREAT through a link to a missing file on the backend sends one
+  READLINK and one LOOKUP more than Linux (the link is read again and the target looked up again).
+
+- K4, second run: the image is unpacked into the backend's directory by the server's container
+  (busybox tar) before the server starts, not as FUSE messages from the kernel; the plan's section 1
+  says tests unpack an image into a directory.
+- K4, third run: a mapped backend file's pages are read whole at mmap (from the file's start to the
+  mapping's end), and a program on the backend whole at exec, where Linux reads each page at its
+  first fault (counted "backend file read whole when mapped" since the fourth run, with a warning); a change to the file through a
+  direct-IO descriptor after the mmap and before a page is first touched shows on Linux and not
+  here. Pages are written back whole, not only those written (counted). The plan's "keeps no
+  cache" is kept apart from these pages, which correct mappings need. INIT does not ask for
+  FUSE_DIRECT_IO_ALLOW_MMAP or FUSE_SETXATTR_EXT (flags2 is 0), which Linux asks for; the first
+  backend grants neither, so the reference behaves the same.
+- K4, second run (changed in the third): Linux's FUSE keeps a file's attributes until the next
+  jiffy even with an attribute timeout of 0; the kernel asks again in every call that has not had
+  them. statx with no basic field or with AT_STATX_DONT_SYNC takes the held attributes, as Linux
+  does with no sync (seed 4040103); within a jiffy Linux may still answer other stats from held
+  attributes where ours asks.
+- K4, second run: FLUSH for a descriptor closed by anything but `close` is sent with nothing
+  waiting for it; Linux's `filp_close` waits for it (and ignores its error).
+
+- K4: the reference for the backend runs the server as the container's first process and the program as
+  its child, in a container with /dev/fuse and CAP_SYS_ADMIN (dropped from the program's sets), so
+  Docker's seccomp profile there is the one for CAP_SYS_ADMIN; the program is not the first
+  process there.
+- K4: a call waiting for the backend is not interrupted (no FUSE_INTERRUPT); Linux sends INTERRUPT
+  on a signal and goes on waiting. A fatal signal ends the process at once here, and the answer
+  that comes later gives back what it handed out.
+- K4: an open file's path for `/proc/<pid>/fd` on the backend is the name it was opened by, not a
+  followed link's target (walking again would ask the backend again).
+- K4: requests the backend took before a save are answered after it by the host that goes on with
+  the backend (the test host's copy); a host that cannot must bring the backend back with them.
+
+- K3, sixth run: setting the wall clock is not compared with the reference. Docker gives no
+  CAP_SYS_TIME, and adding it would set the clock of every container on this shared machine (time
+  namespaces do not cover CLOCK_REALTIME). The test's expected lines come from Linux's source
+  (`clock_was_set`, `timerfd_clock_was_set`, `timerfd_read_iter`, `common_hrtimer_arm`). The kernel
+  sees a setting only at a restore (as Linux at resume); the host gives no sign of a step of its own
+  wall clock during a run, so then timers on the wall clock keep their monotonic time and nothing is
+  canceled.
+
+- libc-test runs each test through its own runner with a 600 s time limit (`runtest -t 600`), not
+  its default 5 s: the stand-in CPU on a loaded machine is far slower than the reference, and only a
+  test that never ends should time out.
+
+- A fatal signal ends a process at once here, where Linux ends it when it next runs. So
+  process_mrelease never finds a dying process with memory to free: a running process is EINVAL and an
+  ended one ESRCH; Linux answers 0 in the window before the victim runs (a race in the reference).
+
+- The root file system is in memory (tmpfs), or on the backend (K4, the server's tmpfs directory in
+  tests). Tests fill it from `docker export` of the reference image. What shows the file system's
+  own kind differs from the reference's overlayfs over ext4 (busybox `root_file_system`, ignored as
+  a known failure); layer 1 stays off it.
 - Docker's `/etc/hostname` is given the container's name; `/etc/hosts` and `/etc/resolv.conf` keep the
   image's empty placeholders (contents come with the network, K5) with Docker's mode 0644. The test
   programs' directory `/wc` is a plain directory here, a read-only bind mount in the reference. `/sys`
-  is the image's empty directory (Docker mounts sysfs there). `/dev/mqueue` is a plain directory.
+  is the image's empty directory (Docker mounts sysfs there).
 - No address randomization: the break starts right after the program, mmap goes top-down from
   end-128 MiB, the stack is at the top.
 - `uname` says release "7.0.0-wcontainers", version "#1 SMP PREEMPT"; the reference says
@@ -862,11 +2581,49 @@ All on this shared Mac; noisy, not benchmarks.
 - `/proc/sys/{abi,debug,dev,net,sunrpc,user}` exist as empty directories so paths through them resolve.
 - statfs reports a block size of 4096 for every file system, `/proc` included (measured); stat reports
   1024 for `/proc` files (measured).
+- Saving natively copies the whole test process (fork) rather than only the kernel's memory: the
+  kernel's state is a graph of Rust heap objects shared through `Rc`, which only a copy at the same
+  addresses keeps, as copying a WebAssembly kernel's memory into a new instance will (K7). The copy
+  is a new kernel instance in a new process; it goes on with a new CPU side built from the saved
+  memories, blocks and registers alone and a new host whose clocks read differently, so what is
+  proven is that the kernel needs nothing else and that `restore` carries its clock over. Deep
+  copying the kernel inside one process was not done: it needs a copy routine for every type that
+  shares (`Rc` inodes, files, terminals, counts), which no crate makes for `no_std`.
+
+- Layer 2's clock is not the wall clock: time passes only by a seeded step per turn and by skipped
+  waits, so CPU times and the scheduler's choices repeat for a seed. Layer 1 keeps the wall clock (its
+  reference runs beside it).
+- What one terminal side writes is taken into the other side's line discipline at once, as if
+  Linux's buffer work (`flush_to_ldisc`, run later from a work queue) ran straight away; what does not
+  fit waits in the other side's buffer, counted in bytes against `tty_buffer_set_limit`'s 8192
+  (Linux counts allocated pieces of 256 bytes and more, so how much a write is taken while nobody
+  reads differs by up to a few hundred bytes; in Linux it also depends on when the work runs).
+  `n_tty_lookahead_flow_ctrl` (stop and start keys seen while the line discipline is full) is not
+  built.
+- A non-canonical read waiting for VMIN bytes takes them only once enough have come (Linux copies
+  each as it comes and waits holding them): another reader or TIOCINQ sees them in the meantime.
+- Layer 2's clock moves a nanosecond for each instruction a turn ran (whole blocks entered are
+  counted) plus the seeded 0.5 to 1.5 us, so CPU times and the fair scheduler see work in
+  proportion to its length.
+- AT_MINSIGSTKSZ is the reference's measured 4720 (typed in linux_extra.rs): arm64 computes it from
+  the CPU's records at boot.
+- The vDSO is laid out by hand with `object`'s ELF structures (src/vdso.rs): one function, its
+  version and soname as Linux's; Linux's own also has the time functions, which programs find
+  missing here and fall back to system calls for (musl and glibc both do).
+- A background job's output order in tests is sorted: which child runs first after fork is a race in
+  the reference's four CPUs, while here the scheduler decides it the same way every time.
 - The made-up machine has one CPU (default time slice 0.7 ms, sched_rr_get_interval in whole 1 ms
   ticks), no permission overlays and no guarded control stacks, like the reference's CPU for the last
   two.
-- A file mapped shared keeps its first pages in a block of shared pages while any mapping shares it;
-  private file mappings stay copies. A tmpfs inode's generation is a keyed hash of its number
+- sched_yield puts the caller behind every thread waiting for its turn (its virtual runtime raised to
+  the run queue's greatest). The plan's scheduler is CFS, whose yield (a skip buddy) keeps a yielder
+  running while the others are more than the wakeup granularity ahead, which for a new child is
+  about 2 ms of yields; the reference (Linux 7.0, EEVDF) forfeits the yielder's deadline so the
+  others run at once, and programs that spin on sched_yield waiting for another process behave as
+  there only with the reference's way (measured with the reference on one CPU).
+- A mapped file keeps its first pages in a block of shared pages while any mapping shows it, private
+  mappings included (their written pages are their own copies); a block covers each mapping's whole
+  length, past the file's end too. A tmpfs inode's generation is a keyed hash of its number
   (siphasher, no_std). The stand-in maps a block's host memory into unicorn wherever it is shown.
 - ARM64 Linux's user copy routine (`copy_template.S`) is modelled in src/user.rs for what overlapping
   copies within one process leave behind.
@@ -896,7 +2653,191 @@ All on this shared Mac; noisy, not benchmarks.
   `sysinfo` and `stack_t` have padding, so their fields are placed by `offset_of!` on linux-raw-sys's
   structures instead of zerocopy.
 
+- Docker's device rules (which devices a container may open) are modelled from runc's default list
+  and measured in the reference (mknod then open: 1:1, 4:1, 200:7 and block devices EPERM, a missing
+  pty slave EIO, the tunnel opens); with cgroup v2 they are an eBPF program in Linux, a table here.
+- What a buffer that faults part way receives depends on where the reference kernel's own copy lies
+  within 16 bytes (its compiler's stack layout); that is measured for the calls tests/partialcopy.rs
+  makes (uname's lies 1 past alignment, the random devices' block 8 past) and taken as aligned to 8
+  elsewhere.
+- Layer 1's reference runner polls every descriptor twice after each call of a sequence with a
+  pseudo-terminal (Linux's buffer work runs later from a work queue; ours at once), and such
+  sequences write at most 256 bytes a call. A child made by clone in layer 1 ends at once.
+- A message queue's absolute real time timeout becomes a deadline on the monotonic clock when the
+  call starts (the made-up machine's real time clock cannot be set).
+- A futex wait's record is a slot in the thread's entry (`Thread::futex`: the futex each of its
+  call's entries is queued on, inline for one, and a bit per entry a wake took), as the plan says;
+  the queue of each futex is an index beside it, a `VecDeque` of waiters in a `BTreeMap` by key
+  (Linux's are intrusive lists in hash buckets), so the first waiter on a futex allocates its queue
+  and a vector wait of more than one futex allocates its list of keys (Linux allocates that vector
+  too). Before K3's fifth run every wait also allocated a list of keys in a map by thread, cloned
+  it at each look and searched its queues for itself. The cost was not measured either way.
+- A named pipe's open waiting for the other end keeps the file it makes in the thread's `opening`
+  slot beside the call slot (the plan's one fixed slot holds only plain values): the file must count
+  as an end while it waits, as Linux's does. It is given up when the call ends any other way or the
+  thread ends.
+- K5, third run: an outside connection accepted through `Host::accept` shows the gateway
+  (172.17.0.1) and a random port as its peer and eth0's address as its own, as measured for
+  Docker's published ports; `Host::accept` gives no peer address, so the real client is not seen.
+- K5, third run: /proc/net shows the made-up network (lo and eth0 only; the reference also has
+  tunl0, gre0 and other tunnel devices and eth0's traffic). Interface counters read zero (counted
+  "interface counters not kept"). Kernel pointers are a number unique to each socket (Linux
+  prints a hashed address), UDP lines are numbered by port modulo 16384 (Linux mixes in a random
+  value per network), TCP lines list listeners first then connections in port order (Linux:
+  hash order), TCP's reference count is 2 with a file and 1 without (Linux holds one more while a
+  timer is pending), and the delayed acknowledgement fields (ato, quick, pingpong) are a model
+  (4, 30 and pingpong once data came and was answered; Linux's depend on timing). Local sockets
+  are those open in some process and those waiting in a backlog (Linux also lists sockets in
+  flight in SCM_RIGHTS). A write to a /proc/net file is EIO here; the reference refuses the open
+  for writing with EACCES even for root (cause not found).
+- K5, third run: the TTL and type of service of datagrams from outside and of the name server's
+  answers are not reported by the host: 64 and 0 are given when asked for (counted "outside
+  datagram header made up").
+
+## Not built, by counter
+
+Every answer to something Linux has and this kernel does not build goes through `Counters::refuse`
+or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The names:
+- "system call not implemented": the Missing list above (detail: the call number).
+- "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
+  flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), NUMA
+  futexes (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
+  shmget's SHM_HUGETLB
+  (ENOMEM).
+- "fcntl command not built": F_SETLEASE, F_NOTIFY, F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG (EINVAL,
+  as Linux without them). Commands Linux does not know are a plain EINVAL, uncounted.
+- "prctl option not built": options Linux has on ARM64 that are not built (EINVAL; see Partial):
+  PR_SET_MM's forms, PR_GET_TIMING, PR_SET_TIMING, the TSC, perf event, MCE, SVE, SME, pointer
+  authentication, tagged address, speculation, syscall user dispatch, memory merge, MDWE setting,
+  shadow stack, timer id, futex hash and rseq slice options, PR_GET_TID_ADDRESS, PR_SET_SECUREBITS
+  and PR_SET_VMA. Unknown options and those Linux has only for other architectures are a plain
+  EINVAL, uncounted.
+- "line discipline not built": TIOCSETD with a discipline other than `n_tty` (detail: its number).
+- "ioctl request not built": nsfs's requests but NS_GET_NSTYPE, NS_GET_OWNER_UID,
+  NS_GET_USERNS and NS_GET_PARENT (ENOTTY); the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
+  caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference);
+  pidfs's ten namespace requests once their checks pass (nsfs is not built; EOPNOTSUPP).
+- "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
+- "device not built": the console (5:1) and `/dev/net/tun` (10:200), which Docker's rules allow
+  (ENODEV; detail the device number).
+- "proc entry not built": the `/proc` entries not built (detail: directory and name index).
+- "sys entry not built": a name the reference's /sys holds, looked up in /sys, which holds none
+  (ENOENT; detail: its index in block, bus, class, dev, devices, firmware, fs, kernel, module).
+- "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
+- "call on another process not built": process_vm_readv and process_vm_writev on another process.
+- "socket family not built": socket and socketpair of a family other than AF_UNIX, AF_INET,
+  AF_INET6 and AF_NETLINK, such as AF_PACKET (detail: the family; EAFNOSUPPORT).
+- "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES; plan section 15: no
+  raw packets, so no ping, though Docker's ping_group_range lets the reference make them), SCTP
+  (ESOCKTNOSUPPORT for SOCK_SEQPACKET, EPROTONOSUPPORT in a stream), MPTCP and UDP-Lite
+  (EPROTONOSUPPORT), netlink protocols other than NETLINK_ROUTE (EPROTONOSUPPORT, where the
+  reference makes NETLINK_SOCK_DIAG (`ss`), GENERIC, AUDIT, KOBJECT_UEVENT, NETFILTER and
+  USERSOCK sockets), and netlink messages to another socket's port (ECONNREFUSED); detail family
+  times 2^32 plus kind times 2^16 plus protocol. AF_PACKET is "socket family not built"
+  (EAFNOSUPPORT; the reference has CAP_NET_RAW and makes them; section 15's raw packets).
+- "socket option not built": socket options not built (detail: level times 2^32 plus option;
+  ENOPROTOOPT). Read: SO_MEMINFO, SO_PEERSEC on local sockets is ENOPROTOOPT as Linux's,
+  TCP_ZEROCOPY_RECEIVE with room for its structure, TCP_MD5SIG and TCP_MD5SIG_EXT, IP_MSFILTER,
+  MCAST_MSFILTER, IP_PKTOPTIONS and IPV6_2292PKTOPTIONS once packet information was asked for,
+  IPV6_FLOWLABEL_MGR, IPV6's MCAST_MSFILTER, and IPv6 options past those answered. Set:
+  SO_ATTACH_FILTER and SO_ATTACH_BPF (no socket filters), SO_RESERVE_MEM, TCP_ULP,
+  TCP_FASTOPEN_KEY, TCP_MD5SIG, TCP_ZEROCOPY_RECEIVE, UDP_ENCAP, IP_ORIGDSTADDR,
+  IP_MINTTL, IP_CHECKSUM, IP_RECVERR_RFC4884, IP_UNICAST_IF, IP_LOCAL_PORT_RANGE, IP_MSFILTER and
+  the source-specific multicast options, IPv6's 2292 forms, flow information and labels,
+  multicast (IPV6_JOIN_GROUP and the rest), IPV6_RECVERR_RFC4884, IPV6_MINHOPCOUNT,
+  IPV6_RECVORIGDSTADDR, IPV6_UNICAST_IF, IPV6_ADDR_PREFERENCES and the extension header
+  options; SO_TIMESTAMPING with software send flags; and as send control messages (EINVAL)
+  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps. The option numbers
+  checked against the reference are hand-picked lists (tests inet
+  `option_reads_and_socket_corners_match_reference`, guest/optreads.c, and
+  `socket_edges_match_reference`, guest/sockedges.c), not a sweep of every number: the K6a
+  check's sweep (guest/zk9opts.c) found UDP's 10, 11 and 100 refused, which now read 0 as
+  Linux's.
+- "socket option not acted on": TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN and TCP_TX_DELAY
+  set on, SO_MAX_PACING_RATE set to a limit, and TCP's MSG_MORE: kept and read back, but bytes
+  go to the peer at once where Linux holds or paces them (detail: level times 2^32 plus option,
+  or the flag). Keepalive's options and TCP_THIN_LINEAR_TIMEOUTS, TCP_RTO_MIN_US and
+  TCP_RTO_MAX_MS are kept and change nothing a program can see here: nothing is lost between
+  the container's own sockets and the peer always answers.
+- "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
+  RTM_GETROUTE dumps, RTM_GETNEIGH and RTM_GETRULE dumps, RTM_GETLINK of one link and
+  RTM_GETROUTE of one address (EOPNOTSUPP; detail the type plus 2^16 for a dump), such as one
+  neighbour and queue disciplines.
+- "ioctl request not built" also covers SIOCGSTAMP and its forms on internet sockets (ENOENT),
+  and the requests that change interfaces for a caller with CAP_NET_ADMIN (Docker gives none,
+  so EPERM as in the reference).
+Notices the backend sends that Linux refuses are counted "backend notice refused" (not a
+refusal of the guest).
+Approximations that are not refusals have their own counters: "outside datagram error not
+queued", "tcp room modelled", "tcp info modelled", "multicast or broadcast not sent outside",
+"neighbour entries not built" (a neighbour dump after packets left by eth0),
+"tcp
+connect waits for backlog room", "interface counters not kept", "name query not answered",
+"listening outside failed" (a host that cannot accept from outside
+or whose port is taken), "outside datagram header made up",
+"page residency not tracked", "proc
+fields not tracked", "fault syndrome approximated", "core dump not
+written", "vmsplice pages copied", "backend pages written whole", "backend change not seen by
+mapped pages", "copy short of backend pages" (a call that did part of its work before reaching
+backend pages not read yet ends short), "backend pages needed outside a call" (the kernel
+touched such pages where nothing can wait, a signal frame: a fault). "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
+this" counts a CPU side that answered it cannot make a memory, thread or shared block (ENOSYS to the
+guest).
+
 ## Changes to the shared crate (wcontainers-abi)
+
+- K6b, third run: none.
+- K6a, first run: none.
+
+- K5, eighth run: none.
+- K5, seventh run: none.
+- K5, sixth run: none.
+- K5, fifth run: none.
+- K5, fourth run: none.
+- K5, third run (host.rs): documentation only. `Host::listen` now says its port is the
+  container's TCP port, that `ConnectionReady` comes on the listener once after the call and again
+  after `accept` answered `WouldBlock`, and that `close` on the listener stops it; `Host::accept`
+  says the new connection is then used as one made by `connect`, and that `WouldBlock` means none
+  waits. No signature changed.
+
+- K5, second run (host.rs, which the kernel owns): added `Host::finish(connection)` (no more
+  bytes will be sent on a TCP connection; the program's SHUT_WR), a required method, so any
+  other `Host` implementor must add it. `Event::LookedUp`'s `addresses` are now 16 bytes each,
+  IPv4 ones mapped (the old mix of 4 and 16 byte addresses could not be split). Documented what
+  `error` means in `LookedUp` and `Connected`, when `ConnectionReady` comes, that a UDP connection
+  is usable at once with one datagram per send and receive, and that `receive`'s
+  `HostError::Closed` is a reset.
+
+- K5, first run: none. (The network hooks and `Event::Connected`, `ConnectionReady` and
+  `LookedUp` exist from K0 and are not used yet.)
+
+- K4, fifth run: none.
+- K4, fourth run: none.
+- K4, third run: none.
+- K4, second run: none.
+- K4, first run: none. (`Host::backend_send`, `Event::BackendReply` and `Event::BackendNotice` are
+  used as they were.)
+
+- K3, sixth run: none.
+- K3, fifth run: none.
+- K3, fourth run: none.
+- K3, third run: none.
+- K3, second run: none.
+- K3, first run: none.
+
+- K2, tenth run: none.
+- K2, ninth run: none.
+
+- K2, eighth run: none.
+- K2, seventh run: none.
+- K2, sixth run: none.
+- K2, fifth run: none.
+- K2, fourth run: none.
+- K2, third run: none.
+
+- K2, second run: none. (`Event::TerminalInput` and `TerminalResized`, for a container's own
+  terminal, are still counted "event with no waiter": the container's first process has pipes, as
+  `docker run` without `-t` gives it.)
 
 - K0: `Host::output(stream, bytes)` with `Stream`; `CounterReading::detail`.
 - K1: none by this side. The seventh run merged origin/phase-1, which added `Exit::AlignmentFault {
@@ -905,6 +2846,7 @@ All on this shared Mac; noisy, not benchmarks.
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
   packages, only additions). The eighth to thirteenth runs changed nothing in the shared crate
   (origin/phase-1 had nothing new to merge in the ninth to thirteenth).
+- K2, first run: none. (Event, Host and the rest are used as they were.)
 
 ## Questions for the orchestrator (boundary)
 
@@ -912,7 +2854,141 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K6b, first run: the whole-suite run at 076dfc4 (`--no-fail-fast`, 4 test threads, load about
+  20) did not finish. It found one crash (fixed in 54c7ff8: a thread's own /proc directory
+  listed coredump_filter, which Linux's `tid_base_stuff` lacks; proclist passes again), then
+  Docker's daemon went away (its socket was gone) with the machine's disk full, and every test
+  after that failed to reach Docker, a sixth layer 1 seed (6262606) among them. The test
+  backend had kept every image archive it unpacked (41 GB in target/wc-kernel-test, the large
+  runtime images most of it); they were removed, and a backend now removes its archive when it
+  ends. The 80 test binaries that ran before Docker went: 150 passed, the failures were the
+  crash above (fixed) and Docker's absence. The whole suite must be run again (Next).
+
+- K6b, first run: inotify on a backend root (tests/inotify.rs
+  `inotify_matches_reference_on_backend_root`, ignored with its reason): after the fixes, events
+  through an open file whose name was unlinked while another link names it still reach watches
+  with IN_EXCL_UNLINK (guest/inotify.c's "writes after unlink"). Backend directories hold no
+  entries here, so whether a name still names the inode is judged by its link count.
+- K6b, first run: test_mmap's LargeMmapTests map sparse files past 4 GiB; the backend reads a
+  mapped file whole (counted "backend file read whole when mapped"), which took the run past 30
+  minutes on the stand-in, so only test_mmap.MmapTests runs. Reading only the pages a mapping
+  touches would let them run.
+
+- K6a, first run (fixed): sigpick's reference race (below, from K3) came from musl's fork, which
+  blocks every signal until it returns in the parent; a child that signalled at once could find
+  the main thread blocking it, so Linux gave the signal to the next thread. The child now waits
+  for the parent's word. 8 of 8 runs alone passed (load about 20).
+
+- K5, eighth run (fixed): tests/inet.rs `deferred_accepts_match_reference` failed now and then
+  because the reference raced: after the listener closed, client 0's write came 100 ms later
+  and its retransmit of data dropped while the queue was full (about 200 ms after it was sent)
+  came about then too, so the reference printed `write 1` or a reset (the check ran it six
+  times: five and one). The guest now waits 600 ms, past the retransmit; the reference gave the
+  same output in four runs side by side (load about 30), and ours now resets at the retransmit.
+
+- K5, seventh run: terminal's `job_control` (guest/jobs.c) hung in the reference once in the
+  whole suite at 187f214 (load about 30): after ten minutes one of its processes was stopped
+  (`do_signal_stop`) and the others waited on it and on a pipe. Ours does not hang; two reruns
+  alone passed. Likely the same family as the K4 entry below (the reference's job control
+  timing on several CPUs); not looked into further. A test that hangs in the reference waits
+  for ever, as the reference runner has no time limit.
+
+- K6b, fourth run: the clone tables race below came again in the whole suite (load about 60 to
+  120); fixed in the test's method (it waits until the thread is gone from /proc).
+
+- K5, seventh run: threads `clone_tables_match_reference` (guest/clonetables.c) failed once in
+  the whole suite at 8e896aa (load about 30, beside three layer 1 runs): the reference showed a
+  thread's SEM_UNDO adjustment not yet undone after joining it ("now 4", ours 5). Linux wakes the
+  joiner at `mm_release` (clearing the thread's id) before `exit_sem` undoes, so on several CPUs
+  the joiner can look first; ours, one thread at a time, always shows it undone. Two reruns
+  alone passed. Left as it is.
+
+- K5, seventh run: busybox `system` failed once in the whole suite at 2d60f92 (load about 45):
+  `ls -l /dev/null` showed 18:19 for ours and 18:18 for the reference. The time shown is when
+  each container was made, and the two runs fell on either side of a minute's turn. The test
+  compares wall clock minutes of two separate runs, so a minute's turn between them fails it;
+  not fixed yet (the harness could give our container the reference's start time).
+
+- K5, fifth run: the sigpick reference race came once more in the whole suite at f73d3aa (load
+  about 25); two reruns alone passed.
+
+- K5, fourth run: threads `process_signal_takers_match_reference` (sigpick) failed once more in
+  the whole suite at 65ae145 (load about 30): the reference gave the process signal to thread 1.
+  Two reruns alone passed. The same race as the K3 sixth run's entry below.
+- K5, fourth run: tests/inet.rs `internet_sockets_match_reference` failed once in a run of three
+  test binaries (load about 30): the reference showed `peer closed poll 0x4` where ours (and every
+  other run of the reference) shows the peer's FIN (0x2005); Linux handles a loopback FIN in its
+  softirq, which under load can come after the poll. Two reruns passed. Left as it is.
+
+- K5, second run (not reproduced in the third): tests/saving.rs once failed for guest/unixsock.c
+  seed 1 ("after connect atime moved 0" where the reference prints 1). In the third run the
+  program alone under saves passed 3 times with 6 seeds each and the whole saving test passed
+  twice (load 28 to 40). The access time check is right for any wall clock after 1970; the likely
+  cause is test binaries building the same guest program into one shared directory while another
+  runs it (see the K2 entries below). Left as it is.
+
+- K4, second run (fixed in the third): layer 1 on the backend seed 4040103 differed on
+  statx(AT_FDCWD, "", AT_EMPTY_PATH, mask 0): Linux's FUSE does not sync attributes for a mask with
+  no basic field and shows what it held; ours asked the backend. Ours now takes the held
+  attributes too; the seed passed 2000.
+- K4, second run (narrowed in the fourth): getxattr of `security.capability` on the reference's
+  FUSE mount answers EINVAL (with size 0 and with a buffer, set or not). Traced with strace at the
+  server in the fourth run: no GETXATTR reaches it for this name, while `security.other` does and
+  answers ENODATA; files on tmpfs (nosuid or not) answer ENODATA. So the EINVAL comes from the
+  reference kernel before FUSE is asked; which line of 7.0.14 gives it is not found (scratch:
+  kernel/capcause). Ours answers EINVAL and sends nothing, the same. Exec: the reference's mount is
+  nosuid (`rw,nosuid,nodev,noatime`), so exec there asks for no capabilities (traced: none sent);
+  ours mounts the volume the same and sends none. On a backend root ours reads them at exec; there
+  is no FUSE root in the reference to compare.
+- K4, first run (from the K3 check): terminal's `job_control` (guest/jobs.c `leader_exit`) can fail
+  from a race in the reference: Linux's `disassociate_ctty` sends SIGHUP to the foreground group
+  before `session_clear_tty`, and on a loaded multi-CPU reference the job can open `/dev/tty` in that
+  window (theirs "job /dev/tty: 4", ours always the final ENXIO). Seen once in a whole-suite run at
+  load 40 to 60; three reruns alone passed. The test is left as it is.
+
+- K3, sixth run: layer 1 seed 3023 (open since the fifth run) was the harness: the IPC status calls
+  (IPC_STAT, SEM_STAT, SEM_STAT_ANY and the shm and msg ones) write sequence numbers and times
+  that the comparison skips but nothing cleared, and a later call read them (process_vm_readv took
+  a set's sequence number as a vector length: the reference's is not 0 after earlier sequences).
+  `machine_bytes` now clears them after the call; seed 3023 passed 20000 (313.8 s, load 13.8 to
+  14.3). Reproduced first with the old harness (failed at the same call, load 23 to 15).
+- K3, sixth run: sigpick's reference (tests/threads.rs `process_signal_takers_match_reference`)
+  sometimes gives the process signal to thread 1 instead of the first thread that does not block
+  it: once in about ten multi-CPU runs at load 30 to 90, and once on one CPU in a whole-suite run
+  beside two layer 1 runs (load up to 144); 8 of 8 one-CPU runs alone gave thread 0, as ours does.
+  Cause in the reference not found (`complete_signal` should pick the first thread while it wants
+  the signal). The test is left as it is.
+- K3, sixth run: terminal's `splice_holds_the_pipe` (ttylock) failed once in a whole-suite run
+  beside three layer 1 runs (ours showed `abc` once where the reference echoed and printed it);
+  three reruns alone passed. Not looked into further.
+- K3, fourth run: sigio's reference race came again once in a whole-suite run beside three layer 1
+  runs (load 47): it counted the raw byte's signal with the next section's (0 and 2 where ours, and
+  every rerun, has 1 and 1).
+- K3, third run: sigio failed once in a whole-suite run beside a layer 1 run (load about 20): the
+  reference counted 0 signals for "output to the master" (ours 1, as three reruns of both). The
+  same family as the ninth run's sigio entry below: the reference's terminal buffer work races
+  under load.
+- K3, first run: the busybox shell test `processes` failed once in a run beside layer 1 at load
+  about 50 (standard error differed); four reruns passed. Not looked into further.
+
+- The stand-in counts instructions by whole blocks, so a turn whose slice runs out in a block that
+  ends in `svc` comes back as a system call, not a stop (K2 check). The kernel's tick at every return
+  (tenth run) gives way either way, so nothing depends on it.
+
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
+- K2's ninth run: sigio failed once in a whole-suite run beside four layer 1 runs (load 36): the
+  reference counted no signal for the raw byte a master wrote after the switch to raw mode (ours,
+  as every other run of the reference, one). Three reruns passed. Cause not found; the guest takes in
+  the byte with a poll of the slave (`n_tty_poll` flushes Linux's buffer work), so this may be a race
+  in the reference's buffer work under load.
+
+- K2's seventh run: terminal's `making_pairs` failed once in a whole-suite run because the reference
+  found no `/wc/tty` (test binaries build guest programs into one shared directory while others run
+  containers from it); it passed alone. Not fixed yet: each test binary could build into its own
+  directory.
+- The dispatch test failed twice in whole-suite runs beside layer 1 runs: the reference container
+  found no `/wc/syscall` (its five tests each built the program and renamed it over the others while
+  a container started it, through Docker's shared directory). It now builds the program once.
 - Once in the third run (load about 20 to 50) the stand-in test binary hung for over 12 minutes and was
   killed; three reruns passed at once. Cause not found; not seen since.
 - Test binaries running side by side build guest programs into one directory; the dispatch test read
@@ -922,10 +2998,86 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2: processes, fork, wait, pipes, signal delivery with Linux's frames and a vDSO (then
-   AT_SYSINFO_EHDR and AT_MINSIGSTKSZ), terminals, job control, shared memory between processes; abort
-   rseq critical sections and run seccomp TRAP handlers on delivery; a fault's signal information
-   (BUS_ADRALN and the address for `Exit::AlignmentFault`, the code and address of memory faults);
-   droppable memory wiped at fork.
-2. The missing calls above by their milestone; the known gaps above before K6's bar.
-3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
+After K6b (fifth run), in this order (none of these holds K6b):
+1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
+   to know that the name an open file was opened by was unlinked while another link names the
+   inode (Linux's `d_unlinked` of that dentry); the kernel keeps no dentries for backend names.
+2. A call that copies part of its bytes and then reaches backend pages not read yet keeps its
+   short result (counted "copy short of backend pages"), where Linux's copy waits; a call
+   with progress of its own (pipe writes) could wait there instead. Not seen in any run.
+3. A mapped backend file's block starts at the file's first page (Departures); start it at the
+   lowest page mapped.
+4. The LTP comparison on ours for the 1532 added tests, and the K6a list below.
+
+K6a's next run (or K6b): the wrong answers of the first comparison (under "K6a, first run"),
+largest first by the tests they turn:
+1. `/proc/config.gz` (CONFIG_IKCONFIG_PROC, which the reference has): the suite's library reads
+   the kernel's configuration for every test that names options it needs, and without it such
+   tests are TBROK "Cannot parse kernel .config" (72 of the first 258 differences). It must
+   describe this kernel truthfully (what is built), in Linux's format, gzip'd.
+2. `/proc/sys/kernel/tainted` (19), `/proc/sys/fs/pipe-max-size`, `/proc/sys/kernel/sem`,
+   `/proc/sysvipc/*`, `/proc/cmdline` and the other entries tests open (counted "proc entry not
+   built"; the comparison lists each test's).
+3. F_SETLEASE (counted "fcntl command not built" 1024), AF_ALG (crypto and cve tests), keyctl
+   and add_key, io_setup and the other calls the comparison names as not built.
+4. The four tests killed by SIGSEGV on ours, and the other wrong answers, test by test.
+5. Re-run the whole comparison (`ltp ours` then `ltp compare`) after each batch; tests slower
+   than the time limit on the stand-in are not differences of behaviour and are listed apart.
+6. The netlink protocols the reference makes (SOCK_DIAG for `ss` first) from the K5 check.
+
+K5's corners, none holding the milestone (what the seven runs built is under Where things
+stand), in this order:
+1. The rest of the send timestamps (refused and counted now): TCP's (SCHED, SND and ACK per
+   send, keyed by byte; needs MSG_ERRQUEUE and EPOLLERR on TCP sockets) and copies of the packet
+   without OPT_TSONLY (the frame from its Ethernet header: 14 zero bytes, then IPv4 and UDP
+   headers whose checksum and id are hard to match; measured in scratch k5r6/tsing.c). Then
+   the other options under Not built.
+2. Urgent data to the outside (a send with MSG_OOB and bytes on an outside connection is
+   refused, counted): the Host hooks carry no urgent data.
+3. Local sockets left: a SCM_PIDFD
+   or SO_PEERPIDFD for a reaped process whose number was given again would name the new one
+   (numbers are kept, not Linux's `struct pid`). ETOOMANYREFS is checked just before the
+   message is queued, where Linux checks it right after the buffer is made (before the bytes
+   are copied in and, for datagrams, before the receiver is found); an order difference only
+   with more descriptors in flight than RLIMIT_NOFILE.
+4. /proc/net's other files (netstat, snmp, sockstat, protocols, packet, raw and the rest) are
+   counted "proc entry not built". fanotify_mark is still "system call not implemented"
+   (fanotify_init is refused by Docker's profile, so no group can exist; Linux's flag checks come
+   before EBADF and EINVAL, and linux-raw-sys has no FAN_MARK_* to check them with).
+5. inotify gaps: a mapping does not hold its file open here (Linux's `vm_file` does), so an
+   unlinked file's IN_DELETE_SELF and a mapped file's IN_CLOSE_* come at the last close, where
+   Linux sends them at the last unmap; events of files changed on the backend from outside are
+   not seen (plan section 15's kind). IN_UNMOUNT is never sent, as nothing in a default Docker
+   container can unmount (umount needs CAP_SYS_ADMIN).
+6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
+   ENETUNREACH, as eth0 has no IPv6).
+7. (Superseded: see Measurements, K6a.) The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
+   5050461 at 090feaf, with sendmmsg, recvmmsg and epoll_pwait2 now generated; 5050462 at the
+   run's last code b70a418). Fresh seeds start at 5050463.
+8. Left from the eighth run: a client whose held request went with its listener sends its
+   FIN (shutdown or close) without drawing the reset Linux's FIN draws; neighbour entries for
+   eth0 traffic (counted); TCP_QUICKACK's timing (a departure); busybox `su` not rerun.
+
+K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
+found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
+1. Notices about mapped files are not tested with a program that sees them: STORE and INVAL_INODE
+   reach mapped files only by chance (node numbers 1 to 11), and a STORE that does changes what the
+   program reads, which the reference cannot be made to match. RETRIEVE is sent and answered.
+2. Calls that move a position without Linux's `f_pos_lock` (sendfile, splice and copy_file_range
+   with no offset given) can still see it move while they wait for the backend, as on Linux; ours
+   then asks again (counted "backend question asked again") where Linux's would race.
+3. Directory changes (create, unlink, rename, mkdir, rmdir on the backend) do not hold the parent
+   directory's lock across waits as Linux's `inode_lock` on the parent does; writes, positions,
+   truncation and fallocate do. Two threads changing one backend directory at once can interleave
+   their questions where Linux's cannot; not seen in any test.
+4. Held access control lists that are not none are not reached: the test server's directory has
+   no lists. Layer 1 on the backend did not reach a pipe spliced into a backend file.
+
+Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
+not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
+sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
+737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
+5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
+6262601 to 6262624 and 8484001 to 8484003 (K6b), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
+to 4040315, and the check's 7171002.

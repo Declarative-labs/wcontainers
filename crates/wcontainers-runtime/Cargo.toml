@@ -1,0 +1,27 @@
+[package]
+name = "wcontainers-runtime"
+description = "Runs a Linux container: drives the wcontainers kernel, a back end that runs the guest's instructions, and an outside."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-kernel = { path = "../wcontainers-kernel" }
+# What to run: the OCI runtime configuration, and the OCI image types it is made from.
+oci-spec = { version = "0.10.0", default-features = false, features = ["runtime", "image"] }
+serde_json = "1.0.154"
+# The properties of a config.json the specification does not define, by path.
+serde_ignored = "0.1.14"
+# An image's layers and a plain tar of files.
+tar = "0.4.46"
+flate2 = "1.1.11"
+# Image blobs are checked against their digests.
+sha2 = "0.10.9"
+# The local system's randomness.
+getrandom = "0.3.4"
+
+[lints]
+workspace = true

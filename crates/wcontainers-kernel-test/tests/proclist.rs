@@ -118,11 +118,12 @@ fn listings_are_a_subset_of_the_reference() {
         "/proc/sys/kernel/random",
         "/proc/sys/fs",
         "/proc/sys/vm",
+        "/proc/sys/net",
+        "/proc/sys/net/core",
     ]);
 }
 
 #[test]
-#[ignore = "known failure: /proc/<pid>/task is not built yet (it comes with threads, K3)"]
 fn thread_listings_are_a_subset_of_the_reference() {
     compare(&["/proc/self/task", "/proc/self/task/1"]);
 }

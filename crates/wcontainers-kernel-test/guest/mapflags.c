@@ -21,6 +21,9 @@
 #ifndef MAP_DROPPABLE
 #define MAP_DROPPABLE 0x08
 #endif
+#ifndef MLOCK_ONFAULT
+#define MLOCK_ONFAULT 1
+#endif
 #ifndef MADV_DONTNEED_LOCKED
 #define MADV_DONTNEED_LOCKED 24
 #endif
@@ -284,6 +287,14 @@ int main(int argc, char **argv) {
     show("devpts trusted attribute", setxattr(".", "trusted.a", "b", 1, 0));
     show("devpts chmod", chmod(".", 0700));
     show("devpts chmod back", chmod(".", 0755));
+    // Locking droppable memory: refused where it allows nothing.
+    char *droppable = mmap(NULL, 2 * 4096, PROT_NONE, MAP_DROPPABLE | MAP_ANONYMOUS, -1, 0);
+    show("mlock droppable none", mlock(droppable, 4096));
+    show("mlock2 droppable none on fault", syscall(SYS_mlock2, droppable, 4096, MLOCK_ONFAULT));
+    mprotect(droppable + 4096, 4096, PROT_READ);
+    show("mlock droppable read", mlock(droppable + 4096, 4096));
+    show("mlock2 droppable read on fault", syscall(SYS_mlock2, droppable + 4096, 4096, MLOCK_ONFAULT));
+    munmap(droppable, 2 * 4096);
     setreuid(1000, 1000);
     show("devpts mkdir unprivileged", mkdir("d", 0755));
     show("devpts create unprivileged", open("f", O_CREAT | O_RDWR, 0644));

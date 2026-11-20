@@ -1,6 +1,6 @@
 //! A process's address space as the kernel keeps it: the ranges it has mapped and what each allows.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
@@ -43,19 +43,26 @@ pub(crate) enum Backing {
         offset: u64,
         name: Vec<u8>,
     },
-    /// A private copy of a file's pages from `offset`. Pages wholly past the file's end, from
-    /// `file_end` on, are kept with no access, and touching one is `SIGBUS` as on Linux.
+    /// A file's pages from `offset`, shown from the file's block of shared pages. Pages wholly past
+    /// the file's end, from `file_end` on, are kept with no access, and touching one is `SIGBUS` as on
+    /// Linux. A private mapping's pages in `copied` (file page numbers) hold its own copy instead,
+    /// made when the page was first written (Linux's copy on write); until then a page shows the
+    /// file's bytes as they change.
     File {
         node: Node,
         path: Vec<u8>,
         offset: u64,
         file_end: u64,
+        copied: BTreeSet<u64>,
     },
     /// Private anonymous memory whose pages Linux may drop under memory pressure (`MAP_DROPPABLE`):
     /// never locked, wiped on fork.
     Droppable,
     Heap,
     Stack,
+    /// Pages the kernel itself provides, named in `/proc/<pid>/maps` (`[vvar]`, `[vdso]`); never
+    /// merged with others.
+    Special(&'static str),
 }
 
 #[derive(Clone)]
@@ -72,7 +79,18 @@ pub(crate) struct Mapping {
     /// Whether a fault below it grows it, with a guard gap kept free below (Linux's `VM_GROWSDOWN`):
     /// the stack, and `MAP_GROWSDOWN` memory.
     pub grows_down: bool,
+    /// What a fork gives the child of it (`MADV_DONTFORK`, `MADV_WIPEONFORK`).
+    pub on_fork: OnFork,
     pub backing: Backing,
+}
+
+/// What a fork does with a mapping: by default the child gets a copy (or, shared, the same pages).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OnFork {
+    /// The child does not get it (`VM_DONTCOPY`).
+    pub skip: bool,
+    /// The child gets it zeroed (`VM_WIPEONFORK`).
+    pub wipe: bool,
 }
 
 /// Whether a mapping is locked in memory, and if so whether its pages are brought in at once or as
@@ -102,8 +120,8 @@ impl Mapping {
         }
     }
 
-    /// What the CPU side is told the page at `address` allows.
-    fn page_permissions(&self, address: u64) -> Permissions {
+    /// What the page at `address` allows the program (before copy on write).
+    pub fn page_permissions(&self, address: u64) -> Permissions {
         match &self.backing {
             Backing::File { file_end, .. } if address >= *file_end => Permissions::empty(),
             _ => cpu_permissions(self.permissions),
@@ -116,14 +134,65 @@ impl Mapping {
     }
 
     /// Whether `mlock` and `munlock` leave the mapping as it is (`mlock_fixup`): secret memory stays
-    /// locked, droppable memory is never locked.
+    /// locked, droppable memory and `VM_SPECIAL` mappings are never locked.
     pub fn keeps_lock(&self) -> bool {
-        self.is_secret() || matches!(self.backing, Backing::Droppable)
+        self.is_secret() || self.is_special() || matches!(self.backing, Backing::Droppable)
     }
 
-    /// Whether the mapping shows a file's block of shared pages.
-    pub fn shares_file(&self) -> bool {
-        self.shared && matches!(self.backing, Backing::File { .. })
+    /// Whether Linux marks it `VM_SPECIAL`: a TCP socket's mapping (`tcp_mmap`'s `VM_MIXEDMAP`
+    /// and `VM_DONTEXPAND`), never locked and never grown.
+    pub fn is_special(&self) -> bool {
+        matches!(&self.backing, Backing::File { node, .. }
+            if matches!(node.borrow().content, crate::fs::Content::Socket(_)))
+    }
+
+    /// The mapping in runs of pages, each with whether the page holds the mapping's own bytes: every
+    /// page but those of a private file mapping not yet copied.
+    pub fn runs(&self) -> Vec<(u64, u64, bool)> {
+        let Backing::File { offset, copied, .. } = &self.backing else {
+            return alloc::vec![(self.start, self.end, true)];
+        };
+        if self.shared {
+            return alloc::vec![(self.start, self.end, true)];
+        }
+        let first = offset / PAGE_SIZE;
+        let address = |page: u64| self.start + (page - first) * PAGE_SIZE;
+        let mut runs = Vec::new();
+        let mut at = self.start;
+        let last = first + (self.end - self.start) / PAGE_SIZE;
+        for page in copied.range(first..last) {
+            let from = address(*page);
+            if from > at {
+                runs.push((at, from, false));
+            }
+            match runs.last_mut() {
+                Some((_, end, true)) if *end == from => *end = from + PAGE_SIZE,
+                _ => runs.push((from, from + PAGE_SIZE, true)),
+            }
+            at = from + PAGE_SIZE;
+        }
+        if at < self.end {
+            runs.push((at, self.end, false));
+        }
+        runs
+    }
+
+    /// Whether a write to the page at `address` makes the mapping's own copy of it first: a private
+    /// file page the mapping may write, before the file's end, not copied yet.
+    pub fn copies_on_write(&self, address: u64) -> bool {
+        match &self.backing {
+            Backing::File {
+                offset,
+                file_end,
+                copied,
+                ..
+            } if !self.shared => {
+                self.permissions.contains(Permissions::WRITE)
+                    && address < *file_end
+                    && !copied.contains(&(offset / PAGE_SIZE + (address - self.start) / PAGE_SIZE))
+            }
+            _ => false,
+        }
     }
 
     /// The same mapping cut to `[start, end)`.
@@ -133,8 +202,15 @@ impl Mapping {
 
     fn cut(&self, start: u64, end: u64) -> Mapping {
         let mut cut = self.clone();
-        if let Backing::File { offset, .. } | Backing::Zero { offset, .. } = &mut cut.backing {
-            *offset += start - self.start;
+        match &mut cut.backing {
+            Backing::File { offset, copied, .. } => {
+                *offset += start - self.start;
+                let first = *offset / PAGE_SIZE;
+                let pages = first..first + (end - start) / PAGE_SIZE;
+                copied.retain(|page| pages.contains(page));
+            }
+            Backing::Zero { offset, .. } => *offset += start - self.start,
+            _ => {}
         }
         cut.start = start;
         cut.end = end;
@@ -148,6 +224,7 @@ pub(crate) fn is_data(permissions: Permissions, shared: bool, grows_down: bool) 
 }
 
 /// Every mapped range of one process, and where the next ones go.
+#[derive(Clone)]
 pub(crate) struct AddressMap {
     /// By start address; never overlapping.
     mappings: BTreeMap<u64, Mapping>,
@@ -168,6 +245,9 @@ pub(crate) struct AddressMap {
     pub membarrier: u32,
     /// Protection keys allocated, one bit each; key 0 from the start.
     pub protection_keys: u32,
+    /// `PR_SET_DUMPABLE`, kept with the memory as Linux keeps it in `mm->flags`; cleared when a
+    /// user's ids change.
+    pub dumpable: bool,
 }
 
 impl AddressMap {
@@ -184,6 +264,7 @@ impl AddressMap {
             future_lock: Lock::None,
             membarrier: 0,
             protection_keys: 1,
+            dumpable: true,
         }
     }
 
@@ -406,7 +487,7 @@ impl AddressMap {
         for old in &removed {
             cpu.set_permissions(memory, old.start, old.end - old.start, Permissions::empty())
                 .map_err(errno::from_cpu)?;
-            if old.shares_file() {
+            if matches!(old.backing, Backing::File { .. }) {
                 cpu.shared_unmap(memory, old.start, old.end - old.start)
                     .map_err(errno::from_cpu)?;
             }
@@ -440,8 +521,9 @@ impl AddressMap {
         Ok(())
     }
 
-    /// Moves where the shared mappings of a file stop being reachable to the file's new end,
-    /// `file_pages` bytes from its start.
+    /// Moves where the mappings of a file stop being reachable to the file's new end, `file_pages`
+    /// bytes from its start. Private copies wholly past it go, as Linux's truncation unmaps even
+    /// copied pages (`unmap_mapping_range` with `even_cows`), so they show the file's block again.
     pub fn set_file_end(
         &mut self,
         cpu: &mut dyn Cpu,
@@ -453,24 +535,118 @@ impl AddressMap {
             .mappings
             .values()
             .filter(|mapping| {
-                mapping.shared
-                    && matches!(&mapping.backing, Backing::File { node: mapped, .. } if alloc::rc::Rc::ptr_eq(mapped, node))
+                matches!(&mapping.backing, Backing::File { node: mapped, .. } if alloc::rc::Rc::ptr_eq(mapped, node))
             })
             .map(|mapping| mapping.start)
             .collect();
         for start in affected {
             let mut mapping = self.mappings.remove(&start).expect("mapping");
-            if let Backing::File {
-                offset, file_end, ..
-            } = &mut mapping.backing
-            {
-                *file_end = mapping.start
-                    + file_pages
-                        .saturating_sub(*offset)
-                        .min(mapping.end - mapping.start);
-            }
+            let new_end = match &mut mapping.backing {
+                Backing::File {
+                    offset, file_end, ..
+                } => {
+                    *file_end = mapping.start
+                        + file_pages
+                            .saturating_sub(*offset)
+                            .min(mapping.end - mapping.start);
+                    *file_end
+                }
+                _ => unreachable!("a file mapping"),
+            };
+            let end = mapping.end;
+            drop_copies(cpu, memory, &mut mapping, new_end, end)?;
             self.apply_permissions(cpu, memory, &mapping)?;
             self.mappings.insert(start, mapping);
+        }
+        Ok(())
+    }
+
+    /// Makes the pages of private file mappings in `[start, end)` that still show the file, up to
+    /// each file's end, the mappings' own copies, and lets them be written as the mappings allow: a
+    /// write fault's copy on write, done ahead for the kernel's own writes and for populating.
+    pub fn copy_on_write(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        start: u64,
+        end: u64,
+    ) -> Result<(), Errno> {
+        let (start, end) = (page_down(start), page_up(end));
+        let affected: Vec<u64> = self
+            .mappings
+            .range(..end)
+            .filter(|(_, mapping)| {
+                mapping.end > start
+                    && !mapping.shared
+                    && matches!(mapping.backing, Backing::File { .. })
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in affected {
+            let mut mapping = self.mappings.remove(&key).expect("mapping");
+            let from = start.max(mapping.start);
+            let mut copies = Vec::new();
+            if let Backing::File {
+                node,
+                offset,
+                file_end,
+                copied,
+                ..
+            } = &mut mapping.backing
+            {
+                let to = end.min(*file_end);
+                let first = *offset / PAGE_SIZE;
+                let page = |at: u64| first + (at - mapping.start) / PAGE_SIZE;
+                // A page not read from the backend yet is copied when it has come.
+                let unread = crate::shared::unfilled(node, page(from)..page(to.max(from)));
+                let mut at = from;
+                while at < to {
+                    let number = page(at);
+                    if unread.iter().any(|run| run.contains(&number)) {
+                        at += PAGE_SIZE;
+                        continue;
+                    }
+                    if copied.insert(number) {
+                        match copies.last_mut() {
+                            Some((_, run_end)) if *run_end == at => *run_end = at + PAGE_SIZE,
+                            _ => copies.push((at, at + PAGE_SIZE)),
+                        }
+                    }
+                    at += PAGE_SIZE;
+                }
+            }
+            for (from, to) in &copies {
+                cpu.shared_unmap(memory, *from, to - from)
+                    .map_err(errno::from_cpu)?;
+            }
+            if !copies.is_empty() {
+                self.apply_permissions(cpu, memory, &mapping)?;
+            }
+            self.mappings.insert(key, mapping);
+        }
+        Ok(())
+    }
+
+    /// Drops the private file pages copied in `[start, end)`, so they show the file again, as
+    /// `MADV_DONTNEED` zaps a private mapping's copies.
+    pub fn drop_copies(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        start: u64,
+        end: u64,
+    ) -> Result<(), Errno> {
+        let affected: Vec<u64> = self
+            .mappings
+            .range(..end)
+            .filter(|(_, mapping)| mapping.end > start)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in affected {
+            let mut mapping = self.mappings.remove(&key).expect("mapping");
+            drop_copies(cpu, memory, &mut mapping, start, end)?;
+            self.apply_permissions(cpu, memory, &mapping)?;
+            self.mappings.insert(key, mapping);
         }
         Ok(())
     }
@@ -481,6 +657,15 @@ impl AddressMap {
             if !mapping.keeps_lock() {
                 mapping.locked = lock;
             }
+            self.mappings.insert(mapping.start, mapping);
+        }
+        self.merge_around();
+    }
+
+    /// Sets what a fork does with a range, every page of which is mapped.
+    pub fn set_on_fork(&mut self, start: u64, end: u64, change: impl Fn(&mut OnFork)) {
+        for mut mapping in self.remove(start, end) {
+            change(&mut mapping.on_fork);
             self.mappings.insert(mapping.start, mapping);
         }
         self.merge_around();
@@ -544,32 +729,32 @@ impl AddressMap {
         Ok(())
     }
 
-    /// Tells the CPU side what a mapping's pages allow: nothing wholly past a file's end.
+    /// Tells the CPU side again what the pages of `[start, end)` in the mapping holding `start`
+    /// allow, once pages of its file came that it showed with no access.
+    pub fn refresh(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        start: u64,
+        end: u64,
+    ) -> Result<(), Errno> {
+        match self.find(start).cloned() {
+            Some(mapping) => {
+                let (lo, hi) = (page_down(start), page_up(end));
+                apply_permissions_in(cpu, memory, &mapping, lo, hi)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Tells the CPU side what a mapping's pages allow.
     fn apply_permissions(
         &mut self,
         cpu: &mut dyn Cpu,
         memory: MemoryId,
         mapping: &Mapping,
     ) -> Result<(), Errno> {
-        let split = match &mapping.backing {
-            Backing::File { file_end, .. } => (*file_end).clamp(mapping.start, mapping.end),
-            _ => mapping.end,
-        };
-        let cpu_permissions = cpu_permissions(mapping.permissions);
-        if split > mapping.start {
-            cpu.set_permissions(
-                memory,
-                mapping.start,
-                split - mapping.start,
-                cpu_permissions,
-            )
-            .map_err(errno::from_cpu)?;
-        }
-        if mapping.end > split {
-            cpu.set_permissions(memory, split, mapping.end - split, Permissions::empty())
-                .map_err(errno::from_cpu)?;
-        }
-        Ok(())
+        apply_permissions_in(cpu, memory, mapping, mapping.start, mapping.end)
     }
 
     /// Zeroes the parts of a range that held something before, and marks it all as used.
@@ -601,7 +786,7 @@ impl AddressMap {
     }
 
     /// Joins neighbouring mappings that are the same, as Linux merges areas: anonymous ones, and shared
-    /// ones of the same file at following offsets (private file pages may have their own copies, which
+    /// ones of the same file at following offsets except System V segments' (private file pages may have their own copies, which
     /// Linux merges only in cases not modelled here).
     fn merge_around(&mut self) {
         let mut merged: BTreeMap<u64, Mapping> = BTreeMap::new();
@@ -613,6 +798,7 @@ impl AddressMap {
                 && last.allowed == mapping.allowed
                 && last.locked == mapping.locked
                 && last.grows_down == mapping.grows_down
+                && last.on_fork == mapping.on_fork
             {
                 let file_end = match (&last.backing, &mapping.backing) {
                     (Backing::Anonymous, Backing::Anonymous)
@@ -634,6 +820,7 @@ impl AddressMap {
                         },
                     ) if mapping.shared
                         && alloc::rc::Rc::ptr_eq(node, next_node)
+                        && !node.borrow().is_segment()
                         && offset + (last.end - last.start) == *next_offset
                         && (*file_end == last.end || *next_file_end == mapping.start) =>
                     {
@@ -725,6 +912,58 @@ impl AddressMap {
     }
 }
 
+/// Drops a private file mapping's copies of the pages in `[start, end)`: they show the file's block
+/// again.
+fn drop_copies(
+    cpu: &mut dyn Cpu,
+    memory: MemoryId,
+    mapping: &mut Mapping,
+    start: u64,
+    end: u64,
+) -> Result<(), Errno> {
+    if mapping.shared {
+        return Ok(());
+    }
+    let mapping_start = mapping.start;
+    let (from, to) = (start.max(mapping.start), end.min(mapping.end));
+    let Backing::File {
+        node,
+        offset,
+        copied,
+        ..
+    } = &mut mapping.backing
+    else {
+        return Ok(());
+    };
+    if from >= to {
+        return Ok(());
+    }
+    let first = *offset / PAGE_SIZE;
+    let pages =
+        first + (from - mapping_start) / PAGE_SIZE..first + (to - mapping_start) / PAGE_SIZE;
+    let dropped: Vec<u64> = copied.range(pages).copied().collect();
+    if dropped.is_empty() {
+        return Ok(());
+    }
+    let block = node
+        .borrow()
+        .content
+        .block()
+        .expect("a mapped file has a block");
+    for page in dropped {
+        copied.remove(&page);
+        cpu.shared_map(
+            block.id,
+            page * PAGE_SIZE,
+            memory,
+            mapping_start + (page - first) * PAGE_SIZE,
+            PAGE_SIZE,
+        )
+        .map_err(errno::from_cpu)?;
+    }
+    Ok(())
+}
+
 /// What the CPU side enforces for what a program asked: on ARM64 writing implies reading, while a page
 /// that may only run cannot be read (execute-only, as on the reference's CPU, measured: a load faults
 /// and the kernel's copies give EFAULT).
@@ -734,4 +973,52 @@ pub(crate) fn cpu_permissions(asked: Permissions) -> Permissions {
     } else {
         asked
     }
+}
+
+/// Tells the CPU side what a mapping's pages in `[lo, hi)` allow: nothing wholly past a file's
+/// end, nothing where a backend file's page is not read yet, so the first touch comes back to read
+/// it, and no writing where a private file page is not copied yet, so the first write comes back
+/// to copy it.
+fn apply_permissions_in(
+    cpu: &mut dyn Cpu,
+    memory: MemoryId,
+    mapping: &Mapping,
+    lo: u64,
+    hi: u64,
+) -> Result<(), Errno> {
+    let (lo, hi) = (lo.max(mapping.start), hi.min(mapping.end));
+    let mut set = |from: u64, to: u64, permissions: Permissions| {
+        let (from, to) = (from.max(lo), to.min(hi));
+        if from < to {
+            cpu.set_permissions(memory, from, to - from, permissions)
+                .map_err(errno::from_cpu)?;
+        }
+        Ok::<(), Errno>(())
+    };
+    let split = match &mapping.backing {
+        Backing::File { file_end, .. } => (*file_end).clamp(mapping.start, mapping.end),
+        _ => mapping.end,
+    };
+    let full = cpu_permissions(mapping.permissions);
+    for (from, to, own) in mapping.runs() {
+        let to = to.min(split);
+        if from >= to {
+            break;
+        }
+        set(from, to, if own { full } else { full - Permissions::WRITE })?;
+    }
+    if mapping.end > split {
+        set(split, mapping.end, Permissions::empty())?;
+    }
+    if let Backing::File { node, offset, .. } = &mapping.backing {
+        let first = offset / PAGE_SIZE;
+        let address = |page: u64| mapping.start + (page - first) * PAGE_SIZE;
+        let page = |address: u64| first + (address - mapping.start) / PAGE_SIZE;
+        if lo < split.min(hi) {
+            for run in crate::shared::unfilled(node, page(lo)..page(split.min(hi))) {
+                set(address(run.start), address(run.end), Permissions::empty())?;
+            }
+        }
+    }
+    Ok(())
 }

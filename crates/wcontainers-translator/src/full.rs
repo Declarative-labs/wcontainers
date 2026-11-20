@@ -4,7 +4,8 @@
 
 use crate::code::*;
 use crate::contract::*;
-use crate::state::{Slot, load_flag};
+use crate::layout::Layout;
+use crate::state::{Slot, load_flag, push_word};
 use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -13,16 +14,12 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
-use wcontainers_arm64::{
-    Access, Address, BranchRegister, Carry, Cond, Control, Effects, Emitter, Flag, Flags, Hook,
-    Host, Instruction, Operand, Reg, Registers, Target, Trap, Width, condition_direct,
-    condition_from_flags, emit, flag_value, habits, untag,
+use wcontainers_guest_cpu::{
+    Access, AccessKind, Base, Emitter, FlowKind, Guest, Index, MemoryAccess, Registers,
+    ReturnAddress, StackMove, Target, Through, TrapKind, TrapPc, WriteBack,
 };
 
 mod proof;
-
-/// How far back a jump through a register looks for the switch it may come from.
-const SWITCH_WINDOW: u64 = 64;
 
 /// The functions of a full or bounded translation, found and planned, ready to be emitted in groups.
 ///
@@ -32,25 +29,25 @@ const SWITCH_WINDOW: u64 = 64;
 /// that carries on at a jump back enters one, so it may rely on what its function knows at the loop. That way
 /// a thread carries on in a new call, which runs whatever code the engine has made for the function by then,
 /// and the function itself has no second way into its loops.
-pub(crate) struct Planned<'a> {
-    finder: Finder<'a>,
+pub(crate) struct Planned<'a, G: Guest> {
+    finder: Finder<'a, G>,
     functions: Vec<Function>,
-    plans: Vec<Plan>,
+    plans: Vec<Plan<G>>,
     /// Each function's loop pieces, with their plans.
-    loops: Vec<Vec<(Function, Plan)>>,
+    loops: Vec<Vec<(Function, Plan<G>)>>,
     omit: Omit,
     optimise: Optimise,
 }
 
 /// Find and plan the functions of a translation from `starts`: the whole blob's (`bound` none) or one stretch
 /// of at most `bound` instructions from each start.
-pub(crate) fn plan<'a>(
-    code: &'a Code<'a>,
+pub(crate) fn plan<'a, G: Guest>(
+    code: &'a Code<'a, G>,
     starts: &[u64],
     bound: Option<usize>,
     omit: Omit,
     optimise: Optimise,
-) -> Planned<'a> {
+) -> Planned<'a, G> {
     let mut finder = Finder {
         code,
         decoded: Decodes::default(),
@@ -61,7 +58,7 @@ pub(crate) fn plan<'a>(
         Some(limit) => finder.stretches(starts, limit),
     };
     let entries: BTreeSet<u64> = functions.iter().map(|f| f.entry).collect();
-    let plans: Vec<Plan> = functions
+    let plans: Vec<Plan<G>> = functions
         .par_iter()
         .map(|f| Plan::new(f, &finder.decoded, Seed::NOTHING))
         .collect();
@@ -69,7 +66,7 @@ pub(crate) fn plan<'a>(
     // Loop pieces, by the function they come from; with no stop checks nothing enters them. Translated for
     // size, there are none: a stop at a jump back carries on in place.
     let pieced = !omit.stop && optimise == Optimise::Speed;
-    let loops: Vec<Vec<(Function, Plan)>> = functions
+    let loops: Vec<Vec<(Function, Plan<G>)>> = functions
         .par_iter()
         .zip(&plans)
         .map(|(function, plan)| {
@@ -115,7 +112,7 @@ pub(crate) fn plan<'a>(
     }
 }
 
-impl Planned<'_> {
+impl<G: Guest> Planned<'_, G> {
     /// The entries of the pieces the lookup table holds, in order.
     pub(crate) fn entries(&self) -> Vec<u64> {
         self.functions.iter().map(|f| f.entry).collect()
@@ -139,13 +136,13 @@ impl Planned<'_> {
     /// holds that group alone: the table's pieces take the function indices from [`F_FIRST_PIECE`] in order,
     /// then the loop pieces follow in order. Code outside the group is reached through the lookup.
     pub(crate) fn emit(&self, group: std::ops::Range<usize>) -> Vec<Unit> {
-        let host = self.finder.code.host;
+        let code = self.finder.code;
         let index: BTreeMap<u64, u32> = self.functions[group.clone()]
             .iter()
             .enumerate()
-            .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
+            .map(|(i, f)| (f.entry, G::F_FIRST_PIECE + i as u32))
             .collect();
-        let mut next = F_FIRST_PIECE + group.len() as u32;
+        let mut next = G::F_FIRST_PIECE + group.len() as u32;
         let loop_index: Vec<FxHashMap<u64, u32>> = group
             .clone()
             .map(|i| {
@@ -166,7 +163,7 @@ impl Planned<'_> {
             .map(|(i, loops)| {
                 let function = &self.functions[i];
                 let emit = |function, plan, own| {
-                    let how = (self.omit, self.optimise, host);
+                    let how = (self.omit, self.optimise, code);
                     FullEmitter::piece(function, plan, decoded, &index, loops, own, how)
                 };
                 let (piece, mut locals, mut sites) =
@@ -191,28 +188,13 @@ impl Planned<'_> {
     }
 }
 
-fn decode_at(code: &Code<'_>, offset: u64) -> Decoded {
-    let word = code.word(offset);
-    let instruction = wcontainers_arm64::decode(word);
-    Decoded {
-        word,
-        instruction,
-        effects: instruction.effects(),
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Decoded {
-    word: u32,
-    instruction: Instruction,
-    effects: Effects,
-}
-
 /// A run of instructions entered only at its start and left only at its end.
 struct Block {
     start: u64,
     /// Just past the last instruction.
     end: u64,
+    /// Where its instructions' offsets are in its function's `offsets`.
+    instructions: std::ops::Range<usize>,
     succs: Vec<usize>,
     /// The targets of the jump table this block ends with, if it ends with one.
     table: Option<Vec<u64>>,
@@ -224,11 +206,28 @@ struct Function {
     blocks: Vec<Block>,
     /// Block index by start offset.
     at: FxHashMap<u64, usize>,
+    /// The offsets of the blocks' instructions, each block's in order.
+    offsets: Vec<u64>,
 }
 
-struct Finder<'a> {
-    code: &'a Code<'a>,
-    decoded: Decodes,
+impl Function {
+    /// The offsets of block `b`'s instructions, in order.
+    fn instructions(&self, b: usize) -> &[u64] {
+        &self.offsets[self.blocks[b].instructions.clone()]
+    }
+
+    /// The offset of block `b`'s last instruction.
+    fn last(&self, b: usize) -> u64 {
+        *self
+            .instructions(b)
+            .last()
+            .expect("a block has an instruction")
+    }
+}
+
+struct Finder<'a, G: Guest> {
+    code: &'a Code<'a, G>,
+    decoded: Decodes<G>,
     /// What made each function's entry one, where it is not a start given.
     means: FxHashMap<u64, Means>,
 }
@@ -243,7 +242,7 @@ fn note(found: &mut Found, offset: u64, means: Means) {
 }
 
 /// Decoded instructions by offset.
-type Decodes = FxHashMap<u64, Decoded>;
+type Decodes<G> = FxHashMap<u64, Decoded<G>>;
 
 /// How far exploring a function may go.
 #[derive(Clone, Copy)]
@@ -255,201 +254,77 @@ enum Reach<'a> {
     Within(&'a FxHashSet<u64>),
 }
 
-/// The flags of a kept shape with every local filled in: for an addition, `b` (when only the value subtracted
-/// was kept) and the result are worked out into `temporaries`, locals of the width's type.
-fn completed(s: &mut InstructionSink<'_>, flags: Flags, temporaries: (u32, u32)) -> Flags {
-    let Flags::Add {
-        width,
-        a,
-        b,
-        carry,
-        subtrahend,
-        ..
-    } = flags
-    else {
-        return flags;
-    };
-    let (inverted, result) = temporaries;
-    let b = match subtrahend {
-        Some(m) => {
-            s.local_get(m);
-            match width {
-                Width::W32 => s.i32_const(-1).i32_xor(),
-                Width::X64 => s.i64_const(-1).i64_xor(),
-            };
-            s.local_set(inverted);
-            inverted
-        }
-        None => b,
-    };
-    s.local_get(a).local_get(b);
-    let add = |s: &mut InstructionSink<'_>| match width {
-        Width::W32 => {
-            s.i32_add();
-        }
-        Width::X64 => {
-            s.i64_add();
-        }
-    };
-    add(s);
-    match carry {
-        Carry::Zero => {}
-        Carry::One => {
-            match width {
-                Width::W32 => s.i32_const(1),
-                Width::X64 => s.i64_const(1),
-            };
-            add(s);
-        }
-        Carry::Local(c) => {
-            s.local_get(c);
-            if width == Width::X64 {
-                s.i64_extend_i32_u();
-            }
-            add(s);
-        }
-    }
-    s.local_set(result);
-    Flags::Add {
-        width,
-        a,
-        b,
-        carry,
-        result,
-        subtrahend,
-    }
-}
-
-/// Push the flags word of the thread block from the four flags, each pushed by `flag` as 0 or 1.
-fn push_word(s: &mut InstructionSink<'_>, mut flag: impl FnMut(&mut InstructionSink<'_>, Flag)) {
-    for (i, f) in Flag::ALL.into_iter().enumerate() {
-        flag(s, f);
-        s.i32_const(f.bit() as i32).i32_shl();
-        if i > 0 {
-            s.i32_or();
-        }
-    }
-}
-
-/// Every shape a kept flag setting may have: a subtraction only ever has a carry of one.
-fn shapes() -> impl Iterator<Item = Shape> {
-    [Width::W32, Width::X64].into_iter().flat_map(|width| {
-        let adds = (0..3).map(move |carry| Shape::Add {
-            width,
-            carry,
-            subtract: false,
-        });
-        adds.chain([
-            Shape::Add {
-                width,
-                carry: 1,
-                subtract: true,
-            },
-            Shape::Logic(width),
-        ])
-    })
-}
-
-/// How many functions work out the flags word: one for flags in locals, one for each shape.
-pub(crate) const FLAGS_WORDS: u32 = 11;
-
-/// The function after [`F_FLAGS_WORD`] that works out the flags word for a shape.
-fn flags_word_function(shape: Shape) -> u32 {
-    let i = shapes()
-        .position(|s| s == shape)
+/// The function after [`Layout::F_FLAGS_WORD`] that works out the flags word for a shape.
+fn flags_word_function<G: Guest>(shape: G::Shape) -> u32 {
+    let i = G::SHAPES
+        .iter()
+        .position(|s| *s == shape)
         .expect("every shape has one");
-    F_FLAGS_WORD + 1 + i as u32
+    G::F_FLAGS_WORD + 1 + i as u32
 }
 
 /// The functions that work out the flags word for a write back on the way to the runner, with their
-/// parameters, all locals of the piece: first from the four flags (N, Z, C, V), then for each shape in the
-/// order of [`shapes`] from its kept locals (`a`, then `b` or the value subtracted, then the carry when it is
-/// a local; for logic, the result). Out of line, as such a write back is rare and the same everywhere.
-pub(crate) fn flags_word_functions() -> Vec<(Vec<ValType>, wasm_encoder::Function)> {
+/// parameters, all locals of the piece: first from the tracked flags, then for each of the guest's shapes in
+/// order from its kept locals. Out of line, as such a write back is rare and the same everywhere.
+pub(crate) fn flags_word_functions<G: Guest>() -> Vec<(Vec<ValType>, wasm_encoder::Function)> {
     let mut functions = Vec::new();
+    if G::FLAGS.is_empty() {
+        return functions;
+    }
     let mut f = wasm_encoder::Function::new([]);
     let mut s = f.instructions();
-    push_word(&mut s, |s, flag| {
-        let i = Flag::ALL.iter().position(|f| *f == flag).expect("a flag");
-        s.local_get(i as u32);
+    push_word::<G>(&mut s, |s, flag| {
+        s.local_get(G::flag_index(flag) as u32);
     });
     s.end();
-    functions.push((vec![ValType::I32; 4], f));
-    for shape in shapes() {
-        let (params, flags) = match shape {
-            Shape::Add {
-                width,
-                carry,
-                subtract,
-            } => {
-                let ty = match width {
-                    Width::W32 => ValType::I32,
-                    Width::X64 => ValType::I64,
-                };
-                let mut params = vec![ty, ty];
-                let carry = match carry {
-                    0 => Carry::Zero,
-                    1 => Carry::One,
-                    _ => {
-                        params.push(ValType::I32);
-                        Carry::Local(2)
-                    }
-                };
-                let flags = Flags::Add {
-                    width,
-                    a: 0,
-                    b: if subtract { u32::MAX } else { 1 },
-                    carry,
-                    result: u32::MAX,
-                    subtrahend: subtract.then_some(1),
-                };
-                (params, flags)
-            }
-            Shape::Logic(width) => {
-                let ty = match width {
-                    Width::W32 => ValType::I32,
-                    Width::X64 => ValType::I64,
-                };
-                (vec![ty], Flags::Logic { width, result: 0 })
-            }
-        };
+    functions.push((vec![ValType::I32; G::FLAGS.len()], f));
+    for &shape in G::SHAPES {
+        let params = G::shape_locals(shape).to_vec();
         let n = params.len() as u32;
+        let locals: Vec<u32> = (0..n).collect();
+        let flags = G::with_locals(shape, &locals);
         let ty = params[0];
         let mut f = wasm_encoder::Function::new([(2, ty)]);
         let mut s = f.instructions();
-        let flags = completed(&mut s, flags, (n, n + 1));
-        push_word(&mut s, |s, flag| flag_value(s, flags, flag));
+        let flags = G::complete(&mut s, flags, [n, n + 1]);
+        push_word::<G>(&mut s, |s, flag| G::flag_value(s, flags, flag));
         s.end();
         functions.push((params, f));
     }
-    assert_eq!(functions.len() as u32, FLAGS_WORDS);
+    assert_eq!(functions.len() as u32, G::FLAGS_WORDS);
     functions
 }
 
 /// Whether control can leave an instruction other than by going on to the next one or by a call that returns.
-fn ends_block(instruction: &Instruction) -> bool {
-    let flow = instruction.flow();
-    let call = matches!(instruction, Instruction::Branch { link: true, .. });
+fn ends_block<G: Guest>(instruction: &G::Instruction) -> bool {
+    let flow = G::flow(instruction);
+    let call = flow.kind == FlowKind::Call;
     !(flow.falls_through && (flow.target.is_none() || call))
 }
 
-impl Finder<'_> {
-    /// The instruction at an offset, decoded again unless it is kept.
-    fn get(&self, offset: u64) -> Decoded {
+impl<G: Guest> Finder<'_, G> {
+    /// The instruction at an offset inside the code, decoded again unless it is kept; `None` when it would
+    /// run past the end of the code.
+    fn try_get(&self, offset: u64) -> Option<Decoded<G>> {
         match self.decoded.get(&offset) {
-            Some(&d) => d,
-            None => decode_at(self.code, offset),
+            Some(&d) => Some(d),
+            None => self.code.decode(offset),
         }
+    }
+
+    /// An instruction of a function found.
+    fn get(&self, offset: u64) -> Decoded<G> {
+        self.try_get(offset).expect("a whole instruction")
     }
 
     /// Keep every instruction of these functions decoded, for planning and emitting them.
     fn keep(&mut self, functions: &[Function]) {
         let code = self.code;
         let decoded = &self.decoded;
-        let missing: Vec<(u64, Decoded)> = functions
+        let missing: Vec<(u64, Decoded<G>)> = functions
             .par_iter()
             .flat_map_iter(|f| function_instructions(f).filter(|o| !decoded.contains_key(o)))
-            .map(|o| (o, decode_at(code, o)))
+            .map(|o| (o, code.decode(o).expect("a whole instruction")))
             .collect();
         self.decoded.extend(missing);
     }
@@ -552,7 +427,7 @@ impl Finder<'_> {
         found: &mut Found,
         reach: Reach<'_>,
     ) -> Function {
-        let mut body = BTreeSet::new();
+        let mut body = BTreeMap::new();
         let mut leaders = BTreeSet::from([entry]);
         let mut tables: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
         // Addresses the code builds; those a jump table of this function goes to are its own blocks.
@@ -561,7 +436,7 @@ impl Finder<'_> {
         while let Some(offset) = work.pop() {
             if !self.code.inside(offset)
                 || (offset != entry && (entries.contains(&offset) || others.contains(&offset)))
-                || body.contains(&offset)
+                || body.contains_key(&offset)
             {
                 continue;
             }
@@ -571,58 +446,31 @@ impl Finder<'_> {
                 Reach::Within(allowed) if allowed.contains(&offset) => {}
                 _ => continue,
             }
-            body.insert(offset);
-            let instruction = self.get(offset).instruction;
-            let flow = instruction.flow();
+            let Some(decoded) = self.try_get(offset) else {
+                continue;
+            };
+            let length = u64::from(decoded.length);
+            body.insert(offset, length);
+            let instruction = decoded.instruction;
+            let flow = G::flow(&instruction);
+            let call = flow.kind == FlowKind::Call;
             let mut jumps = Vec::new();
-            match instruction {
-                Instruction::Branch {
-                    link: true,
-                    offset: by,
-                } => {
-                    note(found, offset.wrapping_add_signed(by), Means::Call);
-                }
-                Instruction::PcRelative {
-                    page: false,
-                    offset: by,
-                    ..
-                } => {
-                    built.push(offset.wrapping_add_signed(by));
-                }
-                Instruction::AddSub {
-                    width: Width::X64,
-                    subtract: false,
-                    set_flags: false,
-                    rn,
-                    operand: Operand::Imm(value),
-                    ..
-                } if offset >= 4 && self.code.inside(offset - 4) => {
-                    if let Instruction::PcRelative {
-                        rd,
-                        page: true,
-                        offset: by,
-                    } = self.get(offset - 4).instruction
-                        && rd == rn
-                    {
-                        built.push(
-                            ((offset - 4) & !0xfff)
-                                .wrapping_add_signed(by)
-                                .wrapping_add(value),
-                        );
-                    }
-                }
-                Instruction::BranchRegister {
-                    op: BranchRegister::Br,
-                    rn,
-                } => {
-                    if let Some(targets) = self.jump_table(offset, rn) {
-                        jumps.extend(&targets);
-                        tables.insert(offset, targets);
-                    }
-                }
-                _ => {}
+            if call && let Some(by) = flow.target {
+                note(found, offset.wrapping_add_signed(by), Means::Call);
             }
-            let call = matches!(instruction, Instruction::Branch { link: true, .. });
+            let blob = self.code.blob;
+            let before = |o: u64| self.before(&body, &leaders, o);
+            if let Some(address) =
+                G::built_address(offset, &instruction, blob, self.code.range.clone(), before)
+            {
+                built.push(address);
+            }
+            if let FlowKind::JumpThrough(Through::Register(r)) = flow.kind
+                && let Some(targets) = self.jump_table(offset, r, before)
+            {
+                jumps.extend(&targets);
+                tables.insert(offset, targets);
+            }
             if let Some(by) = flow.target
                 && !call
             {
@@ -632,10 +480,10 @@ impl Finder<'_> {
             work.extend(jumps);
             // The next instruction is seen first, so a bounded stretch follows the code in order.
             if flow.falls_through {
-                if ends_block(&instruction) {
-                    leaders.insert(offset + 4);
+                if ends_block::<G>(&instruction) {
+                    leaders.insert(offset + length);
                 }
-                work.push(offset + 4);
+                work.push(offset + length);
             }
         }
 
@@ -646,24 +494,36 @@ impl Finder<'_> {
 
         // Cut the body into blocks, the entry's first.
         let mut blocks: Vec<Block> = Vec::new();
-        let mut previous: Option<u64> = None;
-        for &offset in &body {
-            let joined = previous.is_some_and(|p| {
-                p + 4 == offset
+        let mut offsets = Vec::with_capacity(body.len());
+        let mut previous: Option<(u64, u64)> = None;
+        // The furthest end of the instructions before `previous`: only past it can another end where it does.
+        let mut furthest = 0;
+        for (&offset, &length) in &body {
+            let joined = previous.is_some_and(|(p, n)| {
+                p + n == offset
                     && !leaders.contains(&offset)
-                    && !ends_block(&self.get(p).instruction)
+                    && !ends_block::<G>(&self.get(p).instruction)
+                    // Where two overlapping streams meet again, the offset leads a block of its own.
+                    && (furthest < offset || ending_at::<G>(&body, offset).nth(1).is_none())
             });
+            offsets.push(offset);
             if joined {
-                blocks.last_mut().unwrap().end = offset + 4;
+                let block = blocks.last_mut().unwrap();
+                block.end = offset + length;
+                block.instructions.end += 1;
             } else {
                 blocks.push(Block {
                     start: offset,
-                    end: offset + 4,
+                    end: offset + length,
+                    instructions: offsets.len() - 1..offsets.len(),
                     succs: Vec::new(),
                     table: None,
                 });
             }
-            previous = Some(offset);
+            if let Some((p, n)) = previous {
+                furthest = furthest.max(p + n);
+            }
+            previous = Some((offset, length));
         }
         let first = blocks.iter().position(|b| b.start == entry).unwrap();
         blocks.swap(0, first);
@@ -673,17 +533,17 @@ impl Finder<'_> {
             .map(|(i, b)| (b.start, i))
             .collect();
         for block in &mut blocks {
-            let last = block.end - 4;
+            let last = offsets[block.instructions.end - 1];
             let instruction = self.get(last).instruction;
-            let flow = instruction.flow();
+            let flow = G::flow(&instruction);
             let mut targets = Vec::new();
             if let Some(by) = flow.target
-                && ends_block(&instruction)
+                && ends_block::<G>(&instruction)
             {
                 targets.push(last.wrapping_add_signed(by));
             }
             if flow.falls_through {
-                targets.push(last + 4);
+                targets.push(block.end);
             }
             if let Some(table) = tables.get(&last) {
                 targets.extend(table);
@@ -691,30 +551,61 @@ impl Finder<'_> {
             }
             block.succs = targets
                 .into_iter()
-                .filter(|t| body.contains(t))
+                .filter(|t| body.contains_key(t))
                 .map(|t| at[&t])
                 .collect();
         }
-        Function { entry, blocks, at }
+        Function {
+            entry,
+            blocks,
+            at,
+            offsets,
+        }
+    }
+
+    /// The instruction of the walk so far that falls through into `offset`, with its offset; `None` when
+    /// none does, two do or a jump is known to enter there.
+    fn before(
+        &self,
+        body: &BTreeMap<u64, u64>,
+        leaders: &BTreeSet<u64>,
+        offset: u64,
+    ) -> Option<(u64, G::Instruction)> {
+        if leaders.contains(&offset) {
+            return None;
+        }
+        let mut ending = ending_at::<G>(body, offset);
+        let p = ending.next()?;
+        if ending.next().is_some() {
+            return None;
+        }
+        let instruction = self.get(p).instruction;
+        (G::flow(&instruction).falls_through && !ends_block::<G>(&instruction))
+            .then_some((p, instruction))
     }
 
     /// The targets of a switch's jump table ending at the jump through a register at `offset`, if the code
     /// before it has that shape and every target is code.
-    fn jump_table(&self, offset: u64, rn: Reg) -> Option<Vec<u64>> {
-        let first = offset
-            .saturating_sub(4 * SWITCH_WINDOW)
-            .max(self.code.range.start);
-        let before: Vec<(u64, Instruction)> = (first..offset)
-            .step_by(4)
-            .filter(|&o| self.code.inside(o))
-            .map(|o| (o, self.get(o).instruction))
-            .collect();
-        let targets = habits::jump_table(&before, rn, |at, bytes| self.code.read(at, bytes))?;
+    fn jump_table(
+        &self,
+        offset: u64,
+        r: G::Reg,
+        before: impl Fn(u64) -> Option<(u64, G::Instruction)>,
+    ) -> Option<Vec<u64>> {
+        let targets = G::jump_table(offset, r, self.code.blob, self.code.range.clone(), before)?;
         targets
             .iter()
             .all(|&t| self.code.inside(t))
             .then_some(targets)
     }
+}
+
+/// The instructions of `body` that end at `offset`, nearest first. Instructions may overlap, so the one
+/// ending there need not be the last to start before it.
+fn ending_at<G: Guest>(body: &BTreeMap<u64, u64>, offset: u64) -> impl Iterator<Item = u64> + '_ {
+    (offset.saturating_sub(G::MAX_LENGTH)..offset)
+        .rev()
+        .filter(move |p| body.get(p).is_some_and(|&n| p + n == offset))
 }
 
 /// Offsets that cut a function in `parts`: the places control passes from one run of its instructions to
@@ -730,8 +621,7 @@ fn cuts(function: &Function, parts: usize) -> Vec<u64> {
     // Each instruction's place in that order.
     let mut place: FxHashMap<u64, usize> = FxHashMap::default();
     for &b in &order {
-        let block = &function.blocks[b];
-        for offset in (block.start..block.end).step_by(4) {
+        for &offset in function.instructions(b) {
             let next = place.len();
             place.insert(offset, next);
         }
@@ -739,13 +629,13 @@ fn cuts(function: &Function, parts: usize) -> Vec<u64> {
     let count = place.len();
     let part = |offset: u64| place[&offset] * parts / count;
     let mut found = Vec::new();
-    for block in &function.blocks {
-        for offset in (block.start + 4..block.end).step_by(4) {
-            if part(offset) != part(offset - 4) {
-                found.push(offset);
+    for (b, block) in function.blocks.iter().enumerate() {
+        for pair in function.instructions(b).windows(2) {
+            if part(pair[1]) != part(pair[0]) {
+                found.push(pair[1]);
             }
         }
-        let from = part(block.end - 4);
+        let from = part(function.last(b));
         for &s in &block.succs {
             let to = function.blocks[s].start;
             if part(to) != from {
@@ -801,52 +691,28 @@ fn irreducible(function: &Function) -> Vec<u64> {
 
 /// Registers that live in a piece's locals and are tracked between its global copies: everything but the
 /// registers passed as parameters, and the flags, which have their own state.
-fn tracked() -> Registers {
-    Registers::ALL
-        .minus(Registers::FLAGS)
-        .minus(Registers(((1 << ARGUMENTS) - 1) | (1 << 31)))
+fn tracked<G: Guest>() -> Registers {
+    G::TRACKED
 }
 
-/// Where the flags are known to be at a point: a set of [`FlagState`] bits, one bit when it is known which.
-type FlagStates = u32;
+/// Where the flags are known to be at a point: a set of flag state bits, one bit when it is known which:
+/// [`FLAGS_IN_LOCALS`], [`FLAGS_IN_BLOCK`], then one for each shape a function uses (at most 126).
+type FlagStates = u128;
+
+/// The states in a set of flag states, lowest first.
+fn state_ids(mut states: FlagStates) -> Vec<u32> {
+    let mut ids = Vec::with_capacity(states.count_ones() as usize);
+    while states != 0 {
+        ids.push(states.trailing_zeros());
+        states &= states - 1;
+    }
+    ids
+}
+
 /// The flags are in the piece's flag locals.
 const FLAGS_IN_LOCALS: u32 = 0;
 /// The flags are in the thread block, which is up to date.
 const FLAGS_IN_BLOCK: u32 = 1;
-
-/// How a flag setting that is kept lazily looks, so setters of one shape can share locals.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Shape {
-    Add {
-        width: Width,
-        carry: u8,
-        subtract: bool,
-    },
-    Logic(Width),
-}
-
-impl Shape {
-    fn of(flags: Flags) -> Option<Shape> {
-        match flags {
-            Flags::Add {
-                width,
-                carry,
-                subtrahend,
-                ..
-            } => Some(Shape::Add {
-                width,
-                carry: match carry {
-                    Carry::Zero => 0,
-                    Carry::One => 1,
-                    Carry::Local(_) => 2,
-                },
-                subtract: subtrahend.is_some(),
-            }),
-            Flags::Logic { width, .. } => Some(Shape::Logic(width)),
-            _ => None,
-        }
-    }
-}
 
 /// What a check before a memory access does.
 #[derive(Clone, Copy, Debug)]
@@ -865,7 +731,7 @@ enum CheckPlan {
 type Frame = Option<(i64, i64)>;
 
 /// What the analysis of one function decides.
-struct Plan {
+struct Plan<G: Guest> {
     rank: Vec<usize>,
     children: Vec<Vec<usize>>,
     merge: Vec<bool>,
@@ -880,10 +746,11 @@ struct Plan {
     flags_in: Vec<FlagStates>,
     aligned_in: Vec<bool>,
     /// Shape of every flag setting kept lazily, by its flag state number.
-    shapes: Vec<Shape>,
+    shapes: Vec<G::Shape>,
     /// Some point does not know statically where the flags are, so a local says.
     dynamic_flags: bool,
-    checks: FxHashMap<u64, CheckPlan>,
+    /// By instruction and which of its accesses.
+    checks: FxHashMap<(u64, u8), CheckPlan>,
     /// Ranges relative to the stack pointer before the instruction, checked as the stack grows.
     frame_checks: FxHashMap<u64, (i64, u32)>,
     /// Calls after which a frame is known, so the stack pointer must come back unchanged.
@@ -914,60 +781,39 @@ struct Plan {
     reload_on_exit: FxHashMap<(usize, usize), Registers>,
 }
 
-/// How the stack pointer moves at an instruction: by a known amount (before or after its access), or to
-/// something unknown.
-enum StackMove {
-    None,
-    By { delta: i64, before_access: bool },
-    Unknown,
+/// How the stack pointer moves at an instruction: as the guest says, or to something unknown when it is
+/// written otherwise.
+fn stack_move<G: Guest>(d: &Decoded<G>) -> StackMove {
+    match G::stack_move(&d.instruction) {
+        StackMove::None if d.effects.defs.has_bit(G::SP_BIT) => StackMove::Unknown,
+        movement => movement,
+    }
 }
 
-fn stack_move(d: &Decoded) -> StackMove {
-    match d.instruction {
-        Instruction::AddSub {
-            width: Width::X64,
-            subtract,
-            set_flags: false,
-            rd: Reg::Sp,
-            rn: Reg::Sp,
-            operand: Operand::Imm(k),
-        } if k < 1 << 24 => StackMove::By {
-            delta: if subtract { -(k as i64) } else { k as i64 },
-            before_access: true,
-        },
-        _ => match d.instruction.memory_access().map(|a| a.address) {
-            Some(Address::PreIndex {
-                base: Reg::Sp,
-                offset,
-            }) => StackMove::By {
-                delta: offset,
-                before_access: true,
-            },
-            Some(Address::PostIndex {
-                base: Reg::Sp,
-                offset,
-            }) => StackMove::By {
-                delta: offset,
-                before_access: false,
-            },
-            _ if d.effects.defs.has(Reg::Sp) => StackMove::Unknown,
-            _ => StackMove::None,
-        },
+/// The register bit of an access's base, when it is a register that has one.
+fn base_bit<G: Guest>(access: &MemoryAccess<G::Reg>) -> Option<u32> {
+    match access.base? {
+        Base::Register(r) => G::reg_bit(r),
+        Base::Pc => None,
+    }
+}
+
+/// The one memory access of an instruction, when it makes exactly one.
+fn only_access<G: Guest>(d: &Decoded<G>) -> Option<MemoryAccess<G::Reg>> {
+    match G::accesses(&d.instruction) {
+        [Some(access), None] => Some(access),
+        _ => None,
     }
 }
 
 /// Whether the stack pointer is known to be a multiple of 16 after an instruction: an access through it checks
-/// that, and moving it by a multiple of 16 keeps it.
-fn aligned_after(d: &Decoded, aligned: bool) -> bool {
-    let checked = d.instruction.memory_access().is_some_and(|a| {
-        matches!(
-            a.address,
-            Address::Offset { base: Reg::Sp, .. }
-                | Address::PreIndex { base: Reg::Sp, .. }
-                | Address::PostIndex { base: Reg::Sp, .. }
-                | Address::Indexed { base: Reg::Sp, .. }
-        )
-    });
+/// that, where the guest checks it, and moving it by a multiple of 16 keeps it.
+fn aligned_after<G: Guest>(d: &Decoded<G>, aligned: bool) -> bool {
+    let checked = G::SP_ALIGNMENT_CHECKED
+        && G::accesses(&d.instruction)
+            .iter()
+            .flatten()
+            .any(|a| base_bit::<G>(a) == Some(G::SP_BIT));
     match stack_move(d) {
         StackMove::None => aligned || checked,
         StackMove::By { delta, .. } => (aligned || checked) && delta % 16 == 0,
@@ -975,13 +821,27 @@ fn aligned_after(d: &Decoded, aligned: bool) -> bool {
     }
 }
 
-/// Shift a frame to a stack pointer moved by `delta`. What is left below the stack pointer is no frame, so
-/// it is dropped.
-fn shift(frame: Frame, delta: i64) -> Frame {
+/// Shift a frame to a stack pointer moved by `delta`. What is left below the red zone under the stack
+/// pointer is no frame, so it is dropped.
+fn shift<G: Guest>(frame: Frame, delta: i64) -> Frame {
     frame.and_then(|(lo, hi)| {
-        let (lo, hi) = ((lo - delta).max(0), hi - delta);
+        let (lo, hi) = ((lo - delta).max(-(G::RED_ZONE as i64)), hi - delta);
         (lo < hi).then_some((lo, hi))
     })
+}
+
+/// The frame after an instruction: moved as the stack pointer moves, and after a call that leaves its
+/// return address on the stack, back up past it, where the callee's return leaves the stack pointer.
+fn frame_after<G: Guest>(d: &Decoded<G>, frame: Frame) -> Frame {
+    let frame = match stack_move(d) {
+        StackMove::None => frame,
+        StackMove::Unknown => None,
+        StackMove::By { delta, .. } => shift::<G>(grow::<G>(frame, delta), delta),
+    };
+    match G::RETURN_ADDRESS {
+        ReturnAddress::Stack { bytes } if d.effects.calls => shift::<G>(frame, bytes.into()),
+        _ => frame,
+    }
 }
 
 fn covers(frame: Frame, lo: i64, hi: i64) -> bool {
@@ -1003,8 +863,8 @@ impl Seed {
     };
 }
 
-impl Plan {
-    fn new(function: &Function, decoded: &Decodes, seed: Seed) -> Plan {
+impl<G: Guest> Plan<G> {
+    fn new(function: &Function, decoded: &Decodes<G>, seed: Seed) -> Plan<G> {
         let blocks = &function.blocks;
         let n = blocks.len();
         let (graph, rank) = ranks(function);
@@ -1082,40 +942,39 @@ impl Plan {
         }
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by_key(|&b| rank[b]);
-        let instructions = |b: usize| (blocks[b].start..blocks[b].end).step_by(4);
+        let instructions = |b: usize| function.instructions(b).iter().copied();
 
         // Flag setting shapes, numbered after the two fixed states.
-        let mut shapes: Vec<Shape> = Vec::new();
+        const {
+            assert!(
+                G::SHAPES.len() + 2 <= FlagStates::BITS as usize,
+                "too many shapes"
+            )
+        };
+        let mut shapes: Vec<G::Shape> = Vec::new();
         for d in function_instructions(function).map(|o| &decoded[&o]) {
-            if let Some(shape) = d.effects.flags.and_then(Shape::of)
+            if let Some(shape) = d.effects.flags.and_then(G::shape)
                 && !shapes.contains(&shape)
             {
                 shapes.push(shape);
             }
         }
-        let flag_state = |d: &Decoded, state: FlagStates| -> FlagStates {
+        let flag_state = |d: &Decoded<G>, state: FlagStates| -> FlagStates {
             if d.effects.calls {
                 1 << FLAGS_IN_BLOCK
-            } else if let Some(shape) = d.effects.flags.and_then(Shape::of) {
+            } else if let Some(shape) = d.effects.flags.and_then(G::shape) {
                 1 << (2 + shapes.iter().position(|s| *s == shape).unwrap())
-            } else if d.effects.defs.intersect(Registers::FLAGS) != Registers::NONE {
+            } else if !d.effects.defs.intersect(G::FLAG_BITS).is_empty() {
                 1 << FLAGS_IN_LOCALS
             } else {
                 state
             }
         };
-        let dirty_after = |d: &Decoded, dirty: Registers| -> Registers {
+        let dirty_after = |d: &Decoded<G>, dirty: Registers| -> Registers {
             if d.effects.calls || d.effects.syscall {
                 Registers::NONE
             } else {
-                dirty.union(d.effects.defs.intersect(tracked()))
-            }
-        };
-        let frame_after = |d: &Decoded, frame: Frame| -> Frame {
-            match stack_move(d) {
-                StackMove::None => frame,
-                StackMove::Unknown => None,
-                StackMove::By { delta, .. } => shift(grow(frame, delta), delta),
+                dirty.union(d.effects.defs.intersect(tracked::<G>()))
             }
         };
 
@@ -1123,7 +982,7 @@ impl Plan {
         // entered are written back before it, so its slow paths do not keep them alive.
         let untouched: Vec<Registers> = (0..n)
             .map(|h| match bodies.get(&h) {
-                Some(body) => (0..n).filter(|&b| body[b]).fold(tracked(), |r, b| {
+                Some(body) => (0..n).filter(|&b| body[b]).fold(tracked::<G>(), |r, b| {
                     instructions(b).fold(r, |r, o| {
                         let e = &decoded[&o].effects;
                         r.minus(e.defs).minus(e.uses)
@@ -1253,7 +1112,7 @@ impl Plan {
                     } else {
                         live.minus(d.effects.defs).union(d.effects.uses)
                     }
-                    .intersect(tracked());
+                    .intersect(tracked::<G>());
                 }
                 live = live.union(dirty_in[b]);
                 if live != live_in_blocks[b] {
@@ -1267,7 +1126,7 @@ impl Plan {
             plans: checks,
             frame_checks,
             frame_across,
-        } = checks(function, decoded, &frame_in);
+        } = checks::<G>(function, decoded, &frame_in);
         // The innermost loop around each block, and loops in which nothing can change the permission table:
         // no call and no system call. (A stop check that carries on in place forgets every kept run.)
         let innermost = |b: usize| {
@@ -1295,16 +1154,14 @@ impl Plan {
             {
                 for o in instructions(b) {
                     if let (Some(CheckPlan::Exact), Some(access)) =
-                        (checks.get(&o), decoded[&o].instruction.memory_access())
+                        (checks.get(&(o, 0)), only_access(&decoded[&o]))
                     {
-                        let base = match access.address {
-                            Address::Offset { base, .. }
-                            | Address::PreIndex { base, .. }
-                            | Address::PostIndex { base, .. }
-                            | Address::Indexed { base, .. } => Some(base),
-                            Address::Literal { .. } => None,
-                        };
-                        let key = (h, base, access.write);
+                        let key = (
+                            h,
+                            access.segment,
+                            access.base,
+                            access.kind != AccessKind::Read,
+                        );
                         let number = match keys.iter().position(|k| *k == key) {
                             Some(number) => number,
                             None => {
@@ -1314,7 +1171,8 @@ impl Plan {
                                 keys.len() - 1
                             }
                         };
-                        kept_longest[number] = kept_longest[number].max(access.bytes);
+                        let bytes = access.fixed_bytes().expect("a planned access");
+                        kept_longest[number] = kept_longest[number].max(bytes);
                         kept.insert(o, number);
                     }
                 }
@@ -1390,9 +1248,11 @@ impl Plan {
             .flat_map(|(&h, v)| v.regions.iter().map(move |r| (r.at, h)))
             .collect();
         let dynamic_flags = flags_in.iter().any(|f| f.count_ones() > 1);
-        let calls_out = function_instructions(function).any(|o| {
-            let d = &decoded[&o];
-            d.effects.calls || leaves_piece(function, o, &d.instruction)
+        let calls_out = (0..n).any(|b| {
+            instructions(b).any(|o| {
+                let d = &decoded[&o];
+                d.effects.calls || leaves_piece(function, b, o, d)
+            })
         });
         Plan {
             rank,
@@ -1425,61 +1285,50 @@ impl Plan {
 }
 
 fn function_instructions(function: &Function) -> impl Iterator<Item = u64> + '_ {
-    function
-        .blocks
-        .iter()
-        .flat_map(|b| (b.start..b.end).step_by(4))
+    (0..function.blocks.len()).flat_map(|b| function.instructions(b).iter().copied())
 }
 
-/// Whether an instruction can pass control to another piece other than by a call that returns.
-fn leaves_piece(function: &Function, offset: u64, instruction: &Instruction) -> bool {
-    let flow = instruction.flow();
+/// Whether the instruction at `offset` in block `b` can pass control to another piece other than by a call
+/// that returns.
+fn leaves_piece<G: Guest>(function: &Function, b: usize, offset: u64, d: &Decoded<G>) -> bool {
+    let flow = G::flow(&d.instruction);
     let outside = |t: u64| !function.at.contains_key(&t);
-    let call = matches!(instruction, Instruction::Branch { link: true, .. });
-    match instruction {
-        Instruction::BranchRegister {
-            op: BranchRegister::Br,
-            ..
-        } => true,
+    let call = flow.kind == FlowKind::Call;
+    let next = offset + u64::from(d.length);
+    match flow.kind {
+        FlowKind::JumpThrough(_) => true,
         _ => {
             (flow
                 .target
                 .is_some_and(|by| !call && outside(offset.wrapping_add_signed(by))))
-                || (flow.falls_through
-                    && (offset + 4) == block_end(function, offset)
-                    && outside(offset + 4))
+                || (flow.falls_through && offset == function.last(b) && outside(next))
         }
     }
 }
 
-fn block_end(function: &Function, offset: u64) -> u64 {
-    function
-        .blocks
-        .iter()
-        .find(|b| (b.start..b.end).contains(&offset))
-        .unwrap()
-        .end
-}
+/// One access of one instruction: its offset and which of its accesses.
+type AccessAt = (u64, u8);
 
 /// Which accesses need a check, where the stack's frame is checked, and the calls a frame is kept across.
 struct Checks {
-    plans: FxHashMap<u64, CheckPlan>,
+    plans: FxHashMap<(u64, u8), CheckPlan>,
     frame_checks: FxHashMap<u64, (i64, u32)>,
     frame_across: FxHashSet<u64>,
 }
 
-fn checks(function: &Function, decoded: &Decodes, frame_in: &[Frame]) -> Checks {
+fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame]) -> Checks {
     let mut plans = FxHashMap::default();
     let mut frame_checks = FxHashMap::default();
     let mut frame_across = FxHashSet::default();
-    for (b, block) in function.blocks.iter().enumerate() {
-        let mut frame = frame_in[b];
+    for (b, &frame) in frame_in.iter().enumerate() {
+        let mut frame = frame;
         // Per base register: how far its value has moved from where its current groups are measured.
-        let mut moved: FxHashMap<u8, i64> = FxHashMap::default();
-        // Open groups by base register and write: first access, its start, and the bytes covered.
-        let mut open: FxHashMap<(u8, bool), usize> = FxHashMap::default();
-        let mut groups: Vec<(u64, i64, i64, i64, u32)> = Vec::new();
-        for o in (block.start..block.end).step_by(4) {
+        let mut moved: FxHashMap<u32, i64> = FxHashMap::default();
+        // Open groups by segment base, base register (none for a segment base alone) and write: first
+        // access, its start, and the bytes covered.
+        let mut open: FxHashMap<(Option<u32>, Option<u32>, bool), usize> = FxHashMap::default();
+        let mut groups: Vec<(AccessAt, i64, i64, i64, u32)> = Vec::new();
+        for &o in function.instructions(b) {
             let d = &decoded[&o];
             if d.effects.calls || d.effects.syscall {
                 moved.clear();
@@ -1492,52 +1341,64 @@ fn checks(function: &Function, decoded: &Decodes, frame_in: &[Frame]) -> Checks 
             if let StackMove::By { delta, .. } = movement
                 && delta < 0
             {
-                frame_checks.insert(o, (delta, (-delta) as u32));
+                // The red zone below the new stack pointer is part of the frame checked.
+                let low = delta - G::RED_ZONE as i64;
+                frame_checks.insert(o, (low, (-low) as u32));
             }
-            if let Some(access) = d.instruction.memory_access() {
-                let plan = match access.address {
-                    Address::Offset { base: Reg::Sp, .. }
-                    | Address::PreIndex { base: Reg::Sp, .. }
-                    | Address::PostIndex { base: Reg::Sp, .. } => {
-                        let at = match (access.address, &movement) {
-                            (Address::Offset { offset, .. }, _) => offset,
-                            (Address::PreIndex { .. }, _) => 0,
-                            _ => 0,
-                        };
+            // An access that is not plain has no plan: it is checked by itself each time.
+            let accesses = G::accesses(&d.instruction);
+            let plain = accesses
+                .iter()
+                .enumerate()
+                .filter_map(|(which, a)| Some((which as u8, a.filter(MemoryAccess::plain)?)));
+            for (which, access) in plain {
+                let bytes = access.fixed_bytes().expect("a plain access");
+                let base = base_bit::<G>(&access).filter(|_| access.index.is_none());
+                let segment = access.segment.and_then(G::reg_bit);
+                let ahead = match access.write_back {
+                    WriteBack::Before(by) => by,
+                    _ => 0,
+                };
+                let behind = match access.write_back {
+                    WriteBack::Before(by) | WriteBack::After(by) => by,
+                    WriteBack::None => 0,
+                };
+                // What a group is measured from: a general register other than the stack pointer, or a
+                // segment base alone.
+                let grouped = match base {
+                    Some(n) if G::GENERAL_BUT_SP.has_bit(n) => Some(Some(n)),
+                    None if segment.is_some()
+                        && access.base.is_none()
+                        && access.index.is_none() =>
+                    {
+                        Some(None)
+                    }
+                    _ => None,
+                };
+                let plan = match (base, grouped) {
+                    (Some(bit), _) if bit == G::SP_BIT && segment.is_none() => {
+                        let at = access.displacement;
                         let known = match movement {
                             StackMove::By {
                                 delta,
                                 before_access: true,
-                            } => shift(grow(frame, delta), delta),
+                            } => shift::<G>(grow::<G>(frame, delta), delta),
                             _ => frame,
                         };
-                        if covers(known, at, at + i64::from(access.bytes)) {
+                        if covers(known, at, at + i64::from(bytes)) {
                             CheckPlan::Skip
                         } else {
                             CheckPlan::Exact
                         }
                     }
-                    Address::Offset {
-                        base: Reg::X(n),
-                        offset,
-                    }
-                    | Address::PreIndex {
-                        base: Reg::X(n),
-                        offset,
-                    }
-                    | Address::PostIndex {
-                        base: Reg::X(n),
-                        offset,
-                    } => {
-                        let m = *moved.get(&n).unwrap_or(&0);
-                        let (start, after) = match access.address {
-                            Address::Offset { .. } => (m + offset, m),
-                            Address::PreIndex { .. } => (m + offset, m + offset),
-                            _ => (m, m + offset),
-                        };
-                        let end = start + i64::from(access.bytes);
-                        moved.insert(n, after);
-                        let key = (n, access.write);
+                    (_, Some(register)) => {
+                        let m = register.and_then(|n| moved.get(&n).copied()).unwrap_or(0);
+                        let (start, after) = (m + access.displacement + ahead, m + behind);
+                        let end = start + i64::from(bytes);
+                        if let Some(n) = register {
+                            moved.insert(n, after);
+                        }
+                        let key = (segment, register, access.kind != AccessKind::Read);
                         match open.get(&key).map(|&g| (g, groups[g])) {
                             Some((g, (first, first_start, lo, hi, count)))
                                 if hi.max(end) - lo.min(start) <= 4096 =>
@@ -1548,33 +1409,32 @@ fn checks(function: &Function, decoded: &Decodes, frame_in: &[Frame]) -> Checks 
                             }
                             _ => {
                                 open.insert(key, groups.len());
-                                groups.push((o, start, start, end, 1));
+                                groups.push(((o, which), start, start, end, 1));
                                 CheckPlan::Exact
                             }
                         }
                     }
                     _ => CheckPlan::Exact,
                 };
-                plans.insert(o, plan);
+                plans.insert((o, which), plan);
             }
-            // Any other write of a base starts it afresh.
-            let written_back = d.instruction.memory_access().and_then(|a| match a.address {
-                Address::PreIndex { base, .. } | Address::PostIndex { base, .. } => Some(base),
-                _ => None,
-            });
-            for bit in d.effects.defs.bits().filter(|&b| b < 31) {
-                let r = Reg::X(bit as u8);
-                if Some(r) != written_back {
-                    moved.remove(&(bit as u8));
-                    open.remove(&(bit as u8, false));
-                    open.remove(&(bit as u8, true));
+            // Any other write of a base, or of a segment base, starts it afresh.
+            let written_back: Vec<u32> = accesses
+                .iter()
+                .flatten()
+                .filter(|a| a.write_back != WriteBack::None)
+                .filter_map(base_bit::<G>)
+                .collect();
+            for bit in d.effects.defs.intersect(G::GENERAL_BUT_SP).bits() {
+                if !written_back.contains(&bit) {
+                    moved.remove(&bit);
+                    open.retain(|&(_, base, _), _| base != Some(bit));
                 }
             }
-            frame = match movement {
-                StackMove::None => frame,
-                StackMove::Unknown => None,
-                StackMove::By { delta, .. } => shift(grow(frame, delta), delta),
-            };
+            for bit in d.effects.defs.intersect(G::SEGMENT_BITS).bits() {
+                open.retain(|&(segment, _, _), _| segment != Some(bit));
+            }
+            frame = frame_after(d, frame);
         }
         for (first, first_start, lo, hi, count) in groups {
             if count > 1 {
@@ -1595,14 +1455,16 @@ fn checks(function: &Function, decoded: &Decodes, frame_in: &[Frame]) -> Checks 
     }
 }
 
-/// A frame before the stack pointer moves by `delta`, with the part a move down checks added.
-fn grow(frame: Frame, delta: i64) -> Frame {
+/// A frame before the stack pointer moves by `delta`, with the part a move down checks added: down to the
+/// red zone below the new stack pointer.
+fn grow<G: Guest>(frame: Frame, delta: i64) -> Frame {
     if delta >= 0 {
         return frame;
     }
+    let low = delta - G::RED_ZONE as i64;
     match frame {
-        Some((lo, hi)) if lo <= 0 && hi >= 0 => Some((delta.min(lo), hi)),
-        _ => Some((delta, 0)),
+        Some((lo, hi)) if lo <= 0 && hi >= 0 => Some((low.min(lo), hi)),
+        _ => Some((low, 0)),
     }
 }
 
@@ -1640,8 +1502,8 @@ enum AfterStop {
     /// Go on with every local as it is: the hook changes nothing when it says carry on. Used at the entry,
     /// before any register but the passed ones is in a local.
     Continue,
-    /// Load back the tracked registers in the set, and the passed ones from the number given, and go on.
-    Reload(Registers, u32),
+    /// Load back the tracked registers in the set, and the passed ones, and go on.
+    Reload(Registers),
     /// Load back the tracked registers in the set and make the proof of the loop at this header again: the
     /// stop may have changed what it proved.
     Reprove(Registers, usize),
@@ -1655,16 +1517,16 @@ enum Pc {
     Local(u32),
 }
 
-struct FullEmitter<'a> {
+struct FullEmitter<'a, G: Guest> {
     function: &'a Function,
-    plan: &'a Plan,
-    decoded: &'a Decodes,
+    plan: &'a Plan<G>,
+    decoded: &'a Decodes<G>,
     index: &'a BTreeMap<u64, u32>,
     /// The loop pieces of the function this piece comes from, by header offset.
     loops: &'a FxHashMap<u64, u32>,
     omit: Omit,
     optimise: Optimise,
-    host: Host,
+    code: &'a Code<'a, G>,
     /// Whether floating point takes the slow path, loaded once until something may change it.
     float_mode_local: Option<u32>,
     sites: Sites,
@@ -1673,11 +1535,12 @@ struct FullEmitter<'a> {
     free: Vec<(ValType, u32)>,
     taken: Vec<(ValType, u32)>,
     registers: FxHashMap<u32, u32>,
-    flag_locals: [u32; 4],
+    /// One i32 local for each tracked flag, in `Guest::FLAGS` order.
+    flag_locals: [u32; 8],
     /// Which flag state holds, when that is only known at run time.
     flag_state: u32,
     /// The locals each lazily kept flag shape shares.
-    canonical: Vec<Flags>,
+    canonical: Vec<G::Flags>,
     labels: Vec<Label>,
     at: At,
     /// Locals the immutable imported globals (by index) are copied into at the entry, once used.
@@ -1694,20 +1557,22 @@ struct FullEmitter<'a> {
     entry_check: bool,
     /// The instruction being emitted has written a register, the flags or a control register.
     written: bool,
+    /// The instruction being emitted may have raised the stop flag.
+    raised_stop: bool,
     /// i64 local: the depth the piece passes to what it calls, its callers' and its own.
     depth: u32,
 }
 
-impl<'a> FullEmitter<'a> {
+impl<'a, G: Guest> FullEmitter<'a, G> {
     #[allow(clippy::too_many_arguments)]
     fn piece(
         function: &'a Function,
-        plan: &'a Plan,
-        decoded: &'a Decodes,
+        plan: &'a Plan<G>,
+        decoded: &'a Decodes<G>,
         index: &'a BTreeMap<u64, u32>,
         loops: &'a FxHashMap<u64, u32>,
         own: u32,
-        (omit, optimise, host): (Omit, Optimise, Host),
+        (omit, optimise, code): (Omit, Optimise, &'a Code<'a, G>),
     ) -> (wasm_encoder::Function, usize, Sites) {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
@@ -1718,15 +1583,15 @@ impl<'a> FullEmitter<'a> {
             loops,
             omit,
             optimise,
-            host,
+            code,
             float_mode_local: None,
-            sites: Sites::default(),
+            sites: [0; SITES],
             body: Vec::new(),
             locals: Vec::new(),
             free: Vec::new(),
             taken: Vec::new(),
             registers: FxHashMap::default(),
-            flag_locals: [0; 4],
+            flag_locals: [0; 8],
             flag_state: 0,
             canonical: Vec::new(),
             labels: Vec::new(),
@@ -1744,6 +1609,7 @@ impl<'a> FullEmitter<'a> {
             unchecked: Vec::new(),
             entry_check: (plan.calls_out || loop_piece) && !omit.stop,
             written: false,
+            raised_stop: false,
             depth: 0,
         };
         e.depth = e.new_local(ValType::I64);
@@ -1752,8 +1618,13 @@ impl<'a> FullEmitter<'a> {
             let room = e.new_local(ValType::I64);
             e.kept_pages.push((low, room));
         }
-        e.flag_locals = [0; 4].map(|_| e.new_local(ValType::I32));
-        e.flag_state = e.new_local(ValType::I32);
+        const { assert!(G::FLAGS.len() <= 8, "at most 8 tracked flags") };
+        for i in 0..G::FLAGS.len() {
+            e.flag_locals[i] = e.new_local(ValType::I32);
+        }
+        if !G::FLAGS.is_empty() {
+            e.flag_state = e.new_local(ValType::I32);
+        }
         for shape in plan.shapes.clone() {
             let flags = e.canonical_flags(shape);
             e.canonical.push(flags);
@@ -1770,7 +1641,7 @@ impl<'a> FullEmitter<'a> {
         for bit in plan.live_in[0].bits() {
             let local = e.register(bit);
             let block = e.fixed(G_THREAD_BLOCK);
-            Slot::of_bit(bit).load_into(&mut e.sink(), block, local);
+            Slot::of_bit::<G>(bit).load_into(&mut e.sink(), block, local);
         }
         e.tree(0);
         e.sink().unreachable().end();
@@ -1781,13 +1652,13 @@ impl<'a> FullEmitter<'a> {
                 s.global_get(G_OWN + global as u32).local_set(*local);
             }
         }
-        s.local_get(L_DEPTH)
-            .i64_const(frame_bytes(&e.locals))
+        s.local_get(G::L_DEPTH)
+            .i64_const(frame_bytes::<G>(&e.locals))
             .i64_add()
             .local_set(e.depth);
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
-            depth_check(&mut s, L_DEPTH, function.entry);
+            depth_check::<G>(&mut s, G::L_DEPTH, function.entry);
             e.sites[Reason::StackNearlyFull as usize] += 1;
         }
         let locals = e.locals.len();
@@ -1799,82 +1670,43 @@ impl<'a> FullEmitter<'a> {
 
     fn new_local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        PARAMETERS + self.locals.len() as u32 - 1
+        G::PARAMETERS + self.locals.len() as u32 - 1
     }
 
-    /// The locals a shape keeps: the operands only (a and the value subtracted, or a, b and the carry),
-    /// since the rest can be worked out from them when needed; `b` and `result` of a kept addition are
-    /// not locals.
-    fn canonical_flags(&mut self, shape: Shape) -> Flags {
-        let ty = |w: Width| match w {
-            Width::W32 => ValType::I32,
-            Width::X64 => ValType::I64,
-        };
-        match shape {
-            Shape::Add {
-                width,
-                carry,
-                subtract,
-            } => Flags::Add {
-                width,
-                a: self.new_local(ty(width)),
-                b: if subtract {
-                    u32::MAX
-                } else {
-                    self.new_local(ty(width))
-                },
-                carry: match carry {
-                    0 => Carry::Zero,
-                    1 => Carry::One,
-                    _ => Carry::Local(self.new_local(ValType::I32)),
-                },
-                result: u32::MAX,
-                subtrahend: subtract.then(|| self.new_local(ty(width))),
-            },
-            Shape::Logic(width) => Flags::Logic {
-                width,
-                result: self.new_local(ty(width)),
-            },
-        }
+    /// The locals a shape keeps, fresh ones: what else it needs can be worked out from them.
+    fn canonical_flags(&mut self, shape: G::Shape) -> G::Flags {
+        let locals: Vec<u32> = G::shape_locals(shape)
+            .iter()
+            .map(|&ty| self.new_local(ty))
+            .collect();
+        G::with_locals(shape, &locals)
     }
 
     /// The flags of a kept shape with every local filled in: what was not kept is worked out into
     /// temporaries (an engine drops what is not used).
-    fn shape_flags(&mut self, id: usize) -> Flags {
+    fn shape_flags(&mut self, id: usize) -> G::Flags {
         let flags = self.canonical[id];
-        let Flags::Add { width, .. } = flags else {
+        let Some(ty) = G::temporaries(flags) else {
             return flags;
         };
-        let ty = match width {
-            Width::W32 => ValType::I32,
-            Width::X64 => ValType::I64,
-        };
-        let temporaries = (self.temporary(ty), self.temporary(ty));
-        completed(&mut self.sink(), flags, temporaries)
+        let temporaries = [self.temporary(ty), self.temporary(ty)];
+        G::complete(&mut self.sink(), flags, temporaries)
     }
 
     /// The local of a register bit: a parameter for the passed ones.
     fn register(&mut self, bit: u32) -> u32 {
-        match bit {
-            _ if bit < ARGUMENTS => bit,
-            31 => L_SP,
-            _ => {
-                if let Some(&local) = self.registers.get(&bit) {
-                    return local;
-                }
-                let ty = if bit >= 64 {
-                    ValType::V128
-                } else {
-                    ValType::I64
-                };
-                let local = self.new_local(ty);
-                self.registers.insert(bit, local);
-                local
-            }
+        if let Some(local) = G::passed(bit) {
+            return local;
         }
+        if let Some(&local) = self.registers.get(&bit) {
+            return local;
+        }
+        let local = self.new_local(Slot::of_bit::<G>(bit).ty());
+        self.registers.insert(bit, local);
+        local
     }
 
-    fn decoded(&self) -> Decoded {
+    fn decoded(&self) -> Decoded<G> {
         self.decoded[&self.at.offset]
     }
 
@@ -1901,7 +1733,7 @@ impl<'a> FullEmitter<'a> {
             let block = self.fixed(G_THREAD_BLOCK);
             for bit in self.plan.written_before[b].bits() {
                 let local = self.register(bit);
-                Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
+                Slot::of_bit::<G>(bit).store_from(&mut self.sink(), block, local);
             }
             // Both locals are set, so nothing kept from before is alive through the loop.
             for number in self.plan.kept_by_loop[b].clone() {
@@ -2035,7 +1867,7 @@ impl<'a> FullEmitter<'a> {
             aligned: self.plan.aligned_in[b],
             float_mode: false,
         };
-        for offset in (block.start..block.end).step_by(4) {
+        for &offset in self.function.instructions(b) {
             self.at.offset = offset;
             self.written = false;
             let mark = self.taken.len();
@@ -2045,7 +1877,7 @@ impl<'a> FullEmitter<'a> {
                 self.frame_check(from, len);
             }
             let decoded = self.decoded();
-            emit(self, &decoded.instruction);
+            G::emit(self, &decoded.instruction);
             self.at.aligned = aligned_after(&decoded, self.at.aligned);
             let released: Vec<_> = self.taken.drain(mark..).collect();
             self.free.extend(released);
@@ -2073,7 +1905,7 @@ impl<'a> FullEmitter<'a> {
             let block = self.fixed(G_THREAD_BLOCK);
             for bit in self.plan.live_in[to].intersect(kept).bits() {
                 let local = self.register(bit);
-                Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
+                Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
             }
         }
         match self.label_for(to) {
@@ -2089,7 +1921,7 @@ impl<'a> FullEmitter<'a> {
                         None if self.unchecked.contains(&to) => {
                             AfterStop::Reprove(self.plan.live_in[to], to)
                         }
-                        None => AfterStop::Reload(self.plan.live_in[to], 0),
+                        None => AfterStop::Reload(self.plan.live_in[to]),
                     };
                     self.stop_check(Pc::Offset(start), after);
                 }
@@ -2118,7 +1950,7 @@ impl<'a> FullEmitter<'a> {
             }
             None => {
                 self.address(target);
-                self.sink().return_call(F_DISPATCH);
+                self.sink().return_call(G::F_DISPATCH);
             }
         }
     }
@@ -2127,10 +1959,10 @@ impl<'a> FullEmitter<'a> {
     /// all as this piece was given them.
     fn arguments(&mut self) {
         let mut s = self.sink();
-        for i in 0..PASSED {
+        for i in 0..G::PASSED {
             s.local_get(i);
         }
-        s.local_get(L_RETURN).local_get(L_DEPTH);
+        s.local_get(G::L_RETURN).local_get(G::L_DEPTH);
     }
 
     /// Copy every register whose place in the thread block may be stale there, and the flags too.
@@ -2144,7 +1976,7 @@ impl<'a> FullEmitter<'a> {
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in self.at.dirty.bits() {
             let local = self.register(bit);
-            Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
+            Slot::of_bit::<G>(bit).store_from(&mut self.sink(), block, local);
         }
     }
 
@@ -2157,7 +1989,7 @@ impl<'a> FullEmitter<'a> {
         }
         let block = self.fixed(G_THREAD_BLOCK);
         block.push(&mut self.sink());
-        let ids: Vec<u32> = (0..32).filter(|i| states >> i & 1 == 1).collect();
+        let ids = state_ids(states);
         for (k, &id) in ids.iter().enumerate() {
             if k + 1 < ids.len() {
                 let state = self.flag_state;
@@ -2175,7 +2007,7 @@ impl<'a> FullEmitter<'a> {
         for _ in 1..ids.len() {
             self.sink().end();
         }
-        Slot::Flags.store(&mut self.sink());
+        Slot::flags::<G>().store(&mut self.sink());
     }
 
     /// Push the flags word of the thread block, with the flags in one state, `out_of_line` by the module's
@@ -2186,85 +2018,57 @@ impl<'a> FullEmitter<'a> {
                 let block = self.fixed(G_THREAD_BLOCK);
                 let mut s = self.sink();
                 block.push(&mut s);
-                Slot::Flags.load(&mut s);
+                Slot::flags::<G>().load(&mut s);
             }
             FLAGS_IN_LOCALS if out_of_line => {
                 let locals = self.flag_locals;
                 let mut s = self.sink();
-                for local in locals {
+                for &local in &locals[..G::FLAGS.len()] {
                     s.local_get(local);
                 }
-                s.call(F_FLAGS_WORD);
+                s.call(G::F_FLAGS_WORD);
             }
             FLAGS_IN_LOCALS => {
                 let locals = self.flag_locals;
-                push_word(&mut self.sink(), |s, flag| {
-                    let i = Flag::ALL.iter().position(|f| *f == flag).expect("a flag");
-                    s.local_get(locals[i]);
+                push_word::<G>(&mut self.sink(), |s, flag| {
+                    s.local_get(locals[G::flag_index(flag)]);
                 });
             }
             id if out_of_line => {
                 let id = id as usize - 2;
-                let function = flags_word_function(self.plan.shapes[id]);
-                let Flags::Add {
-                    a,
-                    b,
-                    carry,
-                    subtrahend,
-                    ..
-                } = self.canonical[id]
-                else {
-                    let Flags::Logic { result, .. } = self.canonical[id] else {
-                        unreachable!("a shape's flags are an addition or logic")
-                    };
-                    self.sink().local_get(result).call(function);
-                    return;
-                };
+                let function = flags_word_function::<G>(self.plan.shapes[id]);
+                let locals = G::locals_of(self.canonical[id]);
                 let mut s = self.sink();
-                s.local_get(a).local_get(subtrahend.unwrap_or(b));
-                if let Carry::Local(c) = carry {
-                    s.local_get(c);
+                for &local in locals.as_slice() {
+                    s.local_get(local);
                 }
                 s.call(function);
             }
             id => {
                 let flags = self.shape_flags(id as usize - 2);
-                push_word(&mut self.sink(), |s, flag| flag_value(s, flags, flag));
+                push_word::<G>(&mut self.sink(), |s, flag| G::flag_value(s, flags, flag));
             }
         }
     }
 
     /// Whether the flags may be read, or written back, after the instruction at `offset` before something
-    /// sets them again. Only the rest of its block is looked at, and anything but plain arithmetic that
-    /// neither reads the flags nor moves the stack pointer counts as reading them.
+    /// sets them again. Only the rest of its block is looked at, and anything but plain computation that
+    /// neither reads a flag still to be set again nor moves the stack pointer counts as reading them.
     fn flags_needed_after(&self, offset: u64) -> bool {
-        use Instruction as I;
-        let end = self.function.blocks[self.at.block].end;
-        for o in (offset + 4..end).step_by(4) {
-            let d = &self.decoded[&o];
-            let plain = matches!(
-                d.instruction,
-                I::AddSub { .. }
-                    | I::AddSubCarry { .. }
-                    | I::Logical { .. }
-                    | I::MoveWide { .. }
-                    | I::Bitfield { .. }
-                    | I::Extract { .. }
-                    | I::PcRelative { .. }
-                    | I::CondCompare { .. }
-                    | I::CondSelect { .. }
-                    | I::Unary { .. }
-                    | I::Binary { .. }
-                    | I::MulAdd { .. }
-                    | I::Nothing
-            );
-            if !plain
-                || d.effects.uses.intersect(Registers::FLAGS) != Registers::NONE
-                || d.effects.defs.has(Reg::Sp)
+        let instructions = self.function.instructions(self.at.block);
+        // A block's instructions are in address order.
+        let after = instructions.partition_point(|&o| o <= offset);
+        let mut pending = G::FLAG_BITS;
+        for o in &instructions[after..] {
+            let d = &self.decoded[o];
+            if !G::plain(&d.instruction)
+                || !d.effects.uses.intersect(pending).is_empty()
+                || d.effects.defs.has_bit(G::SP_BIT)
             {
                 return true;
             }
-            if d.effects.defs.intersect(Registers::FLAGS) == Registers::FLAGS {
+            pending = pending.minus(d.effects.defs);
+            if pending.is_empty() {
                 return false;
             }
         }
@@ -2282,8 +2086,8 @@ impl<'a> FullEmitter<'a> {
         if !out_of_line {
             let block = self.fixed(G_THREAD_BLOCK);
             let mut s = self.sink();
-            save_passed(&mut s, block);
-            set_pc(&mut s, block, |s| match pc {
+            save_passed::<G>(&mut s, block);
+            set_pc::<G>(&mut s, block, |s| match pc {
                 Pc::Offset(offset) => {
                     load.push(s);
                     s.i64_const(offset as i64).i64_add();
@@ -2294,7 +2098,7 @@ impl<'a> FullEmitter<'a> {
             });
             return;
         }
-        save(&mut self.sink(), |s| match pc {
+        save::<G>(&mut self.sink(), |s| match pc {
             Pc::Offset(offset) => {
                 s.i64_const(offset as i64);
             }
@@ -2323,20 +2127,16 @@ impl<'a> FullEmitter<'a> {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
-        s.i32_load(memarg(
-            MEMORY_STATE,
-            wcontainers_abi::STOP_FLAG_OFFSET as u64,
-            2,
-        ));
+        s.i32_load(memarg(MEMORY_STATE, G::STOP_FLAG_OFFSET as u64, 2));
         if let Some(entry) = deep {
             // The callers' depth, not this piece's own frame, so a piece called from the bottom loop always
             // runs, however large its frame.
-            s.local_get(L_DEPTH)
+            s.local_get(G::L_DEPTH)
                 .i64_const(STACK_BUDGET)
                 .i64_gt_u()
                 .i32_or()
                 .if_(BlockType::Empty);
-            depth_check(&mut s, L_DEPTH, entry);
+            depth_check::<G>(&mut s, G::L_DEPTH, entry);
         } else {
             s.if_(BlockType::Empty);
         }
@@ -2351,7 +2151,7 @@ impl<'a> FullEmitter<'a> {
             .call(F_STOP)
             .if_(BlockType::Empty)
             .i32_const(UNWIND_LEAVE)
-            .call(F_UNWIND)
+            .call(G::F_UNWIND)
             .unreachable()
             .end();
         match after {
@@ -2359,15 +2159,15 @@ impl<'a> FullEmitter<'a> {
                 self.arguments();
                 self.sink().return_call(f);
             }
-            AfterStop::Reload(live, passed_from) => {
-                self.reload(live, passed_from);
+            AfterStop::Reload(live) => {
+                self.reload(live, None);
                 // The table may have changed during the stop.
                 for (_, room) in self.kept_pages.clone() {
                     self.sink().i64_const(0).local_set(room);
                 }
             }
             AfterStop::Reprove(live, header) => {
-                self.reload(live, 0);
+                self.reload(live, None);
                 for (_, room) in self.kept_pages.clone() {
                     self.sink().i64_const(0).local_set(room);
                 }
@@ -2380,17 +2180,19 @@ impl<'a> FullEmitter<'a> {
         self.sink().end();
     }
 
-    /// Load registers from the thread block: the tracked ones in `live`, and the passed ones from
-    /// `passed_from`.
-    fn reload(&mut self, live: Registers, passed_from: u32) {
+    /// Load registers from the thread block: the tracked ones in `live`, and the passed ones but the
+    /// parameter `skip`.
+    fn reload(&mut self, live: Registers, skip: Option<u32>) {
         let block = self.fixed(G_THREAD_BLOCK);
-        for bit in live.intersect(tracked()).bits() {
+        for bit in live.intersect(tracked::<G>()).bits() {
             let local = self.register(bit);
-            Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
+            Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
         }
         let mut s = self.sink();
-        for (i, slot) in passed_slots().enumerate().skip(passed_from as usize) {
-            slot.load_into(&mut s, block, i as u32);
+        for (i, slot) in passed_slots::<G>().enumerate() {
+            if skip != Some(i as u32) {
+                slot.load_into(&mut s, block, i as u32);
+            }
         }
     }
 
@@ -2400,7 +2202,7 @@ impl<'a> FullEmitter<'a> {
         self.save(Pc::Offset(offset), true);
         self.sink()
             .i32_const(UNWIND_GO_TO_EXACT)
-            .call(F_UNWIND)
+            .call(G::F_UNWIND)
             .unreachable();
     }
 
@@ -2414,13 +2216,13 @@ impl<'a> FullEmitter<'a> {
         for chunk in (0..len).step_by(4096) {
             let piece = (len - chunk).min(4096);
             self.sink()
-                .local_get(L_SP)
+                .local_get(G::L_SP)
                 .i64_const(from + i64::from(chunk))
                 .i64_add()
                 .local_set(at);
             let mut s = self.sink();
             permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, page);
-            permission_exact(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at, exact);
+            permission_exact::<G>(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at, exact);
             let offset = self.at.offset;
             self.leave_to(offset);
             self.sink().end().end();
@@ -2473,14 +2275,14 @@ impl<'a> FullEmitter<'a> {
     }
 
     /// Push one flag from wherever the flags are.
-    fn push_flag(&mut self, flag: Flag) {
+    fn push_flag(&mut self, flag: G::Flag) {
         let states = self.at.flags;
         if states.count_ones() == 1 {
             self.push_flag_from(states.trailing_zeros(), flag);
             return;
         }
         // Known only at run time: choose by the state local.
-        let ids: Vec<u32> = (0..32).filter(|i| states >> i & 1 == 1).collect();
+        let ids = state_ids(states);
         for (k, &id) in ids.iter().enumerate() {
             if k + 1 < ids.len() {
                 let state = self.flag_state;
@@ -2500,20 +2302,19 @@ impl<'a> FullEmitter<'a> {
         }
     }
 
-    fn push_flag_from(&mut self, state: u32, flag: Flag) {
-        let i = Flag::ALL.iter().position(|f| *f == flag).unwrap();
+    fn push_flag_from(&mut self, state: u32, flag: G::Flag) {
         match state {
             FLAGS_IN_LOCALS => {
-                let local = self.flag_locals[i];
+                let local = self.flag_locals[G::flag_index(flag)];
                 self.sink().local_get(local);
             }
             FLAGS_IN_BLOCK => {
                 let block = self.fixed(G_THREAD_BLOCK);
-                load_flag(&mut self.sink(), block, flag);
+                load_flag::<G>(&mut self.sink(), block, flag);
             }
             shape => {
                 let flags = self.shape_flags(shape as usize - 2);
-                flag_value(&mut self.sink(), flags, flag);
+                G::flag_value(&mut self.sink(), flags, flag);
             }
         }
     }
@@ -2537,7 +2338,7 @@ impl<'a> FullEmitter<'a> {
         }
         let lo = present.iter().map(|c| c.0).min().unwrap();
         let hi = present.iter().map(|c| c.0).max().unwrap();
-        let slots = (hi - lo) / 4 + 1;
+        let slots = (hi - lo) / G::ALIGN + 1;
         // The engines take at most this many targets in one `br_table`.
         if slots > BR_TABLE_TARGETS {
             self.unrecognised_jump(target);
@@ -2551,35 +2352,37 @@ impl<'a> FullEmitter<'a> {
             let live = present
                 .iter()
                 .fold(Registers::NONE, |l, &(_, b)| l.union(self.plan.live_in[b]));
-            self.stop_check(Pc::Local(target), AfterStop::Reload(live, 0));
+            self.stop_check(Pc::Local(target), AfterStop::Reload(live));
         }
         let index = self.temporary(ValType::I64);
         self.sink().block(BlockType::Empty);
         self.labels.push(Label::Other);
         let mut labels = Vec::new();
         for k in 0..slots {
-            let label = match present.iter().find(|c| c.0 == lo + 4 * k) {
+            let label = match present.iter().find(|c| c.0 == lo + G::ALIGN * k) {
                 Some(&(_, b)) => self.depth(self.label_for(b).unwrap()),
                 None => 0,
             };
             labels.push(label);
         }
-        // A target that is not a multiple of four past the lowest case turns into a huge index. The index
-        // is worked out from the register as it is, not untagged: a tagged address is far from every case,
-        // so it goes to the lookup, which untags it, and the engine can see through `adr` plus an entry.
-        let Instruction::BranchRegister { rn, .. } = self.decoded().instruction else {
+        // A target that is not a multiple of the alignment past the lowest case turns into a huge index. The
+        // index is worked out from the register as it is, not as `Guest::branch_target` makes it: such an
+        // address is far from every case, so it goes to the lookup, and the engine can see through the
+        // address the code built plus an entry.
+        let FlowKind::JumpThrough(Through::Register(rn)) =
+            G::flow(&self.decoded().instruction).kind
+        else {
             unreachable!("a jump through a table is a jump through a register")
         };
         let load = self.fixed(G_LOAD_ADDRESS);
         self.get(rn);
         let mut s = self.sink();
         load.push(&mut s);
-        s.i64_sub()
-            .i64_const(lo as i64)
-            .i64_sub()
-            .i64_const(2)
-            .i64_rotr()
-            .local_tee(index)
+        s.i64_sub().i64_const(lo as i64).i64_sub();
+        if G::ALIGN > 1 {
+            s.i64_const(i64::from(G::ALIGN_SHIFT)).i64_rotr();
+        }
+        s.local_tee(index)
             .i32_wrap_i64()
             .i32_const(slots as i32)
             .local_get(index)
@@ -2589,9 +2392,9 @@ impl<'a> FullEmitter<'a> {
             .br_table(labels, 0)
             .end();
         self.labels.pop();
-        // Untagged again here, so that the engine works it out only when no case is taken.
-        let register = self.register(Registers::bit(rn).expect("a general register"));
-        untag(&mut self.sink(), register);
+        // Made the target again here, so that the engine works it out only when no case is taken.
+        let register = self.register(G::reg_bit(rn).expect("a general register"));
+        G::branch_target(self, register);
         self.sink().local_set(target);
         self.unrecognised_jump(target);
     }
@@ -2618,7 +2421,7 @@ impl<'a> FullEmitter<'a> {
             self.fixed(G_SLOTS),
             self.fixed(G_SLOTS_COVER),
         );
-        crate::thread::lookup(&mut self.sink(), target, slots, offset, piece);
+        crate::thread::lookup::<G>(&mut self.sink(), target, slots, offset, piece);
         piece
     }
 
@@ -2630,9 +2433,9 @@ impl<'a> FullEmitter<'a> {
             .if_(BlockType::FunctionType(0))
             .local_get(target);
         if tail {
-            s.return_call(F_DISPATCH);
+            s.return_call(G::F_DISPATCH);
         } else {
-            s.call(F_DISPATCH);
+            s.call(G::F_DISPATCH);
         }
         s.else_().local_get(piece).ref_as_non_null();
         if tail {
@@ -2643,7 +2446,7 @@ impl<'a> FullEmitter<'a> {
     }
 }
 
-impl Emitter for FullEmitter<'_> {
+impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     fn sink(&mut self) -> InstructionSink<'_> {
         InstructionSink::new(&mut self.body)
     }
@@ -2652,8 +2455,8 @@ impl Emitter for FullEmitter<'_> {
         self.temporary(ty)
     }
 
-    fn get(&mut self, r: Reg) {
-        match Registers::bit(r) {
+    fn get(&mut self, r: G::Reg) {
+        match G::reg_bit(r) {
             Some(bit) => {
                 let local = self.register(bit);
                 self.sink().local_get(local);
@@ -2664,13 +2467,16 @@ impl Emitter for FullEmitter<'_> {
         }
     }
 
-    fn set(&mut self, r: Reg) {
+    fn set(&mut self, r: G::Reg) {
         self.written = true;
-        match Registers::bit(r) {
+        match G::reg_bit(r) {
             Some(bit) => {
                 let local = self.register(bit);
                 self.sink().local_set(local);
-                self.at.dirty = self.at.dirty.union(Registers::of(r).intersect(tracked()));
+                self.at.dirty = self
+                    .at
+                    .dirty
+                    .union(Registers(1 << bit).intersect(tracked::<G>()));
             }
             None => {
                 self.sink().drop();
@@ -2683,55 +2489,25 @@ impl Emitter for FullEmitter<'_> {
         self.address(offset);
     }
 
-    fn set_flags(&mut self, flags: Flags) {
+    fn set_flags(&mut self, flags: G::Flags) {
         self.written = true;
         let lazy = self.decoded().effects.flags.is_some();
-        match Shape::of(flags).filter(|_| lazy) {
+        match G::shape(flags).filter(|_| lazy) {
             Some(shape) => {
                 let id = self.plan.shapes.iter().position(|s| *s == shape).unwrap();
-                let canonical = self.canonical[id];
-                let copy = |s: &mut InstructionSink<'_>, from: u32, to: u32| {
-                    s.local_get(from).local_set(to);
-                };
+                let from = G::locals_of(flags);
+                let to = G::locals_of(self.canonical[id]);
                 let mut s = InstructionSink::new(&mut self.body);
-                match (flags, canonical) {
-                    (
-                        Flags::Add {
-                            a,
-                            b,
-                            carry,
-                            subtrahend,
-                            ..
-                        },
-                        Flags::Add {
-                            a: ca,
-                            b: cb,
-                            carry: cc,
-                            subtrahend: cm,
-                            ..
-                        },
-                    ) => {
-                        copy(&mut s, a, ca);
-                        match (subtrahend, cm) {
-                            (Some(m), Some(to)) => copy(&mut s, m, to),
-                            _ => copy(&mut s, b, cb),
-                        }
-                        if let (Carry::Local(c), Carry::Local(to)) = (carry, cc) {
-                            copy(&mut s, c, to);
-                        }
-                    }
-                    (Flags::Logic { result, .. }, Flags::Logic { result: cr, .. }) => {
-                        copy(&mut s, result, cr);
-                    }
-                    _ => unreachable!("a shape's locals match its flags"),
+                for (&from, &to) in from.as_slice().iter().zip(to.as_slice()) {
+                    s.local_get(from).local_set(to);
                 }
                 self.set_flag_state(2 + id as u32);
             }
             None => {
-                for (i, flag) in Flag::ALL.into_iter().enumerate() {
+                for (i, &(flag, _, _)) in G::FLAGS.iter().enumerate() {
                     let local = self.flag_locals[i];
                     let mut s = self.sink();
-                    flag_value(&mut s, flags, flag);
+                    G::flag_value(&mut s, flags, flag);
                     s.local_set(local);
                 }
                 self.set_flag_state(FLAGS_IN_LOCALS);
@@ -2739,47 +2515,65 @@ impl Emitter for FullEmitter<'_> {
         }
     }
 
-    fn flag(&mut self, flag: Flag) {
+    fn flag(&mut self, flag: G::Flag) {
         self.push_flag(flag);
     }
 
-    fn condition(&mut self, cond: Cond) {
+    fn condition(&mut self, cond: G::Cond) {
         let states = self.at.flags;
         if states.count_ones() == 1 && states.trailing_zeros() >= 2 {
             let flags = self.shape_flags(states.trailing_zeros() as usize - 2);
-            if condition_direct(&mut self.sink(), flags, cond) {
+            if G::condition_direct(&mut self.sink(), flags, cond) {
                 return;
             }
         }
-        condition_from_flags(self, cond);
+        G::condition_from_flags(self, cond);
     }
 
-    fn get_vector(&mut self, n: u8) {
-        let local = self.register(Registers::vector_bit(n));
+    fn get_vector(&mut self, v: G::Vector) {
+        let local = self.register(G::vector_bit(v));
         self.sink().local_get(local);
     }
 
-    fn set_vector(&mut self, n: u8) {
+    fn set_vector(&mut self, v: G::Vector) {
         self.written = true;
-        let bit = Registers::vector_bit(n);
+        let bit = G::vector_bit(v);
         let local = self.register(bit);
         self.sink().local_set(local);
         self.at.dirty = self.at.dirty.union(Registers(1 << bit));
     }
 
-    fn get_control(&mut self, control: Control) {
+    fn get_control(&mut self, control: G::Control) {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
-        Slot::Control(control).load(&mut s);
+        Slot::control::<G>(control).load(&mut s);
     }
 
-    fn hook(&mut self, hook: Hook) {
-        self.sink().call(hook_function(hook));
+    fn hook(&mut self, hook: G::Hook) {
+        // The registers the hook works on go to the thread block before it and come back after: those that
+        // may be stale there, and the passed ones, which live only in their parameters.
+        let registers = G::HOOKS[G::hook_index(hook)].registers;
+        let block = self.fixed(G_THREAD_BLOCK);
+        let stale = self.at.dirty.union(Registers::of_bits(G::PASSED_IN));
+        for bit in registers.intersect(stale).bits() {
+            let local = self.register(bit);
+            Slot::of_bit::<G>(bit).store_from(&mut self.sink(), block, local);
+        }
+        self.at.dirty = self.at.dirty.minus(registers);
+        self.sink().call(hook_function::<G>(hook));
+        for bit in registers.bits() {
+            let local = self.register(bit);
+            Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
+        }
     }
 
-    fn host(&self) -> Host {
-        self.host
+    fn host(&self) -> G::Host {
+        self.code.host
+    }
+
+    fn offer(&self) -> G::Offer {
+        self.code.offer
     }
 
     /// The slow path leaves the piece by a tail call, so no call stays in the function, which would make the
@@ -2798,16 +2592,15 @@ impl Emitter for FullEmitter<'_> {
             }
         };
         if !self.at.float_mode {
-            self.get_control(Control::Fpcr);
-            self.get_control(Control::FloatTracking);
-            self.sink().i32_or().local_set(local);
+            G::float_slow(self);
+            self.sink().local_set(local);
             self.at.float_mode = true;
         }
         self.sink().local_get(local).if_(BlockType::Empty);
         self.write_back();
         self.arguments();
         self.this_address(0);
-        self.sink().return_call(F_EXACT).end();
+        self.sink().return_call(G::F_EXACT).end();
         false
     }
 
@@ -2815,19 +2608,20 @@ impl Emitter for FullEmitter<'_> {
         self.at.aligned
     }
 
-    fn set_control(&mut self, control: Control) {
+    fn set_control(&mut self, control: G::Control) {
         self.written = true;
-        if matches!(control, Control::Fpcr | Control::FloatTracking) {
+        if G::FLOAT_CONTROLS.contains(&control) {
             self.at.float_mode = false;
         }
         let block = self.fixed(G_THREAD_BLOCK);
-        let value = self.temporary(Slot::Control(control).ty());
+        let slot = Slot::control::<G>(control);
+        let value = self.temporary(slot.ty());
         let mut s = self.sink();
         s.local_set(value);
-        Slot::Control(control).store_from(&mut s, block, value);
+        slot.store_from(&mut s, block, value);
     }
 
-    fn check(&mut self, address: u32, bytes: u32, access: Access) {
+    fn check(&mut self, address: u32, bytes: u32, access: Access, which: u8) {
         if self.omit.permissions {
             return;
         }
@@ -2839,7 +2633,7 @@ impl Emitter for FullEmitter<'_> {
         let plan = self
             .plan
             .checks
-            .get(&self.at.offset)
+            .get(&(self.at.offset, which))
             .copied()
             .unwrap_or(CheckPlan::Exact);
         if let CheckPlan::Skip = plan {
@@ -2884,12 +2678,12 @@ impl Emitter for FullEmitter<'_> {
                         .i64_ge_u()
                         .if_(BlockType::Empty);
                 }
-                // An address the table allows has a clear top byte, so only one it does not is untagged and
-                // tried again.
+                // An address the table allows is one data accesses use as it is, so only one it does not is
+                // made what they use and tried again.
                 permission_fast(&mut s, table, address, this, page);
-                untag(&mut s, address);
+                G::data_address(&mut s, address);
                 s.local_set(address);
-                permission_exact(&mut s, address, bytes, this, fault_at, exact);
+                permission_exact::<G>(&mut s, address, bytes, this, fault_at, exact);
                 self.sites[Reason::MemoryFault as usize] += 1;
                 self.save(Pc::Offset(offset), true);
                 let mut s = self.sink();
@@ -2897,7 +2691,7 @@ impl Emitter for FullEmitter<'_> {
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
                     .i32_const(UNWIND_LEAVE)
-                    .call(F_UNWIND)
+                    .call(G::F_UNWIND)
                     .unreachable()
                     .end()
                     .end();
@@ -2916,11 +2710,43 @@ impl Emitter for FullEmitter<'_> {
                     .local_set(start);
                 let mut s = self.sink();
                 permission_fast(&mut s, table, start, this, page);
-                permission_exact(&mut s, start, len, this, fault_at, exact);
+                permission_exact::<G>(&mut s, start, len, this, fault_at, exact);
                 self.leave_to(offset);
                 self.sink().end().end();
             }
         }
+    }
+
+    fn check_range(&mut self, address: u32, length: u32, access: Access) -> u32 {
+        let (page, last) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
+        let allowed = self.temporary(ValType::I32);
+        let table = self.table();
+        let mut s = self.sink();
+        G::data_address(&mut s, address);
+        s.local_set(address);
+        permission_range(
+            &mut s,
+            table,
+            (address, length),
+            page_bit(access),
+            (page, last),
+            allowed,
+        );
+        allowed
+    }
+
+    fn warn(&mut self, reason: G::Reason) {
+        let number = guest_reason::<G>(reason);
+        self.sites[number as usize] += 1;
+        self.sink().i32_const(number as i32);
+        self.this_address(0);
+        self.sink().call(F_WARN);
+    }
+
+    fn raise_stop(&mut self) {
+        self.raised_stop = true;
+        let block = self.fixed(G_THREAD_BLOCK);
+        raise_stop::<G>(&mut self.sink(), block);
     }
 
     fn jump(&mut self, target: Target) {
@@ -2950,25 +2776,26 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn call(&mut self, target: Target) {
-        // The callee may change FPCR or FPSR.
+        // The callee may change the floating point controls.
         self.at.float_mode = false;
         let offset = self.at.offset;
+        let next = offset + u64::from(self.decoded().length);
         self.write_back();
         let looked_up = match target {
             Target::Address(local) => Some(self.look_up(local)),
             Target::Relative(_) => None,
         };
         let mut s = self.sink();
-        for i in 0..PASSED {
+        for i in 0..G::PASSED {
             s.local_get(i);
         }
-        // Instructions are 4 byte aligned, so the bit is clear in the address and adding it sets it.
+        // No return address has the bit, so adding it sets it.
         let wanted = if self.flags_needed_after(offset) {
-            FLAGS_WANTED as u64
+            G::FLAGS_WANTED as u64
         } else {
             0
         };
-        self.address(offset + 4 + wanted);
+        self.address(next + wanted);
         let depth = self.depth;
         self.sink().local_get(depth);
         match target {
@@ -2980,7 +2807,7 @@ impl Emitter for FullEmitter<'_> {
                     }
                     None => {
                         self.address(to);
-                        self.sink().call(F_DISPATCH);
+                        self.sink().call(G::F_DISPATCH);
                     }
                 }
             }
@@ -2990,10 +2817,18 @@ impl Emitter for FullEmitter<'_> {
             }
         }
         let returned_sp = self.temporary(ValType::I64);
-        let mut s = self.sink();
-        s.local_set(returned_sp);
-        for i in (0..ARGUMENTS).rev() {
-            s.local_set(i);
+        let mut reload = self.plan.live_after[&offset];
+        for &bit in G::PASSED_OUT.iter().rev() {
+            let local = if bit == G::SP_BIT {
+                returned_sp
+            } else if let Some(local) = G::passed(bit) {
+                local
+            } else {
+                // Passed out only: the thread block holds the same value, so it needs no load.
+                reload = reload.minus(Registers(1 << bit));
+                self.register(bit)
+            };
+            self.sink().local_set(local);
         }
         self.at.dirty = Registers::NONE;
         self.set_flag_state(FLAGS_IN_BLOCK);
@@ -3002,35 +2837,38 @@ impl Emitter for FullEmitter<'_> {
         let kept =
             self.at.aligned || (self.plan.frame_across.contains(&offset) && !self.omit.permissions);
         if kept {
-            self.sink()
+            let mut s = self.sink();
+            s.local_get(returned_sp).local_get(G::L_SP);
+            // The callee's return moved the stack pointer up past the return address.
+            if let ReturnAddress::Stack { bytes } = G::RETURN_ADDRESS {
+                s.i64_const(bytes.into()).i64_add();
+            }
+            s.i64_ne()
                 .local_get(returned_sp)
-                .local_get(L_SP)
-                .i64_ne()
-                .local_get(returned_sp)
-                .local_set(L_SP)
+                .local_set(G::L_SP)
                 .if_(BlockType::Empty);
-            self.leave_to(offset + 4);
+            self.leave_to(next);
             self.sink().end();
         } else {
-            self.sink().local_get(returned_sp).local_set(L_SP);
+            self.sink().local_get(returned_sp).local_set(G::L_SP);
         }
-        let reload = self.plan.live_after[&offset];
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in reload.bits() {
             let local = self.register(bit);
-            Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
+            Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
         }
     }
 
     fn ret(&mut self, target: u32) {
+        pop_return_address::<G>(&mut self.sink());
         self.write_back_registers();
         // The flags go back only when the caller asks for them.
         let flags = self.at.flags;
         let wanted = |e: &mut Self| {
             if flags != 1 << FLAGS_IN_BLOCK {
                 e.sink()
-                    .local_get(L_RETURN)
-                    .i64_const(FLAGS_WANTED)
+                    .local_get(G::L_RETURN)
+                    .i64_const(G::FLAGS_WANTED)
                     .i64_and()
                     .i32_wrap_i64()
                     .if_(BlockType::Empty);
@@ -3039,82 +2877,84 @@ impl Emitter for FullEmitter<'_> {
                 e.sink().end();
             }
         };
+        let block = self.fixed(G_THREAD_BLOCK);
         if self.omit.returns {
             wanted(self);
-            let mut s = self.sink();
-            for i in 0..PASSED {
-                s.local_get(i);
-            }
-            s.return_();
+            push_results::<G>(&mut self.sink(), block);
+            self.sink().return_();
             return;
         }
         let mut s = self.sink();
-        s.local_get(target)
-            .local_get(L_RETURN)
-            .i64_const(!FLAGS_WANTED)
-            .i64_and()
-            .i64_eq()
-            .if_(BlockType::Empty);
+        s.local_get(target);
+        crate::code::push_expected_return::<G>(&mut s);
+        s.i64_eq().if_(BlockType::Empty);
         wanted(self);
         let mut s = self.sink();
-        for i in 0..PASSED {
-            s.local_get(i);
-        }
+        push_results::<G>(&mut s, block);
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
         self.write_back_flags(false);
-        let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
-        set_pc(&mut s, block, |s| {
+        set_pc::<G>(&mut s, block, |s| {
             s.local_get(target);
         });
-        bottom_return(&mut s);
-        save_passed(&mut s, block);
-        s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
+        bottom_return::<G>(&mut s, block);
+        save_passed::<G>(&mut s, block);
+        s.i32_const(UNWIND_GO_TO).call(G::F_UNWIND).unreachable();
     }
 
     fn syscall(&mut self) {
         self.at.float_mode = false;
-        let next = self.at.offset + 4;
+        let next = self.at.offset + u64::from(self.decoded().length);
         self.save(Pc::Offset(next), false);
-        self.get(Reg::X(8));
-        for i in 0..6 {
-            self.get(Reg::X(i));
+        let registers = G::SYSCALL;
+        self.get(registers.number);
+        for r in registers.args {
+            self.get(r);
         }
-        self.sink().call(F_SYSCALL).local_set(0);
-        self.at.dirty = Registers::NONE;
-        // Nothing but x0 has changed, and everything was just written back.
+        self.sink().call(F_SYSCALL);
+        // Nothing but the result has changed, and everything was just written back.
+        let result = G::reg_bit(registers.result).expect("a result register");
+        let local = self.register(result);
+        self.sink().local_set(local);
+        self.at.dirty = Registers(1 << result).intersect(tracked::<G>());
         let live = self.plan.live_after[&self.at.offset];
-        self.reload(live, 1);
+        self.reload(live.minus(Registers(1 << result)), G::passed(result));
         // The kernel raises the flag during the call when the thread must not carry on.
-        self.stop_check(Pc::Offset(next), AfterStop::Reload(live, 0));
+        self.stop_check(Pc::Offset(next), AfterStop::Reload(live));
     }
 
-    fn trap(&mut self, trap: Trap) {
-        if let Trap::Unsupported = trap {
+    fn trap(&mut self, trap: G::Trap) {
+        let (kind, detail, pc) = G::trap_kind(trap);
+        if kind == TrapKind::Unsupported {
             self.sites[Reason::UnsupportedInstructionReached as usize] += 1;
         }
         let offset = self.at.offset;
-        self.save(Pc::Offset(offset), true);
-        let word = i64::from(self.decoded().word);
-        let mut s = self.sink();
-        match trap {
-            Trap::Undefined => s.i32_const(TrapKind::Undefined as i32).i64_const(word),
-            Trap::Unsupported => s.i32_const(TrapKind::Unsupported as i32).i64_const(word),
-            Trap::Breakpoint(comment) => s
-                .i32_const(TrapKind::Breakpoint as i32)
-                .i64_const(comment.into()),
-            Trap::Alignment(address) => s.i32_const(TrapKind::Alignment as i32).local_get(address),
+        let length = self.decoded().length;
+        let at = match pc {
+            TrapPc::At => offset,
+            TrapPc::After => offset + u64::from(length),
         };
+        self.save(Pc::Offset(at), true);
+        let instruction = G::trap_detail(self.code.bytes(offset));
+        let mut s = self.sink();
+        s.i32_const(kind as i32);
+        trap_detail(&mut s, detail, instruction);
         s.call(F_TRAP)
             .i32_const(UNWIND_LEAVE)
-            .call(F_UNWIND)
+            .call(G::F_UNWIND)
             .unreachable();
     }
 
     fn next(&mut self) {
-        let next = self.at.offset + 4;
-        if next < self.function.blocks[self.at.block].end {
+        let next = self.at.offset + u64::from(self.decoded().length);
+        // The stop hook runs before the next instruction when this one raised the flag.
+        if self.raised_stop {
+            self.raised_stop = false;
+            let live = self.plan.live_after[&self.at.offset];
+            self.stop_check(Pc::Offset(next), AfterStop::Reload(live));
+        }
+        if self.at.offset != self.function.last(self.at.block) {
             return;
         }
         self.goto(next);
