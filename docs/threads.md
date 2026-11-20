@@ -197,8 +197,10 @@ disagree, the last one is followed (brief-threads.md lines 134-160, interface no
   `StopReason { Interrupted, Suspended, Idle { until }, Finished { status } }`. Today's run-to-the-end
   call becomes `run_until_finished`.
 - **Processes that share memory need not be on one kernel.** The owner dropped the "process closure" as a
-  hard rule. Replay of processes that share memory across kernels is the embedder's concern (interface
-  notes lines 158-162). Since 2026-11-19 one task may also be on another kernel than its siblings
+  hard rule. The kernel marks the pages a process shared watched when it leaves. Replay of processes
+  that share memory across kernels is the embedder's concern (interface notes lines 158-162). (The
+  kernel's report of who shares memory is replaced by the shared-memory hooks, below; whether the
+  marking on leaving still holds when single tasks leave is the interface track's to say.) Since 2026-11-19 one task may also be on another kernel than its siblings
   (below).
 - Different processes that share no writable memory always run in parallel with each other.
 - The kernel is the same under every executor. It is entered by one caller at a time to begin with. The
