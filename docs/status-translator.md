@@ -503,6 +503,12 @@ Ninth run of T3 (2026-11-20 08:00 local on):
   only on `MSR_SR_systemmove`, in both the whole run and the Chrome sample (the form the earlier log filter
   hid); the programs tests 22 passed, 2 ignored. On the Mac, layer 1's tests in debug with the change, 4 jobs,
   load 6 to 11 (08:28 to 08:32, 219 s, `t3/r9/mac-layer1-tests-patch.log`): 7 passed.
+- The whole debug suite of the four crates on f6da817c (rented ARM64 machine, 24 jobs, 16:32 to 16:55 UTC, load
+  15 to 19, `t3/r9/suite.log`, script `t3/r9/suite.sh`): every test binary passed but layer 1's, where
+  `every_covered_form_matches_the_cpu` and `sample_matches_the_cpu_in_chrome` failed on `MSR_SR_systemmove`
+  alone (the Graviton's FPSR); programs 22 passed (2 ignored), layer 3 3, layer 2 1, changes 9, checks 12,
+  browser 1, binaries 2, smoke 6, test_guest 16, valid 7, decoding 6, seeded 1. Layer 1's verdict, the Mac's,
+  is the 7 passed above.
 
 After T3:
 - For the independent check: layers 1 and 2 and layer 3 with a seed other than 300 to 600 (layer 1 on
