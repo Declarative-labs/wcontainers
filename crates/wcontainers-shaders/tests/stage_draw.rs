@@ -19,7 +19,7 @@ use wcontainers_gpu::{
 };
 use wcontainers_graphics_test::Driver;
 use wcontainers_graphics_test::d3d11::{self, Gpu};
-use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
+use wcontainers_shaders::stage::{InputTopology, StageDraw, StageIndex, Stages};
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
@@ -35,6 +35,8 @@ struct Case {
     topology: InputTopology,
     count: u32,
     instances: u32,
+    /// Drawn through 16-bit indices ([`indices`]).
+    indexed: bool,
 }
 
 /// Which route of the stage helper draws, and with which pixel shader.
@@ -57,44 +59,69 @@ impl Route {
 
 /// Primitives of every list and strip, one draw instanced (Direct3D numbers each instance's
 /// primitives from zero).
-const NUMBERED: [Case; 5] = [
+const NUMBERED: [Case; 7] = [
     Case {
         topology: InputTopology::TriangleList,
         count: VERTICES as u32,
         instances: 1,
+        indexed: false,
     },
     Case {
         topology: InputTopology::TriangleStrip,
         count: 11,
         instances: 2,
+        indexed: false,
     },
     Case {
         topology: InputTopology::LineList,
         count: VERTICES as u32,
         instances: 1,
+        indexed: false,
     },
     Case {
         topology: InputTopology::LineStrip,
         count: 9,
         instances: 1,
+        indexed: false,
     },
     Case {
         topology: InputTopology::PointList,
         count: VERTICES as u32,
         instances: 1,
+        indexed: false,
+    },
+    Case {
+        topology: InputTopology::TriangleStrip,
+        count: 14,
+        instances: 2,
+        indexed: true,
+    },
+    Case {
+        topology: InputTopology::LineStrip,
+        count: 12,
+        instances: 1,
+        indexed: true,
     },
 ];
 
-const CASES: [Case; 2] = [
+const CASES: [Case; 3] = [
     Case {
         topology: InputTopology::LineList,
         count: VERTICES as u32,
         instances: 1,
+        indexed: false,
     },
     Case {
         topology: InputTopology::LineStrip,
         count: 9,
         instances: 1,
+        indexed: false,
+    },
+    Case {
+        topology: InputTopology::LineStrip,
+        count: 12,
+        instances: 1,
+        indexed: true,
     },
 ];
 
@@ -115,6 +142,22 @@ fn vertices(seed: u64) -> Vec<f32> {
     v
 }
 
+/// One index in this many is a restart, besides the one in the middle of the draw.
+const RESTART_ONE_IN: u32 = 6;
+
+/// Seeded 16-bit indices of an indexed case's strip, with restart indices: one in the middle of the
+/// draw and others at seeded places; an even number of them, as the stage helper reads whole words.
+fn indices(seed: u64, case: &Case) -> Vec<u8> {
+    let mut rng = fastrand::Rng::with_seed(seed ^ 0x5eed);
+    (0..case.count.next_multiple_of(2))
+        .flat_map(|i| {
+            let index = rng.u16(..VERTICES as u16);
+            let restart = i == case.count / 2 || rng.u32(..RESTART_ONE_IN) == 0;
+            if restart { RESTART } else { index }.to_le_bytes()
+        })
+        .collect()
+}
+
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
     match t {
         InputTopology::PointList => D3D11_PRIMITIVE_TOPOLOGY_POINTLIST,
@@ -125,7 +168,13 @@ fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
     }
 }
 
-fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], blending: bool, route: Route) -> Vec<u8> {
+fn direct3d(
+    gpu: &Gpu,
+    case: &Case,
+    (vertices, indices): (&[f32], &[u8]),
+    blending: bool,
+    route: Route,
+) -> Vec<u8> {
     let (vs, ps) = (
         bytecode("vs_line.dxbc"),
         bytecode(&format!("{}.dxbc", route.pixel_shader())),
@@ -164,6 +213,9 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], blending: bool, route: Rou
     };
     let blend = gpu.blend(&blend).unwrap();
     let (target, rtv) = gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM).unwrap();
+    let index_buffer = case
+        .indexed
+        .then(|| gpu.immutable(indices, D3D11_BIND_INDEX_BUFFER).unwrap());
     unsafe {
         let c = &gpu.context;
         c.RSSetState(&raster);
@@ -172,7 +224,13 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], blending: bool, route: Rou
         c.ClearRenderTargetView(&rtv, if blending { &CLEAR } else { &[0.0; 4] });
         c.OMSetRenderTargets(Some(&[Some(rtv)]), None);
         gpu.viewport(SIZE, SIZE);
-        c.DrawInstanced(case.count, case.instances, 0, 0);
+        match &index_buffer {
+            Some(ib) => {
+                c.IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
+                c.DrawIndexedInstanced(case.count, case.instances, 0, 0, 0);
+            }
+            None => c.DrawInstanced(case.count, case.instances, 0, 0),
+        }
         c.OMSetBlendState(None, None, !0);
     }
     read(gpu, &target, Format::Rgba8Unorm)
@@ -205,7 +263,7 @@ fn blended() -> BlendDesc {
 fn ours<B: Backend>(
     b: &mut B,
     case: &Case,
-    vertices: &[f32],
+    (vertices, indices): (&[f32], &[u8]),
     dxil: bool,
     blending: bool,
     route: Route,
@@ -311,16 +369,33 @@ fn ours<B: Backend>(
             }),
         }])
         .unwrap();
+    let index_buffer = case
+        .indexed
+        .then(|| buffer(b, indices, BufferUsage::INDEX | BufferUsage::STORAGE));
     let draw = StageDraw {
         vertex_sets: [Some(&vertex_set), None, None, Some(&vertex_helpers)],
         geometry_sets: [None; 4],
-        index: None,
+        index: index_buffer.as_ref().map(|buffer| StageIndex {
+            buffer,
+            size: indices.len() as u64,
+            offset: 0,
+            format: IndexFormat::U16,
+        }),
         topology: case.topology,
-        range: DrawRange::Vertices {
-            first: 0,
-            count: case.count,
-            first_instance: 0,
-            instances: case.instances,
+        range: match case.indexed {
+            true => DrawRange::Indexed {
+                first: 0,
+                count: case.count,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: case.instances,
+            },
+            false => DrawRange::Vertices {
+                first: 0,
+                count: case.count,
+                first_instance: 0,
+                instances: case.instances,
+            },
         },
         stream_output: None,
     };
@@ -516,6 +591,7 @@ fn print_coverage(name: &str, draw: impl FnOnce(&Case, &[f32]) -> Vec<u8>) {
         topology: InputTopology::LineList,
         count: (vertices.len() / (COLOURED_VERTEX_BYTES as usize / 4)) as u32,
         instances: 1,
+        indexed: false,
     };
     let picture = draw(&case, &vertices);
     eprintln!("{name}: alpha, '.' where nothing is drawn");
@@ -564,13 +640,13 @@ fn antialiased_lines_draw_as_direct3d_does() {
         eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
         if std::env::var_os("WCONTAINERS_LINE_COVERAGE").is_some() {
             print_coverage(&format!("{driver:?}"), |case, v| {
-                direct3d(gpu, case, v, false, Route::Lines)
+                direct3d(gpu, case, (v, &[]), false, Route::Lines)
             });
         }
     }
     if std::env::var_os("WCONTAINERS_LINE_COVERAGE").is_some() {
         print_coverage("ours", |case, v| {
-            ours(&mut backend, case, v, false, false, Route::Lines)
+            ours(&mut backend, case, (v, &[]), false, false, Route::Lines)
         });
     }
     let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
@@ -585,9 +661,13 @@ fn antialiased_lines_draw_as_direct3d_does() {
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
         for (i, case) in CASES.iter().enumerate() {
+            let indices = indices(seed, case);
             let references: Vec<_> = gpus
                 .iter()
-                .map(|(d, gpu)| (*d, direct3d(gpu, case, &vertices, true, Route::Lines)))
+                .map(|(d, gpu)| {
+                    let reference = direct3d(gpu, case, (&vertices, &indices), true, Route::Lines);
+                    (*d, reference)
+                })
                 .collect();
             let between = apart(&references[0].1, &references[1].1);
             eprintln!(
@@ -598,11 +678,19 @@ fn antialiased_lines_draw_as_direct3d_does() {
             );
             spread = spread.max(*between.iter().max().unwrap());
             for dxil in [false, true] {
-                let picture = ours(&mut backend, case, &vertices, dxil, true, Route::Lines);
+                let picture = ours(
+                    &mut backend,
+                    case,
+                    (&vertices, &indices),
+                    dxil,
+                    true,
+                    Route::Lines,
+                );
                 for (driver, reference) in &references {
                     let name = format!(
-                        "seed {seed} {:?} {} against {driver:?}",
+                        "seed {seed} {:?}{} {} against {driver:?}",
                         case.topology,
+                        if case.indexed { " indexed" } else { "" },
                         if dxil { "dxil" } else { "dxbc" }
                     );
                     let d = apart(reference, &picture);
@@ -684,7 +772,9 @@ fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
     for seed in seed..seed + seeds {
         let vertices = vertices(seed);
         for case in &NUMBERED {
-            let reference = direct3d(&gpu, case, &vertices, false, Route::Primitives);
+            let indices = indices(seed, case);
+            let drawn_from = (&vertices[..], &indices[..]);
+            let reference = direct3d(&gpu, case, drawn_from, false, Route::Primitives);
             let drawn = reference
                 .chunks(4)
                 .filter(|t| *t != &reference[..4])
@@ -693,15 +783,16 @@ fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
                 let picture = ours(
                     &mut backend,
                     case,
-                    &vertices,
+                    drawn_from,
                     dxil,
                     false,
                     Route::Primitives,
                 );
                 let name = format!(
-                    "seed {seed} {:?} x{} {}",
+                    "seed {seed} {:?} x{}{} {}",
                     case.topology,
                     case.instances,
+                    if case.indexed { " indexed" } else { "" },
                     if dxil { "dxil" } else { "dxbc" }
                 );
                 let d = apart(&reference, &picture);

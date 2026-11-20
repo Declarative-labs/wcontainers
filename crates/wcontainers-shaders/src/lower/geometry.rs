@@ -508,12 +508,15 @@ impl Lowering<'_> {
         let past = b.binary(BinaryOperator::GreaterEqual, x, total);
         b.when(past, |b| b.ret(None));
         let prim = b.binary(BinaryOperator::Divide, x, gsi);
-        // Listed primitives: the list's first word is its index total, which only the GPU knows, so
-        // invocations past it (the dispatch covers the most there can be) run no shader and close
-        // their slots.
+        // Listed primitives, or an indexed strip made a list: the list's first word is its index
+        // total, which only the GPU knows, so invocations past it (the dispatch covers the most there
+        // can be) run no shader and close their slots.
         let listed = stage::value(&mut b, values, stage::word::LISTED);
         let zero = b.u32(0);
         let is_listed = b.binary(BinaryOperator::NotEqual, listed, zero);
+        let listed_total = stage::value(&mut b, values, stage::word::LISTED_TOTAL);
+        let total_only = b.binary(BinaryOperator::NotEqual, listed_total, zero);
+        let capped = b.binary(BinaryOperator::LogicalOr, is_listed, total_only);
         let list_total = {
             let l = b.global(state.list);
             let first = b.u32(0);
@@ -523,7 +526,7 @@ impl Lowering<'_> {
             b.binary(BinaryOperator::Divide, words, nn)
         };
         let unlisted = b.binary(BinaryOperator::GreaterEqual, prim, list_total);
-        let idle = b.binary(BinaryOperator::LogicalAnd, is_listed, unlisted);
+        let idle = b.binary(BinaryOperator::LogicalAnd, capped, unlisted);
         let runs = b.expr(naga::Expression::Unary {
             op: naga::UnaryOperator::LogicalNot,
             expr: idle,

@@ -320,6 +320,31 @@ const PRIMITIVE_COPIES_BINDING: u32 = 2;
 /// A draw on the primitive route with adjacency, whose adjacent vertices Direct3D draws without.
 const PRIMITIVE_ID_ADJACENCY: &str = "PrimitiveIdAdjacency";
 
+/// The strip program, and the list it writes ([`tess::INDEX_HEADER`] words, then the indices).
+struct Strips<B: Backend> {
+    program: B::Program,
+    list: Option<Owned<B>>,
+}
+
+/// The strip program's values (`strips.wgsl`'s `Values`), read through its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct StripValues {
+    count: u32,
+    first: u32,
+    index_bytes: u32,
+    index_offset: u32,
+    vertices: u32,
+    restart: u32,
+    header: u32,
+    pad: u32,
+}
+
+/// The strip program's bindings: its values, the draw's indices, and the list.
+const STRIP_VALUES_BINDING: u32 = 0;
+const STRIP_INDICES_BINDING: u32 = 1;
+const STRIP_LIST_BINDING: u32 = 2;
+
 /// The cull program's bindings: its values, and the records followed by the index list.
 const CULL_VALUES_BINDING: u32 = 0;
 const CULL_DATA_BINDING: u32 = 1;
@@ -327,7 +352,6 @@ const CULL_DATA_BINDING: u32 = 1;
 const WITHOUT_WORK: &str = "the stage helper without work";
 const GEOMETRY_TRIANGLE_STRIP_ADJACENCY: &str = "GeometryTriangleStripAdjacency";
 const STAGE_INDEX_U8: &str = "StageIndexU8";
-const STAGE_INDEXED_STRIP: &str = "StageIndexedStrip";
 const STAGE_INDIRECT: &str = "StageIndirect";
 const DOMAIN_SETS: &str = "the sets of the stages after a domain stage";
 const GEOMETRY_PRIMITIVE_ID_AFTER_DOMAIN: &str = "GeometryPrimitiveIdAfterDomain";
@@ -373,6 +397,10 @@ struct StreamValues {
     count: u32,
     listed: u32,
     stream: u32,
+    listed_total: u32,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
     strides: [u32; STREAM_BUFFERS],
     sizes: [u32; STREAM_BUFFERS],
     table: [StreamEntry; STREAM_ENTRIES],
@@ -427,6 +455,8 @@ pub struct Stages<B: Backend> {
     cull: Option<Cull<B>>,
     lines: Option<Lines<B>>,
     numbered: Option<Numbered<B>>,
+    /// The strip program and the list it writes, made at the first indexed strip.
+    strips: Option<Strips<B>>,
     /// Words per vertex record.
     in_words: u32,
     records: Option<Owned<B>>,
@@ -490,6 +520,7 @@ impl<B: Backend> Stages<B> {
             cull: None,
             lines: None,
             numbered: None,
+            strips: None,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
@@ -546,6 +577,7 @@ impl<B: Backend> Stages<B> {
             }),
             lines: None,
             numbered: None,
+            strips: None,
             in_words: super::record_words(
                 (drawn_slots + super::distance_slots(programs.cull_distances)) as usize,
             ),
@@ -595,6 +627,7 @@ impl<B: Backend> Stages<B> {
                 linear: programs.linear,
             }),
             numbered: None,
+            strips: None,
             in_words: super::record_words(record_slots as usize),
             records: None,
             out: None,
@@ -640,6 +673,7 @@ impl<B: Backend> Stages<B> {
                 passthrough: programs.passthrough,
                 drawn_slots: record_slots + 1,
             }),
+            strips: None,
             in_words: super::record_words(record_slots as usize),
             records: None,
             out: None,
@@ -782,6 +816,7 @@ impl<B: Backend> Stages<B> {
             cull: None,
             lines: None,
             numbered: None,
+            strips: None,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
@@ -821,6 +856,12 @@ impl<B: Backend> Stages<B> {
         }
         if let Some(n) = self.numbered {
             backend.destroy(Object::Program(n.program));
+        }
+        if let Some(s) = self.strips {
+            backend.destroy(Object::Program(s.program));
+            if let Some(l) = s.list {
+                backend.destroy(Object::Buffer(l.buffer));
+            }
         }
         for owned in [self.records, self.out].into_iter().flatten() {
             backend.destroy(Object::Buffer(owned.buffer));
@@ -984,11 +1025,6 @@ impl<B: Backend> Stages<B> {
             }
             _ => {}
         }
-        if strip && draw.index.is_some() {
-            // Direct3D's indexed strips restart at the largest index, which needs a pass over the
-            // indices to number the primitives.
-            return Err(StageError::Unsupported(STAGE_INDEXED_STRIP));
-        }
         let primitives = match strip {
             false => count / n,
             true => (count + 1).saturating_sub(n),
@@ -1003,6 +1039,19 @@ impl<B: Backend> Stages<B> {
             return Ok(None);
         }
         let limits = backend.caps().limits;
+        // An indexed strip is first listed as an indexed list of its primitives (a restart index
+        // ending a strip, odd triangles taking their last two vertices swapped), which the stages
+        // then take as any list, with a place for every primitive the strip could have: those past
+        // the listed ones hold none.
+        let listed_total = strip && draw.index.is_some();
+        let (count, first, strip) = match &draw.index {
+            Some(index) if strip => {
+                let listed = primitives.checked_mul(n).ok_or(GpuError::OutOfMemory)?;
+                self.list_strip(backend, index, (first, count), n, listed)?;
+                (listed, 0, false)
+            }
+            _ => (count, first, strip),
+        };
         let record_count = u64::from(count) * u64::from(instances);
         let record_bytes = record_count * u64::from(self.in_words) * u64::from(WORD);
         // On the cull route the records end with the empty record, then the index list the final draw
@@ -1096,24 +1145,18 @@ impl<B: Backend> Stages<B> {
             },
         };
 
-        let (index_bytes, index_offset, indices) = match &draw.index {
-            Some(index) => {
-                let bytes = match index.format {
-                    IndexFormat::U16 => size_of::<u16>() as u32,
-                    IndexFormat::U32 => size_of::<u32>() as u32,
-                    IndexFormat::U8 => return Err(StageError::Unsupported(STAGE_INDEX_U8)),
-                };
-                let align = u64::from(limits.min_storage_offset_alignment);
-                let start = index.offset - index.offset % align;
-                let size = (index.size - start) & !(u64::from(WORD) - 1);
-                let range = BufferRange {
-                    buffer: index.buffer,
-                    offset: start,
-                    size,
-                };
-                (bytes, (index.offset - start) as u32, range)
-            }
-            None => (0, 0, self.unused_range(0)),
+        let strip_list = match &self.strips {
+            Some(Strips { list: Some(l), .. }) if listed_total => Some(BufferRange {
+                buffer: &l.buffer,
+                offset: 0,
+                size: l.size,
+            }),
+            _ => None,
+        };
+        let (index_bytes, index_offset, indices) = match (&draw.index, strip_list) {
+            (Some(_), Some(list)) => (WORD, tess::INDEX_HEADER * WORD, list),
+            (Some(index), None) => index_words(index, limits.min_storage_offset_alignment)?,
+            (None, _) => (0, 0, self.unused_range(0)),
         };
         // The API draw's values, then those of the stages after a domain stage.
         let mut values = [0u32; word::COUNT_OF as usize];
@@ -1128,6 +1171,7 @@ impl<B: Backend> Stages<B> {
         values[word::PRIMITIVES as usize] = primitives;
         values[word::INDEX_BASE as usize] = index_base;
         values[word::PATCH_POINTS as usize] = n;
+        values[word::LISTED_TOTAL as usize] = listed_total.into();
         let mut after = [0u32; word::COUNT_OF as usize];
         if let Some((points, listed, _)) = listed {
             after[word::COUNT as usize] = points;
@@ -1442,7 +1486,7 @@ impl<B: Backend> Stages<B> {
                     size: indices.size,
                 })
             }
-            _ => None,
+            _ => strip_list,
         };
 
         if let Some(g) = &self.geometry {
@@ -1526,6 +1570,7 @@ impl<B: Backend> Stages<B> {
                         so[at(offset_of!(StreamValues, units))] = primitives * instances;
                         so[at(offset_of!(StreamValues, vertices))] = n;
                         so[at(offset_of!(StreamValues, strip))] = strip.into();
+                        so[at(offset_of!(StreamValues, listed_total))] = listed_total.into();
                         so[at(offset_of!(StreamValues, record_words))] = self.in_words;
                         (records, record_bytes)
                     }
@@ -1634,6 +1679,84 @@ impl<B: Backend> Stages<B> {
             }
         }
         Ok(last)
+    }
+
+    /// Records the strip program's dispatch listing the primitives of `vertices` each that the
+    /// draw's indices (`first` and `count` of them) make, into a list of `listed` places.
+    fn list_strip(
+        &mut self,
+        backend: &mut B,
+        index: &StageIndex<'_, B>,
+        (first, count): (u32, u32),
+        vertices: u32,
+        listed: u32,
+    ) -> Result<(), StageError> {
+        let limits = backend.caps().limits;
+        let (index_bytes, index_offset, indices) =
+            index_words(index, limits.min_storage_offset_alignment)?;
+        let strips = match &mut self.strips {
+            Some(s) => s,
+            None => {
+                let shader = backend.create_shader(&super::strip_program()?)?;
+                let program = backend.create_program(&Program::Compute(&shader))?;
+                self.strips.insert(Strips {
+                    program,
+                    list: None,
+                })
+            }
+        };
+        let bytes = (u64::from(tess::INDEX_HEADER) + u64::from(listed)) * u64::from(WORD);
+        grow(backend, &mut strips.list, bytes, BufferUsage::STORAGE)?;
+        let mut sv = [0u32; word_at(size_of::<StripValues>())];
+        let at = |offset| word_at(offset);
+        sv[at(offset_of!(StripValues, count))] = count;
+        sv[at(offset_of!(StripValues, first))] = first;
+        sv[at(offset_of!(StripValues, index_bytes))] = index_bytes;
+        sv[at(offset_of!(StripValues, index_offset))] = index_offset;
+        sv[at(offset_of!(StripValues, vertices))] = vertices;
+        sv[at(offset_of!(StripValues, restart))] = match index.format {
+            IndexFormat::U16 => u32::from(u16::MAX),
+            _ => u32::MAX,
+        };
+        sv[at(offset_of!(StripValues, header))] = tess::INDEX_HEADER;
+        let values = words_as_bytes(&sv);
+        let mut offsets = [0u64];
+        let ring = backend.write_buffer_ring(
+            RingKind::Data,
+            &[&values],
+            limits.min_uniform_offset_alignment,
+            &mut offsets,
+        )?;
+        let list = &strips.list.as_ref().unwrap().buffer;
+        let set = backend.create_binding_set(&[
+            BindingEntry {
+                binding: STRIP_VALUES_BINDING,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &ring,
+                    offset: offsets[0],
+                    size: values.len() as u64,
+                }),
+            },
+            BindingEntry {
+                binding: STRIP_INDICES_BINDING,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::StorageBuffer {
+                    range: indices,
+                    writable: false,
+                },
+            },
+            storage(STRIP_LIST_BINDING, list, bytes, true),
+        ])?;
+        let mut sets = [None; MAX_BINDING_SETS];
+        sets[super::STAGE_SET as usize] = Some(&set);
+        backend.dispatch(&DispatchCall {
+            program: &strips.program,
+            bindings: sets,
+            immediates: &[],
+            groups: DispatchGroups::Direct([1, 1, 1]),
+        })?;
+        Ok(())
     }
 
     /// Range `i` of the stand-in buffer.
@@ -1756,6 +1879,28 @@ fn stream_parts<B: Backend>(
 }
 
 /// The list of primitives of `n` vertices.
+/// The draw's index buffer as the storage words a compute program reads: bytes per index, bytes from
+/// the bound words' start to the API's offset, and the bound range.
+fn index_words<'a, B: Backend>(
+    index: &StageIndex<'a, B>,
+    alignment: u32,
+) -> Result<(u32, u32, BufferRange<&'a B::Buffer>), StageError> {
+    let bytes = match index.format {
+        IndexFormat::U16 => size_of::<u16>() as u32,
+        IndexFormat::U32 => size_of::<u32>() as u32,
+        IndexFormat::U8 => return Err(StageError::Unsupported(STAGE_INDEX_U8)),
+    };
+    let alignment = u64::from(alignment);
+    let start = index.offset - index.offset % alignment;
+    let size = (index.size - start) & !(u64::from(WORD) - 1);
+    let range = BufferRange {
+        buffer: index.buffer,
+        offset: start,
+        size,
+    };
+    Ok((bytes, (index.offset - start) as u32, range))
+}
+
 fn list_topology(n: u32) -> Topology {
     match n {
         1 => Topology::PointList,

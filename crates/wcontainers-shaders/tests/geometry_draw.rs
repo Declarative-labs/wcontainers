@@ -43,7 +43,7 @@ struct Case {
     indexed: Option<i32>,
 }
 
-const CASES: [Case; 15] = [
+const CASES: [Case; 18] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_quads",
@@ -194,11 +194,41 @@ const CASES: [Case; 15] = [
         first_instance: 0,
         indexed: None,
     },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cut",
+        topology: InputTopology::TriangleStrip,
+        count: 14,
+        first: 2,
+        instances: 2,
+        first_instance: 1,
+        indexed: Some(3),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_lines",
+        topology: InputTopology::LineStrip,
+        count: 11,
+        first: 1,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(0),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_line_adjacent",
+        topology: InputTopology::LineStripAdjacency,
+        count: 20,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(2),
+    },
 ];
 
 /// Vertex shaders writing cull distances, drawn without a geometry shader: the stage helper's cull
 /// route.
-const CULLED: [Case; 6] = [
+const CULLED: [Case; 8] = [
     Case {
         vs: "vs_cull",
         gs: "",
@@ -259,6 +289,26 @@ const CULLED: [Case; 6] = [
         first_instance: 0,
         indexed: Some(-1),
     },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::TriangleStrip,
+        count: 16,
+        first: 1,
+        instances: 2,
+        first_instance: 0,
+        indexed: Some(1),
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::LineStrip,
+        count: 12,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(0),
+    },
 ];
 
 /// The primitives of a `vs_cull` draw that its first two cull distances drop (all vertices left of
@@ -268,15 +318,6 @@ fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
         InputTopology::PointList => 1,
         InputTopology::LineList | InputTopology::LineStrip => 2,
         _ => 3,
-    };
-    let strip = matches!(
-        case.topology,
-        InputTopology::LineStrip | InputTopology::TriangleStrip
-    );
-    let primitives = if strip {
-        (case.count + 1).saturating_sub(n)
-    } else {
-        case.count / n
     };
     let vertex = |i: u32| -> usize {
         let place = case.first + i;
@@ -290,17 +331,15 @@ fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
         }
     };
     let floats = COLOURED_VERTEX_BYTES as usize / std::mem::size_of::<f32>();
-    let below = |first: u32, plane: fn(f32, f32) -> f32| {
-        (0..n).all(|k| {
-            let v = vertex(first + k) * floats;
+    let below = |places: &[u32], plane: fn(f32, f32) -> f32| {
+        places.iter().all(|&k| {
+            let v = vertex(k) * floats;
             plane(vertices[v], vertices[v + 1]) < 0.0
         })
     };
-    (0..primitives)
-        .filter(|&p| {
-            let first = if strip { p } else { p * n };
-            below(first, |x, _| x + 0.3) || below(first, |_, y| 0.2 - y)
-        })
+    primitive_places(case, n, indices)
+        .iter()
+        .filter(|p| below(p, |x, _| x + 0.3) || below(p, |_, y| 0.2 - y))
         .count() as u32
 }
 
@@ -349,14 +388,48 @@ fn vertices(seed: u64) -> Vec<f32> {
 }
 
 /// Seeded 16-bit indices, kept inside the vertices with the case's base vertex, an even number of
-/// them: the stage helper reads the buffer as whole words, as fronts hold it.
+/// them: the stage helper reads the buffer as whole words, as fronts hold it. A strip's have restart
+/// indices, one in the middle of the draw and others at seeded places.
 fn indices(seed: u64, case: &Case) -> Vec<u8> {
     let mut rng = fastrand::Rng::with_seed(seed ^ 0x5eed);
     let base = case.indexed.unwrap_or(0);
     let low = (-base).max(0) as u16;
     let high = (VERTICES as i32 - base.max(0)) as u16;
+    let middle = case.first + case.count / 2;
     (0..(case.first + case.count).next_multiple_of(2))
-        .flat_map(|_| rng.u16(low..high).to_le_bytes())
+        .flat_map(|i| {
+            let index = rng.u16(low..high);
+            let restart = strip(case.topology) && (i == middle || rng.u32(..RESTART_ONE_IN) == 0);
+            if restart { RESTART } else { index }.to_le_bytes()
+        })
+        .collect()
+}
+
+/// One strip index in this many is a restart, besides the one in the middle.
+const RESTART_ONE_IN: u32 = 8;
+
+fn strip(t: InputTopology) -> bool {
+    matches!(
+        t,
+        InputTopology::LineStrip | InputTopology::TriangleStrip | InputTopology::LineStripAdjacency
+    )
+}
+
+/// The draw's primitives, each as the places of its vertices among the draw's: a strip's restart
+/// indices end it, as Direct3D's do.
+fn primitive_places(case: &Case, n: u32, indices: &[u8]) -> Vec<Vec<u32>> {
+    let index = |i: u32| {
+        let at = std::mem::size_of::<u16>() * (case.first + i) as usize;
+        u16::from_le_bytes([indices[at], indices[at + 1]])
+    };
+    if !strip(case.topology) {
+        return (0..case.count / n)
+            .map(|p| (p * n..p * n + n).collect())
+            .collect();
+    }
+    (0..(case.count + 1).saturating_sub(n))
+        .filter(|&i| case.indexed.is_none() || (i..i + n).all(|k| index(k) != RESTART))
+        .map(|i| (i..i + n).collect())
         .collect()
 }
 
@@ -1038,7 +1111,7 @@ fn direct3d_streamed(
 
 /// Stream output cases: from geometry shaders (strips cut, points, lines, instances) and from the
 /// vertex shader alone (`gs` empty), some filling the first buffer.
-const STREAMED: [Case; 9] = [
+const STREAMED: [Case; 12] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_unplaced",
@@ -1128,6 +1201,36 @@ const STREAMED: [Case; 9] = [
         instances: 2,
         first_instance: 0,
         indexed: None,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "",
+        topology: InputTopology::TriangleStrip,
+        count: 13,
+        first: 1,
+        instances: 2,
+        first_instance: 0,
+        indexed: Some(2),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cut",
+        topology: InputTopology::TriangleStrip,
+        count: 12,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(1),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "",
+        topology: InputTopology::LineStrip,
+        count: 10,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(0),
     },
 ];
 
