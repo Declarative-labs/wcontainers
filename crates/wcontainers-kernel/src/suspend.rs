@@ -333,7 +333,16 @@ impl Kernel {
             if tid == pid {
                 process.ended_leader = Leader::of(thread);
             }
-            process.away.insert(tid, Away::of(thread));
+            // It goes on running here: an end of the copy makes no last stores for it into the
+            // memory it shares with the original.
+            process.away.insert(
+                tid,
+                Away {
+                    robust_list: 0,
+                    clear_child_tid: 0,
+                    ..Away::of(thread)
+                },
+            );
         }
         let announced = self
             .shared_announced

@@ -643,12 +643,13 @@ pub enum ContextOrigin { Suspended, Copied }
 - `copy_process_context` stops nothing, and the copy (`origin()` `Copied`) changes nothing of the
   original: it has its own address map (the same mappings over the same executor memory) and its
   own signal handler table, no pending signal (they stay with the process), and every task of the
-  process counted as away from it. Keeping copies in step on several kernels is the embedder's
-  business. It holds no tasks. An address map tells each kernel a process using it is on what
-  changes in its shared mappings, so a process moved to a second kernel is announced there, and one
-  left on the first (two processes in one memory, one moved) still is there. The test
-  `shared_memory_is_announced_on_the_first_kernel_after_a_copy_goes_on_a_second` maps and unmaps a
-  memory file after a copy of its process is put on a second kernel.
+  process counted as away from it (an end of the copy makes no last stores into the shared memory
+  for the tasks that went on running on the original). Keeping copies in step on several kernels
+  is the embedder's business. It holds no tasks. An address map tells each kernel a process using
+  it is on what changes in its shared mappings, so a process moved to a second kernel is announced
+  there, and one left on the first (two processes in one memory, one moved) still is there. The
+  test `shared_memory_is_announced_on_the_first_kernel_after_a_copy_goes_on_a_second` maps and
+  unmaps a memory file after a copy of its process is put on a second kernel.
 - `resume_process` puts the context on the kernel with `config` (given here, never kept in the
   value: a fork's child takes its parent's as before). A context for a process already on the
   kernel changes nothing and is handed back; so is one with a configuration the kernel cannot run
