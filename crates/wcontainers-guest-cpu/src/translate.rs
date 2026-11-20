@@ -7,6 +7,9 @@ use core::hash::Hash;
 use core::ops::Range;
 use wasm_encoder::{InstructionSink, ValType};
 
+/// The export of a guest's probe module (`Guest::probe_module`) that gives the host answer.
+pub const PROBE: &str = "probe";
+
 /// Everything the translator needs that is true of one guest CPU only.
 pub trait Guest: Personality {
     // --- identity ---
@@ -123,8 +126,7 @@ pub trait Guest: Personality {
 
     // --- what the host's engine does where WebAssembly leaves it open ---
     type Host: Copy + Eq + Hash + Debug + Send + Sync;
-    /// A module whose `probe` export (the contract's `PROBE`), an i32 function, gives the answer
-    /// `host_from_probe` reads.
+    /// A module whose [`PROBE`] export, an i32 function, gives the answer `host_from_probe` reads.
     fn probe_module() -> Vec<u8>;
     fn host_from_probe(answer: i32) -> Self::Host;
     /// The host answer as a number, for the cache key.

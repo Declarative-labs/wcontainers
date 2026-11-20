@@ -7351,34 +7351,22 @@ code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	16
 code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	64
 code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	8
 code	crates/wcontainers-translator/src/code.rs	int	frame_bytes	8
-code	crates/wcontainers-translator/src/code.rs	int	imports	3
-code	crates/wcontainers-translator/src/code.rs	int	imports	4
-code	crates/wcontainers-translator/src/code.rs	int	imports	5
-code	crates/wcontainers-translator/src/code.rs	int	imports	5
-code	crates/wcontainers-translator/src/code.rs	int	imports	7
 code	crates/wcontainers-translator/src/code.rs	int	keep_pages	0x0101_0101_0101_0101
 code	crates/wcontainers-translator/src/code.rs	int	keep_pages	3
 code	crates/wcontainers-translator/src/code.rs	int	keep_pages	8
-code	crates/wcontainers-translator/src/code.rs	int	types	7
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"built addresses"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"call targets"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"cuts"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"followed"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"given"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"kept reducible"
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter	8
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::piece	8
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::piece	8
 code	crates/wcontainers-translator/src/full.rs	int	aligned_after	16
-code	crates/wcontainers-translator/src/full.rs	str	FullEmitter<'a,G>::piece	"at most 8 tracked flags"
 code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	0x0101_0101_0101_0101
 code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	7
 code	crates/wcontainers-translator/src/full/proof.rs	int	pages_allow	8
 code	crates/wcontainers-translator/src/layout.rs	int	bit_index	128
 code	crates/wcontainers-translator/src/layout.rs	int	bit_index	128
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	3
-code	crates/wcontainers-translator/src/thread.rs	int	thread_module	3
-code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
 code	crates/wcontainers-wasmtime/build.rs	str	main	"CARGO_MANIFEST_DIR"
@@ -7428,7 +7416,6 @@ policy	generated	crates/wcontainers-kernel/src/linux/prctl.rs
 policy	generated	crates/wcontainers-kernel/src/linux/ptrace.rs
 policy	generated	crates/wcontainers-kernel/src/linux/system.rs
 policy	generated	crates/wcontainers-kernel/src/syscall/list.rs
-redefinition	crates/wcontainers-arm64/src/host.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-kernel-test/src/layer1.rs	int	MAX_RW_COUNT	MAX_RW_COUNT = 2147479552
 redefinition	crates/wcontainers-kernel-test/src/layer1.rs	int	linux_extra_ipc::IPC_NOWAIT	IPC_NOWAIT = 2048
 redefinition	crates/wcontainers-kernel-test/src/network.rs	int	EADDRINUSE	EADDRINUSE = 98
@@ -7497,7 +7484,6 @@ redefinition	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	LOAD = 6
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	BLOCK_AT	BLOCK_AT = 0
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	LOAD = 65536
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	PERMISSIONS_AT	PERMISSIONS_AT = 4096
-redefinition	crates/wcontainers-translator/src/contract.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse::WORD	WORD = 8
 redefinition	crates/wcontainers-wasmtime/src/starts.rs	int	WORD	WORD = 8
 redefinition	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	CODE = 65536
@@ -7632,7 +7618,6 @@ restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	accesses_fro
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	run	65536
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	two_accesses_of_one_instruction_fault_exactly	0x100
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	two_accesses_of_one_instruction_fault_exactly	0x100
-restated	crates/wcontainers-translator-test/tests/test_guest.rs	str	<Test<F> as Guest>::probe_module	"probe"
 restated	crates/wcontainers-translator-test/tests/valid.rs	int	long_chains_translate_on_a_small_stack	256
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_compiler_copied_by_fork_is_dropped_there	400u32
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000

@@ -715,6 +715,8 @@ const FLAGS_IN_LOCALS: u32 = 0;
 const FLAGS_IN_BLOCK: u32 = 1;
 /// The flags are as the function's first shape keeps them; the other shapes' states follow in order.
 const FIRST_SHAPE_STATE: u32 = FLAGS_IN_BLOCK + 1;
+/// The most flags a guest may keep in locals of their own.
+const MAX_TRACKED_FLAGS: usize = 8;
 
 /// What a check before a memory access does.
 #[derive(Clone, Copy, Debug)]
@@ -1539,7 +1541,7 @@ struct FullEmitter<'a, G: Guest> {
     taken: Vec<(ValType, u32)>,
     registers: FxHashMap<u32, u32>,
     /// One i32 local for each tracked flag, in `Guest::FLAGS` order.
-    flag_locals: [u32; 8],
+    flag_locals: [u32; MAX_TRACKED_FLAGS],
     /// Which flag state holds, when that is only known at run time.
     flag_state: u32,
     /// The locals each lazily kept flag shape shares.
@@ -1594,7 +1596,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             free: Vec::new(),
             taken: Vec::new(),
             registers: FxHashMap::default(),
-            flag_locals: [0; 8],
+            flag_locals: [0; MAX_TRACKED_FLAGS],
             flag_state: 0,
             canonical: Vec::new(),
             labels: Vec::new(),
@@ -1621,7 +1623,12 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             let room = e.new_local(ValType::I64);
             e.kept_pages.push((low, room));
         }
-        const { assert!(G::FLAGS.len() <= 8, "at most 8 tracked flags") };
+        const {
+            assert!(
+                G::FLAGS.len() <= MAX_TRACKED_FLAGS,
+                "too many tracked flags"
+            )
+        };
         for i in 0..G::FLAGS.len() {
             e.flag_locals[i] = e.new_local(ValType::I32);
         }
@@ -2495,9 +2502,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         s.else_().local_get(piece).ref_as_non_null();
         if tail {
-            s.return_call_ref(0).end().unreachable();
+            s.return_call_ref(crate::thread::T_PIECE)
+                .end()
+                .unreachable();
         } else {
-            s.call_ref(0).end();
+            s.call_ref(crate::thread::T_PIECE).end();
         }
     }
 }

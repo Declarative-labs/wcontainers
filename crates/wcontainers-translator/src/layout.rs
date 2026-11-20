@@ -50,7 +50,7 @@ pub(crate) trait Layout: Guest {
 
     // Function indices: the translator's six hooks, the guest's hooks, then the dispatcher and the module's
     // own functions, then the pieces.
-    const F_HOOKS: u32 = 6;
+    const F_HOOKS: u32 = crate::code::TRANSLATOR_HOOKS.len() as u32;
     const F_DISPATCH: u32 = Self::F_HOOKS + Self::HOOKS.len() as u32;
     const F_UNWIND: u32 = Self::F_DISPATCH + 1;
     const F_EXACT: u32 = Self::F_DISPATCH + 2;
@@ -67,7 +67,7 @@ pub(crate) trait Layout: Guest {
     const F_FIRST_PIECE: u32 = Self::F_FLAGS_WORD + Self::FLAGS_WORDS;
 
     // Type indices: those of the translator's own hooks and functions, the guest's hooks, then the rest.
-    const T_HOOKS: u32 = 8;
+    const T_HOOKS: u32 = crate::code::T_UNWIND + 1;
     const T_SAVE: u32 = Self::T_HOOKS + Self::HOOKS.len() as u32;
     const T_PERMISSION: u32 = Self::T_SAVE + 1;
     const T_FLAGS_WORD: u32 = Self::T_SAVE + 2;

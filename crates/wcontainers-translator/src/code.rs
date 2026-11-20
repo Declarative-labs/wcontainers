@@ -211,11 +211,22 @@ impl Unit {
 // Function indices of the translator's own hooks; the guest's hooks, the dispatcher and the rest follow
 // (see `Layout`).
 pub(crate) const F_SYSCALL: u32 = 0;
-pub(crate) const F_STOP: u32 = 1;
-pub(crate) const F_MEMORY_FAULT: u32 = 2;
-pub(crate) const F_LOAD_CODE: u32 = 3;
-pub(crate) const F_WARN: u32 = 4;
-pub(crate) const F_TRAP: u32 = 5;
+pub(crate) const F_STOP: u32 = F_SYSCALL + 1;
+pub(crate) const F_MEMORY_FAULT: u32 = F_STOP + 1;
+pub(crate) const F_LOAD_CODE: u32 = F_MEMORY_FAULT + 1;
+pub(crate) const F_WARN: u32 = F_LOAD_CODE + 1;
+pub(crate) const F_TRAP: u32 = F_WARN + 1;
+
+/// The translator's own hooks with their types, imported in the order of their function indices.
+pub(crate) const TRANSLATOR_HOOKS: [(&str, u32); 6] = [
+    (HOOK_SYSCALL, T_SYSCALL),
+    (HOOK_STOP, T_STOP),
+    (HOOK_MEMORY_FAULT, T_MEMORY_FAULT),
+    (HOOK_LOAD_CODE, T_LOAD_CODE),
+    (HOOK_WARN, T_WARN_TRAP),
+    (HOOK_TRAP, T_WARN_TRAP),
+];
+const _: () = assert!(TRANSLATOR_HOOKS.len() == F_TRAP as usize + 1);
 
 /// The function a meaning's hook calls.
 pub(crate) fn hook_function<G: Guest>(hook: G::Hook) -> u32 {
@@ -492,7 +503,7 @@ fn module<G: Guest>(
     let others: Vec<wasm_encoder::Function> = units
         .into_iter()
         .map(|unit| {
-            functions.function(0);
+            functions.function(crate::thread::T_PIECE);
             code_section.function(&unit.piece);
             unit.others
         })
@@ -501,7 +512,7 @@ fn module<G: Guest>(
         .flatten()
         .collect();
     for function in &others {
-        functions.function(0);
+        functions.function(crate::thread::T_PIECE);
         code_section.function(function);
     }
     module.section(&functions);
@@ -956,26 +967,36 @@ pub(crate) fn keep_pages(
         .local_set(room);
 }
 
-// Type indices of the dispatcher and the unwind tag; the rest follow the guest's hooks (see `Layout`).
-const T_DISPATCHER: u32 = 6;
-const T_UNWIND: u32 = 7;
+// Type indices of a piece, the translator's own hooks, the dispatcher and the unwind tag; the guest's hooks
+// and the rest follow (see `Layout`).
+const T_SYSCALL: u32 = crate::thread::T_PIECE + 1;
+const T_STOP: u32 = T_SYSCALL + 1;
+const T_MEMORY_FAULT: u32 = T_STOP + 1;
+const T_LOAD_CODE: u32 = T_MEMORY_FAULT + 1;
+const T_WARN_TRAP: u32 = T_LOAD_CODE + 1;
+const T_DISPATCHER: u32 = T_WARN_TRAP + 1;
+pub(crate) const T_UNWIND: u32 = T_DISPATCHER + 1;
 
 pub(crate) fn types<G: Guest>() -> TypeSection {
     let mut types = TypeSection::new();
-    piece_type::<G>(&mut types); // 0
-    types.ty().function([ValType::I64; 7], [ValType::I64]); // 1: syscall
-    types.ty().function([], [ValType::I32]); // 2: stop
-    types.ty().function([ValType::I64, ValType::I32], []); // 3: memory_fault
+    piece_type::<G>(&mut types);
+    // The number and the arguments.
+    let syscall_values = 1 + G::SYSCALL.args.len();
     types
         .ty()
-        .function([ValType::I64, ValType::I32], [ValType::I32]); // 4: load_code
-    types.ty().function([ValType::I32, ValType::I64], []); // 5: warn, trap
+        .function(vec![ValType::I64; syscall_values], [ValType::I64]);
+    types.ty().function([], [ValType::I32]);
+    types.ty().function([ValType::I64, ValType::I32], []);
+    types
+        .ty()
+        .function([ValType::I64, ValType::I32], [ValType::I32]);
+    types.ty().function([ValType::I32, ValType::I64], []);
     types.ty().function(
         vec![ValType::I64; G::PARAMETERS as usize + 1],
         vec![ValType::I64; G::RESULTS as usize],
-    ); // 6: dispatcher
-    types.ty().function([ValType::I32], []); // 7: unwind tag
-    // From 8: the guest's hooks.
+    );
+    types.ty().function([ValType::I32], []);
+    debug_assert_eq!(types.len(), G::T_HOOKS);
     for hook in G::HOOKS {
         types
             .ty()
@@ -997,14 +1018,7 @@ pub(crate) fn types<G: Guest>() -> TypeSection {
 
 pub(crate) fn imports<G: Guest>() -> ImportSection {
     let mut imports = ImportSection::new();
-    for (name, ty) in [
-        (HOOK_SYSCALL, 1),
-        (HOOK_STOP, 2),
-        (HOOK_MEMORY_FAULT, 3),
-        (HOOK_LOAD_CODE, 4),
-        (HOOK_WARN, 5),
-        (HOOK_TRAP, 5),
-    ] {
+    for (name, ty) in TRANSLATOR_HOOKS {
         imports.import(HOOKS, name, EntityType::Function(ty));
     }
     for (i, hook) in G::HOOKS.iter().enumerate() {
@@ -1061,7 +1075,7 @@ pub(crate) fn imports<G: Guest>() -> ImportSection {
         UNWIND,
         EntityType::Tag(TagType {
             kind: TagKind::Exception,
-            func_type_idx: 7,
+            func_type_idx: T_UNWIND,
         }),
     );
     imports
@@ -1191,7 +1205,7 @@ pub(crate) fn dispatcher<G: Guest>() -> wasm_encoder::Function {
     }
     s.local_get(piece)
         .ref_as_non_null()
-        .return_call_ref(0)
+        .return_call_ref(crate::thread::T_PIECE)
         .end();
     f
 }
@@ -1225,7 +1239,7 @@ pub(crate) fn exact<G: Guest>() -> wasm_encoder::Function {
     s.i32_const(EXACT_SLOT)
         .table_get(0)
         .ref_as_non_null()
-        .return_call_ref(0)
+        .return_call_ref(crate::thread::T_PIECE)
         .end();
     f
 }

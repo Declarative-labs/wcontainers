@@ -611,7 +611,7 @@ impl<const F: bool> Guest for Test<F> {
         let mut functions = FunctionSection::new();
         functions.function(0);
         let mut exports = ExportSection::new();
-        exports.export("probe", ExportKind::Func, 0);
+        exports.export(wcontainers_guest_cpu::PROBE, ExportKind::Func, 0);
         let mut code = CodeSection::new();
         let mut f = wasm_encoder::Function::new([]);
         f.instructions().i32_const(0).end();

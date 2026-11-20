@@ -9,8 +9,7 @@ use wasm_encoder::{
     TypeSection, ValType,
 };
 
-/// The probe module's export: `() -> i32`.
-pub const PROBE: &str = "probe";
+pub use wcontainers_guest_cpu::PROBE;
 
 const FUSED: i32 = 1;
 const ARM_NANS: i32 = 2;

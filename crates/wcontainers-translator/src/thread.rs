@@ -11,6 +11,9 @@ use wasm_encoder::{
 use wcontainers_guest_cpu::Guest;
 
 /// The piece signature: the passed registers and the expected return address in; the passed registers out.
+/// The type index of a piece, the first type of every module.
+pub(crate) const T_PIECE: u32 = 0;
+
 pub(crate) fn piece_type<G: Guest>(types: &mut TypeSection) {
     types.ty().function(
         vec![ValType::I64; G::PARAMETERS as usize],
@@ -21,7 +24,7 @@ pub(crate) fn piece_type<G: Guest>(types: &mut TypeSection) {
 pub(crate) fn piece_ref() -> RefType {
     RefType {
         nullable: true,
-        heap_type: HeapType::Concrete(0),
+        heap_type: HeapType::Concrete(T_PIECE),
     }
 }
 
@@ -52,14 +55,19 @@ pub(crate) fn memarg(memory: u32, offset: u64, align: u32) -> MemArg {
 /// Build the thread module. Its lookup table starts with [`EXACT_SLOT`] and the slot before it; the runner
 /// grows it for the pieces it adds.
 pub fn thread_module<G: Guest>() -> Vec<u8> {
+    const T_LOAD_CODE: u32 = T_PIECE + 1;
+    const T_WARN_TRAP: u32 = T_LOAD_CODE + 1;
+    const T_RUN: u32 = T_WARN_TRAP + 1;
+    const T_UNWIND: u32 = T_RUN + 1;
     let mut types = TypeSection::new();
-    piece_type::<G>(&mut types); // 0
+    piece_type::<G>(&mut types);
     types
         .ty()
-        .function([ValType::I64, ValType::I32], [ValType::I32]); // 1: load_code
-    types.ty().function([ValType::I32, ValType::I64], []); // 2: warn
-    types.ty().function([], []); // 3: run
-    types.ty().function([ValType::I32], []); // 4: unwind tag
+        .function([ValType::I64, ValType::I32], [ValType::I32]);
+    types.ty().function([ValType::I32, ValType::I64], []);
+    types.ty().function([], []);
+    types.ty().function([ValType::I32], []);
+    debug_assert_eq!(types.len(), T_UNWIND + 1);
 
     const LOAD_CODE: u32 = 0;
     const WARN: u32 = 1;
@@ -72,9 +80,9 @@ pub fn thread_module<G: Guest>() -> Vec<u8> {
     const STATE_M: u32 = 0;
 
     let mut imports = ImportSection::new();
-    imports.import(HOOKS, HOOK_LOAD_CODE, EntityType::Function(1));
-    imports.import(HOOKS, HOOK_WARN, EntityType::Function(2));
-    imports.import(HOOKS, HOOK_TRAP, EntityType::Function(2));
+    imports.import(HOOKS, HOOK_LOAD_CODE, EntityType::Function(T_LOAD_CODE));
+    imports.import(HOOKS, HOOK_WARN, EntityType::Function(T_WARN_TRAP));
+    imports.import(HOOKS, HOOK_TRAP, EntityType::Function(T_WARN_TRAP));
     imports.import(ENV, STATE, EntityType::Memory(state_memory()));
     let constant = |ty| {
         EntityType::Global(GlobalType {
@@ -99,14 +107,14 @@ pub fn thread_module<G: Guest>() -> Vec<u8> {
     let mut tags = TagSection::new();
     tags.tag(TagType {
         kind: TagKind::Exception,
-        func_type_idx: 4,
+        func_type_idx: T_UNWIND,
     });
 
     let mut functions = FunctionSection::new();
     let mut code = CodeSection::new();
-    const RUN_F: u32 = 3;
+    const RUN_F: u32 = TRAP + 1;
 
-    functions.function(3);
+    functions.function(T_RUN);
     let mut f = wasm_encoder::Function::new([
         (2, ValType::I64),
         (1, ValType::Ref(piece_ref())),
@@ -155,7 +163,7 @@ pub fn thread_module<G: Guest>() -> Vec<u8> {
         .i64_const(0)
         .local_get(piece)
         .ref_as_non_null()
-        .call_ref(0);
+        .call_ref(T_PIECE);
     // The results, last first, go back to the block. `pc` is where the guest returned to.
     for slot in crate::code::result_slots::<G>().rev() {
         s.local_set(offset).global_get(BLOCK).local_get(offset);
@@ -282,7 +290,7 @@ pub(crate) fn lookup<G: Guest>(
     offset: u32,
     piece: u32,
 ) {
-    s.ref_null(HeapType::Concrete(0)).local_set(piece);
+    s.ref_null(HeapType::Concrete(T_PIECE)).local_set(piece);
     s.local_get(pc);
     slots.table_base.push(s);
     s.i64_sub().local_tee(offset);
