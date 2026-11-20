@@ -47,6 +47,10 @@ Runs at the tip:
   nothing of, and none for ours making no primitive.
 - Literal check on the desktop (check.txt): passes, no line to add or delete. This crate's
   baseline lines (src, build.rs, tests/*.rs, examples): 584, unchanged.
+- Clean-up at the end: this branch's build folders on the laptop (6.4 GB), the x86 machine
+  (`graphics-shaders` 4.7 GB and `graphics-shaders-fuzz` 1.9 GB) and the desktop (8.5 GB)
+  deleted; nothing built on the Mac (only `cargo fmt`). Scratch `g6a3` keeps the logs and the
+  verdicts (2 MB).
 
 The check's findings, each against the tip:
 1. A vertex program writing a storage texture (blocking): refused by name now, by `convert` and
