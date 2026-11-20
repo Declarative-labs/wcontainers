@@ -51,6 +51,9 @@ pub(crate) struct OpenFile {
     pub dentry: Option<(alloc::rc::Weak<RefCell<crate::fs::Inode>>, Vec<u8>)>,
     /// For `/proc/<pid>/mem`, the memory it was opened on (Linux's `private_data` mm).
     pub memory: Option<wcontainers_abi::MemoryId>,
+    /// Made without an open (`alloc_file_pseudo`, memory files), so not counted as a writer of
+    /// its inode (`i_writecount`).
+    pub pseudo: bool,
 }
 
 /// The state of a file on the shared anonymous inode.
@@ -120,6 +123,7 @@ impl OpenFile {
             position_holder: None,
             dentry: None,
             memory: None,
+            pseudo: false,
         }))
     }
 

@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use crate::file::{FileRef, OpenFile};
-use crate::fs::Node;
+use crate::fs::{Kind, Node};
 use crate::linux::general::*;
 use crate::process::{Channel, Tid};
 use crate::{Context, Errno, Kernel};
@@ -54,6 +54,9 @@ fn time_out(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
         match lease.pending {
             Some((F_UNLCK, deadline)) if now >= deadline => {
                 changed = true;
+                if let Some(file) = lease.file.upgrade() {
+                    disown(&file);
+                }
                 false
             }
             Some((target, deadline)) if now >= deadline => {
@@ -70,12 +73,25 @@ fn time_out(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
     }
 }
 
+/// A lease let go of (`lease_modify` to F_UNLCK) takes its file's owner and signal with it
+/// (`f_delown`).
+fn disown(file: &FileRef) {
+    let mut file = file.borrow_mut();
+    let owner = file.owner.get_or_insert_default();
+    *owner = crate::file::Owner {
+        kind: crate::file::OwnerKind::Process,
+        uid: owner.uid,
+        euid: owner.euid,
+        ..Default::default()
+    };
+}
+
 /// Whether some open file has `node` open for writing (`i_writecount` above 0).
 pub(crate) fn open_for_writing(kernel: &Kernel, node: &Node) -> bool {
     kernel.threads.values().any(|thread| {
         thread.files.borrow().iter().any(|(_, descriptor)| {
             let file = descriptor.file.borrow();
-            Rc::ptr_eq(&file.node, node) && !file.is_path() && file.writable()
+            Rc::ptr_eq(&file.node, node) && !file.is_path() && file.writable() && !file.pseudo
         })
     })
 }
@@ -103,7 +119,7 @@ fn open_counts(kernel: &Kernel, node: &Node) -> (usize, usize) {
             }
             seen.push(pointer);
             if file.writable() {
-                writers += 1;
+                writers += usize::from(!file.pseudo);
             } else if file.readable() {
                 readers += 1;
             }
@@ -152,6 +168,13 @@ pub(super) fn set(
         return Err(Errno::EINVAL);
     }
     let node = file.borrow().node.clone();
+    // `vfs_setlease`: only file systems with a `setlease` take leases.
+    if !matches!(
+        node.borrow().fs.kind,
+        Kind::Tmpfs | Kind::Overlay | Kind::Fuse
+    ) {
+        return Err(Errno::EINVAL);
+    }
     let credentials = kernel.credentials(tid);
     if credentials.fsuid != node.borrow().uid && !credentials.has(CAP_LEASE) {
         return Err(Errno::EACCES);
@@ -170,6 +193,7 @@ pub(super) fn set(
         if !removed {
             return Err(Errno::EAGAIN);
         }
+        disown(file);
         kernel.wake(Channel::Locks);
         return Ok(0);
     }

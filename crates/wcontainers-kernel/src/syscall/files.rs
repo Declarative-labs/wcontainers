@@ -2683,6 +2683,7 @@ pub(super) fn truncate(
     if super::lease::running(kernel, &node) {
         return Err(Errno::ETXTBSY);
     }
+    super::lease::break_leases(kernel, cx, tid, &node, O_WRONLY)?;
     truncate_node(kernel, cx, tid, &node, length)
 }
 

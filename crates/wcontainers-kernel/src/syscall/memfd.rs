@@ -99,6 +99,7 @@ pub(super) fn memfd_create(
         opener,
     );
     file.borrow_mut().direct_io = false;
+    file.borrow_mut().pseudo = true;
     let added = kernel
         .files_mut(tid)
         .add(file, flags & MFD_CLOEXEC != 0, 0, limit)?;
