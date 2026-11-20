@@ -252,7 +252,7 @@ rewritten) would change only that function (brief).
   was taken out again. A call builds x30 in place and leaves through its target's exit, and a return is the
   jump ending in `br t`, not `ret t` (a `ret` with no stub is foreseen from a return-address stack holding none
   of the guest's: fib went from +544% to +102% cycles and calls.c from +481% to +68% when it became a `br`).
-- **A return's last target, ARM64** (N4 run 12, a departure: run 7's option (b)). A `ret` through a register
+- **A return's or call's last target, ARM64** (N4 run 12, a departure: run 7's option (b)). A `ret` through a register
   that is not withheld starts with its last target compared in line: three moves of a guest address into t
   (`movz`, then a slot's two `movk`s), `eor t, t, xN`, `cbnz t` to a call into the inside, and a direct `b`,
   which is the hit's way; the jump through the slot above follows the call and is the miss's way
@@ -269,6 +269,13 @@ rewritten) would change only that function (brief).
   6 pairs, load 11 to 16 (n4r13/ab-lasttarget.log): cycles fib -16.4%, sort -9.6%, calls.c -11.2%, the other
   workloads within 4%. A return whose target changes every time (an interpreter's) pays six words more on the
   miss's way.
+  A call through a register (`blr xN`, N4 run 13) has the same last target: x30 is built first as G + 4 (its
+  first move is the call's commit point, so every word after it, the compare, the call into the inside and
+  the `b` included, is the call made with the guest at xN), then the same six words, then the jump through the
+  slot without x30's moves. `blr x30` and a withheld xN keep the plain form, since the compare would read x30
+  after it changed. Measured in alternating pairs against the build with returns only, 6 pairs, load 15 to 20
+  (n4r14/ab-blr.log): cycles sort -22.2% (its comparison callback), fib, calls.c, interpret and hash within
+  2.3%, instructions sort -7.0%, the others within 0.1%.
 - **The mirror's reach.** The mirror covers guest addresses below 2^45 (32 TiB), so the native ARM64 back
   end's address ceiling (`Cpu::address_space`, abi/cpu.rs:34-35) is 2^45, under the container's width of 2^48,
   as the brief's ruling on ceilings allows (section 6.2, K2; decision 9).
