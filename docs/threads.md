@@ -1398,18 +1398,19 @@ behaviour exactly.
     costs is not measured (section 15).
   - An embedder that calls `run` itself must have a caller for every processor. Its limit on how many
     guest threads run at once is the count of processors it gives the container.
-  - Fewer workers than processors is not designed (known fault 2). A replay and the tests' seeded
-    order do not need it: there the system says which processor is served next, and any worker
-    serves it (4.6, section 11).
+  - Fewer workers than processors is not designed (known fault 3). The tests' seeded order does not
+    need it: there the test system makes `run` return after each turn and says which processor is
+    served next, and its one worker serves it (section 11).
 - Two callers naming one processor at once is a caller's error, which the kernel answers instead of
   today's assertion (kernel/lib.rs:306-309).
 
 `run(processor)` keeps handing that processor threads until it has a reason to return, and the reason is
 the owner's `StopReason`, read per worker:
-- `Idle { until }`: this processor has nothing to run, or, under a system that orders entries,
-  nothing it may run yet (4.6). `run_until_finished` waits in `System::idle` and calls `run` again;
+- `Idle { until }`: this processor has nothing to run. `run_until_finished` waits in `System::idle` and
+  calls `run` again;
 - `Finished { status }`: the container's first process has ended. Every worker gets it;
-- `Suspended`: a process was suspended in a hook that ran on this worker (section 6);
+- `Suspended`: a hook that ran on this worker took its own thread out, with `suspend_tasks` or
+  `suspend_process` (section 6);
 - `Interrupted`: this worker was asked out (a container stop, below).
 
 Rejected: a pool of worker threads hidden in the runtime. An embedder with its own event loop (the owner's
@@ -1429,12 +1430,13 @@ What changes with it:
   - The plan's earlier form woke a processor when an entry made a thread ready. Its fourth check
     showed three ways a thread that is ready already comes to be runnable on an idle processor with
     no thread becoming ready: the mark of a call-in is taken off (4.5); the running thread of a
-    `Serial` group leaves its processor, and a sibling pinned elsewhere may now run; a ready
-    thread's mask gains a processor. A fourth is a config in force that becomes `Parallel`. A list
+    `Serial` process leaves its processor, and a sibling pinned elsewhere may now run; a ready
+    thread's mask gains a processor. Section 3's rule adds more: a `Serial` task that leaves lets its
+    `Parallel` overlappers run, and one that stops being due a turn takes its mark off them. A list
     of events will miss the next one. A condition cannot.
   - How it is checked. The kernel walks the idle processors from the lowest number and asks, for
-    each, what `next` would hand it, counting each thread once and a `Serial` group's one running
-    place once. Each processor that would get a thread has its mark taken off and is announced
+    each, what `next` would hand it, counting each thread once and, for tasks that run as `Serial`
+    and overlap, one running place between them. Each processor that would get a thread has its mark taken off and is announced
     (suggested: a hook `on_processor_needed(processor)`). This is after the entry's own hand-out,
     so a thread the entering worker took for itself wakes nobody.
   - The system's `idle(processor, until)` returns at the time, at an event from outside, or at that
@@ -1446,17 +1448,21 @@ What changes with it:
 - **No ready thread waits with nobody due in.** This is the other half of the same condition, checked
   at the same place: **every ready thread that could be chosen has a running thread in its way that is
   due in, unless an idle processor is being woken that it could run on.**
-  - *Which ready threads.* Those `next` could choose if a processor came free: every ready thread of a
-    group in force `Parallel`, and a `Serial` group's next thread (4.3), whether or not one of that
-    group's threads runs now. A `Serial` group's other ready threads wait behind its next thread,
-    inside the group. Of a group that is called in, only its waiters count: they are chosen whatever
-    is called in (4.3). Its other threads wait for the marks, which come off after a bounded time
-    because the waiters are served (4.5).
+  - *Which ready threads.* Those `next` could choose if a processor came free: every ready thread that
+    runs as `Parallel`, and every ready thread that runs as `Serial` and is due a turn (section 3,
+    rule 3), whether or not an overlapper of it runs now. Other ready `Serial` threads wait behind the
+    one due a turn. Of a memory that is called in, only its waiters count: they are chosen whatever is
+    called in (4.3), but for a `Parallel` waiter while a `Serial` overlapper is handed out. Its other
+    threads wait for the marks, which come off after a bounded time because the waiters are served
+    (4.5).
   - *In its way.* A running thread stands in the way of such a thread when the ready one could run if
     the running one left its processor.
-    - The ready thread is its `Serial` group's next thread, and a thread of that group runs: that
-      running sibling is in its way, and only it, whatever processor it is on and whatever the masks
-      say. The ready thread cannot run while the sibling does.
+    - The ready thread runs as `Serial` and is due a turn, and overlappers of it are handed out: those
+      overlappers are in its way, and only they, whatever processor they are on and whatever the masks
+      say. The ready thread cannot run while any of them is handed out.
+    - The ready thread runs as `Parallel`, and a `Serial` overlapper of it is handed out: that
+      overlapper is in its way, whatever processor it is on (the mixed-ordering check, section 2 of
+      its report).
     - Otherwise: every running thread on a processor that the ready thread's mask holds.
   - *Due in.* A running thread is due in when it was handed out with a fair slice, or the kernel has
     asked it in with `thread_stop` and it has not come in since. The kernel keeps both facts itself,
@@ -1473,31 +1479,32 @@ What changes with it:
     through another processor's entry or through an event, and the deadline leaves the slices
     (below). So the kernel must ask.
   - *What the kernel does.* When such a ready thread has nobody due in in its way, the kernel asks in
-    the one in its way with the most weighted time, with `thread_stop`. For a `Serial` group's next
-    thread behind a running sibling, that is the sibling.
+    the one in its way with the most weighted time, with `thread_stop`. For a `Serial` thread due a
+    turn behind running overlappers, those are its overlappers, and every one of them is asked in
+    (they are called in, section 3, rule 2).
   - *A waiter is served at once.* For a waiter, a thread in its way that has only a slice does not
-    count as due in: the kernel asks one in with `thread_stop` when the waiter is woken. A whole
-    group stands still until the waiter's call has run (4.5), and a slice can be milliseconds.
+    count as due in: the kernel asks one in with `thread_stop` when the waiter is woken. Its
+    overlappers stand still until the waiter's call has run (4.5), and a slice can be milliseconds.
     Counted "thread asked in for a waiter".
   - **The plan's earlier form left a thread waiting for ever behind its own sibling, with one
     processor too.** It asked somebody in only for "a thread ready that its group lets run", and a
     `Serial` group with a thread running lets none run. The fifth check's example: thread A of a
     `Serial` process computes alone, with no slice. Its sibling B sleeps, or waits in `read` on a
-    pipe another group writes. `Event::Timer`, or the other group's entry, wakes B. B was counted
+    pipe another process writes. `Event::Timer`, or the other process's entry, wakes B. B was counted
     nowhere, nobody was asked in, and A ran on. Go's background thread is exactly such a B (Go's
-    runtime, proc.go, `sysmon`), so every Go program in a `Serial` group would have lost its
+    runtime, proc.go, `sysmon`), so every Go program run `Serial` would have lost its
     preemption or hung. Now A stands in B's way and is not due in, so A is asked in.
 - **What the two halves cost, and how they are checked.**
   - The kernel keeps one mark, "the scheduler's state was written", set by every write to what the
     condition reads: the run queue, a processor's thread and its idle mark, whether that thread is due
-    in, a mask, and a group's members, its config in force and its call-in mark. Each is written in a
+    in, a mask, the overlaps, which tasks run as `Serial`, and the call-in marks. Each is written in a
     few functions, and those set the mark. When the lock is let go, the kernel tests
     the mark. Clear: nothing more. A system call answered in place for a thread that carries on
     writes none of these, so it tests one value (4.2).
   - Set: the mark is cleared, and three counts say whether a breach is possible at all. They are the
-    idle processors, the ready threads that could run now (a group that is called in has its waiters
-    and no others; a `Serial` group with a thread running has none; any other `Serial` group has
-    one), and the running threads that are not due in. The first half is walked only with an idle
+    idle processors, the ready threads that could run now (a memory that is called in has its waiters
+    and no others; a `Serial` thread with an overlapper handed out has none), and the running threads
+    that are not due in. The first half is walked only with an idle
     processor and a thread that could run now. The second only with a ready thread and a running thread
     that is not due in. On a busy container every thread was handed out with others waiting, so all are
     due in. With fewer threads than processors the queue is empty.
@@ -1506,9 +1513,10 @@ What changes with it:
     the mark and the counts: it makes both walks at every lock release, and counts "a processor left
     idle with a thread it could run" and "a ready thread with nobody due in", which must both stay
     at zero.
-  - The same build checks the rule the scheduler exists to keep: at every hand-out, no other thread of
-    a `Serial` group is running. Counted "two threads of a Serial group running", which must stay at
-    zero.
+  - The same build checks the rule the scheduler exists to keep: at every hand-out of a thread that
+    runs as `Serial`, no task that overlaps it is handed out, and at every hand-out of any thread, no
+    `Serial` task that overlaps it is handed out. Counted "Serial task handed out beside an
+    overlapper", which must stay at zero.
 - **One timer for the container, in nobody's slice.** Today each turn's slice is cut at the kernel's
   next deadline (kernel/task.rs:55-60). With one thread running, ending its turn is the only way the
   kernel gets to look at its timers. Kept with several processors, every running thread's slice would
@@ -1526,7 +1534,7 @@ What changes with it:
     (`wake_due` and `fire_due`, as kernel/lib.rs:354-355 does today), and by itself it stops nobody.
     A thread it wakes takes an idle processor by the condition above, or, when nobody in its way is
     due in, one thread in its way is asked in by the other half. That holds for a thread woken behind
-    its own running sibling in a `Serial` group too. A signal it sends reaches its thread by 4.5. So
+    its own running sibling in a `Serial` process too. A signal it sends reaches its thread by 4.5. So
     an expiry with every processor busy stops one thread at most for each thread it wakes, where a
     deadline in every slice stops them all;
   - the local system sends the event from an idle worker when there is one, which wakes at the time
@@ -1553,21 +1561,23 @@ What changes with it:
   service and its timer thread call it. The timer thread keeps one slice's end and one thread per
   processor, as `turn` told it, and the container's one deadline, as the hook above told it.
 - **A thread never leaves without its exit**, with two exceptions: the thread whose own entry ended it,
-  and a thread whose process was suspended under it (section 6). Today a thread the kernel dropped
+  and a thread taken out of the kernel under it by `suspend_tasks` or `suspend_process` (section 6). Today a thread the kernel dropped
   breaks out of `Execution::run` with no `Kernel::exit` (wt/lib.rs:2303-2306). By 4.4 a thread ends only
   in its own entry, so the processor's running thread is always cleared by that thread's own `exit`, and
   `next` finds it so.
 - **A container stop.** `System::stopped` runs when no thread is in `Execution::run`
   (rt/lib.rs:156-158), which a save needs. With several workers the loop first asks every running thread
   in, waits until every worker is out of `Execution::run` and no entry is in progress, then calls it
-  once. This is also how an embedder interrupts a running container from another thread, which the
-  interface notes leave open (line 92): each worker's `run` then returns `StopReason::Interrupted`.
-  Every thread has stopped at an entry of its own, at a position.
+  once. This is also how an embedder interrupts a running container from another thread: each worker's
+  `run` then returns `StopReason::Interrupted`. The owner has since ruled its form (interface notes,
+  2026-11-19: creation hands out a container and an interrupter, and `interrupter.interrupt()` may be
+  called from any thread); this plan asks only that it reach every worker. Every thread has stopped at
+  an entry of its own, at a position.
 - **Reading one process, and acting on it, from outside a hook.** The interface notes say
   `kernel.process(id)` is for "between steps" (line 55), and promise that "an embedder that wants to
   work asynchronously returns and finishes later through ordinary calls" (lines 60-61). With several
-  workers there is no moment between steps unless the whole container is interrupted. Two things
-  follow, and both are put to the owner (decision 8).
+  workers there is no moment between steps unless the whole container is interrupted. Reading is put
+  to the owner (decision 8); acting is now partly settled by the ruling on suspend and resume by task.
   - **Reading needs no stop.** `kernel.process(id)` answers a handle at any time, from any thread
     that can call the kernel. In a host program that is any host thread. On the native executor the
     kernel and the embedder's system are inside the virtual machine, and it is the system's code
@@ -1575,11 +1585,12 @@ What changes with it:
     the link (section 10). The handle holds the kernel's lock while it lives, as a hook's handle
     does, so it is kept short.
     `id`, `info` and every accessor of `ProcessInfo` (memory mapped, distance to the ceiling, compute
-    used, the config given and the config in force, which processes share its memory) read the
-    kernel's own records. They touch no guest memory and no thread, and the lock keeps them whole.
-    An embedder that decides where a process should run needs exactly these while the process runs
-    (interface notes lines 11-14). The plan's earlier form answered an error outside a container
-    stop, which closed that off for no reason.
+    used, the config given) read the kernel's own records. They touch no guest memory and no thread,
+    and the lock keeps them whole. An embedder that decides where a process should run needs exactly
+    these while the process runs (interface notes lines 11-14). (The form before also offered "the
+    config in force" and "which processes share its memory". The first is gone with the config in
+    force; the second is replaced by the shared-memory hooks, from which the embedder builds its own
+    view.)
     - Asked from the host thread that is inside a kernel entry, it answers an error: the notes rule
       that a hook acts only on the process it is handed (lines 76-77). That covers a hook,
       `on_processor_needed`, `on_deadline_changed`, a `Host` service and `arrived`. The kernel can
@@ -1588,31 +1599,30 @@ What changes with it:
     - Asked from inside `ran`, the clock's answer or `cpu_warning` when those are called from guest
       code, it panics and names the call (4.2). The worker has no lock there, so this is not the
       case above, and it would hang a group stop.
-    - It is not a kernel entry. It changes nothing, so it has no place in the order of entries and a
-      replay does not repeat it. What the embedder then does about what it read is an entry of its own.
+    - It changes nothing, so a replay does not repeat it. What the embedder then does about what it
+      read is an entry of its own.
     - Compute used is as of each thread's last entry. A running thread's time since its hand-out is
       added only if that accessor is asked for, as the notes say of anything that needs computing.
-  - **Acting needs the group stopped, and one rule says when the handle can do it.** Every other
-    operation touches the memory or the threads: `memory_read`, `memory_write`, `memory_watch`,
-    `memory_changed`, `suspend`, a change of config. On any handle, from a hook or from
-    `kernel.process(id)`, it is carried out with whatever stop 4.5 asks for, when that stop can be
-    made in place: nobody, or a group stop. It answers an error where it would need a call-in,
-    because a call-in parks its caller and a handle cannot wait: a group in force `Serial` with a
-    thread running, and for `suspend` and a change of config a group in force `Parallel` and `Exact`
-    with other threads running.
-  - **For those cases the plan adds one call and one hook** (suggested `Kernel::process_call_in(id)`
-    and `on_process_called_in(process)`). Without them the price of every late finish would be a
-    stop of the whole container: in the owner's other project a thread left waiting by
-    `on_memory_accessing` is let go when its page arrives from another machine.
-    - Any thread that can call the kernel may make the call (above). It is a kernel entry, with its
-      place in the order.
-    - The kernel brings the process's group to a stop by the rule of 4.5 (nobody when none of its
-      threads runs, a group stop, or a call-in), and then announces the hook, handing it the
-      `Process` by value. Every operation on the process is legal there.
-    - When none of the group's threads runs, which is the case of a process with one thread that
-      waits for a page, the hook fires inside the call and nothing is stopped.
-    - Otherwise it costs the group's own running threads their way in and back (300 ns each,
-      docs/runtime.md section 10, and the stop check's latency), and no other group anything.
+  - **Acting needs the right threads stopped, and one rule says when the handle can do it.** Every
+    other operation touches the memory or the threads: `read_memory`, `write_memory`, `watch_memory`,
+    `take_dirty_memory`, `send_signal`, `wake_waiters`, `move_waiters`. On any handle, from a hook or
+    from `kernel.process(id)`, it is carried out with whatever stop 4.5 asks for, when that stop can be
+    made in place: nobody, or a group stop. It answers an error where it would need a call-in, because
+    a call-in parks its caller and a handle cannot wait: a process whose threads run as `Serial` with
+    one of them handed out, or an `Exact` process with other threads running where the act needs them
+    at positions.
+  - **For those cases the embedder suspends the tasks first.** The form before added a call and a hook
+    for this (`Kernel::process_call_in(id)` and `on_process_called_in(process)`). They are withdrawn:
+    the ruled `Kernel::suspend_tasks` does the same job. It takes a batch of tasks as of one moment,
+    and how the kernel stops them is its own; called on the `Kernel` from outside any hook, it may
+    wait, so it calls the tasks in where 4.5 says so and returns when they are in. The embedder then
+    acts on the process with nobody of it running, and puts the tasks back with `resume_tasks`. In the
+    owner's other project a thread left waiting by `on_watched_memory_accessing` is let go when its
+    page arrives from another machine: that is a `write_memory` with nothing to stop when the process
+    has no other thread running, and a `suspend_tasks` of the running ones otherwise.
+    - What it costs: the tasks' way in and back (300 ns each, docs/runtime.md section 10, and the stop
+      check's latency), and the records taken out and put back. The second is not measured; nothing
+      to measure it exists. Nobody else is stopped.
 - `Host` and `System` methods take `&self`, so a system keeps what it changes in atomics or behind its
   own locks. The shipped system needs no lock on a system call (4.2).
 
@@ -1623,7 +1633,7 @@ neither (the brief's last section). The plan builds on neither.
   the same (decision 9), and needs it earlier than two hooks at once. From T1 on, several workers call
   `turn`, `ran`, `idle` and the clock's answer at the same moment, outside the kernel's lock. Hooks and
   `Host` services run under the kernel's one lock until it is split (4.7), so no two run at once in
-  T1. After the split, two hooks about processes of different groups can, with nothing in the
+  T1. After the split, two hooks about processes that share nothing can, with nothing in the
   interface changed.
   - Does it need `System: Sync` from the start? Wherever more than one host thread is in the loop, yes,
     and the compiler asks for it whatever the trait says: Rust lets two threads share `&S` only when
@@ -1636,30 +1646,28 @@ neither (the brief's last section). The plan builds on neither.
     nobody else ever holds (0 to 11.4 ns each time, section 14). The shipped system changes one
     word a system call and pays nothing (4.2).
 - **Per-process state**: an associated type on `System`, kept by the kernel in each process's record,
-  lent through the `Process` handle and mutable in a hook with no lock; cloned at fork, kept in
-  `SuspendedProcess`, not in `ExportedProcess`, and free when it is `()`.
+  lent through the `Process` handle and mutable in a hook with no lock, and free when it is `()`. The
+  rulings of 2026-11-19 write it into their signatures (`P: Process<State = Self::ProcessState>` in the
+  shared-memory hooks, `type State` on `Process` in the ruling on suspend by task), so the plan now
+  takes it as part of the interface. Where it goes when a process's context or a task leaves the
+  kernel is the interface track's.
   - It fits this plan's locking as it is. A `Process` handle exists only while the kernel's lock is
     held: a hook's, and one from `kernel.process(id)` (above). After the split it exists while the
-    process's group's lock is held (4.7). So whoever has the handle has the state alone. That holds
-    in a `Parallel` group too: the process's other threads may be in guest code, but none is in a
-    hook.
+    process's own lock is held (4.7). So whoever has the handle has the state alone. That holds with
+    `Parallel` code too: the process's other threads may be in guest code, but none is in a hook.
   - What locking it takes off an embedder: whatever it keeps about one process and touches only
     through that process's handle. Examples are where it decided to place the process, its record of
-    the process's watches and page hand-overs (section 8), and the starting point it takes in
-    `on_execution_config_in_force_changing` (section 3). With the state these need no lock, and no
-    table from id to record.
+    the process's watches and page hand-overs (section 8), and the process's replay log, which the
+    proxy's hooks are handed the process for (4.6). With the state these need no lock, and no table
+    from id to record.
   - What it does not take off: everything that is not about one process. That is the words `turn`,
-    `ran` and `idle` keep per processor, the container's deadline, the one order of entries a
-    recording system keeps across processes (4.6), its picture of other processes, which a hook
-    cannot look up (interface notes lines 76-77), and its counters.
-  - Five of this plan's calls are not handed a `Process`: `kernel_entry_admit`, `thread_stop`,
-    `on_processor_needed`, `on_deadline_changed` and `on_kernel_entry_ended`. If the state is ruled
-    in, the two that are about one thread's entry, `kernel_entry_admit` and `on_kernel_entry_ended`,
-    could be handed it, and a recording system's log of one process would need no lock either. That
-    is a change to make then.
-  - What it would ask of this plan: one bound. The kernel's state moves between host threads under
-    the lock (4.2), so the type must be `Send`. It need not be `Sync`: one host thread has it at a
-    time.
+    `ran` and `idle` keep per processor, the container's deadline, its picture of other processes,
+    which a hook cannot look up (interface notes lines 76-77), and its counters.
+  - Three of this plan's calls are not handed a `Process`: `thread_stop`, `on_processor_needed` and
+    `on_deadline_changed`. None is about one process's record. (The form before had two more that
+    were, `kernel_entry_admit` and `on_kernel_entry_ended`; both are withdrawn, 4.6.)
+  - What it asks of this plan: one bound. The kernel's state moves between host threads under the
+    lock (4.2), so the type must be `Send`. It need not be `Sync`: one host thread has it at a time.
 
 ## 6. Changing the config of a running process
 
