@@ -87,8 +87,8 @@ event alike at none and 256 on the benchmark set (same hashes), busybox 56 of 56
 blocks program's two `dc cvau` lines differ, from that machine's hardware, and wait for the Mac's reference (below, "N4
 run 20"). Run 21 changed no code; once Docker Desktop started containers again, the kernel test (blocks included, the
 count at every counted event alike at none and 256 with the same hashes), busybox 56 of 56 and both at whole page passed
-against the Mac's own reference (below, "N4 run 21"). What is left of N4 is the orchestrator's rulings and the
-independent check.
+against the Mac's own reference (below, "N4 run 21"). Run 22 found nothing new to build on and changed no code. What
+is left of N4 is the orchestrator's rulings and the independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -115,6 +115,13 @@ independent check.
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 22 (2026-11-20): nothing to build
+
+Start (08:13, load 11): origin/main and origin/phase-1-literals had nothing new; the brief has no section after
+2026-11-20 07:35 and the orchestrator's notes (open-with-owner.md) hold no answer to run 18's asks. No code changed, so
+run 21's suites and run 18's measurements stand and were not repeated. No build folders or containers of this track are
+left in scratch or Docker. What is left is unchanged: the orchestrator's rulings, then the independent check.
 
 ## N4 run 21 (2026-11-20): the reference's suites on the Mac's own reference again
 
