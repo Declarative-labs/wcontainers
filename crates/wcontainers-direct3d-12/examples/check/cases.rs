@@ -3287,33 +3287,54 @@ unsafe fn early_per_primitive(c: &Ctx) -> Result<String> {
     }
 }
 
-/// A line (row 8), three points (row 24) and a triangle (rows 40 to 63) at depth 0.5, each drawn
-/// by a pipeline of its topology type with a `DepthBias` of 100000 into D32 depth cleared to 0.5
-/// and tested `LESS_EQUAL`. Prints whether each band has lit pixels: a biased primitive fails the
-/// test. (How many a line lights is the rasteriser's: a listed loss.)
+/// Lines (rows 4 and 14), three points each (rows 24 and 34) and triangles (rows 40 to 50 and 52
+/// to 62) at depth 0.5, each drawn by a pipeline of its topology type, the first of each pair
+/// unbiased and the second with a `DepthBias` of 100000 (0.006 at that depth), into D32 depth
+/// cleared to 0.503 and tested `LESS_EQUAL`. Prints whether each band has lit pixels: a biased
+/// primitive fails the test. (How
+/// many a line lights is the rasteriser's: a listed loss.)
 unsafe fn line_bias(c: &Ctx) -> Result<String> {
     unsafe {
         const BIAS: i32 = 100_000;
-        const DEPTH: f32 = 0.5;
-        const BANDS: [(usize, usize); 3] = [(0, 16), (16, 32), (32, 64)];
+        // Above the primitives' depth by less than the bias moves them.
+        const DEPTH: f32 = 0.503;
+        const BANDS: [(usize, usize); 6] =
+            [(0, 10), (10, 20), (20, 30), (30, 38), (38, 51), (51, 64)];
         let vs = compile(
-            "static const float2 at[8] = {
-                 float2(-1, 0.734375), float2(1, 0.734375),
+            "static const float2 at[16] = {
+                 float2(-1, 0.859375), float2(1, 0.859375),
+                 float2(-1, 0.546875), float2(1, 0.546875),
                  float2(-0.484375, 0.234375), float2(0.015625, 0.234375), float2(0.515625, 0.234375),
-                 float2(-1, -0.3), float2(1, -0.3), float2(0, -1) };
-             float4 main(uint id : SV_VertexID) : SV_Position { return float4(at[id], 0.5, 1); }",
+                 float2(-0.484375, -0.078125), float2(0.015625, -0.078125), float2(0.515625, -0.078125),
+                 float2(-1, -0.25), float2(1, -0.25), float2(0, -0.5625),
+                 float2(-1, -0.625), float2(1, -0.625), float2(0, -0.9375) };
+             cbuffer draw : register(b0) { uint first; };
+             float4 main(uint id : SV_VertexID) : SV_Position
+             { return float4(at[first + id], 0.5, 1); }",
             s!("vs_5_0"),
         )?;
         let ps = compile(
             "float4 main() : SV_Target { return float4(1, 1, 1, 1); }",
             s!("ps_5_0"),
         )?;
-        let root = c.root(&[], D3D12_ROOT_SIGNATURE_FLAG_NONE)?;
+        // `SV_VertexID` leaves out the draw's first vertex: the draw's first vertex at b0.
+        let param = D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 0,
+                    RegisterSpace: 0,
+                    Num32BitValues: 1,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+        };
+        let root = c.root(&[param], D3D12_ROOT_SIGNATURE_FLAG_NONE)?;
         let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
             pShaderBytecode: b.as_ptr().cast(),
             BytecodeLength: b.len(),
         };
-        let pso = |kind| {
+        let pso = |kind, bias| {
             let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
                 pRootSignature: transmute_copy(&root),
                 VS: code(&vs),
@@ -3323,7 +3344,7 @@ unsafe fn line_bias(c: &Ctx) -> Result<String> {
                     FillMode: D3D12_FILL_MODE_SOLID,
                     CullMode: D3D12_CULL_MODE_NONE,
                     DepthClipEnable: true.into(),
-                    DepthBias: BIAS,
+                    DepthBias: bias,
                     ..Default::default()
                 },
                 DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
@@ -3342,12 +3363,21 @@ unsafe fn line_bias(c: &Ctx) -> Result<String> {
                 ..Default::default()
             };
             desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.BlendState.RenderTarget[0].RenderTargetWriteMask =
+                D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
             c.device
                 .CreateGraphicsPipelineState::<ID3D12PipelineState>(&desc)
         };
-        let line = pso(D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE)?;
-        let point = pso(D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT)?;
-        let triangle = pso(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)?;
+        let mut psos = Vec::new();
+        for kind in [
+            D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE,
+            D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT,
+            D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        ] {
+            for bias in [0, BIAS] {
+                psos.push(pso(kind, bias)?);
+            }
+        }
         let depth = c.committed(
             D3D12_HEAP_TYPE_DEFAULT,
             &D3D12_RESOURCE_DESC {
@@ -3368,24 +3398,36 @@ unsafe fn line_bias(c: &Ctx) -> Result<String> {
         let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
         let (target, _heap, rtv) = c.target(&list)?;
         list.OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv));
+        list.RSSetScissorRects(&[RECT {
+            right: SIZE as i32,
+            bottom: SIZE as i32,
+            ..Default::default()
+        }]);
         list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, DEPTH, 0, None);
         list.SetGraphicsRootSignature(&root);
-        for (pso, topology, count, first) in [
-            (&line, D3D_PRIMITIVE_TOPOLOGY_LINELIST, 2, 0),
-            (&point, D3D_PRIMITIVE_TOPOLOGY_POINTLIST, 3, 2),
-            (&triangle, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, 3, 5),
-        ] {
+        let draws = [
+            (D3D_PRIMITIVE_TOPOLOGY_LINELIST, 2),
+            (D3D_PRIMITIVE_TOPOLOGY_POINTLIST, 3),
+            (D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, 3),
+        ];
+        let mut first = 0;
+        for (i, pso) in psos.iter().enumerate() {
+            let (topology, count) = draws[i / 2];
             list.SetPipelineState(pso);
             list.IASetPrimitiveTopology(topology);
-            list.DrawInstanced(count, 1, first, 0);
+            list.SetGraphicsRoot32BitConstant(0, first, 0);
+            list.DrawInstanced(count, 1, 0, 0);
+            first += count;
         }
         c.run(&list)?;
         let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
         let row = SIZE as usize * 4;
         let lit =
             |(from, to): (usize, usize)| pixels[from * row..to * row].chunks(4).any(|p| p[0] != 0);
-        let [l, p, t] = BANDS.map(lit);
-        Ok(format!("line {l} points {p} triangle {t}"))
+        let [l, lb, p, pb, t, tb] = BANDS.map(lit);
+        Ok(format!(
+            "line {l} biased {lb} points {p} biased {pb} triangle {t} biased {tb}"
+        ))
     }
 }
 
