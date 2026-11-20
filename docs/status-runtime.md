@@ -197,7 +197,8 @@ size the guest is told (plan section 8), which `Machine` holds once the kernel t
   tests/cache.rs) also pass on the x86 machine.
 - Python `language_test_modules_match_reference` at look-ahead none, alone with a 4 hour limit (ARM machine, job
   runtime/20261120-015320-3372935 at 836be254, which differs from 43f2f4b6 only in the build script and the cache's
-  writing; `j5run8/python-none.sh`, log j5run8/arm/python-none.log): running at the time of writing.
+  writing; `j5run8/python-none.sh`, log j5run8/arm/python-none.log): passes, in 2,309 s, load 27 to 41. So at
+  none every verdict of the eight runtimes' tests now equals full's, and none leaves out nothing.
 - Left for J5, all waiting on other tracks: the kernel track's fix of task.rs's assertion (outside
   `clients_talk_to_a_server_outside_as_linux` at full on the ARM machine); the address ceiling's move (java x2,
   node system, python system modules, LTP pth_str01 and pth_str03); the progress count (LTP mmapstress09 and
