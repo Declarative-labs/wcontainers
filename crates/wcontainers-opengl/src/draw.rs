@@ -24,7 +24,7 @@ use crate::resource::Resource;
 use crate::screen::Screen;
 use crate::state::{self, Shader, Stage, refuse};
 use crate::view::{IDENTITY, View};
-use crate::{query, stream};
+use crate::{indices, query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
 struct Built<B: Backend> {
@@ -857,12 +857,14 @@ fn draw<B: Backend>(
         &programs.built[&(vs as ShaderId, vertex.clone())],
         &programs.built[&(fs as ShaderId, fragment.clone())],
     ];
-    if raster.provoking != raster.host_provoking && built[1].flat_inputs {
-        return Err(format!(
-            "flat values from the {:?} vertex, which the back end lacks",
-            raster.provoking
-        ));
-    }
+    // Flat values from the vertex OpenGL names where the host takes the other: indices rewritten.
+    let provoking = (raster.provoking != raster.host_provoking
+        && built[1].flat_inputs
+        && topology != Topology::PointList)
+        .then_some(Provoking {
+            api: raster.provoking,
+            host: raster.host_provoking,
+        });
     let program_key = (vs as ShaderId, vertex, fs as ShaderId, fragment);
     if let Entry::Vacant(slot) = programs.programs.entry(program_key.clone()) {
         slot.insert(
@@ -922,9 +924,16 @@ fn draw<B: Backend>(
         }));
     }
     let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
-    // A fan or loop drawn from an index buffer: its indices read back now (`ReadBackWait`),
-    // then converted as the program's own.
-    let read = if fan && info.index_size > 0 && !info.has_user_indices() {
+    let mode = mesa_prim::from(info.mode);
+    let restart = info.primitive_restart();
+    // Indices in a buffer the host cannot draw as they are (a fan or loop, flat values from the
+    // other vertex, restart in a list, 8-bit indices the back end lacks): read back now
+    // (`ReadBackWait`), then converted as the program's own.
+    let rewritten_on_host = fan
+        || provoking.is_some()
+        || indices::restarts_otherwise(mode, restart)
+        || needs_widening(backend, index_format(info.index_size));
+    let read = if rewritten_on_host && info.index_size > 0 && !info.has_user_indices() {
         Some(read_indices(&mut context.tracker, backend, info, draws)?)
     } else {
         None
@@ -949,7 +958,6 @@ fn draw<B: Backend>(
     }
     let index_size = info.index_size;
     let format = index_format(index_size);
-    let restart = info.primitive_restart();
     if restart && index_size > 0 && info.restart_index != format.restart_value() {
         return Err("primitive restart at an index that is not the largest".into());
     }
@@ -998,7 +1006,7 @@ fn draw<B: Backend>(
             draws,
             read.as_ref(),
             raster.host_provoking,
-            fan,
+            provoking,
         )?;
     }
     for set in sets.into_iter().flatten() {
@@ -1258,8 +1266,71 @@ fn read_indices<B: Backend>(
     Ok((words, first))
 }
 
+/// OpenGL's provoking vertex and the host's, where a draw's flat values need them swapped.
+#[derive(Clone, Copy)]
+struct Provoking {
+    api: ProvokingVertex,
+    host: ProvokingVertex,
+}
+
+/// Whether `indices` hold the largest value of their format, at which the host's strips restart.
+fn holds_largest(indices: &[u8], format: IndexFormat) -> bool {
+    let largest = format.restart_value();
+    match format {
+        IndexFormat::U8 => indices.iter().any(|&i| u32::from(i) == largest),
+        IndexFormat::U16 => indices
+            .as_chunks::<{ size_of::<u16>() }>()
+            .0
+            .iter()
+            .any(|i| u32::from(u16::from_le_bytes(*i)) == largest),
+        IndexFormat::U32 => indices
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .any(|i| u32::from_le_bytes(*i) == largest),
+    }
+}
+
+/// Draws `rewritten`'s indices, from the ring, with `base`'s blocks.
+fn draw_rewritten<B: Backend>(
+    backend: &mut B,
+    base: &DrawCall<'_, B>,
+    rewritten: &indices::Rewritten,
+    base_vertex: i32,
+    info: &pipe_draw_info,
+) -> Result<(), String> {
+    let mut offset = [0];
+    let ring = backend
+        .write_buffer_ring(
+            RingKind::Indices,
+            &[rewritten.indices()],
+            rewritten.format.size(),
+            &mut offset,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    backend.draw(&DrawCall {
+        topology: rewritten.topology,
+        restart: false,
+        index: Some(IndexBinding {
+            buffer: &ring,
+            offset: offset[0],
+            format: rewritten.format,
+        }),
+        range: DrawRange::Indexed {
+            first: 0,
+            count: rewritten.count(),
+            base_vertex,
+            first_instance: info.start_instance,
+            instances: info.instance_count,
+        },
+        ..*base
+    });
+    Ok(())
+}
+
 /// Each range of one draw call made with `base`'s blocks; `read` holds indices read back from
-/// the index buffer, and the first one's position in it.
+/// the index buffer, and the first one's position in it. Where `provoking` is given, every
+/// primitive's vertices are reordered for the host's provoking vertex.
 fn draw_ranges<B: Backend>(
     backend: &mut B,
     base: &DrawCall<'_, B>,
@@ -1267,15 +1338,26 @@ fn draw_ranges<B: Backend>(
     draws: &[pipe_draw_start_count_bias],
     read: Option<&(Vec<u8>, u32)>,
     host_provoking: ProvokingVertex,
-    fan: bool,
+    provoking: Option<Provoking>,
 ) -> Result<(), String> {
     let topology = base.topology;
+    let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
     let restart = base.restart;
     let index_size = info.index_size;
     let user_indices = info.has_user_indices();
     let format = index_format(index_size);
+    let mode = mesa_prim::from(info.mode);
+    let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
+    let restart_switch = backend.caps().has(Features::RESTART_SWITCH);
     for d in draws {
         if d.count == 0 {
+            continue;
+        }
+        if let (0, Some(p)) = (index_size, provoking) {
+            backend.slow_paths().hit(SlowPath::ProvokingRewrite);
+            if let Some(r) = indices::generated(mode, d.start, d.count, p.api, p.host)? {
+                draw_rewritten(backend, base, &r, 0, info)?;
+            }
             continue;
         }
         if index_size == 0 {
@@ -1328,6 +1410,30 @@ fn draw_ranges<B: Backend>(
             None => None,
         };
         if let Some(indices) = host {
+            // Restart cut where the host would not, or made where OpenGL does not: lists never
+            // restart there, and its strips always do at the largest value.
+            // A rewritten draw is cut at every restart value: its primitives may become lists.
+            let cut = indices::restarts_otherwise(mode, restart);
+            let lists_only = !restart && strip && !restart_switch && holds_largest(indices, format);
+            if provoking.is_some() || cut || lists_only {
+                let paths = [
+                    (provoking.is_some(), SlowPath::ProvokingRewrite),
+                    (cut || lists_only, SlowPath::RestartRewrite),
+                    (needs_widening(backend, format), SlowPath::IndexWidened),
+                ];
+                for (_, path) in paths.into_iter().filter(|&(taken, _)| taken) {
+                    backend.slow_paths().hit(path);
+                }
+                let Provoking { api, host } = provoking.unwrap_or(Provoking {
+                    api: host_provoking,
+                    host: host_provoking,
+                });
+                let rewritten = indices::translated(info, indices, restart, lists_only, api, host)?;
+                if let Some(r) = rewritten {
+                    draw_rewritten(backend, base, &r, d.index_bias, info)?;
+                }
+                continue;
+            }
             if fan {
                 let source = IndexSource::Guest {
                     indices,

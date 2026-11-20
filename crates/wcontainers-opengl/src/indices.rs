@@ -1,0 +1,280 @@
+//! A draw's indices rewritten on the host where the host draws its primitives otherwise than
+//! OpenGL: flat values from the other provoking vertex (`ProvokingRewrite`), restart in lists and
+//! in strips drawn without it (`RestartRewrite`), and 8-bit indices a back end lacks. Mesa's own
+//! index translator and generator (`indices/u_indices`, MIT) and restart splitter
+//! (`util/u_prim_restart`, MIT) do the work.
+
+use std::ffi::{c_uint, c_void};
+
+use wcontainers_gpu::{IndexFormat, ProvokingVertex, Topology};
+use wcontainers_shaders::stage::TRIANGLE_VERTICES;
+
+use crate::gallium::*;
+
+/// A draw's indices as the host draws them.
+pub struct Rewritten {
+    pub topology: Topology,
+    pub format: IndexFormat,
+    /// The indices, little-endian, as words so that either width is aligned.
+    words: Vec<u32>,
+    bytes: usize,
+}
+
+impl Rewritten {
+    pub fn indices(&self) -> &[u8] {
+        // SAFETY: the words' bytes, of which the first `bytes` were written.
+        unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), self.bytes) }
+    }
+
+    pub fn count(&self) -> u32 {
+        (self.bytes / self.format.size() as usize) as u32
+    }
+}
+
+/// The primitives the host draws as they come, and those that never restart there.
+const STRIPS_AND_LISTS: &[mesa_prim] = &[
+    MESA_PRIM_POINTS,
+    MESA_PRIM_LINES,
+    MESA_PRIM_LINE_STRIP,
+    MESA_PRIM_TRIANGLES,
+    MESA_PRIM_TRIANGLE_STRIP,
+];
+const LISTS: &[mesa_prim] = &[MESA_PRIM_POINTS, MESA_PRIM_LINES, MESA_PRIM_TRIANGLES];
+
+/// Whether the host's lists and strips would draw `mode` otherwise than OpenGL with restart as
+/// given: lists never restart there.
+pub fn restarts_otherwise(mode: mesa_prim, restart: bool) -> bool {
+    restart && LISTS.contains(&mode)
+}
+
+fn mask(primitives: &[mesa_prim]) -> c_uint {
+    primitives.iter().fold(0, |mask, &p| mask | 1 << p)
+}
+
+fn convention(provoking: ProvokingVertex) -> c_uint {
+    match provoking {
+        ProvokingVertex::First => PV_FIRST,
+        ProvokingVertex::Last => PV_LAST,
+    }
+}
+
+/// `count` less the vertices of an unfinished last primitive, or zero where not one is whole.
+fn trimmed(mode: mesa_prim, count: u32) -> u32 {
+    let line = 2;
+    match mode {
+        MESA_PRIM_LINES => count - count % line,
+        MESA_PRIM_TRIANGLES => count - count % TRIANGLE_VERTICES,
+        MESA_PRIM_LINE_STRIP | MESA_PRIM_LINE_LOOP if count < line => 0,
+        MESA_PRIM_TRIANGLE_STRIP | MESA_PRIM_TRIANGLE_FAN if count < TRIANGLE_VERTICES => 0,
+        _ => count,
+    }
+}
+
+fn topology(primitive: mesa_prim) -> Result<Topology, String> {
+    Ok(match primitive {
+        MESA_PRIM_POINTS => Topology::PointList,
+        MESA_PRIM_LINES => Topology::LineList,
+        MESA_PRIM_LINE_STRIP => Topology::LineStrip,
+        MESA_PRIM_TRIANGLES => Topology::TriangleList,
+        MESA_PRIM_TRIANGLE_STRIP => Topology::TriangleStrip,
+        other => return Err(format!("Mesa's index translator gave primitive {other}")),
+    })
+}
+
+fn format(bytes: c_uint) -> IndexFormat {
+    if bytes == IndexFormat::U32.size() {
+        IndexFormat::U32
+    } else {
+        IndexFormat::U16
+    }
+}
+
+/// Words enough for `bytes`.
+fn words_for(bytes: usize) -> Vec<u32> {
+    vec![0; bytes.div_ceil(size_of::<u32>())]
+}
+
+/// The vertices `first..first + count` drawn as `mode` without indices, as indices that draw them
+/// with the host's provoking vertex `host` where OpenGL's is `api`.
+pub fn generated(
+    mode: mesa_prim,
+    first: u32,
+    count: u32,
+    api: ProvokingVertex,
+    host: ProvokingVertex,
+) -> Result<Option<Rewritten>, String> {
+    let count = trimmed(mode, count);
+    if count == 0 {
+        return Ok(None);
+    }
+    let (mut primitive, mut size, mut out) = (MESA_PRIM_POINTS, 0, 0);
+    let mut generate = None;
+    // SAFETY: Mesa's generator fills the four values it is given.
+    let mode_of = unsafe {
+        u_index_generator(
+            mask(STRIPS_AND_LISTS),
+            mode,
+            first,
+            count,
+            convention(api),
+            convention(host),
+            &mut primitive,
+            &mut size,
+            &mut out,
+            &mut generate,
+        )
+    };
+    let generate = generate
+        .filter(|_| mode_of != U_TRANSLATE_ERROR)
+        .ok_or("Mesa's index generator has none for the draw")?;
+    let bytes = out as usize * size as usize;
+    let mut words = words_for(bytes);
+    // SAFETY: the generator writes `out` indices of `size` bytes, which the words hold.
+    unsafe { generate(first, out, words.as_mut_ptr().cast::<c_void>()) };
+    Ok(Some(Rewritten {
+        topology: topology(primitive)?,
+        format: format(size),
+        words,
+        bytes,
+    }))
+}
+
+/// The draw's `indices` (its whole range, of `info`'s index size) as indices that draw them as
+/// OpenGL does on the host: cut at each restart value where `split_restart`, as lists only where
+/// `lists_only` (the host's strips restart at the largest value), and with the host's provoking
+/// vertex `host` where OpenGL's is `api`.
+pub fn translated(
+    info: &pipe_draw_info,
+    indices: &[u8],
+    split_restart: bool,
+    lists_only: bool,
+    api: ProvokingVertex,
+    host: ProvokingVertex,
+) -> Result<Option<Rewritten>, String> {
+    let index_size = c_uint::from(info.index_size);
+    let count = (indices.len() / index_size as usize) as u32;
+    let mode = mesa_prim::from(info.mode);
+    // Mesa's functions read the indices as their own width.
+    let aligned;
+    let indices = if indices.as_ptr().cast::<u32>().is_aligned() {
+        indices
+    } else {
+        let mut words = words_for(indices.len());
+        // SAFETY: the words hold at least the indices' bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                indices.as_ptr(),
+                words.as_mut_ptr().cast::<u8>(),
+                indices.len(),
+            );
+        }
+        aligned = words;
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), indices.len()) }
+    };
+    let pieces = if split_restart {
+        restart_pieces(info, indices, count)?
+    } else {
+        vec![(0, trimmed(mode, count))]
+    };
+    let primitives = mask(if lists_only { LISTS } else { STRIPS_AND_LISTS });
+    let mut converted = Vec::with_capacity(pieces.len());
+    let mut bytes = 0;
+    let (mut primitive, mut size) = (MESA_PRIM_POINTS, 0);
+    for (start, count) in pieces.into_iter().filter(|&(_, count)| count > 0) {
+        let mut out = 0;
+        let mut translate = None;
+        // SAFETY: Mesa's translator fills the four values it is given.
+        let mode_of = unsafe {
+            u_index_translator(
+                primitives,
+                mode,
+                index_size,
+                count,
+                convention(api),
+                convention(host),
+                PR_DISABLE,
+                &mut primitive,
+                &mut size,
+                &mut out,
+                &mut translate,
+            )
+        };
+        let translate = translate
+            .filter(|_| mode_of != U_TRANSLATE_ERROR)
+            .ok_or("Mesa's index translator has none for the draw")?;
+        converted.push((start, count, out, translate));
+        bytes += out as usize * size as usize;
+    }
+    if bytes == 0 {
+        return Ok(None);
+    }
+    let mut words = words_for(bytes);
+    let mut at = 0;
+    for (start, count, out, translate) in converted {
+        // SAFETY: the translator reads `count` indices from `start` of the indices and writes `out`
+        // indices of `size` bytes at `at`, which the words hold.
+        unsafe {
+            translate(
+                indices.as_ptr().cast::<c_void>(),
+                start,
+                count,
+                out,
+                info.restart_index,
+                words.as_mut_ptr().cast::<u8>().add(at).cast::<c_void>(),
+            );
+        }
+        at += out as usize * size as usize;
+    }
+    Ok(Some(Rewritten {
+        topology: topology(primitive)?,
+        format: format(size),
+        words,
+        bytes,
+    }))
+}
+
+unsafe extern "C" {
+    /// The C runtime's, which Mesa's restart splitter allocates its ranges from.
+    fn free(memory: *mut c_void);
+}
+
+/// The ranges of the `count` indices between restart values, each less an unfinished last
+/// primitive, as (first index, count).
+fn restart_pieces(
+    info: &pipe_draw_info,
+    indices: &[u8],
+    count: u32,
+) -> Result<Vec<(u32, u32)>, String> {
+    let whole = pipe_draw_start_count_bias {
+        start: 0,
+        count,
+        index_bias: 0,
+    };
+    let (mut pieces, mut lowest, mut highest, mut total) = (0, 0, 0, 0);
+    // SAFETY: the splitter reads `count` indices of the draw's size and returns its own array of
+    // `pieces` ranges, or none.
+    let ranges = unsafe {
+        util_prim_restart_convert_to_direct(
+            indices.as_ptr().cast::<c_void>(),
+            info,
+            &whole,
+            &mut pieces,
+            &mut lowest,
+            &mut highest,
+            &mut total,
+        )
+    };
+    if ranges.is_null() {
+        // Nothing whole between the restart values.
+        return Ok(Vec::new());
+    }
+    // SAFETY: the splitter's array of `pieces` ranges, freed after it is read.
+    let found = unsafe { std::slice::from_raw_parts(ranges, pieces as usize) }
+        .iter()
+        .map(|r| (r.start, r.count))
+        .collect();
+    // SAFETY: as above.
+    unsafe { free(ranges.cast::<c_void>()) };
+    Ok(found)
+}

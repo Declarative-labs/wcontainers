@@ -16,6 +16,8 @@ mod format;
 #[cfg(mesa)]
 mod gallium;
 #[cfg(mesa)]
+mod indices;
+#[cfg(mesa)]
 mod present;
 #[cfg(mesa)]
 mod query;

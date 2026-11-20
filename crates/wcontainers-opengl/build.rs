@@ -24,8 +24,9 @@ const BINDINGS: &str = "gallium.rs";
 const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context";
 const ALLOWED_FUNCTIONS: &str = "u_init_pipe_screen_caps|u_upload_create_default|u_upload_destroy|\
      util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported)|\
-     wc_sampler_view_.*|tgsi_to_nir";
-const ALLOWED_CONSTANTS: &str = "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*";
+     wc_sampler_view_.*|tgsi_to_nir|u_index_(translator|generator)|util_prim_restart_convert_to_direct";
+const ALLOWED_CONSTANTS: &str =
+    "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*|PV_(FIRST|LAST)|PR_DISABLE|U_TRANSLATE_.*";
 /// The Gallium file whose defines (and, for `FIELDS`, C standard) the bindings take from Mesa's
 /// compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
