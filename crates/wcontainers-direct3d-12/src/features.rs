@@ -1,6 +1,6 @@
 //! What `D3D12CreateDevice` and `CheckFeatureSupport` answer, from the back end's `Caps` (plan
-//! section 9): feature level 11_0 on a back end with compute, storage writes in fragment programs
-//! and the 11_0 sizes, resource binding
+//! section 9): feature level 11_0 on a back end with compute, storage writes in fragment programs,
+//! the 11_0 sizes and the raster and blend abilities of `LEVEL_11_0_FIXED_FUNCTION`, resource binding
 //! tier 3 only with big resource tables; ray tracing, mesh shaders, variable rate shading,
 //! sampler feedback, tiled resources, rasterizer ordered views, conservative rasterisation and 64-bit
 //! integers absent.
@@ -17,12 +17,19 @@ pub const FEATURE_LEVEL_11_0: u32 = 0xb000;
 pub const LEVEL_11_0_TEXTURE_2D: u32 = 16384;
 pub const LEVEL_11_0_TEXTURE_3D: u32 = 2048;
 pub const LEVEL_11_0_TEXTURE_LAYERS: u32 = 2048;
+/// What 11_0 asks of the raster and blend blocks that the front draws only through the back end:
+/// wireframe, depth clamping, a depth bias clamp, independent blending and a partial sample mask.
+pub const LEVEL_11_0_FIXED_FUNCTION: Features = Features::POLYGON_MODE
+    .union(Features::DEPTH_CLAMP)
+    .union(Features::DEPTH_BIAS_CLAMP)
+    .union(Features::INDEPENDENT_BLEND)
+    .union(Features::SAMPLE_MASK);
 /// `D3D_SHADER_MODEL_6_0`.
 pub const SHADER_MODEL_6_0: u32 = 0x60;
 
 /// The highest feature level the front reports, or None when `D3D12CreateDevice` fails as on
-/// hardware below 11_0 (WebGL 2, or an adapter short of 11_0's sizes or of `D32_FLOAT_S8X24_UINT`
-/// depth targets).
+/// hardware below 11_0 (WebGL 2, or an adapter short of 11_0's sizes, of `D32_FLOAT_S8X24_UINT`
+/// depth targets or of `LEVEL_11_0_FIXED_FUNCTION`).
 pub fn feature_level(caps: &Caps) -> Option<u32> {
     let l = &caps.limits;
     let sizes = l.max_texture_2d >= LEVEL_11_0_TEXTURE_2D
@@ -33,9 +40,11 @@ pub fn feature_level(caps: &Caps) -> Option<u32> {
         .formats
         .get(Format::Depth32FloatStencil8)
         .contains(FormatUse::DEPTH_STENCIL);
-    // 11_0 has compute shaders and unordered access views in pixel shaders.
+    // 11_0 has compute shaders and unordered access views in pixel shaders, and the raster and
+    // blend abilities this front serves only through the back end's own.
     let stages = caps.has(Features::COMPUTE | Features::FRAGMENT_STORAGE_WRITE);
-    if !sizes || !depth_stencil || !stages {
+    let fixed = caps.has(LEVEL_11_0_FIXED_FUNCTION);
+    if !sizes || !depth_stencil || !stages || !fixed {
         return None;
     }
     // 11_1 also needs logic operations and target-independent rasterisation, which no `Caps`

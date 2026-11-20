@@ -1513,14 +1513,14 @@ impl ID3D12CommandQueue_Impl for Queue_Impl {
     ) {
         Queue::ExecuteCommandLists(self, numcommandlists, ppcommandlists)
     }
-    fn SetMarker(&self, _metadata: u32, _pdata: *const core::ffi::c_void, _size: u32) {
-        self.unsupported("SetMarker");
+    fn SetMarker(&self, metadata: u32, pdata: *const core::ffi::c_void, size: u32) {
+        Queue::SetMarker(self, metadata, pdata, size)
     }
-    fn BeginEvent(&self, _metadata: u32, _pdata: *const core::ffi::c_void, _size: u32) {
-        self.unsupported("BeginEvent");
+    fn BeginEvent(&self, metadata: u32, pdata: *const core::ffi::c_void, size: u32) {
+        Queue::BeginEvent(self, metadata, pdata, size)
     }
     fn EndEvent(&self) {
-        self.unsupported("EndEvent");
+        Queue::EndEvent(self)
     }
     fn Signal(
         &self,
@@ -2183,14 +2183,14 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     ) {
         List::SetPredication(self, pbuffer, alignedbufferoffset, operation)
     }
-    fn SetMarker(&self, _metadata: u32, _pdata: *const core::ffi::c_void, _size: u32) {
-        self.unsupported("SetMarker");
+    fn SetMarker(&self, metadata: u32, pdata: *const core::ffi::c_void, size: u32) {
+        List::SetMarker(self, metadata, pdata, size)
     }
-    fn BeginEvent(&self, _metadata: u32, _pdata: *const core::ffi::c_void, _size: u32) {
-        self.unsupported("BeginEvent");
+    fn BeginEvent(&self, metadata: u32, pdata: *const core::ffi::c_void, size: u32) {
+        List::BeginEvent(self, metadata, pdata, size)
     }
     fn EndEvent(&self) {
-        self.unsupported("EndEvent");
+        List::EndEvent(self)
     }
     fn ExecuteIndirect(
         &self,
