@@ -790,6 +790,10 @@ Found on the way, fixed:
 - After the eleventh run: unchanged, 7577 lines; the check passes on this Mac (exit 0, scratch
   streams/s2k/literals-2.log; the new test's argument length is `3 * PAGE_SIZE`, since 10000 was
   taken for a restatement of another constant).
+- After S3's first run: unchanged, 7577 lines (wcontainers-kernel 2247, wcontainers-kernel-test
+  2422, wcontainers-abi 3); the check passes on this Mac (exit 0). The new code's sizes and
+  offsets are derived (`size_of::<SignalInformation>()`, the word size of `c_int`); the signal
+  numbers in the tests are the generated constants.
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -801,6 +805,25 @@ fnv and rayon (all MIT OR Apache-2.0), a test-time tool of the workspace, not a 
 anything shipped.
 
 ## Departures from the plan
+
+- S3, signals (choices where the ruling is silent, for the owner): `on_signal_delivering` fires
+  where ptrace's signal-delivery-stop is, for every signal a thread takes off its pending sets to
+  act on (handler, default action, an ignoring handler); not for signals a call takes
+  (`sigwaitinfo`, `signalfd`), ones dropped at sending as ignored, or a fatal signal that ends a
+  process from the sender's side (as Linux, untraced). `send_signal` is sent when the kernel
+  next settles (after the hook, before any thread runs), since the handle cannot reach the
+  embedder for the hooks a signal can cause (a process's end).
+- S3, `SignalInformation` is the generated C union `siginfo`, as ruled. Safe Rust can build one
+  whose bytes are partly unwritten (a union member smaller than the record); the kernel reads
+  the record whole (`_si_pad`, one `unsafe` read with its reason), so the handle's document asks
+  for a record built from zero, as Linux's `clear_siginfo`. For the owner: a record that cannot
+  be built partly unwritten (bytes, or an enum by layout) would make this sound by type.
+- S3, shared memory (choices, for the owner): the hooks describe what a process maps, compared
+  with what was announced, not each call; a source announced once stays announced while any
+  process maps it, so every announced mapping is announced ended; a private file mapping is not
+  announced (the ruling names `MAP_SHARED`), though it shows other processes' writes to the file
+  until it writes a page itself; a fork's child is announced its mappings just after
+  `on_process_starting`.
 
 - The literal check is taken as its crate's files from 7668c010, not merged (see above). When
   phase-1 or main carries the check with the runtime adapted to the stream ends, a merge brings
