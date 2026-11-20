@@ -2753,11 +2753,10 @@ contract's bits, in both runners).
 
 ## Next
 
-1. P2's independent check (under "What is left of P2").
-2. The brief's asks after the proof run: merge origin/main and rerun layers 1, 2 and a sample of 3; adopt
-   the literal check; `...Settings` to `...Config`; busybox `awk`'s unrecognised jump through a register;
-   the progress count (definition E) as its own milestone.
-3. Refinements of M5 under "M5, fourth run, what comes next".
+1. Finish T3 (see "T3, what is left").
+2. The progress count (definition E, the brief) as its own milestone.
+3. The literal fix list from step 5 on (orchestrator's `magic-literals/fix-translator.md`).
+4. Refinements of M5 under "M5, fourth run, what comes next".
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
@@ -2816,6 +2815,18 @@ contract's bits, in both runners).
   difference, and the translator keeps the M5's answer.
 
 ## Departures from the plan
+
+- T3: layer 2's rerun on the merged code is 100,000 programs (10 percent of the bar), every one compared with
+  the real CPU, rather than the million: that is 100 times the CPU comparisons of P2's whole layer 2, and the
+  milestone asks for reruns, not the bar. Layer 1's rerun is the full bar (10,000 cases a form) on the Mac.
+- T3: `differences_match_linux_on_other_hosts` expected "software fused multiply-add" counted. The program
+  reads FPSR, so its flags are now kept from its start and the same software operations are counted as
+  "exact floating point requested", which the hook has always done for a thread whose flags are kept. The
+  test now asserts that exact expectation (no "software fused multiply-add", some "exact floating point
+  requested", and that the program reads FPSR), not a looser one.
+- T3: busybox awk's counts were measured with `wcon` (the runtime track's command line program) on the rented
+  x86 machine: the translator's output does not depend on the host, and that program is what runs a real
+  container; this track's own binaries test only translates and loads.
 
 - P2: layer 3's bar of 100,000 Csmith programs is read as 100,000 compared with Linux; programs that do not
   end on Linux in time are made and counted apart, not compared, so more than 100,000 are made.
@@ -3074,6 +3085,10 @@ contract's bits, in both runners).
   `memory_may_move(false)`).
 
 ## Shared crate (wcontainers-abi)
+
+- T3: added `PAGE_SHIFT` (`PAGE_SIZE.trailing_zeros()`) and `PAGE_MASK` (`PAGE_SIZE - 1`) beside
+  `PAGE_SIZE`, exported from the crate root, as the literal fix list's step 1 asks (additive; nothing else
+  changed).
 
 - P1: no change by this half. The merge of `origin/phase-1` brought the kernel half's two changes
   (`CounterReading::detail`, `Host::output(Stream, bytes)` in place of `Host::terminal_output`); the runner

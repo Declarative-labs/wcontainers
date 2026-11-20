@@ -64,7 +64,13 @@ fn variants() -> [(&'static str, Omit); 6] {
     ]
 }
 
+/// Where Linux gives the load averages; macOS has none, and `sysctl` gives them there.
+const LOAD_AVERAGES: &str = "/proc/loadavg";
+
 fn load() -> String {
+    if let Ok(averages) = std::fs::read_to_string(LOAD_AVERAGES) {
+        return averages.trim().to_string();
+    }
     let output = std::process::Command::new("sysctl")
         .args(["-n", "vm.loadavg"])
         .output()
