@@ -279,6 +279,12 @@ Run 27 = G2d run 1, 2026-11-19:
   check at HEAD in the LF worktree: exit 0, 0 marks; this crate's baseline lines 192
   (unchanged); the check's first run found 8 new literals, named or derived before committing
   (lit1.log, lit2.log).
+- Last runs, at 5e2b5922 (the pushed head before this note; desktop shared, not alone): the
+  whole suite natively on Vulkan and Direct3D 12 with the interface's tests, 311 passed, 0
+  failed, 5 ignored (full2.log); web/check, every picture equal at tolerance 0 on both APIs and
+  in Chrome, the three new checks passing in Chrome, the shared suite in Chrome 44 passed, 0
+  failed (webcheck2.log). At the end the desktop's C:\wc\target\phase-2-graphics-webgpu (19.4
+  GB) was deleted; no build folder was made on the Mac or in scratch this run.
 
 Run 26 = G2c run 8, 2026-11-19:
 - Merged origin/phase-2-graphics-direct3d-11 (20 commits; it held -webgl's, -direct3d-12's
