@@ -241,6 +241,21 @@ fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_bac
         Device::new(r, &[level::L10_0]).err(),
         Some(Error::Unsupported)
     );
+    // Transform feedback stands for compute below 11_0 (the stage helper's replay); without cube
+    // arrays the level stops at 10_0, as on WebGL 2.
+    let replayed = |r: &mut Recorder| {
+        r.caps.features -= Features::COMPUTE;
+        r.caps.features |= Features::TRANSFORM_FEEDBACK;
+    };
+    assert_eq!(top(&replayed), Ok(level::L10_1));
+    assert_eq!(
+        top(&|r| {
+            replayed(r);
+            r.cube_arrays = false;
+        }),
+        Ok(level::L10_0)
+    );
+    assert_eq!(top(&|r| r.cube_arrays = false), Ok(level::L10_0));
 }
 
 #[test]
