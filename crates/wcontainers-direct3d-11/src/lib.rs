@@ -18,7 +18,10 @@ pub mod runtime;
 pub mod shader;
 pub mod stream;
 
-pub use context::{COMPUTE, DOMAIN, GEOMETRY, HULL, Mapped, PIXEL, STAGES, UAV_SLOTS, VERTEX};
+pub use context::{
+    COLOR_COMPONENTS, COMPUTE, Color, DOMAIN, GEOMETRY, HULL, Mapped, PIXEL, RECT_EDGES, Rect,
+    STAGES, UAV_SLOTS, VERTEX,
+};
 pub use device::{Device, Removal, level_texture_limits, top_level};
 pub use error::{Error, Result, WARNING_PREFIX};
 pub use present::Chain;

@@ -3772,8 +3772,7 @@ impl IDXGISwapChain2_Impl for SwapChain_Impl {
     }
     fn GetFrameLatencyWaitableObject(&self) -> windows::Win32::Foundation::HANDLE {
         let _lock = lock();
-        missing_void("IDXGISwapChain2::GetFrameLatencyWaitableObject");
-        Default::default()
+        self.get_frame_latency_waitable_object()
     }
     fn SetMatrixTransform(&self, pmatrix: *const DXGI_MATRIX_3X2_F) -> windows::core::Result<()> {
         let _lock = lock();
