@@ -471,7 +471,8 @@ impl Kernel {
 }
 
 pub struct SuspendedTask { /* the kernel's records */ }  // id(), process()
-pub struct ProcessContext { /* the kernel's records */ } // id()
+pub struct ProcessContext { /* the kernel's records */ } // id(), origin()
+pub enum ContextOrigin { Suspended, Copied }
 ```
 
 - The kernel's calls take the executor (`cpu`), as `Kernel::process` does: a task's registers live
@@ -525,6 +526,37 @@ pub struct ProcessContext { /* the kernel's records */ } // id()
   write half done, a semaphore operation, `epoll_wait` and a pipe read, changes and wakes the futex
   while they are away, and compares every answer with the reference, where the same program is
   stopped and continued with SIGSTOP and SIGCONT.
+  The call's next run is when the task is put back, so a wait met while it was away (a byte
+  written to the pipe it reads) is found before the signal: a read then answers the byte where
+  Linux, whose call was interrupted when the stop came, answers EINTR to a handler without
+  `SA_RESTART` that a signal sent meanwhile runs. That one case is a known failure
+  (`a_threads_timer_firing_while_it_is_away_interrupts_its_read_though_the_byte_came`, ignored with
+  its reason); running each call's interruption when the task is taken would mean running a call,
+  with its hooks, inside the hook that takes it.
+- A task taken off the kernel is still a task of its process there, as a stopped one is in Linux
+  (the process's record keeps its number, the signals it blocks, and for the first thread what
+  Linux reads from it: credentials, name, scheduling):
+  - The process ends only when its last task ends: a thread that exits while others are away
+    ends alone, and the process's exit status is the last thread's, wherever it comes back.
+  - A signal sent to the process or to the task while it is away is kept, as Linux keeps it for a
+    stopped task (`wants_signal` is false): `kill`, `tgkill` and its kin, a POSIX timer aimed at
+    the thread (`SIGEV_THREAD_ID`), a child's SIGCHLD to its parent. A signal to the
+    task goes with it when it is put back, after what it already had (a standard signal once); one
+    to the process stays with the process. The task acts on them when it is put back, a task taken
+    in a call after its call answers as above. SIGKILL ends the process at once, as it ends a
+    stopped one; the tasks away are then handed back by `resume_tasks`. Every other end of the
+    process (`exit_group`, a fatal signal acted on, the container's end) also ends its tasks away.
+  - The `ProcessContext` carries these records, so a process moved to another kernel keeps them
+    there.
+  The tests in tests/away.rs (guest/away.c) take a child's main thread while it joins a worker that
+  then ends, a child's thread in a read while its parent sends SIGTERM or SIGKILL and closes the
+  pipe, and a thread in a read while its own timer fires, and compare the output with the
+  reference, where nothing is taken.
+- A process whose context is taken off the kernel is still its parent's child there: `wait4` and
+  `waitid` for it wait (with `WNOHANG` they answer 0), as for a stopped child with nothing to
+  report, and when the parent ends it goes to the reaper, which the context takes when it comes
+  back. `kill` of a process away answers ESRCH, as for any process not on this kernel: a signal to
+  it is the embedder's to carry, as the owner ruled for copies on several kernels.
 - Inside a hook the kernel is in the middle of a step for one thread (the system call, signal or
   fault it is handling), or of starting a program or ending a process. That thread, the process
   being started by an exec and every task of a process being ended cannot be taken there: they are
@@ -534,13 +566,24 @@ pub struct ProcessContext { /* the kernel's records */ } // id()
   it is put back. A new thread or process announced by `on_thread_starting` or
   `on_process_starting` after a clone can be taken: it has not run.
 - `suspend_process` takes the context and every task of the process; the process is then gone from
-  the kernel (`process` and `copy_process_context` answer none). Through the handle, when one of its
-  tasks cannot be taken in that hook, the process stays: the answer is a copy of its context and the
-  tasks that could be taken, and the rest are counted as above.
-- `copy_process_context` stops nothing. The copy shares the records the kernel reaches by reference
-  (the address map, the handler table) with the process it copies, as two kernel values in one
-  embedder share the executor's memories; keeping copies in step on several kernels is the
-  embedder's business. It holds no tasks.
+  the kernel (`process` and `copy_process_context` answer none) and the context's `origin()` is
+  `Suspended`. A process being ended (a fatal signal on its way, or inside `on_process_exiting`)
+  cannot leave: `Kernel::suspend_process` answers none for it. Through the handle, whose return
+  has no room for none, when the process is being ended or one of its tasks cannot be taken in that
+  hook (its own thread in the middle of its step, for one), the process stays: the answer is a copy
+  of its context, with `origin()` `Copied`, and the tasks that could be taken, and the rest are
+  counted as above. The test
+  `a_hooks_process_whose_thread_is_in_its_step_stays_and_says_its_context_is_a_copy` asks for the
+  process at `on_signal_delivering`.
+- `copy_process_context` stops nothing, and the copy (`origin()` `Copied`) changes nothing of the
+  original: it has its own address map (the same mappings over the same executor memory) and its
+  own signal handler table, no pending signal (they stay with the process), and every task of the
+  process counted as away from it. Keeping copies in step on several kernels is the embedder's
+  business. It holds no tasks. An address map tells each kernel a process using it is on what
+  changes in its shared mappings, so a process moved to a second kernel is announced there, and one
+  left on the first (two processes in one memory, one moved) still is there. The test
+  `shared_memory_is_announced_on_the_first_kernel_after_a_copy_goes_on_a_second` maps and unmaps a
+  memory file after a copy of its process is put on a second kernel.
 - `resume_process` puts the context on the kernel with `config` (given here, never kept in the
   value: a fork's child takes its parent's as before). A context for a process already on the
   kernel changes nothing and is handed back; so is one with a configuration the kernel cannot run
@@ -552,9 +595,7 @@ pub struct ProcessContext { /* the kernel's records */ } // id()
 - What a task leaves on the kernel it came from while away: results already given to it (a
   semaphore operation done or told EINTR, a message handed over) stay there keyed by its number
   and are found when it comes back to the same kernel; a wake that reaches nobody there is not
-  passed on. Locks across kernels (`wake_waiters`, `move_waiters`) are not built. A thread that
-  ends while its siblings are away is, to the kernel, the last thread of its process and ends the
-  process.
+  passed on. Locks across kernels (`wake_waiters`, `move_waiters`) are not built.
 - A second kernel value in the same embedder can take a context and tasks from another, run on the
   same executor (the memory ids are the executor's); its clock and its tables (ends, futexes,
   System V objects, file systems) are its own. A process brought to a kernel whose parent is not
