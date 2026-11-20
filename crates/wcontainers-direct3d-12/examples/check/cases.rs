@@ -88,6 +88,7 @@ pub const CASES: &[&str] = &[
     "markers",
     "undefined-topology",
     "video-formats",
+    "texture-kinds",
     ANTIALIASED_LINES,
 ];
 
@@ -142,6 +143,7 @@ pub fn run(name: &str) -> Result<String> {
             "markers" => markers(&c),
             "undefined-topology" => undefined_topology(&c),
             "video-formats" => video_formats(&c),
+            "texture-kinds" => texture_kinds(&c),
             ANTIALIASED_LINES => antialiased_lines(&c),
             _ => panic!("no case {name}"),
         }
@@ -4380,5 +4382,197 @@ unsafe fn video_formats(c: &Ctx) -> Result<String> {
             write!(line, "; ").unwrap();
         }
         Ok(line.trim_end().to_string())
+    }
+}
+
+/// HLSL of the texture kinds case: textures loaded as another component kind than their views'
+/// formats, the values stored to a raw buffer.
+const TEXTURE_KINDS_CS: &str = "Texture2D<float4> unsigned_as_float : register(t0);
+     Texture2D<uint4> float_as_unsigned : register(t1);
+     Texture2D<uint4> signed_as_unsigned : register(t2);
+     Texture2D<int4> unorm_as_signed : register(t3);
+     RWByteAddressBuffer o : register(u0);
+     [numthreads(1, 1, 1)] void main() {
+         o.Store4(0, asuint(unsigned_as_float.Load(int3(0, 0, 0))));
+         o.Store4(16, float_as_unsigned.Load(int3(0, 0, 0)));
+         o.Store4(32, signed_as_unsigned.Load(int3(0, 0, 0)));
+         o.Store4(48, asuint(unorm_as_signed.Load(int3(0, 0, 0)))); }";
+
+/// One texel each of `R8G8B8A8_UINT`, `R32G32B32A32_FLOAT`, `R8G8B8A8_SINT` and
+/// `R8G8B8A8_UNORM`, loaded by a compute shader declaring float, unsigned, unsigned and signed
+/// textures: the words it stores (Direct3D gives the view's values, which the shader takes as the
+/// bits of the type it declares).
+unsafe fn texture_kinds(c: &Ctx) -> Result<String> {
+    unsafe {
+        let texels: [(DXGI_FORMAT, Vec<u8>); 4] = [
+            (DXGI_FORMAT_R8G8B8A8_UINT, vec![1, 2, 3, 4]),
+            (
+                DXGI_FORMAT_R32G32B32A32_FLOAT,
+                [1.0f32, -2.5, 0.375, f32::MAX]
+                    .map(f32::to_le_bytes)
+                    .concat(),
+            ),
+            (
+                DXGI_FORMAT_R8G8B8A8_SINT,
+                [-1i8, 2, -3, i8::MIN].map(|v| v as u8).to_vec(),
+            ),
+            (DXGI_FORMAT_R8G8B8A8_UNORM, vec![0, 64, 128, u8::MAX]),
+        ];
+        let range = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: texels.len() as u32,
+            ..Default::default()
+        };
+        let root = c.root(
+            &[
+                D3D12_ROOT_PARAMETER {
+                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                    Anonymous: D3D12_ROOT_PARAMETER_0 {
+                        DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                            NumDescriptorRanges: 1,
+                            pDescriptorRanges: &range,
+                        },
+                    },
+                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                },
+                D3D12_ROOT_PARAMETER {
+                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
+                    Anonymous: D3D12_ROOT_PARAMETER_0 {
+                        Descriptor: D3D12_ROOT_DESCRIPTOR::default(),
+                    },
+                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                },
+            ],
+            D3D12_ROOT_SIGNATURE_FLAG_NONE,
+        )?;
+        let cs = compile(TEXTURE_KINDS_CS, s!("cs_5_0"))?;
+        let pso: ID3D12PipelineState =
+            c.device
+                .CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
+                    pRootSignature: transmute_copy(&root),
+                    CS: D3D12_SHADER_BYTECODE {
+                        pShaderBytecode: cs.as_ptr().cast(),
+                        BytecodeLength: cs.len(),
+                    },
+                    ..Default::default()
+                })?;
+        let views: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                NumDescriptors: texels.len() as u32,
+                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                ..Default::default()
+            })?;
+        let step = c
+            .device
+            .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        let placement = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT as usize;
+        let mut staged = vec![0u8; placement * texels.len()];
+        for (i, (_, bytes)) in texels.iter().enumerate() {
+            staged[i * placement..][..bytes.len()].copy_from_slice(bytes);
+        }
+        let staged = c.upload(&staged)?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let mut textures = Vec::new();
+        for (i, (format, _)) in texels.iter().enumerate() {
+            let texture = c.committed(
+                D3D12_HEAP_TYPE_DEFAULT,
+                &D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                    Width: 1,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    Format: *format,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            )?;
+            list.CopyTextureRegion(
+                &D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: transmute_copy(&texture),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        SubresourceIndex: 0,
+                    },
+                },
+                0,
+                0,
+                0,
+                &D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: transmute_copy(&staged),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                            Offset: (i * placement) as u64,
+                            Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                                Format: *format,
+                                Width: 1,
+                                Height: 1,
+                                Depth: 1,
+                                RowPitch: D3D12_TEXTURE_DATA_PITCH_ALIGNMENT,
+                            },
+                        },
+                    },
+                },
+                None,
+            );
+            list.ResourceBarrier(&[transition(
+                &texture,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            )]);
+            c.device.CreateShaderResourceView(
+                &texture,
+                Some(&D3D12_SHADER_RESOURCE_VIEW_DESC {
+                    Format: *format,
+                    ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                    Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                    Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                        Texture2D: D3D12_TEX2D_SRV {
+                            MipLevels: 1,
+                            ..Default::default()
+                        },
+                    },
+                }),
+                D3D12_CPU_DESCRIPTOR_HANDLE {
+                    ptr: views.GetCPUDescriptorHandleForHeapStart().ptr + i * step as usize,
+                },
+            );
+            textures.push(texture);
+        }
+        let words = size_of::<[u32; 4]>() * texels.len();
+        let out = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(words as u64, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        )?;
+        list.SetComputeRootSignature(&root);
+        list.SetPipelineState(&pso);
+        list.SetDescriptorHeaps(&[Some(views.clone())]);
+        list.SetComputeRootDescriptorTable(0, views.GetGPUDescriptorHandleForHeapStart());
+        list.SetComputeRootUnorderedAccessView(1, out.GetGPUVirtualAddress());
+        list.Dispatch(1, 1, 1);
+        list.ResourceBarrier(&[transition(
+            &out,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COMMON,
+        )]);
+        c.run(&list)?;
+        let loaded: Vec<String> = c
+            .read(&out, 0, words as u64)?
+            .chunks(size_of::<u32>())
+            .map(|w| {
+                format!(
+                    "{:08x}",
+                    u32::from_le_bytes(w.try_into().unwrap_or_default())
+                )
+            })
+            .collect();
+        Ok(format!("loaded {}", loaded.join(" ")))
     }
 }
