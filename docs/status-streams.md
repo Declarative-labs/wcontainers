@@ -84,9 +84,10 @@ Run 2 did part 3, suspend and resume by task with a process context (suspend.rs)
   thread ending while its siblings are away hands its children to none.
 - Test: `tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs` (embedder.c
   `suspend`: a reader of an empty pipe, a waiter on a mutex the main thread holds, a timed futex
-  waiter; the main thread sleeps twice, then writes the pipe, wakes the futex and lets the mutex
-  go, joins, prints). Two plans, each in all 6 orders of putting tasks back: from hooks (the
-  three waiting threads at the second sleep's request, kept away while the main thread wakes
+  waiter, a taker from a System V semaphore; the main thread sleeps twice, then writes the pipe,
+  wakes the futex, lets the mutex go and gives to the semaphore, joins, prints). Two plans, each
+  in all 24 orders of putting the four tasks back: from hooks (the
+  four waiting threads at the second sleep's request, kept away while the main thread wakes
   them; the main thread itself at its write's request, before the call; asking for it again at
   the write's response is refused and counted once), and between steps (one thread at a time and
   a task not on the kernel; every thread; the whole process, its tasks first without the context
@@ -94,8 +95,10 @@ Run 2 did part 3, suspend and resume by task with a process context (suspend.rs)
   process moved to a second `Kernel` value, checked there by memory id and size, and brought
   back). The output equals the reference's in every case. With the futex line leaving disabled,
   the hooks plan hangs (the mutex waiter's wake is lost): checked once on the ARM machine.
-- Not covered by a test: a semaphore or message queue waiter taken (the same code path as the
-  futex's); running a moved process on the second kernel (only its state is checked there).
+- Not covered by a test: a message queue waiter taken (the same code path as the semaphore's);
+  running a moved process on the second kernel (only its state is checked there). The semaphore
+  waiter would also go on correctly on the same kernel without leaving its line (its result is
+  kept by its number), so only the futex case is shown to need it.
 
 Open points for the check and the owner (also in "Departures"):
 - A thread that exits while its siblings are away is, to the kernel, the last thread of its
