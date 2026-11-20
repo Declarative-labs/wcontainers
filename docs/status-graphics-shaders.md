@@ -107,6 +107,9 @@ Runs at the tip:
   at the run's start, 530 after (45 deleted: the hull and domain lowering's numbers and strings
   named once).
 - Not run: WebAssembly and Chrome on the new WGSL files (gap A8's comparison).
+- Clean-up at the end: the desktop's build folder of this branch (C:\wc\target), the laptop's
+  (4.6 GB) and this run's output folders and clone on the x86 machine deleted (its build folder
+  kept, the machine's own); no build was made in the Mac checkout.
 
 ## New for the owner
 
