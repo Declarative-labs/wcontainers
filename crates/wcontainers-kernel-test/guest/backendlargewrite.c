@@ -1,6 +1,7 @@
 // Writes of many backend messages each: one write, a pwrite, a writev of three parts and three
-// asynchronous writes submitted together, then the file read back. Prints each result and a sum of
-// the file's bytes by position.
+// asynchronous writes submitted together, then the file read back; then the first part copied
+// by copy_file_range and sendfile and appended. Prints each result, a sum of the file's bytes by
+// position and whether each copy matches.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/sendfile.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -71,5 +73,22 @@ int main(void) {
     unsigned long long sum = 0;
     for (off_t i = 0; i < size; i++) sum += (unsigned long long)back[i] * (unsigned long long)(i % 251 + 1);
     printf("sum %llu, first part same %d\n", sum, memcmp(back, first, LARGE) == 0);
+
+    // The first part again through calls that read the backend before they write it, and through
+    // a write at the end of a file.
+    int copied = open("copied", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    loff_t from = 0;
+    result("copy_file_range", copy_file_range(fd, &from, copied, NULL, LARGE, 0));
+    int sent = open("sent", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    off_t at = 0;
+    result("sendfile", sendfile(sent, fd, &at, LARGE));
+    int appended = open("appended", O_CREAT | O_RDWR | O_TRUNC | O_APPEND, 0644);
+    result("append", write(appended, first, LARGE));
+    int targets[] = {copied, sent, appended};
+    for (size_t i = 0; i < sizeof targets / sizeof *targets; i++) {
+        memset(back, 0, LARGE);
+        result("pread", pread(targets[i], back, LARGE, 0));
+        printf("same %d\n", memcmp(back, first, LARGE) == 0);
+    }
     return 0;
 }

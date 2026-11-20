@@ -1635,15 +1635,18 @@ pub(crate) fn read(handle: &Handle, offset: u64, count: u64) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
-/// Writes a write's bytes at `offset`, in as many messages as the backend's largest takes, given
-/// the bytes from `resumed` on, which the backend took in earlier runs; how many it took in all.
-/// Each part taken is kept, so a later run of the call goes on after it.
+/// Writes a write's bytes at `offset`, in as many messages as the backend's largest takes; how
+/// many it took in all. A call that goes on after what the backend took in its earlier runs gives
+/// that as `resumed` with the bytes after it, and each part taken is kept for its later runs;
+/// without it every run asks every part, with the call's other questions before them.
 pub(crate) fn write(
     handle: &Handle,
     offset: u64,
-    resumed: u64,
+    resumed: Option<u64>,
     bytes: &[u8],
 ) -> Result<u64, Errno> {
+    let keeps_progress = resumed.is_some();
+    let resumed = resumed.unwrap_or_default();
     let chunk = handle.client.settled().max_write as usize;
     let mut done = 0;
     while done < bytes.len() {
@@ -1671,9 +1674,11 @@ pub(crate) fn write(
         let out: fuse_write_out = first(&body)?;
         done += (out.size as usize).min(part.len());
         let short = (out.size as usize) < part.len();
-        handle
-            .client
-            .took_written(handle.nodeid, offset, resumed + done as u64, short);
+        if keeps_progress {
+            handle
+                .client
+                .took_written(handle.nodeid, offset, resumed + done as u64, short);
+        }
         if short {
             break;
         }

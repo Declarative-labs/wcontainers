@@ -1326,13 +1326,15 @@ fn write_parts(
     // A write to the backend goes on after what the backend took in the call's earlier runs,
     // unless the page cache of a mapped file is to take the whole write.
     let cached = node.borrow().content.block().is_some();
-    let (resumed, ended) = match &file.borrow().backend {
+    let before = match &file.borrow().backend {
         Some(handle) if !append && (handle.direct_io() || !cached) => {
-            handle.client.written_before(handle.nodeid, offset)
+            Some(handle.client.written_before(handle.nodeid, offset))
         }
-        _ => (0, false),
+        _ => None,
     };
-    let resumed = resumed.min(count);
+    let resume = before.map(|(resumed, _)| resumed.min(count));
+    let resumed = resume.unwrap_or_default();
+    let ended = before.is_some_and(|(_, ended)| ended);
     // As much of the buffers as can be read; where it stops, the write ends (`write_bytes`).
     let mut bytes = Vec::new();
     let mut skip = resumed;
@@ -1352,7 +1354,7 @@ fn write_parts(
             break;
         }
     }
-    write_bytes_after(kernel, cx, tid, file, &bytes, count, at, append, resumed)
+    write_bytes_after(kernel, cx, tid, file, &bytes, count, at, append, resume)
 }
 
 /// `inode_lock` around a write to a backend file (`fuse_direct_write_iter` without
@@ -1649,11 +1651,11 @@ pub(super) fn write_bytes(
     at: Option<u64>,
     append: bool,
 ) -> Result<u64, Errno> {
-    write_bytes_after(kernel, cx, tid, file, bytes, wanted, at, append, 0)
+    write_bytes_after(kernel, cx, tid, file, bytes, wanted, at, append, None)
 }
 
-/// As [`write_bytes`], with `bytes` what comes after the `resumed` bytes of the write a backend
-/// took in the call's earlier runs; what it returns counts those too.
+/// As [`write_bytes`], for a call that goes on after what a backend took of its write in its
+/// earlier runs: `bytes` comes after the `resumed` bytes, and what it returns counts those too.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
 fn write_bytes_after(
     kernel: &mut Kernel,
@@ -1664,8 +1666,9 @@ fn write_bytes_after(
     wanted: u64,
     at: Option<u64>,
     append: bool,
-    resumed: u64,
+    resume: Option<u64>,
 ) -> Result<u64, Errno> {
+    let resumed = resume.unwrap_or_default();
     let node = file.borrow().node.clone();
     lock_backend_writes(kernel, tid, &node)?;
     let now = kernel.now(cx);
@@ -1690,7 +1693,7 @@ fn write_bytes_after(
             let written = {
                 let file = file.borrow();
                 let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
-                let written = crate::fs::backend::write(handle, offset, resumed, bytes)?;
+                let written = crate::fs::backend::write(handle, offset, resume, bytes)?;
                 // Linux's page cache takes what a cached write wrote (`fuse_fill_write_pages`).
                 if !handle.direct_io() {
                     crate::shared::backend_written(
