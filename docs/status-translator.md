@@ -307,6 +307,11 @@ Fifth run of T3 (2026-11-20 02:00 to 04:00 local), the second independent check'
 - Reruns on e26b3c23, new seed 500:
   - Layer 1 on the Mac, 1,000 cases a form and 10 a form in Chrome, 4 jobs, load 2 to 9, 838 s: 7 passed
     (`t3/r5/layer1-mac.log`).
+- The whole suite of the four crates at e26b3c23 (the code as committed now), debug, rented ARM64 machine,
+  11:14 to 11:38 UTC, load 7 to 13 (`t3/r5/matrix-suite.log`): 99 passed, 10 ignored, 2 failed, both layer 1's
+  (`sample_matches_the_cpu_in_chrome`, `every_covered_form_matches_the_cpu`), whose verdict is the Mac's
+  (above: 7 passed). The log kept only test names, so the forms that failed there were not seen this time;
+  in the second to fourth runs they were `MSR_SR_systemmove` (the Graviton's FPSR keeps bits 28 and 29).
   - Layer 2 on the rented ARM64 machine, 25,000 programs, every one on the real CPU, 5 in Chrome, 12 jobs, load
     13 to 19, 601 s: 0 failing (8,600 faulted, 1,921 left to an address at full) (`t3/r5/pairs-rerun.log`).
   - Layer 3 on the same machine, 1,000 programs from case 0, 100 in Chrome, 12 jobs, load 8 to 19, 917 s: 868
