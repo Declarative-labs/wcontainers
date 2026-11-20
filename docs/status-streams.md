@@ -668,7 +668,10 @@ Found on the way, fixed:
   binary of 1bacb2d4 (S2 before this run) and of 93d65247, each built alone with `cargo test -p
   wcontainers-kernel-test --test memory`, run alternately 7 rounds, round 0 a warm-up: user CPU
   12.224 12.207 12.181 12.225 12.218 11.981 s before, 11.984 11.952 11.959 11.992 11.980 11.983
-  s after. No slowdown. A first try (s2k/speed.log) timed the whole suite's build of the binary
+  s after. No slowdown in user CPU. Wall time was not steady: in rounds 5 and 6 the new
+  binary took 37.6 s and 47.9 s against 19.8 s and 21.2 s for the old one, while the machine's
+  load rose; user CPU in those rounds was the same (11.98 s both ways), so the wall time is most
+  likely the load, not the code, but it was not measured apart from it. A first try (s2k/speed.log) timed the whole suite's build of the binary
   against one built alone: 12.3 s user and 0.88 s system against 11.9 and 0.30, every round; the
   difference is the build (the suite's packages build it differently), not the code, and that
   comparison is not used.
@@ -843,8 +846,11 @@ anything shipped.
   every call two calls of empty methods through `&dyn System`, and every copy into program memory
   notes its range for `on_memory_written_by_kernel`. The ninth run measured about 0.5 % user CPU
   on the memory test binary; S2's seventh and eighth checks measured no difference beyond noise
-  (+0.3 %). The kernel becomes generic over its `System` when it implements the interface
-  crates.
+  (+0.3 %). The kernel becomes generic over its `System` in a later milestone, after the kernel
+  track has merged (the orchestrator's S3 section moved it out of S3); still carried in S3.
+- For the orchestrator (S2's ninth check): the rented ARM64 machine's root disk was full (580 of
+  581 GB; /work/target held 555 GB of every track's build folders), so builds there failed with
+  "No space left on device" at that time; other tracks' failures then may have been the disk.
 - For the owner: a thread waiting on a watch the embedder never resolves cannot be killed (see
   "Departures"); Linux's userfaultfd wait can be, skipping the kernel's store.
 - For the owner: a container whose first program does not fit below `Start::ceiling` fails its

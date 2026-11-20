@@ -1187,22 +1187,33 @@ fn a_programs_own_memory_reached_by_the_process_vm_calls_meets_its_watches() {
 /// A command line long enough to fill pages the program never touches itself.
 const LONG_ARGUMENT: u64 = 3 * PAGE_SIZE;
 
-#[test]
-fn a_command_line_read_through_proc_meets_the_watches_of_the_process_it_names() {
+/// Reads a long command line or environment (`file`) through /proc as the reference does, in the
+/// process itself and from a child, each run under lazy memory.
+fn proc_strings_meet_the_watches_of_the_process_they_name(file: &str) {
     let long = "a".repeat(LONG_ARGUMENT as usize);
-    for named in lazy_as_the_reference(&["cmdline", "self", &long]) {
+    for named in lazy_as_the_reference(&[file, "self", &long]) {
         assert!(
             named.iter().all(|(process, thread)| process == thread),
             "{named:?}"
         );
     }
     // The child's read meets its parent's watches, named with the child's thread.
-    for named in lazy_as_the_reference(&["cmdline", "parent", &long]) {
+    for named in lazy_as_the_reference(&[file, "parent", &long]) {
         assert!(
             named.iter().any(|(process, thread)| process != thread),
             "{named:?}"
         );
     }
+}
+
+#[test]
+fn a_command_line_read_through_proc_meets_the_watches_of_the_process_it_names() {
+    proc_strings_meet_the_watches_of_the_process_they_name("cmdline");
+}
+
+#[test]
+fn an_environment_read_through_proc_meets_the_watches_of_the_process_it_names() {
+    proc_strings_meet_the_watches_of_the_process_they_name("environ");
 }
 
 /// How many of the buffer's pages embedder.c's `remap` moves, and where to.

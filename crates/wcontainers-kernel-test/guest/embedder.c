@@ -33,6 +33,8 @@
 //     itself, and in another reads it with process_vm_readv; prints what each saw.
 //   cmdline WHOSE LONG: reads the command line of itself (self) or, from a child, of its parent
 //     (parent) through /proc, without touching its strings, and counts the letters a.
+//   environ WHOSE LONG: runs itself again with LONG in its environment, then reads that
+//     environment through /proc as cmdline reads the command line.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -982,7 +984,7 @@ static int vm(void) {
     return 0;
 }
 
-static int command_line(const char *whose) {
+static int proc_strings(const char *file, const char *whose) {
     int parent = !strcmp(whose, "parent");
     pid_t reader = parent ? fork() : 0;
     if (reader > 0) {
@@ -991,13 +993,23 @@ static int command_line(const char *whose) {
     }
     static char line[1 << 16];
     char path[PATH_MAX];
-    snprintf(path, sizeof path, "/proc/%d/cmdline", parent ? getppid() : getpid());
-    int file = open(path, O_RDONLY);
-    long length = read(file, line, sizeof line), letters = 0;
+    snprintf(path, sizeof path, "/proc/%d/%s", parent ? getppid() : getpid(), file);
+    int opened = open(path, O_RDONLY);
+    long length = read(opened, line, sizeof line), letters = 0;
     for (long at = 0; at < length; at++) letters += line[at] == 'a';
-    printf("cmdline %ld letters %ld\n", length, letters);
+    printf("%s %ld letters %ld\n", file, length, letters);
     fflush(stdout);
     if (parent) _exit(0);
+    return 0;
+}
+
+static int environment(char **argv, char *whose, const char *value) {
+    static char variable[1 << 16];
+    snprintf(variable, sizeof variable, "LONG=%s", value);
+    char *arguments[] = {argv[0], "environread", argv[2], argv[3], whose, NULL};
+    char *environment[] = {variable, NULL};
+    execve(argv[0], arguments, environment);
+    printf("exec %s\n", strerror(errno));
     return 0;
 }
 
@@ -1036,6 +1048,8 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "proxy")) return proxy();
     if (!strcmp(mode, "exec") && argc > 4) return exec_program(argv[4]);
     if (!strcmp(mode, "vm")) return vm();
-    if (!strcmp(mode, "cmdline") && argc > 4) return command_line(argv[4]);
+    if (!strcmp(mode, "cmdline") && argc > 4) return proc_strings("cmdline", argv[4]);
+    if (!strcmp(mode, "environ") && argc > 5) return environment(argv, argv[4], argv[5]);
+    if (!strcmp(mode, "environread") && argc > 4) return proc_strings("environ", argv[4]);
     return 2;
 }

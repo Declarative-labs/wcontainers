@@ -111,8 +111,9 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 - `on_watched_memory_accessing`: a thread, or the kernel for it, is about to access a page the
   embedder watches (below), as `kind` (an instruction fetch is `Execute`). `process` is the
   process whose memory it is and `thread` the thread whose access it is: a thread of that
-  process, or, when a call reads another process's memory through `/proc/<pid>/cmdline` or
-  `environ` (published to anyone, as Linux's `access_remote_vm` reads them), the reading
+  process, or, when a call reads another process's memory through `/proc/<pid>/cmdline` (open
+  to anyone) or `/proc/<pid>/environ` (open to whoever may inspect the process, Linux's
+  `PTRACE_MODE_READ` check), both copied as Linux's `access_remote_vm` copies them, the reading
   thread of another process. If the watch is gone when the hook returns the access goes on;
   otherwise the thread waits until that process's watches change, or it ends or runs a program,
   then touches again (and the hook fires again if it is still watched).
