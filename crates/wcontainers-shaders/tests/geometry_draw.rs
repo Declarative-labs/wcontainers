@@ -471,8 +471,10 @@ fn stream_counts(words: &[u32], stream: usize) -> [u64; 2] {
 
 /// Whether ours streamed what Direct3D did: every word of every buffer and each stream's counts.
 fn streamed_equal(reference: &[Vec<u8>], statistics: &[[u64; 2]], made: &Made) -> bool {
-    let Made::Streamed(streamed, words) = made else {
-        return false;
+    let (streamed, words) = match made {
+        Made::Streamed(streamed, words) => (streamed, words),
+        Made::Nothing => return statistics.iter().all(|counts| *counts == [0, 0]),
+        Made::Picture(_) => return false,
     };
     reference.iter().zip(streamed).all(|(a, b)| a == b)
         && statistics
@@ -610,10 +612,11 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8], clamped: C
 }
 
 /// What the stage helper made: the picture, or the bound stream output buffers' bytes and the words
-/// of filled sizes and counts.
+/// of filled sizes and counts; nothing where the replay's draw makes no primitive.
 enum Made {
     Picture(Vec<u8>),
     Streamed(Vec<Vec<u8>>, Vec<u32>),
+    Nothing,
 }
 
 /// The stream output buffers bound: each one's size, and the filled size it starts from.
@@ -1272,34 +1275,36 @@ fn ours_replayed<B: Backend>(
             instances: case.instances,
         },
     };
-    let last = replay
-        .run(
-            b,
-            ReplayDraw {
-                vertex_sets: [None, None, None, Some(&vertex_helpers)],
-                vertex_layout: &vertex_layout,
-                vertex_buffers: &[Some(VertexBinding {
-                    buffer: &vertex_buffer,
-                    offset: 0,
-                })],
-                index: index_buffer.as_ref().map(|buffer| IndexBinding {
-                    buffer,
-                    offset: 0,
-                    format: IndexFormat::U16,
+    let Some(last) = replay.run(
+        b,
+        ReplayDraw {
+            vertex_sets: [None, None, None, Some(&vertex_helpers)],
+            vertex_layout: &vertex_layout,
+            vertex_buffers: &[Some(VertexBinding {
+                buffer: &vertex_buffer,
+                offset: 0,
+            })],
+            index: index_buffer.as_ref().map(|buffer| IndexBinding {
+                buffer,
+                offset: 0,
+                format: IndexFormat::U16,
+            }),
+            immediates: &[],
+            geometry_sets: [geometry_set.as_ref(), None, None, None],
+            topology: case.topology,
+            range,
+            stream_output: stream.map(|_| StreamTargets {
+                buffers: std::array::from_fn(|i| {
+                    targets[i].as_ref().map(|(t, size)| whole(t, *size))
                 }),
-                immediates: &[],
-                geometry_sets: [geometry_set.as_ref(), None, None, None],
-                topology: case.topology,
-                range,
-                stream_output: stream.map(|_| StreamTargets {
-                    buffers: std::array::from_fn(|i| {
-                        targets[i].as_ref().map(|(t, size)| whole(t, *size))
-                    }),
-                    filled: whole(&filled, start.len() as u64),
-                }),
-            },
-        )?
-        .expect("primitives");
+                filled: whole(&filled, start.len() as u64),
+            }),
+        },
+    )?
+    else {
+        replay.destroy(b);
+        return Ok(Made::Nothing);
+    };
     if stream.is_some() {
         let mut read = |buffer, size: u64| {
             let mut out = vec![0; size as usize];
@@ -1835,7 +1840,8 @@ fn stream_output_after_replay_matches_direct3d() {
                 continue;
             }
             let Made::Streamed(streamed, words) = made.unwrap() else {
-                unreachable!()
+                failures.push(format!("{name}: ours made no primitive"));
+                continue;
             };
             compared += 1;
             if !streamed_alike(&name, &reference, statistics[0], &streamed, &words) {
@@ -2296,7 +2302,8 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
                 |reference| drawn_texels(reference) != 0,
                 |indices, _| match ours_replayed(&mut backend, case, &vertices, indices, None) {
                     Ok(Made::Picture(picture)) => drawn_texels(&picture) == 0,
-                    Ok(_) => false,
+                    Ok(Made::Nothing) => true,
+                    Ok(Made::Streamed(..)) => false,
                     // Its refusal is checked on the list compared.
                     Err(_) => !replayed(case),
                 },
@@ -2314,7 +2321,8 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
             }
             let drawn = drawn_texels(&reference);
             let Made::Picture(picture) = made.unwrap() else {
-                unreachable!()
+                failures.push(format!("{name}: ours made no primitive"));
+                continue;
             };
             let (count, largest) = differ(&reference, &picture, Format::Rgba8Unorm);
             // As on the compute route: clipped in the pixel program, attributes round apart by a step
