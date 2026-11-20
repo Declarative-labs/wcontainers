@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
-use crate::position::{
+use crate::position::{BranchTable, 
     AddressPlace, DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span,
     Stopping,
 };
@@ -67,6 +67,17 @@ pub trait Native: Guest {
     /// Writes the host code of one decoded instruction, `bytes` at guest `address`, as its route says. Its
     /// spans start at the instruction, before its commit point, with the count already placed.
     fn carry(i: &Self::Instruction, bytes: &[u8], address: u64, code: &mut HostCode);
+    /// Writes the host code of the jump through a register `i` at guest `address` when the instructions before it
+    /// in its straight-line part (`before`, oldest first, with their guest addresses) show its targets to be a
+    /// bounded set known here (a jump table's): false, and nothing written, leaves it to [`Self::carry`].
+    fn carry_known_jump(
+        _before: &[(u64, Self::Instruction)],
+        _i: &Self::Instruction,
+        _address: u64,
+        _code: &mut HostCode,
+    ) -> bool {
+        false
+    }
     /// Writes the count's add of `events` counted events.
     fn count(code: &mut HostCode, events: u32);
     /// Writes a call into the inside.
@@ -103,6 +114,8 @@ pub struct HostCode {
     pub exits: Vec<DirectExit>,
     /// The words that build guest addresses, in the order they were written.
     pub places: Vec<AddressPlace>,
+    /// The branch tables of known jumps.
+    pub tables: Vec<BranchTable>,
     /// Exits written while the count was ahead, by start: the bytes of their first words, which settle the
     /// count, or none for a branch only the code's own linking may point elsewhere.
     settling: BTreeMap<u32, Option<u32>>,
@@ -269,7 +282,20 @@ impl HostCode {
             exits: self.exits,
             places: self.places,
             sites: self.sites,
+            tables: self.tables,
         }
+    }
+
+    /// Records the branch table written at `at`: `entries` words, entry k an exit to `base + (k << shift)`.
+    pub fn branch_table(&mut self, at: usize, base: u64, entries: u32, shift: u8, field: u32) {
+        let start = u32::try_from(at).expect("host code fits in u32 offsets");
+        self.tables.push(BranchTable {
+            start,
+            base,
+            entries,
+            shift,
+            field,
+        });
     }
 
     /// Writes bytes over earlier ones (a branch whose target is now known).
@@ -349,6 +375,7 @@ pub struct Translation {
     pub exits: Vec<DirectExit>,
     pub places: Vec<AddressPlace>,
     pub sites: [u64; NativeReason::ALL.len()],
+    pub tables: Vec<BranchTable>,
 }
 
 impl Translation {
@@ -373,6 +400,9 @@ impl Translation {
         }
         for exit in &mut self.exits {
             moved(&mut exit.target);
+        }
+        for table in &mut self.tables {
+            moved(&mut table.base);
         }
     }
 }

@@ -1085,6 +1085,111 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     }
 }
 
+/// A jump table's jump known from its straight-line part (a study of docs/native.md section 3.2): `br xN` where
+/// `xN` is a constant base (`adr`, or `adrp` and `add`) plus a byte loaded zero-extended into `xE`, extended and
+/// shifted. The byte bounds the targets to as many as a byte has values, whatever the table holds, so the jump
+/// goes through a branch table of ours indexed by the byte: `adr t, table; add t, t, xE, lsl #2; br t`, each of
+/// its words a direct branch the loader links to its target's piece, or, until then, to the jump through the
+/// target's slot after it. Nothing is read from memory and only branches the translator wrote are taken.
+pub(crate) fn known_jump(before: &[(u64, I)], i: &I, code: &mut HostCode) -> bool {
+    let I::BranchRegister {
+        op: BranchRegister::Br,
+        rn: rn @ Reg::X(n),
+    } = *i
+    else {
+        return false;
+    };
+    if WITHHELD.contains(&n) {
+        return false;
+    }
+    let defines = |k: usize, r: Register| touched(&before[k].1).1.has_bit(bit(r));
+    let Some(add) = crate::habits::last_def(before, rn, before.len()) else {
+        return false;
+    };
+    let I::AddSub {
+        width: crate::instruction::Width::X64,
+        subtract: false,
+        set_flags: false,
+        rn: base_register,
+        operand,
+        ..
+    } = before[add].1
+    else {
+        return false;
+    };
+    let (entry, shift, extend) = match operand {
+        crate::instruction::Operand::Shifted {
+            rm,
+            shift: crate::instruction::Shift::Lsl,
+            amount,
+        } => (rm, amount, None),
+        crate::instruction::Operand::Extended { rm, extend, amount } => (rm, amount, Some(extend)),
+        _ => return false,
+    };
+    let Reg::X(e) = entry else {
+        return false;
+    };
+    if e == n || WITHHELD.contains(&e) || (add + 1..before.len()).any(|k| defines(k, e)) {
+        return false;
+    }
+    let Some(load) = crate::habits::last_def(before, entry, add) else {
+        return false;
+    };
+    let I::Load {
+        bytes,
+        signed: None,
+        ..
+    } = before[load].1
+    else {
+        return false;
+    };
+    // Only a byte: wider entries would need a table as large as their values.
+    if bytes != 1 {
+        return false;
+    }
+    let Some(base) = crate::habits::constant(before, base_register, add) else {
+        return false;
+    };
+    if code.lead() > 1 {
+        return false;
+    }
+    // A sign extension of the byte itself would make the targets wrap around the base.
+    if extend.is_some_and(|x| x.signed && u32::from(x.from_bits) <= u8::BITS * u32::from(bytes)) {
+        return false;
+    }
+    let entries = 1u32 << (u8::BITS * u32::from(bytes));
+    let word = INSTRUCTION as i64;
+    let index = encode::add_extended(false, SCRATCH, SCRATCH, e, false, u64::BITS, ALIGNMENT_BITS)
+        .expect("fits");
+    let into_table = encode::branch_register(form::BR, SCRATCH);
+    // The table starts after the adr and the words after it.
+    let after_adr = [index, into_table];
+    let lead_in = (after_adr.len() as i64 + 1) * word;
+    code.push(
+        &encode::adr(SCRATCH, lead_in)
+            .expect("the table is near")
+            .to_le_bytes(),
+    );
+    code.push(&index.to_le_bytes());
+    // After the commit point the guest is at the target, which xN still holds.
+    code.commit(&into_table.to_le_bytes(), Resume::Through(Held::Register(n)));
+    assert_eq!(code.lead(), 0, "a known jump's count is settled at its commit point");
+    let clear = encode::branch(false, 0).expect("a branch");
+    let field = clear ^ encode::branch(false, -word).expect("a branch");
+    code.branch_table(code.offset(), base, entries, shift, field);
+    for k in 0..entries {
+        let generic = i64::from(entries - k) * word;
+        code.push(&encode::branch(false, generic).expect("in reach").to_le_bytes());
+    }
+    // The jump through the target's slot, for an entry whose piece is not linked yet.
+    let mut out = Out {
+        code,
+        address: 0,
+    };
+    jump(&mut out, BranchRegister::Br, rn);
+    true
+}
+
 /// The bytes from word `from` of a return's start to word `to`.
 fn between(from: usize, to: usize) -> i64 {
     ((to - from) as u64 * INSTRUCTION) as i64

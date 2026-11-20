@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 
 use wcontainers_arm64::mirror::SLOT_MOVES;
-use wcontainers_guest_cpu::position::{DirectExit, NativeReason, Span};
+use wcontainers_guest_cpu::position::{BranchTable, DirectExit, NativeReason, Span};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::link::{self, Link};
@@ -79,6 +79,7 @@ pub struct Piece {
     pub spans: Vec<Span>,
     pub exits: Vec<DirectExit>,
     pub sites: [u64; NativeReason::ALL.len()],
+    pub tables: Vec<BranchTable>,
 }
 
 /// A piece too large for the link's bytes.
@@ -95,7 +96,7 @@ pub fn answer(link: &mut Link, piece: Option<&Piece>) -> Result<(), TooLarge> {
     let code = piece.code.len();
     let (host, rest) = link.bytes.split_at_mut_checked(code).ok_or(TooLarge)?;
     host.copy_from_slice(&piece.code);
-    let map = postcard::to_slice(&(&piece.spans, &piece.exits), rest)
+    let map = postcard::to_slice(&(&piece.spans, &piece.exits, &piece.tables), rest)
         .map_err(|_| TooLarge)?
         .len();
     link.head.length = (code + map) as u64;
@@ -122,12 +123,13 @@ pub fn piece(link: &Link) -> Option<Piece> {
         .unwrap_or_else(|| {
             panic!("the monitor's translate answer is broken: longer than the link")
         });
-    let (spans, exits) = postcard::from_bytes(&bytes[code..])
+    let (spans, exits, tables) = postcard::from_bytes(&bytes[code..])
         .unwrap_or_else(|_| panic!("the monitor's translate answer is broken: position map"));
     Some(Piece {
         code: bytes[..code].to_vec(),
         spans,
         exits,
         sites: answer.sites,
+        tables,
     })
 }

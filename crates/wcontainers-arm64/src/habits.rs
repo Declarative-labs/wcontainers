@@ -78,14 +78,14 @@ pub fn jump_table(
 }
 
 /// The index of the last instruction before `end` that writes `r`.
-fn last_def(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<usize> {
+pub(crate) fn last_def(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<usize> {
     (0..end).rev().find(|&i| {
         Arm64::reg_bit(r).is_some_and(|b| crate::guest::effects(&before[i].1).defs.has_bit(b))
     })
 }
 
 /// The blob offset a register holds before `end`, when an `adr`, or an `adrp` and an `add`, put it there.
-fn constant(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<u64> {
+pub(crate) fn constant(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<u64> {
     let i = last_def(before, r, end)?;
     let (at, instruction) = before[i];
     match instruction {

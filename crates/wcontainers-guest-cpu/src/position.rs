@@ -146,6 +146,18 @@ pub struct DirectExit {
     pub retarget: Option<u32>,
 }
 
+/// A branch table of a known jump (the jump-table study): `entries` direct branches from host offset `start`, one
+/// word each, entry k an exit to guest `base + (k << shift)` whose branch the loader points at that target's piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchTable {
+    pub start: u32,
+    pub base: u64,
+    pub entries: u32,
+    pub shift: u8,
+    /// The bits of each branch that hold its offset in instructions.
+    pub field: u32,
+}
+
 /// What an address place builds in its register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Holds {

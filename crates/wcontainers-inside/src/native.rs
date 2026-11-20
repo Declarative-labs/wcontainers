@@ -1023,24 +1023,44 @@ impl NativeCpu {
             .max()
             .unwrap_or(0);
         code.truncate(covered as usize);
-        let sites: Vec<(u64, Site)> = piece
+        let word_at = |start: usize| {
+            let word = &piece.code[start..start + size_of::<u32>()];
+            u32::from_le_bytes(word.try_into().expect("a word"))
+        };
+        let mut sites: Vec<(u64, Site)> = piece
             .exits
             .iter()
             .map(|exit| {
                 let start = exit.start as usize;
-                let word = &piece.code[start..start + size_of::<u32>()];
                 let at = base + u64::from(exit.start);
-                let word = u32::from_le_bytes(word.try_into().expect("a word"));
                 (
                     exit.target,
                     Site {
                         at,
-                        word,
+                        word: word_at(start),
                         retarget: exit.retarget,
                     },
                 )
             })
             .collect();
+        // A known jump's branch table: each entry an exit to its target, linked as a conditional branch's is.
+        for table in &piece.tables {
+            for k in 0..table.entries {
+                let target = table.base.wrapping_add(u64::from(k) << table.shift);
+                if target >> REACH_BITS != 0 || !target.is_multiple_of(size_of::<u32>() as u64) {
+                    continue;
+                }
+                let start = table.start as usize + k as usize * size_of::<u32>();
+                sites.push((
+                    target,
+                    Site {
+                        at: base + start as u64,
+                        word: word_at(start),
+                        retarget: Some(table.field),
+                    },
+                ));
+            }
+        }
         let m = self.memories.get_mut(&memory).expect("the memory is there");
         m.pieces.insert(
             pc,

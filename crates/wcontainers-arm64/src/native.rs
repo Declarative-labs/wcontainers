@@ -12,6 +12,9 @@ use crate::exact::Operation;
 use crate::instruction::{Address, Instruction as I, Reg, SystemRegister};
 use crate::meaning::{Control, Hook};
 
+/// The study's knob (phase-2-native-jump-study): set, a jump table's jump goes through a branch table of ours.
+const KNOWN_JUMPS: &str = "WCONTAINERS_STUDY_KNOWN_JUMPS";
+
 /// The operand the float hook is given for a read of the float status while it is not kept.
 fn read_status() -> i64 {
     Operation::ReadStatus.encode(0).into()
@@ -207,6 +210,10 @@ impl Native for Arm64 {
     fn carry(i: &I, bytes: &[u8], address: u64, code: &mut HostCode) {
         let word = u32::from_le_bytes(bytes.try_into().expect("an instruction is one word"));
         carry::carry(i, word, address, code);
+    }
+
+    fn carry_known_jump(before: &[(u64, I)], i: &I, _address: u64, code: &mut HostCode) -> bool {
+        std::env::var_os(KNOWN_JUMPS).is_some() && carry::known_jump(before, i, code)
     }
 
     fn count(code: &mut HostCode, events: u32) {
