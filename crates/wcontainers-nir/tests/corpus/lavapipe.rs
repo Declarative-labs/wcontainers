@@ -79,8 +79,8 @@ pub struct Job<'a> {
     /// Vertex and fragment: the points drawn (for a fragment program, one a pixel of a row).
     pub vertices: u32,
     pub attributes: &'a [Attribute],
-    /// Fragment: the vertex program feeding it.
-    pub feeder: Option<&'a [u32]>,
+    /// Fragment: the vertex program feeding it, and its entry point.
+    pub feeder: Option<(&'a [u32], &'a str)>,
     /// Vertex: the bytes transform feedback captures a vertex.
     pub capture_stride: u32,
     /// Fragment: a colour target's format at each location (None where there is none), and
@@ -678,8 +678,9 @@ impl Lavapipe {
                     .module(module)
                     .name(&entry),
             ];
-            let feeder_entry = CString::new(crate::compare::FEEDER_ENTRY).expect("a name");
-            if let Some(feeder) = job.feeder {
+            let feeder_entry =
+                CString::new(job.feeder.map_or("", |f| f.1)).map_err(|e| e.to_string())?;
+            if let Some((feeder, _)) = job.feeder {
                 let feeder = self.module(made, feeder)?;
                 stages.insert(
                     0,

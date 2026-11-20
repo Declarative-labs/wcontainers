@@ -441,7 +441,7 @@ pub fn descriptors(resources: &[Resource]) -> (Vec<Descriptor>, Vec<Descriptor>)
     (reference, route)
 }
 
-fn attribute_format(ty: Ty) -> vk::Format {
+pub fn attribute_format(ty: Ty) -> vk::Format {
     const FLOAT: [vk::Format; 4] = [
         vk::Format::R32_SFLOAT,
         vk::Format::R32G32_SFLOAT,
@@ -694,7 +694,7 @@ pub fn write_spirv(
 
 /// The positions of the feeder's points: the centre of each pixel of a row `width` wide, in
 /// Vulkan's clip space.
-fn positions(width: u32) -> Vec<u8> {
+pub fn positions(width: u32) -> Vec<u8> {
     (0..width)
         .flat_map(|x| {
             let centre = (x as f32 + PIXEL_CENTRE) / width as f32 * 2.0 - 1.0;
@@ -704,7 +704,7 @@ fn positions(width: u32) -> Vec<u8> {
         .collect()
 }
 
-fn colour_format(kind: Kind) -> vk::Format {
+pub fn colour_format(kind: Kind) -> vk::Format {
     match kind {
         Kind::Float => vk::Format::R32G32B32A32_SFLOAT,
         Kind::Sint => vk::Format::R32G32B32A32_SINT,
@@ -928,7 +928,7 @@ pub fn compare(
                 .any(|v| v.slot == Slot::BuiltIn(spirv::BuiltIn::FragDepth as u32));
             let reference = Job {
                 attributes: &attributes,
-                feeder: Some(&feeder_words),
+                feeder: Some((&feeder_words, FEEDER_ENTRY)),
                 targets: &targets,
                 depth,
                 ..base

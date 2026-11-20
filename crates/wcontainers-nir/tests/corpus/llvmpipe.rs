@@ -1,7 +1,9 @@
 //! Runs a GLSL program on llvmpipe, Mesa's OpenGL driver on the processor, through the pinned
-//! build's EGL on its software device, with no surface: the reference for GLSL programs. A compute dispatch,
-//! with default-block uniforms set by `glUniform*`, and uniform and storage blocks bound by name.
+//! build's EGL on its software device, with no surface: the reference for GLSL programs. A compute
+//! dispatch, or a draw of points one a pixel of a row, with default-block uniforms set by
+//! `glUniform*` and uniform and storage blocks bound by their index.
 
+use crate::interface::Kind;
 use glow::HasContext;
 use khronos_egl as egl;
 use std::ffi::{c_char, c_void};
@@ -9,6 +11,8 @@ use wcontainers_nir::mesa::{EGL, Stage};
 
 /// `EGL_PLATFORM_DEVICE_EXT` (EGL_EXT_platform_device), which khronos-egl does not name.
 const PLATFORM_DEVICE_EXT: egl::Enum = 0x313F;
+/// `GL_CLAMP_VERTEX_COLOR` (the compatibility profile), which glow does not name.
+const CLAMP_VERTEX_COLOR: u32 = 0x891A;
 /// The extension of the device that is Mesa's software renderer, llvmpipe.
 const SOFTWARE_DEVICE: &str = "EGL_MESA_device_software";
 /// The most devices looked at.
@@ -89,6 +93,48 @@ pub struct Block {
     pub size: u32,
 }
 
+/// A stage input or output of a program (`GL_PROGRAM_INPUT`, `GL_PROGRAM_OUTPUT`); location -1
+/// for OpenGL's own.
+#[derive(Clone, Debug)]
+pub struct StageValue {
+    pub name: String,
+    pub ty: u32,
+    pub array_size: i32,
+    pub location: i32,
+}
+
+/// One vertex attribute: its location, kind and components (a matrix is one a column), and every
+/// vertex's values.
+pub struct VertexAttribute {
+    pub location: u32,
+    pub kind: Kind,
+    pub components: u32,
+    pub words: Vec<u32>,
+}
+
+/// What a draw left: each colour target's texels (four 32-bit components each), the depth
+/// target's, and each storage block's bytes.
+#[derive(Debug, PartialEq)]
+pub struct Drawn {
+    pub targets: Vec<Vec<u8>>,
+    pub depth: Vec<u8>,
+    pub storage: Vec<Vec<u8>>,
+}
+
+/// What a draw takes.
+pub struct DrawOptions<'a> {
+    pub uniforms: &'a [UniformValue<'a>],
+    pub uniform_blocks: &'a [Vec<u8>],
+    pub storage_blocks: &'a [Vec<u8>],
+    pub attributes: &'a [VertexAttribute],
+    pub points: u32,
+    /// The kind of the colour target at each location (None where there is none).
+    pub targets: &'a [Option<Kind>],
+    pub depth: bool,
+    /// The bits every colour target texel starts as.
+    pub clear: [u32; 4],
+}
+
 /// What a linked program declares.
 #[derive(Clone, Debug, Default)]
 pub struct Reflection {
@@ -98,6 +144,8 @@ pub struct Reflection {
     pub storage_blocks: Vec<Block>,
     /// Every storage block member.
     pub buffer_variables: Vec<Variable>,
+    pub inputs: Vec<StageValue>,
+    pub outputs: Vec<StageValue>,
 }
 
 /// The values of one default-block uniform: its words, element after element, column after column.
@@ -112,6 +160,10 @@ type GetProgramInterfaceiv = unsafe extern "C" fn(u32, u32, u32, *mut i32);
 type GetProgramResourceiv =
     unsafe extern "C" fn(u32, u32, u32, i32, *const u32, i32, *mut i32, *mut i32);
 type GetProgramResourceName = unsafe extern "C" fn(u32, u32, u32, i32, *mut i32, *mut c_char);
+/// `glClipControl` and `glClampColor`.
+type SetTwo = unsafe extern "C" fn(u32, u32);
+/// `glProgramParameteri` and `glFramebufferParameteri`.
+type Parameteri = unsafe extern "C" fn(u32, u32, i32);
 
 pub struct Llvmpipe {
     egl: egl::DynamicInstance<egl::EGL1_5>,
@@ -121,6 +173,10 @@ pub struct Llvmpipe {
     get_program_interface: GetProgramInterfaceiv,
     get_program_resource: GetProgramResourceiv,
     get_program_resource_name: GetProgramResourceName,
+    clip_control: SetTwo,
+    clamp_color: SetTwo,
+    program_parameter: Parameteri,
+    framebuffer_parameter: Parameteri,
 }
 
 impl Drop for Llvmpipe {
@@ -204,9 +260,17 @@ impl Llvmpipe {
                 .then_some(f)
                 .ok_or_else(|| format!("llvmpipe: no {name}"))
         };
-        // SAFETY: each address is the named OpenGL 4.3 function, of the type given.
+        // SAFETY: each address is the named OpenGL 4.1, 4.3 or 4.5 function, of the type given.
         // (glow's glGetProgramResourceiv asks for the values' count with no room, and gets none.)
-        let (get_program_interface, get_program_resource, get_program_resource_name) = unsafe {
+        let (
+            get_program_interface,
+            get_program_resource,
+            get_program_resource_name,
+            clip_control,
+            clamp_color,
+            program_parameter,
+            framebuffer_parameter,
+        ) = unsafe {
             (
                 std::mem::transmute::<*const c_void, GetProgramInterfaceiv>(raw(
                     "glGetProgramInterfaceiv",
@@ -217,6 +281,10 @@ impl Llvmpipe {
                 std::mem::transmute::<*const c_void, GetProgramResourceName>(raw(
                     "glGetProgramResourceName",
                 )?),
+                std::mem::transmute::<*const c_void, SetTwo>(raw("glClipControl")?),
+                std::mem::transmute::<*const c_void, SetTwo>(raw("glClampColor")?),
+                std::mem::transmute::<*const c_void, Parameteri>(raw("glProgramParameteri")?),
+                std::mem::transmute::<*const c_void, Parameteri>(raw("glFramebufferParameteri")?),
             )
         };
         Ok(Self {
@@ -227,15 +295,37 @@ impl Llvmpipe {
             get_program_interface,
             get_program_resource,
             get_program_resource_name,
+            clip_control,
+            clamp_color,
+            program_parameter,
+            framebuffer_parameter,
         })
     }
 
     /// The program of `sources`, compiled and linked, or the driver's log.
     pub fn link(&self, sources: &[(Stage, &str)]) -> Result<glow::Program, Error> {
+        self.link_program(sources, false)
+    }
+
+    /// The program of `sources` linked as a separable program: every stage input and output kept.
+    pub fn link_separable(&self, sources: &[(Stage, &str)]) -> Result<glow::Program, Error> {
+        self.link_program(sources, true)
+    }
+
+    fn link_program(
+        &self,
+        sources: &[(Stage, &str)],
+        separable: bool,
+    ) -> Result<glow::Program, Error> {
         let gl = &self.gl;
         // SAFETY: plain OpenGL calls on the current context, on objects made here.
         unsafe {
             let program = gl.create_program()?;
+            (self.program_parameter)(
+                program.0.get(),
+                glow::PROGRAM_SEPARABLE,
+                i32::from(separable),
+            );
             let mut log = String::new();
             for &(stage, text) in sources {
                 let shader = gl.create_shader(shader_type(stage))?;
@@ -384,12 +474,35 @@ impl Llvmpipe {
             .collect()
     }
 
+    fn stage_values(&self, program: glow::Program, interface: u32) -> Vec<StageValue> {
+        let properties = [glow::TYPE, glow::ARRAY_SIZE, glow::LOCATION];
+        let names = self.resources(program, interface);
+        (0..)
+            .zip(names)
+            .map(|(index, name)| {
+                let [ty, array_size, location] =
+                    self.resource(program, interface, index, &properties)[..]
+                else {
+                    unreachable!("one value a property")
+                };
+                StageValue {
+                    name,
+                    ty: u32::try_from(ty).unwrap_or(glow::NONE),
+                    array_size,
+                    location,
+                }
+            })
+            .collect()
+    }
+
     pub fn reflect(&self, program: glow::Program) -> Reflection {
         Reflection {
             uniforms: self.variables(program, glow::UNIFORM),
             uniform_blocks: self.blocks(program, glow::UNIFORM_BLOCK),
             storage_blocks: self.blocks(program, glow::SHADER_STORAGE_BLOCK),
             buffer_variables: self.variables(program, glow::BUFFER_VARIABLE),
+            inputs: self.stage_values(program, glow::PROGRAM_INPUT),
+            outputs: self.stage_values(program, glow::PROGRAM_OUTPUT),
         }
     }
 
@@ -460,16 +573,15 @@ impl Llvmpipe {
         }
     }
 
-    /// Dispatches `groups` of the compute program with the given uniforms and blocks (block i
-    /// bound at i), and gives each storage block's bytes afterwards.
-    pub fn compute(
+    /// Uses the program with its uniforms and blocks (block i bound at i); the buffers made, the
+    /// storage blocks' last.
+    fn bind_program(
         &self,
         program: glow::Program,
         uniforms: &[UniformValue],
         uniform_blocks: &[Vec<u8>],
         storage_blocks: &[Vec<u8>],
-        groups: [u32; 3],
-    ) -> Result<Vec<Vec<u8>>, Error> {
+    ) -> Result<(Vec<glow::Buffer>, Vec<glow::Buffer>), Error> {
         let gl = &self.gl;
         // SAFETY: plain OpenGL calls on the current context, on objects made here.
         unsafe {
@@ -485,7 +597,20 @@ impl Llvmpipe {
                 gl.shader_storage_block_binding(program, i, i);
                 storage.push(self.buffer(glow::SHADER_STORAGE_BUFFER, i, bytes)?);
             }
-            gl.dispatch_compute(groups[0], groups[1], groups[2]);
+            Ok((made, storage))
+        }
+    }
+
+    /// Each storage block's bytes after the work, then every buffer deleted; or OpenGL's error.
+    fn finish(
+        &self,
+        made: Vec<glow::Buffer>,
+        storage: Vec<glow::Buffer>,
+        storage_blocks: &[Vec<u8>],
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        let gl = &self.gl;
+        // SAFETY: plain OpenGL calls on the current context, on buffers made by `bind_program`.
+        unsafe {
             gl.memory_barrier(glow::ALL_BARRIER_BITS);
             let mut out = Vec::new();
             for (buffer, bytes) in storage.iter().zip(storage_blocks) {
@@ -502,6 +627,186 @@ impl Llvmpipe {
                 return Err(format!("llvmpipe: OpenGL error {error:#x}"));
             }
             Ok(out)
+        }
+    }
+
+    /// Dispatches `groups` of the compute program with the given uniforms and blocks (block i
+    /// bound at i), and gives each storage block's bytes afterwards.
+    pub fn compute(
+        &self,
+        program: glow::Program,
+        uniforms: &[UniformValue],
+        uniform_blocks: &[Vec<u8>],
+        storage_blocks: &[Vec<u8>],
+        groups: [u32; 3],
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        let (made, storage) =
+            self.bind_program(program, uniforms, uniform_blocks, storage_blocks)?;
+        // SAFETY: a dispatch of the program in use.
+        unsafe { self.gl.dispatch_compute(groups[0], groups[1], groups[2]) };
+        self.finish(made, storage, storage_blocks)
+    }
+
+    /// Draws `points` points with the program, into colour targets one row of `points` texels
+    /// (four 32-bit components each) and a 32-bit float depth target, window depth from 0 to 1
+    /// as Vulkan's.
+    #[allow(clippy::too_many_lines, reason = "one draw, step by step")]
+    pub fn draw(&self, program: glow::Program, options: &DrawOptions) -> Result<Drawn, Error> {
+        let gl = &self.gl;
+        let (made, storage) = self.bind_program(
+            program,
+            options.uniforms,
+            options.uniform_blocks,
+            options.storage_blocks,
+        )?;
+        let width = i32::try_from(options.points).map_err(|e| e.to_string())?;
+        // SAFETY: plain OpenGL calls on the current context, on objects made here.
+        unsafe {
+            let array = gl.create_vertex_array()?;
+            gl.bind_vertex_array(Some(array));
+            let mut vertex_buffers = Vec::new();
+            for a in options.attributes {
+                let bytes: Vec<u8> = a.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                let buffer = gl.create_buffer()?;
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STATIC_DRAW);
+                let size = i32::try_from(a.components).map_err(|e| e.to_string())?;
+                match a.kind {
+                    Kind::Float => {
+                        gl.vertex_attrib_pointer_f32(a.location, size, glow::FLOAT, false, 0, 0);
+                    }
+                    Kind::Sint => gl.vertex_attrib_pointer_i32(a.location, size, glow::INT, 0, 0),
+                    Kind::Uint => {
+                        gl.vertex_attrib_pointer_i32(a.location, size, glow::UNSIGNED_INT, 0, 0);
+                    }
+                }
+                gl.enable_vertex_attrib_array(a.location);
+                vertex_buffers.push(buffer);
+            }
+            let framebuffer = gl.create_framebuffer()?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            // The size drawn at when the program writes no target.
+            (self.framebuffer_parameter)(glow::FRAMEBUFFER, glow::FRAMEBUFFER_DEFAULT_WIDTH, width);
+            (self.framebuffer_parameter)(glow::FRAMEBUFFER, glow::FRAMEBUFFER_DEFAULT_HEIGHT, 1);
+            let mut textures = Vec::new();
+            let mut draw_buffers = Vec::new();
+            for (location, kind) in (0..).zip(options.targets) {
+                let Some(kind) = *kind else {
+                    draw_buffers.push(glow::NONE);
+                    continue;
+                };
+                let internal = match kind {
+                    Kind::Float => glow::RGBA32F,
+                    Kind::Sint => glow::RGBA32I,
+                    Kind::Uint => glow::RGBA32UI,
+                };
+                let texture = gl.create_texture()?;
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_storage_2d(glow::TEXTURE_2D, 1, internal, width, 1);
+                let attachment = glow::COLOR_ATTACHMENT0 + location;
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    attachment,
+                    glow::TEXTURE_2D,
+                    Some(texture),
+                    0,
+                );
+                draw_buffers.push(attachment);
+                textures.push((location, attachment, kind, texture));
+            }
+            if options.depth {
+                let texture = gl.create_texture()?;
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::DEPTH_COMPONENT32F, width, 1);
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::DEPTH_ATTACHMENT,
+                    glow::TEXTURE_2D,
+                    Some(texture),
+                    0,
+                );
+                textures.push((0, glow::DEPTH_ATTACHMENT, Kind::Float, texture));
+                gl.enable(glow::DEPTH_TEST);
+                gl.depth_func(glow::ALWAYS);
+                gl.depth_mask(true);
+                gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[0.0]);
+            } else {
+                gl.disable(glow::DEPTH_TEST);
+            }
+            gl.draw_buffers(&draw_buffers);
+            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                return Err(format!("llvmpipe: framebuffer status {status:#x}"));
+            }
+            for &(location, attachment, kind, _) in &textures {
+                if attachment == glow::DEPTH_ATTACHMENT {
+                    continue;
+                }
+                match kind {
+                    Kind::Float => {
+                        let clear = options.clear.map(f32::from_bits);
+                        gl.clear_buffer_f32_slice(glow::COLOR, location, &clear);
+                    }
+                    Kind::Sint => {
+                        let clear = options.clear.map(u32::cast_signed);
+                        gl.clear_buffer_i32_slice(glow::COLOR, location, &clear);
+                    }
+                    Kind::Uint => gl.clear_buffer_u32_slice(glow::COLOR, location, &options.clear),
+                }
+            }
+            gl.viewport(0, 0, width, 1);
+            (self.clip_control)(glow::LOWER_LEFT, glow::ZERO_TO_ONE);
+            // OpenGL's vertex colour clamping is a draw-time variant of the driver's, which the
+            // route does not take.
+            (self.clamp_color)(CLAMP_VERTEX_COLOR, glow::FALSE.into());
+            gl.enable(glow::PROGRAM_POINT_SIZE);
+            gl.draw_arrays(glow::POINTS, 0, width);
+            gl.memory_barrier(glow::ALL_BARRIER_BITS);
+            let texels = usize::try_from(options.points).map_err(|e| e.to_string())?;
+            let mut drawn = Drawn {
+                targets: Vec::new(),
+                depth: Vec::new(),
+                storage: Vec::new(),
+            };
+            for &(_, attachment, kind, _) in &textures {
+                let (format, ty, components) = match (attachment, kind) {
+                    (glow::DEPTH_ATTACHMENT, _) => (glow::DEPTH_COMPONENT, glow::FLOAT, 1),
+                    (_, Kind::Float) => (glow::RGBA, glow::FLOAT, options.clear.len()),
+                    (_, Kind::Sint) => (glow::RGBA_INTEGER, glow::INT, options.clear.len()),
+                    (_, Kind::Uint) => {
+                        (glow::RGBA_INTEGER, glow::UNSIGNED_INT, options.clear.len())
+                    }
+                };
+                let mut bytes = vec![0; texels * components * size_of::<u32>()];
+                if attachment != glow::DEPTH_ATTACHMENT {
+                    gl.read_buffer(attachment);
+                }
+                gl.read_pixels(
+                    0,
+                    0,
+                    width,
+                    1,
+                    format,
+                    ty,
+                    glow::PixelPackData::Slice(Some(&mut bytes)),
+                );
+                if attachment == glow::DEPTH_ATTACHMENT {
+                    drawn.depth = bytes;
+                } else {
+                    drawn.targets.push(bytes);
+                }
+            }
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.delete_framebuffer(framebuffer);
+            for (_, _, _, texture) in textures {
+                gl.delete_texture(texture);
+            }
+            for buffer in vertex_buffers {
+                gl.delete_buffer(buffer);
+            }
+            gl.delete_vertex_array(array);
+            drawn.storage = self.finish(made, storage, options.storage_blocks)?;
+            Ok(drawn)
         }
     }
 }

@@ -36,8 +36,6 @@ const IN_ROUTE: &str = "in the route";
 const IN_COMPARISON: &str = "in the comparison";
 /// Between the stages of a GLSL program in its result.
 const STAGE_JOINER: &str = "+";
-const GLSL_STAGES_NOT_COMPARED: &str =
-    "GLSL vertex and fragment programs are converted but not yet held to llvmpipe";
 
 /// The knobs, by their environment variable.
 const CORPUS: &str = "WC_NIR_CORPUS";
@@ -550,7 +548,7 @@ fn zink_route(
 }
 
 /// A GLSL program of piglit's: its stages through Mesa's compiler, each through the route; a
-/// compute program held to llvmpipe.
+/// compute program dispatched, a vertex and fragment program drawn, held to llvmpipe.
 fn glsl_program(file: &Path, route: &str) -> ShaderResult {
     let mut result = ShaderResult {
         shader: file.display().to_string(),
@@ -629,8 +627,64 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
         ([(Stage::Compute, names, (module, reflection))], [(_, source)]) => {
             glsl::compare_compute(source, names, module, reflection, options)
         }
-        _ => Verdict::NotRun(GLSL_STAGES_NOT_COMPARED.into()),
+        _ => drawn_comparison(&sources, route, file, options),
     });
     result.routes.push(taken);
     result
+}
+
+/// A GLSL program's vertex and fragment stages drawn (`glsl::drawn_program`), the drawn program
+/// through the same route, held to llvmpipe.
+fn drawn_comparison(
+    sources: &[(Stage, String)],
+    route: &str,
+    file: &Path,
+    options: CompareOptions,
+) -> Verdict {
+    let drawn = match glsl::drawn_program(sources) {
+        Ok(d) => d,
+        Err(e) => return Verdict::NotRun(e),
+    };
+    let given: Vec<(Stage, &str)> = drawn.iter().map(|(s, t)| (*s, t.as_str())).collect();
+    let stages = match Nir::from_glsl(&given) {
+        Ok(s) => s,
+        Err(e) => return Verdict::NotRun(format!("the drawn program: {e}")),
+    };
+    let mut routed = Vec::new();
+    for stage in stages {
+        let (one, module) = match route {
+            ROUTE_ZINK => zink_route(stage.nir, stage.stage, file),
+            _ => direct_route(stage.nir, stage.stage),
+        };
+        match module {
+            Some(m) => routed.push((stage.stage, stage.names, m)),
+            None => {
+                let Outcome::Failed(why) = one.outcome else {
+                    unreachable!("a route without a module failed")
+                };
+                return Verdict::NotRun(format!("the drawn program on the route: {why}"));
+            }
+        }
+    }
+    let [
+        (Stage::Vertex, vertex_names, (vertex, vertex_reflection)),
+        (Stage::Fragment, fragment_names, (fragment, fragment_reflection)),
+    ] = routed.as_slice()
+    else {
+        return Verdict::NotRun("the drawn program is not a vertex and a fragment stage".into());
+    };
+    glsl::compare_draw(
+        &drawn,
+        &glsl::RoutedStage {
+            names: vertex_names,
+            module: vertex,
+            reflection: vertex_reflection,
+        },
+        &glsl::RoutedStage {
+            names: fragment_names,
+            module: fragment,
+            reflection: fragment_reflection,
+        },
+        options,
+    )
 }
