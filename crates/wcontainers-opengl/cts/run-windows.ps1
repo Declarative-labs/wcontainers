@@ -30,6 +30,8 @@ foreach ($library in Get-ChildItem (Join-Path $mesaBin '*.dll')) {
     Copy-Item -Force $library.FullName $glctsDir
 }
 
+# `powershell -File` hands a comma list over as one string.
+$Lists = $Lists | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
 $all = Get-Content (Join-Path $PSScriptRoot 'lists.txt') | Where-Object { $_ -and -not $_.StartsWith('#') }
 $chosen = if ($Lists) { $all | Where-Object { $Lists -contains [IO.Path]::GetFileNameWithoutExtension($_) } } else { $all }
 if (-not $chosen) { throw "cts run-windows: none of $Lists is in lists.txt" }
