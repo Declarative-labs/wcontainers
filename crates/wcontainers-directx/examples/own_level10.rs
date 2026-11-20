@@ -2,7 +2,8 @@
 //! argument: `targets` (three targets blended and masked each its own way, over a depth test, then
 //! again with two targets writing nothing; first what each form of per-target blending answers),
 //! `resinfo` (a pixel shader asking views of a texture and of an array, every level and layer as
-//! the library built on WebGL 2 serves views, for their sizes and level counts at their first levels) and `resinfo_empty` (also an empty slot). Shaders are compiled by the
+//! the library built on WebGL 2 serves views, for their sizes and level counts at their first levels), `resinfo_empty` (also an empty slot) and `stream` (a vertex shader's stream
+//! output without a geometry shader, drawn as well, over two draws appending). Shaders are compiled by the
 //! system's d3dcompiler_47.dll. Prints each answer and the targets' bytes as hex, for comparing
 //! with real Direct3D line by line.
 
@@ -396,6 +397,111 @@ fn main() -> windows::core::Result<()> {
                 context.Draw(3, 0);
             }
             print("sizes", &out, 16);
+        }
+        "stream" => {
+            // Each vertex's position and a colour from its id, streamed and drawn.
+            let source = "struct V { float4 pos : SV_Position; float4 c : COLOR; };
+                V main(uint id : SV_VertexID) {
+                    uint k = id % 3;
+                    float2 p = float2(k == 1 ? 1.0 : -1.0, k == 2 ? -1.0 : 1.0);
+                    if (id >= 3) p = -p;
+                    V v; v.pos = float4(p, 0.25 * k, 1); v.c = float4(id * 0.125, 0.5, 1, 1);
+                    return v;
+                }";
+            let code_vs = compile(source, s!("vs_4_0"));
+            let vertex = vs(source);
+            let entries = [
+                D3D11_SO_DECLARATION_ENTRY {
+                    Stream: 0,
+                    SemanticName: s!("SV_Position"),
+                    SemanticIndex: 0,
+                    StartComponent: 0,
+                    ComponentCount: 4,
+                    OutputSlot: 0,
+                },
+                D3D11_SO_DECLARATION_ENTRY {
+                    Stream: 0,
+                    SemanticName: s!("COLOR"),
+                    SemanticIndex: 0,
+                    StartComponent: 1,
+                    ComponentCount: 2,
+                    OutputSlot: 0,
+                },
+            ];
+            let stride = 24;
+            let mut gs = None;
+            let r = unsafe {
+                device.CreateGeometryShaderWithStreamOutput(
+                    &code_vs,
+                    Some(&entries),
+                    Some(&[stride]),
+                    0,
+                    None::<&ID3D11ClassLinkage>,
+                    Some(&mut gs),
+                )
+            };
+            println!("CreateGeometryShaderWithStreamOutput {:#010x}", code(r));
+            let colour = ps("struct V { float4 pos : SV_Position; float4 c : COLOR; };
+                float4 main(V v) : SV_Target { return v.c; }");
+            let size = 8 * stride;
+            let desc = D3D11_BUFFER_DESC {
+                ByteWidth: size,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_STREAM_OUTPUT.0 as u32,
+                ..Default::default()
+            };
+            // Filled first, so the records past what is streamed are defined.
+            let fill = vec![0xab_u8; size as usize];
+            let initial = D3D11_SUBRESOURCE_DATA {
+                pSysMem: fill.as_ptr().cast(),
+                ..Default::default()
+            };
+            let mut so = None;
+            unsafe { device.CreateBuffer(&desc, Some(&initial), Some(&mut so))? };
+            let so = so.unwrap();
+            let target = texture(
+                4,
+                4,
+                1,
+                1,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D11_BIND_RENDER_TARGET,
+            );
+            let rt = rtv(&target);
+            unsafe {
+                viewport(4, 4);
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.VSSetShader(vertex.as_ref(), None);
+                context.GSSetShader(gs.as_ref(), None);
+                context.PSSetShader(colour.as_ref(), None);
+                context.SOSetTargets(1, Some([Some(so.clone())].as_ptr()), Some([0u32].as_ptr()));
+                context.Draw(3, 0);
+                context.Draw(3, 3);
+                context.SOSetTargets(0, None, None);
+                context.GSSetShader(None, None);
+            }
+            print("target", &target, 4);
+            let desc = D3D11_BUFFER_DESC {
+                Usage: D3D11_USAGE_STAGING,
+                BindFlags: 0,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                ..desc
+            };
+            let mut staging = None;
+            unsafe { device.CreateBuffer(&desc, None, Some(&mut staging))? };
+            let staging = staging.unwrap();
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            unsafe {
+                context.CopyResource(&staging, &so);
+                context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                let bytes = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), size as usize);
+                for (i, record) in bytes.chunks(stride as usize).enumerate() {
+                    let hex: Vec<String> = record.iter().map(|b| format!("{b:02x}")).collect();
+                    println!("stream: record {i} {}", hex.join(""));
+                }
+                context.Unmap(&staging, 0);
+            }
         }
         other => panic!("unknown case {other:?}"),
     }
