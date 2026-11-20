@@ -1,4 +1,4 @@
-//! The kernel's side of its interface to the embedder: one process, what it shows, and the data it hands out.
+//! The kernel's side of its interface to the embedder: the kernel, one process, what it shows, and the data it hands out.
 
 #![no_std]
 
@@ -13,14 +13,43 @@ use wcontainers_executor::{Executor, PerThreadWatch};
 use wcontainers_kernel::linux::general::siginfo;
 use wcontainers_kernel::{Errno, TaskId};
 
+/// A kernel, which suspends and resumes the tasks of its processes and their contexts.
+pub trait Kernel {
+    type Executor: Executor;
+    type SuspendedTask;
+    type ProcessContext;
+
+    fn suspend_tasks(
+        &mut self,
+        tasks: &[TaskId],
+    ) -> impl Iterator<Item = (TaskId, Self::SuspendedTask)>;
+    fn suspend_process(
+        &mut self,
+        process: TaskId,
+    ) -> Option<(
+        Self::ProcessContext,
+        impl Iterator<Item = (TaskId, Self::SuspendedTask)>,
+    )>;
+    fn copy_process_context(&self, process: TaskId) -> Option<Self::ProcessContext>;
+    fn resume_process(
+        &mut self,
+        context: Self::ProcessContext,
+        config: ExecutionConfig<Self::Executor>,
+    ) -> Option<Self::ProcessContext>;
+    fn resume_tasks(
+        &mut self,
+        tasks: impl IntoIterator<Item = Self::SuspendedTask>,
+    ) -> impl Iterator<Item = Self::SuspendedTask>;
+}
+
 /// A handle to one process of a kernel.
 pub trait Process {
     type State;
-    type Executor: Executor;
+    type Kernel: Kernel;
 
     fn id(&self) -> TaskId;
     fn info(&self) -> impl ProcessInfo;
-    fn execution_config(&self) -> &ExecutionConfig<Self::Executor>;
+    fn execution_config(&self) -> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>;
     fn state(&mut self) -> &mut Self::State;
     fn memory_id(&self) -> MemoryId;
 
@@ -32,11 +61,21 @@ pub trait Process {
     fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
     fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor)
     where
-        Self::Executor: PerThreadWatch;
+        <Self::Kernel as Kernel>::Executor: PerThreadWatch;
     fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
 
     fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
-    fn suspend(self) -> impl SuspendedProcess<Self::Executor>;
+    fn suspend_tasks(
+        &mut self,
+        tasks: &[TaskId],
+    ) -> impl Iterator<Item = (TaskId, <Self::Kernel as Kernel>::SuspendedTask)>;
+    fn suspend_process(
+        self,
+    ) -> (
+        <Self::Kernel as Kernel>::ProcessContext,
+        impl Iterator<Item = (TaskId, <Self::Kernel as Kernel>::SuspendedTask)>,
+    );
+    fn copy_process_context(&self) -> <Self::Kernel as Kernel>::ProcessContext;
 }
 
 /// A short-lived view of what the kernel keeps for one process.
@@ -47,9 +86,6 @@ pub trait ProcessInfo {
     fn parent(&self) -> Option<TaskId>;
     fn is_inspected(&self) -> bool;
 }
-
-/// A process taken out of its kernel whole, as a value.
-pub trait SuspendedProcess<E: Executor> {}
 
 /// How one process is run.
 pub struct ExecutionConfig<E: Executor> {
