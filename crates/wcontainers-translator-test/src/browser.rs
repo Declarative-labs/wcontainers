@@ -27,6 +27,18 @@ const CASES: &str = "cases";
 const TRANSLATOR_FILE: &str = "translator.wasm";
 const BLOB_FILE: &str = "blob.bin";
 const STACK_FILE: &str = "stack.bin";
+/// The case's setup and its instruction cases, which `run.mjs` reads from the case's folder.
+const SETUP_FILE: &str = "case.json";
+const CASES_FILE: &str = "cases.bin";
+/// The folder of instruction cases under [`CASES`].
+const INSTRUCTION_CASES: &str = "instructions";
+/// The program that runs the browser runner's script, and that script beside this crate's manifest.
+const NODE: &str = "node";
+const RUNNER_SCRIPT: &str = "run.mjs";
+/// The variable through which the runner script gives V8 its flags.
+const JS_FLAGS_VARIABLE: &str = "WC_CHROME_JS_FLAGS";
+/// What Chrome's DevTools protocol reports when a page crashes.
+const PAGE_CRASHED: &str = "Target crashed";
 
 fn package() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PACKAGE)
@@ -298,24 +310,24 @@ fn launch_or_refused(
     flags: Option<&str>,
 ) -> Result<Value, String> {
     std::fs::write(
-        directory.join("case.json"),
+        directory.join(SETUP_FILE),
         serde_json::to_string(setup).unwrap(),
     )
     .unwrap();
 
-    let mut command = Command::new("node");
+    let mut command = Command::new(NODE);
     if let Some(flags) = flags {
-        command.env("WC_CHROME_JS_FLAGS", flags);
+        command.env(JS_FLAGS_VARIABLE, flags);
     }
     let output = command
-        .arg(package().join("run.mjs"))
+        .arg(package().join(RUNNER_SCRIPT))
         .arg(directory)
         .output()
         .expect("run node (from the Nix shell)");
     let errors = String::from_utf8_lossy(&output.stderr);
     eprint!("{errors}");
     // A page that crashes (the engine giving up on a module) is a refusal too.
-    if errors.contains("Target crashed") {
+    if errors.contains(PAGE_CRASHED) {
         return Err("the page crashed".into());
     }
     assert!(output.status.success(), "the browser runner failed");
@@ -398,7 +410,7 @@ pub fn cases(
     places: &[Range<u64>],
     cases: &[StateCase],
 ) -> Vec<StateRun> {
-    let directory = case_folder("instructions", &cases[0].word.to_le_bytes(), &[]);
+    let directory = case_folder(INSTRUCTION_CASES, &cases[0].word.to_le_bytes(), &[]);
     let mut bytes = Vec::new();
     for case in cases {
         bytes.extend(case.word.to_le_bytes());
@@ -407,7 +419,7 @@ pub fn cases(
             bytes.extend(place);
         }
     }
-    std::fs::write(directory.join("cases.bin"), bytes).unwrap();
+    std::fs::write(directory.join(CASES_FILE), bytes).unwrap();
     let setup = Setup {
         areas: Some(
             places
