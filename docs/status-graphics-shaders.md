@@ -103,7 +103,8 @@ The pass bar, item by item:
    tessellation scene, stream output after a domain stage; `stage_draw`). On WebGL 2 since run 52,
    geometry shaders by replay (`geometry_draw`,
    `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`, on ANGLE: every case of the WebGPU
-   test but the strips with adjacency and the indexed strips, which the route refuses by name), and
+   test but the strips with adjacency, which the route refuses by name; indexed strips since run
+   54), and
    stream output after them since run 53 (`stream_output_after_replay_matches_direct3d`).
    Not met: the rest of WebGL 2 (tessellation, cull distances, lines: gap A5), DXIL
    (A6), some topologies and streams (A7), vertex shaders writing storage (A9), and single texels on
@@ -155,10 +156,9 @@ The gap list (every item of the pass bar not met):
     immediates in the program from the root signature's parameters.
 - A5. The stage helper on WebGL 2 (plan section 7). Geometry shaders run there since run 52
   (`stage::GeometryReplay`, `SlowPath::GeometryAsReplay`, drawn equal to Direct3D 11 on ANGLE).
-  Not built, each refused by name or absent: strips with adjacency (`GeometryReplayAdjacentStrip`)
-  and indexed strips (`GeometryReplayIndexedStrip`: their restart indices leave the captured
-  primitives' count on the GPU; takes the indices read back, as the back end's own capture does,
-  or the front listing them); records wider than one capture target
+  Indexed strips run there since run 54 (listed on the host from their indices read back).
+  Not built, each refused by name or absent: strips with adjacency (`GeometryReplayAdjacentStrip`);
+  records wider than one capture target
   (`GeometryReplayComponents`, past `capture_components`, 16 slots on WebGL 2's minimum);
   layered geometry (`selects`, built on the same pass-through, not drawn on WebGL 2 yet); stream
   output from a geometry shader writing several streams (`GeometryReplayStreams`: the replay runs
@@ -2305,6 +2305,16 @@ Run 54 (the gap list in the fronts' order: A4's `decoded` and normalised targets
   integer formats through `decoded`, against Direct3D 11 sampling the normalised texture.
   `variants_draw_as_the_native_feature_does` draws ps_textured into the same four as integer
   targets on both back ends against Direct3D 11 drawing into the normalised format.
+- Indexed strips through `GeometryReplay` (the Direct3D 11 front's 10_0 on WebGL 2; refused as
+  `GeometryReplayIndexedStrip` before): the route reads the draw's index range back (whole words,
+  as buffer copies need), lists each strip's primitives on the host in the order `strips.wgsl`
+  lists them for the compute route (a restart index ends a strip, odd triangles take their last
+  two vertices swapped), writes the list into the index ring as u32, and captures it as a list.
+  The replay tests now draw every indexed strip case: `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`
+  64 comparisons (56 before), 0 failed, 16 refused (strips with adjacency only);
+  `stream_output_after_replay_matches_direct3d` 24 comparisons (20 before), 0 failed, 8 refused
+  (desktop, RTX 3080, ANGLE, seeds 1 to 4, gpu5.log, 9 s; the WebGPU geometry test 112
+  comparisons, layered 24, streams 16, all 0 failed). Departure recorded below.
 - Departure (recorded below): the normalised targets are compared within one code per channel,
   Direct3D's own conversion tolerance (`D3D11_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP`, 0.6), as the
   RTX 3080's render targets round some values otherwise (R16_UNORM exact; R16G16_SNORM 296,
@@ -2688,10 +2698,9 @@ Next (in order). The gap list (top of this file) in the order the fronts need it
    arrays on the DXIL route (`ResourceArray` there), and a drawn test of arrays against real
    Direct3D 12.
 2. The Direct3D 11 front's: `GeometryAsReplay` and lines on WebGL 2 (A5). Geometry shaders by
-   replay done (runs 51 to 53, `stage::GeometryReplay`). Left of A5, in the front's order:
-   indexed strips (read the indices back as the back end's own capture does, or list them in the
-   route), alpha-antialiased lines on WebGL 2,
-   layered geometry drawn there. Stream output after it done (run 53).
+   replay done (runs 51 to 53, `stage::GeometryReplay`), stream output after it (run 53), indexed
+   strips through it (run 54). Left of A5, in the front's order: alpha-antialiased lines on
+   WebGL 2, layered geometry drawn there.
 3. Done in run 54: `decoded` and normalised targets (A4). Left of it: the Direct3D 12 front's
    view-typed reads (needs an interface field; "Also open" under the gap list).
 4. DXIL geometry, hull and domain shaders (A6).
@@ -3024,7 +3033,9 @@ The older list, kept for its detail:
   returned `FinalDraw`: the program of `replay.passthrough()` and the pixel shader,
   `replay.vertex_layout()`, `buffer` as stream 0, no indices, its list topology, `count`
   vertices, one instance. `None` means nothing to draw. Refused by name: strips with adjacency,
-  indexed strips, indirect draws, records past `capture_components`. Stream output (since run 53):
+  indirect draws, records past `capture_components`. Indexed strips (since run 54): the route
+  reads the draw's indices back, so the index buffer needs `BufferUsage::COPY_SRC`; it restarts
+  at the format's largest index, as Direct3D does. Stream output (since run 53):
   pass the declaration to `new` and `ReplayDraw::stream_output` as on the compute route, but with
   buffers and the filled block made with `COPY_SRC` and `COPY_DST` (no storage); the route reads
   the filled block, writes stream 0's whole primitives on the host as Direct3D does (a primitive
@@ -4379,6 +4390,11 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- Indexed strips through the replay route (run 54) are listed on the host from the indices read
+  back (one blocking read a draw on WebGL 2), where the compute route lists them on the GPU: WebGL
+  2 has no compute, and the listed count decides the capture's size. The host listing follows
+  `strips.wgsl`'s order, so both routes give the geometry shader the same primitives.
 
 - Normalised targets held as integers (run 54) are compared with real Direct3D 11 within one code
   per channel, not exactly: the program rounds the scaled value to nearest, and Direct3D allows
