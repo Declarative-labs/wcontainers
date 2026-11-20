@@ -86,7 +86,8 @@ fn operand_bytes(instruction: &Instruction) -> usize {
         Retfw | Retfw_imm16 | Iretw | Call_m1616 | Jmp_m1616 => size_of::<u16>(),
         Retfd | Retfd_imm16 | Iretd | Call_m1632 | Jmp_m1632 => size_of::<u32>(),
         Retfq | Retfq_imm16 | Iretq | Call_m1664 | Jmp_m1664 => size_of::<u64>(),
-        _ => memory_size(instruction) as usize - size_of::<u16>(),
+        // None for `push` and `pop` of fs and gs, which do not use it.
+        _ => (memory_size(instruction) as usize).saturating_sub(size_of::<u16>()),
     }
 }
 

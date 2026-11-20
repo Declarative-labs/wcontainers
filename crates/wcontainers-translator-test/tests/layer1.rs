@@ -15,7 +15,7 @@ use wcontainers_arm64::Arm64;
 use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
-    compare, compare_outcome, on_reference, translated, translated_in_chrome,
+    compare, compare_outcome, on_reference, translated, translated_in_chrome, translated_with,
 };
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_x86::X86_64;
@@ -279,6 +279,81 @@ fn hand_cases_do_what_they_must_arm64() {
 #[test]
 fn bytes_in_no_form_stop_as_on_the_cpu_arm64() {
     bytes_in_no_form_stop_as_on_the_cpu::<Arm64>();
+}
+
+#[test]
+fn offered_features_are_the_ones_programs_are_told_x86_64() {
+    offered_features_are_the_ones_programs_are_told::<X86_64>();
+}
+
+/// `rdtsc` and `rdtscp` give the clock's nanoseconds as edx:eax with the upper halves cleared, and `rdtscp`
+/// ecx 0, the processor (plan 5.10): answered by design, so checked here and not against the CPU.
+#[test]
+fn the_time_stamp_is_the_clock_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::plain;
+    use wcontainers_translator_test::layout::CODE;
+    use wcontainers_x86::{RAX, RCX, RDX};
+    const RDTSC: &[u8] = &[0x0f, 0x31];
+    const RDTSCP: &[u8] = &[0x0f, 0x01, 0xf9];
+    // Past 2^32 nanoseconds, so that the high half is not zero.
+    const CLOCK: u64 = 3 << u32::BITS;
+    let [rax, rcx, rdx] = [RAX, RCX, RDX].map(usize::from);
+    for (code, processor) in [(RDTSC, false), (RDTSCP, true)] {
+        let mut case = plain(code);
+        for field in [rax, rcx, rdx] {
+            case.state.0[field] = u64::MAX.into();
+        }
+        let before = std::time::Instant::now();
+        let outcome = translated_with::<X86_64>(&case, |machine| machine.set_clock(CLOCK));
+        let ran = before.elapsed().as_nanos() as u64;
+        assert_eq!(
+            outcome.stop,
+            Stop::Landed(CODE + code.len() as u64),
+            "{code:02x?}"
+        );
+        let [low, high, processor_number] =
+            [rax, rdx, rcx].map(|field| outcome.state.0[field] as u64);
+        assert!(
+            low <= u32::MAX.into() && high <= u32::MAX.into(),
+            "{code:02x?}"
+        );
+        let ticks = high << u32::BITS | low;
+        assert!(
+            (CLOCK..=CLOCK + ran).contains(&ticks),
+            "{code:02x?}: {ticks:#x}"
+        );
+        assert_eq!(
+            processor_number,
+            if processor { 0 } else { u64::MAX },
+            "{code:02x?}"
+        );
+    }
+}
+
+/// Every default x86-64 code has cases whose meaning is written (or is the fault Linux gives, for the kernel's
+/// instructions), but those left out by design, those the translator decodes as another code, and milestone
+/// X7's.
+#[test]
+fn every_default_code_is_drawn_and_written_x86_64() {
+    use wcontainers_translator_test::guest::x86_64::{
+        NOT_DRAWN, default_left_out, unwritten_forms,
+    };
+    let left = default_left_out();
+    for (code, why) in &left {
+        eprintln!("{code}: {why}");
+    }
+    let undrawn: Vec<_> = left.iter().filter(|(_, why)| *why == NOT_DRAWN).collect();
+    assert!(
+        undrawn.is_empty(),
+        "{} default codes have no case: {undrawn:?}",
+        undrawn.len()
+    );
+    let unwritten = unwritten_forms();
+    assert!(
+        unwritten.is_empty(),
+        "{} default forms have no meaning: {unwritten:?}",
+        unwritten.len()
+    );
 }
 
 #[test]

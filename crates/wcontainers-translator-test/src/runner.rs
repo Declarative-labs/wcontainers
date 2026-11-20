@@ -621,6 +621,13 @@ impl<G: GuestTest> Machine<G> {
         write_shared(&self.state, BLOCK_AT as usize, &thread);
     }
 
+    /// The clock reads `nanos` now and runs on from there.
+    pub fn set_clock(&mut self, nanos: u64) {
+        self.store.data_mut().started = Instant::now()
+            .checked_sub(Duration::from_nanos(nanos))
+            .expect("a clock that far back");
+    }
+
     /// Translate for other facts about the engine than the probe found, to test the paths other hosts
     /// take. Only blobs loaded afterwards are affected.
     pub fn set_host(&mut self, facts: G::Host) {

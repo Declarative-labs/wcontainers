@@ -121,8 +121,88 @@ impl GuestTest for X86_64 {
         wcontainers_x86::claims::DEFAULT_FEATURES.to_vec()
     }
 
+    /// The features of the bits `cpuid` sets by default, and those every x86-64 CPU has with no bit.
     fn told() -> Vec<&'static str> {
-        panic!("what x86-64 programs are told (CPUID) is milestone X5's")
+        use iced_x86::CpuidFeature::{self, *};
+        use wcontainers_x86::cpuid::{
+            EBX, ECX, EDX, EXTENDED_FEATURES, EXTENDED_FEATURES_LEAF, FEATURES_LEAF, answer,
+            extended, leaf1, leaf7,
+        };
+        // Each feature bit, as iced's feature; `None` for a bit that names no instructions.
+        let bits: &[(u32, usize, u32, Option<CpuidFeature>)] = &[
+            (FEATURES_LEAF, ECX, leaf1::SSE3, Some(SSE3)),
+            (FEATURES_LEAF, ECX, leaf1::SSSE3, Some(SSSE3)),
+            (FEATURES_LEAF, ECX, leaf1::FMA, Some(FMA)),
+            (FEATURES_LEAF, ECX, leaf1::CX16, Some(CMPXCHG16B)),
+            (FEATURES_LEAF, ECX, leaf1::SSE4_1, Some(SSE4_1)),
+            (FEATURES_LEAF, ECX, leaf1::SSE4_2, Some(SSE4_2)),
+            (FEATURES_LEAF, ECX, leaf1::MOVBE, Some(MOVBE)),
+            (FEATURES_LEAF, ECX, leaf1::POPCNT, Some(POPCNT)),
+            (FEATURES_LEAF, ECX, leaf1::XSAVE, Some(XSAVE)),
+            (FEATURES_LEAF, ECX, leaf1::OSXSAVE, None),
+            (FEATURES_LEAF, ECX, leaf1::AVX, Some(AVX)),
+            (FEATURES_LEAF, ECX, leaf1::F16C, Some(F16C)),
+            (FEATURES_LEAF, EDX, leaf1::FPU, Some(FPU)),
+            (FEATURES_LEAF, EDX, leaf1::TSC, Some(TSC)),
+            (FEATURES_LEAF, EDX, leaf1::CX8, Some(CX8)),
+            (FEATURES_LEAF, EDX, leaf1::SEP, Some(SEP)),
+            (FEATURES_LEAF, EDX, leaf1::CMOV, Some(CMOV)),
+            (FEATURES_LEAF, EDX, leaf1::CLFSH, Some(CLFSH)),
+            (FEATURES_LEAF, EDX, leaf1::MMX, Some(MMX)),
+            (FEATURES_LEAF, EDX, leaf1::FXSR, Some(FXSR)),
+            (FEATURES_LEAF, EDX, leaf1::SSE, Some(SSE)),
+            (FEATURES_LEAF, EDX, leaf1::SSE2, Some(SSE2)),
+            (EXTENDED_FEATURES_LEAF, EBX, leaf7::FSGSBASE, Some(FSGSBASE)),
+            (EXTENDED_FEATURES_LEAF, EBX, leaf7::BMI1, Some(BMI1)),
+            (EXTENDED_FEATURES_LEAF, EBX, leaf7::AVX2, Some(AVX2)),
+            (EXTENDED_FEATURES_LEAF, EBX, leaf7::BMI2, Some(BMI2)),
+            (EXTENDED_FEATURES_LEAF, EBX, leaf7::ADX, Some(ADX)),
+            // lahf and sahf in 64-bit mode, which iced counts as the 8086's.
+            (EXTENDED_FEATURES, ECX, extended::LAHF_SAHF, None),
+            (EXTENDED_FEATURES, ECX, extended::LZCNT, Some(LZCNT)),
+            (EXTENDED_FEATURES, EDX, extended::SYSCALL, Some(SYSCALL)),
+            (EXTENDED_FEATURES, EDX, extended::NX, None),
+            (EXTENDED_FEATURES, EDX, extended::RDTSCP, Some(RDTSCP)),
+            (EXTENDED_FEATURES, EDX, extended::LM, Some(X64)),
+        ];
+        // Every x86-64 CPU has these, and no bit says so (FPU287 and FPU387 come with FPU).
+        const WITHOUT_BITS: &[CpuidFeature] = &[
+            INTEL8086,
+            INTEL186,
+            INTEL286,
+            INTEL386,
+            INTEL486,
+            CPUID,
+            PAUSE,
+            MULTIBYTENOP,
+            FPU287,
+            FPU387,
+        ];
+        let mut told = WITHOUT_BITS.to_vec();
+        for leaf in [FEATURES_LEAF, EXTENDED_FEATURES_LEAF, EXTENDED_FEATURES] {
+            let words = answer(false, leaf, 0);
+            for (n, &word) in words.iter().enumerate() {
+                let named = bits
+                    .iter()
+                    .filter(|&&(l, r, _, _)| l == leaf && r == n)
+                    .fold(0, |all, &(_, _, bit, _)| all | bit);
+                let unnamed = if leaf == FEATURES_LEAF && n != ECX && n != EDX {
+                    0
+                } else {
+                    word & !named
+                };
+                assert_eq!(
+                    unnamed, 0,
+                    "leaf {leaf:#x} output {n}: bits with no feature named here"
+                );
+            }
+            told.extend(bits.iter().filter_map(|&(l, r, bit, name)| {
+                (l == leaf && words[r] & bit != 0).then_some(name).flatten()
+            }));
+        }
+        told.into_iter()
+            .map(|feature| &*Box::leak(format!("{feature:?}").into_boxed_str()))
+            .collect()
     }
 
     type Form = Form;
@@ -445,37 +525,130 @@ impl GuestTest for X86_64 {
     }
 }
 
-/// The forms: every `Code` valid in 64-bit mode with a legacy encoding whose meaning is written, shown by one
-/// instruction of it.
+/// The forms: every default code (plan 7.4) with a case the translator decodes as that code, but the codes of
+/// milestone X7 whose meaning is not written yet.
 fn forms() -> Vec<Form> {
-    Code::values()
-        .filter(|code| {
-            let info = code.op_code();
-            info.mode64()
-                && info.is_instruction()
-                && info.encoding() == iced_x86::EncodingKind::Legacy
-        })
-        .filter(|&code| {
-            (0..64).any(|draw| case(code, draw).is_some_and(|c| written(c.code.code(), code)))
-        })
+    default_codes()
+        .filter(|&code| default_left_out_because(code).is_none())
         .map(|code| Form {
             code,
             name: format!("{code:?}"),
-            group: format!("{:?}", code.mnemonic()),
+            group: format!("{:?} {:?}", code.mnemonic(), code.op_code().encoding()),
             unoffered: false,
         })
         .collect()
 }
 
-/// Whether `bytes` decode to `code` for the translator, and its meaning is written or it is kernel only (its
-/// meaning the fault Linux gives a program).
-fn written(bytes: &[u8], code: Code) -> bool {
-    wcontainers_x86::decode(bytes).is_some_and(|(i, length)| {
-        usize::from(length) == bytes.len()
-            && i.iced.code() == code
-            && (wcontainers_x86::written(&i)
-                || wcontainers_x86::claim_group(code) == wcontainers_x86::claims::GROUP_KERNEL)
+/// Every `Code` valid in 64-bit mode of every encoding but MVEX (plan 7.4) whose claim group is offered: the
+/// default claims and the kernel-only instructions.
+fn default_codes() -> impl Iterator<Item = Code> {
+    Code::values().filter(|&code| {
+        let info = code.op_code();
+        info.mode64()
+            && info.is_instruction()
+            && info.encoding() != iced_x86::EncodingKind::MVEX
+            && !is_unoffered(code)
     })
+}
+
+/// Why a default code has no form: left out by design, decoded as another code, milestone X7's and not
+/// written yet, or not drawn; `None` for a code with a form.
+fn default_left_out_because(code: Code) -> Option<&'static str> {
+    let drawn: Vec<Vec<u8>> = (0..FORM_DRAWS)
+        .filter_map(|draw| case(code, draw))
+        .map(|c| c.code.code().to_vec())
+        .collect();
+    if let Some(i) = drawn.iter().find_map(|bytes| decoded_as(bytes, code)) {
+        let x7 = is_x87_or_mmx(code) || uses_x87_or_mmx(&i.iced);
+        return (x7 && !wcontainers_x86::written(&i)).then_some(MILESTONE_X7);
+    }
+    if is_x87_or_mmx(code) {
+        return Some(MILESTONE_X7);
+    }
+    if !drawn.is_empty() {
+        return Some(DECODED_ELSEWHERE);
+    }
+    // No case: the code's bytes with operands of every kind, as for an unoffered code.
+    let encoded: Vec<Vec<u8>> = (0..FORM_DRAWS)
+        .filter_map(|draw| unoffered_bytes(code, &mut Draw::of_case(code, draw)))
+        .map(|(bytes, _)| bytes)
+        .collect();
+    if let Some(reason) = encoded.iter().find_map(|bytes| X86_64::excluded(bytes)) {
+        return Some(reason);
+    }
+    // Followed by more bytes, as another code may be longer.
+    let elsewhere = encoded.iter().any(|bytes| {
+        let mut bytes = bytes.clone();
+        bytes.resize(bytes.len() + X86_64::MAX_LENGTH as usize, 0);
+        wcontainers_x86::decode(&bytes).is_some_and(|(i, _)| i.iced.code() != code)
+    });
+    Some(if elsewhere {
+        DECODED_ELSEWHERE
+    } else {
+        NOT_DRAWN
+    })
+}
+
+/// The default codes with no form, and why.
+pub fn default_left_out() -> Vec<(String, &'static str)> {
+    default_codes()
+        .filter_map(|code| Some((format!("{code:?}"), default_left_out_because(code)?)))
+        .collect()
+}
+
+/// The default forms none of whose drawn cases has a written meaning, nor is a kernel-only instruction (whose
+/// meaning is the fault Linux gives).
+pub fn unwritten_forms() -> Vec<String> {
+    <X86_64 as GuestTest>::forms()
+        .iter()
+        .filter(|form| {
+            (0..FORM_DRAWS)
+                .filter_map(|draw| case(form.code, draw))
+                .filter_map(|c| decoded_as(c.code.code(), form.code))
+                .all(|i| {
+                    !wcontainers_x86::written(&i)
+                        && wcontainers_x86::claim_group(form.code)
+                            != wcontainers_x86::claims::GROUP_KERNEL
+                })
+        })
+        .map(|form| form.name.clone())
+        .collect()
+}
+
+/// Why a default code has no form yet: the x87 unit, MMX registers and `fxsave` are milestone X7's (plan 9).
+pub const MILESTONE_X7: &str =
+    "the x87 unit, MMX registers or fxsave: milestone X7's, not written yet";
+
+/// A code of the x87 unit, of MMX registers or of `fxsave` and `fxrstor`, by its features and operands, or
+/// `wait`, the x87 unit's check for pending exceptions, which iced counts as the 8086's.
+fn is_x87_or_mmx(code: Code) -> bool {
+    use iced_x86::CpuidFeature::{FPU, FPU287, FPU387, FXSR, MMX};
+    code == Code::Wait
+        || code
+            .cpuid_features()
+            .iter()
+            .any(|f| matches!(f, FPU | FPU287 | FPU387 | MMX | FXSR))
+        || code.op_code().op_kinds().iter().any(|k| {
+            matches!(
+                k,
+                K::mm_reg | K::mm_rm | K::mm_or_mem | K::st0 | K::sti_opcode
+            )
+        })
+}
+
+/// An instruction that uses an x87 or MMX register without naming one (`fisttp`).
+fn uses_x87_or_mmx(i: &Instruction) -> bool {
+    InstructionInfoFactory::new()
+        .info(i)
+        .used_registers()
+        .iter()
+        .any(|used| used.register().is_mm() || used.register().is_st())
+}
+
+/// The translator's decoding of `bytes` when it is `code`, as long as they are.
+fn decoded_as(bytes: &[u8], code: Code) -> Option<wcontainers_x86::Instruction> {
+    let (i, length) = wcontainers_x86::decode(bytes)?;
+    (usize::from(length) == bytes.len() && i.iced.code() == code).then_some(i)
 }
 
 /// The features of unoffered forms the reference CPU has, besides the AVX setting's (plan 7.4): its runs of
@@ -587,7 +760,9 @@ fn unoffered_bytes(
 ) -> Option<(Vec<u8>, Option<(MemoryOperand, u32, u64)>)> {
     let info = code.op_code();
     let evex = info.encoding() == iced_x86::EncodingKind::EVEX;
-    let mut instruction = Instruction::with(code);
+    // Its operands are set below (`Instruction::with` is for codes without operands).
+    let mut instruction = Instruction::default();
+    instruction.set_code(code);
     let mut memory = None;
     for n in 0..info.op_count() {
         let kind = info.op_kind(n);
@@ -630,6 +805,11 @@ fn unoffered_bytes(
                     instruction.set_immediate8(v as u8);
                 }
             },
+            // A 16-bit branch's target is the low half of the drawn one.
+            Operand::Branch(to) if matches!(kind, K::br16_1 | K::br16_2) => {
+                instruction.set_op_kind(n, OpKind::NearBranch16);
+                instruction.set_near_branch16(to as u16);
+            }
             Operand::Branch(to) => {
                 instruction.set_op_kind(n, OpKind::NearBranch64);
                 instruction.set_near_branch64(to);
@@ -792,7 +972,7 @@ fn unoffered_operand(draw: &mut Draw, kind: K, evex: bool) -> Option<Operand> {
         K::es_rDI => Operand::Implicit(OpKind::MemoryESRDI),
         K::imm8 | K::imm16 | K::imm32 => Operand::Unsigned(draw.value() as u32),
         K::imm4_m2z => Operand::Unsigned(draw.below(REGISTER_QUAD.into()) as u32),
-        K::xbegin_2 | K::xbegin_4 | K::br64_1 | K::br64_4 => {
+        K::xbegin_2 | K::xbegin_4 | K::br64_1 | K::br64_4 | K::br16_1 | K::br16_2 => {
             // Past the instruction, so that it never branches into itself.
             Operand::Branch(CODE + EDGE_BYTES + draw.below(EDGE_BYTES))
         }
@@ -968,6 +1148,8 @@ fn build(code: Code, ops: &[Operand]) -> Option<Instruction> {
         [R(a), M(b), Signed(c)] => Instruction::with3(code, a, b, c),
         [R(a), M(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
         [R(a), R(b), R(c)] => Instruction::with3(code, a, b, c),
+        [R(a), R(b), M(c)] => Instruction::with3(code, a, b, c),
+        [R(a), M(b), R(c)] => Instruction::with3(code, a, b, c),
         [M(a), R(b), R(c)] => Instruction::with3(code, a, b, c),
         [M(a), R(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
         _ => return None,
@@ -1225,8 +1407,12 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                 K::xmm_reg | K::xmm_rm => Operand::R(xmm(&mut draw)),
                 K::r8_reg | K::r8_opcode => Operand::R(general(&mut draw, 8)),
                 K::r16_reg | K::r16_rm | K::r16_opcode => Operand::R(general(&mut draw, 16)),
-                K::r32_reg | K::r32_rm | K::r32_opcode => Operand::R(general(&mut draw, 32)),
-                K::r64_reg | K::r64_rm | K::r64_opcode => Operand::R(general(&mut draw, 64)),
+                K::r32_reg | K::r32_rm | K::r32_opcode | K::r32_vvvv => {
+                    Operand::R(general(&mut draw, 32))
+                }
+                K::r64_reg | K::r64_rm | K::r64_opcode | K::r64_vvvv => {
+                    Operand::R(general(&mut draw, 64))
+                }
                 K::al => Operand::R(Register::AL),
                 K::cl => Operand::R(Register::CL),
                 K::ax => Operand::R(Register::AX),

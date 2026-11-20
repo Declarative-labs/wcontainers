@@ -6,8 +6,10 @@ use crate::{Fxsave, VIRTUAL_ADDRESS_BITS, X86Block};
 /// eax, ebx, ecx and edx.
 pub const OUTPUTS: usize = 4;
 pub type Registers = [u32; OUTPUTS];
-/// ecx's place in [`Registers`].
+/// Each output's place in [`Registers`].
+pub const EBX: usize = 1;
 pub const ECX: usize = 2;
+pub const EDX: usize = 3;
 
 /// The highest basic and extended leaves; above either, a leaf answers as the highest basic one.
 pub const MAX_BASIC: u32 = TIME_STAMP_LEAF;
@@ -21,7 +23,7 @@ pub const EXTENDED_FEATURES_LEAF: u32 = 7;
 pub const TOPOLOGY_LEAF: u32 = 0xb;
 pub const XSAVE_LEAF: u32 = 0xd;
 pub const TIME_STAMP_LEAF: u32 = 0x15;
-const EXTENDED_FEATURES: u32 = EXTENDED + 1;
+pub const EXTENDED_FEATURES: u32 = EXTENDED + 1;
 const BRAND_LEAF: u32 = EXTENDED + 2;
 const BRAND_LEAVES: u32 = (BRAND_BYTES / size_of::<Registers>()) as u32;
 /// The brand string's room, NUL-padded.

@@ -84,8 +84,17 @@ fn translated_stop<G: GuestTest>(stopped: Stopped) -> Stop {
 
 /// Run a case through the translator.
 pub fn translated<G: GuestTest>(case: &Case) -> Outcome {
+    translated_with::<G>(case, |_| {})
+}
+
+/// Run a case through the translator, on a machine `prepare` has changed.
+pub fn translated_with<G: GuestTest>(
+    case: &Case,
+    prepare: impl FnOnce(&mut Machine<G>),
+) -> Outcome {
     // The table covers the case's one instruction only, so control that lands anywhere else stops there.
     let mut machine = Machine::<G>::new(memory::<G>(), CODE, 1, Syscalls::Stop);
+    prepare(&mut machine);
     for (range, permissions) in regions::<G>() {
         machine.set_permissions(range, permissions);
     }
