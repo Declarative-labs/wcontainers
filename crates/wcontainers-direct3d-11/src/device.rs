@@ -229,6 +229,8 @@ const CULL_DISTANCES_UNSERVED: &str = "cull distances past the vertex stage, or 
 /// Refused: sharing below 10_0, or of more or fewer than one kind.
 const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
     "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)";
+/// `Format::components` of a format holding a red channel alone.
+const RED: u32 = 0b0001;
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
 const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound to nothing";
 const TYPED_BUFFER_UNCLAIMED: &str =
@@ -419,9 +421,10 @@ impl<B: Backend> Device<B> {
         use crate::desc::support2::*;
         let caps = self.backend.caps();
         // Every resource is shared through the host where devices hold no common memory
-        // (`SharedThroughHost`), so formats Direct3D shares claim it at 11_0.
+        // (`SharedThroughHost`), so formats Direct3D shares claim it from 10_0, where sharing
+        // starts.
         let shareable = |support1: u32| {
-            if format::shared(dxgi) && support1 & TEXTURE2D != 0 && self.level >= level::L11_0 {
+            if format::shared(dxgi) && support1 & TEXTURE2D != 0 && self.level >= level::L10_0 {
                 crate::desc::SUPPORT2_SHAREABLE
             } else {
                 0
@@ -559,7 +562,19 @@ impl<B: Backend> Device<B> {
             level < level::L10_0,
             BUFFER | SO_BUFFER | SHADER_SAMPLE_COMPARISON,
         );
-        remove(level < level::L10_1, SHADER_GATHER);
+        // Multisampled depth is read from 10_1.
+        remove(
+            level < level::L10_1 && format::depth_aspect_view(dxgi),
+            MULTISAMPLE_LOAD,
+        );
+        // Shader model 4.1 gathers formats of a red channel alone, uncompressed, and one aspect
+        // of depth; 11_0 every format it samples.
+        let red_alone = format::depth_aspect_view(dxgi)
+            || texture.is_some_and(|f| f.components() == RED && f.block().0 == 1);
+        remove(
+            level < level::L10_1 || level < level::L11_0 && !red_alone,
+            SHADER_GATHER,
+        );
         // Typed storage views and gathers with comparison are shader model 5's.
         remove(
             level < level::L11_0,
@@ -628,6 +643,7 @@ impl<B: Backend> Device<B> {
             s.support1 |= TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 |= UAV_TYPED_STORE;
         }
+        // The RTX 3080 claims gathers of these from 10_1, unlike other formats.
         if self.level < level::L10_1 {
             s.support1 &= !SHADER_GATHER;
         }
@@ -1167,6 +1183,16 @@ impl<B: Backend> Device<B> {
         {
             return Err(Error::InvalidArg(
                 "a multisampled texture is 2D, of one level and default usage",
+            ));
+        }
+        // Multisampled depth is read from 10_1.
+        let read_depth = bind::DEPTH_STENCIL | bind::SHADER_RESOURCE;
+        if d.sample_count > 1
+            && self.level < level::L10_1
+            && d.bind_flags & read_depth == read_depth
+        {
+            return Err(Error::InvalidArg(
+                "a multisampled depth texture read by shaders below 10_1",
             ));
         }
         // The back ends' multisampled textures are one layer; holding an array as a texture per

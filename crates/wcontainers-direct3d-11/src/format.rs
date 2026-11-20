@@ -376,6 +376,19 @@ pub fn depth_only(dxgi: u32) -> bool {
     )
 }
 
+/// Whether `dxgi` is a view format reading one aspect of a depth-stencil texture
+/// (`R32_FLOAT_X8X24_TYPELESS`, `X32_TYPELESS_G8X24_UINT`, `R24_UNORM_X8_TYPELESS`,
+/// `X24_TYPELESS_G8_UINT`).
+pub fn depth_aspect_view(dxgi: u32) -> bool {
+    matches!(
+        dxgi,
+        dxgi::R32_FLOAT_X8X24_TYPELESS
+            | dxgi::X32_TYPELESS_G8X24_UINT
+            | dxgi::R24_UNORM_X8_TYPELESS
+            | dxgi::X24_TYPELESS_G8_UINT
+    )
+}
+
 /// The interface format a DXGI format is stored as, for the typed formats this front serves.
 pub fn texture_format(dxgi: u32) -> Option<Format> {
     use Format::*;
