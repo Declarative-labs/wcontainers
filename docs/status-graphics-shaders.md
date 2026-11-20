@@ -22,7 +22,7 @@ arrays of typed buffers on the DXIL route (`ResourceArray` there; see "Run 55");
 Direct3D 12 front's three asks: the pixel program of a pipeline without a pixel shader for its
 variant (`builtin::pixel_program_for_variant`), depth clamped through the geometry stage's
 pass-through, and textures read in their view's component kind (texture-load lines 235 to 267;
-see "Run 56").
+see "Run 56"); run 57 the NIR track's entry point, `wcontainers_shaders::rewrite` (see "Run 57").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -2293,6 +2293,46 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 57 (the NIR track's request of 2026-11-19: a public entry point for 15.4's rewrites):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the other branches
+  had nothing new.
+- New: `wcontainers_shaders::rewrite(module, reflection, &variant, &route_key) -> Result<Converted,
+  ConvertError>` (src/lib.rs, src/common.rs) and `cache::rewritten_key` (public, with
+  `cache::KEY_BYTES`). It takes a program another route brought into the common form (one entry
+  point named `ENTRY_POINT`, bound by 6.4's rule, its reflection) and makes, in order: arrays of
+  textures, storage textures and samplers split into a binding per element (element k at the
+  array's binding plus k, the slots its reflected `count` names; the sampled pairs recomputed
+  from the split program); gathers whose offset is not a constant moved to a coordinate shifted by
+  the offset in texels of level 0, with no offset (2D textures; others refused `DynamicOffset`);
+  storage textures whose slot `storage_formats` or `texels_through_buffer` names given that format
+  or route (the DXIL route's `images::finish`; a storage texture not named keeps the module's
+  format, so the NIR route refuses a formatless one whose slot the key does not name); then every
+  rewrite of `variant::apply`, the strides, validation. The module carries
+  `rewritten_key(route_key, variant)` (the route's own key, this crate's `CONVERTER_VERSION`, the
+  variant). Refusals by name: an array of anything else (`ResourceArray`), an array without a
+  length (`UnboundedResourceArray`), a sample whose texture and sampler are picked at indices not
+  known to be one value (`ResourceArrayPair`, new), a run-time pick passed to a function.
+- The split is now one (`dxil::arrays::split_with`): the DXIL route numbers elements by its
+  resource list as before; it takes sampler picks too (a sample picking texture and sampler at one
+  index is one switch pairing element k with element k; a sampler picked alone switches the
+  sampler). The DXIL route still refuses arrays of samplers (its closure), unchanged.
+- The gather offset's six bits are one constant (`common::GATHER_OFFSET_BITS`) for the DXBC route
+  and this one (one baseline line fewer); the carried naga's reader keeps its own literal (third
+  party, in the baseline).
+- Tests (`tests/rewrite.rs`, any machine, 7): arrays of textures and samplers split with the
+  bindings and pairs expected, the two-index sample and a buffer array refused by name, a gather at
+  a run-time offset leaving no offset, storage textures given the named format and keeping their
+  own otherwise, the key's parts, and a variant rewrite (`min_lod_clamped`) adding the helper
+  block. Each result validates and its WGSL reads back. Not yet drawn: no test runs the rewritten
+  programs on a GPU against the native feature (binding arrays on wgpu's Vulkan path, a constant
+  gather offset); the NIR track's corpus against llvmpipe is the other check (its G8).
+- Results (rented x86 machine, load 12 to 55 on 192 processors while these ran): clippy with
+  warnings denied clean; the whole suite with every corpus
+  (`cargo test --no-fail-fast -p wcontainers-shaders -- --include-ignored --skip mutated`, 234 s):
+  every binary passes but `runner_shaders_give_their_recorded_verdicts`, which fails only on A1's
+  `hlsl+distance-4-ps.dxil` as before; no verdict changed. Literal check (desktop, check2.txt):
+  passes; this crate's baseline lines (src, build.rs, tests, examples) 589, from 590.
+
 Run 56 (the gap list in the fronts' order: the Direct3D 12 front's three asks):
 - Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the other branches
   had nothing new.
@@ -2852,20 +2892,26 @@ Next (in order). The gap list (top of this file) in the order the fronts need it
 Since run 56 the Direct3D 12 front's three asks are built (its texture-load lines, the pixel
 program for a variant alone, depth clamped behind a geometry stage); since run 55 its srv-buffers,
 tgsm, uav-rwbuffer, wave-ops-float and unbounded-array-5.1 (shader model 6.0) runner files should
-pass the converter after a merge. Left first, in order: the NIR track's public entry point for
-the DXIL route's module rewrites (below, "For the NIR track"); arrays of constant and structured
+pass the converter after a merge. Since run 57 the NIR track's entry point is there (below). Left
+first, in order: a drawn test of `rewrite` on the RTX 3080 (its split arrays against wgpu's
+native binding arrays on the Vulkan path, its moved gathers against constant offsets, seeded);
+arrays of constant and structured
 buffers on the DXIL route (each element its own buffer, the reader's one buffer split); the
 Direct3D 11 front's aliased lines into multisampled targets (a stage helper route drawing each
 line as the whole pixels the diamond rule picks, and the interface's word for it); DXIL
 geometry and hull shaders (A6: the Direct3D 12 front's raster, geometry, streamout and
 tessellation scenes fail on them); then items 2 and 4 below.
 
-For the NIR track (its request of 2026-11-19): G8 takes 15.4's rewrites (formatless storage,
-gathers with offsets at run time, arrays of textures, samplers and combined image samplers indexed
-at run time) from this crate; they exist today only inside the DXIL route (`dxil/images.rs`,
-`dxil/arrays.rs`), run on the module naga's SPIR-V reader makes. Not provided yet: it comes next,
-in its own commits, as a public function taking that naga module, its reflection's bindings and
-the variant key, named here when it lands.
+For the NIR track (its request of 2026-11-19), provided in run 57: `wcontainers_shaders::rewrite`
+(what is new for the owner; contract under "Run 57"). Route B calls it on its module and
+reflection with the program's variant key and its own content key, in place of a copy of
+`variant::apply`. What route B does on its side: keep binding arrays as naga's `BindingArray`
+indexed by `Access` (the texture's and sampler's index as one expression, or the same operations
+on it, or the sample is refused `ResourceArrayPair`); write a gather's run-time offset as the
+`ImageSample`'s `offset` (the IR wants a constant; `rewrite` takes it out); declare a storage
+image without a format with any format of its texel's kind and name its slot in
+`storage_formats`, refusing it where the key has none; `textureGatherOffsets` is NIR's own
+lowering (`nir_lower_tex`'s `lower_tg4_offsets`) into four gathers before the route.
 0. Done in run 50: indexed strips through the stage helper (the Direct3D 11 front's
    `StageIndexedStrip`) and triangle strips with adjacency (A7). Done in run 49: `GeometryStreams` (several streams of points). The primitive's number behind a
    geometry shader is not waited on now: the Direct3D 11 front draws the rig's geometry scene's
@@ -3108,6 +3154,12 @@ The older list, kept for its detail:
   back end's writing; multisampled reads are absent there.
 
 ## Asked of other tracks
+
+- The NIR track (run 57): the 15.4 rewrites are public as `wcontainers_shaders::rewrite` (under
+  "Next", "For the NIR track"); merge this branch and call it on route B's module in place of a
+  copy of `variant::apply`, then put Godot's RenderingDevice programs with arrays of textures (21)
+  and formatless storage (2) through it against llvmpipe. Report any refusal it gives a program
+  the route should take.
 
 - The Direct3D 12 track (run 56): (1) a pipeline without a pixel shader whose variant needs one
   (`DEPTH_CLAMP`, `CLIP_DISTANCE` where the back end lacks them) takes
