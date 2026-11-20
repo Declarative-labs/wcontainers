@@ -97,11 +97,17 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   the loader) that finds no room below it. The request is refused before it has any effect; the
   hook fires with the bytes asked for, and only when it returns does the thread get its result,
   out of memory (ENOMEM; `brk` returns the old break), counted (`process outgrew the ceiling`)
-  and warned. The ceiling is given at start (`Start::ceiling`, at most the address space's end);
-  with none below the end it never fires.
+  and warned. The ceiling is given at start (`Start::ceiling`, at most the address space's end,
+  any size); with none below the end it never fires. An `execve` checks the whole new program
+  (its segments, its interpreter and the vDSO, where the loader will put them) against the ceiling
+  before the old program goes, so a program that does not fit fails the call with ENOMEM and the
+  old one carries on. The container's first program is the one exception to the hook: its process
+  is announced only once its program is loaded, so a first program that does not fit is counted
+  and warned, and the start fails with ENOMEM (`Kernel::start_failure`) with no hook.
 - The container's address width stays the executor's address space: a fixed request above the
   width fails as before (`address above the address space`). Until low-first placement lands, the
-  stack's top and the mmap base are put at the ceiling, so that what is placed stays below it.
+  stack's top is put at the ceiling and the mmap base below it by Linux's gap (`mmap_base`: 128
+  MiB, at most five sixths of the top), so that what is placed stays below the ceiling.
 - `on_watched_memory_accessing`: a thread, or the kernel for it, is about to access a page the
   embedder watches (below), as `kind` (an instruction fetch is `Execute`). If the watch is gone
   when the hook returns the access goes on; otherwise the thread waits until the process's
@@ -132,13 +138,19 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   `Break(response)` answers the call without running it; the thread sees the response.
 - `intercept_system_call_response` is asked when a call the kernel ran answers, before the thread
   sees it; the thread sees what it returns. A call that waits answers once, when it finishes; a
-  call that never returns (`exit`, `exit_group`, a successful `execve` on the old program) does not
-  answer, and one that restarts from its instruction is asked again as a new call. The answer is
-  given as it reaches the thread's signal handling, internal restart codes (`ERESTARTSYS`) included,
-  as at Linux's syscall-exit stop.
+  call that never returns (`exit`, `exit_group`) does not answer, and one that restarts from its
+  instruction is asked again as a new call. A call that replaces its thread's registers answers
+  with the new x0, and what the embedder returns goes into x0, as at Linux's syscall-exit stop: a
+  successful `execve` answers 0 in the new program, after `on_program_starting`, to the thread
+  that carries the process's number by then; `rt_sigreturn` answers the x0 it put back. The answer
+  is given as it reaches the thread's signal handling, internal restart codes (`ERESTARTSYS`)
+  included, as at Linux's syscall-exit stop.
 - With neither implemented, each call costs two calls of empty provided methods through the
-  trait object; with the range every copy notes for `on_memory_written_by_kernel`, measured about
-  0.5 % user CPU on the memory test binary (docs/status-streams.md, "Measurements").
+  trait object, and every copy into program memory notes its range for
+  `on_memory_written_by_kernel`, announced through an empty provided method. Measured on the memory
+  test binary: no difference beyond noise (the seventh check's six alternating rounds, docs/status-streams.md,
+  "Measurements"). A kernel generic over `System` would remove these calls at compile time;
+  the kernel takes `&dyn System` today.
 
 ### The kernel's guarantees
 
@@ -146,7 +158,8 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   the hook can do on it conflicts with what the kernel is doing.
 - Hooks never nest. A hook is handed only a `Process`, which holds no way back to the embedder, so
   nothing done through it can announce another hook; the test host checks this by running every
-  operation of the handle inside every hook.
+  operation of the handle inside every hook, and reports a hook called while another runs rather
+  than waiting on its own lock.
 - The kernel touches a program's memory before a system call has any effect, so a watch fires while
   the call can still be repeated (see "Watches and system calls").
 - A hook is synchronous; an embedder that works asynchronously returns and finishes later through
@@ -348,9 +361,17 @@ pub enum Unsupported {
   of `Kernel` taking the `SuspendedProcess` and an `ExecutionConfig`. The process's records are the
   kernel's `Process` and `Thread` entries and its `AddressMap` (watches included); its memory is the
   executor's `MemoryId`.
-- Which processes share memory, and shared pages marked watched when one of them leaves (ruled
-  late on 2026-11-18): leaving is `suspend`, so it comes with it. The report will be a
-  `ProcessInfo` accessor read from the `AddressMap`s' shared mappings (`Mapping::shared` and the
-  file node they map); the marking will set `WatchesFor::All` on those pages in every process still
-  sharing them, from `suspend`.
+- Which processes share memory (ruled on the evening of 2026-11-19, replacing the pairwise report
+  and `memory_sharers()`): two hooks on `System`, `on_shared_memory_mapping` and
+  `on_shared_memory_unmapped(process, source: MemoryObject, offset, range)`, with
+  `MemoryObject::{File { device: DeviceId, inode: InodeNumber }, SystemVSegment(SystemVSegmentId),
+  Anonymous(AnonymousMemoryId)}` and the four branded ids in the kernel's interface. They will fire
+  per process where the `AddressMap` gains or loses a shared mapping (`Mapping::shared` and the
+  node it maps): mmap, shmat, the maps a fork's child inherits, and munmap, exit and exec. The
+  `WorkloadPlacement` ruling of the same evening also needs a getter for a process's memory id on
+  `Process` (the executor's `MemoryId`, which holds across vfork and exec). Shared pages marked
+  watched when one sharer leaves come with `suspend`: the marking will set `WatchesFor::All` on
+  those pages in every process still sharing them.
+- `type ProcessState` (ruled; to wait for the reviewable-rust layout), signals as an input
+  (`on_signal_delivering`, `Process::send_signal`, ruled at 17:10 on 2026-11-19).
 - `set_thread_ordering`, the inspection hooks and `StopReason`: not ruled or not asked for yet.

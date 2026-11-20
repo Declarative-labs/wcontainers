@@ -11,15 +11,17 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   fifth, sixth, seventh and eighth runs (sections below); its sixth check's five findings and the
   owner's rulings of the afternoon of 2026-11-19 (verb-first names, `free_task_id` with no default,
   `on_memory_written_by_kernel`, the system call proxy, `WatchesFor` and `AccessKind`) settled in
-  the ninth run (see "S2 sixth check findings").
-- What comes next: S2's seventh independent check. Not built and left open on purpose: export of
+  the ninth run (see "S2 sixth check findings"); its seventh check's findings settled in the
+  tenth run (see "S2 seventh check findings").
+- What comes next: S2's eighth independent check. Not built and left open on purpose: export of
   a process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
-  docs/embedder-interface.md), the report of which processes share memory and the watch put on
-  shared pages when one leaves (it comes with `suspend`), `set_thread_ordering`, the inspection
-  hooks, `StopReason`; ends made by connect, accept, export or import; `/dev/console` under `-t`.
-  Ruled on 2026-11-19 but not part of S2: `type ProcessState` (to wait for the reviewable-rust
-  layout, as ruled), signals as an input (`on_signal_delivering`, `Process::send_signal`, ruled at
-  17:10, after the check's list).
+  docs/embedder-interface.md), the watch put on shared pages when one sharer leaves (it comes with
+  `suspend`), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made by connect,
+  accept, export or import; `/dev/console` under `-t`. Ruled on 2026-11-19 but not part of S2 (in
+  the document's "Not built"): `type ProcessState` (to wait for the reviewable-rust layout, as
+  ruled), signals as an input (`on_signal_delivering`, `Process::send_signal`), the shared-memory
+  hooks `on_shared_memory_mapping` and `on_shared_memory_unmapped` with `MemoryObject` and its
+  branded ids, and a getter for a process's memory id (for `WorkloadPlacement`).
 
 ## How to run
 
@@ -375,6 +377,49 @@ Found on the way, fixed:
   announce exactly the store's address, beside the next page, which must announce nothing.
 - [minor] `semctl` GETALL through the copy check: as documented; nothing to settle.
 
+## S2 seventh check findings, settled in the tenth run
+
+- [blocking] An answer of `allocate_task_id` outside 1 to `pid_max` panicked (the refusal went
+  through `Counters::refuse`, which only takes reasons of `NOT_BUILT`). Now counted (`task id out
+  of range`) and the fork fails with EAGAIN. Test `a_task_id_out_of_range_fails_the_fork_with_eagain`
+  (answers 0, then `u32::MAX`, at the shell's fork: `sh: can't fork: Resource temporarily
+  unavailable`, counted once).
+- [blocking] A ceiling below 128 MiB underflowed the mmap base. The gap below the stack's top is
+  now Linux's own (`mmap_base`: 128 MiB, at most five sixths of the top; memory.rs `mmap_gap`,
+  with a unit test). Test `a_small_ceiling_is_kept_and_a_first_program_past_it_is_refused`: under
+  a 100 MiB ceiling the program runs and maps 4 MiB pieces until the hook fires and mmap fails with
+  ENOMEM; under a 16-page ceiling the start fails with ENOMEM.
+- [minor] A first program that does not fit was neither announced nor counted (the container just
+  died of SIGSEGV). The loader now checks the whole new program (segments, interpreter, vDSO,
+  where it will put them; loader.rs `fits_below_ceiling`) before its point of no return: an
+  `execve` that does not fit fails with ENOMEM and the old program carries on (announced,
+  counted; test `a_new_program_past_the_ceiling_is_refused_before_the_old_one_goes`, guest
+  bigdata.c with 128 MiB of zeroed data under the 100 MiB ceiling, and it runs with none), and the
+  container's first program is counted and warned and fails the start with ENOMEM, with no hook,
+  since its process is announced only once its program is loaded (stated in the document).
+- [minor] The cost with no hook implemented (two dynamic calls a system call, a noted range a
+  copy): not changed. The owner accepted the kernel-write hook as the zero-cost choice; making
+  the kernel generic over `System` is his decision (listed for him). The check measured no
+  difference from before S2; the document now says so.
+- [minor] The nesting check could hang rather than fail: the test host now takes the test's hooks
+  with `try_lock` and panics "a hook nested in another"
+  (`a_hook_called_while_one_runs_is_reported_as_nested`, a should-panic test that calls a hook
+  while holding them).
+- [minor] The plan for shared memory was out of date: the document's "Not built" now names the
+  evening ruling's two hooks, `MemoryObject` and the branded ids, the getter for a process's memory
+  id that `WorkloadPlacement` needs, `ProcessState` and signals as an input.
+- [minor] A successful `execve` had no response: now built rather than listed. A call that
+  replaces its thread's registers answers with the new x0, and the embedder's answer goes into
+  x0: `execve` answers 0 in the new program after `on_program_starting`, to the thread carrying
+  the process's number (a threaded exec included); `rt_sigreturn` answers the x0 it restored
+  (task.rs `answer_in_registers`). A call run again after a watch is met is asked again as a new
+  call, as before. Test `a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop`
+  (embedder.c `paths` and `kernelwrites`).
+- [minor] A thread waiting on a watch the embedder never resolves cannot be killed: kept, and
+  its consequence stated under "Departures" and for the owner.
+- [minor] The ninth run's "tree before S2 measured 4 % slower" did not reproduce: the check
+  measured the two trees alike (see "Measurements").
+
 ## Measurements
 
 - Third run's fixes, stream tests (20 tests, seeds 1 to 3): passed, 27.2 s, load 73 to 82 (21:15).
@@ -542,7 +587,15 @@ Found on the way, fixed:
   hook implemented every system call now makes two calls of empty provided methods through the
   trait object (the proxy) and every copy into program memory notes its range. Not measured which
   of the two it is. The tree before S2 measured 4 % slower than both here, unlike the eighth
-  run's comparison (+0.3 %); not explained (that tree also differs in code merged since).
+  run's comparison (+0.3 %); not explained (that tree also differs in code merged since). The
+  seventh check did not reproduce it (below): read the 4 % as a measurement artifact.
+- Seventh check, speed with no hook implemented, ARM machine (its scratch s2check7/head/speed7.sh,
+  speed7.log; load 56 falling to 22): memory and processes binaries in fresh build directories
+  from 59056384 (before S2) and f7d06fc2, run alternately, rounds 1 to 6. Memory user CPU, before:
+  11.897 11.925 11.895 11.914 11.897 11.859 (median 11.897 s); f7d06fc2: 11.865 11.909 11.883
+  11.864 11.878 11.873 (median 11.876 s). Processes medians 0.309 and 0.306 s. No difference.
+  Not measured by this track; the tenth run's changes add one hook call to `execve` and
+  `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
 - Ninth run, tests: the embedder tests (20, seeds 1 to 3) on the ARM machine (scratch
   streams/s2g/embedder-2.log, affected-1.log; the nesting checks added to the new hooks last,
@@ -580,6 +633,9 @@ Found on the way, fixed:
   its key.
 - After the ninth run: 7579 lines (the call number register and the argument count now named in
   the abi; the stand-in, `deliver` and `settle` use them); the check passes (exit 0).
+- After the tenth run: 7577 lines (the mmap gap's `128 << 20` now `MMAP_GAP_MIN` with Linux's
+  `MAX_GAP` beside it); the check passes on this Mac (exit 0, scratch streams/s2j/literals-2.log;
+  it needs the git history, which the rented machines' copies lack).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -651,7 +707,11 @@ anything shipped.
   syscall-entry stop), so a waiting call runs the changed one again and the program sees x1 to x5
   changed after the call. A `Break` answer is not given to `intercept_system_call_response`.
 - `watch_thread_memory` is my verb-first form of `memory_watch_thread`; for the owner.
-- Watch waits are not ended by signals, as backend waits are not.
+- Watch waits are not ended by signals, as backend waits are not. Consequence: a thread
+  waiting on a watch the embedder never resolves cannot be killed, SIGKILL included (it acts once
+  the watches change); Linux's nearest wait, a userfaultfd fault, can be killed, and a kernel
+  store into such a page is then skipped. An embedder that loses a page leaves an unkillable
+  process. Listed for the owner.
 - From S1, still standing: `a_terminal_closed_before_the_start_finished` does not guard the
   release it was written for (devpts lookup goes by the master's count; no observation found that
   does); `/dev/console` absent under `-t`; a terminal's space toward the slave is
