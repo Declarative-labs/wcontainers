@@ -1051,6 +1051,19 @@ Found on the way, fixed:
   layout meets a cache conflict under some placements); 0 of 10 alone is weak (it would happen
   16 % of the time if the slow rate stayed 1 in 6). Expected, not measured: a layout change in
   any later commit can move this mode onto either binary.
+- S3 run 11, tests. The new tests on the ARM machine at 8 seeds, each failing without its change
+  (s3run11/taken.log, fatal.log, copyend.log); edges (7) and taskend (7) pass at 8 seeds
+  (edges-taskend.log). Whole suite of 84cc7716 from a clean build directory on the ARM machine
+  in four pieces (s3run11/suite.sh, suite-1..4.log, 21:54 to 22:34 UTC, load 14 to 44): fmt,
+  clippy with warnings denied over the three crates and the literal check pass; 646 tests: 612
+  passed, 27 failed, 7 ignored (failed.txt). The 27 are the fifth check's list less
+  `file_mappings_match_reference` (passed here) and with `fdinfo_matches_reference` (its program
+  does not build on that machine's zig, as its manual says), `splice_holds_the_pipe` among them
+  (see "Departures"). Every one passed on this Mac in the 20 Mac-only binaries (s3run11/
+  mac-only.log, ending 13:56 Pacific, load about 5): 93 passed, 1 failed,
+  `priority_inheriting_futexes_match_reference` (two of the reference's lines in the other order;
+  it passed on the ARM machine and three times again here by 14:01, pi-again.log). So no test fails by
+  our side.
 - S3 run 10, tests. ARM machine (scratch streams/run10): fmt and clippy with warnings denied over
   the three crates passed; the six new tests pass at 3 seeds and all six fail with the kernel
   changes stashed (negative.log); away (12, the known failure ignored), edges (4), embedder (35),
