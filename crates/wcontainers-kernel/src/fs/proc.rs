@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-use wcontainers_abi::Permissions;
+use wcontainers_abi::{PAGE_SIZE, Permissions};
 
 use super::{Content, FileSystem, New, Node, Time, Walk, new_inode};
 use crate::Errno;
@@ -1883,7 +1883,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 "sys/user/max_fanotify_groups" => out.push_str("128\n"),
                 "sys/user/max_fanotify_marks" => {
-                    let pages = machine.memory_bytes / 4096;
+                    let pages = machine.memory_bytes / PAGE_SIZE;
                     let marks = ((pages / 100) << 12) / 1216;
                     let _ = writeln!(out, "{}", marks.clamp(8192, 1_048_576));
                 }
@@ -2085,7 +2085,7 @@ fn process_file(
             let points = if adj == i64::from(crate::linux_extra::OOM_SCORE_ADJ_MIN) {
                 0
             } else {
-                let pages = (source.machine.memory_bytes / 4096) as i64;
+                let pages = (source.machine.memory_bytes / PAGE_SIZE) as i64;
                 let badness = adj * (pages / 1000);
                 (1000 + badness * 1000 / pages) * 2 / 3
             };
@@ -2204,7 +2204,7 @@ fn process_file(
         }
         ProcessFile::Statm => {
             let (vsize, _) = sizes(process);
-            let _ = writeln!(out, "{} 0 0 0 0 0 0", vsize / 4096);
+            let _ = writeln!(out, "{} 0 0 0 0 0 0", vsize / PAGE_SIZE);
         }
         ProcessFile::Status => {
             let credentials = task_credentials(source.view.processes, source.view.threads, tid);
@@ -2254,7 +2254,7 @@ fn process_file(
                 let (data, stack) = data_and_stack(process);
                 for (name, bytes) in [
                     (VM_SIZE, vsize),
-                    (VM_LOCKED, locked * wcontainers_abi::PAGE_SIZE),
+                    (VM_LOCKED, locked * PAGE_SIZE),
                     (VM_PINNED, u64::MIN),
                     (VM_DATA, data),
                     (VM_STACK, stack),

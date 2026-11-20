@@ -1633,7 +1633,6 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	12
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	3
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4096
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	6
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	8
 code	crates/wcontainers-kernel-test/src/driver.rs	str	back_end	"translations"
@@ -1941,12 +1940,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	40
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	40
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	40
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	40
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	4097
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	41
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	41
@@ -2700,42 +2693,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	40
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	40
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4094
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4095
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	4097
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	41
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	41
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	42
@@ -2999,7 +2956,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8191
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8192
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8192
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	8192
@@ -3058,7 +3014,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	99999
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	99999
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	99999
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	decode	99999i64
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	difference	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	difference	4097
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	difference	4097
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	filter_program	0x8000_0000
@@ -3134,12 +3089,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	32
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	40
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	7
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	8
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	ioctl_arguments	8192
@@ -3215,7 +3164,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	4
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	4
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	4
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	40
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	48
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	48
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	machine_bytes	48
@@ -3323,12 +3271,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	4
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	4096
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	6
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	6
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	6
@@ -3367,7 +3309,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	sched_attrs	6
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	sched_attrs	7
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	sched_attrs	8
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	sched_attrs	80
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	seen	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	seen	4097
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	terminal_settings	0o10037777777
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	terminal_settings	0o37777
@@ -3401,7 +3342,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	value_is_volatile	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	value_is_volatile	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	value_is_volatile	3
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	value_is_volatile	3
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	value_is_volatile	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	0x4000
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	1024
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	11
@@ -3482,7 +3422,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	4
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	40
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	40
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	40
-code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	4096
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	48
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	48
 code	crates/wcontainers-kernel-test/src/layer1.rs	int	volatile	48
@@ -3916,9 +3855,6 @@ code	crates/wcontainers-kernel/src/fs/backend.rs	bytestr	counted_entries	b"."
 code	crates/wcontainers-kernel/src/fs/backend.rs	bytestr	counted_entries	b".."
 code	crates/wcontainers-kernel/src/fs/backend.rs	bytestr	tmpfile	b"/"
 code	crates/wcontainers-kernel/src/fs/backend.rs	bytestr	tmpfile	b"/"
-code	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::answered	4096
-code	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::answered	4096
-code	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::answered	4096
 code	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::new	11
 code	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::root	0o755
 code	crates/wcontainers-kernel/src/fs/backend.rs	int	counted_entries	8
@@ -3960,14 +3896,6 @@ code	crates/wcontainers-kernel/src/fs/mod.rs	int	Inode::permits	7
 code	crates/wcontainers-kernel/src/fs/mod.rs	int	Inode::permits	7
 code	crates/wcontainers-kernel/src/fs/mod.rs	int	Inode::permits	7
 code	crates/wcontainers-kernel/src/fs/mod.rs	int	Kind::block_size	1024
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Kind::block_size	4096
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Regular::mark_written	4096
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Regular::mark_written	4096
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Regular::punch	4096
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Regular::punch	4096
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Regular::truncate	4096
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Regular::writable	4096
-code	crates/wcontainers-kernel/src/fs/mod.rs	int	Regular::writable	4096
 code	crates/wcontainers-kernel/src/fs/mod.rs	int	Time::from_nanoseconds	1_000_000_000
 code	crates/wcontainers-kernel/src/fs/mod.rs	int	Time::from_nanoseconds	1_000_000_000
 code	crates/wcontainers-kernel/src/fs/mod.rs	int	decode_device	0xff
@@ -4111,7 +4039,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1216
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1_000_000_000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1_000_000_000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	1_048_576
-code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	4096
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	contents	8192
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	dump_owner	0o555
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	namespace_node	0o444
@@ -4139,8 +4066,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	10_000_000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	12
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	20
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	3
-code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	4096
-code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	4096
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	8
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_position	256
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	uuid	0x0f
@@ -4663,8 +4588,6 @@ code	crates/wcontainers-kernel/src/syscall/files.rs	bytestr	unlinkat	b"."
 code	crates/wcontainers-kernel/src/syscall/files.rs	bytestr	unlinkat	b".."
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	change_mode_unwatched	0o111
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	change_mode_unwatched	0o7777
-code	crates/wcontainers-kernel/src/syscall/files.rs	int	fallocate_unwatched	4096
-code	crates/wcontainers-kernel/src/syscall/files.rs	int	fallocate_unwatched	4096
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	mkdirat	0o1777
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	mknodat	0o7777
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	mknodat	0xff
@@ -5541,10 +5464,7 @@ code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	12
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	4
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	4
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	48
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	17
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	32
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	4096
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	4096
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	setsockopt	1000
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	setsockopt	136
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	setsockopt	15
@@ -5574,9 +5494,7 @@ code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	setsockopt	8
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	setsockopt	8
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	setsockopt	8
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	socketpair	4
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	stream_piece	4096
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	stream_piece	64
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize	4096
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize	64
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	str	bound_device	"4 bytes"
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	str	buffer_locks	"4 bytes"
@@ -7945,12 +7863,6 @@ redefinition	crates/wcontainers-kernel/src/linux_extra.rs	int	SIGNALS	SIGNALS = 
 redefinition	crates/wcontainers-kernel/src/process.rs	int	SIGNALS	SIGNALS = 64
 redefinition	crates/wcontainers-kernel/src/syscall/futex.rs	int	ROBUST_LIST_LIMIT	ROBUST_LIST_LIMIT = 2048
 redefinition	crates/wcontainers-kernel/src/syscall/signals.rs	int	SIGNALS	SIGNALS = 64
-redefinition	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	datagram_truesize::MAX_ALLOC	MAX_ALLOC = 16064
-redefinition	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	datagram_truesize::SHARED_INFO	SHARED_INFO = 320
-redefinition	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	datagram_truesize::SK_BUFF	SK_BUFF = 256
-redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet::MAX_ALLOC	MAX_ALLOC = 16064
-redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize::SHARED_INFO	SHARED_INFO = 320
-redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize::SK_BUFF	SK_BUFF = 256
 redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	ALIGN	ALIGN = 4
 redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	MAX_LINKS	MAX_LINKS = 32
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_CONNECTED	SS_CONNECTED = 3
@@ -8020,19 +7932,8 @@ restated	crates/wcontainers-kernel-test/tests/python.rs	int	system_program_match
 restated	crates/wcontainers-kernel-test/tests/splice.rs	str	splicing_matches_reference	"vmsplice pages copied"
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	CODE	0x10000
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	1_000_000
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	4096
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	0x10000
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	4096
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	unaligned_exclusive_is_reported_as_unsupported	0x20000
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	unaligned_exclusive_is_reported_as_unsupported	4096
-restated	crates/wcontainers-kernel-test/tests/standin.rs	int	unaligned_exclusive_is_reported_as_unsupported	4096
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	clone_sharing_matches_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	priority_inheriting_futexes_match_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	proc_task_matches_reference	"proc fields not tracked"

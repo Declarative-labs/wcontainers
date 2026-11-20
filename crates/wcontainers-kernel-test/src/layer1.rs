@@ -12,7 +12,7 @@ use linux_raw_sys::general as linux;
 use linux_raw_sys::ioctl;
 use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
-use wcontainers_abi::{Event, Exit, Next, SystemCallRequest};
+use wcontainers_abi::{Event, Exit, Next, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::{Kernel, Start};
 
 /// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
@@ -34,7 +34,7 @@ use crate::{guest, reference};
 
 /// Where each sequence's memory is, in both runners.
 pub const ARENA: u64 = 0x7000_0000;
-pub const ARENA_SIZE: u64 = 16 * 4096;
+pub const ARENA_SIZE: u64 = 16 * PAGE_SIZE;
 /// Where the memory calls play: mapped, unmapped and protected by the sequence itself.
 pub const PLAY: u64 = 0x7100_0000;
 pub const PLAY_PAGES: u64 = 16;
@@ -636,13 +636,13 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
         let word = values.get(index as usize).copied().unwrap_or(0);
         let base = match word % 5 {
             0 => 0,
-            1 => PLAY + (word >> 8) % (PLAY_PAGES * 4096),
+            1 => PLAY + (word >> 8) % (PLAY_PAGES * PAGE_SIZE),
             _ => ARENA + OUTPUT + (word >> 8) % 0x8000,
         };
         let length = match (word >> 40) % 4 {
             0 => 0,
             1 => (word >> 44) % 16,
-            2 => (word >> 44) % 4096,
+            2 => (word >> 44) % PAGE_SIZE,
             _ => (word >> 44) % 0x3000,
         };
         let at = (IOVECS + index * 16) as usize;
@@ -762,8 +762,10 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
             .rotate_left(29);
         let kind: i16 = [0, 1, 2, 0, 1, 7][(word % 6) as usize];
         let whence: i16 = [0, 0, 0, 1, 2, 3][((word >> 4) % 6) as usize];
-        let start: i64 = [0, 0, 1, 5, 100, -1, i64::MAX, 4096][((word >> 8) % 8) as usize];
-        let length: i64 = [0, 1, 1, 10, -3, 4096, i64::MAX, -1][((word >> 12) % 8) as usize];
+        let start: i64 =
+            [0, 0, 1, 5, 100, -1, i64::MAX, PAGE_SIZE as i64][((word >> 8) % 8) as usize];
+        let length: i64 =
+            [0, 1, 1, 10, -3, PAGE_SIZE as i64, i64::MAX, -1][((word >> 12) % 8) as usize];
         let pid: i32 = if (word >> 16) % 8 == 0 { 5 } else { 0 };
         let at = (FLOCKS + index * 32) as usize;
         arena[at..at + 2].copy_from_slice(&kind.to_le_bytes());
@@ -890,7 +892,7 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
         (PLAY, 0, 1024),
         (0, linux::SS_DISABLE as i32, 0),
         (PLAY, linux::SS_AUTODISARM as i32, 65536),
-        (PLAY + 4096, linux::SS_ONSTACK as i32, 1 << 20),
+        (PLAY + PAGE_SIZE, linux::SS_ONSTACK as i32, 1 << 20),
         (PLAY, 3, 8192),
     ];
     for (index, (base, flags, size)) in stacks.iter().enumerate() {
@@ -1168,7 +1170,7 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
         (0, ARENA + FILTERS),
         (4097, ARENA + FILTERS),
         (1, 0),
-        (2, u64::MAX - 4095),
+        (2, u64::MAX - (PAGE_SIZE - 1)),
     ];
     for (index, (length, address)) in odd.iter().enumerate() {
         let fprog = (FPROGS + (FILTER_COUNT + index as u64) * 16) as usize;
@@ -1992,8 +1994,8 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
     };
     let buffer = |word: u64| match word % 8 {
         0 => 0,
-        1 => PLAY + (word >> 8) % (PLAY_PAGES * 4096),
-        2 => u64::MAX - 4095,
+        1 => PLAY + (word >> 8) % (PLAY_PAGES * PAGE_SIZE),
+        2 => u64::MAX - (PAGE_SIZE - 1),
         _ => ARENA + OUTPUT + (word >> 8) % 0x8000,
     };
     // Mostly the generated filters, else the odd ones and bad addresses.
@@ -2007,7 +2009,18 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
     };
     let count = |word: u64| {
         pick(
-            &[0u64, 1, 7, 64, 300, 4096, 5000, 0x9000, u64::MAX, 1 << 40],
+            &[
+                0u64,
+                1,
+                7,
+                64,
+                300,
+                PAGE_SIZE,
+                5000,
+                0x9000,
+                u64::MAX,
+                1 << 40,
+            ],
             word,
         )
     };
@@ -2018,7 +2031,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                 1,
                 3,
                 100,
-                4096,
+                PAGE_SIZE,
                 5000,
                 1 << 20,
                 u64::MAX,
@@ -2076,7 +2089,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
     // Some carry a top byte tag, which arm64 Linux's memory calls strip and the others do not.
     let play = |word: u64| {
         let tag = pick(&[0u64, 0, 0, 0, 0, 0, 0x5a << 56, 0xff << 56], word >> 56);
-        (PLAY + ((word % (PLAY_PAGES + 2)) * 4096) + if word >> 60 == 0 { 1 } else { 0 }) | tag
+        (PLAY + ((word % (PLAY_PAGES + 2)) * PAGE_SIZE) + if word >> 60 == 0 { 1 } else { 0 }) | tag
     };
     // Lengths that reach memory stay below the program's own mappings, which lie higher here (in a
     // 4 GiB address space) than in the reference. The last three reach none: rounded up to a page
@@ -2086,14 +2099,14 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             &[
                 0u64,
                 1,
-                4096,
+                PAGE_SIZE,
                 8192,
-                3 * 4096,
-                PLAY_PAGES * 4096,
+                3 * PAGE_SIZE,
+                PLAY_PAGES * PAGE_SIZE,
                 1 << 28,
                 u64::MAX,
-                u64::MAX - 4094,
-                u64::MAX - 8191,
+                u64::MAX - (PAGE_SIZE - 2),
+                u64::MAX - (2 * PAGE_SIZE - 1),
             ],
             word,
         )
@@ -2137,7 +2150,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         };
         let address = match (word >> 4) % 16 {
             0 => 0,
-            1 => u64::MAX - 4095,
+            1 => u64::MAX - (PAGE_SIZE - 1),
             _ => ARENA + SEMBUFS + start * 6,
         };
         (address, count)
@@ -2183,7 +2196,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             // Segment lists the comparison can read: in the arena, or at a bad address.
             let vectors = |word: u64| match word % 8 {
                 0 => 0,
-                1 => u64::MAX - 4095,
+                1 => u64::MAX - (PAGE_SIZE - 1),
                 2 => ARENA + OUTPUT + (word >> 3) % 0x8000,
                 _ => ARENA + IOVECS + ((word >> 3) % 16) * 16,
             };
@@ -2250,12 +2263,12 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             path(b),
             match c % 8 {
                 0 => 0,
-                1 => u64::MAX - 4095,
+                1 => u64::MAX - (PAGE_SIZE - 1),
                 _ => ARENA + HANDLES + (c >> 3) % HANDLE_ROOMS.len() as u64 * 128,
             },
             match d % 8 {
                 0 => 0,
-                1 => u64::MAX - 4095,
+                1 => u64::MAX - (PAGE_SIZE - 1),
                 _ => ARENA + MOUNT_NUMBER,
             },
             pick(
@@ -2283,7 +2296,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         linux::__NR_getdents64 => [
             fd(a),
             buffer(b),
-            pick(&[0, 10, 24, 64, 4096, 0x8000], c),
+            pick(&[0, 10, 24, 64, PAGE_SIZE, 0x8000], c),
             0,
             0,
             0,
@@ -2373,7 +2386,10 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             } else if request == u64::from(ioctl::FICLONERANGE) {
                 // The range names its source descriptor, which must not be one of 0 to 2: the
                 // reference's runner reports through them.
-                pick(&[ARENA + IOCTL_ARGS + 6 * 64, 0, u64::MAX - 4095], c)
+                pick(
+                    &[ARENA + IOCTL_ARGS + 6 * 64, 0, u64::MAX - (PAGE_SIZE - 1)],
+                    c,
+                )
             } else if request == u64::from(ioctl::TIOCGPTPEER) {
                 // Never without O_NOCTTY (see `open_flag_bits`) and O_NONBLOCK (see `build`).
                 let flags = linux::O_NOCTTY | linux::O_NONBLOCK;
@@ -2391,7 +2407,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                 // Never memory other calls write, which could name any discipline.
                 match c % 8 {
                     0 => 0,
-                    1 => u64::MAX - 4095,
+                    1 => u64::MAX - (PAGE_SIZE - 1),
                     _ => ARENA + DISCIPLINES + (c >> 3) % DISCIPLINE_VALUES.len() as u64 * 4,
                 }
             } else if BY_VALUE_REQUESTS.contains(&request) {
@@ -2439,7 +2455,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             dirfd(a),
             path(b),
             buffer(c),
-            pick(&[0, 1, 5, 4096, u64::MAX], d),
+            pick(&[0, 1, 5, PAGE_SIZE, u64::MAX], d),
             0,
             0,
         ],
@@ -2502,11 +2518,18 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             fd(a),
             pick(&[0, 0, 1, 3], b),
             offset(c) % (1 << 20),
-            pick(&[0, 1, 4096, 10000], d),
+            pick(&[0, 1, PAGE_SIZE, 10000], d),
             0,
             0,
         ],
-        linux::__NR_getcwd => [buffer(a), pick(&[0, 1, 5, 11, 12, 4096], b), 0, 0, 0, 0],
+        linux::__NR_getcwd => [
+            buffer(a),
+            pick(&[0, 1, 5, 11, 12, PAGE_SIZE], b),
+            0,
+            0,
+            0,
+            0,
+        ],
         linux::__NR_chdir => [path(a), 0, 0, 0, 0, 0],
         linux::__NR_umask => [a % 0o1000, 0, 0, 0, 0, 0],
         linux::__NR_fstatfs => [fd(a), buffer(b), 0, 0, 0, 0],
@@ -2577,7 +2600,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                 prot(d),
                 flags,
                 fd(e),
-                pick(&[0, 4096, 1], f),
+                pick(&[0, PAGE_SIZE, 1], f),
             ]
         }
         linux::__NR_munmap => [play(a), play_length(b), 0, 0, 0, 0],
@@ -2586,7 +2609,17 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         linux::__NR_shmget => [
             pick(&[0u64, 0x1234, 0x1234, 0x5678, 0xffff_ffff], a),
             pick(
-                &[0u64, 1, 100, 4096, 5000, 0x9000, 1 << 20, u64::MAX, 1 << 63],
+                &[
+                    0u64,
+                    1,
+                    100,
+                    PAGE_SIZE,
+                    5000,
+                    0x9000,
+                    1 << 20,
+                    u64::MAX,
+                    1 << 63,
+                ],
                 b,
             ),
             pick(
@@ -2730,7 +2763,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                 | (b % 4)
                 | pick(&[0, 0o100, 0o100, 0o300, 0o40000, 0o1000, 1 << 25], b >> 2),
             c % 0o1000,
-            pick(&[0, 0, ARENA + MQ_ATTRS, u64::MAX - 4095], d)
+            pick(&[0, 0, ARENA + MQ_ATTRS, u64::MAX - (PAGE_SIZE - 1)], d)
                 + (d >> 3) % 4 * 64 * u64::from(d % 4 == 2),
             0,
             0,
@@ -2801,9 +2834,9 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             // An unlock reads the word before it looks at the address, so it gets no misaligned
             // one, whose bytes could name either runner's thread.
             let first = if command == linux::FUTEX_UNLOCK_PI as u64 {
-                pick(&[0, u64::MAX - 4095], a)
+                pick(&[0, u64::MAX - (PAGE_SIZE - 1)], a)
             } else if locks {
-                pick(&[ARENA + VALUES + 2, 0, u64::MAX - 4095], a)
+                pick(&[ARENA + VALUES + 2, 0, u64::MAX - (PAGE_SIZE - 1)], a)
             } else {
                 word(a)
             };
@@ -3022,7 +3055,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         ],
         // Always only a check: a program that ran would replace the reference's runner.
         linux::__NR_execveat => {
-            let list = |word: u64| pick(&[ARENA + NULLS, 0, u64::MAX - 4095], word);
+            let list = |word: u64| pick(&[ARENA + NULLS, 0, u64::MAX - (PAGE_SIZE - 1)], word);
             let flags = pick(
                 &[
                     0,
@@ -3055,11 +3088,11 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                     ARENA + RSEQS + 0x10,
                     0,
                     0x1000,
-                    u64::MAX - 4095,
+                    u64::MAX - (PAGE_SIZE - 1),
                 ],
                 a,
             ),
-            pick(&[32, 32, 33, 64, 28, 31, 4096, 1 << 32 | 32], b),
+            pick(&[32, 32, 33, 64, 28, 31, PAGE_SIZE, 1 << 32 | 32], b),
             pick(&[0, 0, 0, 1, 1, 3, 4, 1 << 32], c),
             pick(&[0, 1, 0x5305_3053], d),
             0,
@@ -3121,7 +3154,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         linux::__NR_uname => [
             match a % 8 {
                 0 => 0,
-                1 => u64::MAX - 4095,
+                1 => u64::MAX - (PAGE_SIZE - 1),
                 _ => ARENA + UNAME,
             },
             0,
@@ -3153,7 +3186,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         linux::__NR_getrandom => [
             match a % 8 {
                 0 => 0,
-                1 => u64::MAX - 4095,
+                1 => u64::MAX - (PAGE_SIZE - 1),
                 _ => ARENA + RANDOM,
             },
             pick(&[0, 1, 16, 96], b),
@@ -3528,7 +3561,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         }
         // Every path here fails: /dev/shm is mounted without execution and the rest are not programs.
         linux::__NR_execve => {
-            let list = |word: u64| pick(&[0, ARENA + NULLS, u64::MAX - 4095], word);
+            let list = |word: u64| pick(&[0, ARENA + NULLS, u64::MAX - (PAGE_SIZE - 1)], word);
             [path(a), list(b), list(c), 0, 0, 0]
         }
         linux::__NR_msync => [
@@ -3584,7 +3617,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         linux::__NR_fadvise64 => [
             fd(a),
             offset(b),
-            pick(&[0, 1, 4096, u64::MAX], c),
+            pick(&[0, 1, PAGE_SIZE, u64::MAX], c),
             pick(&[0, 1, 2, 3, 4, 5, 6, 100], d),
             0,
             0,
@@ -3593,7 +3626,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         linux::__NR_sync_file_range => [
             fd(a),
             offset(b),
-            pick(&[0, 1, 4096, u64::MAX], c),
+            pick(&[0, 1, PAGE_SIZE, u64::MAX], c),
             pick(&[0, 1, 2, 4, 7, 8], d),
             0,
             0,
@@ -3692,7 +3725,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
         linux::__NR_sched_getattr => [
             pick(&[0, SELF, 99999, u64::MAX], a),
             buffer(b),
-            pick(&[0, 47, 48, 56, 64, 120, 4096, 4097], c),
+            pick(&[0, 47, 48, 56, 64, 120, PAGE_SIZE, PAGE_SIZE + 1], c),
             pick(&[0, 0, 0, 1], d),
             0,
             0,
@@ -3884,7 +3917,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                     e >> 3,
                 )
             } else {
-                (buffer(b), pick(&[0u64, 1, 5, 100, 4096, 70000], c))
+                (buffer(b), pick(&[0u64, 1, 5, 100, PAGE_SIZE, 70000], c))
             };
             [fd(a), buffer, size, flags, address, length]
         }
@@ -3903,7 +3936,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             [
                 fd(a),
                 buffer(b),
-                pick(&[0u64, 1, 3, 64, 4096], c),
+                pick(&[0u64, 1, 3, 64, PAGE_SIZE], c),
                 flags,
                 0,
                 0,
@@ -4192,7 +4225,7 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
         }
         linux::__NR_getcpu => vec![fixed(a, 4)],
         linux::__NR_gettimeofday => vec![fixed(a, 16)],
-        linux::__NR_mincore => vec![fixed(c, b.div_ceil(4096).min(1 << 20))],
+        linux::__NR_mincore => vec![fixed(c, b.div_ceil(PAGE_SIZE).min(1 << 20))],
         linux::__NR_name_to_handle_at => vec![fixed(c + 8, 12), fixed(d, 8)],
         linux::__NR_readlinkat => vec![by_value(c, d)],
         linux::__NR_getcwd => vec![by_value(a, b)],
@@ -4422,7 +4455,7 @@ const SCRATCH: u64 = 0x6000_0000;
 const SCRATCH_ZEROS: u64 = 0x1000;
 /// Where the play area is read into at the end.
 const SCRATCH_PLAY: u64 = 0x11000;
-const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * 4096;
+const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * PAGE_SIZE;
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
 
 /// Signals both runners' callers ignore, as guest/layer1.c's does: at their default Linux keeps
@@ -4877,8 +4910,8 @@ fn run_ours_on(
     // The play area, page by page, by the runner's own calls.
     let mut play = Vec::with_capacity(PLAY_RECORD);
     for page in 0..PLAY_PAGES {
-        let into = SCRATCH + SCRATCH_PLAY + page * 4096;
-        let pair = [into, 4096, PLAY + page * 4096, 4096];
+        let into = SCRATCH + SCRATCH_PLAY + page * PAGE_SIZE;
+        let pair = [into, PAGE_SIZE, PLAY + page * PAGE_SIZE, PAGE_SIZE];
         let bytes: Vec<u8> = pair.iter().flat_map(|word| word.to_le_bytes()).collect();
         cpu.write(memory, SCRATCH, &bytes)
             .expect("writing the scratch");
@@ -4886,10 +4919,10 @@ fn run_ours_on(
             number: linux::__NR_process_vm_readv,
             arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
         };
-        let mut contents = vec![0u8; 4096];
+        let mut contents = vec![0u8; PAGE_SIZE as usize];
         // A filter of the sequence's may end the process here, as it does the reference's.
         let readable = match call(&mut kernel, &mut cpu, &mut host, read) {
-            Ok(value) => value == 4096,
+            Ok(value) => value == PAGE_SIZE as i64,
             Err(status) => {
                 return (
                     SequenceResult {
@@ -5068,15 +5101,15 @@ fn ioctl_arguments() -> [[u64; 8]; IOCTL_ARG_COUNT as usize] {
         flags(0x4000_0001),
         flags(0),
         xattr(linux::FS_XFLAG_NODUMP, 0),
-        xattr(linux::FS_XFLAG_EXTSIZE, 4096),
+        xattr(linux::FS_XFLAG_EXTSIZE, PAGE_SIZE as u32),
         // `struct file_clone_range`: source descriptor, source offset, length, destination offset.
-        [3, 0, 4096, 0, 0, 0, 0, 0],
+        [3, 0, PAGE_SIZE, 0, 0, 0, 0, 0],
         // `struct file_dedupe_range` with one destination: descriptor 3 at offset 0.
-        [0, 4096, 1, 3, 0, 0, 0, 0],
+        [0, PAGE_SIZE, 1, 3, 0, 0, 0, 0],
         space(0, 0, 8192),
-        space(1, 4096, 4096),
+        space(1, PAGE_SIZE, PAGE_SIZE),
         space(2, 0, 1 << 40),
-        space(7, 0, 4096),
+        space(7, 0, PAGE_SIZE),
     ]
 }
 
@@ -5166,7 +5199,7 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     // Which pages are in memory: every mapped one here, the touched ones in the reference (a declared
     // difference), written up to a gap that fails the call.
     if call.number == linux::__NR_mincore {
-        out.push((c, b.div_ceil(4096).min(1 << 20)));
+        out.push((c, b.div_ceil(PAGE_SIZE).min(1 << 20)));
     }
     // A handle holds inode numbers and a random generation, and the mount number is the machine's;
     // the mount number is written even when the handle does not fit.
@@ -5340,7 +5373,7 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         // Identifiers and slots (see `SEGMENT`), and a segment placed by the kernel.
         linux::__NR_shmget => true,
         linux::__NR_shmctl => matches!(call.arguments[1], 3 | 13 | 14 | 15),
-        linux::__NR_shmat => call.arguments[1] < 4096,
+        linux::__NR_shmat => call.arguments[1] < PAGE_SIZE,
         linux::__NR_msgget => true,
         linux::__NR_msgctl => matches!(call.arguments[1], 3 | 11 | 12 | 13),
         // Identifiers, slots, and the process that last changed a semaphore.
@@ -5357,7 +5390,7 @@ struct Mask {
 }
 
 /// The play area's size as far as calls reach into it: its pages and two past them.
-const PLAY_REACH: u64 = (PLAY_PAGES + 2) * 4096;
+const PLAY_REACH: u64 = (PLAY_PAGES + 2) * PAGE_SIZE;
 
 impl Default for Mask {
     fn default() -> Self {
@@ -5492,7 +5525,7 @@ pub fn seen(
         let mut shown = play.clone();
         for (page, record) in shown.chunks_mut(4097).enumerate() {
             for (offset, byte) in record[1..].iter_mut().enumerate() {
-                if mask.play[page * 4096 + offset] {
+                if mask.play[page * PAGE_SIZE as usize + offset] {
                     *byte = 0;
                 }
             }
@@ -5599,7 +5632,7 @@ pub fn difference(
                 if a != b {
                     text.push_str(&format!(
                         "  play+{:#x}: ours {a:#04x} theirs {b:#04x}\n",
-                        page * 4096 + offset
+                        page * PAGE_SIZE as usize + offset
                     ));
                 }
             }

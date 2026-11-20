@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError,
+    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE,
     SystemCallRequest, Warning,
 };
 use wcontainers_kernel::{
@@ -1194,7 +1194,7 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
                 notify_unique: RETRIEVED | node,
                 nodeid: node,
                 offset: 0,
-                size: 4096,
+                size: PAGE_SIZE as u32,
                 padding: 0,
             }
             .as_bytes()

@@ -311,9 +311,12 @@ pub(crate) const FS_IOC_GETFSSYSFSPATH: u32 = ioc(
     size_of::<crate::linux::general::fs_sysfs_path>(),
 );
 
-/// The largest buffer the kernel's allocator gives (`KMALLOC_MAX_SIZE`, `linux/slab.h`: a page shifted
-/// by `MAX_PAGE_ORDER`, 10 for 4 KiB pages), which a sysctl's read or write allocates for its count.
-pub(crate) const KMALLOC_MAX_SIZE: u64 = 4096 << 10;
+/// The largest block the page allocator gives, as an order of pages (`MAX_PAGE_ORDER` for 4 KiB pages).
+pub(crate) const MAX_PAGE_ORDER: u32 = 10;
+
+/// The largest buffer the kernel's allocator gives (`KMALLOC_MAX_SIZE`, `linux/slab.h`), which a
+/// sysctl's read or write allocates for its count.
+pub(crate) const KMALLOC_MAX_SIZE: u64 = wcontainers_abi::PAGE_SIZE << MAX_PAGE_ORDER;
 
 /// `prctl` values newer than linux-raw-sys 0.12.1's headers (`linux/prctl.h`): disable transparent
 /// huge pages except where advised.

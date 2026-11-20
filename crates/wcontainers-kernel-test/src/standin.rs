@@ -816,7 +816,7 @@ impl Cpu for StandIn {
 /// same length, so a block much larger than what its mappings touched (a mapping far into a
 /// file) takes host memory only for what they touched.
 fn copy_touched(from: &MmapMut, to: &mut MmapMut) {
-    const CHUNK: usize = 4096;
+    const CHUNK: usize = wcontainers_abi::PAGE_SIZE as usize;
     for (index, chunk) in from.chunks(CHUNK).enumerate() {
         if chunk.iter().any(|byte| *byte != 0) {
             let start = index * CHUNK;

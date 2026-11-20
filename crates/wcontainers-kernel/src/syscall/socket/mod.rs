@@ -29,6 +29,7 @@ use crate::linux::net::{
 };
 use crate::process::{Channel, Pid, Tid};
 use crate::{Context, Errno, Kernel};
+use wcontainers_abi::PAGE_SIZE;
 
 pub(crate) type SocketRef = Rc<RefCell<Socket>>;
 
@@ -439,9 +440,9 @@ impl Names {
     }
 }
 
-/// The address waits and epoll use for a socket.
-pub(super) fn object(socket: &SocketRef) -> usize {
-    Rc::as_ptr(socket) as *const () as usize
+/// What waits and epoll know a socket by.
+pub(super) fn object(socket: &SocketRef) -> crate::process::ObjectId {
+    crate::process::ObjectId::Numbered(socket.borrow().id)
 }
 
 fn channel(socket: &SocketRef) -> Channel {
@@ -1471,26 +1472,36 @@ fn drop_packet(kernel: &mut Kernel, cx: &mut Context<'_>, packet: Packet) {
     kernel.released.extend(packet.files);
 }
 
+/// `SKB_DATA_ALIGN(sizeof(struct skb_shared_info))`, the tail of every buffer's head.
+pub(super) const SHARED_INFO: u64 = 320;
+
+/// The size of `struct sk_buff` as its cache allocates it.
+pub(super) const SK_BUFF: u64 = 256;
+
+/// The largest head of a buffer before its bytes go in pages (`SKB_MAX_ALLOC`, an order-2 block).
+pub(super) const SKB_MAX_ALLOC: u64 = (PAGE_SIZE << 2) - SHARED_INFO;
+
+/// The most pages one buffer holds (`CONFIG_MAX_SKB_FRAGS`, as /proc/config.gz says).
+const MAX_SKB_FRAGS: u64 = 17;
+
 /// `SKB_TRUESIZE` of a buffer of `head` bytes in its head and `pages` bytes in pages, as
 /// `alloc_skb_with_frags` makes it: the head rounded to kmalloc's sizes with the shared info, the
 /// `sk_buff` itself, and whole pages.
 fn truesize(head: u64, pages: u64) -> u64 {
-    const SHARED_INFO: u64 = 320;
-    const SK_BUFF: u64 = 256;
     let allocated = (head.next_multiple_of(64) + SHARED_INFO).next_power_of_two();
-    allocated + SK_BUFF + pages.next_multiple_of(4096)
+    allocated + SK_BUFF + pages.next_multiple_of(PAGE_SIZE)
 }
 
 /// How one stream buffer splits into head and pages (`unix_stream_sendmsg`).
 fn stream_piece(size: u64, sndbuf: u64) -> (u64, u64) {
-    const MAX_HEAD: u64 = 4096 - 320;
+    const MAX_HEAD: u64 = PAGE_SIZE - SHARED_INFO;
     const FRAGS: u64 = 32768;
     let size = size
         .min((sndbuf >> 1).saturating_sub(64))
         .min(MAX_HEAD + FRAGS);
     let pages = size
         .saturating_sub(MAX_HEAD)
-        .next_multiple_of(4096)
+        .next_multiple_of(PAGE_SIZE)
         .min(size);
     (size, pages)
 }
@@ -1944,9 +1955,10 @@ fn send_packet(
         let waits_on = if full { &target } else { socket };
         return Err(wait_room(kernel, tid, waits_on, nonblocking, timeout));
     }
-    const MAX_ALLOC: u64 = 16384 - 320;
-    let pages = if total > MAX_ALLOC {
-        (total - MAX_ALLOC).min(17 * 4096).next_multiple_of(4096)
+    let pages = if total > SKB_MAX_ALLOC {
+        (total - SKB_MAX_ALLOC)
+            .min(MAX_SKB_FRAGS * PAGE_SIZE)
+            .next_multiple_of(PAGE_SIZE)
     } else {
         0
     };

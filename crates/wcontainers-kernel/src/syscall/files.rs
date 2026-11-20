@@ -2865,7 +2865,10 @@ fn fallocate_unwatched(
     } else {
         // tmpfs refuses a range larger than it could ever hold at once, then takes the pages one
         // by one, giving back those it took if it runs out, and only then sets the size.
-        let (first, last) = (offset / 4096, end.div_ceil(4096));
+        let (first, last) = (
+            offset / wcontainers_abi::PAGE_SIZE,
+            end.div_ceil(wcontainers_abi::PAGE_SIZE),
+        );
         if let Some(space) = &inode.fs.space
             && space.max_blocks() != 0
             && last - first > space.max_blocks()

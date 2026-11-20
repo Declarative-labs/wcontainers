@@ -1,6 +1,8 @@
 //! The stand-in CPU comes back for each reason the abi names, with exact registers.
 
-use wcontainers_abi::{Access, Cpu, Exit, Permissions, RegisterBlock, Resume, SystemCallRequest};
+use wcontainers_abi::{
+    Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, Resume, SystemCallRequest,
+};
 use wcontainers_kernel_test::standin::{StandIn, Unsupported};
 
 const CODE: u64 = 0x10000;
@@ -27,8 +29,13 @@ fn exits_are_exact() {
         .flat_map(|word| word.to_le_bytes())
         .collect();
     cpu.write(memory, CODE, &code).unwrap();
-    cpu.set_permissions(memory, CODE, 4096, Permissions::READ | Permissions::EXECUTE)
-        .unwrap();
+    cpu.set_permissions(
+        memory,
+        CODE,
+        PAGE_SIZE,
+        Permissions::READ | Permissions::EXECUTE,
+    )
+    .unwrap();
     let thread = cpu.thread_new(memory).unwrap();
     let mut start = RegisterBlock::ZERO;
     start.pc = CODE;
@@ -102,29 +109,34 @@ fn permissions_change_while_running() {
         .flat_map(|word| word.to_le_bytes())
         .collect();
     cpu.write(memory, CODE, &code).unwrap();
-    cpu.set_permissions(memory, CODE, 4096, Permissions::READ | Permissions::EXECUTE)
-        .unwrap();
+    cpu.set_permissions(
+        memory,
+        CODE,
+        PAGE_SIZE,
+        Permissions::READ | Permissions::EXECUTE,
+    )
+    .unwrap();
     let data = CODE + 0x10000;
-    cpu.set_permissions(memory, data, 3 * 4096, Permissions::READ)
+    cpu.set_permissions(memory, data, 3 * PAGE_SIZE, Permissions::READ)
         .unwrap();
     let thread = cpu.thread_new(memory).unwrap();
     let mut start = RegisterBlock::ZERO;
     start.pc = CODE;
     start.x[0] = 0xfeed;
-    start.x[1] = data + 4096;
+    start.x[1] = data + PAGE_SIZE;
     cpu.set_registers(thread, &start);
     assert_eq!(
         cpu.run(thread, Resume::FromRegisters, None).unwrap(),
         Exit::MemoryFault {
-            address: data + 4096,
+            address: data + PAGE_SIZE,
             access: Access::Write
         }
     );
     // Only the middle page becomes writable; the split must keep the pages around it as they were.
     cpu.set_permissions(
         memory,
-        data + 4096,
-        4096,
+        data + PAGE_SIZE,
+        PAGE_SIZE,
         Permissions::READ | Permissions::WRITE,
     )
     .unwrap();
@@ -133,10 +145,10 @@ fn permissions_change_while_running() {
         Exit::Syscall(_)
     ));
     let mut stored = [0u8; 8];
-    cpu.read(memory, data + 4096, &mut stored).unwrap();
+    cpu.read(memory, data + PAGE_SIZE, &mut stored).unwrap();
     assert_eq!(u64::from_le_bytes(stored), 0xfeed);
 
-    start.x[1] = data + 2 * 4096;
+    start.x[1] = data + 2 * PAGE_SIZE;
     cpu.set_registers(thread, &start);
     assert!(matches!(
         cpu.run(thread, Resume::FromRegisters, None).unwrap(),
@@ -155,12 +167,17 @@ fn unaligned_exclusive_is_reported_as_unsupported() {
     let mut cpu = StandIn::new();
     let memory = cpu.memory_new().unwrap();
     cpu.write(memory, CODE, &LDXR_X0_X1.to_le_bytes()).unwrap();
-    cpu.set_permissions(memory, CODE, 4096, Permissions::READ | Permissions::EXECUTE)
-        .unwrap();
+    cpu.set_permissions(
+        memory,
+        CODE,
+        PAGE_SIZE,
+        Permissions::READ | Permissions::EXECUTE,
+    )
+    .unwrap();
     cpu.set_permissions(
         memory,
         0x20000,
-        4096,
+        PAGE_SIZE,
         Permissions::READ | Permissions::WRITE,
     )
     .unwrap();

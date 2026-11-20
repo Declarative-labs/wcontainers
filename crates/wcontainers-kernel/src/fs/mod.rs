@@ -16,7 +16,7 @@ use core::cell::RefCell;
 
 use alloc::vec;
 use core::cell::Cell;
-use wcontainers_abi::{Cpu, SharedId};
+use wcontainers_abi::{Cpu, PAGE_SIZE, SharedId};
 
 use crate::Errno;
 use crate::credentials::Credentials;
@@ -264,7 +264,7 @@ impl Kind {
         match self {
             Kind::Proc | Kind::Devpts => 1024,
             Kind::Hugetlbfs { page_shift } => 1 << page_shift,
-            _ => 4096,
+            _ => PAGE_SIZE as u32,
         }
     }
 
@@ -553,8 +553,8 @@ impl Regular {
             .map_or(u64::MAX, |space| space.free_blocks());
         let mut at = offset;
         while at < end {
-            let page = at / 4096;
-            let chunk_end = ((page + 1) * 4096).min(end);
+            let page = at / PAGE_SIZE;
+            let chunk_end = ((page + 1) * PAGE_SIZE).min(end);
             if self.seals & F_SEAL_GROW != 0 && chunk_end > size {
                 if at == offset {
                     return Err(Errno::EPERM);
@@ -643,7 +643,7 @@ impl Regular {
 
     fn mark_written(&mut self, offset: u64, length: u64) {
         if length > 0 {
-            for page in offset / 4096..=(offset + length - 1) / 4096 {
+            for page in offset / PAGE_SIZE..=(offset + length - 1) / PAGE_SIZE {
                 let was_reserved = self.allocated.remove(&page);
                 if self.pages.insert(page)
                     && !was_reserved
@@ -671,8 +671,8 @@ impl Regular {
         let held = self.data.len() as u64;
         self.data[from.min(held) as usize..to.min(held) as usize].fill(0);
         self.zero_block(cpu, from, to);
-        let first = offset.div_ceil(4096);
-        let last = end / 4096;
+        let first = offset.div_ceil(PAGE_SIZE);
+        let last = end / PAGE_SIZE;
         self.drop_pages(|page| page < first || page >= last);
     }
 
@@ -696,7 +696,7 @@ impl Regular {
         }
         self.data.truncate(length as usize);
         self.size = length;
-        let pages = length.div_ceil(4096);
+        let pages = length.div_ceil(PAGE_SIZE);
         self.drop_pages(|page| page < pages);
     }
 

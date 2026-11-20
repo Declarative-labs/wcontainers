@@ -40,8 +40,14 @@ const INIT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_MAX_PAGES
     | FUSE_INIT_EXT;
 
-/// The most a read or write asks for in one message until INIT says (Linux's default `max_pages`).
-const DEFAULT_CHUNK: u32 = 32 * 4096;
+/// Linux's default `max_pages` (`FUSE_DEFAULT_MAX_PAGES_PER_REQ`).
+const DEFAULT_MAX_PAGES: u32 = 32;
+
+/// The most a read or write asks for in one message until INIT says.
+const DEFAULT_CHUNK: u32 = DEFAULT_MAX_PAGES * PAGE_SIZE as u32;
+
+/// The least `max_write` Linux takes from INIT (`fuse_init_reply` writes 4096, not a page).
+const MIN_MAX_WRITE: u32 = 4096;
 
 /// What INIT's answer settled.
 #[derive(Clone, Copy, Debug)]
@@ -787,13 +793,15 @@ impl Client {
                 && let Ok((init, _)) = fuse_init_out::read_from_prefix(body)
             {
                 let chunk = if init.flags & FUSE_MAX_PAGES != 0 && init.max_pages > 0 {
-                    u32::from(init.max_pages) * 4096
+                    u32::from(init.max_pages) * PAGE_SIZE as u32
                 } else {
                     DEFAULT_CHUNK
                 };
                 state.settled = Some(Settled {
                     flags: init.flags,
-                    max_write: init.max_write.clamp(4096, chunk.max(4096)),
+                    max_write: init
+                        .max_write
+                        .clamp(MIN_MAX_WRITE, chunk.max(MIN_MAX_WRITE)),
                     max_read: chunk,
                     readahead_pages: u64::from(init.max_readahead.min(READAHEAD)) / PAGE_SIZE,
                 });

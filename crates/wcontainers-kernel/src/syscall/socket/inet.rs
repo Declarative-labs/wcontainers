@@ -2615,21 +2615,18 @@ fn receive_urgent(
 /// head cache when it fits (`kmalloc_reserve`), and past `SKB_MAX_ALLOC` the payload in pages,
 /// counted exactly.
 pub(super) fn datagram_truesize(size: u64) -> u64 {
-    const SHARED_INFO: u64 = 320;
-    const SK_BUFF: u64 = 256;
     const SMALL_HEAD: u64 = 640;
-    const MAX_ALLOC: u64 = (4096 << 2) - SHARED_INFO;
     let head = size + 28 + 31;
-    if head >= MAX_ALLOC {
-        return SMALL_HEAD + SK_BUFF + size;
+    if head >= super::SKB_MAX_ALLOC {
+        return SMALL_HEAD + super::SK_BUFF + size;
     }
-    let wanted = head.next_multiple_of(64) + SHARED_INFO;
+    let wanted = head.next_multiple_of(64) + super::SHARED_INFO;
     let allocated = if wanted <= SMALL_HEAD {
         SMALL_HEAD
     } else {
         wanted.next_power_of_two()
     };
-    allocated + SK_BUFF
+    allocated + super::SK_BUFF
 }
 
 /// What a send's control messages set for its datagram.
