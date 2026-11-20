@@ -57,7 +57,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   from T1) and a test for run 7's fix: the compute part is +44.67% [+44.16 .. +44.98], still failing, the system-call
   part passes at 71.9 ns (below, "N4 run 8"); run 9 counted a loop of parts once a turn (adds ahead across parts, a
   departure) and held the rest of a turn after an outer loop's branch: search went from +83% to +24% cycles and the
-  compute part to +37.71% [+37.26 .. +37.91], still failing; the system-call part passes at 68.6 ns (below, "N4 run 9").
+  compute part to +37.71% [+37.26 .. +37.91], still failing; the system-call part passes at 68.6 ns (below, "N4 run 9");
+  run 10 built 2 MiB entries by reservation and measured the contiguous bit (no gain, not kept); the benchmark set takes no
+  block, so the bar is as in run 9 (below, "N4 run 10").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -84,6 +86,52 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 10 (2026-11-19): 2 MiB entries by reservation; the contiguous bit measured and not kept
+
+Start: origin/main and origin/phase-1-literals had nothing new; no answer in the brief or the orchestrator's notes to
+the asks below (run 7's (a) or (b), decision 14, the departure of run 9). Lint of the inside ran on the rented ARM64
+machine (n4r11/arm1.log to arm3.log); what needs Hypervisor.framework, Docker or a git checkout (the literal check) ran on
+the Mac (-j 4). Logs are in scratch native/n4r11.
+
+Built (plan 5.2, "As built"):
+- e6945616: the floor's tables protect, unmap and promote a block entry (break before make, every page of the range
+  invalidated), split a block before a page of it is unmapped, and `Frames::take_run_for_guest` gives a fresh 2 MiB run
+  that leaves the inside's kept frames alone.
+- 6bbddf27, 3c464ca2: every private frame of a native memory (first touch, the kernel's write, a copy that ends
+  sharing, a fork's copy) comes from the run reserved for its 2 MiB range, reserved then if the range has none and a
+  run is free. A range whose pages all hold their frames of the run and that the kernel's record makes alike is mapped
+  by one block entry; a permission change over a whole block keeps it, over part of it splits it ("large entry
+  split"), and a range alike again is promoted again. Zeroing a whole block unmaps it at once. Frames go back to their
+  run, a free run is kept whole, and when frames run out, free runs go to the single frames first, then the oldest
+  incomplete reservation is broken, counted "reservation broken" (new reason, wcontainers-inside's reason.rs) and
+  warned.
+- Test: mappings.c writes every page of an 8 MiB mapping, changes one page's permissions, then all of them, unmaps a
+  quarter and maps again; the kernel test checks its output against the reference and the WebAssembly side, and that
+  the native side counted "large entry split" (4: a block was made and split). Writing 1.5 times the memory still ends
+  in SIGSEGV with "guest-physical space full" counted, now with 4 reservations broken first.
+
+Measured (M5 Max, alternating pairs with ab.py, two builds of the speed test):
+- The benchmark set takes no block: no data range of its programs covers a whole 2 MiB range (walk's 1.6 MB of nodes
+  included), seen in a build that printed each reservation and promotion (not kept). So the speed bar does not move.
+- The contiguous bit (16 page entries as one), built over the same runs, with 24 groups formed over walk's nodes (seen
+  in the same printing build): against the build without reservations, 6 pairs, load 3 to 6 (n4r11/ab-groups2.log),
+  walk 0.998 [0.995 .. 1.024] cycles, sieve 0.996, matrix 1.002, instructions within 0.03%. No gain on this M5 under
+  Hypervisor.framework, so it is not kept (one clean primitive; the code is not in the history's last state).
+
+Tests after the change (Mac, load 4 to 6): kernel test alike with the reference and the WebAssembly side at none and
+256, the benchmark set's count the same at both (n4r11/kernel3.log); busybox 56 commands as the reference at none and
+256; exits 4 programs both modes, 0 failed (424 and 426 pieces); floor 21 cases and 1 measurement, 0 failed
+(n4r11/mac1.log). Clippy with warnings denied is clean for the inside (both targets) and the monitor; the literal check
+exits 0, no marks, the baseline unchanged; rustfmt clean.
+
+What N4 still needs, in order:
+1. The compute part of the bar (+37.71% against +21.2%, run 9): calls, returns and jumps through a register and the
+   page test (decision 14) need a ruling; see "For the orchestrator".
+2. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+3. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none, 256 and whole
+   page).
 
 ## N4 run 9 (2026-11-19): a loop of parts adds once a turn; the rest of a turn held
 
@@ -2152,6 +2200,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 10: plan 5.2 reserves a run at the first touch of a 2 MiB range that may take a block. As built, a run is
+  reserved for any 2 MiB range when a private page there needs a frame and the range has no reservation, whether or
+  not the range is alike then: the kernel writes a program's data before its permissions are set, and a range of a
+  file's pages becomes private page by page, so "may take a block" is not known at the first touch. A reservation
+  holds no host memory for pages no one touched (plan 5.2, memory from the host), and its untaken frames come back
+  when frames run out ("reservation broken").
+
 - N4 run 9: the count's adds may now sit in an earlier straight-line part of the same piece, not only in the event's own
   run as the brief's ruling words the freedom: a part entered only from one part that goes on only to it is counted by
   that part's add, and every exit taken while the count is ahead subtracts the lead first. The definition (E) and the
@@ -2317,6 +2372,11 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 10: 2 MiB entries by reservation are built (plan 5.2); the benchmark set takes no block, so the bar is still
+  run 9's (+37.71% against +21.2%). The contiguous bit was built and measured with no gain (walk 0.998 cycles with its
+  nodes in 64 KiB groups) and is not kept. The asks of run 9 stand: the departure of adds counted ahead, and a ruling on
+  run 7's (a) or (b), on decision 14's page test, or on the bar.
 
 - N4 run 9: the compute part is now +37.71% against +21.2% (search fixed: its loop is held whole and adds once a turn).
   Please confirm the departure: adds counted ahead across parts of one piece, with exits settling the count (E and the

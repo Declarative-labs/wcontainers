@@ -1116,6 +1116,22 @@ or frame left it breaks reservations, oldest first, and takes those frames back,
 broken" and warned; the range keeps its 4 KiB entries. So guest-physical space never runs out where 4 KiB
 entries alone would not. Rejected: a block at the first touch (holds frames no page touched, the open point);
 promotion by copying 512 scattered frames into a new run (a 2 MiB copy, and a free run needed at that time).
+As built (N4 run 10, ARM64): every private frame of a process (a first touch, a write by the kernel, a copy that
+ends sharing, a fork's copy) comes from the run reserved for its 2 MiB range, reserved at that moment when the
+range has none and a run is free, else from the single frames. A range is promoted when every page holds its
+frame of the run and the kernel's record makes the range alike; a permission change that covers a whole block
+rewrites the block entry and keeps it, one that covers part of it splits it, and after any permission change a
+range that is alike again with its run complete is promoted again. Zeroing a whole block unmaps it at once and
+keeps its run whole. A frame given back by a page goes back to its run; a run no page holds is kept whole for the
+next reservation; when the frames run out, whole free runs are given to the single frames first, then the
+oldest incomplete reservation is broken. Promotion and splitting assume no other virtual CPU runs the process
+while its entry is invalid (true while one virtual CPU runs a container; N5's threads need a fault in that window
+retried, not reported). The benchmark set takes no block (no data range of its programs covers a whole 2 MiB
+range), so it does not move section 8's bar. The contiguous bit (16 page entries as one 64 KiB entry) was built
+over the same runs and measured in alternating pairs against the build without reservations (n4r11/ab-groups2.log,
+6 pairs, load 3 to 6, with 24 groups formed over walk's nodes, seen in a build that printed them): walk 0.998, sieve
+0.996, matrix 1.002 cycles, instructions unchanged. The M5 under Hypervisor.framework shows no gain from it, so
+it is not kept.
 
 A later 16 KiB guest mode (brief) changes `PAGE_SIZE` and nothing in this design's shape: on ARM64 the floor
 takes the granule from it (TCR_EL1 TG0 and TG1, chosen from `PAGE_SIZE` in one place, which today knows
