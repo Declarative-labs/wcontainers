@@ -3538,3 +3538,104 @@ Runs at the tip (logs in scratch `graphics-shaders/g6b1`):
   575 after (11 deleted; the moved geometry code's strings named once).
 - Not run in this run: the laptop (glslang's GLSL outcomes: the new shaders all need compute, so
   their records name no GLSL compile), WebAssembly, Chrome.
+
+## G6b run 2 (run 66)
+
+Merged origin/phase-2-graphics-direct3d-11 (2 commits; nothing else new). G6b run 1's section is in
+the history file.
+
+Built:
+- `lower/hull.rs` is two passes over stage values either route describes (`TessellationValue`: the
+  private variable, side, register and component or built-in, type, and whether it holds one value a
+  control point): `HullPass::entry_point(main, constants)` builds the hull's compute form,
+  `DomainPass::inputs` the domain program's input function. A value may be an array of rows (one
+  register a row), which dxc writes and fxc's route never has. The DXBC route describes its
+  declarations; every WGSL file of every corpus is byte for byte what it was at G6b run 1's tip
+  (4,339 files, x86 machine; the only change is the cut function's name from run 65), until the
+  last commit renamed the domain program's vertex argument (`domain_vertex`, so no test literal
+  restates it).
+- `dxil/staged.rs`: what the geometry, hull and domain routes share before naga's reader takes the
+  SPIR-V (the entry point and its stage variables read, the variables made private and named, the
+  entry point given another model, instructions made calls of stand-in functions); `dxil/geometry.rs`
+  now uses it (its SPIR-V words are as before).
+- `dxil/tessellation.rs`: dxil-spirv's TessellationControl made a compute program and
+  TessellationEvaluation a vertex program (its inputs private); the hull pass then calls dxil-spirv's
+  `hull_main` per output control point and `patch_main` once, and the domain program calls the domain
+  pass's input function with its vertex number before its own function. The domain, partitioning
+  (pow2 as integer, as dxbc-spirv also has it), output primitive and output control points come
+  from the SPIR-V's execution modes, the input control points from the container's `PSV0` chunk.
+  dxil-spirv is told to give patch constants their own registers as locations
+  (`dxil_spv_converter_set_patch_location_offset(0)`, cpp/dxil.cpp), apart from control point data by
+  their `Patch` decoration. `SV_Position` as control point data (a location in dxil-spirv's output)
+  is the position built-in, as the DXBC route has it, so either route's hull feeds either's domain.
+- A DXBC domain shader's `StageExtras::Domain::input_control_points` was 0 (dxbc-spirv keeps
+  `dcl_input_control_point_count` to itself); it is now read from the code chunk
+  (`container::dxbc_input_control_points`), equal to the DXIL build's.
+- `dxil/selected.rs`: a DXIL pixel shader reading `SV_RenderTargetArrayIndex` or
+  `SV_ViewportArrayIndex` (naga's reader refused "unsupported builtin") reads them as the DXBC route
+  does: the layer from the geometry pass-through with `LAYER_FROM_STAGE`, else the run's layer or
+  viewport from the helper constants (`HelperValue::Layer`, `Viewport`). This was the rig's raster
+  scene's pixel shader.
+- New refusal `DomainWithoutControlPoints` (refusal.rs): a DXIL domain shader of no input control
+  points, which only a hull shader without control points (refused, A14) hands on; dxil-spirv gives
+  it an array of zero, which the reader refused unnamed (`hlsl+patch-syntax-11-ds`).
+- `container::token` (public): a DXBC instruction word's fields, which tests/fuzz.rs now imports.
+- tests/own: dxc builds of `vs_patch`, every `hs_*`, `ds_*` and `gs_tess_*` (compile.cmd).
+
+Corpus counts, before and after (records at 0dc899cc against the tip):
+- Refused `DxilHullShader` 28 (rig 6, runner 22): all 28 convert. `DxilDomainShader` 9 (rig 3,
+  runner 6): 8 convert, 1 refused `DomainWithoutControlPoints`. Both names are gone.
+- The reader's "unsupported builtin" 4 (own `ps_layer`, rig `raster.ps`, runner `rt-array-index-2-ps`
+  and `vp-array-index-2-ps`): all 4 convert.
+- New own DXIL files: 39, all convert. Records: own-dxil 40 lines changed or added, rig-dxil 10,
+  runner-dxil 30.
+
+Drawn on the RTX 3080 (desktop, through the queue, other tracks' jobs beside; logs in scratch
+`graphics-shaders/g6b2`):
+- `tessellation_draw` (seeds 1 to 4): the rig's tessellation scene and the solid patches drawn with
+  fxc's and with dxc's builds of its vertex, hull, domain and pixel shaders against real Direct3D 11:
+  solid patches every texel equal for both builds; the scene's wireframe cells differ by the line
+  rule exactly as fxc's build does (per cell 45, 46, 62, 19, 19 texels, none missed, for both).
+  Stream output after the domain stage with and without `gs_tess_*`, every own hull shader case, fxc's
+  and dxc's builds: 264 comparisons (132 dxc), 0 failed, 14 known (subnormal factors, as before).
+  The tessellator itself: 128 comparisons, 0 failed.
+- `geometry_draw` (seeds 1 to 4): every test passes. Its dxc cases now take dxc's builds of the
+  vertex and pixel programs too (`vs_geometry`, `ps_geometry` compiled with dxc; before, fxc's):
+  192 and 152 comparisons (80 dxc each), 0 failed (draw2.log, at the tip). The two layered tests
+  draw `ps_layer` as fxc and as dxc build it, every texel of every layer equal.
+- Mutated copies, each shown to fail (not committed; scratch `mutation-1.diff`, `mutation-2.diff`):
+  clockwise and counter-clockwise swapped for DXIL hull shaders fails
+  `hull_and_domain_shaders_declare_what_they_are` (x86) and 13 of 66 stream output comparisons, all
+  the DXIL triangle-output cases (mutated1.log); the layer from the stage ignored fails
+  `layers_past_the_views_draw_into_the_first_as_direct3d_11_does` for dxc's `ps_layer` (4,096 bytes
+  apart in layer 0); DXIL domain inputs read as patch constants fails both tessellation scene tests
+  for dxc's builds (mutated2.log).
+- The Direct3D 12 rig scenes through the Direct3D 12 front built from this branch against real
+  Direct3D 12 (scenes3.log): geometry (6 outputs) and streamout (3) pass, all with largest
+  difference 0, where all failed before run 65; raster: cull, scissor and viewports pass, fill fails
+  64 of 16,384 pixels (wireframe); tessellation: 310 of 32,768 pixels, all in the six wireframe and
+  isoline cells (43, 59, 54, 59, 59, 36), the solid cell equal. Both are the line rule the front's
+  back end draws by (the Direct3D 12 status: the library draws on wgpu's Vulkan path, whose lines
+  differ; its "Next" 3), not the converter's: in our own comparison above fxc's and dxc's builds
+  differ from Direct3D 11 by the same counts in the same wireframe cells, none missed.
+
+Runs at the tip:
+- x86 machine (96 processors, load 10 to 30 with others' work, -j 48): clippy with warnings denied
+  clean; the whole suite with every corpus (`--include-ignored --skip mutated`): every binary
+  passes but `damaged_records_decode_without_a_panic` (gap A16's known failure, ignored by default:
+  a damaged `ps_gatheroff.dxil` record panics in naga's validator), x86-suite.log.
+- Laptop (load near 0, -j 4, glslang): the same suite, the same one known failure; every corpus's
+  records equal with glslang's GLSL outcomes, so the records written for the newly converting files
+  ("glsl compiles") are glslang's (laptop-suite.log; the tree before `vs_geometry.dxil` and
+  `ps_geometry.dxil` were added, whose records the x86 machine checked without glslang).
+- Desktop (RTX 3080, through the queue): Windows clippy with warnings denied clean (win-clippy.log);
+  every test binary at default seeds: 154 passed, 1 failed, 6 ignored (gpu-all.log), the failure
+  being the own records before the two new dxc files' lines were added (checked at the tip on the
+  x86 machine since); `geometry_draw` and `tessellation_draw` again at the tip (draw2.log, above).
+- Literal check (x86 machine, a clone with the submodules): passes; this crate's baseline lines 575
+  at the run's start, 530 after (45 deleted: the hull and domain lowering's numbers and strings
+  named once).
+- Not run: WebAssembly and Chrome on the new WGSL files (gap A8's comparison).
+- Clean-up at the end: the desktop's build folder of this branch (C:\wc\target), the laptop's
+  (4.6 GB) and this run's output folders and clone on the x86 machine deleted (its build folder
+  kept, the machine's own); no build was made in the Mac checkout.
