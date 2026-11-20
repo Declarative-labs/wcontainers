@@ -146,6 +146,25 @@ Found:
   (the slopes measured): about an hour for 512 readers and two for 1000. Slow on the test
   machine, not a different verdict.
 
+The twelfth run's timeouts with a two-hour limit (ARM machine, job kernel/20261120-002010-877064,
+code 7579e667, 8 side by side, 00:20 to 02:20 UTC, load 20 to 34; k6c12/slow.tsv and
+slow2-attach.log): dio30 passed in 1384 s, ADSP073 in 1843 s, ADSP074 in 1867 s, fsx22 in
+2892 s, ADSP037 in 4444 s (all as the reference); ADSP038 (1000 readers) ran past 7200 s, as
+the finding above expects; shmctl05 ran past 7200 s twice, at the code before its fix.
+
+Whole suite at 684b15ec on the ARM machine (`cargo test -j 8 -p wcontainers-abi -p
+wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast -- --test-threads=4`, 00:42 to
+02:13 UTC, load 20 to 34, beside the LTP runs; scratch k6c13/suite-attach.log): 241 passed, 36
+failed, 6 ignored. The 36 are the twelfth run's ARM list less Java's start-up and Python's
+system modules, which pass now (k6c13/fail13.txt). On the Mac (load 9 to 21; k6c13/mac.log and
+mac-extra.log) every one of the 36 passes: layer 1 seeds 9191114, 9191115 and 9191116 (300 in
+memory, 32 on the backend, 32 cached each) matched; clocks, fileioctl, mapflags, partialcopy,
+priorities, proclist, procns, procwrite, schedattr, secret, sigframe, sysvshm, timers, xattr,
+procstatus, sysfs, procaccess and rootbackend passed whole; backend file_capabilities and
+special_files, inet proc_net, route_questions_and_rules and socket_edges, terminal
+making_pairs, threads proc_task, inotify instances_are_limited_per_user and busybox system
+passed. Literals: the check passes; the baseline did not change (8491 lines).
+
 ## K6c, twelfth run
 
 origin/phase-1 and origin/phase-1-literals had nothing new to merge. Heavy runs were on the ARM64
@@ -2204,7 +2223,9 @@ Everything a reviewer should know about what is not compared, in one place.
   reference's does. The reference's environment is unchanged. Run it on the ARM64 machine
   only (For the orchestrator). The kernel test crate's tests that differ on the ARM64 machine
   (its manual's list, plus procstatus `limits_match_reference`, sysfs
-  `cgroup_matches_reference` and busybox `system`) are settled on the Mac.
+  `cgroup_matches_reference`, busybox `system`, procaccess, rootbackend and inotify
+  `instances_are_limited_per_user`: the 36 in scratch k6c13/fail13.txt) are settled on the Mac
+  by scratch k6c13/mac.sh (with three fresh layer 1 seeds; change them before running it).
 
 - K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
   summary. The reference ran once, so its own flaky tests (timing tests under load, such as
@@ -4361,7 +4382,11 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-K6c, after the twelfth run (replaces the tenth run's list below):
+K6c, after the thirteenth run: see "K6c, thirteenth run" for whether the bar is met. Beyond
+K6c, the brief's asks, in this order: number the wait channels, then the record-and-replay test;
+low-first mapping placement and the memory ceiling; the runtime's start values.
+
+K6c, after the twelfth run (done in the thirteenth run):
 1. Read k6c12/runtimes-attach.log (Java start-up and Python's system modules with the 2^39
    threshold, still running at the run's end; `arm-run --fetch kernel-b /work/jobs/kernel-b/<id>/log`
    if the follower stopped) and fix any failure first. Delete the ARM machine's
