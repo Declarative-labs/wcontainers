@@ -851,6 +851,10 @@ impl Kernel {
         if !first && !self.memory_in_use_elsewhere(pid, old_memory) {
             cx.cpu.memory_drop(old_memory);
         }
+        // A reader of the old program's memory that waits on a watch reads the new one.
+        if !first {
+            self.wake(crate::process::Channel::Watch(old_memory.0));
+        }
         self.files_released(cx);
         crate::shared::release(self, cx);
         self.update_watching();
