@@ -146,6 +146,12 @@ impl Means {
             Means::Cut => "cuts",
         }
     }
+
+    /// Whether an entry found this way is certainly a function's start: a built address may also be a label
+    /// or a table's base inside one.
+    pub fn starts_function(self) -> bool {
+        matches!(self, Means::Given | Means::Call)
+    }
 }
 
 /// One code module and where its pieces start.

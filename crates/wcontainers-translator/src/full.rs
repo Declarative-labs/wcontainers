@@ -165,7 +165,7 @@ impl<G: Guest> Planned<'_, G> {
                 let function = &self.functions[i];
                 let whole = match self.finder.wholes.get(&function.entry) {
                     Some(whole) => whole.clone(),
-                    None => Whole::of(function),
+                    None => Whole::stretch(function, code),
                 };
                 let emit = |function, plan, own| {
                     let how = (self.omit, self.optimise, code);
@@ -235,8 +235,10 @@ impl Function {
 #[derive(Clone)]
 struct Whole {
     entry: u64,
-    /// From its lowest instruction's offset to its highest's.
-    span: std::ops::RangeInclusive<u64>,
+    /// From its lowest instruction's offset to past its highest's, or to the next function's entry where that
+    /// is further: code there that exploring did not reach (cases of a table not followed, labels of a computed
+    /// goto) is taken as its own.
+    span: std::ops::Range<u64>,
 }
 
 impl Whole {
@@ -246,7 +248,23 @@ impl Whole {
         let high = offsets().max().expect("a function has an instruction");
         Whole {
             entry: function.entry,
-            span: low..=high,
+            span: low..high + 1,
+        }
+    }
+
+    /// A stretch knows no function's bounds, so all of its code may be its own.
+    fn stretch<G: Guest>(stretch: &Function, code: &Code<'_, G>) -> Whole {
+        Whole {
+            entry: stretch.entry,
+            span: code.range.clone(),
+        }
+    }
+
+    /// The same, reaching up to `next`, the next function's entry.
+    fn up_to(self, next: u64) -> Whole {
+        Whole {
+            span: self.span.start..self.span.end.max(next),
+            ..self
         }
     }
 }
@@ -422,8 +440,32 @@ impl<G: Guest> Finder<'_, G> {
             }
             if !more {
                 self.keep(&functions);
+                self.reach_next_functions(&functions, &entries);
                 return functions;
             }
+        }
+    }
+
+    /// Give every function's whole, and each of its parts', the code up to the next start of a function.
+    fn reach_next_functions(&mut self, functions: &[Function], entries: &BTreeSet<u64>) {
+        let means = &self.means;
+        let starts: BTreeSet<u64> = entries
+            .iter()
+            .copied()
+            .filter(|e| means.get(e).is_none_or(|m| m.starts_function()))
+            .collect();
+        let end = self.code.range.end;
+        for function in functions {
+            let whole = match self.wholes.get(&function.entry) {
+                Some(whole) => whole.clone(),
+                None => Whole::of(function),
+            };
+            let next = starts
+                .range(whole.entry + 1..)
+                .next()
+                .copied()
+                .unwrap_or(end);
+            self.wholes.insert(function.entry, whole.up_to(next));
         }
     }
 
@@ -2472,25 +2514,22 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
     }
 
     /// Leave the piece through the lookup. A jump to outside its function, or to its function's entry, is a
-    /// tail call, which costs what a call through a register costs; one to inside it, in this part or in
-    /// another of a function cut in parts, is a table left unrecognised, the slow path, counted.
+    /// tail call, which costs what a call through a register costs; one to inside it (up to the next
+    /// function's entry), in this part or in another of a function cut in parts, is a table or computed goto
+    /// left unrecognised, the slow path, counted.
     fn unrecognised_jump(&mut self, target: u32) {
         self.sites[Reason::JumpThroughRegisterNotRecognised as usize] += 1;
         self.write_back();
-        let (entry, first, last) = (
-            self.whole.entry,
-            *self.whole.span.start(),
-            *self.whole.span.end(),
-        );
+        let (entry, span) = (self.whole.entry, self.whole.span.clone());
         let load = self.fixed(G_LOAD_ADDRESS);
         let mut s = self.sink();
         s.local_get(target);
         load.push(&mut s);
         s.i64_sub()
-            .i64_const(first as i64)
+            .i64_const(span.start as i64)
             .i64_sub()
-            .i64_const((last - first) as i64)
-            .i64_le_u();
+            .i64_const((span.end - span.start) as i64)
+            .i64_lt_u();
         s.local_get(target);
         load.push(&mut s);
         s.i64_sub().i64_const(entry as i64).i64_ne().i32_and();

@@ -644,19 +644,56 @@ fn only_jumps_inside_their_function_are_unrecognised() {
 }
 
 /// A switch whose cases lie in other parts of a function cut in parts jumps to them as tail calls, no slow
-/// path, as on Linux.
+/// path, as on Linux: none counted, and no more code translated at run time than for hello world (the C
+/// library's own).
 #[test]
 fn switch_cases_in_other_parts_are_not_slow() {
     for optimisation in ["-O0", "-O2"] {
         let blob = build("cut_switch", optimisation, Library::C);
         let theirs = native(&blob);
+        let hello = build("hello", optimisation, Library::C);
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let how = (LookAhead::Full, optimise);
+            let (_, library, _) = translated_for(&hello, how);
+            let (ours, machine, _) = translated_for(&blob, how);
+            let what = format!("at {optimisation} for {optimise:?}");
+            assert_eq!(ours, theirs, "{what}");
+            assert_eq!(
+                machine.count(Reason::JumpThroughRegisterNotRecognised),
+                0,
+                "{what}"
+            );
+            assert!(
+                machine.count(Reason::TranslatedAtRunTime)
+                    <= library.count(Reason::TranslatedAtRunTime),
+                "{what}"
+            );
+        }
+    }
+}
+
+/// Jumps through a register to their own function's code that exploring it did not reach (a switch bounded
+/// by no check, a computed goto) are the slow path, counted each time they run. The program prints how many
+/// it made of each.
+#[test]
+fn jumps_to_their_function_beyond_what_was_explored_are_unrecognised() {
+    for optimisation in ["-O2", "-O3", "-Os"] {
+        let blob = build("unexplored_jumps", optimisation, Library::C);
+        let theirs = native(&blob);
+        let made: u64 = String::from_utf8_lossy(&theirs.stdout)
+            .lines()
+            .last()
+            .expect("the program prints its counts")
+            .split_whitespace()
+            .map(|n| n.parse::<u64>().expect("a count"))
+            .sum();
         for optimise in [Optimise::Speed, Optimise::Size] {
             let (ours, machine, _) = translated_for(&blob, (LookAhead::Full, optimise));
             let what = format!("at {optimisation} for {optimise:?}");
             assert_eq!(ours, theirs, "{what}");
             assert_eq!(
                 machine.count(Reason::JumpThroughRegisterNotRecognised),
-                0,
+                made,
                 "{what}"
             );
         }
