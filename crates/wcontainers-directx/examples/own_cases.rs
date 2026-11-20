@@ -1,5 +1,6 @@
 //! Small Direct3D 11 programs for single cases, one per argument: `atomics` (texture atomics
-//! from a compute shader), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
+//! from a compute shader), `raw_signed_atomics` (signed and unsigned minimums and maximums of
+//! raw words from every pixel and thread), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
 //! views), `split` (a pixel shader's storage view read by the next draw on the same targets),
 //! `depth_filter` (an `R32_FLOAT` depth and a colour texture sampled through one linear
 //! sampler), `deep` (a depth buffer larger than its target), `msaa_copy` (a copy between
@@ -311,6 +312,91 @@ fn main() -> windows::core::Result<()> {
             print("min", &lo, 4);
             print("max", &hi, 4);
             print("or xor", &o, 4);
+        }
+        "raw_signed_atomics" => {
+            // Every pixel of a draw (some discarding first) and every thread of a dispatch takes
+            // signed and unsigned minimums and maximums of the same raw words, which commute, so
+            // the words end fixed.
+            let side = 16;
+            let start = [3i32; 8];
+            let desc = D3D11_BUFFER_DESC {
+                ByteWidth: std::mem::size_of_val(&start) as u32,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_UNORDERED_ACCESS.0 as u32,
+                MiscFlags: D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS.0 as u32,
+                ..Default::default()
+            };
+            let data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: start.as_ptr().cast(),
+                ..Default::default()
+            };
+            let mut words = None;
+            unsafe { device.CreateBuffer(&desc, Some(&data), Some(&mut words))? };
+            let words = words.unwrap();
+            let raw = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                Format: DXGI_FORMAT_R32_TYPELESS,
+                ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
+                Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                    Buffer: D3D11_BUFFER_UAV {
+                        FirstElement: 0,
+                        NumElements: start.len() as u32,
+                        Flags: D3D11_BUFFER_UAV_FLAG_RAW.0 as u32,
+                    },
+                },
+            };
+            let mut view = None;
+            unsafe { device.CreateUnorderedAccessView(&words, Some(&raw), Some(&mut view))? };
+            let target = make(
+                &Tex {
+                    w: side,
+                    h: side,
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let rt = rtv(&target);
+            let pixels = ps("RWByteAddressBuffer u : register(u1);
+                float4 main(float4 pos : SV_Position) : SV_Target {
+                    if (((uint)pos.x + (uint)pos.y) % 5 == 0) discard;
+                    int v = (int)pos.x - (int)pos.y * 3;
+                    u.InterlockedMax(0, v);
+                    u.InterlockedMin(4, v);
+                    u.InterlockedMax(8, (uint)v);
+                    u.InterlockedMin(12, (uint)v);
+                    return 0;
+                }");
+            let threads = cs("RWByteAddressBuffer u : register(u0);
+                [numthreads(8, 8, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    int v = (int)id.x * 2 - (int)id.y * 5;
+                    uint r;
+                    u.InterlockedMax(16, v, r);
+                    u.InterlockedMin(20, v, r);
+                    u.InterlockedMax(24, (uint)v, r);
+                    u.InterlockedMin(28, (uint)v, r);
+                }");
+            unsafe {
+                viewport(side, side);
+                context.VSSetShader(vs(FULL).as_ref(), None);
+                context.OMSetRenderTargetsAndUnorderedAccessViews(
+                    Some(std::slice::from_ref(&rt)),
+                    None,
+                    1,
+                    1,
+                    Some([view.clone()].as_ptr()),
+                    None,
+                );
+                context.PSSetShader(pixels.as_ref(), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+                context.CSSetShader(threads.as_ref(), None);
+                context.CSSetUnorderedAccessViews(0, 1, Some([view].as_ptr()), None);
+                context.Dispatch(2, 2, 1);
+                context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+            }
+            print_buffer("raw signed atomics", &words, desc.ByteWidth);
         }
         "typed" => {
             // Values each format holds exactly.
