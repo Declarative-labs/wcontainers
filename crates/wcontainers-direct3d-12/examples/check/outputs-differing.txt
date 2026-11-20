@@ -1,0 +1,33 @@
+# Every DXGI output and swap chain answer of ours that differs from real Direct3D 12's on the RTX 3080
+# and this desktop's monitor, as "key real ours" (see features-differing.txt for the rule).
+#
+# CheckColorSpaceSupport (color_space_<format>_<space>): the spaces real presents on this SDR
+# desktop besides full-range sRGB, scRGB and the others ours presents: studio range (2, 14, 20,
+# 21), BT.2020 primaries (3, 12, 14, 17, 21), the PQ curve (12, 14) and the 2.4 gamma (20, 21).
+# A browser canvas shows full-range sRGB or Display P3 only, so ours answers them absent and the
+# program keeps a space it can show.
+color_space_24_12 0x1 0x0
+color_space_24_14 0x1 0x0
+color_space_24_17 0x1 0x0
+color_space_24_2 0x1 0x0
+color_space_24_20 0x1 0x0
+color_space_24_21 0x1 0x0
+color_space_24_3 0x1 0x0
+color_space_28_12 0x1 0x0
+color_space_28_14 0x1 0x0
+color_space_28_17 0x1 0x0
+color_space_28_2 0x1 0x0
+color_space_28_20 0x1 0x0
+color_space_28_21 0x1 0x0
+color_space_28_3 0x1 0x0
+color_space_87_12 0x1 0x0
+color_space_87_14 0x1 0x0
+color_space_87_17 0x1 0x0
+color_space_87_2 0x1 0x0
+color_space_87_20 0x1 0x0
+color_space_87_21 0x1 0x0
+color_space_87_3 0x1 0x0
+#
+# DXGI_OUTPUT_DESC1's primaries: real gives the monitor's own (from its EDID); a browser reports
+# none, so ours gives BT.709's, which the sRGB space it presents in assumes.
+output_primaries [0.63964844,0.33007813],[0.2998047,0.5996094],[0.15039063,0.059570313],[0.3125,0.32910156] [0.64,0.33],[0.3,0.6],[0.15,0.06],[0.3127,0.329]

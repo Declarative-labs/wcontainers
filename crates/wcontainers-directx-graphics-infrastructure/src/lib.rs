@@ -16,7 +16,10 @@ pub use format::{
     typeless_group,
 };
 pub use output::{COLOR_SPACE_LINEAR, COLOR_SPACE_SRGB, DisplayMode, OutputDesc, presents_in, sdr};
-pub use support::{FormatSupport, format_support, plane_count, support1, support2, takes_samples};
+pub use support::{
+    FormatSupport, atomic_operations, format_support, plane_count, support1, support2,
+    takes_samples,
+};
 pub use swapchain::{
     DEFAULT_LATENCY, MAX_BUFFERS, Model, SwapChain, SwapChainDesc, SwapChainError,
 };
