@@ -111,6 +111,16 @@ pub trait ProcessTracer {
     ) -> ProcessorFeatures {
         supported.clone()
     }
+    fn read_monotonic_nanoseconds<P: Process<State = Self::ProcessState>>(
+        &self,
+        process: P,
+        thread: TaskId,
+    ) -> u64;
+    fn read_random_number<P: Process<State = Self::ProcessState>>(
+        &self,
+        process: P,
+        thread: TaskId,
+    ) -> u64;
 }
 
 /// The source of the ids of processes and threads.
