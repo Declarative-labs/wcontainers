@@ -161,10 +161,32 @@ Next, in this order:
 1. GLSL into the bridge: Mesa's standalone GLSL compiler (`libglsl_standalone`; `standalone.cpp`
    shows the calls: `initialize_context_to_defaults`, `standalone_add_shader_source`,
    `_mesa_glsl_compile_shader`, `link_shaders_init`, `gl_nir_link_glsl`; the linked NIR is
-   `_LinkedShaders[stage]->Program->nir`; a C++ file, so a second `cc::Build`), then st/mesa's
-   after-link lowering for the caps the OpenGL driver will report (decide and record them: G9 must
-   report the same; default-block uniforms go to a uniform buffer as st/mesa's
-   `nir_lower_uniforms_to_ubo` does); the reference is llvmpipe (EGL surfaceless).
+   `_LinkedShaders[stage]->Program->nir`; a C++ file, so a second `cc::Build` whose flags come from
+   `standalone.cpp`'s compile command), then st/mesa's after-link lowering for the caps the OpenGL
+   driver will report (decide and record them: G9 must report the same); the reference is
+   llvmpipe (EGL surfaceless). Read in run 5 (`st_glsl_to_nir.cpp`, `gl_nir_linker.c`), so the
+   shape route B must take from GLSL is known:
+   - The linker always lowers IO (`gl_nir_lower_optimize_varyings` runs `nir_lower_io_passes`):
+     route B takes that now. Set `GLSLFragCoordIsSysVal`, `GLSLFrontFacingIsSysVal` and
+     `GLSLPointCoordIsSysVal` in the context (the driver's caps), and run `nir_lower_fragcolor`
+     for `gl_FragColor` (it writes every draw buffer). Legacy varyings (`gl_TexCoord`,
+     `gl_FrontColor`: `VARYING_SLOT_TEX0`, `COL0`) reach `builtin_at` as "another built-in" and
+     are refused; give them locations past the generic ones or keep them refused, and record it.
+   - Blocks: `gl_nir_lower_buffers` makes each uniform and storage block a `deref_cast` of
+     `vec2(block index, byte offset)` with the deref chain below it (the driver runs
+     `nir_lower_explicit_io`); route B must take that cast as it takes Vulkan's descriptor chains.
+   - Default-block uniforms: `st_finalize_nir` assigns their places
+     (`st_nir_assign_uniform_locations`, which needs the program's parameter list:
+     `_mesa_ensure_and_associate_uniform_storage`), lowers them (`st_nir_lower_uniforms`:
+     `nir_lower_io` then `nir_lower_uniforms_to_ubo`) into `load_ubo(0, byte offset)` with every
+     other block one index up. Route B must take `load_ubo` with explicit offsets: the block as an
+     array of `vec4<u32>` (a uniform array's stride is 16 in the common form), each component
+     read by its word and bitcast at the use.
+   - Samplers: `gl_nir_lower_samplers_as_deref` (the driver reports `nir_samplers_as_deref`),
+     images likewise; the binding is the sampler's index, bound to its unit at draw time.
+   - Constants: a context from `_mesa_init_constants` (libmesa, linked already) rather than the
+     scaffolding's GLSL 1.20 minimums, API compatibility at GLSL 4.60 with the ES compatibility
+     extensions, so one context takes desktop and ES sources.
 2. The rest of the corpus (piglit and dEQP GLSL, Godot Compatibility, bgfx, Dolphin; Godot Forward+
    SPIR-V; the shaders of `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and
    `dEQP-VK.robustness.buffer_access.*`), each pinned in `corpus/sources`. Then `corpus/choose` again
