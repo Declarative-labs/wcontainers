@@ -27,8 +27,9 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   machine the new tests equal the reference, the whole suite's verdicts are unchanged, and the
   speed with no hook implemented is unchanged (see "Measurements", S3 run 6). Still owed: the
   Mac's verdicts for the 25 tests the ARM manual keeps on the Mac (Docker Desktop there still
-  starts no container); their failures on the ARM machine are word for word run 4's. Then the
-  next independent check.
+  starts no container; run 7 changed no code and waited for it in vain, see "For the
+  orchestrator"); their failures on the ARM machine are word for word run 4's. Then the next
+  independent check.
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -1230,6 +1231,14 @@ anything shipped.
   machine gave every other verdict. Owed on the Mac once Docker starts containers: the 20 test
   binaries holding the manual's 25 Mac-only tests and `splice_holds_the_pipe` (the list in
   scratch streams/s3d/mac-only.log).
+- Run 7 (07:22 to 07:58 Pacific, Mac load about 2.5): still none. `docker run`, `docker run -d`
+  and `docker start` never return; the container stays "Created" and the VM's log shows the
+  attach and wait requests but no start answered. A probe tried every 3 minutes, 9 times from
+  07:33 to 07:57 (scratch streams/s3g/docker-probe.sh, docker-probe.log), each "created",
+  each removed after. I did not restart Docker Desktop (shared; another project's container
+  runs). The 20 binaries are built in this checkout's target (s3g/build.log); once containers
+  start: `RUST_TEST_THREADS=3 CARGO_INCREMENTAL=0 nix develop -c cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel-test $(cat <scratch>/streams/s3c/mac-tests.txt)`.
 
 - For the owner (S3 run 4): `ProcessContext::origin() -> ContextOrigin { Suspended, Copied }` is
   new (names suggested): through a hook's handle, a process whose own thread is in the middle of
