@@ -225,7 +225,12 @@ machine; the others need an ARM64 reference). On the Mac at f84695a7 (k6c15/mac4
 on the backend, 32 cached each) matched, every test of the Mac list passed, and timers passed 3
 of 3. write and tmpfsfull passed on the Mac at 265fd927. Literals at 265fd927: only the second
 start (For the orchestrator); the baseline is 8448 lines (8487 before the merge).
-FINAL_SUITE
+Whole suite at the run's last code, 265fd927, on the ARM machine (fmt and clippy clean; same
+command, 10:01 to 11:32 UTC, load 10 to 35, beside ADSP038; scratch k6c15/suite2-attach.log,
+k6c15/fail15b.txt): 273 passed, 37 failed, 6 ignored. 36 are the known ARM list; the 37th is
+terminal `splice_holds_the_pipe`, new here: run again there it failed 3 times in 9 (11:33 UTC,
+load 11 to 12), ours showing "abc\r\n" once where the reference showed it twice, and it
+passed on the Mac. Cause not found (Known issues).
 
 ## K6c, fourteenth run
 
@@ -4522,6 +4527,11 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Known issues
 
+- terminal `splice_holds_the_pipe` (guest/ttylock.c, `cat /dev/tty | cat`) failed 1 time in the
+  fifteenth run's whole suite on the ARM machine and 2 times in 9 run alone there: ours printed
+  the typed line once ("abc\r\n"), the reference twice (its echo and cat's copy). It passed on
+  the Mac. Not seen before the merge of phase-1's streams work; which side varies is not known
+  yet: keep a failing run's output and compare it with a passing one's.
 - timers `timers_match_reference` failed once on the Mac in the thirteenth run's check (its
   output was not kept) and passed 33 runs since. If it fails again, keep the whole output: it
   says which side's line differs.
