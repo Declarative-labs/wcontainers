@@ -5,6 +5,84 @@ G9).
 
 ## Where it stands
 
+G9 run 6 (2026-11-20). G9 is still far from its bar, but OpenGL ES 2.0 now mostly works on our
+driver. The table of lists and shares on our driver, the WHOLE lists (desktop, RTX 3080, GPU
+queue, 14:00 to 14:07, 8 at once; the desktop's processors at 8% just after; other tracks' jobs
+queued beside):
+- dEQP-GLES2: 17,165 cases; Pass 14,619, Warn 5, Fail 2,143, Crash 262, Skip (NotSupported)
+  136: passed 14,624 of 17,029 run, 85.88% (run 5, 1% shard: 23.98%).
+- KHR-GLES2: 473 cases; Pass 422, Fail 5, Crash 6, Skip 40: 422 of 433 run, 97.46% (run 5: 0 of
+  5).
+- dEQP-GLES3, dEQP-GLES31, KHR-GLES3, KHR-GLES31, KHR-GLES32, KHR-GL33, KHR-GL46: still cannot
+  start (the driver reports OpenGL ES 2.0 only; glcts makes no context). Over all the lists of
+  15.2 the measure is therefore far below the 92.9% floor; no list but the two above has a case
+  run.
+- Results: scratch `results/g9r6/full/` (both `results.csv` and the runner's output); 1% and 10%
+  shards on the way in `results/g9r6/s2` to `s10`.
+Fixed this run (each found by reading the failing cases' pictures and the runner's logs):
+- Uniforms: st/mesa hands every program's uniforms over as `load_ubo` (the default uniforms as
+  block 0). The bridge's `wc_nir_uniform_blocks_as_words` (called once when st/mesa hands a
+  program over) turns every block access into derefs of one array of words a block, the step
+  the GLSL corpus already used, sized by the block variables' explicit types (the default
+  block's variable is one array of vectors, not an array of blocks), and drops the default
+  uniforms' own variables, which nothing reads after. 82 of run 5's 94 crash logs.
+- Everything was drawn upside down: route B takes a program's clip space as Vulkan's and
+  negates y itself, so the driver now negates y only for a Gallium viewport whose y scale is
+  negative (window-system framebuffers), where it negated it for a positive one.
+- A sampler view's target and swizzle were read wrongly on Windows: bindgen lays bit fields out
+  as the Itanium ABI does, and Visual C++ starts a new unit where `pipe_sampler_view` puts a
+  `bool` between its enums, so every view read target 0 (a 2D view: wgpu refused the 3D and cube
+  textures, "Invalid texture view dimension D2 with texture of dimension D3", which run 5 had
+  asked of the WebGPU track; it was ours). Both are now read in C by the compiler that lays them
+  out (`bridge/fields.c`, built with Mesa's flags by `cc`). The other Gallium structs the driver
+  reads keep one width a run of bit fields (checked: pipe_draw_info, pipe_vertex_element,
+  pipe_framebuffer_state, pipe_surface, pipe_resource, the state blocks).
+- Draws whose stencil faces differ in masks or reference on a back end with one of each per
+  draw (WebGPU) are split by face (`StencilFacesSplit`): blocks a face, the rasterizer's blocks
+  culling one face each; points and lines take the front's; a draw culling one face takes the
+  other's only.
+- Convergent fragment inputs: Mesa's varying optimiser made them flat, which the host takes from
+  the first vertex while OpenGL's default is the last; the NIR options now keep them interpolated
+  (`nir_io_always_interpolate_convergent_fs_inputs`, exact for a value that is the same at every
+  vertex). Mesa then interpolates them linearly, and the host requires a vertex output and the
+  fragment input it meets to be interpolated alike, so the vertex program is converted for the
+  fragment program it meets: its outputs take the fragment inputs' interpolation (the variant
+  holds them; OpenGL's fragment stage alone decides).
+- Arrays of textures and samplers read at constant indices (OpenGL ES 2.0's only kind) are one
+  variable an element (`wc_nir_split_resource_arrays`): the host has no arrays of bindings.
+- Fans and loops drawn from an index buffer read the indices back (`ReadBackWait`) and convert
+  them as the program's own.
+- A view whose target has one layer reads one layer (st/mesa gives a cube's whole range).
+- The Windows build fetches the DirectX Shader Compiler (v1.9.2609, `dxc_2026_09_29.zip`, sha256
+  ad31b1fc...a7e7f1) and installs `dxcompiler.dll` and `dxil.dll` beside the driver, so wgpu's
+  Direct3D 12 back end compiles with DXC, as Chrome does, and not with FXC, which failed to
+  unroll loops ("X3511") and hit an internal error ("X8000: Abs modifier not allowed").
+- Route B samples at level 0.0 outside comparisons (naga's HLSL writer writes `SampleLevelZero`,
+  which HLSL has only for comparisons).
+What is left, by what the whole run shows (grouped by the runner's results; the Fail groups are
+not yet read case by case):
+- Crashes (refusals by name): blending with both the blend constant's colour and its alpha in one
+  block, 254 logs (BlendInShader is not built); "not taken: a texture operand of another kind",
+  136 (route B); "a program not in NIR", 132 (a program st/mesa hands over as TGSI: to trace);
+  8-bit indices in a buffer, 6; arrays of arrays of textures, 4; stage values at Mesa's slots 24
+  and 25, 4.
+- Fails: shaders 550, clipping 430, uniform_api 325, vertex_arrays 324, fbo 118, fragment_ops 111,
+  texture 106, draw 72. Many are not their own: one object wgpu finds invalid makes the whole
+  submit fail, and every case after it in the same glcts process reads back nothing ("finish_read
+  of a read back that is not ready or failed"). The cause seen most: a vertex stream whose stride
+  is not a multiple of 4 ("Vertex buffer 0 stride 2 does not respect VERTEX_ALIGNMENT"), which
+  the WebGPU back end accepts and wgpu refuses (asked under Requests). The clipping cases seen
+  (`clip_one.clip_neg_x_pos_y`) draw nothing in the triangle's area, likely such a cascade; to be
+  rerun alone.
+- NotSupported (Skip) groups, not yet listed with what each asks: dEQP-GLES2 fbo 91, the rest
+  small; KHR-GLES2 ASTC 3D textures 30 and internal formats 10.
+- Next, in order: (1) rerun the failing groups alone to separate cascades from real failures,
+  and give each a reason; (2) the vertex stride (WebGPU track) or a refusal by name in the
+  meantime; (3) BlendInShader for constant colour and alpha; route B's texture operand; the TGSI
+  program; (4) OpenGL ES 3.0 (queries, transform feedback through the stage helper, instanced
+  arrays, primitive restart, then the GLSL and ESSL caps), which every other list needs; (5) the
+  literal check's 36 findings in wcontainers-opengl (Literal check).
+
 G9 run 5 (2026-11-20). G9 is still far from its bar. This run found the heap corruption that
 crashed llvmpipe and our driver alike, and fixed the largest groups of our driver's crashes:
 - The heap corruption (exit 0xc0000374, every crash that compiled a program, on llvmpipe and on
@@ -1197,6 +1275,12 @@ Next (after G8's check):
 - The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
   the Mesa build; the route test linked with a map, each kept object traced to its source).
 
+- Reading a run's failures (G9 run 6): copy the list's folder back (`scp -o BatchMode=yes -r
+  tom@192.168.2.183:C:/wc/graphics-nir/cts/results/wcontainers/<list> <scratch>`), then
+  `scripts/qpa_images.py <case>.qpa` (scratch) writes each picture of a case's log as a PNG, and
+  `scripts/crash_reasons.py <folder> <runner output>` lists each failed case with the driver's
+  refusals in its process's log (a process runs many cases: a refusal is the crash's own, a
+  validation error may be an earlier case's).
 - Build Mesa for Windows (G9) on the desktop, from a checkout on the Mac: `tools/graphics-rig/remote
   'powershell -NoProfile -ExecutionPolicy Bypass -File crates\wcontainers-nir\mesa\build-windows.ps1'`.
   Tools, source, build and install under `C:\wc\graphics-nir` (kept between runs; the tools'
@@ -1314,6 +1398,13 @@ Next (after G8's check):
 
 ## Measurements
 
+- The whole dEQP-GLES2 and KHR-GLES2 lists on our driver (G9 run 6, desktop, RTX 3080, one GPU
+  job, 8 glcts processes at once, other tracks' jobs queued beside; the desktop's processors at
+  8% just after): 17,638 cases in 6 min 45 s (14:00:07 to 14:06:52, with the job's start). A 1%
+  shard of both (177 cases): about 35 s; a 10% shard (1,765 cases): 71 s.
+- The Windows Mesa build with the driver, incremental after a driver change (desktop, 8 jobs,
+  shared): about 1 to 2 minutes, most of it cargo's release build of the driver.
+
 - The whole corpus run (G9 run 1, 18,738 items, 96 children, x86-64 machine, load 10.9 at the
   start and 2.2 at the end; a new spot machine, Mesa and the corpus built again first): 740 s
   (12 min 20 s). Route B: 12,068 match, 156 differ, 518 failed by name, 6 not compared (run 15:
@@ -1421,6 +1512,13 @@ Next (after G8's check):
 - No change to the interface crate: what the second batch needs from it (15.7) is written below as requests.
 
 ## Licences brought in (for the owner to confirm)
+
+- G9 run 6: the DirectX Shader Compiler's Windows release v1.9.2609 (`dxcompiler.dll`,
+  `dxil.dll`), fetched by `mesa/build-windows.ps1` onto the desktop only and placed beside the
+  test driver; not in this repository. Its LICENSE.TXT is the University of Illinois/NCSA Open
+  Source License (permissive) with notices for its LLVM-derived parts; to confirm from the
+  archive's own files before anything ships with it. The `cc` crate (MIT or Apache-2.0, already
+  a build dependency of wcontainers-nir) is now also a build dependency of wcontainers-opengl.
 
 - Mesa 26.3.1 (fetched by the build scripts, not in this repository). Its `docs/license.rst` says
   each file's SPDX tag governs; the core is MIT. Linked into wcontainers-nir's tests: Mesa's static
@@ -1685,11 +1783,13 @@ None.
 
 ## Requests to other tracks
 
-- WebGPU back end or interface track (G9 run 5): KHR-GLES2's `texture_3d.filtering` cases end with
-  wgpu's "Invalid texture view dimension `D2` with texture of dimension `D3`" in
-  `Texture::create_view`, and none of our driver's views of a 3D texture is 2D (sampler views
-  and surfaces take `D3`). Not yet traced to the call that makes it; the next run of this track
-  finds it first (it may be ours).
+- WebGPU back end (G9 run 6): `create_vertex_layout` accepts a stream whose stride is not a
+  multiple of 4 (OpenGL allows any stride: dEQP-GLES2's `vertex_arrays` cases with strides 2 and
+  17), and wgpu then refuses the pipeline ("Vertex buffer 0 stride 2 does not respect
+  VERTEX_ALIGNMENT"), which fails the whole submit and every case after it in the process. The
+  back end should take such a stream by a counted slow path (repacked, or fetched in the program)
+  or refuse the layout so that a front can. (Run 5's request about 2D views of 3D textures is
+  withdrawn: it was this driver's misread view target, fixed in run 6.)
 
 - Literals track (G9 run 3): a lawful form for a build script's output folder. The check accepts
   `env!("OUT_DIR")` but not `env::var_os("OUT_DIR")`, the only way a build script can read it,
@@ -1748,6 +1848,18 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 6: exit 1 at 30a4c084's successor 7ead95aa (x86-64 machine, from a git bundle; marks 0;
+the clone and its build deleted after; output in scratch `logs/g9r6-literals.out`). 38
+findings: `CUBE_FACES` twice (Waiting on others) and 36 in wcontainers-opengl, most from runs 3
+to 5: the refusal texts given to the driver's own `refuse` and returned as `Err("...".into())`
+(the check's documented false catch of a crate's own message helpers; to be made messages the
+check reads, or named), `"C"` and the format string of the `unbuilt!` macro, the shader entry
+names `"vs"`/`"fs"` in present.rs, `[u32; 4]` and `[f32; 4]` colour arrays, and run 3's two
+`OUT_DIR` ones (build.rs's `"OUT_DIR"` and gallium.rs's `"/gallium.rs"`, still reported). Fixed
+this run: the draw's binding sets (from `MAX_BINDING_SETS` by `array::from_fn`) and two zero
+colours (`Default::default()`), 2062f8fe. wcontainers-nir and wcontainers-opengl have no
+baseline lines.
 
 G9 run 5: run at 99e5ff55 (x86-64 machine, from a git bundle; marks 0; the clone and
 its build deleted after). Findings shown: `CUBE_FACES` twice (Waiting on others) and
