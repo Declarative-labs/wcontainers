@@ -47,10 +47,11 @@ mod macos {
 
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-    use wcontainers_arm64::encode::{self, field};
+    use wcontainers_arm64::encode::{self, field, form};
     use wcontainers_arm64::forms::{self, Form};
     use wcontainers_arm64::{Arm64, Instruction as I, Reg, SystemRegister, decode};
     use wcontainers_guest_cpu::{Guest, Native, Route};
+    use wcontainers_translator::LookAhead;
     use wcontainers_translator_test::layer1::{Case, Stop, cases, covered, excluded, translated};
     use wcontainers_translator_test::layout::CODE;
 
@@ -222,6 +223,32 @@ mod macos {
         }
     }
 
+    /// A case loading the code page's second word, run after a function of two words: what it loads is a fresh
+    /// machine's, whatever ran before. The difference from the WebAssembly output, if any.
+    fn code_page_fresh(runner: &mut Runner, look_ahead: LookAhead) -> Option<String> {
+        const DESTINATION: encode::Register = 0;
+        const BASE: encode::Register = 1;
+        let unit = size_of::<u32>() as u64;
+        let load = encode::load_store(form::LDR_32, DESTINATION, BASE, 0, unit).expect("fits");
+        runner.load_function(&[load, load], look_ahead);
+        runner.unload();
+        let case = Case {
+            word: load,
+            registers: std::array::from_fn(|n| {
+                if n == usize::from(BASE) {
+                    CODE + Arm64::MAX_LENGTH
+                } else {
+                    0
+                }
+            }),
+            vectors: std::array::from_fn(|_| 0),
+            float: Default::default(),
+            tracking: false,
+            seed: 0,
+        };
+        runner.case(&case).differs(&translated(&case))
+    }
+
     /// `run` of each of `items`, on `jobs` threads.
     fn on_threads<T: Sync, R: Send>(
         items: &[T],
@@ -253,6 +280,9 @@ mod macos {
             .map(|list| list.split(SEPARATOR).map(String::from).collect());
         let started = Instant::now();
         let mut runner = Runner::start();
+        if let Some(difference) = code_page_fresh(&mut runner, look_ahead) {
+            panic!("a case sees the code page of the function before it: {difference}");
+        }
         let chosen: Vec<_> = forms::all()
             .iter()
             .filter(|f| covered(f))

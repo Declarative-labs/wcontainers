@@ -98,7 +98,7 @@ impl Runner {
             bytes.extend_from_slice(&code.bytes);
             pieces.last_mut().expect("just placed").code = code;
         }
-        self.write(CODE, &image);
+        self.write_code(words);
         self.load(&bytes);
         Function {
             entry: CODE,

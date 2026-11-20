@@ -314,6 +314,16 @@ impl Runner {
         }
     }
 
+    /// Writes `words` at the guest's code address and zeros over the rest of its page, as a fresh machine has, so
+    /// that no case sees the words of one before it.
+    fn write_code(&self, words: &[u32]) {
+        let mut page = vec![0u8; PAGE_SIZE as usize];
+        for (slot, word) in page.as_chunks_mut().0.iter_mut().zip(words) {
+            *slot = word.to_le_bytes();
+        }
+        self.write(CODE, &page);
+    }
+
     fn read(&self, va: u64, bytes: &mut [u8]) {
         for (k, b) in bytes.iter_mut().enumerate() {
             let at = self.frame_of(va + k as u64);
@@ -464,7 +474,7 @@ impl Runner {
         let mut data = vec![0u8; DATA_BYTES as usize];
         fill(case.seed, &mut data);
         self.write(DATA, &data);
-        self.write(CODE, &case.word.to_le_bytes());
+        self.write_code(&[case.word]);
         self.load(&piece.bytes);
         let (mut hardware, mut page) = start(case);
         let mut float = FloatStatus {
@@ -511,7 +521,7 @@ impl Runner {
         let mut data = vec![0u8; DATA_BYTES as usize];
         fill(case.seed, &mut data);
         self.write(DATA, &data);
-        self.write(CODE, &case.word.to_le_bytes());
+        self.write_code(&[case.word]);
         let mut piece = case.word.to_le_bytes().to_vec();
         piece.extend(call_word(InsideCall::Exit).to_le_bytes());
         self.load(&piece);
