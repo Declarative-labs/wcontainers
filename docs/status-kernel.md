@@ -4,6 +4,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## For the orchestrator
 
+- Seventeenth run (13:09 to about 13:45 UTC on the 20th): the rented ARM64 machine (now
+  3.134.104.48 in arm-run) still could not be reached and Docker Desktop on the Mac still started
+  no container (55 stuck "Created", one of them this track's), so no ARM64 reference could run.
+  The x86 machine was up and was used for a native Linux probe (K6c, seventeenth run).
+
 - From the sixteenth run ADSP038 (aiodio_sparse with 1000 readers) is named on the gap list under
   plan section 15's "same behaviour, slower: file access, until the cache in section 8 exists",
   with the one CPU, instead of waiting for a verdict (Known gaps, first part; Departures). It gave
@@ -44,6 +49,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   ARM64 machine (native Docker, no vsock link); the Mac's run was stopped at 07:40 on the 19th.
 
 ## Where things stand
+
+K6c, seventeenth run: terminal `splice_holds_the_pipe` is settled by measuring Linux: for
+`cat /dev/tty | cat` Linux itself prints the line once or twice from run to run, so that case is
+no longer compared (its guest was changed; Departures). Its verdict against the ARM64 reference
+and the rest of the bar wait for a machine with Docker and for the rulings (For the
+orchestrator). See "K6c, seventeenth run".
 
 K6c, sixteenth run: no code changed (265fd927 is the last code; its whole suite and the Mac's
 part are the fifteenth run's). ADSP038 is named on the gap list under section 15's slower file
@@ -174,6 +185,29 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, seventeenth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge (13:10 UTC). The ARM64
+machine and the Mac's Docker were still down (For the orchestrator).
+
+Terminal `splice_holds_the_pipe`, measured on Linux. Guest ttylock built for x86-64 (zig cc,
+musl, static) and run in alpine:3.22 under the x86 machine's Docker (Linux 7.0.0-1017-aws, 192
+processors, load 1 to 24; job kernel/20261120-131431-2105023, scratch
+k6c17/ttylock-probe.sh and the job's log beside it), 30 times on one CPU (`--cpuset-cpus=0`, as
+`run_one_cpu`) and 30 on all:
+- `cat /dev/tty | cat`: one CPU 20 once ("abc\r\n") and 10 twice; all CPUs 30 once. The ARM64
+  references (Docker Desktop, the ARM machine) gave twice, and ours gave once or twice.
+- `cat /dev/tty | (sleep 1; cat)` and `(sleep 1; head -c 2)`: once, 30 of 30 both ways.
+- `head -n 1 /dev/tty | cat`: twice, 30 of 30 both ways.
+So the first case is a race in Linux itself (the woken reader and the splice's next call both
+want the pipe's lock), and no kernel can be held to one answer for it. The guest no longer runs
+it (3c4a7075); the property it was written for, a reader coming to the pipe while a splice waits
+waits for the next line, is still compared by the other three. Not yet run against the ARM64
+reference after the change (no machine with Docker for it).
+
+Literal check at 3c4a7075 (Mac, load 2.4, as it needs the history; scratch k6c17/lit.txt): one
+finding, the second start (For the orchestrator); the baseline is 8448 lines, as before.
 
 ## K6c, sixteenth run
 
@@ -4011,6 +4045,11 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, seventeenth run: guest ttylock no longer runs `cat /dev/tty | cat`. Linux gives that
+  command's output either way (one CPU: 20 once, 10 twice in 30; 192 CPUs: 30 once; the ARM64
+  references twice), so comparing it compared two schedules, not two kernels. The case removed
+  is the only one whose output is a race; the three left are each 30 of 30 the same on Linux.
+
 - K6c, sixteenth run: ADSP038 is excused as section 15's slower file access with one CPU,
   although section 15's "slower" entries were read until now as giving the reference's verdict
   with a longer limit; seven hours were not enough and the plan defers the cache that would
@@ -4599,7 +4638,7 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Known issues
 
-- terminal `splice_holds_the_pipe` (guest/ttylock.c, `cat /dev/tty | cat`) failed 1 time in the
+- Settled in the seventeenth run (Departures): terminal `splice_holds_the_pipe` (guest/ttylock.c, `cat /dev/tty | cat`) failed 1 time in the
   fifteenth run's whole suite on the ARM machine and 2 times in 9 run alone there, as before in
   K3's sixth run and K6c's ninth: ours printed the typed line once ("abc\r\n", the echo), the
   reference twice (the echo and the second cat's copy). It passes on the Mac. Read from the code
@@ -4773,6 +4812,14 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the seventeenth run: the bar waits on rulings and on a machine with Docker.
+1. The literal check's second baseline start and the owner's rulings, as items 1 and 2 below.
+2. When the ARM64 machine or the Mac's Docker is up: terminal `splice_holds_the_pipe` against
+   the ARM64 reference several times (`cargo test -p wcontainers-kernel-test --test terminal`),
+   then the whole suite once at the last code (on the ARM machine, the Mac list on the Mac).
+3. Then say the bar is met; the independent check follows "For the independent check" and
+   scratch k6c15/mac4.sh (fresh layer 1 seeds from 9191123).
 
 K6c, after the sixteenth run: the bar waits on rulings, not on code.
 1. The literal check's second baseline start (For the orchestrator): the literals track's or the
