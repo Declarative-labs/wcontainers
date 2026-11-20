@@ -12,8 +12,8 @@ use std::ops::ControlFlow;
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::linux::general;
 use wcontainers_kernel::{
-    AccessKind, Errno, Kernel, MemoryError, Process, SignalInformation, System, SystemCallResponse,
-    TaskId, WatchesFor, reason, task_id_after,
+    AccessKind, Errno, Kernel, MemoryError, MemoryObject, Process, SignalInformation, System,
+    SystemCallResponse, SystemVSegmentId, TaskId, WatchesFor, reason, task_id_after,
 };
 use wcontainers_kernel_test::driver::{self, Run};
 use wcontainers_kernel_test::hooks::Hooks;
@@ -2125,4 +2125,254 @@ fn a_signal_the_embedder_sends_interrupts_a_read_as_one_another_process_sends() 
             );
         }
     }
+}
+
+/// The shared pages announced, by process and page: the source and where in it the page is.
+type SharedPages = BTreeMap<(TaskId, u64), (MemoryObject, u64)>;
+
+/// Keeps the shared memory each process is announced to map, page by page, checking that every
+/// end names what was announced; at each `sched_yield` keeps a copy, with the process yielding.
+#[derive(Default)]
+struct SharingRecorder {
+    pages: Arc<Mutex<SharedPages>>,
+    steps: Arc<Mutex<Vec<(TaskId, SharedPages)>>>,
+    /// Processes announced to map anything, and to end mapping anything.
+    mapped_in: Arc<Mutex<BTreeSet<TaskId>>>,
+    unmapped_in: Arc<Mutex<BTreeSet<TaskId>>>,
+}
+
+impl Hooks for SharingRecorder {
+    fn intercept_system_call_request(
+        &mut self,
+        process: Process<'_>,
+        _: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if request.number == u64::from(general::__NR_sched_yield) {
+            let pages = self.pages.lock().unwrap().clone();
+            self.steps.lock().unwrap().push((process.id(), pages));
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn on_shared_memory_mapping(
+        &mut self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        assert!(process.info().memory_mapped() > 0);
+        self.mapped_in.lock().unwrap().insert(process.id());
+        let mut pages = self.pages.lock().unwrap();
+        for page in range.clone().step_by(PAGE_SIZE as usize) {
+            let place = (source, offset + (page - range.start));
+            let before = pages.insert((process.id(), page), place);
+            assert_eq!(before, None, "{:?} {page:#x} announced twice", process.id());
+        }
+    }
+
+    fn on_shared_memory_unmapped(
+        &mut self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        self.unmapped_in.lock().unwrap().insert(process.id());
+        let mut pages = self.pages.lock().unwrap();
+        for page in range.clone().step_by(PAGE_SIZE as usize) {
+            let place = (source, offset + (page - range.start));
+            let before = pages.remove(&(process.id(), page));
+            assert_eq!(before, Some(place), "{:?} {page:#x} ended", process.id());
+        }
+    }
+}
+
+/// embedder.c's `sharing` steps: each name, and the shared pages /proc/self/maps showed then
+/// (page, offset in the source).
+fn sharing_steps(output: &str) -> Vec<(String, BTreeMap<u64, u64>)> {
+    let mut steps: Vec<(String, BTreeMap<u64, u64>)> = Vec::new();
+    for line in output.lines() {
+        if let Some(name) = line.strip_prefix("step ") {
+            steps.push((name.to_owned(), BTreeMap::new()));
+            continue;
+        }
+        let words: Vec<&str> = line.split(' ').collect();
+        let [range, _, offset] = words.as_slice() else {
+            continue;
+        };
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let hex = |text: &str| u64::from_str_radix(text, 16).unwrap();
+        let (start, end, offset) = (hex(start), hex(end), hex(offset));
+        let (_, pages) = steps.last_mut().expect("a step");
+        for page in (start..end).step_by(PAGE_SIZE as usize) {
+            pages.insert(page, offset + (page - start));
+        }
+    }
+    steps
+}
+
+#[test]
+fn shared_memory_is_announced_per_process_as_it_starts_and_ends_as_proc_maps_shows_it() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["sharing", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let steps = sharing_steps(&theirs);
+    let names: Vec<&str> = steps.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "readonly",
+            "writable",
+            "anonymous",
+            "segment",
+            "memfd",
+            "moved",
+            "replaced",
+            "child"
+        ],
+        "{theirs}"
+    );
+    let segment: i32 = theirs
+        .lines()
+        .find_map(|line| line.strip_prefix("segment "))
+        .expect("a segment")
+        .parse()
+        .unwrap();
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let recorder = SharingRecorder::default();
+        let (announced, taken) = (recorder.pages.clone(), recorder.steps.clone());
+        let (mapped_in, unmapped_in) = (recorder.mapped_in.clone(), recorder.unmapped_in.clone());
+        let run = run_embedder("sharing", Box::new(recorder), seed);
+        assert_eq!(stdout(&run), theirs, "seed {seed}");
+        let taken = taken.lock().unwrap();
+        assert_eq!(taken.len(), steps.len(), "seed {seed}");
+        let keeper = taken.last().expect("the child's step").0;
+        let mut previous = BTreeSet::new();
+        for ((name, shown), (process, all)) in steps.iter().zip(taken.iter()) {
+            let mine: BTreeMap<u64, u64> = all
+                .iter()
+                .filter(|((owner, _), _)| owner == process)
+                .map(|((_, page), (_, offset))| (*page, *offset))
+                .collect();
+            // Nobody could write the file through a mapping yet.
+            let expected = if name == "readonly" {
+                BTreeMap::new()
+            } else {
+                shown.clone()
+            };
+            assert_eq!(mine, expected, "seed {seed}, step {name}");
+            let sources: BTreeSet<MemoryObject> = all
+                .iter()
+                .filter(|((owner, _), _)| owner == process)
+                .map(|(_, (source, _))| *source)
+                .collect();
+            // What each step adds to the sources of the step before it.
+            let added: Vec<MemoryObject> = sources.difference(&previous).copied().collect();
+            let removed: Vec<MemoryObject> = previous.difference(&sources).copied().collect();
+            let label = format!("seed {seed}, step {name}: added {added:?}, removed {removed:?}");
+            match name.as_str() {
+                "readonly" | "moved" | "replaced" => {
+                    assert!(added.is_empty() && removed.is_empty(), "{label}")
+                }
+                "writable" => assert!(
+                    matches!(added[..], [MemoryObject::File { .. }]) && removed.is_empty(),
+                    "{label}"
+                ),
+                "anonymous" => assert!(
+                    matches!(added[..], [MemoryObject::Anonymous(_)]) && removed.is_empty(),
+                    "{label}"
+                ),
+                "segment" => assert!(
+                    added == [MemoryObject::SystemVSegment(SystemVSegmentId(segment))]
+                        && removed.is_empty(),
+                    "{label}"
+                ),
+                "memfd" => assert!(
+                    matches!(added[..], [MemoryObject::File { .. }])
+                        && removed == [MemoryObject::SystemVSegment(SystemVSegmentId(segment))],
+                    "{label}"
+                ),
+                _ => assert!(added.is_empty() && sources.len() == 1, "{label}"),
+            }
+            previous = sources;
+            // The child that kept the read-only mapping is announced when the file becomes
+            // writable through the parent's.
+            if name == "writable" {
+                let kept = &steps.last().expect("the child's step").1;
+                let its: BTreeMap<u64, u64> = all
+                    .iter()
+                    .filter(|((owner, _), _)| *owner == keeper)
+                    .map(|((_, page), (_, offset))| (*page, *offset))
+                    .collect();
+                assert_eq!(&its, kept, "seed {seed}: the child at the parent's step");
+            }
+        }
+        // Every start ended, in the parent, the child that kept a mapping and the one that ran
+        // a program.
+        assert!(announced.lock().unwrap().is_empty(), "seed {seed}");
+        let (mapped_in, unmapped_in) = (mapped_in.lock().unwrap(), unmapped_in.lock().unwrap());
+        assert_eq!(mapped_in.len(), 3, "seed {seed}: {mapped_in:?}");
+        assert_eq!(*mapped_in, *unmapped_in, "seed {seed}");
+    }
+}
+
+/// The hook, the process and its memory id.
+type MemoryIdSeen = (&'static str, TaskId, wcontainers_abi::MemoryId);
+
+/// Keeps the memory id each process is announced with at each of its hooks.
+#[derive(Default)]
+struct MemoryIds {
+    seen: Arc<Mutex<Vec<MemoryIdSeen>>>,
+}
+
+impl Hooks for MemoryIds {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        let id = process.memory_id();
+        self.seen
+            .lock()
+            .unwrap()
+            .push(("process", process.id(), id));
+    }
+    fn on_program_starting(&mut self, process: Process<'_>) {
+        let id = process.memory_id();
+        self.seen
+            .lock()
+            .unwrap()
+            .push(("program", process.id(), id));
+    }
+}
+
+#[test]
+fn processes_in_one_memory_have_one_memory_id_and_a_new_program_a_new_one() {
+    // The paths mode makes forked children, one that runs a program from a second thread, and a
+    // vfork child that runs a program.
+    let ids = MemoryIds::default();
+    let seen = ids.seen.clone();
+    run_embedder(
+        "paths",
+        Box::new(ids),
+        wcontainers_kernel_test::schedule_seeds().next().unwrap(),
+    );
+    let seen = seen.lock().unwrap();
+    let first = seen[0].2;
+    let (mut shared, mut fresh) = (0, 0);
+    for (index, (hook, process, memory)) in seen.iter().enumerate() {
+        let earlier: Vec<_> = seen[..index].iter().map(|(_, _, memory)| *memory).collect();
+        match *hook {
+            // A new program always runs in memory no process had before.
+            "program" if index > 1 => {
+                assert!(!earlier.contains(memory), "{process:?}: {seen:?}");
+                fresh += 1;
+            }
+            "process" if earlier.contains(memory) => shared += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(seen[1].2, first);
+    assert!(shared > 0 && fresh > 0, "{seen:?}");
 }

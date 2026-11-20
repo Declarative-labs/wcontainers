@@ -501,7 +501,7 @@ fn place(
     readable: bool,
 ) -> Result<Image, Failed> {
     let end = kernel.ceiling;
-    let mut map = AddressMap::new(kernel.machine.memory_bytes, end, kernel.outgrown.clone());
+    let mut map = AddressMap::new(kernel.machine.memory_bytes, end, kernel.map_notes.clone());
     let endian = LittleEndian;
     // In the order of Linux's `load_elf_binary`: the program's header and program headers, its
     // loader's name and header, the loader's program headers, then the properties.

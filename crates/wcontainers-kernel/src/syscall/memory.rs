@@ -537,6 +537,7 @@ fn shared_zero_file(
     let now = kernel.now(cx);
     let ino = kernel.files.numbers.ino();
     let mut regular = crate::fs::Regular::default();
+    regular.anonymous = true;
     regular.truncate(cx.cpu, size);
     let node = crate::fs::new_inode(
         kernel.files.memfd_fs.clone(),

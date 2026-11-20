@@ -54,7 +54,7 @@ pub(super) fn clone(
                     system.on_thread_starting(process, thread)
                 });
             } else {
-                kernel.announce(cx, process, |system, process| {
+                kernel.announce_start(cx, process, |system, process| {
                     system.on_process_starting(process)
                 });
             }
@@ -201,6 +201,7 @@ fn make_child(
     process.pid = child;
     process.memory = memory;
     process.map = map;
+    process.map.borrow().note_sharers_changed();
     process.threads = alloc::vec![child];
     process.pending = Default::default();
     process.ended = None;

@@ -33,6 +33,18 @@ pub trait System: Host + Sync {
     fn on_watched_memory_accessing(&self, process: Process<'_>, thread: TaskId, address: u64, kind: AccessKind) {}
     fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {}
     fn on_signal_delivering(&self, process: Process<'_>, thread: TaskId, signal: &SignalInformation) {}
+    fn on_shared_memory_mapping(&self, process: Process<'_>, source: MemoryObject, offset: u64, range: Range<u64>) {}
+    fn on_shared_memory_unmapped(&self, process: Process<'_>, source: MemoryObject, offset: u64, range: Range<u64>) {}
+}
+
+pub struct DeviceId(pub u64);
+pub struct InodeNumber(pub u64);
+pub struct SystemVSegmentId(pub i32);
+pub struct AnonymousMemoryId(pub u64);
+pub enum MemoryObject {
+    File { device: DeviceId, inode: InodeNumber },
+    SystemVSegment(SystemVSegmentId),
+    Anonymous(AnonymousMemoryId),
 }
 
 /// Linux's own record of a signal (the generated binding of `struct siginfo`).
@@ -155,6 +167,42 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   over those watches after it; a thread that then waits on a watch keeps the signal it took and
   acts on it, with no second announcement, once the watches change.
 
+- `on_shared_memory_mapping` and `on_shared_memory_unmapped`: what each process maps of shared
+  memory, per process (a mapping belongs to a process's whole memory): `range` is where it sits
+  in the process's memory and `offset` where in `source` that range starts. `source` is a file
+  by its device and inode (also a memory file and POSIX shared memory), a System V segment by its
+  id (`shmget`'s answer, the inode `/proc/<pid>/maps` shows for it), or shared anonymous memory
+  (`MAP_SHARED | MAP_ANONYMOUS`, and a shared mapping of `/dev/zero`) by the kernel's own number
+  for it. They describe a change of what a process maps, not a call: a mapping starts with mmap
+  (`MAP_SHARED`), shmat, `mremap` (at its new place, or a mapping grown), and fork (in the
+  child, every shared mapping it inherits but those `MADV_DONTFORK` keeps out) or a clone with
+  `CLONE_VM` (in the new process, the memory it shares); one ends with munmap (only the part
+  taken away), `mremap` (at the old place), a mapping put over it (`MAP_FIXED`, shmat with
+  `SHM_REMAP`), shmdt, a new program (every one, in the process that runs it), and the process's
+  end. Pieces of one mapping that `mprotect`, `mlock` or `madvise` split are still one piece of
+  the source, and nothing is announced for them; a call that maps the same part of the same
+  source at the same place again announces nothing either. Every end names exactly a range
+  announced before with the same source and offset, ends first: a change that ends one mapping and
+  starts another announces the ending first.
+- Only sources some process may write through a mapping are announced: a shared mapping whose
+  file was opened for writing (Linux's `VM_MAYWRITE`, whatever `mprotect` allows now). When a
+  source that no mapping could write through gets one that can, every process already mapping
+  it is announced then, before the new mapping, in each process's own hook. A source once
+  announced stays announced while any process maps it, even if the last mapping that could
+  write it ends; each mapping announced is announced ended.
+- When: a change made by a call is announced before the call's answer reaches the proxy
+  (`intercept_system_call_response`), and before any other hook; a fork's or clone's child is
+  announced its mappings just after `on_process_starting`; a new program's ends come before
+  `on_program_starting`; a process's end, just after `on_process_exiting`, while it is whole.
+- What it costs: an address map notes that a shared mapping went in or out, and a process
+  being made, running a new program or ending notes it when its memory has one; only then does
+  the kernel, before its next hook or before any thread runs, walk every live process's
+  mappings and compare what they map with what it announced. With no shared mapping anywhere
+  nothing is walked.
+- Not announced (for the owner): a private file mapping, which shows the file's bytes as other
+  processes write them until it writes a page itself. The ruling names `MAP_SHARED` mappings
+  only.
+
 ### The system call proxy
 
 - `intercept_system_call_request` is asked once for every system call a thread makes, when the
@@ -201,6 +249,7 @@ impl Process<'_> {
     pub fn id(&self) -> TaskId;
     pub fn info(&self) -> ProcessInfo<'_>;
     pub fn execution_config(&self) -> ExecutionConfig;
+    pub fn memory_id(&self) -> MemoryId;
     pub fn read_memory(&mut self, range: Range<u64>) -> Result<Vec<u8>, MemoryError>;
     pub fn write_memory(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError>;
     pub fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
@@ -263,6 +312,9 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
   (the abi's `PerThreadWatch` subtrait of `Cpu`); no executor implements it today, and the kernel
   reaches the executor as `dyn Cpu`, so the call is refused by name (`Unsupported::PerThreadWatch`).
 
+- `memory_id` is the executor's `MemoryId` of the memory the process runs in: the same for
+  processes that run in one memory (a vfork child until it lets go, a clone with `CLONE_VM`),
+  and a new one when the process runs a new program, which replaces its memory.
 - `send_signal` sends a signal to one thread of the process, as `rt_tgsigqueueinfo` would with
   `signal` as its record (the number is the record's `si_signo`; the sender is whoever the
   record names, for example none with `SI_QUEUE` for a signal from outside the container). It
@@ -411,16 +463,5 @@ pub enum Unsupported {
   of `Kernel` taking the `SuspendedProcess` and an `ExecutionConfig`. The process's records are the
   kernel's `Process` and `Thread` entries and its `AddressMap` (watches included); its memory is the
   executor's `MemoryId`.
-- Which processes share memory (ruled on the evening of 2026-11-19, replacing the pairwise report
-  and `memory_sharers()`): two hooks on `System`, `on_shared_memory_mapping` and
-  `on_shared_memory_unmapped(process, source: MemoryObject, offset, range)`, with
-  `MemoryObject::{File { device: DeviceId, inode: InodeNumber }, SystemVSegment(SystemVSegmentId),
-  Anonymous(AnonymousMemoryId)}` and the four branded ids in the kernel's interface. They will fire
-  per process where the `AddressMap` gains or loses a shared mapping (`Mapping::shared` and the
-  node it maps): mmap, shmat, the maps a fork's child inherits, and munmap, exit and exec. The
-  `WorkloadPlacement` ruling of the same evening also needs a getter for a process's memory id on
-  `Process` (the executor's `MemoryId`, which holds across vfork and exec). Shared pages marked
-  watched when one sharer leaves come with `suspend`: the marking will set `WatchesFor::All` on
-  those pages in every process still sharing them.
 - `type ProcessState` (ruled; to wait for the reviewable-rust layout).
 - `set_thread_ordering`, the inspection hooks and `StopReason`: not ruled or not asked for yet.

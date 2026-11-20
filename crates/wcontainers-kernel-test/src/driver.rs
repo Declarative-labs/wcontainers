@@ -11,8 +11,8 @@ use wcontainers_abi::{
     SystemCallRequest, Warning,
 };
 use wcontainers_kernel::{
-    AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, Process, SignalInformation, Start,
-    System, SystemCallResponse, TaskId,
+    AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, MemoryObject, Process,
+    SignalInformation, Start, System, SystemCallResponse, TaskId,
 };
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
@@ -319,6 +319,26 @@ impl System for TestHost<Box<dyn Hooks>> {
         signal: &SignalInformation,
     ) {
         self.hook().on_signal_delivering(process, thread, signal);
+    }
+    fn on_shared_memory_mapping(
+        &self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        self.hook()
+            .on_shared_memory_mapping(process, source, offset, range);
+    }
+    fn on_shared_memory_unmapped(
+        &self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        self.hook()
+            .on_shared_memory_unmapped(process, source, offset, range);
     }
 }
 

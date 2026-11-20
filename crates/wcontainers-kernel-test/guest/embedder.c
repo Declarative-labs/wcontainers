@@ -38,6 +38,11 @@
 //     its handlers saw, in order.
 //   interrupted SENDER: a child reads an empty pipe into the buffer until a SIGUSR1 interrupts
 //     it; the parent sends it with sigqueue (SENDER parent) or leaves it to the embedder (none).
+//   sharing: maps shared memory in every way it can start and end (a file read-only, then
+//     writable; shared anonymous memory cut in two; a System V segment; a memory file split by
+//     mprotect and moved by mremap; a mapping replaced), with a child that inherits a mapping and
+//     one that runs a program; at each step yields and prints its shared mappings from
+//     /proc/self/maps.
 //   environ WHOSE LONG: runs itself again with LONG in its environment, then reads that
 //     environment through /proc as cmdline reads the command line.
 #define _GNU_SOURCE
@@ -57,6 +62,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
+#include <sys/shm.h>
 #include <sys/mman.h>
 #include <sys/msg.h>
 #include <sys/prctl.h>
@@ -1119,6 +1125,75 @@ static int interrupted(const char *sender) {
     return 0;
 }
 
+static void shared_step(const char *name) {
+    printf("step %s\n", name);
+    fflush(stdout);
+    syscall(SYS_sched_yield);
+    FILE *maps = fopen("/proc/self/maps", "r");
+    char line[512];
+    unsigned long start, end, offset;
+    char permissions[8];
+    while (fgets(line, sizeof line, maps))
+        if (sscanf(line, "%lx-%lx %7s %lx", &start, &end, permissions, &offset) == 4 &&
+            permissions[3] == 's')
+            printf("%lx-%lx %s %lx\n", start, end, permissions, offset);
+    fclose(maps);
+    fflush(stdout);
+}
+
+static int sharing(void) {
+    char *base = buffer + 2 * pages * page;
+    char *file_read = base, *file_write = base + 4 * page, *anonymous = base + 8 * page;
+    char *segment_at = base + 16 * page, *memory_file = base + 24 * page;
+    char *moved_to = base + 32 * page;
+    int fixed = MAP_SHARED | MAP_FIXED;
+    int file = open("/tmp/sharing", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    ftruncate(file, 4 * page);
+    int reading = open("/tmp/sharing", O_RDONLY);
+    mmap(file_read, 2 * page, PROT_READ, fixed, reading, page);
+    int to_child[2], from_child[2];
+    pipe(to_child);
+    pipe(from_child);
+    pid_t keeper = fork();
+    if (keeper == 0) {
+        char byte;
+        read(to_child[0], &byte, 1);
+        shared_step("child");
+        _exit(0);
+    }
+    shared_step("readonly");
+    mmap(file_write, page, PROT_READ | PROT_WRITE, fixed, file, 0);
+    shared_step("writable");
+    mmap(anonymous, 3 * page, PROT_READ | PROT_WRITE, fixed | MAP_ANONYMOUS, -1, 0);
+    munmap(anonymous + page, page);
+    shared_step("anonymous");
+    pid_t runner = fork();
+    if (runner == 0) {
+        char *arguments[] = {"/bin/true", NULL};
+        execve(arguments[0], arguments, NULL);
+        _exit(1);
+    }
+    waitpid(runner, NULL, 0);
+    int segment = shmget(IPC_PRIVATE, 2 * page, IPC_CREAT | 0600);
+    shmat(segment, segment_at, 0);
+    printf("segment %d\n", segment);
+    shared_step("segment");
+    shmdt(segment_at);
+    shmctl(segment, IPC_RMID, NULL);
+    int memory = memfd_create("sharing", 0);
+    ftruncate(memory, 4 * page);
+    mmap(memory_file, 4 * page, PROT_READ | PROT_WRITE, fixed, memory, 0);
+    mprotect(memory_file, page, PROT_READ);
+    shared_step("memfd");
+    mremap(memory_file + 2 * page, 2 * page, 2 * page, MREMAP_MAYMOVE | MREMAP_FIXED, moved_to);
+    shared_step("moved");
+    mmap(file_write, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    shared_step("replaced");
+    write(to_child[1], "x", 1);
+    waitpid(keeper, NULL, 0);
+    return 0;
+}
+
 static int exec_program(char *path) {
     char *arguments[] = {path, NULL};
     execve(path, arguments, NULL);
@@ -1155,6 +1230,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "exec") && argc > 4) return exec_program(argv[4]);
     if (!strcmp(mode, "vm")) return vm();
     if (!strcmp(mode, "signals")) return signals();
+    if (!strcmp(mode, "sharing")) return sharing();
     if (!strcmp(mode, "interrupted") && argc > 4) return interrupted(argv[4]);
     if (!strcmp(mode, "cmdline") && argc > 4) return proc_strings("cmdline", argv[4]);
     if (!strcmp(mode, "environ") && argc > 5) return environment(argv, argv[4], argv[5]);

@@ -4,7 +4,8 @@ use std::ops::{ControlFlow, Range};
 
 use wcontainers_abi::{Cpu, SystemCallRequest};
 use wcontainers_kernel::{
-    AccessKind, Kernel, Process, SignalInformation, SystemCallResponse, TaskId, task_id_after,
+    AccessKind, Kernel, MemoryObject, Process, SignalInformation, SystemCallResponse, TaskId,
+    task_id_after,
 };
 
 /// A test's side of the kernel's hooks and task id calls, for the tests that act at some of them;
@@ -66,6 +67,24 @@ pub trait Hooks: Send {
         range: Range<u64>,
     ) {
         let _ = (process, thread, range);
+    }
+    fn on_shared_memory_mapping(
+        &mut self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        let _ = (process, source, offset, range);
+    }
+    fn on_shared_memory_unmapped(
+        &mut self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        let _ = (process, source, offset, range);
     }
     fn on_signal_delivering(
         &mut self,

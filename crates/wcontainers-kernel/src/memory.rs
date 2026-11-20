@@ -276,8 +276,17 @@ pub(crate) struct AddressMap {
     pub dumpable: bool,
     /// The embedder's watches on these pages and its record of the pages written.
     pub watches: Watches,
-    /// Where a placement that found no room below the end notes the length it asked for.
-    outgrown: Rc<Cell<Option<u64>>>,
+    /// What the map notes for the kernel.
+    notes: Rc<MapNotes>,
+}
+
+/// What address maps note for the kernel, one value shared by every map.
+#[derive(Debug, Default)]
+pub(crate) struct MapNotes {
+    /// The length a placement asked for that found no room below the ceiling.
+    pub outgrown: Cell<Option<u64>>,
+    /// A shared mapping was put in or taken out of some map.
+    pub sharing_changed: Cell<bool>,
 }
 
 /// How much of a page's access a watch brings back: none, writes, everything.
@@ -444,7 +453,7 @@ impl Watches {
 
 impl AddressMap {
     /// A map of `end`'s width whose stack's top is at the ceiling.
-    pub fn new(end: u64, ceiling: u64, outgrown: Rc<Cell<Option<u64>>>) -> Self {
+    pub fn new(end: u64, ceiling: u64, notes: Rc<MapNotes>) -> Self {
         Self {
             mappings: BTreeMap::new(),
             used: BTreeMap::new(),
@@ -459,7 +468,7 @@ impl AddressMap {
             protection_keys: 1,
             dumpable: true,
             watches: Watches::default(),
-            outgrown,
+            notes,
         }
     }
 
@@ -565,6 +574,7 @@ impl AddressMap {
     /// A fork's child's copy: no record of written pages, and nothing of its parent's running
     /// call.
     pub fn start_child(&mut self, cpu: &mut dyn Cpu, memory: MemoryId) {
+        self.note_sharers_changed();
         self.watches.touched = None;
         self.watches.described = None;
         self.watches.undescribed = None;
@@ -812,7 +822,7 @@ impl AddressMap {
         if end <= self.ceiling {
             return false;
         }
-        self.outgrown.set(Some(length));
+        self.notes.outgrown.set(Some(length));
         true
     }
 
@@ -835,7 +845,7 @@ impl AddressMap {
             let start = ceiling.checked_sub(length).filter(|start| *start >= floor);
             let Some(start) = start else {
                 if self.ceiling < self.end {
-                    self.outgrown.set(Some(length));
+                    self.notes.outgrown.set(Some(length));
                 }
                 return None;
             };
@@ -865,7 +875,23 @@ impl AddressMap {
     /// its pages' watches and record go with them.
     pub fn remove(&mut self, start: u64, end: u64) -> Vec<Mapping> {
         self.watches.forget(start, end);
-        self.split_out(start, end)
+        let removed = self.split_out(start, end);
+        if removed.iter().any(|mapping| mapping.shared) {
+            self.notes.sharing_changed.set(true);
+        }
+        removed
+    }
+
+    /// Whether any mapping shows shared memory.
+    pub fn has_shared(&self) -> bool {
+        self.mappings.values().any(|mapping| mapping.shared)
+    }
+
+    /// Notes that the processes using this map changed, if it shows shared memory.
+    pub fn note_sharers_changed(&self) {
+        if self.has_shared() {
+            self.notes.sharing_changed.set(true);
+        }
     }
 
     /// Takes the mappings of a range out of the table to be put back changed, splitting them at
@@ -911,6 +937,9 @@ impl AddressMap {
         self.apply(cpu, memory, &mapping)?;
         if had_code && !mapping.permissions.contains(Permissions::EXECUTE) {
             cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+        }
+        if mapping.shared {
+            self.notes.sharing_changed.set(true);
         }
         self.mappings.insert(mapping.start, mapping);
         self.merge_around();

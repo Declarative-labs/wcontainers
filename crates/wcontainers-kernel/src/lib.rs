@@ -28,6 +28,7 @@ mod process;
 mod schedule;
 mod seccomp;
 mod shared;
+mod sharing;
 mod signal;
 mod syscall;
 mod system;
@@ -47,8 +48,9 @@ pub use counters::reason;
 pub use ends::Standard;
 pub use errno::Errno;
 pub use system::{
-    AccessKind, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism,
-    SignalInformation, System, SystemCallResponse, TaskId, ThreadOrdering, Unsupported, WatchesFor,
+    AccessKind, AnonymousMemoryId, DeviceId, ExecutionConfig, InodeNumber, MemoryError,
+    MemoryObject, Process, ProcessInfo, ReplayDeterminism, SignalInformation, System,
+    SystemCallResponse, SystemVSegmentId, TaskId, ThreadOrdering, Unsupported, WatchesFor,
     task_id_after,
 };
 
@@ -195,9 +197,13 @@ pub struct Kernel {
     unsettled: bool,
     /// Numbers that may no longer be carried, given back to the embedder when the kernel settles.
     ids_let_go: Vec<i32>,
-    /// The length a placement asked for that found no room below the ceiling, shared with every
-    /// address map.
-    outgrown: Rc<core::cell::Cell<Option<u64>>>,
+    /// What every address map notes for the kernel: a placement that found no room below the
+    /// ceiling, a shared mapping put in or taken out.
+    map_notes: Rc<memory::MapNotes>,
+    /// What the embedder has been told each process maps of shared memory.
+    shared_announced: sharing::Announced,
+    /// Processes on their way out whose shared memory has been announced ended.
+    sharing_left: alloc::collections::BTreeSet<Pid>,
     /// The container's first process; when it ends the container ends.
     init: Option<Pid>,
     /// The first process's wait status once it has ended.
@@ -283,7 +289,9 @@ impl Kernel {
             unsettled: false,
             signals_sent: VecDeque::new(),
             ids_let_go: Vec::new(),
-            outgrown: Rc::default(),
+            map_notes: Rc::default(),
+            shared_announced: sharing::Announced::new(),
+            sharing_left: alloc::collections::BTreeSet::new(),
             init: None,
             finished: None,
             starting: None,

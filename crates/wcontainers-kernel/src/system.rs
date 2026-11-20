@@ -120,6 +120,34 @@ pub enum MemoryError {
 /// What a system call answers: its value, or the error it fails with.
 pub type SystemCallResponse = Result<u64, crate::Errno>;
 
+/// The device a file lives on, as `stat`'s `st_dev` encodes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DeviceId(pub u64);
+
+/// The number of a file on its device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct InodeNumber(pub u64);
+
+/// The id of a System V shared memory segment (`shmget`'s answer).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SystemVSegmentId(pub i32);
+
+/// The kernel's own number for a shared anonymous memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AnonymousMemoryId(pub u64);
+
+/// The memory a shared mapping shows, as the embedder addresses it. Memory files and POSIX
+/// shared memory are files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum MemoryObject {
+    File {
+        device: DeviceId,
+        inode: InodeNumber,
+    },
+    SystemVSegment(SystemVSegmentId),
+    Anonymous(AnonymousMemoryId),
+}
+
 /// Linux's own record of a signal.
 pub type SignalInformation = crate::linux::general::siginfo;
 
@@ -192,6 +220,27 @@ pub trait System: Host + Sync {
     /// The kernel wrote `range` of the process's memory for `thread`.
     fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
         let _ = (process, thread, range);
+    }
+    /// The process maps `range` of its memory to `source` from `offset`, a source some process
+    /// may write through a mapping.
+    fn on_shared_memory_mapping(
+        &self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        let _ = (process, source, offset, range);
+    }
+    /// The process no longer maps `range`, announced before as mapping `source` from `offset`.
+    fn on_shared_memory_unmapped(
+        &self,
+        process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: Range<u64>,
+    ) {
+        let _ = (process, source, offset, range);
     }
     /// `thread` has taken `signal` to act on it, before anything of its action.
     fn on_signal_delivering(
@@ -295,6 +344,12 @@ impl Process<'_> {
 
     pub fn execution_config(&self) -> ExecutionConfig {
         self.kernel.processes[&self.pid].execution
+    }
+
+    /// The memory the process runs in: the same for processes that share it (vfork, `CLONE_VM`),
+    /// and a new one once it runs a new program.
+    pub fn memory_id(&self) -> MemoryId {
+        self.kernel.processes[&self.pid].memory
     }
 
     /// The bytes of a mapped range, whatever its pages allow.
@@ -426,6 +481,9 @@ impl Kernel {
         pid: Pid,
         hook: impl FnOnce(&dyn System, Process<'_>),
     ) {
+        if self.map_notes.sharing_changed.get() {
+            self.announce_sharing(cx);
+        }
         self.announce_kernel_writes(cx);
         let process = Process {
             kernel: self,
@@ -433,6 +491,25 @@ impl Kernel {
             pid,
         };
         hook(cx.host, process);
+    }
+
+    /// As [`Self::announce`] for a process's start: the shared memory it maps is announced after.
+    pub(crate) fn announce_start(
+        &mut self,
+        cx: &mut crate::Context<'_>,
+        pid: Pid,
+        hook: impl FnOnce(&dyn System, Process<'_>),
+    ) {
+        self.announce_kernel_writes(cx);
+        let process = Process {
+            kernel: self,
+            cpu: &mut *cx.cpu,
+            pid,
+        };
+        hook(cx.host, process);
+        if self.map_notes.sharing_changed.get() {
+            self.announce_sharing(cx);
+        }
     }
 
     /// Tells the embedder what the kernel wrote into processes' memory, each to the process whose

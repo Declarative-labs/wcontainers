@@ -302,7 +302,7 @@ impl Kernel {
         }
         // A request outgrew the executor's ceiling. It failed before it had any effect, and its
         // result reaches the thread only once the hook has returned.
-        if let Some(bytes) = self.outgrown.take()
+        if let Some(bytes) = self.map_notes.outgrown.take()
             && let Some(thread) = self.threads.get(&tid)
         {
             let pid = thread.process;
@@ -558,6 +558,10 @@ impl Kernel {
             }
             if !self.kernel_writes.get_mut().is_empty() {
                 self.announce_kernel_writes(cx);
+                continue;
+            }
+            if self.map_notes.sharing_changed.get() {
+                self.announce_sharing(cx);
                 continue;
             }
             if let Some((pid, tid, info)) = self.signals_sent.pop_front() {
@@ -900,6 +904,7 @@ impl Kernel {
         self.announce(cx, pid, |system, process| {
             system.on_process_exiting(process)
         });
+        self.withdraw_sharing(cx, pid);
         // The container ends with its first process, and the rest are killed then, as Linux's
         // first process of a namespace kills them on its way out (`zap_pid_ns_processes`).
         if self.init == Some(pid) {
@@ -936,6 +941,8 @@ impl Kernel {
             tables.push(thread.files);
         }
         syscall::timer::process_end(self, pid, false);
+        // No hook comes before the process is marked ended.
+        self.sharing_left.remove(&pid);
         let process = self.processes.get_mut(&pid).expect("process exists");
         process.threads.clear();
         process.ended = Some(wait_status);
@@ -947,7 +954,7 @@ impl Kernel {
         let empty = crate::memory::AddressMap::new(
             self.machine.memory_bytes,
             self.ceiling,
-            self.outgrown.clone(),
+            self.map_notes.clone(),
         );
         let map = core::mem::replace(
             &mut process.map,

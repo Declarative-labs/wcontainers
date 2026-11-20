@@ -469,7 +469,7 @@ impl Kernel {
             map: Rc::new(core::cell::RefCell::new(crate::memory::AddressMap::new(
                 self.machine.memory_bytes,
                 self.ceiling,
-                self.outgrown.clone(),
+                self.map_notes.clone(),
             ))),
             threads: vec![pid],
             limits: docker_limits(),
@@ -571,7 +571,7 @@ impl Kernel {
             self.end_asking(pid, result == Err(Errno::PARKED));
             // The first program did not fit below the ceiling: counted, with no hook, since its
             // process is announced only once its program is loaded.
-            if self.outgrown.take().is_some() {
+            if self.map_notes.outgrown.take().is_some() {
                 self.counters
                     .count(cx.host, reason::PROCESS_OUTGROWN, u64::from(__NR_execve));
             }
@@ -785,6 +785,7 @@ impl Kernel {
         // The container's first program replaces no memory: its process has none yet.
         let first = self.init.is_none();
         let old_memory = core::mem::replace(&mut process.memory, image.memory);
+        process.map.borrow().note_sharers_changed();
         process.map = Rc::new(core::cell::RefCell::new(image.map));
         process.executable = image.executable;
         process.starting_stack = image.starting_stack;
@@ -859,7 +860,7 @@ impl Kernel {
         crate::shared::release(self, cx);
         self.update_watching();
         if first {
-            self.announce(cx, pid, |system, process| {
+            self.announce_start(cx, pid, |system, process| {
                 system.on_process_starting(process)
             });
         }

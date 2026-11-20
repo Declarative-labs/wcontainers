@@ -397,6 +397,8 @@ pub(crate) struct Regular {
     /// Whether it is a System V shared memory segment, whose mappings are never merged (Linux's
     /// `shm_vm_ops` has a `close`).
     pub segment: bool,
+    /// Whether it holds shared anonymous memory (Linux's `shmem_zero_setup`).
+    pub anonymous: bool,
 }
 
 impl Content {
@@ -422,6 +424,7 @@ impl Default for Regular {
             mapped: false,
             space: None,
             segment: false,
+            anonymous: false,
         }
     }
 }
@@ -934,6 +937,10 @@ impl Inode {
     /// Whether it is a System V shared memory segment's file.
     pub fn is_segment(&self) -> bool {
         matches!(&self.content, Content::Regular(regular) if regular.segment)
+    }
+
+    pub fn is_shared_anonymous(&self) -> bool {
+        matches!(&self.content, Content::Regular(regular) if regular.anonymous)
     }
 
     /// An inode of process descriptors (regular inside, shown with no file type) or the anonymous
