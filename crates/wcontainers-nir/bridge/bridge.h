@@ -177,6 +177,29 @@ bool wc_nir_serialize(const struct nir_shader *nir, struct wc_bytes *out);
  * native Vulkan mode. The shader is changed by the preparation. */
 bool wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out);
 
+struct nir_shader *wc_nir_clone(const struct nir_shader *nir);
+
+/* Vertex inputs numbered as st/mesa hands the driver its vertex elements: each attribute, OpenGL's
+ * own (gl_Vertex, gl_Color, ...) among them, at its rank among the attributes read. Returns the
+ * slots read before. */
+uint64_t wc_nir_number_vertex_elements(struct nir_shader *nir);
+
+/* gl_FragColor written to each of the first `buffers` draw buffers, nir_lower_fragcolor's step
+ * (the driver's own, as Zink's) on lowered stage values. */
+void wc_nir_fragcolor_to_buffers(struct nir_shader *nir, unsigned buffers);
+
+/* How a vertex program's position is changed to meet the host's clip space and viewport. */
+struct wc_position_transform {
+   /* y negated: a Gallium viewport whose y scale is positive. */
+   bool flip_y;
+   /* Depth from OpenGL's -w..w to the host's 0..w. */
+   bool half_z;
+   /* Depth as w - z, for a depth range whose near value is the larger. */
+   bool reverse_z;
+};
+
+void wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform);
+
 void wc_nir_free(struct nir_shader *nir);
 void wc_bytes_free(struct wc_bytes *bytes);
 void wc_words_free(struct wc_words *words);

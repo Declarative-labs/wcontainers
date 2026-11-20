@@ -198,6 +198,23 @@ unsafe extern "C" {
     fn wc_nir_serialize(nir: *const NirShader, out: *mut Bytes) -> bool;
     fn wc_nir_free(nir: *mut NirShader);
     fn wc_bytes_free(bytes: *mut Bytes);
+    fn wc_nir_clone(nir: *const NirShader) -> *mut NirShader;
+    fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
+    fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
+    fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
+}
+
+/// How a vertex program's position is changed to meet the host's clip space and viewport
+/// (`struct wc_position_transform`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PositionTransform {
+    /// y negated, for a Gallium viewport whose y scale is positive.
+    pub flip_y: bool,
+    /// Depth from OpenGL's -w..w to the host's 0..w.
+    pub half_z: bool,
+    /// Depth as w - z, for a depth range whose near value is the larger.
+    pub reverse_z: bool,
 }
 
 #[cfg(feature = "standalone")]
@@ -244,6 +261,33 @@ impl Nir {
     /// `nir` is a live `nir_shader` the caller owns and does not use again.
     pub unsafe fn from_raw(nir: *mut std::ffi::c_void) -> Nir {
         Nir(nir.cast())
+    }
+
+    /// A copy of the shader, owned apart from it; None when Mesa runs out of memory.
+    pub fn try_clone(&self) -> Option<Nir> {
+        // SAFETY: self.0 is a live shader; the clone is a new allocation.
+        let copy = unsafe { wc_nir_clone(self.0) };
+        (!copy.is_null()).then_some(Nir(copy))
+    }
+
+    /// A vertex program's inputs numbered as st/mesa hands its vertex elements over: each
+    /// attribute at its rank among those read. Returns the attribute slots read before.
+    pub fn number_vertex_elements(&mut self) -> u64 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_number_vertex_elements(self.0) }
+    }
+
+    /// gl_FragColor written to each of the first `buffers` draw buffers. Nothing for a program
+    /// that does not write it, or of another stage.
+    pub fn fragcolor_to_buffers(&mut self, buffers: u32) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_fragcolor_to_buffers(self.0, buffers) }
+    }
+
+    /// A vertex program's position changed by `transform`. Nothing for another stage.
+    pub fn transform_position(&mut self, transform: PositionTransform) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_transform_position(self.0, transform) }
     }
 
     #[cfg(feature = "standalone")]

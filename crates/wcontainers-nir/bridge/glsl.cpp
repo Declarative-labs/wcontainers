@@ -399,29 +399,6 @@ name_bindings(struct gl_shader_program *whole, struct gl_program *prog, nir_shad
    return added;
 }
 
-static bool
-attribute_as_element(nir_builder *b, nir_intrinsic_instr *intr, void *data)
-{
-   if (intr->intrinsic != nir_intrinsic_load_input)
-      return false;
-   nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
-   semantics.location = VERT_ATTRIB_GENERIC0 + nir_intrinsic_base(intr);
-   nir_intrinsic_set_io_semantics(intr, semantics);
-   return true;
-}
-
-/* Vertex inputs numbered as st/mesa hands the driver its vertex elements: each attribute, OpenGL's
- * own (gl_Vertex, gl_Color, ...) among them, at its rank among the attributes read. */
-static uint64_t
-number_vertex_elements(nir_shader *nir)
-{
-   nir_recompute_io_bases(nir, nir_var_shader_in);
-   const uint64_t read = nir->info.inputs_read;
-   nir_shader_intrinsics_pass(nir, attribute_as_element, nir_metadata_all, NULL);
-   nir->info.inputs_read = BITFIELD64_MASK(util_bitcount64(read)) << VERT_ATTRIB_GENERIC0;
-   return read;
-}
-
 /* Each attribute's name at its vertex elements, from the slots read before they were numbered: a
  * name a run of slots read (an attribute read in part has several); one not read has none. */
 static bool
@@ -455,37 +432,6 @@ name_vertex_elements(struct wc_glsl_names *names, uint64_t read)
    free_names(names);
    *names = placed;
    return added;
-}
-
-static bool
-fragcolor_to_every_buffer(nir_builder *b, nir_intrinsic_instr *intr, void *data)
-{
-   if (intr->intrinsic != nir_intrinsic_store_output)
-      return false;
-   nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
-   if (semantics.location != FRAG_RESULT_COLOR)
-      return false;
-   b->cursor = nir_before_instr(&intr->instr);
-   for (unsigned buffer = 0; buffer < WC_GL_DRAW_BUFFERS; buffer++) {
-      semantics.location = FRAG_RESULT_DATA0 + buffer;
-      nir_store_output(b, intr->src[0].ssa, intr->src[1].ssa,
-                       .write_mask = nir_intrinsic_write_mask(intr),
-                       .component = nir_intrinsic_component(intr),
-                       .src_type = nir_intrinsic_src_type(intr), .io_semantics = semantics);
-   }
-   nir_instr_remove(&intr->instr);
-   return true;
-}
-
-/* gl_FragColor written to every draw buffer, nir_lower_fragcolor's step (the driver's own, as
- * Zink's) on lowered stage values. */
-static void
-lower_fragcolor(nir_shader *nir)
-{
-   if (nir_shader_intrinsics_pass(nir, fragcolor_to_every_buffer, nir_metadata_control_flow, NULL)) {
-      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
-      nir_recompute_io_bases(nir, nir_var_shader_out);
-   }
 }
 
 /* st/mesa's steps from the linked NIR to what the driver receives, for this driver's capabilities:
@@ -532,7 +478,7 @@ after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked, uin
    NIR_PASS(_, nir, nir_opt_intrinsics);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    if (nir->info.stage == MESA_SHADER_VERTEX)
-      *attributes = number_vertex_elements(nir);
+      *attributes = wc_nir_number_vertex_elements(nir);
 
    nir_lower_tex_options tex = {};
    tex.lower_rect = true;
@@ -548,7 +494,7 @@ after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked, uin
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
    NIR_PASS(_, nir, gl_nir_lower_samplers_as_deref, whole);
    if (nir->info.stage == MESA_SHADER_FRAGMENT)
-      lower_fragcolor(nir);
+      wc_nir_fragcolor_to_buffers(nir, WC_GL_DRAW_BUFFERS);
    return true;
 }
 

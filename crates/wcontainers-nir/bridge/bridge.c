@@ -10,6 +10,7 @@
 #include "nir_builder.h"
 #include "nir_serialize.h"
 #include "pipe/p_state.h"
+#include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/blob.h"
 #include "util/ralloc.h"
@@ -415,6 +416,98 @@ wc_nir_serialize(const struct nir_shader *nir, struct wc_bytes *out)
    blob_finish_get_buffer(&blob, &data, &out->size);
    out->data = data;
    return true;
+}
+
+struct nir_shader *
+wc_nir_clone(const struct nir_shader *nir)
+{
+   return nir_shader_clone(NULL, nir);
+}
+
+static bool
+attribute_as_element(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_input)
+      return false;
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+   semantics.location = VERT_ATTRIB_GENERIC0 + nir_intrinsic_base(intr);
+   nir_intrinsic_set_io_semantics(intr, semantics);
+   return true;
+}
+
+uint64_t
+wc_nir_number_vertex_elements(struct nir_shader *nir)
+{
+   wc_nir_lower_io(nir);
+   nir_recompute_io_bases(nir, nir_var_shader_in);
+   const uint64_t read = nir->info.inputs_read;
+   nir_shader_intrinsics_pass(nir, attribute_as_element, nir_metadata_all, NULL);
+   nir->info.inputs_read = BITFIELD64_MASK(util_bitcount64(read)) << VERT_ATTRIB_GENERIC0;
+   return read;
+}
+
+static bool
+fragcolor_to_every_buffer(nir_builder *b, nir_intrinsic_instr *intr, void *buffers)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output)
+      return false;
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+   if (semantics.location != FRAG_RESULT_COLOR)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   for (unsigned buffer = 0; buffer < *(const unsigned *)buffers; buffer++) {
+      semantics.location = FRAG_RESULT_DATA0 + buffer;
+      nir_store_output(b, intr->src[0].ssa, intr->src[1].ssa,
+                       .write_mask = nir_intrinsic_write_mask(intr),
+                       .component = nir_intrinsic_component(intr),
+                       .src_type = nir_intrinsic_src_type(intr), .io_semantics = semantics);
+   }
+   nir_instr_remove(&intr->instr);
+   return true;
+}
+
+void
+wc_nir_fragcolor_to_buffers(struct nir_shader *nir, unsigned buffers)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return;
+   wc_nir_lower_io(nir);
+   if (nir_shader_intrinsics_pass(nir, fragcolor_to_every_buffer, nir_metadata_control_flow,
+                                  &buffers)) {
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+      nir_recompute_io_bases(nir, nir_var_shader_out);
+   }
+}
+
+static bool
+transform_position(nir_builder *b, nir_intrinsic_instr *intr, void *transform)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+      return false;
+   const struct wc_position_transform *t = transform;
+   b->cursor = nir_before_instr(&intr->instr);
+   enum { X, Y, Z, W };
+   nir_def *at = intr->src[0].ssa;
+   nir_def *x = nir_channel(b, at, X), *y = nir_channel(b, at, Y);
+   nir_def *z = nir_channel(b, at, Z), *w = nir_channel(b, at, W);
+   if (t->flip_y)
+      y = nir_fneg(b, y);
+   if (t->half_z)
+      z = nir_fdiv(b, nir_fadd(b, z, w), nir_imm_float(b, 2));
+   if (t->reverse_z)
+      z = nir_fsub(b, w, z);
+   nir_src_rewrite(&intr->src[0], nir_vec4(b, x, y, z, w));
+   return true;
+}
+
+void
+wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform)
+{
+   if (nir->info.stage != MESA_SHADER_VERTEX)
+      return;
+   wc_nir_lower_io(nir);
+   nir_shader_intrinsics_pass(nir, transform_position, nir_metadata_control_flow, &transform);
 }
 
 void
