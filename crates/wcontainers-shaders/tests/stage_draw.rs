@@ -147,15 +147,26 @@ const RESTART_ONE_IN: u32 = 6;
 
 /// Seeded 16-bit indices of an indexed case's strip, with restart indices: one in the middle of the
 /// draw and others at seeded places; an even number of them, as the stage helper reads whole words.
+/// Drawn again from the same generator until the draw holds a whole primitive.
 fn indices(seed: u64, case: &Case) -> Vec<u8> {
     let mut rng = fastrand::Rng::with_seed(seed ^ 0x5eed);
-    (0..case.count.next_multiple_of(2))
-        .flat_map(|i| {
-            let index = rng.u16(..VERTICES as u16);
-            let restart = i == case.count / 2 || rng.u32(..RESTART_ONE_IN) == 0;
-            if restart { RESTART } else { index }.to_le_bytes()
-        })
-        .collect()
+    let first_primitive = if case.topology == InputTopology::LineStrip {
+        2
+    } else {
+        3
+    };
+    loop {
+        let indices: Vec<u8> = (0..case.count.next_multiple_of(2))
+            .flat_map(|i| {
+                let index = rng.u16(..VERTICES as u16);
+                let restart = i == case.count / 2 || rng.u32(..RESTART_ONE_IN) == 0;
+                if restart { RESTART } else { index }.to_le_bytes()
+            })
+            .collect();
+        if whole_strip_primitive(&indices, 0..case.count, first_primitive) {
+            return indices;
+        }
+    }
 }
 
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
