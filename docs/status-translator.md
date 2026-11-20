@@ -164,15 +164,21 @@ Done:
   - The first try (E-local, limit 2^32) was stopped after an hour: some Csmith programs at none ran very
     long below that limit.
 
+- The whole suite of the four crates on 25eb5eae (release, `--no-fail-fast`, rented ARM64 machine, 24 jobs,
+  12 test threads, 20:00 to 20:23 UTC, load 8 to 22, `c1/suite.log`): every test binary passed but layer 1's,
+  where `every_covered_form_matches_the_cpu` and `sample_matches_the_cpu_in_chrome` failed, as in every
+  Graviton run since T3 (the Graviton's FPSR difference; this log's filter kept only the panics' lines, so
+  the form was not read from it). Layer 1's verdict is the Mac's, above: 7 passed. progress_count 5 passed,
+  programs 22 passed (3 ignored, one being the register jump known failure), layer 3 3, layer 2 1, changes
+  9, checks 12, browser 1, binaries 2, smoke 6, test_guest 16, valid 7, decoding 6.
+
 Next (in order):
-1. The whole suite of the four crates on this run's last code (started at the end of the run; log
-   `c1/suite.log`).
-2. More layer 3 programs, so that 1,000 are compared rather than 852 of 1,000 run (`WC_PROGRESS_CSMITH=1200`).
-3. The hash spill on the Graviton: try keeping the count in a fresh local copied from the parameter, or
+1. More layer 3 programs, so that 1,000 are compared rather than 852 of 1,000 run (`WC_PROGRESS_CSMITH=1200`).
+2. The hash spill on the Graviton: try keeping the count in a fresh local copied from the parameter, or
    adding the event where the check is, and measure; keep whichever is cheapest on all three hosts.
-4. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
+3. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
    hand-count `progress_events.S` or a program of its own; `measure_progress_count` on each host.
-5. The native track's index of forms (brief, 08:40), then the literal fix list.
+4. The native track's index of forms (brief, 08:40), then the literal fix list.
 
 How to run C1's checks: `cargo test --release -p wcontainers-translator-test --test progress_count`
 (knobs at the top of the file); the cost: `WC_BENCH_RUNS=5 cargo test --release -p
