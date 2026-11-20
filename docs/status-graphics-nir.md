@@ -1,8 +1,90 @@
-# Status: graphics, NIR route (G8)
+# Status: graphics, NIR route (G8) and OpenGL natively (G9)
 
-Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8).
+Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3, 15.4 and 15.8 (G8,
+G9).
 
 ## Where it stands
+
+G9 run 1 (2026-11-20). G9 is started, far from its bar: no OpenGL driver of ours exists yet, so no
+case of 15.2's lists has run and there is no table of lists and shares to give (G9's report, below,
+says what each line of it waits on). This run settled the findings of G8's third check (listed
+next) and took G9's first step on the desktop (G9, below).
+
+G8's third check, settled in G9 run 1:
+- GLSL `!(x < y)` beside `!(x >= y)` gives false on a NaN where llvmpipe gives true. Explained,
+  not changed, and kept as a known failure (`a_glsl_program_negating_both_comparisons_of_a_nan_
+  matches_llvmpipe_on_route_b`, ignored with the reason). Mesa's GLSL front (`glsl_to_nir.cpp`,
+  unchanged) gives `<` and `>=` no NaN preservation (only `==`, `!=`, min and max get it), so
+  `nir_opt_algebraic`'s `inot(flt(a, b)) -> fge(a, b)` (when the `flt` is used once) is Mesa's own
+  legal fold for GLSL, which leaves NaN comparisons to the implementation. In the bridge the fold
+  is already in the NIR Mesa's linker hands back (its `gl_nir_opts`, run by `gl_nir_link_glsl`),
+  before any step of ours: marking every operation NaN-preserving before the bridge's own loop
+  (tried, then taken out) changed nothing. llvmpipe's own compile (`MESA_GLSL=dump`) keeps the
+  `flt` used twice (by the `inot` and by a `bcsel` its loop made), so the rule never fires there.
+  Which of the two drivers' compiler options makes that difference was not found. G9's driver runs
+  st/mesa itself with this driver's options and settles it: its NIR for this program is to be
+  compared with the bridge's.
+- The literal check's `CUBE_FACES` finding is now listed under "Waiting on others".
+- A vertex output the reference captures and the route's module lacks is now a difference when
+  the program can write it (`interface::reaches`: a store or copy into it, an access chain from
+  it, for a block member one whose first index is that member, or a function call given it); an
+  output the program never reaches holds no defined value and is still left out.
+- Godot's `scene_forward_clustered.glsl/10.vert` on seed 8675309: reproduced (route B 17 values
+  differ by about 1e-4 relative, route A matches; both match on 8675310 and 24301). Fusing is ruled
+  out: with route B's `ffma_weak` written as a separate multiply and add (temporary, on the x86
+  copy) it still differs on 8675309 and matches on the other two. Not further explained; probably
+  cancellation amplifying a difference of operation order between route B's module and lavapipe's
+  own compile of the SPIR-V. Left a listed seed-dependent difference.
+- A child that dies by a signal in the comparison is now a difference when the reference had
+  ended (the route's module crashed the driver, as a hang there already was), and "the reference
+  crashed on seed n" when it had not, which is tried on the next seeds as a reference that does
+  not end is. A child ended by a panic of the harness stays not compared. Checked:
+  `texturemipmapgen/texture.frag.spv` (GLSL) on seed 8675309: the reference crashes, route B is
+  held on 8675310 and matches.
+- The GLSL reference tests read `WC_NIR_SEED` (the first seed) and `WC_NIR_INPUT_SETS` (how many
+  seeds, one input set each; default 1) and print both.
+- "Licences brought in" made current (the linked list again, below).
+- Route B's `umul_high` and `imul_high`: the bridge's options already ask for them lowered
+  (`lower_mul_high`), but only `nir_lower_alu` lowers them, which `gl_nir_opts` runs for GLSL and
+  the SPIR-V path's loop did not; it now runs in that loop. Held by `tests/narrow.rs`'s second
+  test: SPIR-V's `OpUMulExtended` and `OpSMulExtended` written word by word, run natively by
+  lavapipe and through route B, both held to Rust's 64-bit products (65,600 cases at the default:
+  the 36 pairs of six edge values of both signs and 65,536 seeded pairs, `WC_NIR_SEED` and
+  `WC_NIR_INPUT_SETS`; 0 differ, x86-64 machine).
+- The other two findings were information (route B's seed-dependent outcomes on 8675309 fall in
+  listed classes), recorded here.
+
+G9 (OpenGL natively), where it stands:
+- The desktop has Visual Studio Build Tools 17.14.37906.3 (`install.rst` asks for 17.9 or later)
+  and the Windows 10 SDK 10.0.26100.0 (at least 20348); no Python (only the Store's stub), Meson,
+  Ninja, flex, bison or LLVM for the Visual C++ runtime were there.
+- `crates/wcontainers-nir/mesa/build-windows.ps1` (with `options-windows.ini`): fetches pinned
+  build tools into `C:\wc\graphics-nir\tools` (Python 3.13.1 from its NuGet package with Meson
+  1.12.1, Ninja, Mako, PyYAML and packaging; win_flex_bison 2.5.25; LLVM 21.1.8 built for the
+  Visual C++ runtime) and builds the pinned Mesa with the same patches as the Linux build: the WGL
+  frontend's `opengl32.dll` with llvmpipe, OpenGL ES through WGL. Built in G9 run 1:
+  `opengl32.dll` and `libgallium_wgl.dll` in `C:\wc\graphics-nir\mesa\install\bin` (the build
+  was not timed; nothing has drawn through it yet). Two fixes were needed on the way: win_flex's
+  temporary files clash when two run at once (its outputs are now made first, one at a time),
+  and LLVM's Windows release is built for the static runtime (`b_vscrt = 'mt'`).
+  The downloads' SHA-256: python-3.13.1.zip eba9c88a...ac2df, win_flex_bison-2.5.25.zip
+  8d324b62...ac135, clang+llvm-21.1.8-x86_64-pc-windows-msvc.tar.xz 749d22f5...21a47 (full in
+  the log, scratch `logs/g9r1-mesa-windows.log`); to be checked by the script once the owner
+  accepts the tools.
+- Next, in order: (1) choose the CTS release (the two current lines are `opengl-es-cts-3.2.14.1`
+  for the GLES lists and `opengl-cts-4.6.8.1` for KHR-GL; 15.2 says one release, so take the GL
+  line's tag if its tree holds the GLES mustpass too, and say so), build its `glcts` for Windows
+  with the WGL platform and deqp-runner (MIT) for Windows, and run a shard of each list on
+  llvmpipe through the queue, so the harness is proven before our driver exists; (2) the driver:
+  a Mesa patch adding `src/gallium/drivers/wcontainers` (the screen's create function and its
+  meson file linking the Rust static library), the `gallium-drivers` choice, `wgl.c`'s three
+  places (15.2), and the crate `wcontainers-opengl` with `pipe_screen` and `pipe_context` over
+  `wcontainers-gpu`, generic over the back end, shaders through `wcontainers-nir`'s route B; (3)
+  the lists through the queue in shards, the table, the failures with reasons; (4) bgfx's and
+  Godot's OpenGL renderers on the rig.
+- G9's report, the table of lists and shares: none yet. dEQP-GLES2, dEQP-GLES3, dEQP-GLES31,
+  KHR-GLES and KHR-GL33 (the 92.9% floor together) and KHR-GL46 (98.6%): no case run on our driver,
+  which does not exist yet.
 
 G8 run 15 (2026-11-20). Complete but for one item waiting on the owner's decision, named below;
 handed to G8's independent check again. Run 15 fixed the second check's findings: route B's
@@ -31,6 +113,13 @@ Waiting on others (G8's bar, as the orchestrator ruled on 2026-11-19 night):
   (`corpus/cts-programs`; 162 programs: 52 need what our Vulkan 1.1 does not report, route B
   matches 62, 24 fail by name on 64-bit values and 24 on texel buffers; compared without the
   lowering, which they will be held with once steps 1 and 3 exist).
+
+- The literal check's exit 0. Cause: `CUBE_FACES` (the layers of one cube) is defined in
+  `wcontainers-nir/src/lib.rs` and, since the Direct3D 11 track's 7e4d8df6, crate-private in
+  `wcontainers-direct3d-11/src/device.rs`; the check reports the second definition, and neither
+  crate can import the other's. The one place for it is the interface (Requests). Owner: the
+  interface track (or the owner, since this track may not change the interface). Still so after
+  merging the Direct3D 11 branch's tip (a5834fb5) in G9 run 1.
 
 Not a bar item, waiting on the shaders track: 20 of Godot's RenderingDevice programs with arrays
 of textures (`gi.glsl` and kin) reach the shaders crate's `rewrite`, which validates without
@@ -847,6 +936,12 @@ Next (after G8's check):
 - The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
   the Mesa build; the route test linked with a map, each kept object traced to its source).
 
+- Build Mesa for Windows (G9) on the desktop, from a checkout on the Mac: `tools/graphics-rig/remote
+  'powershell -NoProfile -ExecutionPolicy Bypass -File crates\wcontainers-nir\mesa\build-windows.ps1'`.
+  Tools, source, build and install under `C:\wc\graphics-nir` (kept between runs; the tools'
+  downloads with their SHA-256 printed); `opengl32.dll` and `libgallium_wgl.dll` in
+  `C:\wc\graphics-nir\mesa\install\bin`. Uses half the desktop's threads. A remote command waits
+  while another track's hazard job holds the GPU slot.
 - Build Mesa, from the Mac: `orchestrator/cloud/x86-run <checkout> --name graphics-nir --jobs 64 --
   'crates/wcontainers-nir/mesa/build path:/work/flake/graphics-nir'`. On any Linux machine with Nix:
   `crates/wcontainers-nir/mesa/build` (its argument, the flake, defaults to the checkout). The tools
@@ -922,6 +1017,24 @@ Next (after G8's check):
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- The whole corpus run (G9 run 1, 18,738 items, 96 children, x86-64 machine, load 10.9 at the
+  start and 2.2 at the end; a new spot machine, Mesa and the corpus built again first): 740 s
+  (12 min 20 s). Route B: 12,068 match, 156 differ, 518 failed by name, 6 not compared (run 15:
+  12,069, 154, 519, 6); the three changes are piglit's `fs-shl-of-shr-int64` (was "not taken:
+  umul_high", now matches) and two Slang vertex programs of Sascha Willems' samples
+  (`occlusionquery/simple.vert`, `subpasses/gbuffer.vert`) whose outputs the route drops, now
+  differences by the new vertex check: each stores a load of a local the program never writes
+  (checked in the disassembly), an undefined value, listed with the undefined-behaviour
+  differences. Route A unchanged (1,075 match, 7 differ, 147 not compared). Time per shader to
+  the validated common form at 96 at once on the 1,072 shaders both routes match: A median
+  448 us, mean 710 us; B median 358 us, mean 460 us. Results: scratch
+  `results/g9r1/nir-results-g9r1.jsonl`.
+- The whole suite of wcontainers-nir (G9 run 1, x86-64 machine, load 2 to 15): clippy with
+  warnings denied clean with and without Mesa; without Mesa every target builds (no tests run);
+  with Mesa `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known llvmpipe failure and
+  the negated NaN comparisons), `narrow` 2 (2,097,152 16-bit cases and 65,600 multiplications,
+  0 differ), `route` 11 passed. `corpus/cts-programs` from nothing: about 400 s at `-j 96`.
 
 - The whole corpus run (run 15, 18,738 items, 172 children on cores 10-95 and 106-191, x86-64
   machine, load 41.1 at the start and 100.4 at the end, other tracks' jobs and the timed sample
@@ -1013,28 +1126,26 @@ Next (after G8's check):
 
 ## Licences brought in (for the owner to confirm)
 
-- Mesa 26.3.1 (fetched by the build script, not in this repository). Its `docs/license.rst` says each
-  file's SPDX tag governs; the core is MIT. Linked into wcontainers-nir's tests today: Mesa's static
-  libraries `libzink`, `libglsl_standalone`, `libglsl`, `libglcpp`, `libmesa`, `libvtn`, `libnir`,
-  `libcompiler`, `libmesa_util`, `libblake3`, `libmesa_util_c11`, and since run 6 `libglsl_util`
-  and `libglcpp_standalone` (the linker keeps only the objects used). Run 6, with GLSL linked
-  (`results/run6/nir-linked-licences-r6.txt`): 243 files, 77 of them from the GLSL libraries
-  (`libglsl` 68, `libglsl_util` 4, `libglcpp` 3, `libglcpp_standalone` 1, `libglsl_standalone`
-  1), all with the MIT permission text. Four of those are generated and carry a second notice:
-  `glsl_parser.cpp` and `glcpp-parse.c` are Bison's output (Bison's skeleton is GPL-3.0-or-later
-  with the Bison special exception, which lets the output be distributed under any terms),
-  `glsl_lexer.cpp` and `glcpp-lex.c` are flex's output (flex's own BSD-style licence). The other
-  166 are run 4's files and licences, unchanged. Kept by the linker in run 4 (`mesa/linked-licences`; list in scratch
-  `results/run4/nir-linked-licences.txt`): 129 files, from `libnir` 65, `libmesa_util` 37, `libvtn`
-  14, `libblake3` 7, `libcompiler` 3, `libzink` 2, `libmesa_util_c11` 1. Their licences: 89 carry
-  the MIT permission text, 28 the SPDX tag MIT, 2 are generated by Mesa's build from MIT scripts
-  (`nir_opcodes.c`, `nir_opt_algebraic.c`), 1 BSL-1.0 (`c11/impl/threads_posix.c`), and 9 carry no
-  text in the file: the 7 of `util/blake3` (BLAKE3 1.8.2 copied verbatim, its README says;
-  upstream's licence is CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception),
-  `util/softfloat.c` (Berkeley SoftFloat 3e, BSD-3-Clause text in the file, which the script's MIT
-  match does not count) and `util/format/u_format_etc.c` (MIT text in the header it includes,
-  `texcompress_etc_tmp.h`). All permissive. GLSL's libraries are not linked yet; the list is made
-  again when they are.
+- Mesa 26.3.1 (fetched by the build scripts, not in this repository). Its `docs/license.rst` says
+  each file's SPDX tag governs; the core is MIT. Linked into wcontainers-nir's tests: Mesa's static
+  libraries `libzink`, `libglsl_standalone`, `libglsl`, `libglcpp`, `libglsl_util`,
+  `libglcpp_standalone`, `libmesa`, `libvtn`, `libnir`, `libcompiler`, `libmesa_util`, `libblake3`
+  and `libmesa_util_c11` (the linker keeps only the objects used). The files kept, listed again in
+  G9 run 1 by `mesa/linked-licences` (scratch `results/g9r1/nir-linked-licences-g9r1.txt`): 242
+  files. 196 carry the MIT permission text and 34 the SPDX tag MIT; 2 are generated by Mesa's
+  build from MIT scripts (`nir_opcodes.c`, `nir_opt_algebraic.c`); 1 is BSL-1.0
+  (`c11/impl/threads_posix.c`); 9 carry no licence text in the file: the 7 of `util/blake3`
+  (BLAKE3 1.8.2 copied verbatim, its README says; upstream's licence is CC0-1.0 OR Apache-2.0 OR
+  Apache-2.0 WITH LLVM-exception), `util/softfloat.c` (Berkeley SoftFloat 3e, BSD-3-Clause text
+  in the file, which the script's MIT match does not count) and `util/format/u_format_etc.c` (MIT
+  text in the header it includes, `texcompress_etc_tmp.h`). Against run 6's list (243 files) the
+  one change is `nir_lower_fragcolor.c`, no longer linked (the bridge writes that step itself).
+  Four of the MIT files are generated and carry a second notice: `glsl_parser.cpp` and
+  `glcpp-parse.c` are Bison's output (Bison's skeleton is GPL-3.0-or-later with the Bison special
+  exception, which lets the output be distributed under any terms), `glsl_lexer.cpp` and
+  `glcpp-lex.c` flex's (flex's own BSD-style licence). All permissive. The Windows build
+  (`mesa/build-windows.ps1`, G9) links nothing into anything of ours yet; G9 lists the driver's
+  linked files when there is one.
 - zlib (Zlib licence), linked as Mesa's build found it (Nixpkgs' static zlib).
 - `serde_json` 1 and `serde` 1 (both MIT OR Apache-2.0), build- and dev-dependencies of
   wcontainers-nir; `cc` (MIT OR Apache-2.0), already in the workspace.
@@ -1072,11 +1183,25 @@ Next (after G8's check):
   its `COPYING`: MIT for most of it, with some test shaders under their projects' own licences,
   e.g. GStreamer's in `glslparsertest`; piglit is for testing only, as the routed decision says,
   and never a dependency).
+- Build tools only, on the Windows desktop (G9, `mesa/build-windows.ps1`, never linked into
+  anything of ours; nothing installed, all under `C:\wc\graphics-nir\tools`): Python 3.13.1 from
+  its NuGet package (PSF-2.0), Meson 1.12.1 (Apache-2.0), Ninja 1.13.0 (Apache-2.0), Mako 1.3.10
+  (MIT), PyYAML 6.0.2 (MIT), packaging 25.0 (Apache-2.0 OR BSD-2-Clause), win_flex_bison 2.5.25
+  (flex BSD-2-Clause; bison GPL-3.0-or-later, a generator whose output carries Bison's exception,
+  as GCC's Bison on Linux), LLVM 21.1.8 for the Visual C++ runtime (Apache-2.0 WITH
+  LLVM-exception; llvmpipe links it, the reference only), and Visual Studio 2022 Build Tools,
+  already on the desktop (Microsoft's licence).
 - Build tools only, from the repository's locked nixpkgs: Meson 1.12.1 (Apache-2.0), Ninja (Apache-2.0),
   LLVM 21.1.8 (Apache-2.0 WITH LLVM-exception; llvmpipe and lavapipe use it, wcontainers-nir does not
   link it), GCC 16.2.0 (GPL-3.0 with the GCC runtime library exception).
 
 ## Departures from the plan
+
+- G9 run 1: the Windows build of Mesa is a script beside the Linux one
+  (`crates/wcontainers-nir/mesa/build-windows.ps1`), sharing its pin and patches, not a step of
+  the rig's setup (the rig's scripts are another track's). It fetches its own tools into
+  `C:\wc\graphics-nir\tools` rather than installing them system-wide. llvmpipe is built with
+  LLVM's own Windows release (static runtime), not an LLVM built here.
 
 - 6.4 states the binding rule for Direct3D. For Vulkan and OpenGL programs the NIR route reads it as
   Direct3D 12's: within the stage's set each kind's resources in the order of the program's own
@@ -1264,6 +1389,11 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 1: exit 1 at 248050c5 (x86-64 machine, from a git bundle; marks 0), with the one finding
+outside this track's reach, `CUBE_FACES` (Waiting on others). wcontainers-nir still has no
+baseline lines; this run added no literal (the PowerShell script names its versions and paths once
+at its top; the check does not scan PowerShell).
 
 Run 15: exit 1 at 52c083b9 (x86-64 machine, from a git bundle; marks 0), for one finding outside
 this track's reach: `CUBE_FACES` in `wcontainers-nir/src/lib.rs` (since run 9) is reported as a
