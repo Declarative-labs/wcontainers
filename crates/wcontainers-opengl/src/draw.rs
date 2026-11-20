@@ -9,11 +9,14 @@ use wcontainers_gpu::{
     AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange,
     CullMode, DrawCall, DrawRange, FanOrLoop, Features, FormatKind, FormatUse, HELPER_SET,
     HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource, MAX_BINDING_SETS, Object,
-    PassTracker, Program, ProvokingVertex, ReadSource, ReflectedBinding, RingKind, STORAGE_WORD,
-    ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, StageSet, StepMode, Topology,
-    VariantKey, VertexBinding, VertexFormat, Viewport, cut_scissors, helper_binding,
+    PassTracker, Program, ProvokingVertex, ReadSource, ReflectedBinding, Reflection, RingKind,
+    STORAGE_WORD, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage,
+    StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding, VertexFormat, Viewport,
+    cut_scissors, helper_binding,
 };
 use wcontainers_nir::mesa::{PositionTransform, TextureSwizzle};
+use wcontainers_shaders::Converted;
+use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
 
 use crate::context::Context;
 use crate::gallium::*;
@@ -21,6 +24,7 @@ use crate::resource::Resource;
 use crate::screen::Screen;
 use crate::state::{self, Shader, Stage, refuse};
 use crate::view::{IDENTITY, View};
+use crate::{query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
 struct Built<B: Backend> {
@@ -37,6 +41,8 @@ struct Built<B: Backend> {
     helper_size: u32,
     /// The storage binding of each stream the program fetches itself, by its input's location.
     pulled: Vec<(u32, u32)>,
+    /// A vertex program converted for the stage helper: its module, with its outputs.
+    converted: Option<Converted>,
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
@@ -52,6 +58,8 @@ struct Variant {
     interpolation: Vec<Interpolated>,
     /// The inputs the program fetches from their streams itself, by location, and their formats.
     pulled: Vec<(u32, VertexFormat)>,
+    /// A vertex program the stage helper runs, every input fetched in it.
+    streamed: bool,
 }
 
 /// A value passed between stages at one location, and how it is interpolated.
@@ -78,6 +86,8 @@ pub struct Programs<B: Backend> {
     built: HashMap<(ShaderId, Variant), Built<B>>,
     programs: HashMap<(ShaderId, Variant, ShaderId, Variant), B::Program>,
     blends: HashMap<BlendDesc, B::Blend>,
+    /// The stage helpers of vertex programs streamed, by program and variant.
+    streamed: HashMap<(ShaderId, Variant), Stages<B>>,
 }
 
 impl<B: Backend> Default for Programs<B> {
@@ -86,6 +96,7 @@ impl<B: Backend> Default for Programs<B> {
             built: HashMap::new(),
             programs: HashMap::new(),
             blends: HashMap::new(),
+            streamed: HashMap::new(),
         }
     }
 }
@@ -111,6 +122,17 @@ impl<B: Backend> Programs<B> {
                 screen.retire(Object::Program(p));
             }
         }
+        let streamed: Vec<_> = self
+            .streamed
+            .keys()
+            .filter(|k| k.0 == id)
+            .cloned()
+            .collect();
+        for key in streamed {
+            if let Some(stages) = self.streamed.remove(&key) {
+                stages.destroy(&mut screen.backend());
+            }
+        }
     }
 
     /// Gives every object back, with the context.
@@ -123,6 +145,9 @@ impl<B: Backend> Programs<B> {
         }
         for (_, b) in self.blends.drain() {
             screen.retire(Object::Blend(b));
+        }
+        for (_, stages) in self.streamed.drain() {
+            stages.destroy(&mut screen.backend());
         }
     }
 }
@@ -288,6 +313,20 @@ fn convert<B: Backend>(
             reflection.helper_size,
         )
     };
+    let converted = variant.streamed.then(|| Converted {
+        modules: vec![module.clone()],
+        reflection: Reflection {
+            stage: SourceStage::Vertex,
+            inputs: Vec::new(),
+            outputs: stream::outputs(&module.module),
+            bindings: bindings.clone(),
+            helpers: helpers.clone(),
+            helper_size,
+            sampled_pairs: Vec::new(),
+            extras: StageExtras::None,
+            slow_paths: Vec::new(),
+        },
+    });
     let uniform_sizes = uniform_sizes(&module.module);
     let flat_inputs = flat_inputs(&module.module);
     let inputs = input_interpolation(&module.module);
@@ -310,6 +349,7 @@ fn convert<B: Backend>(
         helpers,
         helper_size,
         pulled,
+        converted,
     })
 }
 
@@ -510,37 +550,36 @@ fn helper_block<B: Backend>(
     Ok(block)
 }
 
-/// Binds every resource the two programs read, one set a stage, as the route's reflection
-/// numbers them, with the streams the vertex program fetches itself and its helper constants.
+/// Binds every resource the programs read, one set a stage, as the route's reflection numbers
+/// them, with the streams the vertex program fetches itself and its helper constants; the vertex
+/// program's visible to `vertex_visible`.
 fn binding_sets<B: Backend>(
     backend: &mut B,
     stages: &state::Stages<B>,
-    built: [&Built<B>; Stage::ALL.len()],
+    built: &[(Stage, &Built<B>)],
     pulled: &[Pulled<'_, B>],
     first_instance: u32,
+    vertex_visible: StageSet,
 ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], String> {
     let mut sets = [const { None }; MAX_BINDING_SETS];
     let limits = &backend.caps().limits;
     let align = limits.min_uniform_offset_alignment;
     let storage_align = u64::from(limits.min_storage_offset_alignment);
     let largest_storage = limits.max_storage_buffer_size;
-    if built[1].helper_size != 0 {
-        return Err("helper constants in a fragment program".into());
+    let mut helpers = None;
+    for &(stage, b) in built {
+        match (stage, b.helper_size) {
+            (_, 0) => {}
+            (Stage::Vertex, _) => {
+                helpers = Some(helper_block(b, pulled, storage_align, first_instance)?);
+            }
+            (Stage::Fragment, _) => return Err("helper constants in a fragment program".into()),
+        }
     }
-    let helpers = if built[0].helper_size == 0 {
-        None
-    } else {
-        Some(helper_block(
-            built[0],
-            pulled,
-            storage_align,
-            first_instance,
-        )?)
-    };
-    for (stage, built) in Stage::ALL.into_iter().zip(built) {
+    for &(stage, built) in built {
         let bound = stages.get(stage);
         let visible = match stage {
-            Stage::Vertex => StageSet::VERTEX,
+            Stage::Vertex => vertex_visible,
             Stage::Fragment => StageSet::FRAGMENT,
         };
         // Uniform blocks the program reads that the frontend handed as bytes go through the
@@ -790,12 +829,30 @@ fn draw<B: Backend>(
             .iter()
             .filter_map(|&l| Some((l, elements.format(l)?)))
             .collect(),
+        streamed: false,
     };
     // SAFETY: as above.
     programs.built_for(backend, unsafe { &*vs }, &vertex)?;
     if !vertex.swizzles.is_empty() || !fragment.swizzles.is_empty() {
         backend.slow_paths().hit(SlowPath::SwizzleInShader);
     }
+    if context.streams.active() {
+        // SAFETY: as above.
+        stream_out(
+            context,
+            backend,
+            unsafe { &*vs },
+            &vertex,
+            elements,
+            info,
+            draws,
+        )?;
+    }
+    if raster.discard {
+        return Ok(());
+    }
+    let bound = &context.bound;
+    let programs = &mut context.programs;
     let built = [
         &programs.built[&(vs as ShaderId, vertex.clone())],
         &programs.built[&(fs as ShaderId, fragment.clone())],
@@ -817,58 +874,14 @@ fn draw<B: Backend>(
                 .map_err(|e| format!("a program: {e:?}"))?,
         );
     }
-    let mut fetched = Vec::new();
-    for &location in &pulled {
-        let stream = elements
-            .stream(location)
-            .ok_or("a fetched input without a stream")?;
-        let attribute = elements
-            .desc
-            .attributes
-            .iter()
-            .flatten()
-            .find(|a| a.location == location)
-            .ok_or("a fetched input without its element")?;
-        let layout = elements.desc.streams[stream].ok_or("an element of no stream")?;
-        let bound_stream = context
-            .bound
-            .vertex_buffers
-            .get(stream)
-            .filter(|s| !s.resource.is_null())
-            .ok_or("a fetched vertex stream that is not bound")?;
-        // SAFETY: a bound stream holds a reference on a live buffer.
-        let resource = unsafe { Resource::<B>::of(bound_stream.resource) };
-        let component = elements
-            .component_bytes
-            .iter()
-            .find(|&&(l, _)| l == location)
-            .map_or(1, |&(_, bytes)| bytes);
-        let starts = [bound_stream.offset, attribute.offset, layout.stride];
-        if starts.iter().any(|s| !s.is_multiple_of(component)) {
-            return Err(
-                "a fetched vertex component across words (the shaders crate's fetch reads aligned components)"
-                    .into(),
-            );
-        }
-        fetched.push(Pulled {
-            location,
-            buffer: resource.buffer().ok_or("a vertex stream in a texture")?,
-            buffer_bytes: u64::from(resource.base.width0),
-            stream_offset: u64::from(bound_stream.offset),
-            attribute_offset: attribute.offset,
-            stride: layout.stride,
-            divisor: match layout.step {
-                StepMode::Vertex => 0,
-                StepMode::Instance(n) => n,
-            },
-        });
-    }
+    let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &pulled)?;
     let sets = binding_sets(
         backend,
         &context.stages,
-        built,
+        &[(Stage::Vertex, built[0]), (Stage::Fragment, built[1])],
         &fetched,
         info.start_instance,
+        StageSet::VERTEX,
     )?;
     let pulled_mask = pulled.iter().fold(0, |mask, l| mask | 1 << l);
     let layout = elements.block(backend, pulled_mask)?;
@@ -987,6 +1000,165 @@ fn draw<B: Backend>(
             raster.host_provoking,
             fan,
         )?;
+    }
+    for set in sets.into_iter().flatten() {
+        backend.destroy(Object::BindingSet(set));
+    }
+    Ok(())
+}
+
+/// The streams of the inputs at `pulled`, which the vertex program fetches itself.
+fn fetched_streams<'a, B: Backend + 'a>(
+    elements: &state::Elements<B>,
+    streams: &'a [state::VertexBuffer],
+    pulled: &[u32],
+) -> Result<Vec<Pulled<'a, B>>, String> {
+    let mut fetched = Vec::new();
+    for &location in pulled {
+        let stream = elements
+            .stream(location)
+            .ok_or("a fetched input without a stream")?;
+        let attribute = elements
+            .desc
+            .attributes
+            .iter()
+            .flatten()
+            .find(|a| a.location == location)
+            .ok_or("a fetched input without its element")?;
+        let layout = elements.desc.streams[stream].ok_or("an element of no stream")?;
+        let bound_stream = streams
+            .get(stream)
+            .filter(|s| !s.resource.is_null())
+            .ok_or("a fetched vertex stream that is not bound")?;
+        // SAFETY: a bound stream holds a reference on a live buffer.
+        let resource = unsafe { Resource::<B>::of(bound_stream.resource) };
+        let component = elements
+            .component_bytes
+            .iter()
+            .find(|&&(l, _)| l == location)
+            .map_or(1, |&(_, bytes)| bytes);
+        let starts = [bound_stream.offset, attribute.offset, layout.stride];
+        if starts.iter().any(|s| !s.is_multiple_of(component)) {
+            return Err(
+                "a fetched vertex component across words (the shaders crate's fetch reads aligned components)"
+                    .into(),
+            );
+        }
+        fetched.push(Pulled {
+            location,
+            buffer: resource.buffer().ok_or("a vertex stream in a texture")?,
+            buffer_bytes: u64::from(resource.base.width0),
+            stream_offset: u64::from(bound_stream.offset),
+            attribute_offset: attribute.offset,
+            stride: layout.stride,
+            divisor: match layout.step {
+                StepMode::Vertex => 0,
+                StepMode::Instance(n) => n,
+            },
+        });
+    }
+    Ok(fetched)
+}
+
+/// The stage helper's topology of a list or strip.
+fn input_topology(topology: Topology) -> Option<InputTopology> {
+    Some(match topology {
+        Topology::PointList => InputTopology::PointList,
+        Topology::LineList => InputTopology::LineList,
+        Topology::LineStrip => InputTopology::LineStrip,
+        Topology::TriangleList => InputTopology::TriangleList,
+        Topology::TriangleStrip => InputTopology::TriangleStrip,
+        _ => return None,
+    })
+}
+
+/// The vertex program's outputs streamed to the bound targets for each range of a draw, by the
+/// stage helper (`StreamOutAsCompute`), before the draw itself.
+fn stream_out<B: Backend>(
+    context: &mut Context<B>,
+    backend: &mut B,
+    vs: &Shader,
+    vertex: &Variant,
+    elements: &state::Elements<B>,
+    info: &pipe_draw_info,
+    draws: &[pipe_draw_start_count_bias],
+) -> Result<(), String> {
+    let Some(declared) = vs.streamed.clone()? else {
+        return Ok(());
+    };
+    if info.index_size > 0 {
+        return Err("stream output of an indexed draw (OpenGL ES 3.0 has none)".into());
+    }
+    let topology = input_topology(topology(info.mode)).ok_or("stream output of a fan or loop")?;
+    let mut locations: Vec<u32> = elements
+        .desc
+        .attributes
+        .iter()
+        .flatten()
+        .map(|a| a.location)
+        .collect();
+    locations.sort_unstable();
+    let variant = Variant {
+        pulled: locations
+            .iter()
+            .filter_map(|&l| Some((l, elements.format(l)?)))
+            .collect(),
+        interpolation: Vec::new(),
+        streamed: true,
+        ..vertex.clone()
+    };
+    let programs = &mut context.programs;
+    let key = (std::ptr::from_ref(vs) as ShaderId, variant.clone());
+    let made = programs.streamed.contains_key(&key);
+    let built = programs.built_for(backend, vs, &variant)?;
+    let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
+    let sets = binding_sets(
+        backend,
+        &context.stages,
+        &[(Stage::Vertex, built)],
+        &fetched,
+        info.start_instance,
+        StageSet::VERTEX.union(StageSet::COMPUTE),
+    )?;
+    if !made {
+        let converted = built
+            .converted
+            .clone()
+            .ok_or("a streamed program without its module")?;
+        let stages = Stages::new(backend, &converted, None, Some(&declared))
+            .map_err(|e| format!("stream output: {e:?}"))?;
+        programs.streamed.insert(key.clone(), stages);
+    }
+    let stages = programs.streamed.get_mut(&key).ok_or("the stage helper")?;
+    context
+        .tracker
+        .close(backend)
+        .map_err(|e| format!("{e:?}"))?;
+    let fragment_set = wcontainers_nir::bind::stage_set(ShaderStage::Fragment) as usize;
+    let vertex_sets = std::array::from_fn(|set| sets[set].as_ref().filter(|_| set != fragment_set));
+    for d in draws.iter().filter(|d| d.count > 0) {
+        let draw = StageDraw {
+            vertex_sets,
+            geometry_sets: [None; MAX_BINDING_SETS],
+            index: None,
+            topology,
+            range: DrawRange::Vertices {
+                first: d.start,
+                count: d.count,
+                first_instance: info.start_instance,
+                instances: info.instance_count,
+            },
+            stream_output: Some(context.streams.targets()?),
+        };
+        stages
+            .run(backend, &draw)
+            .map_err(|e| format!("stream output: {e:?}"))?;
+        let statistics = context
+            .streams
+            .filled
+            .as_ref()
+            .ok_or("stream output's block")?;
+        query::count_emitted(context.counting, backend, statistics)?;
     }
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));

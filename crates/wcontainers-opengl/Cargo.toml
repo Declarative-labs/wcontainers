@@ -16,6 +16,7 @@ pollster = "1.0.1"
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
 wcontainers-nir = { path = "../wcontainers-nir", default-features = false }
+wcontainers-shaders = { path = "../wcontainers-shaders" }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "vulkan"] }
 
 [target.'cfg(windows)'.dependencies]

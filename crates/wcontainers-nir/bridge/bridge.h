@@ -237,6 +237,23 @@ struct wc_texture_swizzle {
 void wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle *swizzles,
                              size_t count);
 
+/* One output a vertex program streams: the buffer, its byte offset in each vertex there, where the
+ * route places the output (a generic location, or the position), and its components. */
+struct wc_stream_output {
+   uint32_t buffer;
+   uint32_t offset;
+   uint32_t location;
+   bool position;
+   uint8_t first_component;
+   uint8_t components;
+};
+
+/* The outputs `nir` streams (its transform feedback), at most `capacity` written to `outputs`, with
+ * each of the first `buffers` buffers' bytes a vertex in `strides`; returns how many it streams,
+ * or UINT32_MAX when one is a value the route places neither at a location nor as the position. */
+uint32_t wc_nir_stream_outputs(const struct nir_shader *nir, struct wc_stream_output *outputs,
+                               uint32_t capacity, uint32_t *strides, uint32_t buffers);
+
 void wc_nir_free(struct nir_shader *nir);
 void wc_bytes_free(struct wc_bytes *bytes);
 void wc_words_free(struct wc_words *words);

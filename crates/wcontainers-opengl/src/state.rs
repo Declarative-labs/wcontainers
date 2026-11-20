@@ -12,11 +12,13 @@ use wcontainers_gpu::{
     VertexFormat, VertexLayoutDesc, VertexStream,
 };
 use wcontainers_nir::mesa::Nir;
+use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};
 
 use crate::context::{self, Context};
 use crate::gallium::*;
 use crate::resource;
 use crate::screen::DRIVER_NAME;
+use crate::stream;
 
 /// Ends the process naming state the driver does not take yet: a crash with the reason in the
 /// case's log, never a draw that ignores it.
@@ -161,6 +163,8 @@ pub struct Raster<B: Backend> {
     pub faces: Option<[B::Raster; 2]>,
     /// Both faces culled: triangles draw nothing.
     pub cull_both: bool,
+    /// Nothing is rasterized (stream output alone).
+    pub discard: bool,
     /// The vertex program's depth goes from OpenGL's clip space to the host's.
     pub minus_one: bool,
     pub scissor: bool,
@@ -266,6 +270,9 @@ fn pulled_because<B: Backend>(backend: &B, element: &pipe_vertex_element) -> Opt
 pub struct Shader {
     pub stage: Stage,
     pub nir: Nir,
+    /// What a vertex program streams while stream output is bound: the stage helper's
+    /// declaration, none, or why it cannot.
+    pub streamed: Result<Option<StreamOutput>, &'static str>,
 }
 
 fn factor(f: pipe_blendfactor) -> BlendFactor {
@@ -607,6 +614,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         cull: desc.cull,
         faces,
         cull_both: cull_face == PIPE_FACE_FRONT_AND_BACK,
+        discard: state.rasterizer_discard() != 0,
         minus_one: state.clip_halfz() == 0,
         scissor: desc.scissor,
         provoking,
@@ -815,13 +823,23 @@ fn create_shader(state: *const pipe_shader_state, stage: Stage) -> *mut c_void {
     let mut nir = unsafe { Nir::from_raw(state.ir.nir.cast()) };
     nir.uniform_blocks_as_words();
     nir.split_resource_arrays();
+    let mut streamed = Ok(None);
     match stage {
         Stage::Vertex => {
             nir.number_vertex_elements();
+            streamed = match nir.stream_outputs::<STREAM_BUFFERS>() {
+                Some((outputs, _)) if outputs.is_empty() => Ok(None),
+                Some((outputs, strides)) => Ok(Some(stream::declaration(&outputs, strides))),
+                None => Err("a streamed value that is neither at a location nor the position"),
+            };
         }
         Stage::Fragment => nir.fragcolor_to_buffers(PIPE_MAX_COLOR_BUFS),
     }
-    object(Shader { stage, nir })
+    object(Shader {
+        stage,
+        nir,
+        streamed,
+    })
 }
 
 unsafe extern "C" fn create_vs_state(

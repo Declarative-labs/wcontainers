@@ -205,7 +205,32 @@ unsafe extern "C" {
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
+    fn wc_nir_stream_outputs(
+        nir: *const NirShader,
+        outputs: *mut StreamedOutput,
+        capacity: u32,
+        strides: *mut u32,
+        buffers: u32,
+    ) -> u32;
 }
+
+/// One output a vertex program streams (`struct wc_stream_output`): its buffer, its byte offset in
+/// each vertex there, where the route places it (a generic location, or the position), and its
+/// components.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamedOutput {
+    pub buffer: u32,
+    pub offset: u32,
+    pub location: u32,
+    pub position: bool,
+    pub first_component: u8,
+    pub components: u8,
+}
+
+/// The bridge's answer for a streamed value the route places neither at a location nor as the
+/// position.
+const STREAMED_ELSEWHERE: u32 = u32::MAX;
 
 /// What one component of a texture's result is made of (`enum wc_swizzle`).
 #[repr(u8)]
@@ -330,6 +355,36 @@ impl Nir {
     pub fn swizzle_textures(&mut self, swizzles: &[TextureSwizzle]) {
         // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
         unsafe { wc_nir_swizzle_textures(self.0, swizzles.as_ptr(), swizzles.len()) }
+    }
+
+    /// The outputs the program streams (its transform feedback, none without it) and each of the
+    /// first `N` buffers' bytes a vertex; `None` when one is a value the route places neither at a
+    /// location nor as the position.
+    pub fn stream_outputs<const N: usize>(&self) -> Option<(Vec<StreamedOutput>, [u32; N])> {
+        let mut strides = [0; N];
+        let buffers = N as u32;
+        // SAFETY: self.0 is a live shader; the bridge writes at most the capacities given.
+        let count = unsafe {
+            wc_nir_stream_outputs(
+                self.0,
+                std::ptr::null_mut(),
+                0,
+                strides.as_mut_ptr(),
+                buffers,
+            )
+        };
+        let mut outputs = vec![StreamedOutput::default(); count as usize];
+        // SAFETY: as above.
+        let written = unsafe {
+            wc_nir_stream_outputs(
+                self.0,
+                outputs.as_mut_ptr(),
+                count,
+                strides.as_mut_ptr(),
+                buffers,
+            )
+        };
+        (count != STREAMED_ELSEWHERE && written != STREAMED_ELSEWHERE).then_some((outputs, strides))
     }
 
     /// A vertex program's position changed by `transform`. Nothing for another stage.

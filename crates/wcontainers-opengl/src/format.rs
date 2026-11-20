@@ -189,7 +189,10 @@ pub fn supported(
 ) -> bool {
     if target == PIPE_BUFFER {
         // Vertex streams of the formats the interface reads; texel buffers are not served yet.
-        let plain = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER | PIPE_BIND_CONSTANT_BUFFER;
+        let plain = PIPE_BIND_VERTEX_BUFFER
+            | PIPE_BIND_INDEX_BUFFER
+            | PIPE_BIND_CONSTANT_BUFFER
+            | PIPE_BIND_STREAM_OUTPUT;
         return bindings & !plain == 0
             && (bindings & PIPE_BIND_VERTEX_BUFFER == 0 || vertex_format(format).is_some());
     }

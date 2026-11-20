@@ -26,4 +26,6 @@ mod screen;
 #[cfg(mesa)]
 mod state;
 #[cfg(mesa)]
+mod stream;
+#[cfg(mesa)]
 mod view;

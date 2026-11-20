@@ -14,7 +14,7 @@ use crate::gallium::*;
 use crate::resource::{self, Resource};
 use crate::screen::{DRIVER_NAME, Screen};
 use crate::state::{self, Stage, Stages};
-use crate::{blit, draw, present, query, view};
+use crate::{blit, draw, present, query, stream, view};
 
 /// Ends the process naming a Gallium entry point the driver does not have yet, so that a case
 /// reaching it is a crash with the name in its log, never a call that does nothing.
@@ -61,6 +61,9 @@ pub struct Context<B: Backend> {
     /// The occlusion query sets, and the query running in them.
     pub queries: query::Sets<B>,
     pub running: Option<*mut pipe_query>,
+    /// The count of primitives streamed that is running.
+    pub counting: Option<*mut pipe_query>,
+    pub streams: stream::Bound<B>,
 }
 
 impl<B: Backend> Context<B> {
@@ -102,6 +105,8 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
         blit_bytes: Vec::new(),
         queries: query::Sets::default(),
         running: None,
+        counting: None,
+        streams: stream::Bound::default(),
     });
     let base = &mut context.base;
     base.screen = screen;
@@ -142,6 +147,9 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.get_query_result = Some(query::get_query_result::<B>);
     c.set_active_query_state = Some(query::set_active_query_state::<B>);
     c.set_polygon_stipple = Some(set_polygon_stipple);
+    c.create_stream_output_target = Some(stream::create_stream_output_target::<B>);
+    c.stream_output_target_destroy = Some(stream::stream_output_target_destroy::<B>);
+    c.set_stream_output_targets = Some(stream::set_stream_output_targets::<B>);
     c.resource_copy_region = Some(view::resource_copy_region::<B>);
     c.generate_mipmap = Some(view::generate_mipmap::<B>);
     c.create_sampler_view = Some(view::create_sampler_view::<B>);
@@ -173,9 +181,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
         bind_compute_state,
         delete_compute_state,
         launch_grid,
-        create_stream_output_target,
-        stream_output_target_destroy,
-        set_stream_output_targets,
     );
 }
 
@@ -200,6 +205,7 @@ unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
     }
     context.programs.release(screen);
     context.queries.release(screen);
+    context.streams.release(screen);
     if let Some(copy) = context.present.take() {
         copy.release(screen);
     }

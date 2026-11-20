@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard};
 
-use wcontainers_gpu::{Backend, Caps, Features, Object};
+use wcontainers_gpu::{Backend, Caps, Features, Format, FormatUse, Object};
+use wcontainers_shaders::stage::STREAM_BUFFERS;
 
 use crate::device::HostWindows;
 use crate::format;
@@ -96,8 +97,21 @@ fn levels(size: u32) -> u32 {
 
 /// The GLSL version st/mesa's GLSL compiler takes for this driver, and OpenGL ES's: the
 /// versions whose programs the NIR route converts and whose state the context draws with.
-const GLSL_VERSION: c_uint = 120;
-const ESSL_VERSION: c_uint = 100;
+const GLSL_VERSION: c_uint = 130;
+const ESSL_VERSION: c_uint = 300;
+
+/// Stream output's limits: the stage helper's (every vertex output written to its records, into
+/// its four buffers), on back ends with compute work; none without.
+fn stream_output(ours: &Caps) -> (c_uint, c_uint) {
+    if ours.has(Features::COMPUTE) {
+        (
+            STREAM_BUFFERS as c_uint,
+            ours.limits.inter_stage_slots * naga::VectorSize::Quad as c_uint,
+        )
+    } else {
+        (0, 0)
+    }
+}
 
 /// Gallium's screen caps: its defaults, with the interface's limits over them and what the
 /// context does and does not do.
@@ -120,10 +134,22 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     }
     caps.max_texture_anisotropy = f32::from(limits.max_anisotropy);
     caps.constant_buffer_offset_alignment = limits.min_uniform_offset_alignment;
+    caps.max_constant_buffer_size = limits.max_uniform_buffer_size;
     caps.max_varyings = limits.inter_stage_slots;
     caps.glsl_feature_level = GLSL_VERSION;
     caps.glsl_feature_level_compatibility = GLSL_VERSION;
     caps.essl_feature_level = ESSL_VERSION;
+    let filters = |format| ours.formats.get(format).contains(FormatUse::FILTER);
+    caps.texture_half_float_linear = filters(Format::Rgba16Float);
+    caps.texture_float_linear = filters(Format::Rgba32Float);
+    caps.texture_shadow_map = true;
+    // Strips restart at the largest index on the host; lists, where OpenGL drops the primitive
+    // a restart cuts, and strips drawn without restart are rewritten (`RestartRewrite`).
+    caps.primitive_restart_fixed_index = true;
+    (
+        caps.max_stream_output_buffers,
+        caps.max_stream_output_interleaved_components,
+    ) = stream_output(ours);
     caps.npot_textures = true;
     caps.blend_equation_separate = true;
     let independent = ours.has(Features::INDEPENDENT_BLEND);

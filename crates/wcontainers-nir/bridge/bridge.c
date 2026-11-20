@@ -9,6 +9,7 @@
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_serialize.h"
+#include "nir_xfb_info.h"
 #include "pipe/p_state.h"
 #include "util/bitscan.h"
 #include "util/bitset.h"
@@ -974,4 +975,31 @@ wc_nir_uniform_blocks_as_words(nir_shader *nir)
    wc_nir_buffers_as_words(nir, bytes, blocks);
    /* The default uniforms' own variables, which st/mesa keeps after their loads became block 0's. */
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
+}
+
+uint32_t
+wc_nir_stream_outputs(const nir_shader *nir, struct wc_stream_output *outputs, uint32_t capacity,
+                      uint32_t *strides, uint32_t buffers)
+{
+   const nir_xfb_info *xfb = nir->xfb_info;
+   for (unsigned b = 0; b < buffers; b++)
+      strides[b] = b < NIR_MAX_XFB_BUFFERS ? nir->info.xfb_stride[b] * sizeof(uint32_t) : 0;
+   if (!xfb)
+      return 0;
+   for (unsigned i = 0; i < xfb->output_count && i < capacity; i++) {
+      const nir_xfb_output_info *o = &xfb->outputs[i];
+      uint32_t location;
+      enum wc_builtin builtin = wc_builtin_at(nir, true, o->location, &location);
+      if (builtin != WC_BUILTIN_NONE && builtin != WC_BUILTIN_POSITION)
+         return UINT32_MAX;
+      outputs[i] = (struct wc_stream_output){
+         .buffer = o->buffer,
+         .offset = o->offset,
+         .location = location,
+         .position = builtin == WC_BUILTIN_POSITION,
+         .first_component = o->component_offset,
+         .components = util_bitcount(o->component_mask),
+      };
+   }
+   return xfb->output_count;
 }

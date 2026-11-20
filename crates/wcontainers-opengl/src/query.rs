@@ -1,10 +1,15 @@
 //! Occlusion queries: whether any sample passed, from the pass tracker's queries, one an
-//! interface query a pass the guest query ran in.
+//! interface query a pass the guest query ran in; and counts of the primitives stream output
+//! wrote, from the stage helper's statistics.
 
 use std::ffi::c_uint;
 use std::ops::Range;
 
-use wcontainers_gpu::{Backend, Object, PassTracker, QueryKind, ReadState};
+use wcontainers_gpu::{
+    Backend, BufferDesc, BufferUsage, MapIntent, Object, PassTracker, QueryKind, ReadSource,
+    ReadState, STORAGE_WORD,
+};
+use wcontainers_shaders::stage::STREAM_BUFFERS;
 
 use crate::context::Context;
 use crate::gallium::*;
@@ -81,22 +86,114 @@ pub struct Query<B: Backend> {
     answer: Option<Answer<B>>,
     /// Paused while st/mesa draws for itself (its blits and clears).
     paused: bool,
+    /// For a count of primitives streamed, the count.
+    emitted: Option<Emitted<B>>,
 }
 
-/// `pipe_context::create_query`: occlusion predicates; an exact sample count needs
-/// `OCCLUSION_COUNT` or the counting replay, which is not built.
+/// Streamed draws whose counts a count keeps on the device before it reads them back and sums
+/// them.
+const EMITTED_SLOTS: u64 = 1024;
+/// The stage helper's statistics word of stream 0's primitives written.
+const WRITTEN_WORD: u64 = STREAM_BUFFERS as u64;
+
+/// Primitives written to stream output while the count ran: each streamed draw's, copied from the
+/// stage helper's statistics into a slot, read back and summed when asked for (or when the slots
+/// are full).
+pub struct Emitted<B: Backend> {
+    slots: B::Buffer,
+    used: u64,
+    sum: u64,
+}
+
+impl<B: Backend> Emitted<B> {
+    /// The slots' counts summed into `sum`, read back now (outside a pass).
+    fn gather(&mut self, backend: &mut B) -> Result<(), String> {
+        if self.used == 0 {
+            return Ok(());
+        }
+        let mut words = vec![0; (self.used * STORAGE_WORD) as usize];
+        backend
+            .read_back_now(
+                &ReadSource::Buffer {
+                    buffer: &self.slots,
+                    offset: 0,
+                    size: self.used * STORAGE_WORD,
+                },
+                &mut words,
+            )
+            .map_err(|e| format!("{e:?}"))?;
+        let (counts, _) = words.as_chunks::<{ size_of::<u32>() }>();
+        self.sum += counts
+            .iter()
+            .map(|&w| u64::from(u32::from_le_bytes(w)))
+            .sum::<u64>();
+        self.used = 0;
+        Ok(())
+    }
+}
+
+/// After a streamed draw: the running count takes its primitives written from `statistics`, the
+/// stage helper's block (outside a pass).
+pub fn count_emitted<B: Backend>(
+    counting: Option<*mut pipe_query>,
+    backend: &mut B,
+    statistics: &B::Buffer,
+) -> Result<(), String> {
+    let Some(query) = counting else {
+        return Ok(());
+    };
+    // SAFETY: a running count lives until it ends.
+    let Some(emitted) = (unsafe { of::<B>(query) }).emitted.as_mut() else {
+        return Err("a count that is not one".into());
+    };
+    if emitted.used == EMITTED_SLOTS {
+        emitted.gather(backend)?;
+    }
+    backend.copy_buffer(
+        statistics,
+        WRITTEN_WORD * STORAGE_WORD,
+        &emitted.slots,
+        emitted.used * STORAGE_WORD,
+        STORAGE_WORD,
+    );
+    emitted.used += 1;
+    Ok(())
+}
+
+/// `pipe_context::create_query`: occlusion predicates and counts of primitives streamed; an
+/// exact sample count needs `OCCLUSION_COUNT` or the counting replay, which is not built.
 pub unsafe extern "C" fn create_query<B: Backend>(
-    _: *mut pipe_context,
+    pipe: *mut pipe_context,
     kind: c_uint,
     _: c_uint,
 ) -> *mut pipe_query {
+    let query = |emitted| {
+        Box::into_raw(Box::new(Query::<B> {
+            answer: None,
+            paused: false,
+            emitted,
+        }))
+        .cast()
+    };
     match kind as pipe_query_type {
-        PIPE_QUERY_OCCLUSION_PREDICATE | PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE => {
-            Box::into_raw(Box::new(Query::<B> {
-                answer: None,
-                paused: false,
+        PIPE_QUERY_OCCLUSION_PREDICATE | PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE => query(None),
+        PIPE_QUERY_PRIMITIVES_EMITTED => {
+            // SAFETY: Mesa passes this driver's context.
+            let context = unsafe { Context::<B>::of(pipe) };
+            let slots = context
+                .screen()
+                .backend()
+                .create_buffer(&BufferDesc {
+                    size: EMITTED_SLOTS * STORAGE_WORD,
+                    usage: BufferUsage::COPY_DST.union(BufferUsage::READ_BACK),
+                    intent: MapIntent::Rarely,
+                })
+                .unwrap_or_else(|e| refuse(&format!("a count of primitives: {e:?}")));
+            query(Some(Emitted {
+                slots,
+                used: 0,
+                sum: 0,
             }))
-            .cast()
         }
         _ => refuse(&format!(
             "a query of Gallium kind {kind} (only occlusion predicates are built)"
@@ -111,9 +208,17 @@ unsafe fn of<'a, B: Backend>(query: *mut pipe_query) -> &'a mut Query<B> {
     unsafe { &mut *query.cast::<Query<B>>() }
 }
 
-pub unsafe extern "C" fn destroy_query<B: Backend>(_: *mut pipe_context, query: *mut pipe_query) {
+pub unsafe extern "C" fn destroy_query<B: Backend>(
+    pipe: *mut pipe_context,
+    query: *mut pipe_query,
+) {
     // SAFETY: Mesa destroys a query it made once.
-    drop(unsafe { Box::from_raw(query.cast::<Query<B>>()) });
+    let query = unsafe { Box::from_raw(query.cast::<Query<B>>()) };
+    if let Some(emitted) = query.emitted {
+        // SAFETY: Mesa passes this driver's context.
+        let context = unsafe { Context::<B>::of(pipe) };
+        context.screen().retire(Object::Buffer(emitted.slots));
+    }
 }
 
 pub unsafe extern "C" fn begin_query<B: Backend>(
@@ -122,6 +227,11 @@ pub unsafe extern "C" fn begin_query<B: Backend>(
 ) -> bool {
     // SAFETY: Mesa passes this driver's context and a query of it.
     let (context, query) = unsafe { (Context::<B>::of(pipe), of::<B>(query)) };
+    if let Some(emitted) = &mut query.emitted {
+        (emitted.used, emitted.sum) = (0, 0);
+        context.counting = Some(std::ptr::from_mut(query).cast());
+        return true;
+    }
     let screen = context.screen();
     let mut backend = screen.backend();
     let begun = context
@@ -153,6 +263,10 @@ pub unsafe extern "C" fn end_query<B: Backend>(
 ) -> bool {
     // SAFETY: as above.
     let (context, query) = unsafe { (Context::<B>::of(pipe), of::<B>(query)) };
+    if query.emitted.is_some() {
+        context.counting = None;
+        return true;
+    }
     let Some(Answer::Running { set, first }) = query.answer.take() else {
         refuse("an occlusion query ended that is not running");
     };
@@ -184,6 +298,20 @@ pub unsafe extern "C" fn get_query_result<B: Backend>(
 ) -> bool {
     // SAFETY: as above; Mesa gives a result to write.
     let (context, query) = unsafe { (Context::<B>::of(pipe), of::<B>(query)) };
+    if let Some(emitted) = &mut query.emitted {
+        let mut backend = context.screen().backend();
+        let gathered = context
+            .tracker
+            .close(&mut backend)
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|()| emitted.gather(&mut backend));
+        if let Err(reason) = gathered {
+            refuse(&format!("a count of primitives: {reason}"));
+        }
+        // SAFETY: as above.
+        unsafe { (*result).u64_ = emitted.sum };
+        return true;
+    }
     let passed = match answer(context, query, wait) {
         Ok(Some(passed)) => passed,
         Ok(None) => return false,
