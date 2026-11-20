@@ -131,6 +131,7 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.memory_barrier = Some(texture_barrier::<B>);
     c.flush_resource = Some(flush_resource);
     c.set_active_query_state = Some(set_active_query_state);
+    c.set_polygon_stipple = Some(set_polygon_stipple);
     c.resource_copy_region = Some(view::resource_copy_region::<B>);
     c.generate_mipmap = Some(view::generate_mipmap::<B>);
     c.create_sampler_view = Some(view::create_sampler_view::<B>);
@@ -170,7 +171,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
         create_stream_output_target,
         stream_output_target_destroy,
         set_stream_output_targets,
-        set_polygon_stipple,
     );
 }
 
@@ -546,6 +546,9 @@ unsafe extern "C" fn texture_barrier<B: Backend>(pipe: *mut pipe_context, _: c_u
 
 /// A resource about to be shown or shared needs nothing more: every write is already ordered.
 unsafe extern "C" fn flush_resource(_: *mut pipe_context, _: *mut pipe_resource) {}
+
+/// The stipple pattern applies only to a rasterizer state that stipples, which is refused by name.
+unsafe extern "C" fn set_polygon_stipple(_: *mut pipe_context, _: *const pipe_poly_stipple) {}
 
 /// Pausing queries around st/mesa's own draws: the driver runs no query yet.
 unsafe extern "C" fn set_active_query_state(_: *mut pipe_context, _: bool) {}

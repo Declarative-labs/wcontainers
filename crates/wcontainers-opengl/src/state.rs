@@ -4,9 +4,10 @@ use std::ffi::{c_uint, c_void};
 
 use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor,
-    ColorWrites, CompareFn, CullMode, DepthStencilDesc, FillMode, Filter, FrontFace, LogicOp,
-    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, ProvokingVertex, RasterDesc, RenderTargetBlend,
-    SamplerDesc, StencilFace, StencilOp, StepMode, VertexAttribute, VertexLayoutDesc, VertexStream,
+    ColorWrites, CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace,
+    LogicOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, ProvokingVertex, RasterDesc,
+    RenderTargetBlend, SamplerDesc, StencilFace, StencilOp, StepMode, VertexAttribute,
+    VertexLayoutDesc, VertexStream,
 };
 use wcontainers_nir::mesa::Nir;
 
@@ -155,6 +156,8 @@ pub struct Raster<B: Backend> {
     pub scissor: bool,
     /// Which vertex of a primitive gives flat-shaded values.
     pub provoking: ProvokingVertex,
+    /// The vertex the block takes them from: `provoking` where the back end has it.
+    pub host_provoking: ProvokingVertex,
 }
 
 pub struct Sampler<B: Backend> {
@@ -417,6 +420,26 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         _ if front_fill == back_fill => fill_mode(front_fill),
         _ => refuse("front and back faces filled differently"),
     };
+    if state.poly_stipple_enable() != 0 {
+        refuse("polygon stippling");
+    }
+    let provoking = if state.flatshade_first() != 0 {
+        ProvokingVertex::First
+    } else {
+        ProvokingVertex::Last
+    };
+    // The block takes the convention the back end has; flat values from the other one are
+    // checked at the draw, where the fragment program is known.
+    let caps = context.screen().backend().caps().clone();
+    let host_provoking = match provoking {
+        ProvokingVertex::Last if !caps.has(Features::PROVOKING_VERTEX_LAST) => {
+            ProvokingVertex::First
+        }
+        ProvokingVertex::First if !caps.has(Features::PROVOKING_VERTEX_FIRST) => {
+            ProvokingVertex::Last
+        }
+        wanted => wanted,
+    };
     let biased = state.offset_tri() != 0;
     let bias = |v: f32| if biased { v.to_bits() } else { 0 };
     let desc = RasterDesc {
@@ -437,11 +460,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         depth_clip: state.depth_clip_near() != 0,
         scissor: state.scissor() != 0,
         line_width: state.line_width.to_bits(),
-        provoking: if state.flatshade_first() != 0 {
-            ProvokingVertex::First
-        } else {
-            ProvokingVertex::Last
-        },
+        provoking: host_provoking,
         depth_minus_one: false,
         sample_mask: u32::MAX,
     };
@@ -451,7 +470,8 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
             cull_both: cull_face == PIPE_FACE_FRONT_AND_BACK,
             minus_one: state.clip_halfz() == 0,
             scissor: desc.scissor,
-            provoking: desc.provoking,
+            provoking,
+            host_provoking,
         }),
         Err(error) => refuse(&format!("a rasterizer state: {error:?}")),
     }

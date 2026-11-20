@@ -26,6 +26,8 @@ struct Built<B: Backend> {
     bindings: Vec<ReflectedBinding>,
     /// The bytes each uniform block declares, by its binding in the converted program.
     uniform_sizes: HashMap<u32, u64>,
+    /// The program reads values interpolated flat, taken from the provoking vertex.
+    flat_inputs: bool,
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
@@ -107,6 +109,30 @@ fn uniform_sizes(module: &naga::Module) -> HashMap<u32, u64> {
         .collect()
 }
 
+/// Whether an entry point's inputs include a flat value.
+fn flat_inputs(module: &naga::Module) -> bool {
+    let flat = |binding: &Option<naga::Binding>| {
+        matches!(
+            binding,
+            Some(naga::Binding::Location {
+                interpolation: Some(naga::Interpolation::Flat),
+                ..
+            })
+        )
+    };
+    module.entry_points.iter().any(|entry| {
+        entry.function.arguments.iter().any(|argument| {
+            flat(&argument.binding)
+                || match &module.types[argument.ty].inner {
+                    naga::TypeInner::Struct { members, .. } => {
+                        members.iter().any(|m| flat(&m.binding))
+                    }
+                    _ => false,
+                }
+        })
+    })
+}
+
 /// One stage's program through the NIR route, for `variant`.
 fn convert<B: Backend>(
     backend: &mut B,
@@ -131,6 +157,7 @@ fn convert<B: Backend>(
         .map(|e| e.name.clone())
         .ok_or("no entry point")?;
     let uniform_sizes = uniform_sizes(&module);
+    let flat_inputs = flat_inputs(&module);
     let module = ShaderModule {
         module,
         info,
@@ -145,6 +172,7 @@ fn convert<B: Backend>(
         shader,
         bindings,
         uniform_sizes,
+        flat_inputs,
     })
 }
 
@@ -466,6 +494,12 @@ fn draw<B: Backend>(
         &programs.built[&(vs as ShaderId, vertex.clone())],
         &programs.built[&(fs as ShaderId, fragment.clone())],
     ];
+    if raster.provoking != raster.host_provoking && built[1].flat_inputs {
+        return Err(format!(
+            "flat values from the {:?} vertex, which the back end lacks",
+            raster.provoking
+        ));
+    }
     let program_key = (vs as ShaderId, vertex, fs as ShaderId, fragment);
     if let Entry::Vacant(slot) = programs.programs.entry(program_key.clone()) {
         slot.insert(
@@ -575,7 +609,7 @@ fn draw<B: Backend>(
                         &vertices,
                         fan_or_loop(topology),
                         source,
-                        raster.provoking,
+                        raster.host_provoking,
                         info.start_instance,
                         info.instance_count,
                     )
@@ -615,7 +649,7 @@ fn draw<B: Backend>(
                         &base,
                         fan_or_loop(topology),
                         source,
-                        raster.provoking,
+                        raster.host_provoking,
                         info.start_instance,
                         info.instance_count,
                     )
