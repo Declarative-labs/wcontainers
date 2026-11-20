@@ -37,7 +37,7 @@ minor ones; run 49 did:
 
 The pass bar, item by item:
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080:
-  189 of 198 ("Test files") ("Test files"); every failing file is on the gap list with the absent feature, or
+  189 of 198 ("Test files"); every failing file is on the gap list with the absent feature, or
   not to be matched as real Direct3D 12 crashes in it.
 - A real Direct3D 12 program drawing matching frames: Microsoft's D3D12HelloTriangle and
   D3D12HelloConstBuffers, bgfx 01-cubes, 26-occlusion, 35-dynamic, 37-gpudrivenrendering and
@@ -48,35 +48,36 @@ The pass bar, item by item:
 - The queue, fence, query, predication, placed-resource and indirect cases against real Direct3D
   12: the own program's 33 cases ("Cases").
 
-For the independent check, one command each (scratch `bin/all48.sh <n>` runs them all):
+For the independent check, one command each (scratch `bin/all49.sh <n>` runs them all):
 - a sample of test files: `wine-tests run --dll ... vkd3d-d3d12:test_a/test_b` ("How to run");
 - the 33 cases: `check_d3d12 cases` through the own program ("How to run");
-- the real programs: scratch `bin/real48.sh <n>` (Microsoft's two samples, Godot's two
-  platformers, bgfx 37) and `bin/bgfx48.sh <n>` (bgfx 01-cubes, 26-occlusion, 35-dynamic,
+- the real programs: scratch `bin/real49.sh <n>` (Microsoft's two samples, Godot's two
+  platformers, bgfx 37) and `bin/bgfx49.sh <n>` (bgfx 01-cubes, 26-occlusion, 35-dynamic,
   38-bloom).
 Before running test files apply scratch run20/rig-wine-run-fix.patch to
 tools/graphics-rig/desktop/wine-run.ps1 and undo it afterwards ("How to run"); it is never
 committed.
 
-## Results of run 48
+## Results of run 49
 
-2026-11-19, RTX 3080, desktop shared with other tracks unless said; scratch run48/. Run 1 at
-3dfef503 (`bin/all48.sh 1` then `bin/bgfx48.sh 1`), run 2 at 708bd126, which only stops clearing
-`Map`'s out pointer (`full48.sh 2`, `real48.sh 2`, `lit48.sh 2`):
-- Literal check passes (lit3.log, lit2.log). Lint clean (lint1.log, lint2.log). The crates'
-  tests: 59 pass, none fail (test2.log: 57 of the two crates, among them the 3 GPU tests, and
-  the interface's 2 slow path tests).
-- Test files 189 of 198 at 708bd126 (full2.log); 188 at 3dfef503 (full1.log: test_map_resource
-  failed on the cleared `Map` pointer, the cause of 708bd126).
-- Own program (check2.log; check1.log the same): draw 0 of 4096 pixels beyond 1; features 169
-  of 872 differ, each as listed (192 before run 48: the 23 shape lines are gone); outputs 22 of
-  110 and answers 2 of 40 differ, none beyond real; 33 of 33 cases equal; `antialiased-lines` 0
-  of 4096 beyond 63, largest difference 38.
-- Shader runner 214 of 302 (runner1.log, runner2.log). Scenes 95 pass, 22 fail, 3 absent
-  (scenes1.log). Wine's five dxgi tests: 3 pass, 2 fail on the absent software adapter
-  (dxgi1.log).
-- Real programs: see "Real programs". Fence round trip `--alone` (alone1.log): see
-  "Measurements".
+2026-11-19, RTX 3080, desktop shared with other tracks unless said; scratch run49/, at d3ec3f99
+with the rig patch (`all49.sh 1`, then `bgfx49.sh 1`; quick checks `quick49.sh 1`):
+- Lint clean (lint1.log). The crates' tests: 60 pass, none fail (test1.log; among them the new
+  `every_texture_shape_check_feature_support_answers_is_made` and the 3 GPU tests). Literal check
+  passes (lit1.log, lit2.log).
+- Test files 189 of 198 (full1.log, logs-full1/): the same 9 failures as run 48, each on the gap
+  list.
+- Own program (check1.log): draw 0 of 4096 pixels beyond 1; features 169 of 872 differ, each as
+  listed; outputs 22 of 110 and answers 2 of 40 differ, none beyond real; 33 of 33 cases equal;
+  `antialiased-lines` 0 of 4096 beyond 63, largest difference 38.
+- Shader runner 214 of 302 (runner1.log). Scenes 95 pass, 22 fail, 3 absent (scenes1.log).
+  Wine's five dxgi tests: 3 pass, 2 fail on the absent software adapter (dxgi1.log).
+- Real programs: Microsoft's two samples equal (0 pixels beyond 8); Godot's 2D platformer equal
+  (0 of 518,400 beyond 8; 3.9 s); bgfx 37 (p1-bgfx37.log) and 01-cubes, 26-occlusion, 35-dynamic
+  and 38-bloom (b1-*.log) every frame of both our runs within the allowance (741 to 1225 pixels
+  beyond 8 of 20,480 allowed, the overlay's text); Godot's 3D platformer the same one pixel as
+  before (1 of 518,400 beyond 8, difference 48 at 921,317; 10 s).
+- Fence round trip `--alone`: see "Measurements".
 
 ## Test files (Wine's and vkd3d's, through our libraries, RTX 3080)
 
@@ -85,8 +86,7 @@ test that skips what real runs, or runs fewer checks, fails. Tests failing some 
 are held to every other check. The counted set is 198 files: d3d12 (Wine's) 10,
 vkd3d-d3d12_invalid_usage 3, vkd3d-hlsl_d3d12 9, vkd3d-d3d12 176.
 
-Failing at run 48 (run48/full2.log, logs-full2/, at 708bd126 with the rig patch; run 1 at
-3dfef503 failed test_map_resource too, which the Map fix of 708bd126 made pass again), each on the
+Failing at run 49 (run49/full1.log, logs-full1/, at d3ec3f99 with the rig patch), each on the
 gap list: d3d12 10 of 10, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9, vkd3d-d3d12
 167 of 176. The 9:
 - test_create_reserved_resource: ran 4 checks of real's 22, skipped 1. Tiled resources absent.
@@ -102,12 +102,12 @@ gap list: d3d12 10 of 10, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 o
   (E_NOTIMPL). The layer from the vertex shader absent.
 - test_copy_block_compressed_texture: 5 checks, the first d3d12_test_utils.h:669. Not to be
   matched (real Direct3D 12 crashes in it).
-The refusals the counted test files printed (logs-full2): "logic operations without LOGIC_OP"
+The refusals the counted test files printed (run 48's logs-full2): "logic operations without LOGIC_OP"
 (create_graphics_pipeline_state) and "a shader feature the converter lacks"
 (`RenderTargetArrayIndex`, ps_layer); none other.
 
 Whole counts by run: 129 of 198 (run 17), 157 (20), 164 (25), 169 (28), 180 (31), 184 (34), 186
-(35 to 45), 189 (46), 189 (48).
+(35 to 45), 189 (46), 189 (48), 189 (49).
 
 ## Gap list
 
@@ -367,7 +367,7 @@ picture within 63 of 255 (Direct3D leaves the line filter to the implementation)
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
 Run with our d3d12.dll alone (our dxgi.dll serves Direct3D 12 only and every file starts with a
-Direct3D 11 part). Run 48 (run48/runner1.log and runner2.log): 214 of 302, the same 88 failing files as runs 34 to 46. Each failing file's cause was sorted in run 44 (scratch
+Direct3D 11 part). Run 49 (run49/runner1.log): 214 of 302, the same 88 failing files as runs 34 to 46. Each failing file's cause was sorted in run 44 (scratch
 `bin/classify30.py`; the list is in this file at cf55bbe8, "Shader runner"): 61 run fewer checks
 than real with none failing (50 shader models above 6.0, which section 9 does not answer; the
 rest 64-bit integers, stencil export, depth bounds, raster order views, the layer and viewport
@@ -377,7 +377,7 @@ track: a texture read as another type than its view).
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
-Run 48 (run48/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs as runs 38 to 46. The failing outputs: raster, geometry, streamout, tessellation (DXIL geometry and
+Run 49 (run49/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs as runs 38 to 46. The failing outputs: raster, geometry, streamout, tessellation (DXIL geometry and
 hull shaders and one pixel shader the converter refuses, the shaders track's); topology (43
 pixels beyond 1, all in line cells: the aliased line listed loss), samplers-filters (anisotropy
 cells) and msaa-alpha_to_coverage, which draw with largest difference 0 on wgpu's Direct3D 12
@@ -388,7 +388,7 @@ targets, minimum and maximum filtering.
 
 RTX 3080, desktop shared with other tracks, not `--alone`, debug builds, 120 frames. Frames 10, 60
 and 120 compared with real Direct3D 12's at 8 of 255.
-- Run 48 (run48/p1-*.log at 3dfef503, p2-*.log at 708bd126; b1-*.log): Microsoft's
+- Run 49: as listed under "Results of run 49". Run 48 (run48/p1-*.log at 3dfef503, p2-*.log at 708bd126; b1-*.log): Microsoft's
   D3D12HelloTriangle and D3D12HelloConstBuffers equal (0 pixels beyond 8; 2.6 and 2.5 s);
   Godot's 2D platformer equal (0 of 518,400 beyond 8; 3.8 s); bgfx 37-gpudrivenrendering,
   01-cubes, 26-occlusion, 35-dynamic and 38-bloom every frame of both our runs within the
@@ -461,10 +461,10 @@ All on the Windows desktop through the rig; on the Mac only `nix develop -c carg
 build command starts with `set CARGO_INCREMENTAL=0&& ` (stale incremental objects once failed to
 link). Run one rig command of this branch at a time, and do not change the working tree while a
 `gpu-job` of it waits (the job refuses another tree). Scratch bin/ (this track's scratch
-directory) holds run 48's scripts: `quick48.sh <n>` (lint, the crates' tests, the literal check),
-`full48.sh <n>` (lint, tests, every test file, the own program, the shader runner), `scenes48.sh
-<n> [scenes]`, `real48.sh <n>`, `bgfx48.sh <n>`, `all48.sh <n>` (everything, with Wine's five
-dxgi tests and the `--alone` fence timing); logs land in scratch run48/.
+directory) holds run 49's scripts: `quick49.sh <n>` (lint, the crates' tests, the literal check),
+`full49.sh <n>` (lint, tests, every test file, the own program, the shader runner), `scenes49.sh
+<n> [scenes]`, `real49.sh <n>`, `bgfx49.sh <n>`, `all49.sh <n>` (everything, with Wine's five
+dxgi tests and the `--alone` fence timing); logs land in scratch run49/.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p wcontainers-gpu -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
 - Tests (three draw on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
@@ -495,8 +495,8 @@ dxgi tests and the `--alone` fence timing); logs land in scratch run48/.
 - Scenes: `tools/graphics-rig/scenes --build "cargo build -j 3 -p wcontainers-direct3d-12
   --examples" --dll ... (all three) --api d3d12 [scenes]`.
 - Real programs: `tools/graphics-rig/programs run` with the three `--dll`s (scratch
-  `bin/prog48.sh <log> <programs>`); bgfx through scratch bgfx-compare.ps1 in
-  C:\wc\out\phase-2-graphics-direct3d-12 (`bgfx48.sh`).
+  `bin/prog49.sh <log> <programs>`); bgfx through scratch bgfx-compare.ps1 in
+  C:\wc\out\phase-2-graphics-direct3d-12 (`bgfx49.sh`).
 - com.rs: `python3 examples/directx/com.py > examples/directx/com.rs`, then `cargo fmt` (it reads
   the windows crate under `$CARGO_HOME`).
 - The desktop needs the shaders crate's submodules once (checked out since run 4).
@@ -504,12 +504,13 @@ dxgi tests and the `--alone` fence timing); logs land in scratch run48/.
 ## No magic numbers
 
 The literal check passes (run48/lit3.log at the last code commit and lit2.log at the Map fix). Baseline lines of this track's crates: run 43
-wcontainers-direct3d-12 471 and the infrastructure crate 63; run 48 458 and 63. Named in run 48:
+wcontainers-direct3d-12 471 and the infrastructure crate 63; run 48 458 and 63; run 49 457 and
+63 (main.rs's feature levels now the windows crate's `D3D_FEATURE_LEVEL_*`). Named in run 48:
 the cull modes, comparison functions and primitive topologies (`state`), the root signature
 versions and the input layout flag (`root`), the buffer layout (`resource`); the tests' DXGI
 formats, entry point and write mask from their one definitions. Left: Direct3D's own enum values
 no crate this branch uses names (`features.rs`'s wave lane counts, `resource_heap_tier`, the
-feature level numbers in main.rs), the depth-stencil view's read-only flags (both fronts define
+feature level numbers in tests/front.rs), the depth-stencil view's read-only flags (both fronts define
 them; they wait for the Direct3D 11 track to put them in the `d3d` module), and the fix list's
 order: Direct3D 12 placement alignments, WebGPU alignments and limits, byte widths, then the
 Direct3D enum values. Facts another crate owns stay until its constant is on a branch this one
@@ -532,6 +533,12 @@ merges.
   `SlowPath::StorageOffsetInShader` (run 34). Details in the record at cf55bbe8.
 
 ## Measurements
+
+- Run 49, fence-wait (own program, 2000 rounds) as `gpu-job --alone` at d3ec3f99
+  (run49/alone1.log, ended 23:06; desktop CPU load 1 % before and 1 % after, Win32_Processor
+  LoadPercentage): real first 8 µs, mean 1 µs, 99th percentile 1 µs, largest 8 µs; ours first
+  157 µs, mean 26 µs, 99th percentile 30 µs, largest 157 µs (run 48: mean 18 µs; the change
+  is not explained: nothing on the fence path changed in this run).
 
 - Run 48, fence-wait (own program, 2000 rounds) as `gpu-job --alone` at 3dfef503
   (run48/alone1.log, 21:10; desktop CPU load 1 % before, 32 % after, Win32_Processor
@@ -655,7 +662,7 @@ merges.
   file's name.
 - Tests only: `wcontainers-gpu-webgpu`, `wgpu` 30.0.2, `pollster`, `png` (MIT OR Apache-2.0).
 - Wine's and vkd3d's tests (LGPL-2.1) are run from the rig for testing only; nothing of them is in
-  this repository. No dependency added in run 48.
+  this repository. No dependency added in run 49.
 
 ## Installed on the desktop
 
@@ -667,5 +674,5 @@ Nothing of this track beyond the rig's setup:
   KB each), bgfx's captured frames and logs (about 12 MB, evidence), the rig's outputs, which each
   run overwrites.
 - The rig's build folder C:\wc\target\phase-2-graphics-direct3d-12 is deleted at the end of each
-  run (run 48: 8,492,639,967 bytes deleted). Nothing installed in run 48; no build output in scratch
+  run (run 49: 8,318,929,943 bytes deleted). Nothing installed in run 49; no build output in scratch
   or on the Mac.
