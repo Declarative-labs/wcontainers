@@ -253,7 +253,7 @@ enum Token<'a> {
 const SOURCE_QUOTES: &str = "\"\"";
 const QUOTES: [char; 2] = ['"', '\''];
 const ESCAPE: char = '\\';
-const COMMENT: char = '#';
+pub const COMMENT: char = '#';
 const SYMBOLS: &str = "=+-,|;()[]{}>";
 const FRACTION_MARK: char = '.';
 const EXPONENTS: [char; 2] = ['e', 'E'];

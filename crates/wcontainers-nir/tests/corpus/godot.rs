@@ -2,6 +2,7 @@
 //! Godot's build reads it (`gles3_builders.py`) and specialized as `ShaderGLES3` hands it to a
 //! desktop OpenGL driver (`_build_variant_code`), with no material code.
 
+use crate::deqp::COMMENT;
 use std::path::{Path, PathBuf};
 use wcontainers_nir::mesa::Stage;
 
@@ -15,9 +16,8 @@ const FLIP_SEPARATOR: char = ':';
 
 /// The general defines each shader is initialized with (`ShaderGLES3::initialize`), at Godot's
 /// default project settings: one line a shader file, its path under the shader folder, then the
-/// text, `\n` between lines.
+/// text, `\n` between lines; a line starting as dEQP's comments do is a comment.
 const GENERAL_DEFINES: &str = include_str!("../../corpus/godot-defines");
-const COMMENT: char = '#';
 
 /// The format's markers (`gles3_builders.py`).
 const MODES_SECTION: &str = "#[modes]";
