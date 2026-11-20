@@ -6,6 +6,13 @@
 //   wait:    a parent asks (without waiting, then waiting) for a child that sleeps, then exits.
 //   mapping: the process maps a memory file shared and writable, prints where, and unmaps it.
 //   raise:   the process raises a signal it handles.
+//   leave:   a child (forked, or with "vm" sharing the memory) sleeps, writes a page the parent
+//            shares with it, and exits while the parent waits; the parent then reads the page.
+//   pieces:  a parent maps a file read-only at two places; its child maps it writable, sleeps and
+//            exits while the parent waits; the parent unmaps both.
+//   sent:    a thread waits in a read; with "self" the main thread sends it a signal it handles.
+//   socket:  a child waits in a socket read with a receive timeout; with "stop" the parent stops
+//            and continues it, with "handler" it sends a signal the child handles with SA_RESTART.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -14,7 +21,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sched.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -30,6 +40,9 @@ enum {
     AWAY_WRITE_MS = 300,
     AWAY_LATER_MS = 100,
     AWAY_PAGES = 2,
+    AWAY_LEAVE_EXIT = 3,
+    AWAY_STACK = 64 * 1024,
+    AWAY_RECEIVE_TIMEOUT_S = 2,
     MS = 1000 * 1000,
     SECOND_MS = 1000,
 };
@@ -178,6 +191,139 @@ static int away_raise(void) {
     return 0;
 }
 
+static char away_stack[AWAY_STACK];
+
+static int away_leaver(void *argument) {
+    char *shared = argument;
+    away_sleep(AWAY_PARENT_MS);
+    shared[1] = 'c';
+    _exit(AWAY_LEAVE_EXIT);
+}
+
+static int away_leave(const char *how) {
+    long size = sysconf(_SC_PAGESIZE);
+    int file = memfd_create("leave", 0);
+    ftruncate(file, size);
+    char *shared = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
+    close(file);
+    shared[0] = 'p';
+    pid_t child;
+    if (strcmp(how, "vm") == 0) {
+        child = clone(away_leaver, away_stack + sizeof away_stack, CLONE_VM | SIGCHLD, shared);
+    } else {
+        child = fork();
+        if (child == 0) {
+            away_leaver(shared);
+        }
+    }
+    int status;
+    if (waitpid(child, &status, 0) != child) {
+        printf("wait %s\n", strerror(errno));
+    } else {
+        away_report(status);
+    }
+    printf("shared %.2s\n", shared);
+    return 0;
+}
+
+static int away_pieces(void) {
+    long page = sysconf(_SC_PAGESIZE);
+    const char *path = "/tmp/away-pieces";
+    int file = open(path, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    ftruncate(file, AWAY_PAGES * AWAY_PAGES * page);
+    close(file);
+    int readonly = open(path, O_RDONLY);
+    char *first = mmap(NULL, page, PROT_READ, MAP_SHARED, readonly, 0);
+    char *second = mmap(NULL, page, PROT_READ, MAP_SHARED, readonly, AWAY_PAGES * page);
+    pid_t child = fork();
+    if (child == 0) {
+        int writable = open(path, O_RDWR);
+        char *written = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_SHARED, writable, 0);
+        written[0] = 'c';
+        away_sleep(AWAY_PARENT_MS);
+        _exit(0);
+    }
+    int status;
+    if (waitpid(child, &status, 0) != child) {
+        printf("wait %s\n", strerror(errno));
+    } else {
+        away_report(status);
+    }
+    printf("first %c\n", first[0]);
+    munmap(first, page);
+    munmap(second, page);
+    unlink(path);
+    printf("unmapped\n");
+    return 0;
+}
+
+static void *away_plain_reader(void *argument) {
+    (void)argument;
+    char byte;
+    away_read_answer = read(away_timer_pipe[0], &byte, 1);
+    away_read_error = away_read_answer < 0 ? errno : 0;
+    return NULL;
+}
+
+static int away_sent(const char *how) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = away_handler;
+    sigaction(SIGUSR1, &action, NULL);
+    pipe(away_timer_pipe);
+    pthread_t reader;
+    pthread_create(&reader, NULL, away_plain_reader, NULL);
+    away_sleep(AWAY_PARENT_MS);
+    if (strcmp(how, "self") == 0) {
+        pthread_kill(reader, SIGUSR1);
+    }
+    // Two marks the embedder's test acts on.
+    getppid();
+    away_sleep(AWAY_LATER_MS);
+    getppid();
+    away_sleep(AWAY_LATER_MS);
+    write(away_timer_pipe[1], "", 1);
+    pthread_join(reader, NULL);
+    printf("read %ld %s handled %d\n", away_read_answer, strerror(away_read_error), away_handled);
+    return 0;
+}
+
+static int away_socket(const char *how) {
+    int ends[2];
+    socketpair(AF_UNIX, SOCK_STREAM, 0, ends);
+    struct timeval timeout = {AWAY_RECEIVE_TIMEOUT_S, 0};
+    setsockopt(ends[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    pid_t child = fork();
+    if (child == 0) {
+        struct sigaction action;
+        memset(&action, 0, sizeof action);
+        action.sa_handler = away_handler;
+        action.sa_flags = SA_RESTART;
+        sigaction(SIGUSR1, &action, NULL);
+        char byte;
+        long got = recv(ends[0], &byte, 1, 0);
+        printf("recv %ld %s handled %d\n", got, got < 0 ? strerror(errno) : "-", away_handled);
+        fflush(stdout);
+        _exit(0);
+    }
+    away_sleep(AWAY_PARENT_MS);
+    if (strcmp(how, "stop") == 0) {
+        kill(child, SIGSTOP);
+    }
+    if (strcmp(how, "handler") == 0) {
+        kill(child, SIGUSR1);
+    }
+    away_sleep(AWAY_PARENT_MS);
+    // A mark the embedder's test acts on.
+    getppid();
+    if (strcmp(how, "stop") == 0) {
+        kill(child, SIGCONT);
+    }
+    waitpid(child, NULL, 0);
+    printf("done\n");
+    return 0;
+}
+
 int main(int count, char **arguments) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     const char *mode = count > 1 ? arguments[1] : "";
@@ -198,6 +344,19 @@ int main(int count, char **arguments) {
     }
     if (strcmp(mode, "raise") == 0) {
         return away_raise();
+    }
+    const char *how = count > 2 ? arguments[2] : "";
+    if (strcmp(mode, "leave") == 0) {
+        return away_leave(how);
+    }
+    if (strcmp(mode, "pieces") == 0) {
+        return away_pieces();
+    }
+    if (strcmp(mode, "sent") == 0) {
+        return away_sent(how);
+    }
+    if (strcmp(mode, "socket") == 0) {
+        return away_socket(how);
     }
     fprintf(stderr, "unknown mode %s\n", mode);
     return 1;

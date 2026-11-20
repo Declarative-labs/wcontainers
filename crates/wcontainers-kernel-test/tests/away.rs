@@ -6,7 +6,9 @@ use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use wcontainers_abi::{Cpu, SystemCallRequest};
+use std::collections::BTreeMap;
+
+use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::linux::general;
 use wcontainers_kernel::{
     ContextOrigin, ExecutionConfig, Kernel, MemoryObject, Process, ProcessContext,
@@ -96,6 +98,18 @@ enum Plan {
     Copy,
     /// The process asked for from the hook announcing its signal, its own thread in that step.
     Raise,
+    /// The parent's whole process while it waits; back once its child has asked to exit.
+    Leave,
+    /// The parent's whole process from the hook announcing its first piece of shared memory; back
+    /// once its child has asked to exit.
+    Pieces,
+    /// The reader in its read; the embedder sends it a signal at the main thread's first mark
+    /// (`getppid`), and it is back at the second.
+    Sent,
+    /// The child in its socket read; back at the parent's mark (`getppid`).
+    Socket,
+    /// Nothing is taken.
+    Nothing,
 }
 
 #[derive(Debug, Default)]
@@ -105,6 +119,11 @@ struct Seen {
     unmapped: Vec<(u64, Range<u64>)>,
     origin: Option<ContextOrigin>,
     handed_back: usize,
+    /// Every shared memory announcement: the process, whether it starts, the offset and range.
+    pieces: Vec<(TaskId, bool, u64, Range<u64>)>,
+    /// How many announcements came before the plan put the process back.
+    pieces_before_back: Option<usize>,
+    not_sent: u64,
 }
 
 struct Script {
@@ -143,8 +162,34 @@ impl Script {
     }
 
     fn put_back(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        if let Some(context) = CONTEXT.take() {
+            let back = kernel.resume_process(context, ExecutionConfig::default());
+            assert!(back.is_none(), "the context is put back");
+        }
         let back = kernel.resume_tasks(cpu, TAKEN.take()).count();
-        self.seen.lock().unwrap().handed_back += back;
+        let mut seen = self.seen.lock().unwrap();
+        seen.handed_back += back;
+        seen.pieces_before_back = Some(seen.pieces.len());
+    }
+
+    /// Notes a shared memory announcement; in `Pieces`, takes the parent at its first.
+    fn piece(&mut self, process: Process<'_>, start: bool, offset: u64, range: Range<u64>) {
+        assert!(process.info().memory_mapped() > 0);
+        let id = process.id();
+        self.seen
+            .lock()
+            .unwrap()
+            .pieces
+            .push((id, start, offset, range));
+        if self.plan == Plan::Pieces && self.stage == 0 && self.processes.first() == Some(&id) {
+            self.stage = 1;
+            let (context, tasks) = process.suspend_process();
+            let mut seen = self.seen.lock().unwrap();
+            seen.origin = Some(context.origin());
+            CONTEXT.set(Some(context));
+            TAKEN.with_borrow_mut(|held| held.extend(tasks.map(|(_, task)| task)));
+            seen.notes.push("taken in its hook".to_owned());
+        }
     }
 }
 
@@ -174,22 +219,32 @@ impl Hooks for Script {
 
     fn on_shared_memory_mapping(
         &mut self,
-        _: Process<'_>,
+        process: Process<'_>,
         _: MemoryObject,
         offset: u64,
         range: Range<u64>,
     ) {
-        self.seen.lock().unwrap().mapped.push((offset, range));
+        self.seen
+            .lock()
+            .unwrap()
+            .mapped
+            .push((offset, range.clone()));
+        self.piece(process, true, offset, range);
     }
 
     fn on_shared_memory_unmapped(
         &mut self,
-        _: Process<'_>,
+        process: Process<'_>,
         _: MemoryObject,
         offset: u64,
         range: Range<u64>,
     ) {
-        self.seen.lock().unwrap().unmapped.push((offset, range));
+        self.seen
+            .lock()
+            .unwrap()
+            .unmapped
+            .push((offset, range.clone()));
+        self.piece(process, false, offset, range);
     }
 
     fn on_signal_delivering(&mut self, process: Process<'_>, _: TaskId, _: &SignalInformation) {
@@ -226,7 +281,7 @@ impl Hooks for Script {
             (Plan::Kill, 1) if self.asked(PARENT, general::__NR_wait4) > 0 => {
                 self.put_back(kernel, cpu);
             }
-            (Plan::TimerBeforeWrite | Plan::TimerAfterWrite, 0) => {
+            (Plan::TimerBeforeWrite | Plan::TimerAfterWrite | Plan::Sent, 0) => {
                 let parent = parent.expect("the process");
                 let Some(reader) = self.worker_of(parent) else {
                     return false;
@@ -255,9 +310,39 @@ impl Hooks for Script {
             }
             // The parent's second wait is the one that waits.
             (Plan::Wait, 1) if self.asked(PARENT, general::__NR_wait4) > 1 => {
-                let context = CONTEXT.take().expect("the context");
-                let back = kernel.resume_process(context, ExecutionConfig::default());
-                assert!(back.is_none(), "the context is put back");
+                assert!(CONTEXT.with_borrow(Option::is_some), "the context");
+                self.put_back(kernel, cpu);
+            }
+            (Plan::Leave, 0)
+                if self.asked(PARENT, general::__NR_wait4) > 0
+                    && self.asked(CHILD, general::__NR_nanosleep) > 0 =>
+            {
+                let (context, tasks) = kernel
+                    .suspend_process(cpu, parent.expect("the parent"))
+                    .expect("the parent's process");
+                self.seen.lock().unwrap().origin = Some(context.origin());
+                CONTEXT.set(Some(context));
+                TAKEN.with_borrow_mut(|held| held.extend(tasks.map(|(_, task)| task)));
+                self.seen.lock().unwrap().notes.push("taken".to_owned());
+            }
+            (Plan::Leave | Plan::Pieces, 1) if self.asked(CHILD, general::__NR_exit_group) > 0 => {
+                self.put_back(kernel, cpu);
+            }
+            (Plan::Sent, 1) if self.asked(PARENT, general::__NR_getppid) > 0 => {
+                let parent = parent.expect("the process");
+                let reader = self.worker_of(parent).expect("the reader");
+                kernel
+                    .process(cpu, parent)
+                    .expect("the process is here")
+                    .send_signal(reader, user_signal(general::SIGUSR1));
+            }
+            (Plan::Sent, 2) if self.asked(PARENT, general::__NR_getppid) > 1 => {
+                self.put_back(kernel, cpu);
+            }
+            (Plan::Socket, 0) if self.asked(CHILD, general::__NR_recvfrom) > 0 => {
+                self.take(kernel, cpu, &[child.expect("the child")]);
+            }
+            (Plan::Socket, 1) if self.asked(PARENT, general::__NR_getppid) > 0 => {
                 self.put_back(kernel, cpu);
             }
             (Plan::Copy, 0) if self.asked(PARENT, general::__NR_nanosleep) > 0 => {
@@ -300,19 +385,39 @@ fn run_plan(plan: Plan, arguments: &[&str], seed: u64) -> (Run, Seen) {
 
 /// Runs `plan` under every seed and asks that what the program printed is the reference's.
 fn as_the_reference(plan: Plan, arguments: &[&str]) -> Vec<Seen> {
-    let theirs = theirs(arguments);
+    as_the_reference_runs(plan, arguments, arguments)
+}
+
+/// As [`as_the_reference`], the reference run with `reference` (which does there what the plan
+/// does here).
+fn as_the_reference_runs(plan: Plan, arguments: &[&str], reference: &[&str]) -> Vec<Seen> {
+    let theirs = theirs(reference);
     wcontainers_kernel_test::schedule_seeds()
         .map(|seed| {
-            let (run, seen) = run_plan(plan, arguments, seed);
+            let (run, mut seen) = run_plan(plan, arguments, seed);
+            seen.not_sent = counted(&run, reason::SIGNAL_NOT_SENT);
             let label = format!("{plan:?} {arguments:?}, seed {seed}: {seen:?}");
             assert_eq!(stdout(&run), theirs, "{label} {:?}", run.counters);
             assert!(
-                seen.notes.iter().any(|note| note.starts_with("taken")) || seen.origin.is_some(),
+                plan == Plan::Nothing
+                    || seen.notes.iter().any(|note| note.starts_with("taken"))
+                    || seen.origin.is_some(),
                 "{label}: the plan acted"
             );
             seen
         })
         .collect()
+}
+
+/// A record of `signal` sent from outside the container (no sender process).
+fn user_signal(signal: u32) -> SignalInformation {
+    // SAFETY: every member of the record is made of integers, for which zero is valid.
+    let mut record: SignalInformation = unsafe { std::mem::zeroed() };
+    // SAFETY: a record built from zero has every member's bytes set.
+    let header = unsafe { &mut record.__bindgen_anon_1.__bindgen_anon_1 };
+    header.si_signo = signal as i32;
+    header.si_code = general::SI_USER as i32;
+    record
 }
 
 #[test]
@@ -392,4 +497,70 @@ fn a_hooks_process_whose_thread_is_in_its_step_stays_and_says_its_context_is_a_c
             run.counters
         );
     }
+}
+
+#[test]
+fn a_parent_away_while_its_forked_child_ends_goes_on_when_it_is_back() {
+    for seen in as_the_reference(Plan::Leave, &["leave", "fork"]) {
+        assert_eq!(seen.origin, Some(ContextOrigin::Suspended), "{seen:?}");
+        assert_eq!(seen.handed_back, 0, "{seen:?}");
+    }
+}
+
+#[test]
+fn a_parent_away_while_a_child_in_its_memory_ends_goes_on_when_it_is_back() {
+    for seen in as_the_reference(Plan::Leave, &["leave", "vm"]) {
+        assert_eq!(seen.origin, Some(ContextOrigin::Suspended), "{seen:?}");
+        assert_eq!(seen.handed_back, 0, "{seen:?}");
+    }
+}
+
+#[test]
+fn a_process_taken_in_its_own_sharing_hook_is_told_the_rest_when_it_is_back() {
+    for seen in as_the_reference(Plan::Pieces, &["pieces"]) {
+        let label = format!("{seen:?}");
+        assert_eq!(seen.origin, Some(ContextOrigin::Suspended), "{label}");
+        assert_eq!(seen.handed_back, 0, "{label}");
+        // Each end names pages announced before at the same place in the source, and all end.
+        let mut told: BTreeMap<(TaskId, u64), u64> = BTreeMap::new();
+        for (process, start, offset, range) in &seen.pieces {
+            for page in range.clone().step_by(PAGE_SIZE as usize) {
+                let place = offset + (page - range.start);
+                if *start {
+                    let before = told.insert((*process, page), place);
+                    assert_eq!(before, None, "{label}: {page:#x} announced twice");
+                } else {
+                    let before = told.remove(&(*process, page));
+                    assert_eq!(before, Some(place), "{label}: {page:#x} ended");
+                }
+            }
+        }
+        assert!(told.is_empty(), "{label}: {told:?}");
+        // The parent was told of both its pieces, the second once it was back.
+        let parent = seen.pieces.first().expect("an announcement").0;
+        let starts: Vec<usize> = (0..seen.pieces.len())
+            .filter(|&at| seen.pieces[at].0 == parent && seen.pieces[at].1)
+            .collect();
+        assert_eq!(starts.len(), 2, "{label}");
+        let back = seen.pieces_before_back.expect("put back");
+        assert!(starts[1] >= back, "{label}");
+    }
+}
+
+#[test]
+fn a_signal_the_embedder_sends_to_a_task_away_waits_for_it() {
+    for seen in as_the_reference_runs(Plan::Sent, &["sent", "embedder"], &["sent", "self"]) {
+        assert_eq!(seen.not_sent, 0, "{seen:?}");
+        assert_eq!(seen.handed_back, 0, "{seen:?}");
+    }
+}
+
+#[test]
+fn a_socket_wait_with_a_receive_timeout_taken_off_answers_as_a_stop_makes_it_answer() {
+    as_the_reference_runs(Plan::Socket, &["socket", "embedder"], &["socket", "stop"]);
+}
+
+#[test]
+fn a_socket_wait_with_a_receive_timeout_is_not_restarted_after_a_handler() {
+    as_the_reference(Plan::Nothing, &["socket", "handler"]);
 }

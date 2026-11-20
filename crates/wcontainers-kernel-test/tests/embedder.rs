@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::linux::general;
 use wcontainers_kernel::{
-    AccessKind, Errno, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
+    AccessKind, ContextOrigin, Errno, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
     SignalInformation, SuspendedTask, System, SystemCallResponse, SystemVSegmentId, TaskId,
     WatchesFor, reason, task_id_after,
 };
@@ -161,7 +161,12 @@ impl Recorder {
             let bytes = process
                 .read_memory(first.start..first.start + 1)
                 .expect("readable");
-            process.write_memory(first.start, &bytes).expect("writable");
+            // A page of a shared mapping its process cannot write is refused, not written.
+            let written = process.write_memory(first.start, &bytes);
+            assert!(
+                matches!(written, Ok(()) | Err(MemoryError::SharedNotWritable)),
+                "{seen}: {written:?}"
+            );
             process.watch_memory(first.clone(), WatchesFor::None);
         }
         assert!(
@@ -184,6 +189,17 @@ impl Recorder {
         );
         process.watch_memory(reversed, WatchesFor::All);
         process.watch_memory(u64::MAX - 1..u64::MAX, WatchesFor::All);
+        let _ = process.memory_id();
+        let copy = process.copy_process_context();
+        assert_eq!(
+            (copy.id(), copy.origin()),
+            (process.id(), ContextOrigin::Copied),
+            "{seen}"
+        );
+        // No task asked for: none taken. Taking the process itself is the suspend tests' part.
+        assert_eq!(process.suspend_tasks(&[]).count(), 0, "{seen}");
+        // A signal of number 0 is counted and not sent.
+        process.send_signal(process.id(), queued_signal(0, 0));
         *self.depth.lock().unwrap() -= 1;
     }
 }
@@ -252,6 +268,32 @@ impl Hooks for Recorder {
     ) {
         let (number, ..) = signal_fields(signal);
         self.operate(&mut process, &format!("signal {number} to {thread:?}"));
+    }
+
+    fn on_shared_memory_mapping(
+        &mut self,
+        mut process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        self.operate(
+            &mut process,
+            &format!("mapping {source:?} {offset} {range:?}"),
+        );
+    }
+
+    fn on_shared_memory_unmapped(
+        &mut self,
+        mut process: Process<'_>,
+        source: MemoryObject,
+        offset: u64,
+        range: std::ops::Range<u64>,
+    ) {
+        self.operate(
+            &mut process,
+            &format!("unmapped {source:?} {offset} {range:?}"),
+        );
     }
 
     fn on_process_starting(&mut self, mut process: Process<'_>) {
@@ -2332,6 +2374,18 @@ fn shared_memory_is_announced_per_process_as_it_starts_and_ends_as_proc_maps_sho
         let (mapped_in, unmapped_in) = (mapped_in.lock().unwrap(), unmapped_in.lock().unwrap());
         assert_eq!(mapped_in.len(), 3, "seed {seed}: {mapped_in:?}");
         assert_eq!(*mapped_in, *unmapped_in, "seed {seed}");
+    }
+}
+
+#[test]
+fn every_operation_of_the_handle_is_legal_in_the_shared_memory_hooks() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["sharing", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let run = run_embedder("sharing", Box::new(Recorder::default()), seed);
+        assert_eq!(stdout(&run), theirs, "seed {seed}: {:?}", run.counters);
     }
 }
 
