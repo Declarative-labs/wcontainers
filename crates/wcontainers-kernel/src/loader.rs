@@ -625,7 +625,10 @@ fn place(
     }
     let mmap_offset = randomization.map_or(0, |random| random.mmap_offset(random_word(cx)));
     map.mmap_base = crate::memory::mmap_base(end, stack_limit, randomization, mmap_offset);
-    let top = end - randomization.map_or(0, |random| random.stack_offset(random_word(cx)));
+    // A space too small for the random move leaves no room, which the check against the ceiling
+    // refuses before the old program goes.
+    let top =
+        end.saturating_sub(randomization.map_or(0, |random| random.stack_offset(random_word(cx))));
     // Where Linux puts a program that can be placed anywhere: two thirds of the way up.
     let bias = if header.e_type(endian) == elf::ET_EXEC {
         0
