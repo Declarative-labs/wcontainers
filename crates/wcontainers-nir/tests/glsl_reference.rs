@@ -58,6 +58,25 @@ void main() {
 }
 ";
 
+const SAMPLING: &str = "#version 430
+layout(local_size_x = 8) in;
+uniform sampler2D colours;
+uniform usampler3D counts;
+uniform samplerCube sky;
+uniform sampler2DShadow depths;
+uniform isampler2DArray layered;
+layout(std430) buffer Sampled { vec4 c[16]; uvec4 n[16]; vec4 s[16]; float d[16]; ivec4 l[16]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec2 at = vec2(float(i) / 8.0 + 0.0625, 0.4);
+    c[i] = textureLod(colours, at, 0.0) + texelFetch(colours, ivec2(i % 4u, 1), 0);
+    n[i] = texelFetch(counts, ivec3(i % 4u, 2, 3), 0);
+    s[i] = textureLod(sky, vec3(1.0, at * 2.0 - 1.0), 0.0);
+    d[i] = textureLod(depths, vec3(at, 0.5), 0.0);
+    l[i] = texelFetch(layered, ivec3(i % 4u, 3, i % 2u), 0);
+}
+";
+
 const TEST_FILE: &str = "[require]
 GLSL >= 4.30
 
@@ -70,9 +89,8 @@ void main() {}
 compute 1 1 1
 ";
 
-#[test]
-fn a_glsl_compute_program_matches_llvmpipe_on_route_b() {
-    let mut stage = Nir::from_glsl(&[(Stage::Compute, PROGRAM)])
+fn compute_verdict(source: &str) -> Verdict {
+    let mut stage = Nir::from_glsl(&[(Stage::Compute, source)])
         .unwrap()
         .pop()
         .unwrap();
@@ -83,8 +101,17 @@ fn a_glsl_compute_program_matches_llvmpipe_on_route_b() {
         seed: DEFAULT_SEED,
         input_sets: 1,
     };
-    let verdict = glsl::compare_compute(PROGRAM, &stage.names, &module, &reflection, options);
-    assert_eq!(verdict, Verdict::Matched);
+    glsl::compare_compute(source, &stage.names, &module, &reflection, options)
+}
+
+#[test]
+fn a_glsl_compute_program_matches_llvmpipe_on_route_b() {
+    assert_eq!(compute_verdict(PROGRAM), Verdict::Matched);
+}
+
+#[test]
+fn a_glsl_program_sampling_textures_matches_llvmpipe_on_route_b() {
+    assert_eq!(compute_verdict(SAMPLING), Verdict::Matched);
 }
 
 #[test]

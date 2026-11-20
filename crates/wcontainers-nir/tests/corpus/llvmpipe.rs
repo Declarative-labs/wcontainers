@@ -4,6 +4,8 @@
 //! `glUniform*` and uniform and storage blocks bound by their index.
 
 use crate::interface::Kind;
+use crate::lavapipe::Image;
+use ash::vk;
 use glow::HasContext;
 use khronos_egl as egl;
 use std::ffi::{c_char, c_void};
@@ -103,10 +105,21 @@ pub struct StageValue {
     pub location: i32,
 }
 
-/// One vertex attribute: its location, kind and components (a matrix is one a column), and every
+/// Where an attribute is fed: a generic attribute's location, or one of OpenGL's own arrays.
+#[derive(Clone, Copy, Debug)]
+pub enum AttributeSlot {
+    Generic(u32),
+    /// `gl_MultiTexCoord` of a texture unit.
+    TexCoord(u32),
+    Color,
+    Normal,
+    FogCoord,
+}
+
+/// One vertex attribute: its slot, kind and components (a matrix is one a column), and every
 /// vertex's values.
 pub struct VertexAttribute {
-    pub location: u32,
+    pub slot: AttributeSlot,
     pub kind: Kind,
     pub components: u32,
     pub words: Vec<u32>,
@@ -126,6 +139,7 @@ pub struct DrawOptions<'a> {
     pub uniforms: &'a [UniformValue<'a>],
     pub uniform_blocks: &'a [Vec<u8>],
     pub storage_blocks: &'a [Vec<u8>],
+    pub sampled: &'a [SampledTexture],
     pub attributes: &'a [VertexAttribute],
     pub points: u32,
     /// The kind of the colour target at each location (None where there is none).
@@ -148,6 +162,31 @@ pub struct Reflection {
     pub outputs: Vec<StageValue>,
 }
 
+/// A texture a sampler uniform reads: the uniform's name and type, and the texels, as the route's
+/// resource has them.
+#[derive(Clone)]
+pub struct SampledTexture {
+    pub uniform: String,
+    pub ty: u32,
+    pub image: Image,
+}
+
+/// What `bind_program` made: uniform buffers, storage buffers and sampled textures.
+#[derive(Default)]
+struct Bound {
+    buffers: Vec<glow::Buffer>,
+    storage: Vec<glow::Buffer>,
+    textures: Vec<glow::Texture>,
+}
+
+/// Sampler types whose texture is a rectangle (the route's is two-dimensional).
+const RECTANGLE_SAMPLERS: [u32; 4] = [
+    glow::SAMPLER_2D_RECT,
+    glow::SAMPLER_2D_RECT_SHADOW,
+    glow::INT_SAMPLER_2D_RECT,
+    glow::UNSIGNED_INT_SAMPLER_2D_RECT,
+];
+
 /// The values of one default-block uniform: its words, element after element, column after column.
 pub struct UniformValue<'a> {
     pub variable: &'a Variable,
@@ -164,6 +203,28 @@ type GetProgramResourceName = unsafe extern "C" fn(u32, u32, u32, i32, *mut i32,
 type SetTwo = unsafe extern "C" fn(u32, u32);
 /// `glProgramParameteri` and `glFramebufferParameteri`.
 type Parameteri = unsafe extern "C" fn(u32, u32, i32);
+/// `glClientActiveTexture` and `glEnableClientState`.
+type SetOne = unsafe extern "C" fn(u32);
+/// `glTexCoordPointer` and `glColorPointer`.
+type SizedPointer = unsafe extern "C" fn(i32, u32, i32, *const c_void);
+/// `glNormalPointer` and `glFogCoordPointer`.
+type TypedPointer = unsafe extern "C" fn(u32, i32, *const c_void);
+
+/// OpenGL's own vertex arrays (the compatibility profile), which glow does not name.
+const TEXTURE_COORD_ARRAY: u32 = 0x8078;
+const COLOR_ARRAY: u32 = 0x8076;
+const NORMAL_ARRAY: u32 = 0x8075;
+const FOG_COORD_ARRAY: u32 = 0x8457;
+
+/// The functions feeding OpenGL's own vertex arrays.
+struct ConventionalArrays {
+    client_active_texture: SetOne,
+    enable_client_state: SetOne,
+    tex_coord: SizedPointer,
+    color: SizedPointer,
+    normal: TypedPointer,
+    fog_coord: TypedPointer,
+}
 
 pub struct Llvmpipe {
     egl: egl::DynamicInstance<egl::EGL1_5>,
@@ -177,13 +238,14 @@ pub struct Llvmpipe {
     clamp_color: SetTwo,
     program_parameter: Parameteri,
     framebuffer_parameter: Parameteri,
+    conventional: ConventionalArrays,
 }
 
+/// The display is not terminated: it is the process's one, shared by every `Llvmpipe` on any thread.
 impl Drop for Llvmpipe {
     fn drop(&mut self) {
         let _ = self.egl.make_current(self.display, None, None, None);
         let _ = self.egl.destroy_context(self.display, self.context);
-        let _ = self.egl.terminate(self.display);
     }
 }
 
@@ -287,6 +349,25 @@ impl Llvmpipe {
                 std::mem::transmute::<*const c_void, Parameteri>(raw("glFramebufferParameteri")?),
             )
         };
+        // SAFETY: each address is the named OpenGL 1.3 or 1.4 function, of the type given.
+        let conventional = unsafe {
+            ConventionalArrays {
+                client_active_texture: std::mem::transmute::<*const c_void, SetOne>(raw(
+                    "glClientActiveTexture",
+                )?),
+                enable_client_state: std::mem::transmute::<*const c_void, SetOne>(raw(
+                    "glEnableClientState",
+                )?),
+                tex_coord: std::mem::transmute::<*const c_void, SizedPointer>(raw(
+                    "glTexCoordPointer",
+                )?),
+                color: std::mem::transmute::<*const c_void, SizedPointer>(raw("glColorPointer")?),
+                normal: std::mem::transmute::<*const c_void, TypedPointer>(raw("glNormalPointer")?),
+                fog_coord: std::mem::transmute::<*const c_void, TypedPointer>(raw(
+                    "glFogCoordPointer",
+                )?),
+            }
+        };
         Ok(Self {
             egl,
             display,
@@ -299,6 +380,7 @@ impl Llvmpipe {
             clamp_color,
             program_parameter,
             framebuffer_parameter,
+            conventional,
         })
     }
 
@@ -573,41 +655,202 @@ impl Llvmpipe {
         }
     }
 
-    /// Uses the program with its uniforms and blocks (block i bound at i); the buffers made, the
-    /// storage blocks' last.
+    /// A texture holding `sampled`'s texels at texture unit `unit`, with the route's sampler state
+    /// (nearest, clamped to the edge, one level; a depth texture compared less or equal and its
+    /// comparison in every component, as the driver gives it before a view's swizzle), and the
+    /// sampler uniform set to the unit.
+    fn sampled_texture(
+        &self,
+        program: glow::Program,
+        unit: u32,
+        sampled: &SampledTexture,
+    ) -> Result<glow::Texture, Error> {
+        let gl = &self.gl;
+        let image = &sampled.image;
+        let (internal, format, ty) = match image.format {
+            vk::Format::R32G32B32A32_SFLOAT => (glow::RGBA32F, glow::RGBA, glow::FLOAT),
+            vk::Format::R32G32B32A32_SINT => (glow::RGBA32I, glow::RGBA_INTEGER, glow::INT),
+            vk::Format::R32G32B32A32_UINT => {
+                (glow::RGBA32UI, glow::RGBA_INTEGER, glow::UNSIGNED_INT)
+            }
+            vk::Format::D32_SFLOAT => {
+                (glow::DEPTH_COMPONENT32F, glow::DEPTH_COMPONENT, glow::FLOAT)
+            }
+            other => return Err(format!("a texture of format {other:?} is not made here")),
+        };
+        let target = match image.view {
+            _ if RECTANGLE_SAMPLERS.contains(&sampled.ty) => glow::TEXTURE_RECTANGLE,
+            vk::ImageViewType::TYPE_1D => glow::TEXTURE_1D,
+            vk::ImageViewType::TYPE_1D_ARRAY => glow::TEXTURE_1D_ARRAY,
+            vk::ImageViewType::TYPE_2D => glow::TEXTURE_2D,
+            vk::ImageViewType::TYPE_2D_ARRAY => glow::TEXTURE_2D_ARRAY,
+            vk::ImageViewType::TYPE_3D => glow::TEXTURE_3D,
+            vk::ImageViewType::CUBE => glow::TEXTURE_CUBE_MAP,
+            vk::ImageViewType::CUBE_ARRAY => glow::TEXTURE_CUBE_MAP_ARRAY,
+            other => return Err(format!("a texture of view {other:?} is not made here")),
+        };
+        let size = |n: u32| i32::try_from(n).map_err(|e| e.to_string());
+        let (width, height, depth) = (
+            size(image.extent.width)?,
+            size(image.extent.height)?,
+            size(image.extent.depth)?,
+        );
+        let layers = size(image.layers)?;
+        let internal = size(internal)?;
+        let pixels = |bytes| glow::PixelUnpackData::Slice(Some(bytes));
+        // SAFETY: plain OpenGL calls on the current context; each upload's bytes hold its texels.
+        unsafe {
+            let texture = gl.create_texture()?;
+            gl.active_texture(glow::TEXTURE0 + unit);
+            gl.bind_texture(target, Some(texture));
+            let bytes = image.bytes.as_slice();
+            match target {
+                glow::TEXTURE_1D => {
+                    gl.tex_image_1d(target, 0, internal, width, 0, format, ty, pixels(bytes));
+                }
+                glow::TEXTURE_1D_ARRAY => gl.tex_image_2d(
+                    target,
+                    0,
+                    internal,
+                    width,
+                    layers,
+                    0,
+                    format,
+                    ty,
+                    pixels(bytes),
+                ),
+                glow::TEXTURE_2D | glow::TEXTURE_RECTANGLE => gl.tex_image_2d(
+                    target,
+                    0,
+                    internal,
+                    width,
+                    height,
+                    0,
+                    format,
+                    ty,
+                    pixels(bytes),
+                ),
+                glow::TEXTURE_CUBE_MAP => {
+                    let face_bytes = bytes.len() / image.layers as usize;
+                    for (face, texels) in (0..).zip(bytes.chunks(face_bytes)) {
+                        gl.tex_image_2d(
+                            glow::TEXTURE_CUBE_MAP_POSITIVE_X + face,
+                            0,
+                            internal,
+                            width,
+                            height,
+                            0,
+                            format,
+                            ty,
+                            pixels(texels),
+                        );
+                    }
+                }
+                _ => {
+                    let depth = if target == glow::TEXTURE_3D {
+                        depth
+                    } else {
+                        layers
+                    };
+                    gl.tex_image_3d(
+                        target,
+                        0,
+                        internal,
+                        width,
+                        height,
+                        depth,
+                        0,
+                        format,
+                        ty,
+                        pixels(bytes),
+                    );
+                }
+            }
+            let nearest = size(glow::NEAREST)?;
+            let edge = size(glow::CLAMP_TO_EDGE)?;
+            gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, nearest);
+            gl.tex_parameter_i32(target, glow::TEXTURE_MAG_FILTER, nearest);
+            for wrap in [
+                glow::TEXTURE_WRAP_S,
+                glow::TEXTURE_WRAP_T,
+                glow::TEXTURE_WRAP_R,
+            ] {
+                gl.tex_parameter_i32(target, wrap, edge);
+            }
+            gl.tex_parameter_i32(target, glow::TEXTURE_MAX_LEVEL, 0);
+            if image.depth {
+                let red = size(glow::RED)?;
+                gl.tex_parameter_i32(
+                    target,
+                    glow::TEXTURE_COMPARE_MODE,
+                    size(glow::COMPARE_REF_TO_TEXTURE)?,
+                );
+                gl.tex_parameter_i32(target, glow::TEXTURE_COMPARE_FUNC, size(glow::LEQUAL)?);
+                gl.tex_parameter_i32_slice(target, glow::TEXTURE_SWIZZLE_RGBA, &[red; 4]);
+            }
+            let at = gl.get_uniform_location(program, &sampled.uniform);
+            let Some(at) = at.as_ref() else {
+                return Err(format!("no location for the sampler {}", sampled.uniform));
+            };
+            gl.uniform_1_i32(Some(at), size(unit)?);
+            let error = gl.get_error();
+            if error != glow::NO_ERROR {
+                return Err(format!(
+                    "llvmpipe: OpenGL error {error:#x} making the texture of {}",
+                    sampled.uniform
+                ));
+            }
+            Ok(texture)
+        }
+    }
+
+    /// Uses the program with its uniforms, blocks (block i bound at i) and textures (texture i
+    /// at unit i); the buffers made, the storage blocks', and the textures.
     fn bind_program(
         &self,
         program: glow::Program,
         uniforms: &[UniformValue],
         uniform_blocks: &[Vec<u8>],
         storage_blocks: &[Vec<u8>],
-    ) -> Result<(Vec<glow::Buffer>, Vec<glow::Buffer>), Error> {
+        sampled: &[SampledTexture],
+    ) -> Result<Bound, Error> {
         let gl = &self.gl;
         // SAFETY: plain OpenGL calls on the current context, on objects made here.
         unsafe {
             gl.use_program(Some(program));
             self.set_uniforms(program, uniforms)?;
-            let mut made = Vec::new();
+            let mut bound = Bound::default();
             for (i, bytes) in (0..).zip(uniform_blocks) {
                 gl.uniform_block_binding(program, i, i);
-                made.push(self.buffer(glow::UNIFORM_BUFFER, i, bytes)?);
+                bound
+                    .buffers
+                    .push(self.buffer(glow::UNIFORM_BUFFER, i, bytes)?);
             }
-            let mut storage = Vec::new();
             for (i, bytes) in (0..).zip(storage_blocks) {
                 gl.shader_storage_block_binding(program, i, i);
-                storage.push(self.buffer(glow::SHADER_STORAGE_BUFFER, i, bytes)?);
+                bound
+                    .storage
+                    .push(self.buffer(glow::SHADER_STORAGE_BUFFER, i, bytes)?);
             }
-            Ok((made, storage))
+            for (unit, texture) in (0..).zip(sampled) {
+                bound
+                    .textures
+                    .push(self.sampled_texture(program, unit, texture)?);
+            }
+            // Later textures (a draw's targets) are bound on a unit no sampler uses.
+            gl.active_texture(glow::TEXTURE0 + u32::try_from(sampled.len()).unwrap_or(0));
+            Ok(bound)
         }
     }
 
-    /// Each storage block's bytes after the work, then every buffer deleted; or OpenGL's error.
-    fn finish(
-        &self,
-        made: Vec<glow::Buffer>,
-        storage: Vec<glow::Buffer>,
-        storage_blocks: &[Vec<u8>],
-    ) -> Result<Vec<Vec<u8>>, Error> {
+    /// Each storage block's bytes after the work, then every buffer and texture deleted; or
+    /// OpenGL's error.
+    fn finish(&self, bound: Bound, storage_blocks: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, Error> {
+        let Bound {
+            buffers: made,
+            storage,
+            textures,
+        } = bound;
         let gl = &self.gl;
         // SAFETY: plain OpenGL calls on the current context, on buffers made by `bind_program`.
         unsafe {
@@ -622,6 +865,9 @@ impl Llvmpipe {
             let error = gl.get_error();
             for buffer in made.into_iter().chain(storage) {
                 gl.delete_buffer(buffer);
+            }
+            for texture in textures {
+                gl.delete_texture(texture);
             }
             if error != glow::NO_ERROR {
                 return Err(format!("llvmpipe: OpenGL error {error:#x}"));
@@ -638,13 +884,14 @@ impl Llvmpipe {
         uniforms: &[UniformValue],
         uniform_blocks: &[Vec<u8>],
         storage_blocks: &[Vec<u8>],
+        sampled: &[SampledTexture],
         groups: [u32; 3],
     ) -> Result<Vec<Vec<u8>>, Error> {
-        let (made, storage) =
-            self.bind_program(program, uniforms, uniform_blocks, storage_blocks)?;
+        let bound =
+            self.bind_program(program, uniforms, uniform_blocks, storage_blocks, sampled)?;
         // SAFETY: a dispatch of the program in use.
         unsafe { self.gl.dispatch_compute(groups[0], groups[1], groups[2]) };
-        self.finish(made, storage, storage_blocks)
+        self.finish(bound, storage_blocks)
     }
 
     /// Draws `points` points with the program, into colour targets one row of `points` texels
@@ -653,11 +900,12 @@ impl Llvmpipe {
     #[allow(clippy::too_many_lines, reason = "one draw, step by step")]
     pub fn draw(&self, program: glow::Program, options: &DrawOptions) -> Result<Drawn, Error> {
         let gl = &self.gl;
-        let (made, storage) = self.bind_program(
+        let bound = self.bind_program(
             program,
             options.uniforms,
             options.uniform_blocks,
             options.storage_blocks,
+            options.sampled,
         )?;
         let width = i32::try_from(options.points).map_err(|e| e.to_string())?;
         // SAFETY: plain OpenGL calls on the current context, on objects made here.
@@ -671,16 +919,42 @@ impl Llvmpipe {
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
                 gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STATIC_DRAW);
                 let size = i32::try_from(a.components).map_err(|e| e.to_string())?;
-                match a.kind {
-                    Kind::Float => {
-                        gl.vertex_attrib_pointer_f32(a.location, size, glow::FLOAT, false, 0, 0);
+                let c = &self.conventional;
+                let none = std::ptr::null();
+                match (a.slot, a.kind) {
+                    (AttributeSlot::Generic(at), Kind::Float) => {
+                        gl.vertex_attrib_pointer_f32(at, size, glow::FLOAT, false, 0, 0);
                     }
-                    Kind::Sint => gl.vertex_attrib_pointer_i32(a.location, size, glow::INT, 0, 0),
-                    Kind::Uint => {
-                        gl.vertex_attrib_pointer_i32(a.location, size, glow::UNSIGNED_INT, 0, 0);
+                    (AttributeSlot::Generic(at), Kind::Sint) => {
+                        gl.vertex_attrib_pointer_i32(at, size, glow::INT, 0, 0);
+                    }
+                    (AttributeSlot::Generic(at), Kind::Uint) => {
+                        gl.vertex_attrib_pointer_i32(at, size, glow::UNSIGNED_INT, 0, 0);
+                    }
+                    (AttributeSlot::TexCoord(unit), Kind::Float) => {
+                        (c.client_active_texture)(glow::TEXTURE0 + unit);
+                        (c.enable_client_state)(TEXTURE_COORD_ARRAY);
+                        (c.tex_coord)(size, glow::FLOAT, 0, none);
+                    }
+                    (AttributeSlot::Color, Kind::Float) => {
+                        (c.enable_client_state)(COLOR_ARRAY);
+                        (c.color)(size, glow::FLOAT, 0, none);
+                    }
+                    (AttributeSlot::Normal, Kind::Float) => {
+                        (c.enable_client_state)(NORMAL_ARRAY);
+                        (c.normal)(glow::FLOAT, 0, none);
+                    }
+                    (AttributeSlot::FogCoord, Kind::Float) => {
+                        (c.enable_client_state)(FOG_COORD_ARRAY);
+                        (c.fog_coord)(glow::FLOAT, 0, none);
+                    }
+                    (slot, kind) => {
+                        return Err(format!("OpenGL's {slot:?} of {kind:?} is not fed here"));
                     }
                 }
-                gl.enable_vertex_attrib_array(a.location);
+                if let AttributeSlot::Generic(at) = a.slot {
+                    gl.enable_vertex_attrib_array(at);
+                }
                 vertex_buffers.push(buffer);
             }
             let framebuffer = gl.create_framebuffer()?;
@@ -805,7 +1079,7 @@ impl Llvmpipe {
                 gl.delete_buffer(buffer);
             }
             gl.delete_vertex_array(array);
-            drawn.storage = self.finish(made, storage, options.storage_blocks)?;
+            drawn.storage = self.finish(bound, options.storage_blocks)?;
             Ok(drawn)
         }
     }

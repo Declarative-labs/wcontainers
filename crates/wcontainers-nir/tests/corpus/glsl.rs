@@ -19,7 +19,8 @@ use crate::interface::{COMPONENT_BYTES, Kind, Ty};
 const BYTES_A_WORD: usize = COMPONENT_BYTES as usize;
 use crate::lavapipe::{self, Attribute, Element, Job, Lavapipe};
 use crate::llvmpipe::{
-    Block, DrawOptions, Llvmpipe, Reflection, StageValue, UniformValue, Variable, VertexAttribute,
+    AttributeSlot, Block, DrawOptions, Llvmpipe, Reflection, SampledTexture, StageValue,
+    UniformValue, Variable, VertexAttribute,
 };
 use ash::vk;
 use naga::Module;
@@ -222,6 +223,8 @@ struct GlInputs<'a> {
     values: Vec<UniformValue<'a>>,
     uniform_blocks: Vec<(Vec<u8>, Vec<Option<Kind>>)>,
     storage_blocks: Vec<(Vec<u8>, Vec<Option<Kind>>)>,
+    /// Each sampler's texture, made from the first route resource that reads it.
+    sampled: Vec<SampledTexture>,
 }
 
 impl GlInputs<'_> {
@@ -234,9 +237,25 @@ impl GlInputs<'_> {
     }
 }
 
-fn gl_inputs<'a>(rng: &mut ChaCha8Rng, gl: &'a Reflection) -> Result<GlInputs<'a>, String> {
+/// Whether a default-block uniform is a sampler or image of the route's (its texture is set up from
+/// the route's resource).
+fn opaque(v: &Variable, stages: &[&[GlslName]]) -> bool {
+    stages.iter().flat_map(|s| s.iter()).any(|n| {
+        matches!(n.kind, GlslNameKind::Sampler | GlslNameKind::Image) && n.name == bare(&v.name)
+    })
+}
+
+fn gl_inputs<'a>(
+    rng: &mut ChaCha8Rng,
+    gl: &'a Reflection,
+    stages: &[&[GlslName]],
+) -> Result<GlInputs<'a>, String> {
     let mut values = Vec::new();
-    for v in gl.uniforms.iter().filter(|v| v.block < 0) {
+    for v in gl
+        .uniforms
+        .iter()
+        .filter(|v| v.block < 0 && !opaque(v, stages))
+    {
         let ty = typed(v)?;
         let count =
             usize::try_from(v.array_size.max(1)).unwrap_or(1) * (ty.columns * ty.rows) as usize;
@@ -256,7 +275,38 @@ fn gl_inputs<'a>(rng: &mut ChaCha8Rng, gl: &'a Reflection) -> Result<GlInputs<'a
         values,
         uniform_blocks: block_contents(rng, &gl.uniform_blocks, &gl.uniforms)?,
         storage_blocks: block_contents(rng, &gl.storage_blocks, &gl.buffer_variables)?,
+        sampled: Vec::new(),
     })
+}
+
+/// Gives a route's texture resource the texels of the sampler it is, making that sampler's
+/// texture on OpenGL's side from it the first time.
+fn sampled_texture(
+    elements: &mut [Element],
+    binding: u32,
+    names: &[GlslName],
+    gl: &Reflection,
+    inputs: &mut GlInputs,
+) -> Result<(), String> {
+    let [Element::Image(image)] = elements else {
+        return Err("an array of textures is not set up for GLSL here".into());
+    };
+    let name = named(names, GlslNameKind::Sampler, binding)
+        .ok_or_else(|| format!("no sampler of the program at texture binding {binding}"))?;
+    let variable = gl
+        .uniforms
+        .iter()
+        .find(|v| bare(&v.name) == name.name)
+        .ok_or_else(|| format!("llvmpipe has no sampler {}", name.name))?;
+    match inputs.sampled.iter().find(|s| s.uniform == variable.name) {
+        Some(made) => image.clone_from(&made.image),
+        None => inputs.sampled.push(SampledTexture {
+            uniform: variable.name.clone(),
+            ty: variable.ty,
+            image: image.clone(),
+        }),
+    }
+    Ok(())
 }
 
 /// The route's resources of one stage, given the same bytes as the program's blocks, found by
@@ -287,6 +337,11 @@ fn route_resources(
                 &gl.storage_blocks,
                 &mut inputs.storage_blocks,
             ),
+            vk::DescriptorType::SAMPLED_IMAGE => {
+                sampled_texture(&mut r.elements, binding, names, gl, inputs)?;
+                continue;
+            }
+            vk::DescriptorType::SAMPLER => continue,
             other => return Err(format!("a {other:?} is not set up for GLSL here")),
         };
         let [Element::Buffer(bytes)] = r.elements.as_mut_slice() else {
@@ -375,7 +430,7 @@ pub fn compare_compute(
         Err(e) => return not_run(e),
     };
     let gl = llvmpipe.reflect(program);
-    let mut inputs = match gl_inputs(&mut rng, &gl) {
+    let mut inputs = match gl_inputs(&mut rng, &gl, &[names]) {
         Ok(i) => i,
         Err(e) => return not_run(e),
     };
@@ -390,6 +445,7 @@ pub fn compare_compute(
             &inputs.values,
             &inputs.uniform_bytes(),
             &inputs.storage_bytes(),
+            &inputs.sampled,
             [COMPUTE_GROUPS, 1, 1],
         )
     };
@@ -398,7 +454,19 @@ pub fn compare_compute(
         (Err(e), _) | (_, Err(e)) => return not_run(e),
     };
     if first != again {
-        return not_run("the reference's outputs differ between two runs".into());
+        let at = (0..)
+            .zip(first.iter().zip(&again))
+            .find_map(|(block, (a, b))| {
+                let words = |x: &[u8]| x.as_chunks::<BYTES_A_WORD>().0.to_vec();
+                let (a, b) = (words(a), words(b));
+                (0..)
+                    .zip(a.iter().zip(&b))
+                    .find(|(_, (x, y))| x != y)
+                    .map(|(w, _)| (block, w))
+            });
+        return not_run(format!(
+            "the reference's outputs differ between two runs (storage block and word {at:?})"
+        ));
     }
     let (_, route_descriptors) = compare::descriptors(&resources);
     let lavapipe = match Lavapipe::open() {
@@ -460,6 +528,11 @@ const FRAG_DATA: &str = "gl_FragData";
 const FRAG_DEPTH: &str = "gl_FragDepth";
 /// OpenGL's attribute that is generic attribute 0.
 const VERTEX_ATTRIBUTE: &str = "gl_Vertex";
+/// OpenGL's own attributes fed by its own arrays; a texture coordinate's name ends in its unit.
+const COLOR_ATTRIBUTE: &str = "gl_Color";
+const NORMAL_ATTRIBUTE: &str = "gl_Normal";
+const FOG_COORD_ATTRIBUTE: &str = "gl_FogCoord";
+const TEX_COORD_ATTRIBUTE: &str = "gl_MultiTexCoord";
 /// Vertex inputs the draw gives, not attributes: the same on both sides (first vertex 0, one
 /// instance).
 const DRAW_VALUES: [&str; 3] = ["gl_VertexID", "gl_InstanceID", "gl_InstanceIDARB"];
@@ -705,15 +778,24 @@ fn attributes(
         }
         let ty = gl_type(v.ty)
             .ok_or_else(|| format!("{name} of type {:#x} is not set up here", v.ty))?;
-        let location = match (v.location, name) {
-            (at, _) if at >= 0 => at.cast_unsigned(),
-            (_, VERTEX_ATTRIBUTE) => 0,
-            _ => return Err(format!("OpenGL's attribute {name} is not set up here")),
+        let slot = match (v.location, name) {
+            (at, _) if at >= 0 => AttributeSlot::Generic(at.cast_unsigned()),
+            (_, VERTEX_ATTRIBUTE) => AttributeSlot::Generic(0),
+            (_, COLOR_ATTRIBUTE) => AttributeSlot::Color,
+            (_, NORMAL_ATTRIBUTE) => AttributeSlot::Normal,
+            (_, FOG_COORD_ATTRIBUTE) => AttributeSlot::FogCoord,
+            _ => match name
+                .strip_prefix(TEX_COORD_ATTRIBUTE)
+                .and_then(|unit| unit.parse().ok())
+            {
+                Some(unit) => AttributeSlot::TexCoord(unit),
+                None => return Err(format!("OpenGL's attribute {name} is not set up here")),
+            },
         };
         // An attribute the route's module does not read is fed to llvmpipe alone.
         let route = name_at(names, GlslNameKind::Input, name);
         let elements = u32::try_from(v.array_size.max(1)).unwrap_or(1);
-        for slot in 0..elements * ty.columns {
+        for column in 0..elements * ty.columns {
             let words: Vec<u32> = if name == POINT_ATTRIBUTE {
                 compare::positions(points)
                     .as_chunks::<{ size_of::<u32>() }>()
@@ -731,14 +813,18 @@ fn attributes(
             };
             if let Some(route) = route {
                 theirs.push(Attribute {
-                    location: route + slot,
+                    location: route + column,
                     format: compare::attribute_format(one),
                     stride: one.bytes(),
                     bytes: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
                 });
             }
+            let slot = match slot {
+                AttributeSlot::Generic(at) => AttributeSlot::Generic(at + column),
+                conventional => conventional,
+            };
             ours.push(VertexAttribute {
-                location: location + slot,
+                slot,
                 kind: ty.kind,
                 components: ty.rows,
                 words,
@@ -835,7 +921,7 @@ pub fn compare_draw(
         Err(e) => return not_run(e),
     };
     let gl = llvmpipe.reflect(program);
-    let mut inputs = match gl_inputs(&mut rng, &gl) {
+    let mut inputs = match gl_inputs(&mut rng, &gl, &[vertex.names, fragment.names]) {
         Ok(i) => i,
         Err(e) => return not_run(e),
     };
@@ -871,6 +957,7 @@ pub fn compare_draw(
         uniforms: &inputs.values,
         uniform_blocks: &uniform_bytes,
         storage_blocks: &storage_bytes,
+        sampled: &inputs.sampled,
         attributes: &ours,
         points,
         targets: &gl_targets,
