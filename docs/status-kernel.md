@@ -14,6 +14,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, twelfth run: layout randomization is built (aslr01 passes) and LTP on our kernel runs on the
+machine's clock, which turned 31 of the 43 slow rows into verdicts. The whole comparison at
+a67cd731 matches 4143 of 4211 tests; the new differences it showed are fixed and their reruns are
+under "K6c, twelfth run". K6c is not complete: Next says what is left. See "K6c, twelfth run".
+
 K6c, eleventh run: the owner's ruling is built (every host call takes the host shared, the host
 trait requires `Sync`); the brief's backend batching was measured slower and not kept; the
 questions left open since the fifth run are decided in the gap list (Known gaps, first part), so
@@ -105,6 +110,64 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, twelfth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge. Heavy runs were on the ARM64
+machine (the x86 machine was unreachable from 21:55 UTC); the Mac ran only what needs Docker
+Desktop's kernel.
+
+Built:
+- LTP on our kernel runs on the machine's clock (`Prepared::wall_clock`), where the repeatable
+  clock moved only with the work run: tests that run for a span of time took hours on the
+  stand-in. With it (ARM machine, 6 jobs, 21:50 UTC, load 13 to 55): rwtest01 to 04 (fs and
+  scsi_debug) 63 to 69 s, sched_stress 73 s, mtest06_3 83 s, thp01 121 s, msgstress01 182 s, all
+  passing, where each ran past 900 s before (the eleventh run's slow.tsv). With the wall clock
+  the suite's own limits bite instead (shmctl05 TBROK at 70 s), so our side sets
+  `LTP_TIMEOUT_MUL` to the harness's limit over the suite's default 30 s (For the independent
+  check); shmctl05 then ran to the harness's 900 s. aiodio_sparse (ADSP037, 038, 073, 074) went
+  the other way: 85 to 164 s before, past 900 s now (not yet understood).
+- Layout randomization, as Linux's `load_elf_binary` with `randomize_va_space` 2: the mapping
+  base (`arch_mmap_rnd`, under Linux's `mmap_base` gap from the stack limit), the stack's top
+  (`randomize_stack_top`), the tables below the strings (`arch_align_stack`), a placeable
+  program's base and the heap (`arch_randomize_brk`), from the host's randomness, unless
+  `ADDR_NO_RANDOMIZE` (kept through exec, cleared on a gain of privileges). The values: Known
+  gaps, first part. /proc/sys/kernel/randomize_va_space (2) and vm/mmap_rnd_bits are built.
+  tests/layout.rs (guest/layout.c, 32 starts): which of stack, stack within its page, a new
+  mapping, heap, vDSO and code move, both settings, and personality(ADDR_NO_RANDOMIZE) (EPERM
+  from Docker's filter): equal to the reference (ARM machine). aslr01 passes ("Library address
+  has 8 random bits", reference 16).
+- Literals: the check passes; baseline 8494 to 8491.
+
+The whole LTP comparison at a67cd731 (ARM machine, `LTP_JOBS=8 LTP_LIMIT=900`, 22:28 to 23:55
+UTC, load 23 at the start, 19 at the end; committed as ltp/ours-20260930-a67cd731.tsv; scratch
+k6c12/differ.txt from k6c12/differ.py): of 4211 distinct tests (4226 rows), 4143 match and 68
+differ. Against the tenth run's table: aslr01 now passes; 31 of the 43 slow rows now finish (all
+the gf tests, rwtest01 to 04, iogen01, cve-2011-0999, cve-2017-17052, msgstress01, mtest06_3,
+thp01, sched_stress); the 40 section 15 rows, the 13 rows excused in the gap list
+(copy_file_range03 still fails on the machine's clock) and the reference's 3 own failures are as
+they were. New: timeouts dio30, fsx22, ADSP037, 038, 073, 074, shmctl05 (twice); keyctl01 ran to
+the harness's limit where the reference ended by the suite's 30 s limit (TBROK) because the first
+multiplier put the suite's limit at the harness's (changed: now one default limit before it);
+pth_str01 and pth_str03 broke after 74 threads (thread stacks did not fit: new mappings never
+went below the heap, and randomization took a few more pages; changed: the top-down search now
+goes on below the program and its heap, as Linux's does); setrlimit06 failed one of its two
+rounds (SIGKILL without SIGXCPU; the known RLIMIT_CPU gap under a loaded machine's clock).
+Rerun after the fixes (ARM machine, 8 jobs, 00:04 UTC on the 20th, load 33; k6c12/fix-attach.log):
+pth_str01, pth_str03, setrlimit06, mtest01 and aslr01 pass, keyctl01 is broken at 871 s as the
+reference's; mmap12 and copy_file_range03 fail as the gap list says; layout, memory, privatemap,
+sharedmap, faults, loader, hello and bigargs pass; clippy clean.
+
+Whole suite at a67cd731 on the ARM machine (`cargo test -j 4 -p wcontainers-abi -p
+wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast -- --test-threads=4`, 22:28 to 23:09
+UTC, load 37 at the start and end, beside the LTP run; scratch k6c12/k6c12-suite.log): 239
+passed, 38 failed, 6 ignored. 36 of the failures are the machine's known list (the eleventh run's
+ARM failures exactly); they passed on the Mac (k6c12/mac.log, below). The other two came from
+randomization with Linux's 64-bit values in the 16 GiB space (Java "Could not reserve" its heap,
+Python's test_around_4GB): fixed by the 2^39 threshold (Known gaps), rerun in
+k6c12/runtimes-attach.log. On the Mac at a67cd731 (load 8 to 11): layer 1 seeds 9191111, 9191112
+and 9191113 (300 in memory, 32 on the backend, 32 cached each) matched, and the ARM machine's
+list plus procstatus and sysfs passed.
 
 ## K6c, eleventh run
 
@@ -2098,7 +2161,14 @@ Everything a reviewer should know about what is not compared, in one place.
   shows theirs. One test is `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test
   --bin ltp -- ours <results> <test>` (and `reference` for Docker's). The literals check: `cargo
   run -q -p wcontainers-literals -- check` (exit 0); its baseline had 8592 lines at its start
-  (708289f3) and may only shrink (8511 at e1d37089, under the seventh rules).
+  (708289f3) and may only shrink (8511 at e1d37089, under the seventh rules; 8491 at a67cd731).
+  From the twelfth run our side of LTP runs on the machine's clock (the reference's runs on its
+  own) with `LTP_TIMEOUT_MUL` set so the suite's own limits reach the harness's `LTP_LIMIT`
+  (src/ltp.rs `environment_on_ours`): a test slow on the stand-in is then the harness's timeout,
+  not the suite's TBROK. The reference's environment is unchanged. Run it on the ARM64 machine
+  only (For the orchestrator). The kernel test crate's tests that differ on the ARM64 machine
+  (its manual's list, plus procstatus `limits_match_reference`, sysfs
+  `cgroup_matches_reference` and busybox `system`) are settled on the Mac.
 
 - K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
   summary. The reference ran once, so its own flaky tests (timing tests under load, such as
@@ -2611,8 +2681,14 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
   Rss lines, pagemap is not built, mlock2's on-fault counts and the cgroup's memory counts are
   not kept. Excused: mincore03, mlock201, mlock05, mmap12, vma01. Built when the CPU side reports
   touched pages (the streams track's written-page record is a start: it reports writes only).
-- Layout is not randomized (aslr01; kernel.randomize_va_space is not built, ENOENT): to be built
-  with the brief's low-first mapping placement, from the host's randomness.
+- (Built in the twelfth run: layout randomization, so aslr01 is no longer on this list.) An
+  address space smaller than ARM64 Linux's smallest for 64-bit tasks (2^39 bytes; ours are 4 and
+  16 GiB) is randomized with Linux's values for 32-bit tasks (11 bits of mapping base, 2047 pages
+  of stack, 32 MiB of heap), not the 64-bit ones (18 bits, 1 GiB each): with those, Java could not
+  reserve its heap and Python's test_around_4GB could not map in the 16 GiB space (measured, ARM
+  machine). Plan section 15's "the address space is small". vm.mmap_rnd_bits shows the bits in
+  use (11 here, the reference 18). An unlimited stack or
+  ADDR_COMPAT_LAYOUT keeps the top-down layout, counted "bottom-up mapping layout not built".
 - IPV6_RTHDR (setsockopt11, cve-2026-53362): routing headers reroute IPv6 packets, and the made-up
   network has no IPv6 route outside the container; section 15's "the network is not Linux's
   network stack".
@@ -3515,6 +3591,12 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, twelfth run: our side of the LTP comparison runs on the machine's clock with
+  `LTP_TIMEOUT_MUL` set from the harness's limit (For the independent check); the reference's
+  runs are unchanged. The repeatable clock made tests that run for a span of time take hours.
+- K6c, twelfth run: layout randomization uses Linux's 32-bit values in address spaces below 2^39
+  bytes (Known gaps, first part), and vm.mmap_rnd_bits shows them (11 where the reference shows
+  18).
 - K6c, eleventh run: the owner's questions on page residency, layout randomization, IPV6_RTHDR
   and the harness causes (Questions) had no answer after six runs, so K6c's gap list decides them
   (Known gaps, first part): residency, IPV6_RTHDR and the harness causes are excused, layout
@@ -4065,8 +4147,7 @@ guest).
 Unanswered since the fifth to tenth runs; the eleventh run decided each as written under Known
 gaps (and Departures) so that K6c's gap list could be final. An answer that differs reopens it.
 
-- Layout randomization (tenth run): aslr01 fails as nothing is randomized. Build it with the
-  brief's low-first mapping placement (proposed), or name it in section 15?
+- Layout randomization (tenth run): built in the twelfth run (Known gaps, first part).
 - IPV6_RTHDR (setsockopt11, cve-2026-53362): a sticky option that reroutes a socket's sends to
   the routing header's address. Build it in the made-up network, or excuse it under "the network
   is not Linux's network stack"?
@@ -4235,6 +4316,22 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the twelfth run (replaces the tenth run's list below):
+1. Read k6c12/runtimes-attach.log (Java start-up and Python's system modules with the 2^39
+   threshold, still running at the run's end; `arm-run --fetch kernel-b /work/jobs/kernel-b/<id>/log`
+   if the follower stopped) and fix any failure first. Delete the ARM machine's
+   /work/target/kernel-b afterwards (a second build folder made for that run).
+2. Rerun on the ARM machine at the final code, with `LTP_LIMIT=7200`, every row of
+   ltp/ours-20260930-a67cd731.tsv that is a timeout (dio30, fsx22, ADSP037, 038, 073, 074,
+   shmctl05 twice, keyctl01) and then the whole comparison once more at the final code (about 90
+   minutes at 8 jobs), as the multiplier and the mapping search changed after a67cd731. ADSP0xx
+   (aiodio_sparse) took 85 to 164 s on the repeatable clock and over 900 s on the machine's: find
+   why before calling them slow.
+3. Then write the final table (as the tenth run's) and say the bar is met; the independent check
+   follows the bar, "For the independent check" and the twelfth run's Mac list.
+4. Beyond K6c, the brief's asks: number the wait channels then the record-and-replay test;
+   low-first mapping placement and the memory ceiling; the runtime's start values.
 
 K6c, after the tenth run (this replaces the ninth run's first two items just below):
 0. The whole comparison is done (item 1 is how to run it again). Read the slow tests' run:

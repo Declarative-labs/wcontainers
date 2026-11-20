@@ -36,9 +36,10 @@ const MIN_GAP: u64 = 128 << 20;
 /// `kernel.randomize_va_space`: the stack, the mappings, the vDSO and the heap placed at random.
 pub(crate) const RANDOMIZE_VA_SPACE: u32 = 2;
 
-/// The addresses a 32-bit pointer reaches; an address space no larger is placed at random as Linux
-/// places 32-bit tasks.
-const ADDRESSES_32_BIT: u64 = 1 << u32::BITS;
+/// ARM64 Linux's smallest address space for 64-bit tasks (39 bits with 4 KiB pages), which its
+/// 64-bit randomization values are made for; a smaller space is placed at random as Linux places
+/// 32-bit tasks.
+const SMALLEST_64_BIT_SPACE: u64 = 1 << 39;
 
 /// Linux's `MAX_GAP`, the most room left above the mapping base, as a share of the space.
 const MAX_GAP_SHARE: (u64, u64) = (5, 6);
@@ -57,8 +58,8 @@ const BRK_RANDOM_RANGE: u64 = 1 << 30;
 const BRK_RANDOM_RANGE_32_BIT: u64 = 32 << 20;
 
 /// How far `execve` moves a program's parts at random (Linux's `PF_RANDOMIZE` layout). An address
-/// space no larger than a 32-bit task's takes Linux's values for 32-bit tasks, so that randomness
-/// spends a small share of it.
+/// space smaller than any ARM64 Linux gives 64-bit tasks takes Linux's values for 32-bit tasks,
+/// so that randomness spends a small share of it.
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutRandomization {
     /// `vm.mmap_rnd_bits`: pages of randomness below the mapping base and above the base of a
@@ -72,7 +73,7 @@ pub(crate) struct LayoutRandomization {
 
 impl LayoutRandomization {
     pub fn for_space(end: u64) -> Self {
-        if end <= ADDRESSES_32_BIT {
+        if end < SMALLEST_64_BIT_SPACE {
             Self {
                 mmap_bits: MMAP_RANDOM_BITS_32_BIT,
                 stack_pages: STACK_RANDOM_PAGES_32_BIT,
@@ -599,10 +600,11 @@ impl AddressMap {
             .is_none_or(|mapping| mapping.start_gap() >= end)
     }
 
-    /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search.
+    /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search,
+    /// which goes on below the program and its heap down to the lowest address.
     pub fn find_free(&self, length: u64) -> Option<u64> {
         let mut ceiling = self.mmap_base;
-        let floor = self.brk.max(LOWEST_ADDRESS);
+        let floor = LOWEST_ADDRESS;
         loop {
             let start = ceiling.checked_sub(length)?;
             if start < floor {
