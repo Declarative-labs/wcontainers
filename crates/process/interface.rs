@@ -40,6 +40,7 @@ pub trait ProcessInfo {
     fn ceiling_distance(&self) -> u64;
     fn compute_used(&self) -> Duration;
     fn parent(&self) -> Option<TaskId>;
+    fn is_inspected(&self) -> bool;
 }
 
 /// A process taken out of its kernel whole, as a value.
