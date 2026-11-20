@@ -47,6 +47,9 @@ pub const GEOMETRY_OUTPUT: &str = "GeometryOutput";
 pub const GEOMETRY_PATCH_INPUT: &str = "GeometryPatchInput";
 pub const GEOMETRY_STREAMS: &str = "GeometryStreams";
 pub const GEOMETRY_VARIANT: &str = "GeometryVariant";
+/// A view declared `globallycoherent`: neither WebGPU nor WebGL 2 makes stores seen across
+/// workgroups before the dispatch ends.
+pub const GLOBALLY_COHERENT: &str = "GloballyCoherent";
 pub const HULL_INPUT: &str = "HullInput";
 pub const HULL_INPUT_SHAPE: &str = "HullInputShape";
 pub const HULL_OUTPUT: &str = "HullOutput";

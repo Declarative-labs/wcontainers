@@ -69,6 +69,8 @@ const IR_ENUMS: &[HeaderEnum] = &[
     ("ir/ir.h", "InterpolationMode", "interp", "u64"),
     ("ir/ir.h", "Construct", "construct", "u64"),
     ("ir/ir.h", "UavFlag", "uav", "u64"),
+    ("ir/ir.h", "Scope", "scope", "u64"),
+    ("ir/ir.h", "MemoryType", "memory", "u64"),
     ("ir/ir.h", "AtomicOp", "atomic_op", "u64"),
     ("ir/ir.h", "RoundMode", "round", "u64"),
     ("ir/ir.h", "DerivativeMode", "derivative", "u64"),

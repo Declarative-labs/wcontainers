@@ -3824,6 +3824,7 @@ dependencies = [
  "cc",
  "crc32fast",
  "fastrand",
+ "md-5",
  "naga",
  "pollster",
  "postcard",

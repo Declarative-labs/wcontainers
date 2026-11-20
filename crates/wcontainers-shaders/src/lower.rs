@@ -748,6 +748,14 @@ impl<'a> Lowering<'a> {
             }
             code::DCL_SRV | code::DCL_UAV => {
                 let storage = op.code == code::DCL_UAV;
+                if storage
+                    && op
+                        .lits
+                        .get(ir::resource_literal::UAV_FLAGS)
+                        .is_some_and(|f| f & ir::uav::COHERENT != 0)
+                {
+                    return Err(unsupported(crate::refusal::GLOBALLY_COHERENT));
+                }
                 let k = op.lits[ir::resource_literal::KIND];
                 let slot = if storage {
                     SlotKind::Storage
@@ -3032,16 +3040,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::ROV_SCOPED_LOCK_BEGIN | c::ROV_SCOPED_LOCK_END => {
                 return Err(unsupported(crate::refusal::RASTERIZER_ORDERED_VIEW));
             }
+            // A fence of the whole device reaches only the workgroup: with no view globally
+            // coherent (refused at its declaration), no other workgroup's stores are seen anyway.
             c::BARRIER => {
                 let (exec, mem) = (op.lits[0], op.lits[2]);
                 let mut flags = naga::Barrier::empty();
-                if mem & 1 != 0 {
+                if mem & ir::memory::LDS != 0 {
                     flags |= naga::Barrier::WORK_GROUP;
                 }
-                if mem & 2 != 0 {
+                if mem & ir::memory::UAV != 0 {
                     flags |= naga::Barrier::STORAGE | naga::Barrier::TEXTURE;
                 }
-                let s = if exec >= 3 {
+                let s = if exec >= ir::scope::WORKGROUP {
                     Statement::ControlBarrier(flags)
                 } else {
                     Statement::MemoryBarrier(flags)
