@@ -233,6 +233,18 @@ fn level_targets(level: u32) -> u32 {
     }
 }
 
+/// A typed buffer view whose format the back end holds no texture of, where typed buffers are
+/// read through texture copies (`TexelBufferAsTexture`).
+const TYPED_BUFFER_FORMAT_UNHELD: &str =
+    "a typed buffer view of a format the back end holds no texture of";
+/// Typed unordered access buffers where the back end has no storage buffers.
+const TYPED_STORAGE_BUFFERS_UNSERVED: &str =
+    "typed unordered access buffers without the back end's storage buffers";
+/// Geometry shaders and stream output where the back end has neither compute programs nor
+/// transform feedback.
+const GEOMETRY_STAGE_UNSERVED: &str = "geometry shaders and stream output without the back end's \
+     compute programs or transform feedback";
+
 /// Whether `caps` serves every requirement of feature level `level` (plan section 9): its texture
 /// sizes and targets within the adapter's limits; from 10_0 `D32_FLOAT_S8X24_UINT` targets, float
 /// targets, and the geometry stage and stream output, which the stage helper's compute route serves
@@ -1789,9 +1801,7 @@ impl<B: Backend> Device<B> {
                     .get(f)
                     .contains(FormatUse::SAMPLE)
                 {
-                    return not_implemented(
-                        "a typed buffer view of a format the back end holds no texture of",
-                    );
+                    return not_implemented(TYPED_BUFFER_FORMAT_UNHELD);
                 }
                 let within = u32::try_from(offset).map_err(|_| Error::OutOfMemory)?;
                 return Ok((0, u64::from(d.byte_width), Some((f, within, count))));
@@ -1967,9 +1977,7 @@ impl<B: Backend> Device<B> {
         let mut typed = shader::typed_views(bytecode)?;
         if self.typed_buffers_textured() {
             if typed.iter().any(|t| t.buffer && t.storage) {
-                return not_implemented(
-                    "typed unordered access buffers without the back end's storage buffers",
-                );
+                return not_implemented(TYPED_STORAGE_BUFFERS_UNSERVED);
             }
             for t in typed.iter_mut().filter(|t| t.buffer) {
                 t.textured = true;
@@ -2135,10 +2143,7 @@ impl<B: Backend> Device<B> {
         let caps = self.backend.caps();
         let replayed = !caps.has(Features::COMPUTE);
         if replayed && !caps.has(Features::TRANSFORM_FEEDBACK) {
-            return not_implemented(
-                "geometry shaders and stream output without the back end's compute programs or \
-                 transform feedback",
-            );
+            return not_implemented(GEOMETRY_STAGE_UNSERVED);
         }
         if replayed && vertex {
             return not_implemented(crate::context::STREAM_OUT_WITHOUT_COMPUTE);

@@ -52,11 +52,19 @@ const FILLED_BYTES: u64 = (STREAM_FILLED_WORDS * COUNTER_BYTES) as u64;
 pub(crate) const STREAM_OUT_WITHOUT_COMPUTE: &str =
     "stream output without a geometry shader on a back end without compute programs";
 
-/// One API draw through a replayed geometry stage: its input topology, (start, count, base
-/// vertex), whether indexed, and its instances.
+/// A vertex shader variant the replay cannot capture: what follows the geometry stage (the
+/// viewport, clip distances) or inputs fetched in the program.
+const VARIANT_BEHIND_REPLAY: &str = "a vertex shader variant behind a replayed geometry shader";
+/// Storage textures read through buffers of their texels behind a geometry stage.
+const THROUGH_BEHIND_GEOMETRY: &str =
+    "storage textures read through buffers behind a geometry shader";
+
+/// One API draw through a replayed geometry stage.
 pub(super) struct Replayed {
     topology: InputTopology,
-    range: [u32; 3],
+    start: u32,
+    count: u32,
+    base_vertex: i32,
     indexed: bool,
     first_instance: u32,
     instances: u32,
@@ -386,7 +394,9 @@ impl<B: Backend> Device<B> {
         if replayed {
             let draw = Replayed {
                 topology,
-                range: [start, count, base as u32],
+                start,
+                count,
+                base_vertex: base,
                 indexed,
                 first_instance,
                 instances,
@@ -527,9 +537,7 @@ impl<B: Backend> Device<B> {
         if let Some((_, ph)) = &program {
             self.update_set(PIXEL, &[], &ph.relocated)?;
             if !self.ctx.through[PIXEL].is_empty() {
-                return not_implemented(
-                    "storage textures read through buffers behind a geometry shader",
-                );
+                return not_implemented(THROUGH_BEHIND_GEOMETRY);
             }
             // Runs per layer or viewport write theirs at each run.
             if !selects && (ph.size > 0 || !ph.merged.is_empty()) {
@@ -839,7 +847,7 @@ impl<B: Backend> Device<B> {
             ..vk
         }) != StageVariant::default()
         {
-            return not_implemented("a vertex shader variant behind a replayed geometry shader");
+            return not_implemented(VARIANT_BEHIND_REPLAY);
         }
         if self.ctx.topology == topology::UNDEFINED || (draw.indexed && self.ctx.index.is_none()) {
             return Ok(false);
@@ -872,8 +880,18 @@ impl<B: Backend> Device<B> {
         raster: Option<&B::Raster>,
         draw: Replayed,
     ) -> Result<()> {
-        let [start, count, base] = draw.range;
-        let bases = [if draw.indexed { base } else { start }, draw.first_instance];
+        let Replayed {
+            start,
+            count,
+            base_vertex,
+            ..
+        } = draw;
+        let first = if draw.indexed {
+            base_vertex as u32
+        } else {
+            start
+        };
+        let bases = [first, draw.first_instance];
         let selects = staged.replay.as_ref().is_some_and(GeometryReplay::selects);
         let program = match &staged.passthrough {
             Some(k) if gs.drawn => {
@@ -896,9 +914,7 @@ impl<B: Backend> Device<B> {
         if let Some((_, ph)) = &program {
             self.update_set(PIXEL, &[], &ph.relocated)?;
             if !self.ctx.through[PIXEL].is_empty() {
-                return not_implemented(
-                    "storage textures read through buffers behind a geometry shader",
-                );
+                return not_implemented(THROUGH_BEHIND_GEOMETRY);
             }
             if !selects && (ph.size > 0 || !ph.merged.is_empty()) {
                 self.write_helpers(&[Rc::default(), ph.clone()], bases, None)?;
@@ -975,7 +991,7 @@ impl<B: Backend> Device<B> {
             DrawRange::Indexed {
                 first: start,
                 count,
-                base_vertex: base as i32,
+                base_vertex,
                 first_instance: draw.first_instance,
                 instances: draw.instances,
             }
