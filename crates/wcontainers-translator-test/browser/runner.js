@@ -34,8 +34,7 @@ function run({
   load,
   memoryBytes,
   regions,
-  sp,
-  keepFloatFlags,
+  start,
   stack,
   lookAhead,
   bound,
@@ -518,7 +517,7 @@ function run({
   const runs = [];
   for (let run = 0; run < repeat; run++) {
     guest().set(blob, load);
-    guest().set(stack, sp);
+    guest().set(stack, start.sp);
     stdout.length = 0;
     stderr.length = 0;
     stopped = null;
@@ -526,8 +525,8 @@ function run({
     const block = new DataView(state.buffer, BLOCK_AT, contract.threadStateSize);
     for (let i = 0; i < contract.threadStateSize; i++) block.setUint8(i, 0);
     block.setBigUint64(contract.registerPc, BigInt(load), true);
-    block.setBigUint64(contract.registerSp, BigInt(sp), true);
-    if (keepFloatFlags) block.setUint32(contract.floatTracking, 1, true);
+    block.setBigUint64(contract.registerSp, BigInt(start.sp), true);
+    if (start.keepFloatFlags) block.setUint32(contract.floatTracking, 1, true);
 
     const started = performance.now();
     try {

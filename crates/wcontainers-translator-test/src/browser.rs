@@ -86,7 +86,10 @@ pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32
     run_in_chrome(blob, how, omit, repeat, None, 0)
 }
 
-/// The setup's name for whether the thread starts with FPSR's flags kept exact (runner.js reads it).
+/// The setup's names for the thread's start, which runner.js reads: its stack pointer, and whether FPSR's
+/// flags are kept exact from the start.
+const START: &str = "start";
+const START_SP: &str = "sp";
 const KEEP_FLOAT_FLAGS: &str = "keepFloatFlags";
 
 /// [`repeated`] at full look-ahead, the translation split into modules of at most `module_bytes` of code,
@@ -127,7 +130,6 @@ fn run_in_chrome(
         "load": blob.load,
         "memoryBytes": place.memory_bytes,
         "regions": regions,
-        "sp": place.sp,
         "lookAhead": match look_ahead {
             LookAhead::None => 0,
             LookAhead::Full => 1,
@@ -145,11 +147,14 @@ fn run_in_chrome(
             | (u8::from(omit.returns) << 2)
             | (u8::from(omit.depth) << 3),
     });
+    let mut start = serde_json::Map::new();
+    start.insert(START_SP.into(), place.sp.into());
+    start.insert(KEEP_FLOAT_FLAGS.into(), blob.reads_float_status().into());
     let mut setup = setup;
     setup
         .as_object_mut()
         .expect("an object")
-        .insert(KEEP_FLOAT_FLAGS.into(), blob.reads_float_status().into());
+        .insert(START.into(), start.into());
     let result = launch(&directory, &setup, flags);
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
@@ -279,7 +284,6 @@ pub fn load_modules(
         "load": load,
         "memoryBytes": memory,
         "regions": [],
-        "sp": 0,
         "lookAhead": 1,
         "repeat": 0,
         "omit": 0,
@@ -348,7 +352,6 @@ pub fn cases(
         "load": code,
         "memoryBytes": memory_bytes,
         "regions": regions,
-        "sp": 0,
         "lookAhead": 0,
         "repeat": 0,
         "omit": 0,
