@@ -51,10 +51,10 @@ const ASSIGNMENT: &str = "=";
 /// tst_test.h's `DEFAULT_TIMEOUT`: the suite's own limit for a test that names none.
 const SUITE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The environment on our kernel: the reference's, with the suite's own time limits scaled to end
-/// one default limit before the harness's `limit`, so that a test slow on the stand-in CPU has
-/// nearly the harness's time, and one that hangs ends as the reference's does, by the suite's own
-/// limit.
+/// The environment on our kernel: the reference's, with the suite's own time limits scaled so that
+/// a test with the default limit ends one default limit before the harness's `limit`: a test slow
+/// on the stand-in CPU has nearly the harness's time, and one that hangs ends as the reference's
+/// does, by the suite's own limit. A test with a longer limit of its own is ended by the harness's.
 fn environment_on_ours(limit: Duration) -> Vec<String> {
     let multiplier = (limit.as_secs() / SUITE_TIMEOUT.as_secs())
         .saturating_sub(1)
