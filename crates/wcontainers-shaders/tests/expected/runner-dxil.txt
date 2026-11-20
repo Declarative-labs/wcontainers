@@ -274,13 +274,13 @@ hlsl+clip-cull-distance-1-12-vs.dxil	ok ; glsl needs CLIP_DISTANCE compile '#ext
 hlsl+clip-cull-distance-1-13-vs.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-14-vs.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-15-vs.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
-hlsl+clip-cull-distance-1-16-gs.dxil	unsupported DxilGeometryShader
+hlsl+clip-cull-distance-1-16-gs.dxil	unsupported ClipDistance
 hlsl+clip-cull-distance-1-17-vs.dxil	ok ; glsl compiles
-hlsl+clip-cull-distance-1-18-gs.dxil	unsupported DxilGeometryShader
-hlsl+clip-cull-distance-1-19-gs.dxil	unsupported DxilGeometryShader
+hlsl+clip-cull-distance-1-18-gs.dxil	unsupported CullDistance
+hlsl+clip-cull-distance-1-19-gs.dxil	unsupported CullDistance
 hlsl+clip-cull-distance-1-2-ps.dxil	ok ; glsl compiles
-hlsl+clip-cull-distance-1-20-gs.dxil	unsupported DxilGeometryShader
-hlsl+clip-cull-distance-1-21-gs.dxil	unsupported DxilGeometryShader
+hlsl+clip-cull-distance-1-20-gs.dxil	unsupported CullDistance
+hlsl+clip-cull-distance-1-21-gs.dxil	unsupported CullDistance
 hlsl+clip-cull-distance-1-5-vs.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-6-ps.dxil	unsupported CullDistance
 hlsl+clip-cull-distance-1-7-vs.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
@@ -545,9 +545,9 @@ hlsl+gather-offset-5-ps.dxil	ok ; glsl compiles
 hlsl+gather-offset-6-ps.dxil	ok ; glsl compiles
 hlsl+gather-offset-7-ps.dxil	ok ; glsl compiles
 hlsl+geometry-1-vs.dxil	ok ; glsl compiles
-hlsl+geometry-2-gs.dxil	unsupported DxilGeometryShader
+hlsl+geometry-2-gs.dxil	ok ; glsl absent compute
 hlsl+geometry-3-ps.dxil	ok ; glsl compiles
-hlsl+geometry-4-gs.dxil	unsupported DxilGeometryShader
+hlsl+geometry-4-gs.dxil	ok ; glsl absent compute
 hlsl+get-sample-pos-1-ps.dxil	ok ; glsl compiles
 hlsl+getdimensions-1-ps.dxil	ok ; glsl compiles
 hlsl+getdimensions-2-ps.dxil	ok ; glsl compiles
@@ -864,7 +864,7 @@ hlsl+object-references-8-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-1-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-10-hs.dxil	unsupported DxilHullShader
 hlsl+patch-syntax-11-ds.dxil	unsupported DxilDomainShader
-hlsl+patch-syntax-12-gs.dxil	unsupported DxilGeometryShader
+hlsl+patch-syntax-12-gs.dxil	unsupported GeometryPatchInput
 hlsl+patch-syntax-13-hs.dxil	unsupported DxilHullShader
 hlsl+patch-syntax-14-ds.dxil	unsupported DxilDomainShader
 hlsl+patch-syntax-15-hs.dxil	unsupported DxilHullShader
@@ -883,7 +883,7 @@ hlsl+pow-2-ps.dxil	ok ; glsl compiles
 hlsl+precise-modifier-1-ps.dxil	ok ; glsl compiles
 hlsl+precise-modifier-3-ps.dxil	ok ; glsl compiles
 hlsl+primitive-id-1-vs.dxil	ok ; glsl compiles
-hlsl+primitive-id-2-gs.dxil	unsupported DxilGeometryShader
+hlsl+primitive-id-2-gs.dxil	unsupported PrimitiveId
 hlsl+primitive-id-3-ps.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 hlsl+rasteriser-ordered-views-1-vs.dxil	ok ; glsl compiles
 hlsl+rasteriser-ordered-views-2-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | IMAGE_LOAD_STORE | DYNAMIC_ARRAY_SIZE)
@@ -1176,7 +1176,7 @@ hlsl+srv-structuredbuffer-5-ps.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write
 hlsl+srv-structuredbuffer-6-ps.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+srv-structuredbuffer-7-ps.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+srv-structuredbuffer-8-ps.dxil	ok ; glsl compiles
-hlsl+srv-structuredbuffer-9-gs.dxil	unsupported DxilGeometryShader
+hlsl+srv-structuredbuffer-9-gs.dxil	ok ; glsl absent compute
 hlsl+state-block-function-syntax-1-ps.dxil	ok ; glsl compiles
 hlsl+state-block-function-syntax-2-ps.dxil	ok ; glsl compiles
 hlsl+state-block-function-syntax-3-ps.dxil	ok ; glsl compiles

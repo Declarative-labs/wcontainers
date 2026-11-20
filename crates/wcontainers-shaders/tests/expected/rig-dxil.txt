@@ -23,10 +23,10 @@ draws.vs.dxil	ok ; glsl compiles
 formats.ps_float.dxil	ok ; glsl compiles
 formats.ps_sint.dxil	ok ; glsl compiles
 formats.ps_uint.dxil	ok ; glsl compiles
-geometry.gs_adjacency.dxil	unsupported DxilGeometryShader
-geometry.gs_layers.dxil	unsupported DxilGeometryShader
-geometry.gs_points.dxil	unsupported DxilGeometryShader
-geometry.gs_strips.dxil	unsupported DxilGeometryShader
+geometry.gs_adjacency.dxil	ok ; glsl absent compute
+geometry.gs_layers.dxil	ok ; glsl absent compute
+geometry.gs_points.dxil	ok ; glsl absent compute
+geometry.gs_strips.dxil	ok ; glsl absent compute
 geometry.ps.dxil	ok ; glsl compiles
 geometry.ps_id.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 geometry.ps_primitive.dxil	ok ; glsl compiles
@@ -34,14 +34,14 @@ geometry.vs.dxil	ok ; glsl compiles
 msaa.ps_coverage.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
 msaa.ps_load.dxil	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 msaa.ps_sample.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
-raster.gs.dxil	unsupported DxilGeometryShader
+raster.gs.dxil	ok ; glsl absent compute
 raster.ps.dxil	spirv-reader unsupported builtin %10
 raster.vs.dxil	ok ; glsl compiles
 samplers.ps_compare.dxil	ok ; glsl compiles
 samplers.ps_compare_zero.dxil	ok ; glsl compiles
 samplers.ps_gather.dxil	ok ; glsl compiles
 samplers.ps_sample.dxil	ok ; glsl compiles
-streamout.gs.dxil	unsupported DxilGeometryShader
+streamout.gs.dxil	ok ; glsl absent compute
 streamout.vs_back.dxil	ok ; glsl compiles
 targets.ps.dxil	ok ; glsl compiles
 tessellation.ds_line.dxil	unsupported DxilDomainShader

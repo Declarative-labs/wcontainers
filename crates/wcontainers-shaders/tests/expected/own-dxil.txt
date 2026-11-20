@@ -13,16 +13,16 @@ cs_through.dxil	ok views:R32Float through ; glsl absent compute
 cs_typed_array.dxil	unsupported UnboundedResourceArray
 cs_view_kinds.dxil	ok views:R32Float ; glsl absent compute
 cs_view_sampled.dxil	ok views:R32Float ; glsl absent compute
-gs_adjacent.dxil	unsupported DxilGeometryShader
-gs_clip.dxil	unsupported DxilGeometryShader
-gs_cut.dxil	unsupported DxilGeometryShader
-gs_instances.dxil	unsupported DxilGeometryShader
-gs_line_adjacent.dxil	unsupported DxilGeometryShader
-gs_lines.dxil	unsupported DxilGeometryShader
-gs_points.dxil	unsupported DxilGeometryShader
-gs_quads.dxil	unsupported DxilGeometryShader
-gs_streams.dxil	unsupported DxilGeometryShader
-gs_unplaced.dxil	unsupported DxilGeometryShader
+gs_adjacent.dxil	ok ; glsl absent compute
+gs_clip.dxil	ok ; glsl absent compute
+gs_cut.dxil	ok ; glsl absent compute
+gs_instances.dxil	ok ; glsl absent compute
+gs_line_adjacent.dxil	ok ; glsl absent compute
+gs_lines.dxil	ok ; glsl absent compute
+gs_points.dxil	ok ; glsl absent compute
+gs_quads.dxil	ok ; glsl absent compute
+gs_streams.dxil	ok ; glsl absent compute
+gs_unplaced.dxil	ok ; glsl absent compute
 ps_array.dxil	ok ; glsl compiles
 ps_cases.dxil	ok ; glsl compiles
 ps_clip.dxil	ok ; glsl compiles
