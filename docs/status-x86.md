@@ -109,7 +109,51 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   programs the bar names; see "X6, run 1" for what holds and what is left. The same run, after a restart,
   added x86's validity tests from every byte address (which found a translator bug, fixed) and its bounded
   look-ahead test, the program whose running code another thread changes, and ran the suite (see "X6, run 1,
-  after the restart").
+  after the restart"). Run 2 (2026-11-20) fixed what the independent check of X6 found: a large move of the
+  stack pointer down hung translation, the plan's "Frames" rule was not built, the trap flag cases and three
+  other program sets ran in Chrome at full only and the trap flag ones were compared by status only, and four
+  smaller ones (see "X6, run 2").
+
+## X6, run 2 (2026-11-20)
+
+Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws) for lint and the x86 tests; the
+i7-8750H for layer 1's verdicts; the Mac for git, formatting and the literal check. Logs in scratch `x6r3-*`.
+
+The X6 check's findings:
+- Translation hung on a large move of the stack pointer down (blocking): a frame check made one page test
+  for every page of the descent, so `sub rsp, 0x2be2a860` gave about 180,000 and translating eight bytes
+  did not end. One frame check now covers at most `FRAME_CHECK_BYTES` (contract.rs, 64 KiB, a tuning number
+  in plan 11); a move down that a check of that size cannot cover makes no frame, so its accesses are each
+  checked, and a check's run of following moves stops before the move that would pass the limit (which also
+  ends the `as u32` truncation the check noted). `programs/x86_64/far_frame.S` moves down by twice the limit
+  within its stack and by 0x2be2a860 past it; `far_frames_match_linux_x86_64` runs both at every look-ahead in
+  wasmtime and Chrome against the reference. ARM64 uses the same rule (`sub sp` of more than 64 KiB).
+- The plan's "Frames" rule was not built (blocking): now it is, in both runners (plan 5.7, "As built at X6").
+  When `load_code` locks for code a page that a frame proof of the thread may cover (at or above the stack
+  pointer less the red zone, every page from there up to it readable and writable), the piece is put in
+  place, "code translated from a live stack frame" (a new `Reason`) is counted and warned, and the thread
+  leaves `run` and is run again from its registers. `programs/x86_64/stack_code.S` (my own, three cases: the
+  second write by a push, through rsp, through rbp) exits with 7 * 16 + 9 = 121 on the reference;
+  `code_on_the_stack_matches_linux_x86_64` runs it at every look-ahead and mixed in wasmtime and in Chrome,
+  each run counting the frames given up. With the rule turned off by hand (a mutation, not kept) the test
+  fails.
+- Chrome ran the trap flag cases at full only, by status (blocking): every Chrome comparison in
+  `tests/programs.rs` now runs at every look-ahead (`every_look_ahead_matches_in_chrome`: none, full for speed
+  and size, bounded with pieces made at run time), which covers `self_written`, unwinding, the switched
+  stacks and the cut functions. The page now answers the thread state at its stop; the trap flag test checks
+  in Chrome that the stop is a single step (not a breakpoint), with the reference's rip and general
+  registers, and that "trap flag set by the program" was counted.
+- The claim that five tests keep their X5 run 8 verdicts because nothing they translate changed was wrong
+  (ebb4d9ce changed every stop check and fault site and the runners' hooks); they are run again on the
+  i7-8750H this run (below).
+- The stale departure on a program changed by another thread is corrected.
+- Literals in X6's files: `self_written.c` takes PAGE_SIZE and its passes from the build (the test asserts
+  against the same constant), `trap_flag.S` takes TF (`wcontainers_x86::TF`), SYS_write and SYS_exit from the
+  build and names its scratch bytes once, the page takes the lock bit (`runner::LOCK_CODE`, now public) and
+  the single step's name (`browser::SINGLE_STEP`) from the test's settings and derives each slow path's key
+  from its name in the contract, and the memory fault hooks read the access as "a write or not".
+- Plan 5.7's sentence on `brk` zeroing pages is corrected: the stand-in's `brk` never moves the break.
+
 
 ## X6, run 1, after the restart (2026-11-20)
 
@@ -151,7 +195,8 @@ Measured:
   CPU has the features) and `hand_cases_do_what_they_must_x86_64` (it runs `movbe` with 66 and REX.W). Every x86
   program test, in wasmtime and Chrome, the changes tests, layer 2 and layer 3 for x86, validity and bounded
   look-ahead pass. Those five keep their i7-8750H verdicts of X5 run 8: nothing they translate changed (one
-  instruction at none; the translator change only touches starts that used to stop it).
+  instruction at none; the translator change only touches starts that used to stop it). (Wrong, as the check
+  of X6 found: the stop checks, fault sites and hooks they run through had changed; see "X6, run 2".)
 - ARM64's tests, rented ARM64 machine (`x6r2-suite-arm.log`, 1,485 s, load 9 to 27): all pass but the two layer 1
   tests its manual keeps on the Mac (`every_form_matches_the_cpu_arm64`, `sample_matches_the_cpu_in_chrome_arm64`),
   as in X5 run 8. Not run on the Mac this run; expected to pass as in run 7, not measured.
@@ -3354,7 +3399,12 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   plan 5.7 say so now).
 - X6 run 1: the plan's three programs that write code with no announcement are `written_code.c` (another
   page), and `self_written.c` (the loop writing its next instruction's immediate, and an instruction writing
-  its own first byte); a program whose thread changes code another thread runs waits for threads (X10).
+  its own first byte); beside them, a program whose code another thread changes (`written_by_another.c`),
+  where the test runners, which give one thread, write as that thread at a stop (`Paused::write`), and so it
+  is not run in Chrome, whose runner has no pause.
+- X6 run 2: one frame check covers at most `FRAME_CHECK_BYTES` (64 KiB); a larger move of the stack pointer
+  down makes no frame, so its accesses are checked one by one. The plan had no limit, and a check a page made
+  translation of a large move run for minutes.
 - X6 run 1: while single stepping, the host runner's stop hook does not call the pause function or count
   "stopped by the flag" (plan 5.1 lets another reason be dealt with first; the test runner's only other
   reasons are its own pauses).

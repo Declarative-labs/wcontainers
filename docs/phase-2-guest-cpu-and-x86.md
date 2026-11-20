@@ -1251,7 +1251,11 @@ nothing is known about the frame covers `[sp, sp + bytes)` too.) A move down mak
 already covers its red zone, and the check a move down makes reaches as far down as the moves down that follow
 it in the block before anything that calls, makes a system call, or moves the stack pointer up or by an unknown
 amount, so x86's run of pushes in a prologue makes one check, not one a push; a failing check leaves to exact
-code at the first move, so the later moves fault where the CPU does. A call that pushes its return address
+code at the first move, so the later moves fault where the CPU does. One check covers at most
+`FRAME_CHECK_BYTES` (contract.rs, 16 pages, section 11): a move down that a check of that size cannot cover
+makes no frame and its accesses are each checked, and the run of moves a check reaches stops before the move
+that would pass it (X6: a check a page, emitted for every page of `sub rsp, 0x2be2a860`, made translating
+eight bytes run for minutes, found by the independent check of X6). A call that pushes its return address
 checks no frame for the callee (the callee checks its own); its push is checked by itself only when the frame
 does not cover it. `SP_ALIGNMENT_CHECKED` is false on x86
 and RISC-V, where the "aligned after" analysis is never run.
@@ -2051,8 +2055,9 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   WebAssembly frames when they next run, as in the frames case above.
 - **When each part is built.** X6 builds the fault path and the marks in both runners. Until X10 an x86
   program runs only under the runners' stand-in system calls (`write`, `writev`, `exit`, `exit_group`,
-  `brk`), which map nothing twice and write guest memory only when `brk` zeroes pages, which takes the
-  step; so nothing writes code unseen before the kernel joins. X10, with the kernel's personality, builds
+  `brk`), which map nothing twice and write no guest memory (their `brk` never moves the break); so nothing
+  writes code unseen before the kernel joins, but the runners' `Paused::write`, which writes as another
+  thread would and takes the step. X10, with the kernel's personality, builds
   the step in `Cpu::write`, `zero`, `shared_write` and the shared mappings, with three tests against the
   reference: a program that `read`s new code over code it has run and runs it again, a memfd mapped twice
   (written through one address, run through the other), and two processes sharing a page of code.
@@ -2077,14 +2082,24 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   include it, so a change to a page under rsp within 128 bytes is noticed at the next function entry, and
   x86's hand-made change programs read past it. Another thread's write, while the test runners give one
   thread: the pause function writes at a stop (`Paused::write`), which takes the step for a page locked for
-  code and makes the stopped thread give up its WebAssembly frames and carry on from its registers, as this
-  section's "Frames" rule says; `written_by_another.c` spins in code on a page of its own until another
+  code and makes the stopped thread give up its WebAssembly frames and carry on from its registers;
+  `written_by_another.c` spins in code on a page of its own until another
   thread writes the immediate it compares (on the reference a thread made by `clone`, here the runner at the
   first stop on that page). Without giving up the frames the thread spins in the dropped piece for ever,
   which the test was seen to do. Translating from any byte address: a start or an entry found whose
   instruction runs past the end of the code gets no piece at full and bounded look-ahead, as at none (it is
   translated from memory when reached); before X6 such an entry stopped the translator, found by x86's
-  validity test from every byte address.
+  validity test from every byte address. The "Frames" rule, in both runners: when `load_code` locks a page
+  that was writable and lies at or above the thread's stack pointer less the red zone, with every page from
+  there up to it readable and writable (where a frame proof of the thread may reach), the piece is put in
+  place, the slow path "code translated from a live stack frame" is counted with the address, and the hook
+  returns 0, so the thread leaves `run`; the runner runs it again at once from its registers (wasmtime's
+  runner in a fresh thread instance, as after a lost stack; the browser's calls `run` again), and functions in
+  progress go on from their return addresses with their frames checked afresh. A page already locked is not
+  writable in the table, so no proof made since covers it and locking it again gives nothing up.
+  `programs/x86_64/stack_code.S` writes code at its stack pointer, calls it, writes other code there by a
+  push, a store through rsp or one through rbp, and calls it again: before the rule was built the second
+  write was not seen at full or bounded look-ahead (the independent check of X6).
 
 ### 5.8 Floating point: SSE and x87
 
@@ -3155,8 +3170,9 @@ one command recorded in the status file.
 ## 11. Tuning numbers
 
 Internal constants, part of the cache key, as in phase one: x86's passed registers in and out (section 3.4,
-measured and chosen at X5), the bulk string chunk (1 MiB), and phase one's own numbers, which
-apply unchanged.
+measured and chosen at X5), the bulk string chunk (1 MiB), the most one frame check covers
+(`FRAME_CHECK_BYTES`, 64 KiB, chosen at X6 to keep a check's code to 16 page tests; not measured), and phase
+one's own numbers, which apply unchanged.
 
 ## 12. Not yet measured
 
