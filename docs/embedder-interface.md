@@ -8,15 +8,21 @@ listed under "Departures" in docs/status-streams.md.
 ## The embedder's trait
 
 The kernel reaches its embedder through `wcontainers_kernel::System`, which extends the abi's
-`Host` (clocks, randomness, warnings, the backend, connections, stream ends). Everything below has
-a provided default, so an embedder that implements none of it gets a counter for task ids and no
-hooks.
+`Host` (clocks, randomness, warnings, the backend, connections, stream ends). Everything below but
+`free_task_id` has a provided default, so an embedder that implements only that gets a counter for
+task ids, every system call run as made, and no hooks.
 
 ```rust
 pub trait System: Host + Sync {
     // Services: the kernel asks and uses the answer.
-    fn task_id_allocate(&self, previous: TaskId) -> TaskId { task_id_after(previous) }
-    fn task_id_free(&self, id: TaskId) {}
+    fn allocate_task_id(&self, previous: TaskId) -> TaskId { task_id_after(previous) }
+    fn free_task_id(&self, id: TaskId);
+
+    // The system call proxy.
+    fn intercept_system_call_request(&self, process: Process<'_>, thread: TaskId, request: SystemCallRequest)
+        -> ControlFlow<SystemCallResponse, SystemCallRequest> { ControlFlow::Continue(request) }
+    fn intercept_system_call_response(&self, process: Process<'_>, thread: TaskId, request: &SystemCallRequest,
+        response: SystemCallResponse) -> SystemCallResponse { response }
 
     // Hooks: the kernel announces; synchronous, nothing returned.
     fn on_process_starting(&self, process: Process<'_>) {}
@@ -24,12 +30,19 @@ pub trait System: Host + Sync {
     fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {}
     fn on_process_exiting(&self, process: Process<'_>) {}
     fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {}
-    fn on_memory_accessing(&self, process: Process<'_>, thread: TaskId, address: u64, access: Access) {}
+    fn on_watched_memory_accessing(&self, process: Process<'_>, thread: TaskId, address: u64, kind: AccessKind) {}
+    fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {}
 }
 
 /// A process or thread id: one space for both, as Linux's `pid_t`.
 pub struct TaskId(pub u32);
 pub fn task_id_after(previous: TaskId) -> TaskId; // the default counter, wrapping as `alloc_pid`
+
+// In the abi.
+pub const SYSTEM_CALL_ARGUMENT_COUNT: usize = 6; // man 2 syscall: x0 to x5 on arm64
+pub struct SystemCallRequest { pub number: u64, pub arguments: [u64; SYSTEM_CALL_ARGUMENT_COUNT] }
+// In the kernel.
+pub type SystemCallResponse = Result<u64, Errno>;
 ```
 
 Every method of `System` and of the abi's `Host` takes `&self`, and `System` requires `Sync`, so
@@ -40,14 +53,14 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 
 ### Task ids
 
-- `task_id_allocate` is asked for every new process and thread number, the container's first
+- `allocate_task_id` is asked for every new process and thread number, the container's first
   process included. `previous` is the number handed out last, which the default counter needs
   (the owner's names have no argument; listed for the owner). The kernel skips a number something
   still carries (as `alloc_pid` skips used ones) and asks again, counted (`task id still
   carried`); after as many tries as there are numbers, fork and clone fail with EAGAIN, as Linux's
   do when every number is taken. A number outside 1 to `pid_max` fails the fork or clone with
   EAGAIN at once, counted (`task id out of range`).
-- `task_id_free` is called when no process, thread, process group or session carries a number any
+- `free_task_id` is called when no process, thread, process group or session carries a number any
   more: a thread that ended, a process reaped (or one whose parent did not want it), the numbers a
   process leaves behind by `setpgid` or `setsid`, the old number of a thread that took its
   process's number by `execve`, and every number still carried once the container has ended. It
@@ -72,7 +85,7 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   list and the word `CLONE_CHILD_CLEARTID` named, as Linux's `mm_release`) and before any of its
   threads or memory go: its memory and records are still readable, and a watch set then has
   nothing of the kernel's left to meet. The number stays carried by the zombie until it is reaped
-  (`task_id_free`). When the container's first process ends it is announced first; then every
+  (`free_task_id`). When the container's first process ends it is announced first; then every
   other process is killed and announced in turn, before the first's memory goes (Linux's first process of a namespace kills
   the rest on its way out, `zap_pid_ns_processes`); once the container has ended every number
   still carried is freed.
@@ -89,9 +102,42 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 - The container's address width stays the executor's address space: a fixed request above the
   width fails as before (`address above the address space`). Until low-first placement lands, the
   stack's top and the mmap base are put at the ceiling, so that what is placed stays below it.
-- `on_memory_accessing`: a thread is about to access a page the embedder watches (below). If the
-  watch is gone when the hook returns the access goes on; otherwise the thread waits until the
-  process's watches change, then touches again (and the hook fires again if it is still watched).
+- `on_watched_memory_accessing`: a thread, or the kernel for it, is about to access a page the
+  embedder watches (below), as `kind` (an instruction fetch is `Execute`). If the watch is gone
+  when the hook returns the access goes on; otherwise the thread waits until the process's
+  watches change, then touches again (and the hook fires again if it is still watched).
+- `on_memory_written_by_kernel`: after the kernel wrote `range` of a process's memory for
+  `thread`: the data a call copies out, a signal's frame, restartable sequence stores, clone's
+  `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` words, the word `CLONE_CHILD_CLEARTID` names and
+  the robust list's lock words at a thread's end. Every copy into program memory goes through one
+  routine (crates/wcontainers-kernel/src/user.rs `Guest`), which notes the exact range written
+  (adjacent ranges for the same thread joined); the kernel announces them, in order, before the
+  next hook of any kind and before any thread runs again, to the process using that memory (the
+  one it was written for, or, if that one has left it by `execve`, another process still sharing
+  it; none if no process uses it any more). Not announced, and why: memory a mapping call
+  changes without copying (mmap, munmap, `madvise`, `mremap`'s move, `MADV_WIPEONFORK` at fork),
+  which `take_dirty_memory` reports; a new program's stack, vDSO and segment tails, written by
+  `execve` into the new memory before `on_program_starting`, where the whole new memory is the
+  embedder's to read; pages of a mapped backend file filled from the backend, which are written
+  into the file every process mapping it shares, as another process's `write` to a shared file
+  is. The embedder's own `write_memory` fires neither this hook nor a watch.
+
+### The system call proxy
+
+- `intercept_system_call_request` is asked once for every system call a thread makes, when the
+  thread comes back with it and before anything of it happens (before the watch walk, `seccomp`
+  and the call). `Continue(request)` runs `request`: when it differs from what the thread made, the
+  thread's registers (x8 and x0 to x5) are changed to it, as a tracer's change at Linux's
+  syscall-entry stop changes them, so a call that waits and runs again runs the changed one.
+  `Break(response)` answers the call without running it; the thread sees the response.
+- `intercept_system_call_response` is asked when a call the kernel ran answers, before the thread
+  sees it; the thread sees what it returns. A call that waits answers once, when it finishes; a
+  call that never returns (`exit`, `exit_group`, a successful `execve` on the old program) does not
+  answer, and one that restarts from its instruction is asked again as a new call. The answer is
+  given as it reaches the thread's signal handling, internal restart codes (`ERESTARTSYS`) included,
+  as at Linux's syscall-exit stop.
+- With neither implemented, each call costs two calls of empty provided methods through the
+  trait object.
 
 ### The kernel's guarantees
 
@@ -114,11 +160,11 @@ impl Process<'_> {
     pub fn id(&self) -> TaskId;
     pub fn info(&self) -> ProcessInfo<'_>;
     pub fn execution_config(&self) -> ExecutionConfig;
-    pub fn memory_read(&mut self, range: Range<u64>) -> Result<Vec<u8>, MemoryError>;
-    pub fn memory_write(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError>;
-    pub fn memory_watch(&mut self, range: Range<u64>, watch: Watch);
-    pub fn memory_watch_thread(&mut self, thread: TaskId, range: Range<u64>, watch: Watch) -> Result<(), Unsupported>;
-    pub fn memory_take_dirty(&mut self) -> Vec<Range<u64>>;
+    pub fn read_memory(&mut self, range: Range<u64>) -> Result<Vec<u8>, MemoryError>;
+    pub fn write_memory(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError>;
+    pub fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
+    pub fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor) -> Result<(), Unsupported>;
+    pub fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
 }
 
 impl Kernel {
@@ -135,8 +181,8 @@ impl ProcessInfo<'_> {
     pub fn parent(&self) -> Option<TaskId>;
 }
 
-pub enum Watch { None, Writes, All }
-pub enum Access { Read, Write }
+pub enum WatchesFor { None, Writes, All }
+pub enum AccessKind { Read, Write, Execute }
 pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }
 ```
 
@@ -146,32 +192,32 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
   can still take below the ceiling (the gaps between the heap's end and the mmap base);
   `compute_used` is the CPU time of the live threads plus the ended ones; `parent` is the
   process's parent as `getppid` reports it.
-- `memory_read` and `memory_write` work on mapped ranges whatever their private pages allow; a
+- `read_memory` and `write_memory` work on mapped ranges whatever their private pages allow; a
   page of a backend file not read yet is `NotRead`. A write makes a private file page the
   process's own copy first, and is not counted as written by the process. A shared page the
   process may not write is refused (`SharedNotWritable`), as Linux's forced writes (ptrace,
   `/proc/<pid>/mem`) refuse it: others share it. A range that ends before it starts, or bytes that
-  would run past the last address, are `InvalidRange`; `memory_watch` acts on no page for them.
-- `memory_watch` is a setting: idempotent, nothing returned. It acts on the mapped pages
+  would run past the last address, are `InvalidRange`; `watch_memory` acts on no page for them.
+- `watch_memory` is a setting: idempotent, nothing returned. It acts on the mapped pages
   (`PAGE_SIZE`) the range touches, and costs time in proportion to them, not to the range: ending
   watches visits only the watched pages, setting them only the mapped ones. A watch belongs to the page's bytes: unmapping a page ends it,
   as does mapping something new over it; `mremap` takes it along to where the page moves; a
   fork's child has its parent's watches, as it has its memory, except on pages it gets fresh
   (`MADV_WIPEONFORK`); `execve` ends them all with the old memory. Changing a page's attributes
   (`mprotect`, `pkey_mprotect`, `mlock`, `mlock2`, `munlock`, `madvise`'s fork advice) keeps its
-  watch and its place in the record of written pages. `Writes` watches writes; `All` watches reads, writes and running code (running
-  code is reported as `Read`).
-- `memory_take_dirty` answers the pages whose bytes the process changed since it was last asked, as
+  watch and its place in the record of written pages. `Writes` watches writes; `All` watches reads, writes and
+  instruction fetches (`Execute`).
+- `take_dirty_memory` answers the pages whose bytes the process changed since it was last asked, as
   ranges: what its threads wrote, what the kernel's copies wrote for it, pages `mremap` moved (at
   their new place, as Linux's soft-dirty bits mark them) and pages `madvise` put back to zero or
   to their file (`MADV_DONTNEED`, `MADV_REMOVE`, and the old pages of `MREMAP_DONTUNMAP`). A new
   mapping (mmap, also over pages that were mapped, heap and stack growth, a mapping grown by
   `mremap`) is in it whatever it allows, as Linux marks a new mapping soft-dirty. The embedder's
-  own `memory_write` is not. The first answer is every page mapped writable, since nothing was
+  own `write_memory` is not. The first answer is every page mapped writable, since nothing was
   recorded before it; from then on the record costs one fault per page per interval. It is kept as
   ranges, so a large new mapping costs no more than a small one. A fork's child starts with no
   record.
-- `memory_watch_thread` is declared for executors that can watch one thread and not its siblings
+- `watch_thread_memory` is declared for executors that can watch one thread and not its siblings
   (the abi's `PerThreadWatch` subtrait of `Cpu`); no executor implements it today, and the kernel
   reaches the executor as `dyn Cpu`, so the call is refused by name (`Unsupported::PerThreadWatch`).
 
@@ -179,7 +225,7 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
 
 Before a call runs, the kernel walks the memory its arguments say it will touch
 (crates/wcontainers-kernel/src/syscall/touch.rs) and meets every watch on it, announcing
-`on_memory_accessing` for each watched page in order; what names more memory (an iovec array, a
+`on_watched_memory_accessing` for each watched page in order; what names more memory (an iovec array, a
 msghdr or mmsghdr array, a string pointer array, a futex_waitv array, a robust list) is met
 before it is read, and what a call writes back into what it read (a received message's lengths and
 flags, `sched_setattr`'s size and the capability calls' version when they refuse them, a socket
@@ -304,6 +350,6 @@ pub enum Unsupported {
 - Which processes share memory, and shared pages marked watched when one of them leaves (ruled
   late on 2026-11-18): leaving is `suspend`, so it comes with it. The report will be a
   `ProcessInfo` accessor read from the `AddressMap`s' shared mappings (`Mapping::shared` and the
-  file node they map); the marking will set `Watch::All` on those pages in every process still
+  file node they map); the marking will set `WatchesFor::All` on those pages in every process still
   sharing them, from `suspend`.
 - `set_thread_ordering`, the inspection hooks and `StopReason`: not ruled or not asked for yet.

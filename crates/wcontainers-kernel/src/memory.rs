@@ -11,7 +11,7 @@ use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
 use crate::fs::Node;
 use crate::linux::general::{RLIMIT_AS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_STACK};
 use crate::process::{LIMITS, Limit};
-use crate::system::{Access, MemoryError, Watch};
+use crate::system::{AccessKind, MemoryError, WatchesFor};
 use crate::{Errno, errno};
 
 pub(crate) fn page_down(address: u64) -> u64 {
@@ -262,26 +262,26 @@ pub(crate) struct AddressMap {
 }
 
 /// How much of a page's access a watch brings back: none, writes, everything.
-fn watch_rank(watch: Watch) -> u8 {
+fn watch_rank(watch: WatchesFor) -> u8 {
     match watch {
-        Watch::None => 0,
-        Watch::Writes => 1,
-        Watch::All => 2,
+        WatchesFor::None => 0,
+        WatchesFor::Writes => 1,
+        WatchesFor::All => 2,
     }
 }
 
 /// The embedder's watches on one memory's pages, and the pages written since it last asked.
 #[derive(Clone, Default)]
 pub(crate) struct Watches {
-    /// Watched pages by address; never `Watch::None`.
-    pages: BTreeMap<u64, Watch>,
+    /// Watched pages by address; never `WatchesFor::None`.
+    pages: BTreeMap<u64, WatchesFor>,
     /// Pages written since the embedder last asked; none until it first asks.
     written: Option<RangeSet<u64>>,
     /// The first watched page a kernel copy for the running call found, and how it touched it.
-    pub touched: Option<(u64, Access)>,
+    pub touched: Option<(u64, AccessKind)>,
     /// The ranges the running call's description named and how, against which its copies are
     /// checked.
-    pub described: Option<Vec<(u64, u64, Access)>>,
+    pub described: Option<Vec<(u64, u64, AccessKind)>>,
     /// The first address a copy of the running call reached outside its description.
     pub undescribed: Option<u64>,
     /// How many times a page's watch was raised (set, or widened to `All`): a walk over what a
@@ -292,14 +292,15 @@ pub(crate) struct Watches {
 impl Watches {
     /// Notes a copy of `[start, end)` as `access` that the running call's description did not
     /// name: a write must lie in ranges named as written, which meet every watch.
-    pub fn check_described(&mut self, start: u64, end: u64, access: Access) {
+    pub fn check_described(&mut self, start: u64, end: u64, access: AccessKind) {
         let Some(described) = &self.described else {
             return;
         };
         let mut at = start;
         while at < end {
             match described.iter().find(|(from, to, named)| {
-                (*from..*to).contains(&at) && (access == Access::Read || *named == Access::Write)
+                (*from..*to).contains(&at)
+                    && (access != AccessKind::Write || *named == AccessKind::Write)
             }) {
                 Some((_, to, _)) => at = *to,
                 None => {
@@ -324,9 +325,9 @@ impl Watches {
     fn narrowed(&self, page: u64, full: Permissions) -> Permissions {
         let mut allowed = full;
         match self.pages.get(&page) {
-            Some(Watch::All) => allowed = Permissions::empty(),
-            Some(Watch::Writes) => allowed -= Permissions::WRITE,
-            Some(Watch::None) | None => {}
+            Some(WatchesFor::All) => allowed = Permissions::empty(),
+            Some(WatchesFor::Writes) => allowed -= Permissions::WRITE,
+            Some(WatchesFor::None) | None => {}
         }
         if self
             .written
@@ -339,11 +340,11 @@ impl Watches {
     }
 
     /// The watch on the page holding `address`.
-    pub fn watch_at(&self, address: u64) -> Watch {
+    pub fn watch_at(&self, address: u64) -> WatchesFor {
         self.pages
             .get(&page_down(address))
             .copied()
-            .unwrap_or(Watch::None)
+            .unwrap_or(WatchesFor::None)
     }
 
     /// Whether the record of written pages holds back writing the page of `address`.
@@ -354,15 +355,13 @@ impl Watches {
     }
 
     /// The first address in `[start, end)` whose page is watched for `access`.
-    pub fn first_watched(&self, start: u64, end: u64, access: Access) -> Option<u64> {
+    pub fn first_watched(&self, start: u64, end: u64, access: AccessKind) -> Option<u64> {
         if self.pages.is_empty() || start >= end {
             return None;
         }
         self.pages
             .range(page_down(start)..end)
-            .find(|(_, watch)| {
-                access == Access::Read && **watch == Watch::All || access == Access::Write
-            })
+            .find(|(_, watch)| access == AccessKind::Write || **watch == WatchesFor::All)
             .map(|(page, _)| (*page).max(start))
     }
 
@@ -380,8 +379,8 @@ impl Watches {
     }
 
     /// Takes the watches of `[start, end)`, by their pages' offsets from `start`.
-    fn take(&mut self, start: u64, end: u64) -> Vec<(u64, Watch)> {
-        let taken: Vec<(u64, Watch)> = self
+    fn take(&mut self, start: u64, end: u64) -> Vec<(u64, WatchesFor)> {
+        let taken: Vec<(u64, WatchesFor)> = self
             .pages
             .range(start..end)
             .map(|(page, watch)| (*page - start, *watch))
@@ -466,14 +465,14 @@ impl AddressMap {
         cpu: &mut dyn Cpu,
         memory: MemoryId,
         range: core::ops::Range<u64>,
-        watch: Watch,
+        watch: WatchesFor,
     ) -> bool {
         // Only watched pages are visited to end watches, and only mapped ones to set them.
         let mut changed = false;
         if range.is_empty() {
             return changed;
         }
-        if watch == Watch::None {
+        if watch == WatchesFor::None {
             let ended: Vec<u64> = self
                 .watches
                 .pages
@@ -572,7 +571,7 @@ impl AddressMap {
     }
 
     /// Takes the watches of `[start, end)` along to pages a move is about to take there.
-    pub fn take_watches(&mut self, start: u64, end: u64) -> Vec<(u64, Watch)> {
+    pub fn take_watches(&mut self, start: u64, end: u64) -> Vec<(u64, WatchesFor)> {
         if self.watches.pages.is_empty() {
             return Vec::new();
         }
@@ -587,7 +586,7 @@ impl AddressMap {
         memory: MemoryId,
         start: u64,
         end: u64,
-        watches: Vec<(u64, Watch)>,
+        watches: Vec<(u64, WatchesFor)>,
     ) {
         for (offset, watch) in watches {
             self.watches.pages.insert(start + offset, watch);

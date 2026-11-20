@@ -5,7 +5,10 @@
 //! happens, its deadline comes or a signal arrives, the thread is woken and the same call runs again
 //! from the thread's saved registers; nothing ever waits on the kernel's own stack.
 
-use wcontainers_abi::{Next, RegisterBlock, Resume, Syscall};
+use wcontainers_abi::{
+    Next, RegisterBlock, Resume, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER,
+    SystemCallRequest,
+};
 
 use crate::counters::reason;
 use crate::linux::general::*;
@@ -159,11 +162,44 @@ impl Kernel {
     }
 
     /// Runs a system call, the first time or again after its thread was woken.
-    fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
+    fn system_call(
+        &mut self,
+        cx: &mut Context<'_>,
+        tid: Tid,
+        mut call: SystemCallRequest,
+        again: bool,
+    ) {
         // A thread of a process a fatal signal is ending does not run its call again.
         if !self.dying.is_empty() && self.dying.contains_key(&self.threads[&tid].process) {
             self.return_to_user(cx, tid, Resume::FromRegisters);
             return;
+        }
+        // The embedder sees each call it made once, before anything of it happens: it may answer
+        // it, or change it, which changes the thread's registers as a tracer's change does.
+        if !again {
+            let pid = self.threads[&tid].process;
+            let thread = crate::TaskId::of(tid);
+            let mut decision = core::ops::ControlFlow::Continue(call);
+            self.announce(cx, pid, |system, process| {
+                decision = system.intercept_system_call_request(process, thread, call);
+            });
+            match decision {
+                core::ops::ControlFlow::Break(response) => {
+                    let value = crate::system::return_of(response);
+                    self.return_to_user(cx, tid, Resume::Return(value));
+                    return;
+                }
+                core::ops::ControlFlow::Continue(request) => {
+                    if request != call {
+                        let mut registers = RegisterBlock::ZERO;
+                        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+                        registers.x[SYSTEM_CALL_NUMBER_REGISTER] = request.number;
+                        registers.x[..request.arguments.len()].copy_from_slice(&request.arguments);
+                        cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
+                        call = request;
+                    }
+                }
+            }
         }
         // The watched memory the call will touch is met before it acts, and its copies are
         // checked against what its description named.
@@ -267,6 +303,18 @@ impl Kernel {
         match outcome {
             syscall::Outcome::Return(value) => {
                 self.finish_call(cx, tid);
+                let pid = self.threads[&tid].process;
+                let thread = crate::TaskId::of(tid);
+                let mut response = crate::system::response_of(value);
+                self.announce(cx, pid, |system, process| {
+                    response =
+                        system.intercept_system_call_response(process, thread, &call, response);
+                });
+                // The embedder's answer may have ended the thread's process (suspended, later).
+                if !self.threads.contains_key(&tid) {
+                    return;
+                }
+                let value = crate::system::return_of(response);
                 self.return_to_user(cx, tid, Resume::Return(value));
             }
             syscall::Outcome::Restart => {
@@ -432,9 +480,11 @@ impl Kernel {
                 let mut registers = RegisterBlock::ZERO;
                 cx.cpu.registers(thread.cpu, &mut registers);
                 let x = &registers.x;
-                let call = Syscall {
-                    number: x[8],
-                    arguments: [x[0], x[1], x[2], x[3], x[4], x[5]],
+                let mut arguments = [0; SYSTEM_CALL_ARGUMENT_COUNT];
+                arguments.copy_from_slice(&x[..SYSTEM_CALL_ARGUMENT_COUNT]);
+                let call = SystemCallRequest {
+                    number: x[SYSTEM_CALL_NUMBER_REGISTER],
+                    arguments,
                 };
                 self.system_call(cx, tid, call, true);
                 // A call that went back to its program has its thread's turn.
@@ -455,6 +505,10 @@ impl Kernel {
                 continue;
             }
             if self.serve_ends(cx) {
+                continue;
+            }
+            if !self.kernel_writes.get_mut().is_empty() {
+                self.announce_kernel_writes(cx);
                 continue;
             }
             if let Some(tid) = self.signalled.pop_front() {

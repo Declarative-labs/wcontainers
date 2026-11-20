@@ -108,7 +108,7 @@ impl Ends {
         let count = bytes.len() as u64;
         debug_assert!(count <= held.credit && !held.closed);
         held.credit -= count;
-        cx.host.stream_send(end, bytes);
+        cx.host.send_stream(end, bytes);
     }
 }
 
@@ -194,7 +194,7 @@ impl Kernel {
 
     /// `Event::StreamCredit`: the kernel may send this many more bytes. Credit on an end the kernel
     /// never sends on is counted as an event nothing waits for.
-    pub(crate) fn stream_credit(&mut self, cx: &mut Context<'_>, end: End, bytes: u64) {
+    pub(crate) fn credit_stream(&mut self, cx: &mut Context<'_>, end: End, bytes: u64) {
         self.ends.moved = true;
         match self.ends.held.get_mut(&end).filter(|held| held.sends) {
             Some(held) => held.credit = held.credit.saturating_add(bytes),
@@ -294,7 +294,7 @@ impl Kernel {
             };
             if finished {
                 self.ends.held.get_mut(&end).expect("held").closed = true;
-                cx.host.stream_close(end);
+                cx.host.close_stream(end);
                 moved = true;
                 continue;
             }
@@ -304,7 +304,7 @@ impl Kernel {
                 Side::PipeOut => 0,
             };
             if credit > 0 {
-                cx.host.stream_credit(end, credit);
+                cx.host.credit_stream(end, credit);
                 moved = true;
             }
         }
@@ -318,7 +318,7 @@ impl Kernel {
         for (end, _) in standard.ends() {
             if let Some(held) = self.ends.held.get_mut(&end) {
                 held.closed = true;
-                cx.host.stream_close(end);
+                cx.host.close_stream(end);
             }
         }
     }

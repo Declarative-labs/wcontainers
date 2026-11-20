@@ -1,16 +1,37 @@
 //! What a test does at the kernel's hooks and task id calls.
 
-use wcontainers_abi::Cpu;
-use wcontainers_kernel::{Access, Kernel, Process, TaskId, task_id_after};
+use std::ops::{ControlFlow, Range};
+
+use wcontainers_abi::{Cpu, SystemCallRequest};
+use wcontainers_kernel::{AccessKind, Kernel, Process, SystemCallResponse, TaskId, task_id_after};
 
 /// A test's side of the kernel's hooks and task id calls, for the tests that act at some of them;
 /// each left alone does nothing, or for task ids, counts as the kernel's default does.
 pub trait Hooks: Send {
-    fn task_id_allocate(&mut self, previous: TaskId) -> TaskId {
+    fn allocate_task_id(&mut self, previous: TaskId) -> TaskId {
         task_id_after(previous)
     }
-    fn task_id_free(&mut self, id: TaskId) {
+    fn free_task_id(&mut self, id: TaskId) {
         let _ = id;
+    }
+    fn intercept_system_call_request(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        let _ = (process, thread);
+        ControlFlow::Continue(request)
+    }
+    fn intercept_system_call_response(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        let _ = (process, thread, request);
+        response
     }
     fn on_process_starting(&mut self, process: Process<'_>) {
         let _ = process;
@@ -27,14 +48,22 @@ pub trait Hooks: Send {
     fn on_process_outgrown(&mut self, process: Process<'_>, bytes: u64) {
         let _ = (process, bytes);
     }
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         process: Process<'_>,
         thread: TaskId,
         address: u64,
-        access: Access,
+        kind: AccessKind,
     ) {
-        let _ = (process, thread, address, access);
+        let _ = (process, thread, address, kind);
+    }
+    fn on_memory_written_by_kernel(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        range: Range<u64>,
+    ) {
+        let _ = (process, thread, range);
     }
     /// The kernel has nothing to run: the test may act on it through ordinary calls. Whether it
     /// did anything that may let the kernel go on.

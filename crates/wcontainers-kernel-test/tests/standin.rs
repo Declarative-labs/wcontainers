@@ -1,6 +1,6 @@
 //! The stand-in CPU comes back for each reason the abi names, with exact registers.
 
-use wcontainers_abi::{Access, Cpu, Exit, Permissions, RegisterBlock, Resume, Syscall};
+use wcontainers_abi::{Access, Cpu, Exit, Permissions, RegisterBlock, Resume, SystemCallRequest};
 use wcontainers_kernel_test::standin::{StandIn, Unsupported};
 
 const CODE: u64 = 0x10000;
@@ -44,7 +44,7 @@ fn exits_are_exact() {
     let exit = cpu.run(thread, Resume::FromRegisters, None).unwrap();
     assert_eq!(
         exit,
-        Exit::Syscall(Syscall {
+        Exit::Syscall(SystemCallRequest {
             number: 64,
             arguments: [1, 0x10, 0, 0, 0, 6]
         })

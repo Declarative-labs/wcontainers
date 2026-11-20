@@ -8,7 +8,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::memory::{AddressMap, Backing, page_down, page_up};
 use crate::process::{LIMITS, Limit};
-use crate::system::Access;
+use crate::system::AccessKind;
 use crate::{Errno, errno};
 
 /// One past the highest user address on ARM64 Linux with 48 bit virtual addresses (`TASK_SIZE_MAX`).
@@ -34,6 +34,11 @@ pub(crate) struct Guest<'a> {
     pub limits: &'a [Limit; LIMITS],
     /// Whether the process may lock memory past its limit (`CAP_IPC_LOCK`), for a locked stack's growth.
     pub may_lock_any: bool,
+    /// The process and the thread the copies are made for, and where what they write is noted
+    /// for the embedder.
+    pub pid: crate::process::Pid,
+    pub tid: crate::process::Tid,
+    pub written: &'a core::cell::RefCell<Vec<crate::system::KernelWrite>>,
 }
 
 impl Guest<'_> {
@@ -64,9 +69,9 @@ impl Guest<'_> {
         }
         // A page the embedder watches is not there for the copy until the watch is met.
         let access = if wanted.contains(Permissions::WRITE) {
-            Access::Write
+            AccessKind::Write
         } else {
-            Access::Read
+            AccessKind::Read
         };
         let watches = &mut self.map.borrow_mut().watches;
         watches.check_described(address, address.saturating_add(length), access);
@@ -160,6 +165,7 @@ impl Guest<'_> {
         {
             return 0;
         }
+        self.wrote(address, stored);
         reported
     }
 
@@ -174,7 +180,9 @@ impl Guest<'_> {
         self.copy_on_write(address, length)?;
         self.cpu
             .write(self.memory, address, bytes)
-            .map_err(errno::from_cpu)
+            .map_err(errno::from_cpu)?;
+        self.wrote(address, length);
+        Ok(())
     }
 
     /// `unsafe_put_user` stores in order, each at an offset from `address`, ending at the first that
@@ -205,8 +213,34 @@ impl Guest<'_> {
             {
                 return 0;
             }
+            self.wrote(address + offset, bytes.len() as u64);
         }
         made
+    }
+
+    /// Notes for the embedder that the kernel wrote `[address, address + length)`, as one range
+    /// with the last when they touch.
+    fn wrote(&self, address: u64, length: u64) {
+        if length == 0 {
+            return;
+        }
+        let range = address..address + length;
+        let mut written = self.written.borrow_mut();
+        if let Some(last) = written.last_mut()
+            && last.tid == self.tid
+            && last.memory == self.memory
+            && last.range.start <= range.end
+            && range.start <= last.range.end
+        {
+            last.range = last.range.start.min(range.start)..last.range.end.max(range.end);
+            return;
+        }
+        written.push(crate::system::KernelWrite {
+            pid: self.pid,
+            tid: self.tid,
+            memory: self.memory,
+            range,
+        });
     }
 
     /// Makes the private file pages of a range about to be written the process's own copies, as a
@@ -231,6 +265,7 @@ impl Guest<'_> {
         {
             return 0;
         }
+        self.wrote(address, length as u64);
         length
     }
 
@@ -282,6 +317,7 @@ impl Guest<'_> {
         {
             return 0;
         }
+        self.wrote(address, cleared);
         cleared
     }
 
@@ -298,10 +334,11 @@ impl Guest<'_> {
             self.cpu
                 .read(self.memory, from, &mut bytes)
                 .map_err(errno::from_cpu)?;
-            return self
-                .cpu
+            self.cpu
                 .write(self.memory, to, &bytes)
-                .map_err(errno::from_cpu);
+                .map_err(errno::from_cpu)?;
+            self.wrote(to, length);
+            return Ok(());
         }
         let low = from.min(to);
         let mut bytes = vec![0; (from.max(to) + length - low) as usize];
@@ -318,7 +355,9 @@ impl Guest<'_> {
         let start = (to - low) as usize;
         self.cpu
             .write(self.memory, to, &bytes[start..start + length as usize])
-            .map_err(errno::from_cpu)
+            .map_err(errno::from_cpu)?;
+        self.wrote(to, length);
+        Ok(())
     }
 
     pub fn read_value<T: FromBytes>(&mut self, address: u64) -> Result<T, Errno> {

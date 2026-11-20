@@ -8,7 +8,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::{offset_of, size_of};
 
-use wcontainers_abi::{PAGE_SIZE, Syscall};
+use wcontainers_abi::{PAGE_SIZE, SystemCallRequest};
 
 use crate::linux::ctypes::{c_int, c_uint};
 use crate::linux::general::*;
@@ -26,7 +26,7 @@ use crate::linux_extra::{
     tms,
 };
 use crate::memory::page_down;
-use crate::system::Access;
+use crate::system::AccessKind;
 
 /// What one thread's end touches: its lock list and the word that tells joiners it is gone.
 #[derive(Clone, Copy)]
@@ -49,7 +49,7 @@ pub(crate) enum Ending {
 /// The calling thread's memory as the walk sees it.
 pub(crate) trait Memory {
     /// Meets the watches on a range; false if the call must wait.
-    fn touch(&mut self, address: u64, length: u64, access: Access) -> bool;
+    fn touch(&mut self, address: u64, length: u64, access: AccessKind) -> bool;
     /// Bytes the call reads to learn what else it touches, once touched; false if unreadable.
     fn read(&mut self, address: u64, into: &mut [u8]) -> bool;
     fn stack_pointer(&mut self) -> u64;
@@ -62,17 +62,22 @@ pub(crate) trait Memory {
 }
 
 /// Meets a range; a null address or nothing touches nothing.
-fn meet(memory: &mut dyn Memory, address: u64, length: u64, access: Access) -> bool {
+fn meet(memory: &mut dyn Memory, address: u64, length: u64, access: AccessKind) -> bool {
     address == 0 || length == 0 || memory.touch(address, length, access)
 }
 
-fn sized(memory: &mut dyn Memory, address: u64, size: usize, access: Access) -> bool {
+fn sized(memory: &mut dyn Memory, address: u64, size: usize, access: AccessKind) -> bool {
     meet(memory, address, size as u64, access)
 }
 
 /// Meets a range whose bytes the walk then reads; none if the call must wait, empty if it will
 /// fault on them itself.
-fn fetch(memory: &mut dyn Memory, address: u64, size: usize, access: Access) -> Option<Vec<u8>> {
+fn fetch(
+    memory: &mut dyn Memory,
+    address: u64,
+    size: usize,
+    access: AccessKind,
+) -> Option<Vec<u8>> {
     if !sized(memory, address, size, access) {
         return None;
     }
@@ -101,7 +106,7 @@ fn string(memory: &mut dyn Memory, address: u64, limit: u64) -> bool {
     let mut at = address;
     while address != 0 && at < end {
         let to = (page_down(at) + PAGE_SIZE).min(end);
-        let Some(bytes) = fetch(memory, at, (to - at) as usize, Access::Read) else {
+        let Some(bytes) = fetch(memory, at, (to - at) as usize, AccessKind::Read) else {
             return false;
         };
         if bytes.is_empty() || bytes.contains(&0) {
@@ -123,7 +128,7 @@ fn name(memory: &mut dyn Memory, address: u64) -> bool {
 /// A null-ended array of string pointers, as `execve`'s arguments and environment.
 fn strings(memory: &mut dyn Memory, mut array: u64) -> bool {
     while array != 0 {
-        let Some(bytes) = fetch(memory, array, size_of::<u64>(), Access::Read) else {
+        let Some(bytes) = fetch(memory, array, size_of::<u64>(), AccessKind::Read) else {
             return false;
         };
         if bytes.is_empty() || word(&bytes, 0) == 0 {
@@ -138,10 +143,10 @@ fn strings(memory: &mut dyn Memory, mut array: u64) -> bool {
 }
 
 /// A `struct iovec` array, read, then each segment touched as `access`.
-fn vectors(memory: &mut dyn Memory, array: u64, count: u64, access: Access) -> bool {
+fn vectors(memory: &mut dyn Memory, array: u64, count: u64, access: AccessKind) -> bool {
     let size = size_of::<iovec>();
     let count = count.min(UIO_MAXIOV.into()) as usize;
-    let Some(bytes) = fetch(memory, array, count * size, Access::Read) else {
+    let Some(bytes) = fetch(memory, array, count * size, AccessKind::Read) else {
         return false;
     };
     bytes.chunks_exact(size).all(|entry| {
@@ -156,8 +161,8 @@ fn vectors(memory: &mut dyn Memory, array: u64, count: u64, access: Access) -> b
 
 /// A `struct msghdr`, read, then its name, control data and segments touched as `access`; a
 /// received message's lengths and flags go back into it.
-fn message(memory: &mut dyn Memory, header: u64, access: Access) -> bool {
-    let Some(bytes) = fetch(memory, header, size_of::<msghdr>(), Access::Read) else {
+fn message(memory: &mut dyn Memory, header: u64, access: AccessKind) -> bool {
+    let Some(bytes) = fetch(memory, header, size_of::<msghdr>(), AccessKind::Read) else {
         return false;
     };
     let returned = [
@@ -166,10 +171,10 @@ fn message(memory: &mut dyn Memory, header: u64, access: Access) -> bool {
         (offset_of!(msghdr, msg_flags), size_of::<c_uint>()),
     ];
     bytes.is_empty()
-        || (access == Access::Read
+        || (access == AccessKind::Read
             || returned
                 .into_iter()
-                .all(|(at, size)| sized(memory, header + at as u64, size, Access::Write)))
+                .all(|(at, size)| sized(memory, header + at as u64, size, AccessKind::Write)))
             && meet(
                 memory,
                 word(&bytes, offset_of!(msghdr, msg_name)),
@@ -191,7 +196,7 @@ fn message(memory: &mut dyn Memory, header: u64, access: Access) -> bool {
 }
 
 /// A `struct mmsghdr` array: each message as `access`, and the length the call stores in it.
-fn messages(memory: &mut dyn Memory, array: u64, count: u64, access: Access) -> bool {
+fn messages(memory: &mut dyn Memory, array: u64, count: u64, access: AccessKind) -> bool {
     let size = size_of::<mmsghdr>() as u64;
     (0..count.min(UIO_MAXIOV.into())).all(|index| {
         let entry = array + index * size;
@@ -200,7 +205,7 @@ fn messages(memory: &mut dyn Memory, array: u64, count: u64, access: Access) -> 
                 memory,
                 entry + offset_of!(mmsghdr, msg_len) as u64,
                 size_of::<u32>(),
-                Access::Write,
+                AccessKind::Write,
             )
     })
 }
@@ -210,16 +215,16 @@ fn address_out(memory: &mut dyn Memory, address: u64, length: u64) -> bool {
     if address == 0 {
         return true;
     }
-    let Some(bytes) = fetch(memory, length, size_of::<u32>(), Access::Write) else {
+    let Some(bytes) = fetch(memory, length, size_of::<u32>(), AccessKind::Write) else {
         return false;
     };
-    bytes.is_empty() || meet(memory, address, half(&bytes, 0).into(), Access::Write)
+    bytes.is_empty() || meet(memory, address, half(&bytes, 0).into(), AccessKind::Write)
 }
 
 /// `pselect6`'s last argument: a pointer to the signal mask and its size, then the mask.
 fn mask_and_size(memory: &mut dyn Memory, address: u64) -> bool {
     let size = size_of::<[u64; 2]>();
-    let Some(bytes) = fetch(memory, address, size, Access::Read) else {
+    let Some(bytes) = fetch(memory, address, size, AccessKind::Read) else {
         return false;
     };
     bytes.is_empty()
@@ -227,12 +232,12 @@ fn mask_and_size(memory: &mut dyn Memory, address: u64) -> bool {
             memory,
             word(&bytes, 0),
             word(&bytes, size_of::<u64>()),
-            Access::Read,
+            AccessKind::Read,
         )
 }
 
 /// The futex word at `address` of a size given by `flags` (`futex2`'s size bits).
-fn futex2_word(memory: &mut dyn Memory, address: u64, flags: u64, access: Access) -> bool {
+fn futex2_word(memory: &mut dyn Memory, address: u64, flags: u64, access: AccessKind) -> bool {
     meet(
         memory,
         address,
@@ -245,7 +250,7 @@ fn futex2_word(memory: &mut dyn Memory, address: u64, flags: u64, access: Access
 fn futex_waiters(memory: &mut dyn Memory, array: u64, count: u64) -> bool {
     let size = size_of::<futex_waitv>();
     let count = count.min(FUTEX_WAITV_MAX.into()) as usize;
-    let Some(bytes) = fetch(memory, array, count * size, Access::Read) else {
+    let Some(bytes) = fetch(memory, array, count * size, AccessKind::Read) else {
         return false;
     };
     bytes.chunks_exact(size).all(|entry| {
@@ -253,14 +258,14 @@ fn futex_waiters(memory: &mut dyn Memory, array: u64, count: u64) -> bool {
             memory,
             word(entry, offset_of!(futex_waitv, uaddr)),
             half(entry, offset_of!(futex_waitv, flags)).into(),
-            Access::Read,
+            AccessKind::Read,
         )
     })
 }
 
 /// `futex`'s operations: the words and timeouts each reads or changes.
 fn futex(memory: &mut dyn Memory, [word, op, _, timeout, second, _]: super::Args) -> bool {
-    let (read, write) = (Access::Read, Access::Write);
+    let (read, write) = (AccessKind::Read, AccessKind::Write);
     let four = size_of::<u32>();
     let timespec = size_of::<__kernel_timespec>();
     match (op as u32) & (FUTEX_CMD_MASK as u32) {
@@ -284,7 +289,7 @@ fn futex(memory: &mut dyn Memory, [word, op, _, timeout, second, _]: super::Args
 /// predate the encoding define it.
 fn ioctl(memory: &mut dyn Memory, request: u64, argument: u64) -> bool {
     let request = request as u32;
-    let (read, write) = (Access::Read, Access::Write);
+    let (read, write) = (AccessKind::Read, AccessKind::Write);
     let int = size_of::<i32>();
     match request {
         TCGETS | TIOCGLCKTRMIOS => sized(memory, argument, size_of::<termios>(), write),
@@ -333,7 +338,7 @@ fn ioctl(memory: &mut dyn Memory, request: u64, argument: u64) -> bool {
 
 /// `fcntl`'s commands that take a structure.
 fn fcntl(memory: &mut dyn Memory, command: u64, argument: u64) -> bool {
-    let (read, write) = (Access::Read, Access::Write);
+    let (read, write) = (AccessKind::Read, AccessKind::Write);
     match command as u32 {
         F_GETLK | F_OFD_GETLK => sized(memory, argument, size_of::<flock>(), write),
         F_SETLK | F_SETLKW | F_OFD_SETLK | F_OFD_SETLKW => {
@@ -349,7 +354,7 @@ fn fcntl(memory: &mut dyn Memory, command: u64, argument: u64) -> bool {
 
 /// `prctl`'s options that take memory.
 fn prctl(memory: &mut dyn Memory, [option, second, third, ..]: super::Args) -> bool {
-    let write = Access::Write;
+    let write = AccessKind::Write;
     let int = size_of::<i32>();
     match option as u32 {
         PR_SET_NAME => string(memory, second, crate::process::NAME_LENGTH as u64 + 1),
@@ -371,7 +376,7 @@ fn prctl(memory: &mut dyn Memory, [option, second, third, ..]: super::Args) -> b
 
 /// A seccomp filter: its `struct sock_fprog`, then its instructions.
 fn filter(memory: &mut dyn Memory, program: u64) -> bool {
-    let Some(bytes) = fetch(memory, program, size_of::<sock_fprog>(), Access::Read) else {
+    let Some(bytes) = fetch(memory, program, size_of::<sock_fprog>(), AccessKind::Read) else {
         return false;
     };
     bytes.is_empty() || {
@@ -381,7 +386,7 @@ fn filter(memory: &mut dyn Memory, program: u64) -> bool {
             memory,
             word(&bytes, offset_of!(sock_fprog, filter)),
             u64::from(length) * size_of::<sock_filter>() as u64,
-            Access::Read,
+            AccessKind::Read,
         )
     }
 }
@@ -391,7 +396,7 @@ fn filter(memory: &mut dyn Memory, program: u64) -> bool {
 fn sched_attributes(memory: &mut dyn Memory, address: u64) -> bool {
     let size_word = size_of::<u32>();
     let known = size_of::<sched_attr>();
-    let Some(bytes) = fetch(memory, address, size_word, Access::Read) else {
+    let Some(bytes) = fetch(memory, address, size_word, AccessKind::Read) else {
         return false;
     };
     if bytes.is_empty() {
@@ -404,21 +409,21 @@ fn sched_attributes(memory: &mut dyn Memory, address: u64) -> bool {
     let refused = if size < SCHED_ATTR_SIZE_VER0 || u64::from(size) > PAGE_SIZE {
         true
     } else {
-        let Some(bytes) = fetch(memory, address, size as usize, Access::Read) else {
+        let Some(bytes) = fetch(memory, address, size as usize, AccessKind::Read) else {
             return false;
         };
         bytes
             .get(known..)
             .is_some_and(|past| past.iter().any(|byte| *byte != 0))
     };
-    !refused || sized(memory, address, size_word, Access::Write)
+    !refused || sized(memory, address, size_word, AccessKind::Write)
 }
 
 /// The capability calls' header: an unknown version is answered by writing the one Linux
 /// prefers (`cap_validate_magic`).
 fn capability_header(memory: &mut dyn Memory, address: u64) -> bool {
     let size = size_of::<__user_cap_header_struct>();
-    let Some(bytes) = fetch(memory, address, size, Access::Read) else {
+    let Some(bytes) = fetch(memory, address, size, AccessKind::Read) else {
         return false;
     };
     let version = offset_of!(__user_cap_header_struct, version);
@@ -429,7 +434,7 @@ fn capability_header(memory: &mut dyn Memory, address: u64) -> bool {
             _LINUX_CAPABILITY_VERSION_3,
         ]
         .contains(&half(&bytes, version))
-        || sized(memory, address, size, Access::Write)
+        || sized(memory, address, size, AccessKind::Write)
 }
 
 /// The IPC control calls' buffer: written by the commands that show an object, read by
@@ -443,9 +448,9 @@ fn ipc_control(
 ) -> bool {
     let command = command as i32;
     if shows.contains(&command) {
-        sized(memory, buffer, size, Access::Write)
+        sized(memory, buffer, size, AccessKind::Write)
     } else if command == IPC_SET {
-        sized(memory, buffer, size, Access::Read)
+        sized(memory, buffer, size, AccessKind::Read)
     } else {
         true
     }
@@ -458,14 +463,19 @@ pub(crate) fn thread_ends(memory: &mut dyn Memory, ends: &[ThreadEnd]) -> bool {
         robust_list(memory, end.tid, end.robust_list)
             && end
                 .clear_child_tid
-                .is_none_or(|address| sized(memory, address, size_of::<u32>(), Access::Write))
+                .is_none_or(|address| sized(memory, address, size_of::<u32>(), AccessKind::Write))
     })
 }
 
 /// `exit_robust_list`'s walk: every entry is read, and a lock word written where the thread
 /// holds it.
 fn robust_list(memory: &mut dyn Memory, tid: i32, head: u64) -> bool {
-    let Some(bytes) = fetch(memory, head, size_of::<robust_list_head>(), Access::Read) else {
+    let Some(bytes) = fetch(
+        memory,
+        head,
+        size_of::<robust_list_head>(),
+        AccessKind::Read,
+    ) else {
         return false;
     };
     if bytes.is_empty() {
@@ -475,19 +485,19 @@ fn robust_list(memory: &mut dyn Memory, tid: i32, head: u64) -> bool {
     let pending = word(&bytes, offset_of!(robust_list_head, list_op_pending)) & !1;
     let lock = |memory: &mut dyn Memory, entry: u64| {
         let address = entry.wrapping_add(offset);
-        let Some(value) = fetch(memory, address, size_of::<u32>(), Access::Read) else {
+        let Some(value) = fetch(memory, address, size_of::<u32>(), AccessKind::Read) else {
             return false;
         };
         value.is_empty()
             || half(&value, 0) & FUTEX_TID_MASK != tid as u32
-            || sized(memory, address, size_of::<u32>(), Access::Write)
+            || sized(memory, address, size_of::<u32>(), AccessKind::Write)
     };
     let mut entry = word(&bytes, offset_of!(robust_list_head, list)) & !1;
     for _ in 0..super::futex::ROBUST_LIST_LIMIT {
         if entry == head {
             break;
         }
-        let Some(next) = fetch(memory, entry, size_of::<u64>(), Access::Read) else {
+        let Some(next) = fetch(memory, entry, size_of::<u64>(), AccessKind::Read) else {
             return false;
         };
         if entry != pending && !lock(memory, entry) {
@@ -503,13 +513,13 @@ fn robust_list(memory: &mut dyn Memory, tid: i32, head: u64) -> bool {
 
 /// Meets the watches on what `call` will touch, as far as its arguments say; false if it must
 /// wait.
-pub(crate) fn touch(memory: &mut dyn Memory, call: Syscall) -> bool {
+pub(crate) fn touch(memory: &mut dyn Memory, call: SystemCallRequest) -> bool {
     let arguments = call.arguments;
     let [a0, a1, a2, a3, a4, a5] = arguments;
     let Ok(number) = u32::try_from(call.number) else {
         return true;
     };
-    let (read, write) = (Access::Read, Access::Write);
+    let (read, write) = (AccessKind::Read, AccessKind::Write);
     let timespec = size_of::<__kernel_timespec>();
     let int = size_of::<i32>();
     let offset = size_of::<i64>();

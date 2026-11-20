@@ -7,8 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use wcontainers_abi::{Cpu, PAGE_SIZE};
-use wcontainers_kernel::{Access, Kernel, MemoryError, Process, TaskId, Watch, reason};
+use std::ops::ControlFlow;
+
+use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
+use wcontainers_kernel::linux::general;
+use wcontainers_kernel::{
+    AccessKind, Kernel, MemoryError, Process, SystemCallResponse, TaskId, WatchesFor, reason,
+};
 use wcontainers_kernel_test::driver::{self, Run};
 use wcontainers_kernel_test::hooks::Hooks;
 use wcontainers_kernel_test::reference::{self, ROOT_DIRECTORY, in_guest_directory};
@@ -120,17 +125,17 @@ impl Recorder {
         assert!(info.memory_mapped() > 0, "{seen:?}: memory mapped");
         let _ = (info.ceiling_distance(), info.compute_used());
         let _ = process.execution_config();
-        let changed = process.memory_take_dirty();
+        let changed = process.take_dirty_memory();
         if let Some(first) = changed.first() {
             let bytes = process
-                .memory_read(first.start..first.start + 1)
+                .read_memory(first.start..first.start + 1)
                 .expect("readable");
-            process.memory_write(first.start, &bytes).expect("writable");
-            process.memory_watch(first.clone(), Watch::None);
+            process.write_memory(first.start, &bytes).expect("writable");
+            process.watch_memory(first.clone(), WatchesFor::None);
         }
         assert!(
             process
-                .memory_watch_thread(TaskId(0), buffer(), Watch::All)
+                .watch_thread_memory(TaskId(0), buffer(), WatchesFor::All)
                 .is_err()
         );
         // Ranges that end before they start or past the last address are refused, not obeyed.
@@ -139,22 +144,22 @@ impl Recorder {
             end: BUFFER,
         };
         assert_eq!(
-            process.memory_read(reversed.clone()),
+            process.read_memory(reversed.clone()),
             Err(MemoryError::InvalidRange)
         );
         assert_eq!(
-            process.memory_write(u64::MAX, &[0, 0]),
+            process.write_memory(u64::MAX, &[0, 0]),
             Err(MemoryError::InvalidRange)
         );
-        process.memory_watch(reversed, Watch::All);
-        process.memory_watch(u64::MAX - 1..u64::MAX, Watch::All);
+        process.watch_memory(reversed, WatchesFor::All);
+        process.watch_memory(u64::MAX - 1..u64::MAX, WatchesFor::All);
         self.seen.lock().unwrap().push(seen);
         *self.depth.lock().unwrap() -= 1;
     }
 }
 
 impl Hooks for Recorder {
-    fn task_id_allocate(&mut self, previous: TaskId) -> TaskId {
+    fn allocate_task_id(&mut self, previous: TaskId) -> TaskId {
         let Some((next, freed)) = &mut self.pool else {
             return wcontainers_kernel::task_id_after(previous);
         };
@@ -166,7 +171,7 @@ impl Hooks for Recorder {
         TaskId(id)
     }
 
-    fn task_id_free(&mut self, id: TaskId) {
+    fn free_task_id(&mut self, id: TaskId) {
         assert_eq!(
             *self.depth.lock().unwrap(),
             0,
@@ -500,7 +505,7 @@ fn life_cycle_hooks_fire_in_order_over_signals_threaded_exec_vfork_groups_and_un
 
 /// What a watching test saw at each hook: the process, the address, how, and whether the
 /// watched page still held what it held when the process started.
-type Touches = Arc<Mutex<Vec<(u32, u64, Access, bool)>>>;
+type Touches = Arc<Mutex<Vec<(u32, u64, AccessKind, bool)>>>;
 
 /// Pages of the buffer a process ended with changed though no hook announced them, by process,
 /// with the first changed address and its byte before and after.
@@ -540,22 +545,22 @@ impl Hooks for Watcher {
             self.parents.insert(process.id().0, parent.0);
         }
         // The first process maps the buffer only once it runs.
-        if let Ok(bytes) = process.memory_read(buffer()) {
+        if let Ok(bytes) = process.read_memory(buffer()) {
             self.at_start.insert(process.id().0, bytes);
-            process.memory_watch(buffer(), Watch::Writes);
+            process.watch_memory(buffer(), WatchesFor::Writes);
         }
     }
 
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
         _: TaskId,
         address: u64,
-        access: Access,
+        access: AccessKind,
     ) {
         let page = page_of(address);
         let now = process
-            .memory_read(page.clone())
+            .read_memory(page.clone())
             .expect("the buffer is mapped");
         let offset = (page.start - BUFFER) as usize;
         let unchanged = self.at_start[&process.id().0][offset..offset + now.len()] == now[..];
@@ -576,13 +581,13 @@ impl Hooks for Watcher {
         if self.later {
             self.pending.push((process.id(), address));
         } else {
-            process.memory_watch(page, Watch::None);
+            process.watch_memory(page, WatchesFor::None);
         }
     }
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
         let id = process.id().0;
-        let (Some(start), Ok(end)) = (self.at_start.get(&id), process.memory_read(buffer())) else {
+        let (Some(start), Ok(end)) = (self.at_start.get(&id), process.read_memory(buffer())) else {
             return;
         };
         let announced = self.announced.remove(&id).unwrap_or_default();
@@ -606,7 +611,7 @@ impl Hooks for Watcher {
         let pending = std::mem::take(&mut self.pending);
         for (id, address) in &pending {
             let mut process = kernel.process(cpu, *id).expect("the process waits");
-            process.memory_watch(page_of(*address), Watch::None);
+            process.watch_memory(page_of(*address), WatchesFor::None);
         }
         !pending.is_empty()
     }
@@ -642,11 +647,8 @@ fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
         for later in [false, true] {
             let touches = Touches::default();
             let unannounced = Unannounced::default();
-            let run = run_embedder(
-                "calls",
-                Box::new(Watcher::new(later, touches.clone(), unannounced.clone())),
-                seed,
-            );
+            let watcher = Watcher::new(later, touches.clone(), unannounced.clone());
+            let run = run_embedder("calls", Box::new(watcher), seed);
             assert_eq!(stdout(&run), stdout(&plain), "seed {seed}, later {later}");
             assert!(
                 unannounced.lock().unwrap().is_empty(),
@@ -664,7 +666,7 @@ fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
             );
             for (id, address, access, unchanged) in touches.iter() {
                 assert!(buffer().contains(address), "{id}: {address:#x}");
-                assert_eq!(*access, Access::Write);
+                assert_eq!(*access, AccessKind::Write);
                 assert!(
                     unchanged,
                     "{id}: the page of {address:#x} changed before the hook: {touches:?} {}",
@@ -695,7 +697,7 @@ fn an_access_that_ends_before_a_watched_page_does_not_announce_it() {
             let touches = touches.lock().unwrap();
             let addresses: Vec<u64> = touches.iter().map(|touch| touch.1).collect();
             assert_eq!(addresses, expected, "seed {seed}, page {page}: {touches:?}");
-            assert!(touches.iter().all(|touch| touch.2 == Access::Write));
+            assert!(touches.iter().all(|touch| touch.2 == AccessKind::Write));
         }
     }
 }
@@ -706,23 +708,23 @@ struct NextPage(u64, Touches);
 impl Hooks for NextPage {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            process.memory_take_dirty();
-            process.memory_watch(page_of(BUFFER + self.0 * PAGE_SIZE), Watch::Writes);
+            process.take_dirty_memory();
+            process.watch_memory(page_of(BUFFER + self.0 * PAGE_SIZE), WatchesFor::Writes);
         }
     }
 
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
         _: TaskId,
         address: u64,
-        access: Access,
+        access: AccessKind,
     ) {
         self.1
             .lock()
             .unwrap()
             .push((process.id().0, address, access, true));
-        process.memory_watch(page_of(address), Watch::None);
+        process.watch_memory(page_of(address), WatchesFor::None);
     }
 }
 
@@ -732,13 +734,13 @@ struct Changes(Arc<Mutex<Vec<std::ops::Range<u64>>>>);
 impl Hooks for Changes {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            process.memory_take_dirty();
+            process.take_dirty_memory();
         }
     }
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            *self.0.lock().unwrap() = process.memory_take_dirty();
+            *self.0.lock().unwrap() = process.take_dirty_memory();
         }
     }
 }
@@ -774,8 +776,8 @@ struct VastWatch(Arc<Mutex<Vec<Duration>>>);
 impl Hooks for VastWatch {
     fn on_program_starting(&mut self, mut process: Process<'_>) {
         let started = std::time::Instant::now();
-        process.memory_watch(0..VAST, Watch::Writes);
-        process.memory_watch(0..VAST, Watch::None);
+        process.watch_memory(0..VAST, WatchesFor::Writes);
+        process.watch_memory(0..VAST, WatchesFor::None);
         self.0.lock().unwrap().push(started.elapsed());
     }
 }
@@ -822,37 +824,37 @@ impl Hooks for Lazy {
     fn on_program_starting(&mut self, mut process: Process<'_>) {
         let mut saved = BTreeMap::new();
         let zeros = vec![0; PAGE_SIZE as usize];
-        for range in process.memory_take_dirty() {
+        for range in process.take_dirty_memory() {
             for page in (range.start..range.end).step_by(PAGE_SIZE as usize) {
                 let bytes = process
-                    .memory_read(page..page + PAGE_SIZE)
+                    .read_memory(page..page + PAGE_SIZE)
                     .expect("a mapped page");
-                process.memory_write(page, &zeros).expect("a mapped page");
+                process.write_memory(page, &zeros).expect("a mapped page");
                 saved.insert(page, bytes);
             }
-            process.memory_watch(range, Watch::All);
+            process.watch_memory(range, WatchesFor::All);
         }
         self.saved.insert(process.id().0, Arc::new(saved));
     }
 
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
         _: TaskId,
         address: u64,
-        _: Access,
+        _: AccessKind,
     ) {
         let page = page_of(address);
         let saved = &self.saved[&process.id().0];
         let bytes = &saved[&page.start];
-        let now = process.memory_read(page.clone()).expect("a mapped page");
+        let now = process.read_memory(page.clone()).expect("a mapped page");
         if now.iter().any(|byte| *byte != 0) {
             self.written_past.lock().unwrap().push(page.start);
         }
         process
-            .memory_write(page.start, bytes)
+            .write_memory(page.start, bytes)
             .expect("a mapped page");
-        process.memory_watch(page, Watch::None);
+        process.watch_memory(page, WatchesFor::None);
         *self.filled.lock().unwrap() += 1;
     }
 }
@@ -928,7 +930,7 @@ const MOVED_TO: u64 = BUFFER + 2 * PAGES * PAGE_SIZE;
 #[derive(Default)]
 struct Moves {
     saved: BTreeMap<u64, Vec<u8>>,
-    touches: Arc<Mutex<Vec<(u64, Access)>>>,
+    touches: Arc<Mutex<Vec<(u64, AccessKind)>>>,
     changed: Arc<Mutex<Vec<std::ops::Range<u64>>>>,
 }
 
@@ -937,40 +939,43 @@ impl Hooks for Moves {
         if process.info().parent().is_none() {
             return;
         }
-        process.memory_take_dirty();
+        process.take_dirty_memory();
         let zeros = vec![0; PAGE_SIZE as usize];
         for index in (0..MOVED - 1).chain([MOVED]) {
             let page = page_of(BUFFER + index * PAGE_SIZE);
-            let bytes = process.memory_read(page.clone()).expect("the buffer");
+            let bytes = process.read_memory(page.clone()).expect("the buffer");
             process
-                .memory_write(page.start, &zeros)
+                .write_memory(page.start, &zeros)
                 .expect("the buffer");
-            process.memory_watch(page.clone(), Watch::All);
+            process.watch_memory(page.clone(), WatchesFor::All);
             self.saved.insert(page.start, bytes);
         }
-        process.memory_watch(page_of(BUFFER + (MOVED - 1) * PAGE_SIZE), Watch::Writes);
+        process.watch_memory(
+            page_of(BUFFER + (MOVED - 1) * PAGE_SIZE),
+            WatchesFor::Writes,
+        );
     }
 
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
         _: TaskId,
         address: u64,
-        access: Access,
+        access: AccessKind,
     ) {
         self.touches.lock().unwrap().push((address, access));
         let page = page_of(address);
         if let Some(bytes) = self.saved.remove(&page.start) {
             process
-                .memory_write(page.start, &bytes)
+                .write_memory(page.start, &bytes)
                 .expect("a watched page");
         }
-        process.memory_watch(page, Watch::None);
+        process.watch_memory(page, WatchesFor::None);
     }
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            *self.changed.lock().unwrap() = process.memory_take_dirty();
+            *self.changed.lock().unwrap() = process.take_dirty_memory();
         }
     }
 }
@@ -994,11 +999,11 @@ fn watches_and_the_record_follow_pages_moved_or_dropped() {
         // The move reads the lazy pages where they are; the page watched for writes goes along
         // and its write is met where it landed; dropping a lazy page is met as a write.
         let page = |base: u64, index: u64| base + index * PAGE_SIZE;
-        let mut expected: Vec<(u64, Access)> = (0..MOVED - 1)
-            .map(|index| (page(BUFFER, index), Access::Read))
+        let mut expected: Vec<(u64, AccessKind)> = (0..MOVED - 1)
+            .map(|index| (page(BUFFER, index), AccessKind::Read))
             .collect();
-        expected.push((page(MOVED_TO, MOVED - 1), Access::Write));
-        expected.push((page(BUFFER, MOVED), Access::Write));
+        expected.push((page(MOVED_TO, MOVED - 1), AccessKind::Write));
+        expected.push((page(BUFFER, MOVED), AccessKind::Write));
         assert_eq!(*touches.lock().unwrap(), expected, "seed {seed}");
         // Written since the child started: every moved page where it landed, and the dropped one.
         let watched = BUFFER..page(MOVED_TO, MOVED);
@@ -1021,7 +1026,7 @@ struct SharedWrite(u64, Arc<Mutex<Vec<Result<(), MemoryError>>>>);
 impl Hooks for SharedWrite {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            let result = process.memory_write(self.0, b"y");
+            let result = process.write_memory(self.0, b"y");
             self.1.lock().unwrap().push(result);
         }
     }
@@ -1052,7 +1057,7 @@ fn a_read_only_shared_page_is_not_written_by_the_embedder() {
 #[derive(Default)]
 struct Attributes {
     saved: BTreeMap<u64, Vec<u8>>,
-    touches: Arc<Mutex<Vec<(u64, Access)>>>,
+    touches: Arc<Mutex<Vec<(u64, AccessKind)>>>,
     changed: Arc<Mutex<Vec<Vec<u64>>>>,
 }
 
@@ -1061,32 +1066,32 @@ impl Hooks for Attributes {
         if process.info().parent().is_none() {
             return;
         }
-        process.memory_take_dirty();
+        process.take_dirty_memory();
         let lazy = page_of(BUFFER + PAGE_SIZE);
-        let bytes = process.memory_read(lazy.clone()).expect("the buffer");
+        let bytes = process.read_memory(lazy.clone()).expect("the buffer");
         process
-            .memory_write(lazy.start, &vec![0; PAGE_SIZE as usize])
+            .write_memory(lazy.start, &vec![0; PAGE_SIZE as usize])
             .expect("the buffer");
-        process.memory_watch(lazy.clone(), Watch::All);
+        process.watch_memory(lazy.clone(), WatchesFor::All);
         self.saved.insert(lazy.start, bytes);
-        process.memory_watch(page_of(BUFFER + 2 * PAGE_SIZE), Watch::Writes);
+        process.watch_memory(page_of(BUFFER + 2 * PAGE_SIZE), WatchesFor::Writes);
     }
 
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
         _: TaskId,
         address: u64,
-        access: Access,
+        access: AccessKind,
     ) {
         let page = page_of(address);
         self.touches.lock().unwrap().push((page.start, access));
         if let Some(bytes) = self.saved.remove(&page.start) {
             process
-                .memory_write(page.start, &bytes)
+                .write_memory(page.start, &bytes)
                 .expect("a watched page");
         }
-        process.memory_watch(page, Watch::None);
+        process.watch_memory(page, WatchesFor::None);
     }
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
@@ -1094,7 +1099,7 @@ impl Hooks for Attributes {
             return;
         }
         let written = process
-            .memory_take_dirty()
+            .take_dirty_memory()
             .into_iter()
             .flat_map(|range| (range.start..range.end).step_by(PAGE_SIZE as usize))
             .filter(|page| buffer().contains(page))
@@ -1135,11 +1140,11 @@ fn watches_and_the_record_stay_through_attribute_changes() {
         assert_eq!(stdout(&run), output, "seed {seed}");
         // Every child meets the lazy page's watch at its read and the other at its write, after
         // the change; its record holds the page written before the change and the two after.
-        let expected: Vec<(u64, Access)> = (0..count)
+        let expected: Vec<(u64, AccessKind)> = (0..count)
             .flat_map(|_| {
                 [
-                    (BUFFER + PAGE_SIZE, Access::Read),
-                    (BUFFER + 2 * PAGE_SIZE, Access::Write),
+                    (BUFFER + PAGE_SIZE, AccessKind::Read),
+                    (BUFFER + 2 * PAGE_SIZE, AccessKind::Write),
                 ]
             })
             .collect();
@@ -1219,17 +1224,17 @@ struct WatchAtExit;
 
 impl Hooks for WatchAtExit {
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
-        process.memory_watch(buffer(), Watch::Writes);
+        process.watch_memory(buffer(), WatchesFor::Writes);
     }
 
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
         _: TaskId,
         address: u64,
-        _: Access,
+        _: AccessKind,
     ) {
-        process.memory_watch(page_of(address), Watch::None);
+        process.watch_memory(page_of(address), WatchesFor::None);
     }
 }
 
@@ -1264,30 +1269,30 @@ fn a_watch_set_as_a_process_exits_changes_nothing_the_program_sees() {
 struct Chaser {
     later: bool,
     pending: Vec<(TaskId, u64)>,
-    touches: Arc<Mutex<Vec<(u64, Access)>>>,
+    touches: Arc<Mutex<Vec<(u64, AccessKind)>>>,
 }
 
 impl Chaser {
     fn chase(process: &mut Process<'_>, address: u64) {
         let page = page_of(address);
-        process.memory_watch(page.clone(), Watch::None);
-        process.memory_watch(page.end..page.end + PAGE_SIZE, Watch::All);
+        process.watch_memory(page.clone(), WatchesFor::None);
+        process.watch_memory(page.end..page.end + PAGE_SIZE, WatchesFor::All);
     }
 }
 
 impl Hooks for Chaser {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            process.memory_watch(page_of(BUFFER + PAGE_SIZE), Watch::Writes);
+            process.watch_memory(page_of(BUFFER + PAGE_SIZE), WatchesFor::Writes);
         }
     }
 
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &mut self,
         mut process: Process<'_>,
         _: TaskId,
         address: u64,
-        access: Access,
+        access: AccessKind,
     ) {
         self.touches
             .lock()
@@ -1334,9 +1339,9 @@ fn a_watch_raised_behind_a_calls_walk_is_met_before_the_call_acts() {
             assert_eq!(
                 *touches.lock().unwrap(),
                 [
-                    (page(1), Access::Write),
-                    (page(2), Access::Write),
-                    (page(3), Access::Write)
+                    (page(1), AccessKind::Write),
+                    (page(2), AccessKind::Write),
+                    (page(3), AccessKind::Write)
                 ],
                 "seed {seed}, later {later}"
             );
@@ -1348,5 +1353,155 @@ fn a_watch_raised_behind_a_calls_walk_is_met_before_the_call_acts() {
                 assert_eq!(counted(&run, counter), 0, "{counter}: {:?}", run.counters);
             }
         }
+    }
+}
+
+/// What the kernel was announced writing: the process, the thread, the range.
+type Written = Arc<Mutex<Vec<(u32, u32, std::ops::Range<u64>)>>>;
+
+/// Records what the kernel wrote in each child.
+#[derive(Default)]
+struct KernelWrites {
+    children: BTreeSet<u32>,
+    written: Written,
+}
+
+impl Hooks for KernelWrites {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        if process.info().parent().is_some() {
+            self.children.insert(process.id().0);
+        }
+    }
+
+    fn on_memory_written_by_kernel(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        range: std::ops::Range<u64>,
+    ) {
+        if self.children.contains(&process.id().0) {
+            (self.written.lock().unwrap()).push((process.id().0, thread.0, range));
+        }
+    }
+}
+
+#[test]
+fn the_kernels_writes_are_announced_exactly() {
+    const LENGTH: u64 = 10;
+    let at = BUFFER + PAGE_SIZE + 64;
+    let time = BUFFER + 2 * PAGE_SIZE + size_of::<u64>() as u64;
+    let word = |index: u64| {
+        let start = BUFFER + 3 * PAGE_SIZE + index * size_of::<u32>() as u64;
+        start..start + size_of::<u32>() as u64
+    };
+    let length = LENGTH.to_string();
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let hooks = KernelWrites::default();
+        let written = hooks.written.clone();
+        let run = run_embedder_below(
+            &["kernelwrites", &length],
+            Some(Box::new(hooks)),
+            seed,
+            None,
+        );
+        assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
+        let written = written.lock().unwrap();
+        // Each was written for a thread of the process it went to, a process of its own.
+        assert!(written.iter().all(|(process, thread, _)| process == thread));
+        // Then the signal's frame, on the alternate stack.
+        let stack = BUFFER + 4 * PAGE_SIZE..BUFFER + 6 * PAGE_SIZE;
+        let fixed = written.len().min(5);
+        assert!(
+            written.len() > fixed
+                && written[fixed..].iter().all(|(_, _, range)| {
+                    stack.start <= range.start && range.start < range.end && range.end <= stack.end
+                }),
+            "seed {seed}: {written:?}"
+        );
+        let processes: Vec<u32> = written[..fixed].iter().map(|write| write.0).collect();
+        let ranges: Vec<std::ops::Range<u64>> = written[..fixed]
+            .iter()
+            .map(|write| write.2.clone())
+            .collect();
+        assert_eq!(
+            ranges,
+            [
+                at..at + LENGTH,
+                time..time + size_of::<general::__kernel_timespec>() as u64,
+                word(0),
+                word(1),
+                word(2),
+            ],
+            "seed {seed}: {written:?}"
+        );
+        // The child's own, then its vfork child's end, then the killed sharer's end; the frame is
+        // the child's.
+        assert!(written[fixed..].iter().all(|write| write.0 == processes[0]));
+        let [child, _, _, vforked, sharer] = processes[..] else {
+            panic!("seed {seed}: {written:?}");
+        };
+        assert_eq!(
+            processes,
+            [child, child, child, vforked, sharer],
+            "seed {seed}"
+        );
+        assert!(child != vforked && child != sharer && vforked != sharer);
+    }
+}
+
+/// Answers getpid itself, makes every write to standard output one byte shorter, and changes
+/// getuid's answer.
+struct Proxy;
+
+/// What the proxy answers for getpid and getuid.
+const PROXY_PID: u64 = 4242;
+const PROXY_UID: u64 = 77;
+
+impl Hooks for Proxy {
+    fn intercept_system_call_request(
+        &mut self,
+        _: Process<'_>,
+        _: TaskId,
+        mut request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        match u32::try_from(request.number) {
+            Ok(general::__NR_getpid) => return ControlFlow::Break(Ok(PROXY_PID)),
+            Ok(general::__NR_write)
+                if request.arguments[0] == u64::from(general::STDOUT_FILENO) =>
+            {
+                request.arguments[2] -= 1;
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn intercept_system_call_response(
+        &mut self,
+        _: Process<'_>,
+        _: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        if request.number == u64::from(general::__NR_getuid) {
+            assert_eq!(response, Ok(0));
+            return Ok(PROXY_UID);
+        }
+        response
+    }
+}
+
+#[test]
+fn the_embedder_answers_and_changes_system_calls() {
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let plain = run_embedder_below(&["proxy"], None, seed, None);
+        let pid = stdout(&plain);
+        assert!(pid.starts_with("pid 1\nuid 0\n"), "{pid}");
+        let run = run_embedder("proxy", Box::new(Proxy), seed);
+        assert_eq!(
+            stdout(&run),
+            format!("pid {PROXY_PID}uid {PROXY_UID}"),
+            "seed {seed}"
+        );
     }
 }

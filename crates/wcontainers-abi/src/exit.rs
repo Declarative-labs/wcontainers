@@ -2,11 +2,19 @@
 
 use crate::ThreadId;
 
-/// One system call as the guest made it: the number from x8 and the six raw values from x0 to x5.
+/// How many argument registers a system call has on arm64 and x86-64: x0 to x5, and rdi, rsi,
+/// rdx, r10, r8, r9 (<https://man7.org/linux/man-pages/man2/syscall.2.html>).
+pub const SYSTEM_CALL_ARGUMENT_COUNT: usize = 6;
+
+/// The register that holds a system call's number on arm64, x8
+/// (<https://man7.org/linux/man-pages/man2/syscall.2.html>); its arguments are x0 onwards.
+pub const SYSTEM_CALL_NUMBER_REGISTER: usize = 8;
+
+/// One system call as the guest made it: the number from x8 and the raw values from x0 to x5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Syscall {
+pub struct SystemCallRequest {
     pub number: u64,
-    pub arguments: [u64; 6],
+    pub arguments: [u64; SYSTEM_CALL_ARGUMENT_COUNT],
 }
 
 /// What a memory access was trying to do.
@@ -23,7 +31,7 @@ pub enum Access {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
     /// The guest ran a system call instruction. `pc` is the instruction after it.
-    Syscall(Syscall),
+    Syscall(SystemCallRequest),
     /// The stop flag was raised. The CPU side has already cleared it.
     Stop,
     /// An access the page's permissions do not allow. `pc` is the instruction that tried.

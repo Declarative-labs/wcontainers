@@ -19,6 +19,12 @@
 //     writes the second and the third.
 //   spend BYTES: in a child, maps BYTES, spends some CPU time and prints the process's, in
 //     seconds and nanoseconds.
+//   kernelwrites LENGTH: in a child, by raw calls, reads LENGTH bytes from a pipe into the buffer's
+//     second page and the monotonic time into its third; then, in its fourth, has the kernel
+//     store a vfork child's number for it and clear the word of the child as it ends, and the
+//     word of a memory sharer it kills; then takes a signal on an alternate stack in its fifth
+//     and sixth; then ends.
+//   proxy: prints its process id and its user id, each by raw calls and one write.
 //   scatter: in a child, receives the first of two datagrams with recvfrom into the buffer's
 //     second page, its address into the third and the address's length from the fourth, then
 //     the second datagram, and prints both.
@@ -827,6 +833,44 @@ static int scatter(void) {
     return WEXITSTATUS(status);
 }
 
+static void on_frame_signal(int signal) { (void)signal; }
+
+static int kernel_writes(long length) {
+    int ends[2];
+    if (pipe(ends)) return 1;
+    char *bytes = malloc(length);
+    memset(bytes, 'k', length);
+    write(ends[1], bytes, length);
+    pid_t child = fork();
+    if (child == 0) {
+        syscall(SYS_read, ends[0], AT, length);
+        syscall(SYS_clock_gettime, CLOCK_MONOTONIC, buffer + 2 * page + sizeof(long));
+        int *words = (int *)(buffer + 3 * page);
+        clone_child(CLONE_VM | CLONE_VFORK | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID, &words[0],
+                    &words[1]);
+        long sharer = clone_waiting_sharer(&words[2]);
+        kill(sharer, SIGKILL);
+        waitpid(sharer, NULL, 0);
+        stack_t stack = {.ss_sp = buffer + 4 * page, .ss_size = 2 * page};
+        syscall(SYS_sigaltstack, &stack, NULL);
+        struct sigaction action = {.sa_handler = on_frame_signal, .sa_flags = SA_ONSTACK};
+        sigaction(SIGUSR1, &action, NULL);
+        syscall(SYS_tgkill, syscall(SYS_getpid), syscall(SYS_gettid), SIGUSR1);
+        syscall(SYS_exit_group, 0);
+    }
+    waitpid(child, NULL, 0);
+    return 0;
+}
+
+static int proxy(void) {
+    char line[64];
+    int length = snprintf(line, sizeof line, "pid %ld\n", syscall(SYS_getpid));
+    syscall(SYS_write, STDOUT_FILENO, line, length);
+    length = snprintf(line, sizeof line, "uid %ld\n", syscall(SYS_getuid));
+    syscall(SYS_write, STDOUT_FILENO, line, length);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) return 2;
     buffer = (char *)strtoul(argv[2], NULL, 0);
@@ -851,5 +895,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "attributes")) return attributes();
     if (!strcmp(mode, "spend") && argc > 4) return spend(strtol(argv[4], NULL, 0));
     if (!strcmp(mode, "scatter")) return scatter();
+    if (!strcmp(mode, "kernelwrites") && argc > 4) return kernel_writes(strtol(argv[4], NULL, 0));
+    if (!strcmp(mode, "proxy")) return proxy();
     return 2;
 }

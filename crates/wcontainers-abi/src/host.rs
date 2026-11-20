@@ -107,11 +107,11 @@ pub trait Host {
     fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 
     /// Bytes out of an end, never more than the credit the embedder gave on it.
-    fn stream_send(&self, end: End, bytes: &[u8]);
+    fn send_stream(&self, end: End, bytes: &[u8]);
     /// The embedder may send this many more bytes on an end (added to what it may send already).
-    fn stream_credit(&self, end: End, bytes: u64);
+    fn credit_stream(&self, end: End, bytes: u64);
     /// The kernel sends nothing more on an end, data or credit; the embedder frees it by closing it.
-    fn stream_close(&self, end: End);
+    fn close_stream(&self, end: End);
 
     /// Start connecting to an outside address (4 or 16 bytes) and port. The result arrives as
     /// [`Event::Connected`]. `stream` is true for TCP and false for UDP. A UDP connection may be

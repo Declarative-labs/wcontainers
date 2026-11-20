@@ -680,7 +680,8 @@ impl Kernel {
             cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
             registers.pc -= 4;
             if code == Errno::ERESTART_RESTARTBLOCK {
-                registers.x[8] = u64::from(__NR_restart_syscall);
+                registers.x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER] =
+                    u64::from(__NR_restart_syscall);
             }
             cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
             resume = Resume::FromRegisters;
@@ -1176,7 +1177,7 @@ impl Kernel {
                 &mut memory,
                 at,
                 top - at,
-                crate::system::Access::Write,
+                crate::system::AccessKind::Write,
             ) {
                 return false;
             }
@@ -1199,7 +1200,7 @@ impl Kernel {
     /// Meets the embedder's watches on what `rseq_fixup` touches; false if the thread must wait.
     fn rseq_touched(&mut self, cx: &mut Context<'_>, tid: Tid) -> bool {
         use crate::syscall::touch::Memory;
-        use crate::system::Access::{Read, Write};
+        use crate::system::AccessKind::{Read, Write};
         let Some((area, _, _)) = self.threads[&tid].rseq else {
             return true;
         };
@@ -1248,7 +1249,7 @@ impl Kernel {
         address: u64,
         access: Access,
     ) -> bool {
-        use crate::system::Watch;
+        use crate::system::WatchesFor;
         let pid = self.threads[&tid].process;
         // The fault names an access's first byte; the access reached into the next page only when
         // the CPU side allows it all of the first.
@@ -1263,20 +1264,23 @@ impl Kernel {
                 || map.readable_whole(page..page + wcontainers_abi::PAGE_SIZE)
                     == Err(crate::system::MemoryError::NotRead);
             match map.watches.watch_at(address) {
-                Watch::None if !held_here => (map.watches.watch_at(last), last, false),
+                WatchesFor::None if !held_here => (map.watches.watch_at(last), last, false),
                 watch => (watch, address, true),
             }
         };
         // A page whose reading the CPU side allows faults only on a write, whatever the CPU side
         // calls it (an atomic's read and write in one).
         let touch = match (access, watch) {
-            (Access::Read, Watch::Writes) | (Access::Write, _) => crate::system::Access::Write,
-            (Access::Read | Access::Execute, _) => crate::system::Access::Read,
+            (Access::Read, WatchesFor::Writes) | (Access::Write, _) => {
+                crate::system::AccessKind::Write
+            }
+            (Access::Read, _) => crate::system::AccessKind::Read,
+            (Access::Execute, _) => crate::system::AccessKind::Execute,
         };
         let watched = match watch {
-            Watch::All => true,
-            Watch::Writes => touch == crate::system::Access::Write,
-            Watch::None => false,
+            WatchesFor::All => true,
+            WatchesFor::Writes => touch == crate::system::AccessKind::Write,
+            WatchesFor::None => false,
         };
         if watched {
             if self.watch_touched(cx, tid, at, touch) {

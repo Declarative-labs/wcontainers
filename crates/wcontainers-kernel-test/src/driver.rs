@@ -1,15 +1,18 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
+use std::ops::{ControlFlow, Range};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, End, Event, Host, HostError, Next, Warning,
+    BackendRequestId, ConnectionId, CounterReading, End, Event, Host, HostError, Next,
+    SystemCallRequest, Warning,
 };
 use wcontainers_kernel::{
-    Access, Errno, ExecutionConfig, FileRecord, Kernel, Process, Start, System, TaskId,
+    AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, Process, Start, System,
+    SystemCallResponse, TaskId,
 };
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
@@ -245,14 +248,35 @@ impl<H> TestHost<H> {
     }
 }
 
-impl System for TestHost {}
+impl System for TestHost {
+    fn free_task_id(&self, _: TaskId) {}
+}
 
 impl System for TestHost<Box<dyn Hooks>> {
-    fn task_id_allocate(&self, previous: TaskId) -> TaskId {
-        self.hooks().task_id_allocate(previous)
+    fn allocate_task_id(&self, previous: TaskId) -> TaskId {
+        self.hooks().allocate_task_id(previous)
     }
-    fn task_id_free(&self, id: TaskId) {
-        self.hooks().task_id_free(id);
+    fn free_task_id(&self, id: TaskId) {
+        self.hooks().free_task_id(id);
+    }
+    fn intercept_system_call_request(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        self.hooks()
+            .intercept_system_call_request(process, thread, request)
+    }
+    fn intercept_system_call_response(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        self.hooks()
+            .intercept_system_call_response(process, thread, request, response)
     }
     fn on_process_starting(&self, process: Process<'_>) {
         self.hooks().on_process_starting(process);
@@ -269,15 +293,19 @@ impl System for TestHost<Box<dyn Hooks>> {
     fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
         self.hooks().on_process_outgrown(process, bytes);
     }
-    fn on_memory_accessing(
+    fn on_watched_memory_accessing(
         &self,
         process: Process<'_>,
         thread: TaskId,
         address: u64,
-        access: Access,
+        kind: AccessKind,
     ) {
         self.hooks()
-            .on_memory_accessing(process, thread, address, access);
+            .on_watched_memory_accessing(process, thread, address, kind);
+    }
+    fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
+        self.hooks()
+            .on_memory_written_by_kernel(process, thread, range);
     }
 }
 
@@ -326,15 +354,15 @@ impl<H> Host for TestHost<H> {
         Ok(())
     }
 
-    fn stream_send(&self, end: End, bytes: &[u8]) {
+    fn send_stream(&self, end: End, bytes: &[u8]) {
         self.locked().streams.send(end, bytes);
     }
 
-    fn stream_credit(&self, end: End, bytes: u64) {
+    fn credit_stream(&self, end: End, bytes: u64) {
         self.locked().streams.credit(end, bytes);
     }
 
-    fn stream_close(&self, end: End) {
+    fn close_stream(&self, end: End) {
         self.locked().streams.close(end);
     }
 

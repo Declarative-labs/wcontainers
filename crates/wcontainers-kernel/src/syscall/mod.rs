@@ -35,7 +35,7 @@ pub(crate) mod touch;
 pub(crate) mod tty;
 mod xattr;
 
-use wcontainers_abi::Syscall;
+use wcontainers_abi::SystemCallRequest;
 
 pub(crate) use xattr::CAPABILITY;
 
@@ -397,7 +397,7 @@ pub(crate) fn dispatch(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    call: Syscall,
+    call: SystemCallRequest,
     again: bool,
 ) -> Outcome {
     // ARM64 Linux takes the call number from the low 32 bits of x8 only.
@@ -457,6 +457,9 @@ pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Ti
         map: &process.map,
         limits: &process.limits,
         may_lock_any,
+        pid: process.pid,
+        tid,
+        written: &kernel.kernel_writes,
     }
 }
 

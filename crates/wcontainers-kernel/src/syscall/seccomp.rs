@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{RegisterBlock, Syscall};
+use wcontainers_abi::{RegisterBlock, SystemCallRequest};
 use zerocopy::{FromBytes, FromZeros};
 
 use super::{Args, Outcome, guest};
@@ -194,7 +194,7 @@ pub(super) fn filter_call(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    call: &Syscall,
+    call: &SystemCallRequest,
     docker: Option<Errno>,
 ) -> Option<Outcome> {
     let thread = &kernel.threads[&tid];

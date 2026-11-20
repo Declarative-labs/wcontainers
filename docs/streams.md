@@ -12,10 +12,10 @@ the embedder holds. Names below marked (suggested) are for the owner to rule on.
   the kernel will name the ones it makes later (connect, accept, import), from numbers no live end
   has. An end made at start is the same kind of thing those will be.
 - On `Host`, kernel to embedder:
-  - `stream_send(end, bytes)`: data, never more than the credit the embedder has given.
-  - `stream_credit(end, bytes: u64)`: the embedder may send this many more bytes (added, not a
+  - `send_stream(end, bytes)`: data, never more than the credit the embedder has given.
+  - `credit_stream(end, bytes: u64)`: the embedder may send this many more bytes (added, not a
     total).
-  - `stream_close(end)`: the kernel sends nothing more on this end, data or credit.
+  - `close_stream(end)`: the kernel sends nothing more on this end, data or credit.
 - Events, embedder to kernel:
   - `Event::StreamData { end, bytes }` (suggested): data, never more than the kernel's credit.
   - `Event::StreamCredit { end, bytes: u64 }` (suggested): the kernel may send this many more.

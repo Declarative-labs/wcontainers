@@ -12,7 +12,7 @@ use linux_raw_sys::general as linux;
 use linux_raw_sys::ioctl;
 use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
-use wcontainers_abi::{Event, Exit, Next, Syscall};
+use wcontainers_abi::{Event, Exit, Next, SystemCallRequest};
 use wcontainers_kernel::{Kernel, Start};
 
 use crate::buffer::BufferCpu;
@@ -4489,7 +4489,7 @@ fn run_ours_on(
         kernel.exit(
             cpu,
             host,
-            Exit::Syscall(Syscall {
+            Exit::Syscall(SystemCallRequest {
                 number: call.number.into(),
                 arguments: call.arguments,
             }),
@@ -4506,7 +4506,7 @@ fn run_ours_on(
                     kernel.exit(
                         cpu,
                         host,
-                        Exit::Syscall(Syscall {
+                        Exit::Syscall(SystemCallRequest {
                             number: linux::__NR_exit_group.into(),
                             arguments: [CHILD_STATUS, 0, 0, 0, 0, 0],
                         }),

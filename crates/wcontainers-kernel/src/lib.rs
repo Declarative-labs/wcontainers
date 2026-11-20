@@ -47,8 +47,8 @@ pub use counters::reason;
 pub use ends::Standard;
 pub use errno::Errno;
 pub use system::{
-    Access, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism, System, TaskId,
-    ThreadOrdering, Unsupported, Watch, task_id_after,
+    AccessKind, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism, System,
+    SystemCallResponse, TaskId, ThreadOrdering, Unsupported, WatchesFor, task_id_after,
 };
 
 use counters::Counters;
@@ -161,6 +161,8 @@ pub struct Kernel {
     /// threads end of it on their way back to the program, once the kernel's stores at the end
     /// have met the watches (`SIGNAL_GROUP_EXIT`).
     dying: BTreeMap<Pid, u32>,
+    /// What the kernel wrote into processes' memory and has not yet told the embedder.
+    kernel_writes: core::cell::RefCell<Vec<system::KernelWrite>>,
     /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
     /// host whose clock reads differently.
     monotonic_offset: u64,
@@ -261,6 +263,7 @@ impl Kernel {
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             dying: BTreeMap::new(),
+            kernel_writes: Default::default(),
             monotonic_offset: 0,
             wall_offset: 0,
             entry_now: 0,
@@ -431,7 +434,7 @@ impl Kernel {
             }
             Event::StreamCredit { end, bytes } => {
                 self.entry_now = cx.monotonic();
-                self.stream_credit(&mut cx, end, bytes);
+                self.credit_stream(&mut cx, end, bytes);
                 self.settle(&mut cx);
                 return;
             }
@@ -573,7 +576,7 @@ impl Kernel {
     /// number has been tried.
     fn allocate_id(&mut self, cx: &mut Context<'_>) -> Result<i32, Errno> {
         for _ in RESERVED_PIDS..PID_MAX {
-            let id = cx.host.task_id_allocate(TaskId::of(self.last_id)).pid();
+            let id = cx.host.allocate_task_id(TaskId::of(self.last_id)).pid();
             if !(1..PID_MAX).contains(&id) {
                 return Err(self.counters.refuse(
                     cx.host,
@@ -609,7 +612,7 @@ impl Kernel {
         ids.dedup();
         for id in ids {
             if self.finished.is_some() || !self.carried(id) {
-                cx.host.task_id_free(TaskId::of(id));
+                cx.host.free_task_id(TaskId::of(id));
             }
         }
     }
