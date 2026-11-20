@@ -87,9 +87,12 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   (`lar`, `lsl`, `verr`, `verw`, `sldt`, `str`, `smsw`, `sgdt`, `sidt`), each checked at 1,000 a form against
   the i7-8750H (see "X5, run 4"): 976 of the 1,295 have layer 1 forms. Left: the segment register and
   far-transfer group, and the rest of the bar. Run 5 (2026-11-19, restarted once) wrote the segment register
-  and far-transfer group, ran layer 3 Csmith at 1,000, built and ran layer 1's list of unoffered forms (2,993
-  forms, every encoding), measured the not-a-number probe on x86 and ARM hosts and the passed-register lists,
-  and ran every default form on the i7-8750H (see "X5, run 5"). Left: see "X5, run 5", "What comes next".
+  and far-transfer group, ran layer 3 Csmith at 1,000 (0 failing), built and ran layer 1's list of unoffered
+  forms (2,992 forms, every encoding, 0 failing at 100 a form), measured the not-a-number probe on x86 and ARM
+  hosts and the passed-register lists, fixed `wbnoinvd`, and ran every default form on the i7-8750H at 1,000
+  a form with 0 failing (see "X5, run 5"). The bar's layer 1 and layer 3 parts hold. Left: the faster
+  passed-register lists wait on a translator bug at bounded look-ahead (X6), and the ARM64 layer 1 tests on
+  the Mac.
 
 ## X5, run 5 (2026-11-19)
 
@@ -174,7 +177,17 @@ On the i7-8750H at 4ad0ca98 (`batch5-laptop.log`, load 0.3 to 4, 4 at once):
 - 10,000 cases in no form, seed 9332: 0 failing (30 s).
 - The Chrome sample, 3 a form, 3,189 cases, seed 9333, Chrome 158 there: 0 failing (31 s).
 - `the_x86_64_reference_refuses_what_linux_refuses` passed on the laptop in the job above (`l1-all1-laptop.log`).
-The whole default list and the unoffered list once more after the last changes: running at the time of writing.
+Every default form once more at 17730368, after the last change to the translator (`final5-laptop.log`):
+1,063 forms, 1,000 a form, seed 9340, 4 at once, 0 failing, 4,869 s; the laptop's load was 4 at the start
+and up to 61 during, from another project's benchmark running there. The unoffered forms again in the same
+job (seed 9341, 100 a form, 913 s): 2,992 forms (`wbnoinvd` now decodes as `wbinvd`), 0 failing; of the
+forms the reference has it ran 71,400 cases and refused none.
+
+So X5's pass bar holds by these runs: layer 1 for the default forms at 1,000 a form with 0 failing (seed 9340),
+the unoffered forms at 100 a form with 0 failing (seed 9341), layer 3 Csmith at 1,000 programs with 0 failing
+(seed 5502), and the reciprocal formula against all 2^32 inputs (run 3). Not done: the passed-register lists
+are measured but the faster ones wait on a translator fix (X6), and the ARM64 layer 1 tests were not run on
+the Mac after this run's change to the shared layer 1 runner.
 
 The suite at 4ad0ca98 on the rented x86-64 machine (load 8 to 55, shared, 2,714 s, `suite-run5.log`; run 4's
 command with `wcontainers-arm64` linted too): clippy with warnings denied passes; 31 tests fail, all
