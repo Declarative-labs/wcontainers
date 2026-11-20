@@ -48,6 +48,10 @@ Runs at the tip:
   absent.
 - Literal check on the desktop (check.txt): passes, printing no line to add or delete. This
   crate's baseline lines (src, build.rs, tests/*.rs, examples): 585, as at run 58.
+- Clean-up at the end: the build folders `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  on the laptop (6.2 GB), `/work/target/graphics-shaders` on the x86 machine and
+  `C:\wc\target\phase-2-graphics-shaders` on the desktop deleted; nothing built on the Mac (only
+  `cargo fmt --check`). Scratch keeps the logs and `g6a1/out` (50 MB, the files Chrome compiled).
 
 The check's findings, each against the tip:
 1. Corpus records (blocking): fixed in run 47. The records are whole verdicts under the WebGL 2 key;
