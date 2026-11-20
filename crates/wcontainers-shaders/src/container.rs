@@ -151,11 +151,28 @@ pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
 /// The fields of a DXBC instruction's first word (d3d11TokenizedProgramFormat.hpp): the opcode in its
 /// low bits, the instruction's length in words, and a control point count.
 pub mod token {
-    pub const OPCODE_MASK: u32 = 0x7ff;
+    pub const OPCODE_BITS: u32 = 11;
     pub const LENGTH_SHIFT: u32 = 24;
-    pub const LENGTH_MASK: u32 = 0x7f;
+    pub const LENGTH_BITS: u32 = 7;
     pub const CONTROL_POINTS_SHIFT: u32 = 11;
-    pub const CONTROL_POINTS_MASK: u32 = 0x3f;
+    pub const CONTROL_POINTS_BITS: u32 = 6;
+
+    fn field(word: u32, shift: u32, bits: u32) -> u32 {
+        word >> shift & ((1 << bits) - 1)
+    }
+
+    pub fn opcode(word: u32) -> u32 {
+        field(word, 0, OPCODE_BITS)
+    }
+
+    /// The instruction's length in words (but for custom data, whose length is the next word).
+    pub fn length(word: u32) -> u32 {
+        field(word, LENGTH_SHIFT, LENGTH_BITS)
+    }
+
+    pub fn control_points(word: u32) -> u32 {
+        field(word, CONTROL_POINTS_SHIFT, CONTROL_POINTS_BITS)
+    }
 }
 
 /// The tags of a DXBC program's code chunk (shader model 5 and 4).
@@ -171,13 +188,13 @@ pub(crate) fn dxbc_input_control_points(container: &[u8]) -> Option<u32> {
         .next()?;
     let mut at = size_of::<CodeHeader>();
     while let Some(word0) = word(code, at) {
-        let opcode = word0 & token::OPCODE_MASK;
+        let opcode = token::opcode(word0);
         if opcode == dxbc_op::DCL_INPUT_CONTROL_POINT_COUNT {
-            return Some(word0 >> token::CONTROL_POINTS_SHIFT & token::CONTROL_POINTS_MASK);
+            return Some(token::control_points(word0));
         }
         let length = match opcode {
             dxbc_op::CUSTOM_DATA => word(code, at + size_of::<u32>())?,
-            _ => word0 >> token::LENGTH_SHIFT & token::LENGTH_MASK,
+            _ => token::length(word0),
         };
         if length == 0 {
             return None;

@@ -241,8 +241,8 @@ fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
         .position(|&w| w == tag)
         .expect("the program chunk")
         + PROGRAM_HEADER_WORDS;
-    while words[at] & token::OPCODE_MASK != SAMPLER_DECLARATION {
-        at += ((words[at] >> token::LENGTH_SHIFT) & token::LENGTH_MASK) as usize;
+    while token::opcode(words[at]) != SAMPLER_DECLARATION {
+        at += token::length(words[at]) as usize;
     }
     let last = size_of::<u32>() * (at + LAST_REGISTER_WORD);
     b[last..last + size_of::<u32>()].copy_from_slice(&FAR_REGISTER.to_le_bytes());
@@ -282,8 +282,8 @@ fn a_globally_coherent_view_is_refused_by_name() {
         .position(|&w| w == tag)
         .expect("the program chunk")
         + PROGRAM_HEADER_WORDS;
-    while !VIEW_DECLARATIONS.contains(&(words[at] & token::OPCODE_MASK)) {
-        at += ((words[at] >> token::LENGTH_SHIFT) & token::LENGTH_MASK) as usize;
+    while !VIEW_DECLARATIONS.contains(&(token::opcode(words[at]))) {
+        at += token::length(words[at]) as usize;
     }
     let first = size_of::<u32>() * at;
     let marked = words[at] | GLOBALLY_COHERENT_BIT;
