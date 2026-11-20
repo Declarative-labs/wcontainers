@@ -544,6 +544,21 @@ Found on the way, fixed:
   of the two it is. The tree before S2 measured 4 % slower than both here, unlike the eighth
   run's comparison (+0.3 %); not explained (that tree also differs in code merged since).
 
+- Ninth run, tests: the embedder tests (20, seeds 1 to 3) on the ARM machine (scratch
+  streams/s2g/embedder-2.log, affected-1.log; the nesting checks added to the new hooks last,
+  nest.log). Clippy with warnings denied over the three crates passed on the x86 machine
+  (s2g/clippy-5.log). Whole suite on the ARM machine at a8629893's tree, before the order tests'
+  nesting checks (the command in "How to run" with `-j $ARM_JOBS`; s2g/suite-arm.log, 2139 s,
+  ending about 01:58 UTC, machine load 23 to 27): 569 passed, 27 failed, 6 ignored; the 27 are
+  by name exactly the eighth run's (the 26 of the manual's list and the literal check's
+  `the_workspace_keeps_to_its_baseline`, no git there), and every test that passed then passes
+  now, with the two new embedder tests. The 20 binaries kept on the Mac (s2g/mac-only.log, this
+  Mac, 17:29 to 18:22 Pacific, load 10 to 23): 92 passed, and in `terminal` two failed on the
+  reference's side (`splice_holds_the_pipe`: Docker's tty echoed once more, as seen before;
+  `job_control`: the reference container hung for 50 minutes and was removed); `terminal` alone
+  again passed all 10 (s2g/mac-terminal.log, 18:23, load 8). The literal check's tests passed
+  here (s2g/literals-mac.log). Combined: 602 tests, 596 passed, 6 ignored, none failed.
+
 ## Literals
 
 - Adopted at da21d326 (`init` once on this tree, version 7 of the rules): 7612 baseline lines, of
