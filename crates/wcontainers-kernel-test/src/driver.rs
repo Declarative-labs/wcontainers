@@ -480,9 +480,9 @@ pub fn exit_code(wait_status: i32) -> i32 {
     }
 }
 
-/// How many turns on the CPU side this process's runs have ended and backend answers they have
-/// taken, for a watchdog that tells a run that is slow from one stuck inside a single call or
-/// turn.
+/// How many turns on the CPU side this process's runs have ended, backend answers they have
+/// taken and steps of deadlines they have waited for, for a watchdog that tells a run that is
+/// slow from one stuck inside a single call or turn.
 pub static PROGRESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What a container starts with: its files and its first process.
@@ -916,7 +916,14 @@ impl Outside for TestHost {
         };
         let left = until.saturating_sub(self.monotonic_nanoseconds());
         if self.waits {
-            std::thread::sleep(Duration::from_nanos(left));
+            // A wait for the kernel's own deadline is no hang: it counts as progress as it goes.
+            let mut left = Duration::from_nanos(left);
+            while !left.is_zero() {
+                let step = left.min(WAIT_STEP);
+                std::thread::sleep(step);
+                left -= step;
+                PROGRESS.fetch_add(1, Ordering::Relaxed);
+            }
         } else {
             self.skipped += left;
         }
@@ -943,6 +950,9 @@ impl Outside for TestHost {
 /// draws apart from the host's own randomness.
 const SCHEDULE_SALT: u64 = 0x5eed;
 const SAVES_SALT: u64 = 0x5a7e;
+
+/// How much of a waiting host's wait for a deadline passes between its marks of progress.
+const WAIT_STEP: Duration = Duration::from_secs(1);
 
 /// The longest the driver waits for the outside when nothing else can happen.
 const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
