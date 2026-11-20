@@ -712,6 +712,41 @@ fn capability_queries_claim_only_what_creation_serves() {
                 });
             assert!(made, "format {f} with 4 samples");
         }
+        // A 1D or 3D texture claimed is made, bound for shaders where loads are claimed.
+        let shaded = if bits & D3D11_FORMAT_SUPPORT_SHADER_LOAD.0 as u32 != 0 {
+            D3D11_BIND_SHADER_RESOURCE.0 as u32
+        } else {
+            0
+        };
+        if bits & D3D11_FORMAT_SUPPORT_TEXTURE1D.0 as u32 != 0 {
+            let desc = D3D11_TEXTURE1D_DESC {
+                Width: 4,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: format,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: shaded,
+                ..Default::default()
+            };
+            let mut out = None;
+            let r = unsafe { device.CreateTexture1D(&desc, None, Some(&mut out)) };
+            assert!(r.is_ok(), "format {f} in 1D: {r:?}");
+        }
+        if bits & D3D11_FORMAT_SUPPORT_TEXTURE3D.0 as u32 != 0 {
+            let desc = D3D11_TEXTURE3D_DESC {
+                Width: 4,
+                Height: 4,
+                Depth: 4,
+                MipLevels: 1,
+                Format: format,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: shaded,
+                ..Default::default()
+            };
+            let mut out = None;
+            let r = unsafe { device.CreateTexture3D(&desc, None, Some(&mut out)) };
+            assert!(r.is_ok(), "format {f} in 3D: {r:?}");
+        }
         if bits & D3D11_FORMAT_SUPPORT_TEXTURE2D.0 as u32 == 0 {
             continue;
         }
