@@ -13,7 +13,9 @@ mod webgpu {
     use windows::Win32::Foundation::{E_INVALIDARG, HWND};
     use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::WindowsAndMessaging::{GWLP_HINSTANCE, GetWindowLongPtrW};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWLP_HINSTANCE, GetWindowLongPtrW, GetWindowThreadProcessId,
+    };
     use windows::core::{Error, Result};
 
     use wcontainers_direct3d_11::WARNING_PREFIX;
@@ -33,6 +35,13 @@ mod webgpu {
             wgpu::Instance::new(desc)
         })
     }
+
+    /// The adapter the back end was made on, which surfaces are asked about.
+    static ADAPTER: std::sync::OnceLock<wgpu::Adapter> = std::sync::OnceLock::new();
+
+    /// Refused: a swap chain on another process's window, or on one whose surface takes no format.
+    const UNPRESENTABLE_WINDOW: &str = "a swap chain on a window the back end cannot present to \
+         (another process's, or one taking no format)";
 
     /// Makes the back end on the most capable GPU `wgpu` finds through Direct3D 12, or none if there
     /// is none. Direct3D 12 is what browsers' WebGPU draws through on Windows, and it rasterises
@@ -57,7 +66,9 @@ mod webgpu {
             }
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
-        Some(Chosen::new(&adapter, device, queue))
+        let chosen = Chosen::new(&adapter, device, queue);
+        let _ = ADAPTER.set(adapter);
+        Some(chosen)
     }
 
     /// Gives `backend` the program's window `hwnd` as host window `id`.
@@ -78,9 +89,22 @@ mod webgpu {
         };
         // SAFETY: the program keeps its window while a swap chain uses it, as DXGI requires.
         let surface = unsafe { instance().create_surface_unsafe(target) }.map_err(|e| {
-            eprintln!("wcontainers direct3d 11: no surface for the window: {e}");
+            eprintln!("{WARNING_PREFIX}: no surface for the window: {e}");
             Error::from(DXGI_ERROR_INVALID_CALL)
         })?;
+        // DXGI's answer where it cannot present to the window. The back end's flip-model swap
+        // chain presents only to the process's own windows.
+        let mut owner = Default::default();
+        // SAFETY: reads which process made the window.
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+        let presents = owner == std::process::id()
+            && ADAPTER
+                .get()
+                .is_some_and(|a| !surface.get_capabilities(a).formats.is_empty());
+        if !presents {
+            eprintln!("{WARNING_PREFIX}: not served: {UNPRESENTABLE_WINDOW}");
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
         backend.add_window(id, surface);
         Ok(())
     }

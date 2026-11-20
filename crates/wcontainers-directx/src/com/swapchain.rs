@@ -13,9 +13,7 @@ use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_SHADER_RESOURCE, ID3D11Tex
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::Threading::{CreateSemaphoreW, GetCurrentProcess, ReleaseSemaphore};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetDesktopWindow, IsIconic, IsWindowVisible,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsIconic, IsWindowVisible};
 use windows::core::{
     BOOL, GUID, HRESULT, IUnknown, IUnknownImpl, Interface, OutRef, Ref, Result, implement,
 };
@@ -231,10 +229,7 @@ impl Factory_Impl {
         windowed: bool,
     ) -> Result<IDXGISwapChain1> {
         let device = our_device(device).map_err(|_| Error::from(E_INVALIDARG))?;
-        // The desktop window takes no surface the back end can configure; DXGI also answers this
-        // where it cannot present to it.
-        // SAFETY: asks for the desktop window's handle.
-        if hwnd.is_invalid() || hwnd == unsafe { GetDesktopWindow() } {
+        if hwnd.is_invalid() {
             return Err(DXGI_ERROR_INVALID_CALL.into());
         }
         if !windowed {
@@ -275,7 +270,7 @@ impl Factory_Impl {
         let mut chain = front
             .borrow_mut()
             .create_swap_chain(window, &desc, bind, waitable)
-            .map_err(hresult)?;
+            .map_err(chain_hresult)?;
         let latency_object = if waitable {
             chain
                 .set_max_latency(WAITABLE_LATENCY)
