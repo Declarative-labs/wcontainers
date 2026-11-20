@@ -6,8 +6,8 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 - Twenty-first run (15:14 UTC on the 20th on): Docker Desktop on the Mac still starts no
   container (a probe made at 15:14 UTC stayed "Created" and was removed; six of other tracks
-  stay so). The ARM64 machine is up and did all of this run's work. The Mac's part of the bar
-  (scratch kernel/k6c19/mac5.sh) waits for Docker Desktop.
+  stay so). By 18:10 UTC it started containers again (a probe ran); the Mac's part of the bar
+  (scratch kernel/k6c19/mac5.sh, log mac5.log) started then. The ARM64 machine was up all run.
 
 - Twentieth run (15:07 to about 15:20 UTC on the 20th): Docker Desktop on the Mac again starts
   no container. Every container made since 14:12 UTC stays "Created" (this track's probes of
@@ -318,8 +318,9 @@ rustversion 1.0.23 (MIT OR Apache-2.0).
 Running at 91d85e31 on the ARM64 machine:
 - The whole LTP comparison again, job kernel-b/20261120-175937-1811146 (`LTP_JOBS=8
   LTP_LIMIT=900`), results target/ltp-k6c21b/whole.tsv in the kernel-b folder there.
-- Reruns, job kernel-c/20261120-175947-1820040: the six fsx tests together, then getrusage04
-  and setrlimit06 five times; results target/ltp-k6c21/re-*.tsv in the kernel-c folder there.
+- Reruns, job kernel-c/20261120-175947-1820040 (17:59 to 18:12 UTC, load 7 to 33; scratch
+  k6c21/kernel-c/reruns-91d85e31.log): the six fsx tests, six at once, all pass (643.5 to
+  741.5 s); getrusage04 and setrlimit06 pass 5 of 5 each.
 - The whole suite at 18eda16f stands for 91d85e31 but for the stand-in on the machine's clock,
   which only the LTP and cpulimit use; cpulimit passed at 91d85e31.
 
