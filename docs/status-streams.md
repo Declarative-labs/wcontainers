@@ -7,23 +7,19 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 ## Where things stand
 
 - S1: complete; its third independent check's findings are settled (see "S1 check findings").
-- S2: built in its first run; its first independent check's ten findings settled in its second run
-  (see "S2 check findings"); every item of its bar met, the whole suite at 565881d2 and the speed
-  over five test binaries finished in the fourth run (see "Measurements"); its second independent
-  check's twelve findings settled in the fifth run (see "S2 second check findings"); its third
-  check's eight findings settled in the sixth run (see "S2 third check findings"); its fourth
-  check's seven findings and the owner's two rulings of 2026-11-19 (`&self` with `Sync`, and
-  `memory_take_dirty`) settled in the seventh run (see "S2 fourth check findings"), and the whole
-  suite's verdicts unchanged after them (see "Measurements"); its fifth check's five findings
-  settled in the eighth run (see "S2 fifth check findings").
-- What comes next: S2's sixth independent check. Not built and left open on purpose: export of a
-  process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
+- S2: built in its first run; its first five independent checks' findings settled in the second,
+  fifth, sixth, seventh and eighth runs (sections below); its sixth check's five findings and the
+  owner's rulings of the afternoon of 2026-11-19 (verb-first names, `free_task_id` with no default,
+  `on_memory_written_by_kernel`, the system call proxy, `WatchesFor` and `AccessKind`) settled in
+  the ninth run (see "S2 sixth check findings").
+- What comes next: S2's seventh independent check. Not built and left open on purpose: export of
+  a process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), the report of which processes share memory and the watch put on
   shared pages when one leaves (it comes with `suspend`), `set_thread_ordering`, the inspection
   hooks, `StopReason`; ends made by connect, accept, export or import; `/dev/console` under `-t`.
   Ruled on 2026-11-19 but not part of S2: `type ProcessState` (to wait for the reviewable-rust
-  layout, as ruled) and the system call proxy (`intercept_system_call_request` and `_response`;
-  its `memory_written` still open).
+  layout, as ruled), signals as an input (`on_signal_delivering`, `Process::send_signal`, ruled at
+  17:10, after the check's list).
 
 ## How to run
 
@@ -39,13 +35,19 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 ## S2
 
 What exists (signatures and firing points in docs/embedder-interface.md):
-- kernel: `System: Host + Sync` (system.rs) with `task_id_allocate`, `task_id_free` and the six
-  hooks, all taking `&self` with provided defaults (the abi's `Host` takes `&self` too); `TaskId`;
-  `Process` with `id`, `info`, `execution_config`, `memory_read`, `memory_write`, `memory_watch`,
-  `memory_watch_thread` (refused by name), `memory_take_dirty`; `ProcessInfo` with `memory_mapped`, `ceiling_distance`, `compute_used`,
-  `parent`; `Kernel::process(cpu, id)`; `Watch`, `Access`, `MemoryError`, `ThreadOrdering`,
-  `ReplayDeterminism`, `ExecutionConfig`, `Unsupported`. `Start` has `ceiling` and `execution`;
-  `Kernel::start` returns `Result<(), Unsupported>`.
+- kernel: `System: Host + Sync` (system.rs) with `allocate_task_id`, `free_task_id` (no default),
+  `intercept_system_call_request` and `_response`, and the seven hooks (`on_process_starting`,
+  `on_program_starting`, `on_thread_starting`, `on_process_exiting`, `on_process_outgrown`,
+  `on_watched_memory_accessing`, `on_memory_written_by_kernel`), all taking `&self`; `TaskId`;
+  `SystemCallResponse`; `Process` with `id`, `info`, `execution_config`, `read_memory`,
+  `write_memory`, `watch_memory`, `watch_thread_memory` (refused by name), `take_dirty_memory`;
+  `ProcessInfo` with `memory_mapped`, `ceiling_distance`, `compute_used`, `parent`;
+  `Kernel::process(cpu, id)`; `WatchesFor`, `AccessKind` (with `Execute`), `MemoryError`,
+  `ThreadOrdering`, `ReplayDeterminism`, `ExecutionConfig`, `Unsupported`. `Start` has `ceiling`
+  and `execution`; `Kernel::start` returns `Result<(), Unsupported>`.
+- abi: `SystemCallRequest` (was `Syscall`), `SYSTEM_CALL_ARGUMENT_COUNT`,
+  `SYSTEM_CALL_NUMBER_REGISTER`; the stream services are `send_stream`, `credit_stream`,
+  `close_stream`.
 - abi: `PerThreadWatch`, the subtrait of `Cpu` for watching one thread (declared, implemented by no
   executor).
 - watches and the record of written pages live in each `AddressMap` (memory.rs `Watches`), so a
@@ -81,8 +83,8 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   Both pass.
 - Watches met before calls write, inside the hook and left unmet and met later (between steps,
   through `Kernel::process`), the result unchanged:
-  `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 46 children each making one
-  call into a watched buffer, inputs put there by the parent before the child starts: read, readv
+  `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 48 children each making one
+  call into a watched buffer (the output first compared with the reference's), inputs put there by the parent before the child starts: read, readv
   (two pages), recvmsg (a datagram, which Linux loses at a fault), a handler's frame on an
   alternate stack in the buffer, pread64, getcwd, uname, fstat, pipe2, wait4, getrandom,
   clock_gettime, setitimer, sigaltstack, recvmmsg, msgrcv, sendfile, timerfd_settime,
@@ -92,13 +94,17 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`, and (fifth check) raw
   recvmsg with its header on a page apart from its data (a datagram, and a stream read in part),
   raw recvmmsg with its header and its length on two pages, sched_setattr refused for its size
-  and capset refused for its version. Each call announced the
+  and capset refused for its version, and (sixth check) a memory sharer killed by SIGKILL and by
+  SIGTERM, its clear-tid word in the buffer. Each call announced the
   hook in exactly one process, at an address in the buffer, as a write, with the page as it was
   when the process started; the output is the same as with no watch; nothing counted outside a
   description, met at a copy or cut short; and at each process's end every page of the buffer
   whose bytes changed was announced in it or in its vfork child. Passes both ways.
-- A fault's span: `an_access_that_ends_before_a_watched_page_does_not_announce_it`. Passes.
-- `memory_take_dirty` (was `memory_changed`) exact:
+- A fault's span: `an_access_that_ends_before_a_watched_page_does_not_announce_it` (with a
+  watch on the store's own page as its control). Passes.
+- `on_memory_written_by_kernel` exact: `the_kernels_writes_are_announced_exactly`. The proxy:
+  `the_embedder_answers_and_changes_system_calls`. Both pass (see the sixth check's findings).
+- `take_dirty_memory` (was `memory_changed`) exact:
   `the_pages_changed_are_exactly_those_a_program_wrote_or_mapped_anew`: a child writes pages 0, 2
   and 5 of a buffer itself and page 7 by read(), and maps new memory with `MAP_FIXED` over page 3
   (writable) and page 4 (read-only); the record over the buffer is exactly [0, 2, 3, 4, 5, 7].
@@ -329,6 +335,46 @@ Found on the way, fixed:
   every `Host` call (the owner's ruling requires `Sync`); the kernel's no-hook path changed there
   only from `&mut dyn` to `&dyn`. Which of the two the 0.3 % is was not measured.
 
+## S2 sixth check findings, settled in the ninth run
+
+- [blocking] A fatal signal from another process (`kill`, `tgkill`, `tkill`, a group) ended its
+  target at once in the sender's call, and the stores at the target's end (its threads' robust
+  lists and `CLONE_CHILD_CLEARTID` words) were made with no walk: a watched word was dropped, and
+  the hook came after the call, in the sender. Now a fatal signal to a process with watched
+  memory is left to the process's own threads, as Linux's threads end themselves on their way
+  back (`SIGNAL_GROUP_EXIT`): the process is noted dying (`Kernel::dying`), each thread is woken
+  from any wait but a watch's (a stopped process is no longer stopped), and the first to go back
+  (`deliver`) walks the ends' stores, waiting on a watch that stays, then ends the process. None
+  of its threads runs its program or a call again (`system_call` and `wake_thread` send them to
+  their signals first). A process with no watched memory still ends at once, so nothing changes
+  without watches. Test: two calls added to the calls test (`kill_sharer` in embedder.c: a
+  `CLONE_VM` process of its own waiting in `ppoll` on its own stack, killed with SIGKILL and with
+  SIGTERM, its clear-tid word in the buffer), now 48 calls; the calls test also compares the
+  program's output with the reference's now. With the old kernel it failed (output differs,
+  `copy outside the call's description` and `call short of watched memory` counted for 129,
+  kill; scratch streams/s2g/unfixed.log); with the fix it passes at seeds 1 to 3, inside the
+  hook and between steps.
+- [minor] The owner's rulings of the afternoon of 2026-11-19, applied: methods verb first
+  (`read_memory`, `write_memory`, `watch_memory`, `watch_thread_memory`, `take_dirty_memory`,
+  `allocate_task_id`, `free_task_id`, `send_stream`, `credit_stream`, `close_stream`);
+  `free_task_id` has no default (the test host with no hooks implements it doing nothing);
+  `WatchesFor`, `AccessKind { Read, Write, Execute }` (an instruction fetch on an `All` page is
+  now `Execute`), `on_watched_memory_accessing(.., kind)`, `watch_memory(range, watches)`;
+  `on_memory_written_by_kernel`; the system call proxy. Tests:
+  `the_kernels_writes_are_announced_exactly` (embedder.c `kernelwrites`: a child's read into the
+  buffer, its clock_gettime, a vfork clone's `CLONE_PARENT_SETTID` word, the vfork child's
+  clear-tid word at its end, a killed sharer's clear-tid word, each exactly, each to the process
+  the memory belongs to and its thread; then a signal's frame, inside the alternate stack) and
+  `the_embedder_answers_and_changes_system_calls` (embedder.c `proxy`: getpid answered by the
+  embedder, every write to standard output one byte shorter by a changed request, getuid's
+  answer changed). Both pass at seeds 1 to 3.
+- [minor] The cost statement: the document now says that every copy, watched or not, takes its
+  address map's watches and finds no description and no watched page, and that a thread's way
+  back pays one more test (whether a fatal signal waits on watches).
+- [minor] The span test had no control: it now also watches the store's own page, which must
+  announce exactly the store's address, beside the next page, which must announce nothing.
+- [minor] `semctl` GETALL through the copy check: as documented; nothing to settle.
+
 ## Measurements
 
 - Third run's fixes, stream tests (20 tests, seeds 1 to 3): passed, 27.2 s, load 73 to 82 (21:15).
@@ -482,6 +528,22 @@ Found on the way, fixed:
   has the same verdict, but the dirty record's test, renamed and passing; the vast watch test is
   new and passes.
 
+- Ninth run, speed with no hook implemented, on the ARM machine: the memory and processes test
+  binaries built from three trees, each in its own fresh build directory: 59056384 (before S2),
+  f5f8b8b9 (the eighth run's end) and this run's tree (a8629893's sources), run alternately
+  with 3 test threads, round 0 a warm-up (scratch streams/s2g/speed.sh, speed.log, 01:24 to
+  01:29 UTC, machine load 27 to 31). User CPU, seconds, rounds 1 to 5: memory before S2 12.271,
+  12.304, 12.297, 12.538, 12.316 (median 12.30); eighth 11.739, 11.785, 11.781, 11.772, 11.782
+  (median 11.78); ninth 11.842, 12.159, 11.835, 11.846, 11.841 (median 11.84). Processes: before
+  0.339, 0.337, 0.320, 0.293, 0.315; eighth 0.304, 0.303, 0.299, 0.322, 0.332; ninth 0.301, 0.334,
+  0.340, 0.299, 0.296 (within noise). Wall, memory: before 15.65 to 16.18 s, eighth 15.12 to
+  15.29 s, ninth 15.21 to 15.60 s. So this run's tree costs about 0.5 % more user CPU than the
+  eighth's on the memory binary (four rounds of five 0.05 to 0.07 s above, one 0.37 s): with no
+  hook implemented every system call now makes two calls of empty provided methods through the
+  trait object (the proxy) and every copy into program memory notes its range. Not measured which
+  of the two it is. The tree before S2 measured 4 % slower than both here, unlike the eighth
+  run's comparison (+0.3 %); not explained (that tree also differs in code merged since).
+
 ## Literals
 
 - Adopted at da21d326 (`init` once on this tree, version 7 of the rules): 7612 baseline lines, of
@@ -501,6 +563,8 @@ Found on the way, fixed:
   passes (exit 0). It reads the checkout's git history, so it runs on this Mac. The test host's clock
   step stays `TestHost::ran` (an associated function taking the locked state) so its `1000` keeps
   its key.
+- After the ninth run: 7579 lines (the call number register and the argument count now named in
+  the abi; the stand-in, `deliver` and `settle` use them); the check passes (exit 0).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -555,8 +619,23 @@ anything shipped.
   trait's default method keeps no state. Both for the owner to confirm.
 - `on_memory_accessing` before a call is announced for what the call's arguments name, which can
   be more than it then writes (a short read, `nanosleep`'s remaining time).
-- `Access` is the kernel's own two-variant enum; the abi's `Access` (with `Execute`) stays for
-  faults. Running code on a watched page is reported as `Read`.
+- `AccessKind` is the kernel's (the ruled name); the abi's `Access` stays for the executor's
+  faults, which `AccessKind` follows one to one.
+- `on_memory_written_by_kernel` is announced for every copy into program memory (one routine,
+  user.rs `Guest`), not for memory changed by mapping calls (reported by `take_dirty_memory`), a
+  new program's stack, vDSO and segment tails written by `execve` (the whole new memory is the
+  embedder's to read at `on_program_starting`), or backend pages of a mapped file (written into
+  the file all mappers share). The owner named "a page of a mapped file being filled" among his
+  examples: for him to confirm. Writes are announced after the call, before the next hook and
+  before any thread runs again, not inside the copy (a hook cannot be given the process while a
+  call holds it).
+- The abi's `Syscall` is renamed `SystemCallRequest` (one type, the ruled name), and the register
+  holding a call's number is the abi's `SYSTEM_CALL_NUMBER_REGISTER`; the executors construct it,
+  so the runtime track's executor adapts.
+- A changed request is written into the thread's registers (as ptrace's change at the
+  syscall-entry stop), so a waiting call runs the changed one again and the program sees x1 to x5
+  changed after the call. A `Break` answer is not given to `intercept_system_call_response`.
+- `watch_thread_memory` is my verb-first form of `memory_watch_thread`; for the owner.
 - Watch waits are not ended by signals, as backend waits are not.
 - From S1, still standing: `a_terminal_closed_before_the_start_finished` does not guard the
   release it was written for (devpts lookup goes by the master's count; no observation found that
@@ -592,7 +671,14 @@ anything shipped.
   `MemoryError::{NotMapped, NotRead, Executor}`; `Unsupported`; `ExecutionConfig::supported`;
   `Start::ceiling`, `Start::execution`; `task_id_after` (the default counter);
   `PerThreadWatch::set_thread_permissions`.
-- From S1 (suggested, unchanged): `End`, `Host::stream_send`, `Host::stream_close`,
+- For the owner (speed): the system call proxy costs every call two calls of empty methods
+  through `&dyn System`, measured about 0.5 % user CPU on the memory test binary (see
+  "Measurements"). Zero cost would need the kernel generic over its `System` (resolved at compile
+  time), a larger change than this milestone's.
+- For the runtime track: the abi's `Syscall` is `SystemCallRequest`; `Host::stream_send`,
+  `stream_credit`, `stream_close` are `send_stream`, `credit_stream`, `close_stream`;
+  `System::free_task_id` has no default.
+- From S1 (suggested, unchanged): `End`, `Host::send_stream`, `Host::close_stream`,
   `Event::StreamData`, `Event::StreamCredit`, `Event::StreamClosed`, `Event::TerminalResized`,
   `Start::standard`, `Standard::{Pipes, Terminal}`.
 - The literal check: phase-1-kernel merged phase-1-literals directly; this branch took only the

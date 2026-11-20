@@ -137,7 +137,8 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   given as it reaches the thread's signal handling, internal restart codes (`ERESTARTSYS`) included,
   as at Linux's syscall-exit stop.
 - With neither implemented, each call costs two calls of empty provided methods through the
-  trait object.
+  trait object; with the range every copy notes for `on_memory_written_by_kernel`, measured about
+  0.5 % user CPU on the memory test binary (docs/status-streams.md, "Measurements").
 
 ### The kernel's guarantees
 
