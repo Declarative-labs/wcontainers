@@ -11,8 +11,7 @@ const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shade
 const FLOAT_BITS_CLEAR_BY_DRAW: &str = "float colour clear made by a draw keeping its bits";
 
 /// The reason [`SlowPath::StreamOutAfterReplay`] shows.
-const STREAM_OUT_AFTER_REPLAY: &str =
-    "stream output after a replayed geometry shader written on the host";
+const STREAM_OUT_AFTER_REPLAY: &str = "stream output of the replay route written on the host";
 
 /// The reason [`SlowPath::FrameStretched`] shows.
 const FRAME_STRETCHED: &str = "frame stretched to its window against the swap chain's scaling";
@@ -294,9 +293,11 @@ pub enum SlowPath {
     /// A 32-bit float colour clear whose bits the API's clear value would change (denormals flushed,
     /// NaN payloads quieted), made by a draw writing the bits.
     FloatBitsClearByDraw,
-    /// Stream output after a geometry shader run by replay, written on the host from a read back of
-    /// what the replay captured: the replay captures every output slot, cut ones included, and only
-    /// a count across invocations, which a vertex program cannot make, drops them.
+    /// Stream output on the replay route, written on the host from a read back of what was
+    /// captured: after a geometry shader run by replay, which captures every output slot, cut ones
+    /// included, and only a count across invocations, which a vertex program cannot make, drops
+    /// them; or from a vertex shader alone, whose declared layout, overflow and counts transform
+    /// feedback does not give.
     StreamOutAfterReplay,
     /// A frame shown stretched to a window of another size than its buffers, where the swap chain
     /// asked for no stretching (a listed loss: the host's window scales whatever it shows).

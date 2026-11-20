@@ -4,7 +4,8 @@
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
 //! read back and used by `SetPredication`, `ExecuteIndirect`, pipeline and stream output
 //! statistics, geometry shaders, layers a geometry shader names, timestamps, views a vertex
-//! shader reads in the program, a depth bias on lines and points, debugging annotations, and
+//! shader reads in the program, a depth bias on lines and points, debugging annotations, the video
+//! formats stored as ordinary textures, and
 //! alpha-antialiased lines (whose picture is compared within
 //! [`PICTURES`]' tolerance, as their filter is the implementation's own).
 
@@ -86,6 +87,7 @@ pub const CASES: &[&str] = &[
     "line-bias",
     "markers",
     "undefined-topology",
+    "video-formats",
     ANTIALIASED_LINES,
 ];
 
@@ -139,6 +141,7 @@ pub fn run(name: &str) -> Result<String> {
             "line-bias" => line_bias(&c),
             "markers" => markers(&c),
             "undefined-topology" => undefined_topology(&c),
+            "video-formats" => video_formats(&c),
             ANTIALIASED_LINES => antialiased_lines(&c),
             _ => panic!("no case {name}"),
         }
@@ -3840,6 +3843,541 @@ unsafe fn vertex_views(c: &Ctx) -> Result<String> {
                 .map(|p| format!("{:08x}", u32::from_le_bytes(p.try_into().unwrap())))
                 .collect();
             write!(line, "row {row}: {} ", colours.join(" ")).unwrap();
+        }
+        Ok(line.trim_end().to_string())
+    }
+}
+
+/// A copy location naming a placed footprint of buffer `r`.
+unsafe fn footprint_location(
+    r: &ID3D12Resource,
+    layout: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+) -> D3D12_TEXTURE_COPY_LOCATION {
+    D3D12_TEXTURE_COPY_LOCATION {
+        // SAFETY: the location borrows the resource for the call it is passed to.
+        pResource: unsafe { transmute_copy(r) },
+        Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+            PlacedFootprint: layout,
+        },
+    }
+}
+
+/// A copy location naming subresource `index` of texture `r`.
+unsafe fn subresource_location(r: &ID3D12Resource, index: u32) -> D3D12_TEXTURE_COPY_LOCATION {
+    D3D12_TEXTURE_COPY_LOCATION {
+        // SAFETY: the location borrows the resource for the call it is passed to.
+        pResource: unsafe { transmute_copy(r) },
+        Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+            SubresourceIndex: index,
+        },
+    }
+}
+
+/// A 64 by 32 texture of one level in `format` with `flags`.
+fn video_desc(format: DXGI_FORMAT, flags: D3D12_RESOURCE_FLAGS) -> D3D12_RESOURCE_DESC {
+    D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Width: 64,
+        Height: 32,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Flags: flags,
+        ..Default::default()
+    }
+}
+
+/// Where subresources lie in a buffer: each one's footprint, row count and bytes a row.
+type Footprints = Vec<(D3D12_PLACED_SUBRESOURCE_FOOTPRINT, u32, u64)>;
+
+/// The footprints of the first `count` subresources of `desc`, written into the line, and the
+/// bytes they span.
+unsafe fn video_footprints(
+    c: &Ctx,
+    desc: &D3D12_RESOURCE_DESC,
+    count: usize,
+    line: &mut String,
+) -> (Footprints, u64) {
+    let mut layouts = vec![D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); count];
+    let (mut rows, mut sizes, mut total) = (vec![0u32; count], vec![0u64; count], 0u64);
+    // SAFETY: arrays of `count` entries.
+    unsafe {
+        c.device.GetCopyableFootprints(
+            desc,
+            0,
+            count as u32,
+            0,
+            Some(layouts.as_mut_ptr()),
+            Some(rows.as_mut_ptr()),
+            Some(sizes.as_mut_ptr()),
+            Some(&mut total),
+        )
+    };
+    write!(line, "total {total}").unwrap();
+    for (i, l) in layouts.iter().enumerate() {
+        let f = l.Footprint;
+        write!(
+            line,
+            " [{} at {} {}x{} pitch {} rows {} size {}]",
+            f.Format.0, l.Offset, f.Width, f.Height, f.RowPitch, rows[i], sizes[i]
+        )
+        .unwrap();
+    }
+    let placed = (0..count).map(|i| (layouts[i], rows[i], sizes[i]));
+    (placed.collect(), total)
+}
+
+/// The video formats plan 4.12 stores as ordinary textures: what creating them answers, their
+/// footprints, `NV12`'s two planes and `YUY2` written from a buffer, copied whole and by region,
+/// cleared through target views of each `NV12` plane, read by a compute shader through views of
+/// each plane (of two textures, as one is written) and of `YUY2` as `R8G8B8A8`, written through an
+/// unordered access view of the chroma plane, and read back through their footprints.
+unsafe fn video_formats(c: &Ctx) -> Result<String> {
+    const SHADER: &str = "
+        Texture2D<float> luma : register(t0);
+        Texture2D<float2> chroma : register(t1);
+        Texture2D<float4> pairs : register(t2);
+        RWByteAddressBuffer result : register(u0);
+        RWTexture2D<float2> chroma_out : register(u1);
+        uint byte(float v) { return uint(v * 255.0 + 0.5); }
+        [numthreads(1, 1, 1)]
+        void main()
+        {
+            float2 c = chroma.Load(int3(9, 5, 0));
+            float4 p = pairs.Load(int3(3, 2, 0));
+            uint w, h, cw, ch, pw, ph;
+            luma.GetDimensions(w, h);
+            chroma.GetDimensions(cw, ch);
+            pairs.GetDimensions(pw, ph);
+            result.Store4(0, uint4(byte(luma.Load(int3(17, 9, 0))),
+                byte(c.x) | byte(c.y) << 8,
+                byte(p.x) | byte(p.y) << 8 | byte(p.z) << 16 | byte(p.w) << 24,
+                w | h << 8 | cw << 16 | ch << 24));
+            result.Store2(16, uint2(pw | ph << 8, 0));
+            chroma_out[uint2(1, 1)] = float2(1.0, 0.25);
+        }";
+    /// The bytes the shader stores: six words.
+    const RESULT_BYTES: u64 = 24;
+    unsafe {
+        let mut line = String::new();
+        let nv12 = DXGI_FORMAT_NV12;
+        let yuy2 = DXGI_FORMAT_YUY2;
+        let none = D3D12_RESOURCE_FLAG_NONE;
+        let shaped = |format, width, height, mips, layers| D3D12_RESOURCE_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: mips,
+            DepthOrArraySize: layers,
+            ..video_desc(format, none)
+        };
+        for (name, desc) in [
+            ("nv12", video_desc(nv12, none)),
+            ("nv12-levels", shaped(nv12, 64, 32, 2, 1)),
+            ("nv12-odd-width", shaped(nv12, 63, 32, 1, 1)),
+            ("nv12-odd-height", shaped(nv12, 64, 31, 1, 1)),
+            ("nv12-array", shaped(nv12, 64, 32, 1, 2)),
+            (
+                "nv12-target",
+                video_desc(nv12, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+            ),
+            (
+                "nv12-storage",
+                video_desc(nv12, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            ),
+            ("yuy2", video_desc(yuy2, none)),
+            ("yuy2-odd-width", shaped(yuy2, 63, 32, 1, 1)),
+            ("yuy2-odd-height", shaped(yuy2, 64, 31, 1, 1)),
+            (
+                "yuy2-storage",
+                video_desc(yuy2, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            ),
+            ("420-opaque", video_desc(DXGI_FORMAT_420_OPAQUE, none)),
+        ] {
+            let made = c
+                .committed(D3D12_HEAP_TYPE_DEFAULT, &desc, D3D12_RESOURCE_STATE_COMMON)
+                .map_or_else(|e| format!("{:#x}", e.code().0), |_| "made".into());
+            write!(line, "{name} {made}; ").unwrap();
+        }
+        let both =
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        let planar = video_desc(nv12, both);
+        write!(line, "nv12 footprints ").unwrap();
+        let (layouts, total) = video_footprints(c, &planar, 2, &mut line);
+        write!(line, "; yuy2 footprints ").unwrap();
+        let pair_desc = video_desc(yuy2, none);
+        let (pair_layouts, pair_total) = video_footprints(c, &pair_desc, 1, &mut line);
+        write!(line, "; 420-opaque footprints ").unwrap();
+        video_footprints(c, &video_desc(DXGI_FORMAT_420_OPAQUE, none), 1, &mut line);
+        write!(line, "; ").unwrap();
+
+        // Each plane's rows filled with a pattern of its own, then copied in by footprint.
+        let pattern = |total: u64, seed: usize| -> Vec<u8> {
+            (0..total as usize)
+                .map(|i| (i * 7 + seed * 13 + i / 251) as u8)
+                .collect()
+        };
+        let source = c.upload(&pattern(total, 1))?;
+        let pair_source = c.upload(&pattern(pair_total, 2))?;
+        let a = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &planar,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let b = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &video_desc(nv12, none),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let y = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &pair_desc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let y2 = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &pair_desc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        for (i, (l, ..)) in layouts.iter().enumerate() {
+            list.CopyTextureRegion(
+                &subresource_location(&a, i as u32),
+                0,
+                0,
+                0,
+                &footprint_location(&source, *l),
+                None,
+            );
+        }
+        list.CopyTextureRegion(
+            &subresource_location(&y, 0),
+            0,
+            0,
+            0,
+            &footprint_location(&pair_source, pair_layouts[0].0),
+            None,
+        );
+        list.ResourceBarrier(&[
+            transition(
+                &a,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            ),
+            transition(
+                &y,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            ),
+        ]);
+        list.CopyResource(&b, &a);
+        list.CopyResource(&y2, &y);
+        // Boxes of each plane, and of pixel pairs, at other places.
+        let area = |left, top, right, bottom| D3D12_BOX {
+            left,
+            top,
+            front: 0,
+            right,
+            bottom,
+            back: 1,
+        };
+        list.CopyTextureRegion(
+            &subresource_location(&b, 0),
+            16,
+            8,
+            0,
+            &subresource_location(&a, 0),
+            Some(&area(0, 0, 8, 4)),
+        );
+        list.CopyTextureRegion(
+            &subresource_location(&b, 1),
+            8,
+            4,
+            0,
+            &subresource_location(&a, 1),
+            Some(&area(0, 0, 4, 2)),
+        );
+        list.CopyTextureRegion(
+            &subresource_location(&y2, 0),
+            20,
+            4,
+            0,
+            &subresource_location(&y, 0),
+            Some(&area(4, 0, 12, 2)),
+        );
+        list.ResourceBarrier(&[
+            transition(
+                &b,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            ),
+            transition(
+                &y2,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            ),
+            transition(
+                &a,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+            ),
+        ]);
+
+        // Rectangles of each plane cleared through target views naming it.
+        let targets: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                NumDescriptors: 2,
+                ..Default::default()
+            })?;
+        let rtv_size = c
+            .device
+            .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        let rtv = |i: u32| D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: targets.GetCPUDescriptorHandleForHeapStart().ptr + (i * rtv_size) as usize,
+        };
+        for (plane, format) in [(0, DXGI_FORMAT_R8_UNORM), (1, DXGI_FORMAT_R8G8_UNORM)] {
+            c.device.CreateRenderTargetView(
+                &a,
+                Some(&D3D12_RENDER_TARGET_VIEW_DESC {
+                    Format: format,
+                    ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2D,
+                    Anonymous: D3D12_RENDER_TARGET_VIEW_DESC_0 {
+                        Texture2D: D3D12_TEX2D_RTV {
+                            MipSlice: 0,
+                            PlaneSlice: plane,
+                        },
+                    },
+                }),
+                rtv(plane),
+            );
+        }
+        list.ClearRenderTargetView(
+            rtv(0),
+            &[0.5, 0.0, 0.0, 0.0],
+            Some(&[RECT {
+                left: 0,
+                top: 0,
+                right: 16,
+                bottom: 8,
+            }]),
+        );
+        list.ClearRenderTargetView(
+            rtv(1),
+            &[0.25, 0.75, 0.0, 0.0],
+            Some(&[RECT {
+                left: 0,
+                top: 0,
+                right: 8,
+                bottom: 4,
+            }]),
+        );
+        list.ResourceBarrier(&[
+            transition(
+                &a,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            ),
+            transition(
+                &y,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            ),
+            transition(
+                &b,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            ),
+        ]);
+
+        // A compute shader reading each plane and YUY2's pixel pairs, writing the chroma plane.
+        let cs = compile(SHADER, s!("cs_5_0"))?;
+        let ranges = [
+            D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                NumDescriptors: 3,
+                ..Default::default()
+            },
+            D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+                NumDescriptors: 1,
+                BaseShaderRegister: 1,
+                OffsetInDescriptorsFromTableStart: 3,
+                ..Default::default()
+            },
+        ];
+        let root = c.root(
+            &[
+                D3D12_ROOT_PARAMETER {
+                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                    Anonymous: D3D12_ROOT_PARAMETER_0 {
+                        DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                            NumDescriptorRanges: ranges.len() as u32,
+                            pDescriptorRanges: ranges.as_ptr(),
+                        },
+                    },
+                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                },
+                D3D12_ROOT_PARAMETER {
+                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
+                    Anonymous: D3D12_ROOT_PARAMETER_0 {
+                        Descriptor: D3D12_ROOT_DESCRIPTOR {
+                            ShaderRegister: 0,
+                            RegisterSpace: 0,
+                        },
+                    },
+                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                },
+            ],
+            D3D12_ROOT_SIGNATURE_FLAG_NONE,
+        )?;
+        let pso: ID3D12PipelineState =
+            c.device
+                .CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
+                    pRootSignature: transmute_copy(&root),
+                    CS: D3D12_SHADER_BYTECODE {
+                        pShaderBytecode: cs.as_ptr().cast(),
+                        BytecodeLength: cs.len(),
+                    },
+                    ..Default::default()
+                })?;
+        let views: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                NumDescriptors: 4,
+                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                ..Default::default()
+            })?;
+        let view_size = c
+            .device
+            .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        let at = |i: u32| D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: views.GetCPUDescriptorHandleForHeapStart().ptr + (i * view_size) as usize,
+        };
+        for (i, (resource, format, plane)) in [
+            (&a, DXGI_FORMAT_R8_UNORM, 0),
+            (&b, DXGI_FORMAT_R8G8_UNORM, 1),
+            (&y, DXGI_FORMAT_R8G8B8A8_UNORM, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            c.device.CreateShaderResourceView(
+                resource,
+                Some(&D3D12_SHADER_RESOURCE_VIEW_DESC {
+                    Format: format,
+                    ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                    Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                    Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                        Texture2D: D3D12_TEX2D_SRV {
+                            MipLevels: 1,
+                            PlaneSlice: plane,
+                            ..Default::default()
+                        },
+                    },
+                }),
+                at(i as u32),
+            );
+        }
+        c.device.CreateUnorderedAccessView(
+            &a,
+            None,
+            Some(&D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                Format: DXGI_FORMAT_R8G8_UNORM,
+                ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_UAV {
+                        MipSlice: 0,
+                        PlaneSlice: 1,
+                    },
+                },
+            }),
+            at(3),
+        );
+        let output = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(RESULT_BYTES, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        )?;
+        list.SetDescriptorHeaps(&[Some(views.clone())]);
+        list.SetComputeRootSignature(&root);
+        list.SetPipelineState(&pso);
+        list.SetComputeRootDescriptorTable(0, views.GetGPUDescriptorHandleForHeapStart());
+        list.SetComputeRootUnorderedAccessView(1, output.GetGPUVirtualAddress());
+        list.Dispatch(1, 1, 1);
+        list.ResourceBarrier(&[
+            transition(
+                &a,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            ),
+            transition(
+                &b,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            ),
+        ]);
+
+        // Every texture read back by its footprints.
+        let readback = |total| {
+            c.committed(
+                D3D12_HEAP_TYPE_READBACK,
+                &buffer_desc(total, D3D12_RESOURCE_FLAG_NONE),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            )
+        };
+        let (ra, rb, ry) = (readback(total)?, readback(total)?, readback(pair_total)?);
+        for (r, t) in [(&ra, &a), (&rb, &b)] {
+            for (i, (l, ..)) in layouts.iter().enumerate() {
+                list.CopyTextureRegion(
+                    &footprint_location(r, *l),
+                    0,
+                    0,
+                    0,
+                    &subresource_location(t, i as u32),
+                    None,
+                );
+            }
+        }
+        list.CopyTextureRegion(
+            &footprint_location(&ry, pair_layouts[0].0),
+            0,
+            0,
+            0,
+            &subresource_location(&y2, 0),
+            None,
+        );
+        list.ResourceBarrier(&[transition(
+            &output,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+        )]);
+        c.run(&list)?;
+        let results = c.read(&output, 0, RESULT_BYTES)?;
+        write!(line, "shader read {}; ", words(&results)).unwrap();
+        for (name, r, size, places) in [
+            ("cleared and stored", &ra, total, &layouts),
+            ("copied", &rb, total, &layouts),
+            ("pairs copied", &ry, pair_total, &pair_layouts),
+        ] {
+            let bytes = mapped(r, size as usize)?;
+            write!(line, "{name}:").unwrap();
+            // Each plane's rows without the padding between them.
+            for (i, (l, rows, row)) in places.iter().enumerate() {
+                let texels: Vec<u8> = (0..*rows as usize)
+                    .flat_map(|r| {
+                        let at = l.Offset as usize + r * l.Footprint.RowPitch as usize;
+                        bytes[at..at + *row as usize].to_vec()
+                    })
+                    .collect();
+                write!(line, " plane {i} {}", words(&texels)).unwrap();
+            }
+            write!(line, "; ").unwrap();
         }
         Ok(line.trim_end().to_string())
     }

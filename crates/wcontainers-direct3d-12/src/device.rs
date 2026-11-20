@@ -38,6 +38,7 @@ use crate::state::{
     resolve_offsets, vertex_format,
 };
 use pull::{Helpers, PulledKey, VertexProgram};
+use wcontainers_directx_graphics_infrastructure::dxgi::R8G8B8A8_TYPELESS;
 
 macro_rules! id {
     ($($(#[$m:meta])* $name:ident),*) => {$(
@@ -192,6 +193,9 @@ struct Resource<B: Backend> {
     twins: Vec<ResourceId>,
     /// Whether this is such a twin.
     twin: bool,
+    /// The texture holding the chroma plane of an `NV12` texture (`resource::has_chroma_plane`),
+    /// whose views, copies and inheritance name it in place of this one.
+    chroma: Option<ResourceId>,
 }
 
 /// A heap of `CreateHeap`. Each placed resource in a default heap has storage of its own (plan
@@ -623,7 +627,8 @@ impl<B: Backend> Device<B> {
                     TextureDimension::D2
                 },
                 format,
-                width: u32::try_from(desc.width).map_err(|_| Error::Invalid("texture too wide"))?,
+                width: u32::try_from(desc.stored_width())
+                    .map_err(|_| Error::Invalid("texture too wide"))?,
                 height: desc.height.max(1),
                 depth_or_layers: u32::from(desc.depth_or_array_size).max(1),
                 // Direct3D 12 takes more levels than the chain has; the texture keeps the chain.
@@ -679,7 +684,17 @@ impl<B: Backend> Device<B> {
             synced: 0,
             twins: Vec::new(),
             twin: false,
+            chroma: None,
         });
+        if let Some(chroma) = desc.chroma() {
+            match self.create(heap, &chroma, None) {
+                Ok(c) => self.resources[id.0 as usize].chroma = Some(c),
+                Err(e) => {
+                    self.destroy_resource(id);
+                    return Err(e);
+                }
+            }
+        }
         Ok(id)
     }
 
@@ -762,6 +777,77 @@ impl<B: Backend> Device<B> {
         Ok(id)
     }
 
+    /// The texture and subresource index holding subresource `index` of texture `id`: an `NV12`
+    /// texture's chroma plane is a texture of its own.
+    fn plane_holder(&self, id: ResourceId, index: u32) -> (ResourceId, u32) {
+        match self.resources.get(id.0 as usize) {
+            Some(Resource {
+                chroma: Some(chroma),
+                desc,
+                ..
+            }) if index >= desc.mips() * desc.layers() => {
+                (*chroma, index - desc.mips() * desc.layers())
+            }
+            _ => (id, index),
+        }
+    }
+
+    /// A box at `origin` of `extent` pixels of texture `id` in its stored texels (`YUY2`'s pixel
+    /// pairs are one texel each).
+    fn in_texels(&self, id: ResourceId, origin: Origin, extent: Extent) -> (Origin, Extent) {
+        let n = self
+            .resources
+            .get(id.0 as usize)
+            .map_or(1, |r| resource::pixels_per_texel(r.desc.format));
+        (
+            Origin {
+                x: origin.x / n,
+                ..origin
+            },
+            Extent {
+                width: extent.width.div_ceil(n),
+                ..extent
+            },
+        )
+    }
+
+    /// Copy location `l` naming the texture holding its subresource (`plane_holder`), and the
+    /// pixels each of its texels holds (`in_texels`); a `YUY2` footprint's pixel pairs are
+    /// `R8G8B8A8` texels.
+    fn texel_location(&self, l: &CopyLocation) -> (CopyLocation, u32) {
+        match *l {
+            CopyLocation::Subresource { resource, index } => {
+                let (resource, index) = self.plane_holder(resource, index);
+                let n = self
+                    .resources
+                    .get(resource.0 as usize)
+                    .map_or(1, |r| resource::pixels_per_texel(r.desc.format));
+                (CopyLocation::Subresource { resource, index }, n)
+            }
+            CopyLocation::Footprint {
+                resource,
+                footprint,
+            } => {
+                let n = resource::pixels_per_texel(footprint.format);
+                let footprint = match n {
+                    1 => footprint,
+                    _ => resource::Footprint {
+                        format: R8G8B8A8_TYPELESS,
+                        width: footprint.width.div_ceil(n),
+                        ..footprint
+                    },
+                };
+                (
+                    CopyLocation::Footprint {
+                        resource,
+                        footprint,
+                    },
+                    n,
+                )
+            }
+        }
+    }
+
     /// The region of subresource `sub` of texture `id` at `origin`, for slice `z` of a box.
     fn subresource_region(
         &self,
@@ -798,6 +884,8 @@ impl<B: Backend> Device<B> {
         (row_pitch, depth_pitch): (u32, u32),
     ) -> Result<(), Error> {
         self.live()?;
+        let (id, sub) = self.plane_holder(id, sub);
+        let (origin, extent) = self.in_texels(id, origin, extent);
         let rows = extent.height.div_ceil(self.texture(id)?.1.format.block().1);
         for z in 0..extent.depth_or_layers {
             let start = (z * depth_pitch) as usize;
@@ -834,6 +922,8 @@ impl<B: Backend> Device<B> {
         (row_pitch, depth_pitch): (u32, u32),
     ) -> Result<(), Error> {
         self.live()?;
+        let (id, sub) = self.plane_holder(id, sub);
+        let (origin, extent) = self.in_texels(id, origin, extent);
         let (bw, bh, bytes) = self.texture(id)?.1.format.block();
         let (rows, row) = (
             extent.height.div_ceil(bh) as usize,
@@ -906,7 +996,7 @@ impl<B: Backend> Device<B> {
             m.placed.retain(|p| p.2 != id);
         }
         self.disinherit(id, &r.inherits);
-        for t in r.twins {
+        for t in r.twins.into_iter().chain(r.chroma) {
             self.destroy_resource(t);
         }
         self.reads.retain(|p| p.resource != id);
@@ -2782,6 +2872,7 @@ fn adopt_buffers<B: Backend>(
             synced: 0,
             twins: Vec::new(),
             twin: false,
+            chroma: None,
         });
         out.push(ResourceId(id as u32));
         i += 1;
@@ -3397,9 +3488,9 @@ impl<B: Backend> Replay<B> {
 
     /// Notes what copies, clears and resolves use, and copies inherited bytes into them first.
     fn copies_due(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
-        let location = |l: &CopyLocation| match l {
-            CopyLocation::Subresource { resource, .. }
-            | CopyLocation::Footprint { resource, .. } => *resource,
+        let location = |d: &Device<B>, l: &CopyLocation| match *l {
+            CopyLocation::Subresource { resource, index } => d.plane_holder(resource, index).0,
+            CopyLocation::Footprint { resource, .. } => resource,
         };
         match c {
             Command::CopyBuffer { dst, src, .. } => {
@@ -3407,8 +3498,8 @@ impl<B: Backend> Replay<B> {
                 d.note(*dst, true);
             }
             Command::CopyTexture { dst, src, .. } => {
-                d.note(location(src), false);
-                d.note(location(dst), true);
+                d.note(location(d, src), false);
+                d.note(location(d, dst), true);
             }
             Command::Resolve { dst, src, .. } => {
                 d.note(*src, false);
@@ -4729,6 +4820,14 @@ fn copy_texture<B: Backend>(
     src: &CopyLocation,
     area: Option<[u32; 6]>,
 ) -> Result<(), Error> {
+    // The textures holding the subresources, in their stored texels.
+    let ((dst, dn), (src, sn)) = (d.texel_location(dst), d.texel_location(src));
+    let (dst, src) = (&dst, &src);
+    let [x, y, z] = at;
+    let at = [x / dn, y, z];
+    let area = area.map(|[left, top, front, right, bottom, back]| {
+        [left / sn, top, front, right.div_ceil(sn), bottom, back]
+    });
     // A subresource's texture, mip, layer and origin, the resource's description, and whether it is
     // in the stencil plane.
     let region = |d: &Device<B>, id: ResourceId, index: u32, origin: Origin| {
@@ -4751,7 +4850,7 @@ fn copy_texture<B: Backend>(
         z: v[2],
     };
     let size_of_mip = |desc: &ResourceDesc, mip: u32| Extent {
-        width: ((desc.width >> mip) as u32).max(1),
+        width: ((desc.stored_width() >> mip) as u32).max(1),
         height: (desc.height >> mip).max(1),
         depth_or_layers: if desc.dimension == resource::DIMENSION_TEXTURE3D {
             (u32::from(desc.depth_or_array_size) >> mip).max(1)

@@ -2270,7 +2270,9 @@ They never reach a back end. The shaders crate lowers them, and its stage helper
   texture, then one draw runs the geometry shader once per output vertex slot, each invocation keeping
   only its own emitted vertex and collapsing unused slots (`GeometryAsReplay`). Stream output after
   it is written on the host from a read back of the replay's capture, which holds the collapsed
-  slots too; dropping them needs a count across invocations (`StreamOutAfterReplay`). Hull and domain shaders
+  slots too; dropping them needs a count across invocations (`StreamOutAfterReplay`). Stream
+  output from a vertex shader alone is written the same way from the vertex stage's capture, which
+  the pass-through draws. Hull and domain shaders
   are not offered on WebGL 2 (feature level 10_0 does not have them).
 
 Alpha-antialiased lines (4.12) take the same first step: the vertex stage runs as compute (WebGPU) or is

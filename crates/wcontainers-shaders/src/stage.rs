@@ -275,6 +275,56 @@ pub fn capture_program(
     geometry: &crate::Converted,
 ) -> Result<wcontainers_gpu::ShaderModule> {
     let inputs = locations(&geometry.reflection.inputs);
+    capture_program_for(vertex, &inputs, 0, CAPTURED_RECORDS)
+}
+
+/// A vertex program's stream output on the replay route ([`replay::GeometryReplay::streamed`]).
+pub(crate) struct StreamedPrograms {
+    /// The vertex program writing records of its position, each output location (`locations`) and
+    /// its clip distances' slots as flat four-word values from location 0.
+    pub(crate) capture: wcontainers_gpu::ShaderModule,
+    /// The vertex program drawing those records, passing on every output with its own binding and
+    /// the clip distances.
+    pub(crate) passthrough: wcontainers_gpu::ShaderModule,
+    pub(crate) locations: Vec<u32>,
+    /// Four-word slots per record.
+    pub(crate) slots: u32,
+}
+
+/// The programs of `vertex` (converted, its inputs as drawn) whose output is streamed on the replay
+/// route. They take its outputs from its module, so every rewrite its key made reaches the pixel
+/// program as it would from the vertex program.
+pub(crate) fn streamed_programs(vertex: &crate::Converted) -> Result<StreamedPrograms> {
+    let source = &vertex.modules[0];
+    let drawn = drawn_outputs(source)?;
+    if drawn.cull != 0 {
+        return Err(ConvertError::Unsupported(STREAMED_CULL_DISTANCE));
+    }
+    let capture = capture_program_for(vertex, &drawn.locations, drawn.clip, STREAMED_RECORDS)?;
+    let passed: Vec<(ScalarKind, Binding)> = drawn
+        .passed
+        .iter()
+        .map(|(_, k, b)| (*k, b.clone()))
+        .collect();
+    let passthrough = passthrough_of(&passed, false, drawn.clip, None, None)?;
+    let mut key = blake3::Hasher::new();
+    key.update(&source.key).update(STREAMED_PASSTHROUGH);
+    Ok(StreamedPrograms {
+        capture,
+        passthrough: vertex_module(passthrough, key)?,
+        slots: 1 + drawn.locations.len() as u32 + distance_slots(drawn.clip),
+        locations: drawn.locations,
+    })
+}
+
+/// [`capture_program`] writing a slot for each of `inputs` (locations), then the slots of the
+/// program's `clip` clip distances, keyed as `what`.
+fn capture_program_for(
+    vertex: &crate::Converted,
+    inputs: &[u32],
+    clip: u32,
+    what: &[u8],
+) -> Result<wcontainers_gpu::ShaderModule> {
     let source = &vertex.modules[0];
     let mut module = source.module.clone();
     if module.entry_points.len() != 1 || module.entry_points[0].stage != naga::ShaderStage::Vertex {
@@ -335,9 +385,30 @@ pub fn capture_program(
     };
     let position = value_of(&mut b, &|binding| is_position(binding))?;
     let mut slots = alloc::vec![position];
-    for &l in &inputs {
+    for &l in inputs {
         let at = |binding: &Binding| matches!(binding, Binding::Location { location, .. } if *location == l);
         slots.push(value_of(&mut b, &at)?);
+    }
+    if clip > 0 {
+        let member = outputs
+            .iter()
+            .find(|(binding, ..)| matches!(binding, Binding::BuiltIn(BuiltIn::ClipDistances)))
+            .and_then(|(_, member, _)| *member)
+            .ok_or(ConvertError::Malformed(VERTEX_OUTPUTS.into()))?;
+        let distances = b.field(out, member);
+        for k in 0..distance_slots(clip) {
+            let zero = b.u32(0);
+            let parts: Vec<Expr> = (0..build::VEC4)
+                .map(|c| match k * build::VEC4 + c {
+                    i if i < clip => {
+                        let d = b.field(distances, i);
+                        b.bitcast(d, ScalarKind::Uint)
+                    }
+                    _ => zero,
+                })
+                .collect();
+            slots.push(b.compose(uvec4, parts));
+        }
     }
     let mut members = Vec::new();
     for i in 0..slots.len() as u32 {
@@ -375,8 +446,8 @@ pub fn capture_program(
     derived_module(
         source,
         module,
-        &inputs,
-        CAPTURED_RECORDS,
+        inputs,
+        what,
         wcontainers_gpu::ShaderStage::Vertex,
     )
 }
@@ -576,6 +647,11 @@ const OUTPUTS_TYPE: &str = "Outputs";
 const VERTEX_RECORDS: &[u8] = b"vertex records";
 /// The key part of [`capture_program`]'s module.
 const CAPTURED_RECORDS: &[u8] = b"captured records";
+/// What [`StreamedPrograms::capture`] and [`StreamedPrograms::passthrough`] are, in their keys.
+const STREAMED_RECORDS: &[u8] = b"streamed records";
+const STREAMED_PASSTHROUGH: &[u8] = b"streamed pass-through";
+/// A vertex program writing cull distances whose output is streamed on the replay route.
+const STREAMED_CULL_DISTANCE: &str = "StreamOutCullDistance";
 /// The function the vertex program's entry point becomes in [`capture_program`].
 const CAPTURED_FUNCTION: &str = "captured_vertex_shader";
 /// The position's member in [`capture_program`]'s outputs.
