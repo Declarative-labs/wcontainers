@@ -1247,7 +1247,8 @@ impl<B: Backend> Device<B> {
             None => dxgi(v.format)?,
         };
         // Direct3D returns what the view's format gives and the shader takes those bits as the
-        // type it declares; the back ends read a view only as its own type.
+        // type it declares; the back ends read a view only as its own type, so the program is
+        // converted again reading the view's values by their bits (`VariantKey::texel_formats`).
         let read_as = |f: Format| match f.kind() {
             FormatKind::Uint | FormatKind::Stencil => FormatKind::Uint,
             FormatKind::Sint => FormatKind::Sint,
@@ -1261,9 +1262,14 @@ impl<B: Backend> Device<B> {
                     read_as(format)
                 }
         {
-            return Err(Error::NotImplemented(
-                "a texture read as another type than its view's format",
-            ));
+            if stencil || !reconverted(b) {
+                return Err(Error::NotImplemented(
+                    "a texture read as another type than its view's format, of a stencil view or \
+                     in a geometry, hull or domain shader or a vertex shader before one",
+                ));
+            }
+            self.bound_formats
+                .push((b.visibility, (false, b.binding.slot()), format));
         }
         let dimension = declared_dimension(dimension, layer_count, b);
         // Direct3D leaves a view of another dimension than the declaration undefined, and the
