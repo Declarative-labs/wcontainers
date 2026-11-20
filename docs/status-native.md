@@ -2822,8 +2822,9 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 - N4 run 15: (1) Option (b) is built with the re-measurement's faults fixed and its programs made tests; the older
   forced-interrupt fault is fixed (a direct branch's stop before its exit). The bar passes by its own command, +18.85%
-  [+18.23 .. +19.21], and by alternating pairs is +20.53%, 0.67 points under +21.2%, inside the 2 points of layout luck
-  the study measured: please rule whether that is a pass. (2) The table is not sized by the bound check (Departures).
+  [+18.23 .. +19.21], and by alternating pairs is +20.53%, 0.67 points under +21.2%; over four seeded layouts of the
+  same build, by pairs, +18.96%, +18.92%, +22.35% and +20.77%, so four of five layouts measured pass and one does not:
+  please rule whether that is a pass. (2) The table is not sized by the bound check (Departures).
   Sizing soundly needs one of: a table indexed by the bounded case number whose every entry compares the loaded byte
   with the one it was made for, filled at its first use (N + 1 entries of four words, two more instructions on the
   hit's way: speed for size); or a range check on the byte before the table, its size taken from the guest's table
