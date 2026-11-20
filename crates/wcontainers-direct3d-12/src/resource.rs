@@ -16,6 +16,9 @@ pub const DIMENSION_TEXTURE1D: u32 = 2;
 pub const DIMENSION_TEXTURE2D: u32 = 3;
 pub const DIMENSION_TEXTURE3D: u32 = 4;
 
+/// `D3D12_TEXTURE_LAYOUT_ROW_MAJOR`, the one layout of buffers.
+pub const LAYOUT_ROW_MAJOR: u32 = 1;
+
 /// `D3D12_RESOURCE_FLAGS` bits.
 pub const FLAG_RENDER_TARGET: u32 = 1;
 pub const FLAG_DEPTH_STENCIL: u32 = 2;
@@ -199,7 +202,7 @@ pub fn check_creation(
         if clear {
             return Err(Error::Invalid("a clear value for a buffer"));
         }
-        if desc.mip_levels != 1 || desc.layout != 1 || desc.format != 0 {
+        if desc.mip_levels != 1 || desc.layout != LAYOUT_ROW_MAJOR || desc.format != 0 {
             return Err(Error::Invalid("a buffer's description"));
         }
         if desc.flags & (FLAG_RENDER_TARGET | FLAG_DEPTH_STENCIL | FLAG_SIMULTANEOUS_ACCESS) != 0

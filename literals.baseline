@@ -2159,7 +2159,6 @@ code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::full_chain	64
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	rts0_part	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	serialize	b"DXBC"
-code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::at_version	3
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	12
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	3
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	3
@@ -2245,7 +2244,6 @@ code	crates/wcontainers-direct3d-12/src/root.rs	int	serialize	8
 code	crates/wcontainers-direct3d-12/src/root.rs	str	RootSignatureDesc::validate	"root arguments of more than 64 dwords"
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Blend::dual_source	16
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Blend::dual_source	19
-code	crates/wcontainers-direct3d-12/src/state.rs	int	Raster::block	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Raster::block	32
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Raster::block	32
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_factor	10
@@ -2268,12 +2266,6 @@ code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_factor	9
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_op	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_op	4
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_op	5
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	3
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	4
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	5
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	6
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	7
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	8
 code	crates/wcontainers-direct3d-12/src/state.rs	int	in_program	4
 code	crates/wcontainers-direct3d-12/src/state.rs	int	in_program	5
 code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	3
@@ -2331,10 +2323,7 @@ code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	5
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	6
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	7
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	8
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	33
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	4
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	5
 code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	64
 code	crates/wcontainers-directx-graphics-infrastructure/src/adapter.rs	int	AdapterDesc::description_utf16	128
 code	crates/wcontainers-directx-graphics-infrastructure/src/adapter.rs	int	AdapterDesc::description_utf16	128

@@ -8,12 +8,12 @@ mod record;
 mod triangle;
 
 use record::Recorder;
-use triangle::{PS, RGBA8, VS, element};
+use triangle::{PS, RGBA8, VS};
 use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error};
-use wcontainers_directx_graphics_infrastructure::dxgi::D32_FLOAT;
+use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_gpu::{Backend, Features};
 
 #[test]
@@ -121,14 +121,13 @@ fn the_triangle_scene_replays() {
 
 /// The scene's inputs, rasterised with depth clipping `depth_clip` and fill mode `fill`.
 fn scene_raster(depth_clip: bool, fill: u32) -> (Vec<InputElement>, Raster) {
-    let inputs = vec![element("POSITION", 16, 0), element("COLOR", 6, 8)];
     let raster = Raster {
         fill,
-        cull: 1,
+        cull: CULL_MODE_NONE,
         depth_clip,
         ..Default::default()
     };
-    (inputs, raster)
+    (triangle::inputs(), raster)
 }
 
 #[test]
@@ -145,7 +144,7 @@ fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
         inputs.clone(),
         raster,
         TOPOLOGY_TYPE_TRIANGLE,
-        0,
+        dxgi::UNKNOWN,
     )
     .unwrap();
     // The back end clips; the programs keep depth inside the clip volume and clamp it.
@@ -169,7 +168,7 @@ fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
             dsv,
         )
     };
-    assert!(depth_only(&mut device, 0).is_ok());
+    assert!(depth_only(&mut device, dxgi::UNKNOWN).is_ok());
     let refused = depth_only(&mut device, D32_FLOAT);
     assert!(
         matches!(refused, Err(Error::NotImplemented(_))),
@@ -190,7 +189,7 @@ fn wireframe_without_polygon_mode_is_refused_by_name() {
         inputs,
         raster,
         TOPOLOGY_TYPE_TRIANGLE,
-        0,
+        dxgi::UNKNOWN,
     );
     assert!(
         matches!(refused, Err(Error::NotImplemented(_))),
@@ -211,7 +210,7 @@ fn a_pipeline_description_with_no_topology_type_is_invalid() {
             inputs,
             raster,
             TOPOLOGY_TYPE_UNDEFINED,
-            0,
+            dxgi::UNKNOWN,
         );
         assert!(matches!(refused, Err(Error::Invalid(_))), "{refused:?}");
     }
