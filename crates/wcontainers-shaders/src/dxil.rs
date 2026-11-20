@@ -9,6 +9,7 @@ pub(crate) mod images;
 mod nonfinite;
 mod one_d;
 mod registers;
+mod selected;
 mod staged;
 mod tessellation;
 mod widths;
@@ -270,6 +271,7 @@ pub(crate) fn lower(
     registers::encode(&mut spirv);
     let geometry = geometry::prepare(&mut spirv)?;
     let tessellation = tessellation::prepare(&mut spirv, dxil)?;
+    let selected = selected::prepare(&mut spirv)?;
     let mut declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
@@ -383,6 +385,7 @@ pub(crate) fn lower(
         stage,
         &mut reflection,
     )?;
+    selected::finish(&mut module, &selected, variant, &mut reflection, &inputs)?;
     let stage = match &geometry {
         Some(declared) => {
             let (extras, [inputs, outputs]) =

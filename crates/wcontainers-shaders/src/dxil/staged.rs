@@ -91,7 +91,7 @@ pub(super) fn opcode(i: &[u32]) -> u32 {
     i[0] & words::OPCODE_MASK
 }
 
-fn header(op: Op, count: usize) -> u32 {
+pub(super) fn header(op: Op, count: usize) -> u32 {
     ((count as u32) << words::COUNT_SHIFT) | op as u32
 }
 
@@ -226,6 +226,53 @@ impl Ids {
         self.0 += 1;
         self.0 - 1
     }
+
+    /// The module's bound past the ids given.
+    pub fn bound(&self) -> u32 {
+        self.0
+    }
+}
+
+/// Whether `op` belongs before the module's annotations (names included).
+pub(super) fn preamble(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Capability
+            | Op::Extension
+            | Op::ExtInstImport
+            | Op::MemoryModel
+            | Op::EntryPoint
+            | Op::ExecutionMode
+            | Op::String
+            | Op::SourceExtension
+            | Op::Source
+            | Op::SourceContinued
+            | Op::Name
+            | Op::MemberName
+            | Op::ModuleProcessed
+    )
+}
+
+/// An `OpName` naming `id` `s`.
+pub(super) fn name(out: &mut Vec<u32>, id: u32, s: &str) {
+    let s = string(s);
+    out.push(header(Op::Name, NAME_WORDS + s.len()));
+    out.push(id);
+    out.extend(s);
+}
+
+/// `OpEntryPoint` instruction `i` without the interface variables `staged` names.
+pub(super) fn without_interface(i: &[u32], staged: &dyn Fn(u32) -> bool) -> Vec<u32> {
+    let names = string_words(&i[ENTRY_NAME..]);
+    let kept: Vec<u32> = i[ENTRY_NAME + names..]
+        .iter()
+        .copied()
+        .filter(|&id| !staged(id))
+        .collect();
+    let mut out = Vec::from(&i[..ENTRY_NAME + names]);
+    out[0] = header(Op::EntryPoint, ENTRY_NAME + names + kept.len());
+    out.extend(kept);
+    out
 }
 
 /// Makes `p.entry`'s values private and named, its entry point of `p.model` (one invocation a group
@@ -258,32 +305,8 @@ pub(super) fn privatise(
     while let Some(i) = instruction(spirv, at) {
         at += i.len();
         let op = Op::from_u32(opcode(i));
-        let preamble = matches!(
-            op,
-            Some(
-                Op::Capability
-                    | Op::Extension
-                    | Op::ExtInstImport
-                    | Op::MemoryModel
-                    | Op::EntryPoint
-                    | Op::ExecutionMode
-                    | Op::String
-                    | Op::SourceExtension
-                    | Op::Source
-                    | Op::SourceContinued
-                    | Op::Name
-                    | Op::MemberName
-                    | Op::ModuleProcessed
-            )
-        );
-        if !preamble && !named {
+        if !named && !op.is_some_and(preamble) {
             named = true;
-            let name = |out: &mut Vec<u32>, id: u32, s: &str| {
-                let s = string(s);
-                out.push(header(Op::Name, NAME_WORDS + s.len()));
-                out.push(id);
-                out.extend(s);
-            };
             for (k, v) in p.values.iter().enumerate() {
                 name(&mut out, v.id, &value_name(p.prefix, k));
             }
@@ -298,15 +321,8 @@ pub(super) fn privatise(
         }
         match op {
             Some(Op::EntryPoint) => {
-                let names = string_words(&i[ENTRY_NAME..]);
-                let kept: Vec<u32> = i[ENTRY_NAME + names..]
-                    .iter()
-                    .copied()
-                    .filter(|&id| !staged(id))
-                    .collect();
-                out.push(header(Op::EntryPoint, ENTRY_NAME + names + kept.len()));
-                out.push(p.model as u32);
-                out.extend_from_slice(&i[ENTRY_FUNCTION..ENTRY_NAME + names]);
+                let mut kept = without_interface(i, &staged);
+                kept[ENTRY_MODEL] = p.model as u32;
                 out.extend(kept);
                 if p.model == ExecutionModel::GLCompute {
                     out.push(header(Op::ExecutionMode, MODE_LITERAL + LOCAL_SIZE.len()));
@@ -347,7 +363,7 @@ pub(super) fn privatise(
             _ => out.extend_from_slice(i),
         }
     }
-    out[words::BOUND] = ids.0;
+    out[words::BOUND] = ids.bound();
     *spirv = out;
     Ok(())
 }
