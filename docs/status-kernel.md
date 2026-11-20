@@ -14,6 +14,13 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, thirteenth run: K6c's bar is met. The whole LTP comparison at 684b15ec matches 4153 of
+4211 tests; the other 58 are 36 of section 15's causes, 13 on the gap list, the reference's own
+3 failures and 6 slower than 900 s on the stand-in, five of which give the reference's verdict
+with two hours and the sixth (ADSP038) runs alone with four. remap_file_pages on a removed
+segment is fixed (shmctl05 passes). The whole suite gives the known ARM list there, all of
+which passes on the Mac. See "K6c, thirteenth run".
+
 K6c, twelfth run: layout randomization is built (aslr01 passes) and LTP on our kernel runs on the
 machine's clock, which turned 31 of the 43 slow rows into verdicts. The whole comparison at
 a67cd731 matches 4143 of 4211 tests; the new differences it showed are fixed and their reruns are
@@ -145,6 +152,37 @@ Found:
   waits for every reader to run as long before its next turn, so each reader adds 5 to 8 s
   (the slopes measured): about an hour for 512 readers and two for 1000. Slow on the test
   machine, not a different verdict.
+
+The whole LTP comparison at 684b15ec, every row at that code (ARM machine, `LTP_LIMIT=900`, 4
+side by side from 00:41 UTC, then from 02:21 the same command with 12 continuing the file, which
+reruns what was in flight; ended 02:47 UTC; load 20 to 34; committed as
+ltp/ours-20260930-684b15ec.tsv; scratch k6c13/arm/whole.tsv, k6c13/differ.txt from differ.py,
+and the differing tests' logs in k6c13/arm/differ-logs.tgz): of 4211 distinct tests (4226
+rows), 4153 match and 58 differ. Against the twelfth run: shmctl05 (both groups) passes,
+keyctl01 is broken as the reference's, and pth_str01, pth_str03, setrlimit06, mtest01,
+mtest01w, mtest06 and mallinfo2_01 now pass as the reference's.
+
+The LTP table at this run's end (4211 tests, verdicts of the ARM64 machine), which meets K6c's
+bar:
+- Matching: 4153.
+- A section 15 cause, 36: tracing (ptrace01, 02, 03, 05, 06, 11); no raw packets
+  (cve-2017-7308, setsockopt02, sendto02: AF_PACKET; asapi_01 to 03: raw IPv6; cve-2017-2671:
+  ping sockets); not Linux's network stack (cve-2018-5803 and test_1_to_1_initmsg_connect:
+  SCTP; cve-2021-26708: vsock); /proc and /sys a chosen subset (sysfs sys_kernel01,
+  sys_clocksource01, sys_clockevents01, sys_cpu_topology01 and 02, sys_cpu_vulnerabilities01,
+  sys_cpu_cache01, sys_bdi01, sys_rtc01, sys_net01, sys_block_queue01, sys_block_size01,
+  sys_mm_swap01; mm kallsyms); one CPU (af_alg07, cve-2019-8912, irqbalance01, getcwd04,
+  writev03); the small address space (fork14).
+- Excused by the gap list (Known gaps, first part), 13: page residency (mincore03, mlock201,
+  mlock05, mmap12, vma01), IPV6_RTHDR (setsockopt11, cve-2026-53362), the test harness (fork09,
+  creat05, fcntl12, fcntl12_64, openat03, copy_file_range03).
+- The reference's own failures, 3: clock_nanosleep02, select02 and prctl09 (they pass when the
+  reference runs them again, fourth run).
+- Slower than 900 s on the stand-in, 6, each with the reference's verdict given a longer limit
+  (below): dio30, fsx22, ADSP037, ADSP073 and ADSP074 pass in 1384 to 4444 s; ADSP038 (1000
+  readers) ran past 7200 s beside seven others, for the cause found above; it runs again alone
+  with a four-hour limit (ARM machine, job kernel/20261120-024815-1653325, results
+  target/ltp-k6c13/adsp038.tsv there, followed into scratch k6c13/adsp038-attach.log).
 
 The twelfth run's timeouts with a two-hour limit (ARM machine, job kernel/20261120-002010-877064,
 code 7579e667, 8 side by side, 00:20 to 02:20 UTC, load 20 to 34; k6c12/slow.tsv and
@@ -4382,9 +4420,12 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-K6c, after the thirteenth run: see "K6c, thirteenth run" for whether the bar is met. Beyond
-K6c, the brief's asks, in this order: number the wait channels, then the record-and-replay test;
-low-first mapping placement and the memory ceiling; the runtime's start values.
+K6c, after the thirteenth run: the bar is met; the independent check is next ("For the
+independent check", the thirteenth run's table, scratch k6c13/mac.sh for the Mac's part). Read
+ADSP038's four-hour run (`arm-run --fetch kernel target/ltp-k6c13/adsp038.tsv
+<scratch>/kernel/k6c13/` if the follower stopped). Then the brief's asks, in this order: number
+the wait channels, then the record-and-replay test; low-first mapping placement and the memory
+ceiling; the runtime's start values.
 
 K6c, after the twelfth run (done in the thirteenth run):
 1. Read k6c12/runtimes-attach.log (Java start-up and Python's system modules with the 2^39
@@ -4595,6 +4636,7 @@ sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seed
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
 6262601 to 6262624 and 8484001 to 8484003 (K6b), 8484004 (K6c, 300 sequences), 9191001 and
 9191002 (K6c third run, 200 each), 9191003 to 9191005 (300, 32, 32 each), 9191100 to 9191104
-(K6c runs' own checks), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+(K6c runs' own checks), 9191105 to 9191107 and 9191111 to 9191116 (K6c's tenth, twelfth and
+thirteenth runs, on the Mac; fresh ones start at 9191117), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
