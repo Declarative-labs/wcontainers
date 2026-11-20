@@ -10,10 +10,10 @@ on every count (The choice, below). Run 9: dEQP's GLES cases in the corpus (rout
 126 differ, all from undefined behaviour on the seeded inputs); route B takes bitfield extract and
 insert, integer sign, frexp, the sample mask input and an exclusive or of booleans; a vertex
 attribute read in part (some columns of a matrix) keeps its columns' places; ES programs are held
-to llvmpipe at full precision. Piglit 1338 match (up from 1313), bgfx 307 (up from 301). Still to
-do (Next): the 15.4 rewrites and robustBufferAccess (both blocked on other tracks), the
-alpha_to_one programs in the corpus (the build that dumps them was started in run 9), Godot,
-Dolphin and Godot Forward+.
+to llvmpipe at full precision. Piglit 1338 match (up from 1313), bgfx 307 (up from 301). The
+alpha_to_one programs of the Vulkan CTS are in the corpus (converted and validated after the two
+steps, held by G10's CTS cases). Still to do (Next): the 15.4 rewrites and robustBufferAccess
+(both blocked on other tracks), Godot, Dolphin and Godot Forward+.
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -255,6 +255,15 @@ Done:
   GLSL ES allows both. Without it 883 of dEQP's programs differed by half-precision rounding or
   16-bit integers. `#version 100` is now taken as ES (GLSL ES 1.00 has no profile word), so its
   feeders are ES too.
+- The alpha_to_one programs in the corpus (run 9): `corpus/cts-programs` builds VK-GL-CTS's
+  `vk-build-programs` at the commit `corpus/sources` pins and writes the programs of
+  `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one` (its registry: one file a distinct program;
+  the group's 28 cases build 2, a vertex and a fragment program) into
+  `nir-corpus/vk-gl-cts-programs/alpha_to_one`. The corpus run puts a fragment program of that
+  folder through `Nir::alpha_to_one` before the routes and records it "held by G10's CTS cases"
+  instead of comparing it (below). Run 9 (`results/run9/nir-results-r9-a2o.jsonl`): route B
+  converts and validates the fragment program after the two steps; the vertex program matches
+  lavapipe on both routes; route A fails the fragment program (Zink's compiler and lowered IO).
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -409,33 +418,24 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. The alpha_to_one programs (item 4 below): `corpus/cts-programs` (new in run 9, its first run
-   started at the end of run 9; check its log in scratch `logs/r9-cts.log`) builds VK-GL-CTS's
-   `vk-build-programs` at the corpus's pinned commit and writes the programs of
-   `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one` into
-   `nir-corpus/vk-gl-cts-programs/alpha_to_one`; the corpus run (`run.rs`, already in) puts each
-   fragment program there through `Nir::alpha_to_one` before the routes and records it "held by
-   G10's CTS cases". Then add `dEQP-VK.robustness.buffer_access` to its groups when
-   robustBufferAccess can be done.
+1. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
+   `corpus/cts-programs`' groups, and lower those programs before both runs.
 2. Godot's Compatibility renderer (its `.glsl` files with Godot's section and variant markers) and
    Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
    `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names);
    `rgba16f` storage images in the harness (6 bgfx); `pack_*_split` (64-bit, so refused) stays.
-3. The rest of the SPIR-V corpus (Godot Forward+; the shaders of
-   `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and `dEQP-VK.robustness.buffer_access.*`),
-   each pinned in `corpus/sources`. Then `corpus/choose` again over all of it for the final choice.
-4. The alpha_to_one programs into the corpus: the fragment programs of
-   `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` (VK-GL-CTS makes them in its C++;
-   take them from a CTS build's shader dump, pinned), each through `Nir::alpha_to_one` then the
-   routes, converted and validated, and listed as held by G10's CTS cases (lavapipe does not run
-   `demote_samples`).
-5. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
+3. The rest of the SPIR-V corpus (Godot Forward+, pinned in `corpus/sources`). Then
+   `corpus/choose` again over all of it for the final choice (dEQP's GLSL is in since run 9).
+4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
-   shaders crate (Requests; not there at shaders' tip 2e8abb3e, run 6); robustBufferAccess's three steps
-   (needs `HelperValue::BufferRange`).
-6. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
-   end on the seeded inputs.
-7. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
+   shaders crate (Requests; still not there at the shaders branch's tip 2ddd69b3, run 9: only
+   `convert` for DXBC and DXIL, `variant` private); robustBufferAccess's three steps (needs
+   `HelperValue::BufferRange`, not in the interface at run 9).
+5. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
+   end on the seeded inputs; the cube map array program naga refuses (dEQP
+   `android_extension_pack.test#extension_directive.ext_texture_cube_map_array`, "Index 2 is out of
+   bounds").
+6. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
 
 ## How to run
 
@@ -507,6 +507,11 @@ Next, in this order:
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- `corpus/cts-programs` from nothing (VK-GL-CTS clone, its `fetch_sources.py`, CMake and Ninja
+  for `vk-build-programs`, the alpha_to_one programs), x86-64 machine, `-j 96`, load 5.2 at the
+  start and 10.4 at the end: 320 s wall, 76 min user.
+- dEQP's 13,630 items alone, 192 children, x86-64 machine, load 0.1 to 32.6: about 32 s.
 
 - Mesa 26.3.1 clean build (configure, 1239 steps, install), x86-64 machine (c7i.metal-48xl, 192
   threads), `-j 64`: 45.9 s wall, 11 min 37 s user, load average 4.96 at the start and 10.51 at the
@@ -726,7 +731,11 @@ None.
 
 ## Literal check
 
-Run 8: exit 0 at the run's last code commit, 9e0a7c6e's parent (x86-64 machine, from a git bundle; marks 0; a first
+Run 9: exit 0 with the run's code (x86-64 machine, from a git bundle; marks 0). A first try
+found `"in"`, `"out"` and a decimal point in `tests/corpus/deqp.rs` restating constants of the
+WebGL back end and the check (private there): GLSL's qualifiers are now written through one
+function of format strings, and the dEQP grammar's one word before a stage list is taken as any
+word. wcontainers-nir still has no baseline lines. Run 8: exit 0 at the run's last code commit, 9e0a7c6e's parent (x86-64 machine, from a git bundle; marks 0; a first
 try found the GLSL version directive named twice, in `glsl.rs` and the new `bgfx.rs`: now imported);
 wcontainers-nir still has no baseline lines. Run 7: exit 0 at the run's last code commit (x86-64 machine, from a git bundle of the branch; marks
 0); wcontainers-nir still has no baseline lines. Run 6: exit 0 at 4294fcf0 (x86-64 machine, from a git bundle; marks 0; the 18 changes that could
