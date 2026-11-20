@@ -81,7 +81,11 @@ new layouts of it at +17.75% to +19.03%, every one under +21.2% (below, "N4 run 
 spent about 164 million cycles before the program started, finding the float state moves by decoding every system
 register six times, and found them in one pass once a process: the bar's command gives +11.08% [+10.42 .. +11.52] and
 the system-call part 76.4 ns; by pairs the compute part went from +18.68% to +12.51% (below, "N4 run 18"). Run 19
-changed no code and waited on Docker for the suites that need the reference (below, "N4 run 19").
+changed no code and waited on Docker for the suites that need the reference (below, "N4 run 19"). Run 20 ran them with
+the reference on the rented ARM64 machine's Docker, since the Mac's still starts no container: the count at every counted
+event alike at none and 256 on the benchmark set (same hashes), busybox 56 of 56, and both at whole page, pass; only the
+blocks program's two `dc cvau` lines differ, from that machine's hardware, and wait for the Mac's reference (below, "N4
+run 20").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -108,6 +112,38 @@ changed no code and waited on Docker for the suites that need the reference (bel
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 20 (2026-11-20): the reference's suites, with the reference on the rented ARM64 machine
+
+Start: origin/main and origin/phase-1-literals had nothing new; no new ruling in the brief since run 15 (its section of
+2026-11-20 is what runs 15 to 17 built), and no answer in the orchestrator's folder to run 18's asks. No code changed.
+Files in scratch native/n4r20 (bin/docker, scripts/remote-docker.sh, scripts/docker-suites.sh, suite/*.log).
+
+Docker Desktop on the Mac still starts no container (a probe at 07:08 and one at 07:15 stayed in Created; both removed;
+other tracks' containers sit in Created too). So the reference ran on the rented ARM64 machine's Docker (Docker 29.9.3,
+alpine:3.22, Linux 7.0 on Graviton4), reached from the Mac's tests through a forwarded socket: `remote-docker.sh` forwards
+that machine's Docker socket to scratch n4r20/d.sock, and `bin/docker`, first on PATH, sends every docker command there,
+copying a bind-mounted folder to the same path under /work/native-ref first. The native side ran on the Mac
+(Hypervisor.framework) as always, at -j 4 and 3 test threads, load 1.6 to 6.5, HEAD 693f60ff. A departure (below).
+
+Results:
+- The kernel test (scripts/docker-suites.sh, suite/kernel.log): hello, bench, calls, jumptables, forks and code give the
+  reference's output and exit code; with a stop after every counted event, alike at look-ahead none and 256: bench
+  177,072 stops, hash 10937141521840235265, calls 3,004 (18260131204484228776), jumptables 5,484 (17339527552300285948),
+  the same as runs 15 to 17. It then failed at blocks against this reference, two lines of 34: `cvau allowing nothing`
+  and `cvau unmapped` give signal 11 on our side (native and WebAssembly alike, and as Docker Desktop's reference on the
+  M5 gave in runs 15 to 17) and "ran" on Graviton4. `dc cvau` of a page that cannot be read is a fault on the M5 and a
+  no-fault on that machine: the reference's hardware differs, not our output. The test is not changed; its blocks
+  comparison needs the Mac's reference.
+- So that the rest could run, the same test with only blocks' comparison with the reference taken out (scratch patch
+  zz-blocks-after.patch, applied for the run and reverted at once; suite/kernel-mappings.log): passes to the end, mappings
+  as the reference, its large entry split 4 times, and killed with "guest-physical space full" when writing 1536 MiB.
+- Busybox (suite/busybox.log): 56 commands give the reference's output, exit code and files (seed 0x6b65726e, 282 s).
+- Whole page (WCONTAINERS_NATIVE_BOUND=4294967295, suite/whole-page.log and kernel-mappings-whole-page.log): busybox 56 of
+  56; the kernel test as above, the same stops and hashes, blocks differing on the same two lines, the rest to the end.
+- So the count at every counted event is identical across look-aheads on the benchmark set, against the reference, at
+  this head. What is left of the reference on the Mac: blocks' comparison, once Docker Desktop starts containers
+  (`sh n4r19/scripts/docker-suites.sh`, the kernel test alone is enough).
 
 ## N4 run 19 (2026-11-20): waiting on Docker for the reference
 
@@ -3038,6 +3074,10 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 - N2, `Route::Collision`: the plan's register-field collisions (plan 3.4, "Encodings Arm leaves CONSTRAINED
   UNPREDICTABLE") are a route of their own, so the routing test and the emitter see them by name.
+- N4 run 20, the reference: Docker Desktop on the Mac started no container, so the kernel test and busybox ran on the
+  Mac with their docker commands sent to the rented ARM64 machine's Docker (scratch n4r20/bin/docker and
+  scripts/remote-docker.sh; nothing in the repository changed). The brief lets that machine's verdicts count except for
+  tests whose reference differs there; blocks' `dc cvau` lines are one, and wait for the Mac's reference.
 - N2, `counted` lives in wcontainers-guest-cpu's native module beside `Native` until T2 moves the count
   into the shared finder; it depends only on `Flow` and the address.
 - N2, the encoder is in wcontainers-arm64 (`encode.rs`), not the translator: the translator knows no one
@@ -3075,6 +3115,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 20: Docker Desktop on the Mac still starts no container (07:08 and 07:15). The reference's suites ran with the
+  reference on the rented ARM64 machine's Docker through a forwarded socket (Departures): all pass, the count at every
+  counted event alike at none and 256 on the benchmark set with the same hashes as runs 15 to 17, except two lines of
+  the blocks program: `dc cvau` of a page that cannot be read faults on the M5 (our output, and Docker Desktop's
+  reference in runs 15 to 17) and does not on Graviton4. That belongs on the manual's list of verdicts that differ on
+  that machine. Blocks' comparison waits for Docker Desktop. Run 18's asks stand: the bar, the forms index, the
+  table's size, loaded translations shared between processes.
 
 - N4 run 19: Docker Desktop on the Mac answers `docker ps` and `docker info` but starts no container (`docker start`
   hangs) from about 03:56 to at least 06:58, also after the restart at 06:08. The kernel test, busybox and
