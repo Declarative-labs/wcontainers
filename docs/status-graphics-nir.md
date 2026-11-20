@@ -5,6 +5,13 @@ G9).
 
 ## Where it stands
 
+G9 run 2 (2026-11-20). G9 is far from its bar. This run: the one conformance release and its
+lists chosen, glcts and deqp-runner built on the desktop, the harness proven through the GPU
+queue on llvmpipe and on the RTX 3080's own OpenGL (1% of every list), the Mesa patch adding our
+Gallium driver to the WGL target, and the driver's first slice (its screen, built into
+`libgallium_wgl.dll`). Our driver passes no case yet: its context does not exist, and its screen
+hangs under glcts (G9, below). The table of lists and shares on our driver: none yet.
+
 G9 run 1 (2026-11-20). G9 is started, far from its bar: no OpenGL driver of ours exists yet, so no
 case of 15.2's lists has run and there is no table of lists and shares to give (G9's report, below,
 says what each line of it waits on). This run settled the findings of G8's third check (listed
@@ -71,20 +78,96 @@ G9 (OpenGL natively), where it stands:
   8d324b62...ac135, clang+llvm-21.1.8-x86_64-pc-windows-msvc.tar.xz 749d22f5...21a47 (full in
   the log, scratch `logs/g9r1-mesa-windows.log`); to be checked by the script once the owner
   accepts the tools.
-- Next, in order: (1) choose the CTS release (the two current lines are `opengl-es-cts-3.2.14.1`
-  for the GLES lists and `opengl-cts-4.6.8.1` for KHR-GL; 15.2 says one release, so take the GL
-  line's tag if its tree holds the GLES mustpass too, and say so), build its `glcts` for Windows
-  with the WGL platform and deqp-runner (MIT) for Windows, and run a shard of each list on
-  llvmpipe through the queue, so the harness is proven before our driver exists; (2) the driver:
-  a Mesa patch adding `src/gallium/drivers/wcontainers` (the screen's create function and its
-  meson file linking the Rust static library), the `gallium-drivers` choice, `wgl.c`'s three
-  places (15.2), and the crate `wcontainers-opengl` with `pipe_screen` and `pipe_context` over
-  `wcontainers-gpu`, generic over the back end, shaders through `wcontainers-nir`'s route B; (3)
-  the lists through the queue in shards, the table, the failures with reasons; (4) bgfx's and
-  Godot's OpenGL renderers on the rig.
-- G9's report, the table of lists and shares: none yet. dEQP-GLES2, dEQP-GLES3, dEQP-GLES31,
-  KHR-GLES and KHR-GL33 (the 92.9% floor together) and KHR-GL46 (98.6%): no case run on our driver,
-  which does not exist yet.
+- G9 run 2: the conformance release is chosen: VK-GL-CTS `opengl-cts-4.6.8.1`, commit
+  067e8832; `opengl-es-cts-3.2.14.1` names the same commit, so one release holds every list
+  (`crates/wcontainers-opengl/cts/pin.toml`; the pinned Mesa's own CI uses these two tags too).
+  Its lists for 15.2 (`cts/lists.txt`), with their case counts: dEQP-GLES2 17,165, dEQP-GLES3
+  44,768, dEQP-GLES31 37,802 (`gles/aosp_mustpass/main/gles*-main.txt`), KHR-GLES2 473,
+  KHR-GLES3 6,498, KHR-GLES31 4,101, KHR-GLES32 1,405 (`gles/khronos_mustpass/main/
+  gles*-khr-main.txt`), KHR-GL33 9,886 and KHR-GL46 19,714 (`gl/khronos_mustpass/main/`). The
+  seven GLES lists hold 112,212 cases, exactly the total gex_wgpu's published GLES share is over
+  (15.2). Each list runs with its `mustpass.xml`'s first configuration (the CTS's own arguments,
+  read from the file, not retyped). deqp-runner v0.23.3 (commit 0fc69278, the pinned Mesa's).
+- `cts/build-windows.ps1` fetches the release and the sources its `fetch_sources.py` pins, builds
+  `glcts` (WGL platform, `DEQP_TARGET=default`) with the Visual C++ compiler and Ninja, and
+  `cargo install`s deqp-runner, all under `C:\wc\graphics-nir`. `cts/run-windows.ps1 -Driver
+  <gallium driver> [-Lists <names>] [-Fraction n -FractionStart k]` copies Mesa's DLLs beside
+  glcts, runs each list (or every n-th case from the k-th, a shard) through deqp-runner and prints
+  each result's count and 15.8's measure. The tools both Windows scripts share are in
+  `crates/wcontainers-nir/mesa/windows-tools.ps1`.
+- The Mesa patch for the driver (`mesa/patches/wcontainers-gallium-driver.patch`): `wcontainers`
+  in `gallium-drivers`, `with_gallium_wcontainers`, the driver's folder (its meson file only
+  declares the dependency: `GALLIUM_WCONTAINERS` and the new `wcontainers-link-args` option, the
+  static library cargo built and the native libraries rustc printed for it;
+  `wcontainers_public.h` declares `wcontainers_screen_create`), and `wgl.c`'s three places (the
+  screen by name, ours first after `GALLIUM_DRIVER`'s choice, present through
+  `flush_frontbuffer`). Applied and built on Linux (x86-64 machine, driver not selected there).
+- The driver's first slice, `crates/wcontainers-opengl`: the C bridge (`bridge/screen.c`, built
+  by `cc` against the pinned headers and `u_screen.c`'s compile flags, as wcontainers-nir's
+  bridge is) makes the `pipe_screen`: Gallium's default caps (`u_init_pipe_screen_caps`) with
+  the interface's limits (texture sizes and levels, layers, colour targets, vertex streams and
+  stride, point size) over them, the GPU's name. The device (`src/device.rs`) is the WebGPU back
+  end on `wgpu`'s Direct3D 12 on Windows (Vulkan elsewhere), as the Direct3D fronts make theirs.
+  Honest absence until the context exists: `is_format_supported` reports no format, and
+  `context_create` refuses by name ("wcontainers: refused: an OpenGL context ..."), so WGL offers
+  no pixel format and makes no context rather than one that draws nothing. Lint clean with and
+  without Mesa; the static library exports `wcontainers_screen_create` and the device's entry
+  points and leaves Gallium's helpers to Mesa's link (x86-64 machine, `nm`). The Windows Mesa
+  script now builds it (`RUSTFLAGS=-C target-feature=+crt-static` for Mesa's static runtime, its
+  own target folder `C:\wc\graphics-nir\opengl-target`), passes it and rustc's
+  `native-static-libs` through `meson configure`, and links it into `libgallium_wgl.dll` with
+  `gallium-drivers = ['wcontainers', 'llvmpipe']`.
+- Next, in order: (0) the hang above, so that our screen is made and the context refusal is
+  what glcts sees; (1) the context (`pipe_context`): blocks from `create_*_state`, dirty marks,
+  `draw_vbo` naming blocks and binding sets, resources, transfers, `util_blitter` clears and
+  blits, queries, `flush_frontbuffer` presenting through a surface over the DC's window; shaders
+  from st/mesa's NIR through route B, so the screen's `nir_options` are wcontainers-nir's
+  (`wc_compiler_options`); wcontainers-nir must then build only its bridge into the driver, not
+  link Mesa's own libraries a second time (libgallium_wgl.dll already holds NIR); then formats
+  reported from the interface's `FormatCaps`; (2) the lists through the queue in shards on our
+  driver, the table, every failure with a reason; (3) bgfx's and Godot's OpenGL renderers on the
+  rig.
+- G9's report, the table of lists and shares on OUR driver: none yet. dEQP-GLES2, dEQP-GLES3,
+  dEQP-GLES31, KHR-GLES and KHR-GL33 (the 92.9% floor together) and KHR-GL46 (98.6%): no case has
+  run on our driver; its screen refuses contexts until the context is built.
+- The harness is proven on llvmpipe (G9 run 2, the desktop through the GPU queue, `--desktop`,
+  deqp-runner 8 at once, every 100th case of each list from the first, 2026-11-20 09:06 to 09:08,
+  shared with other tracks' queued jobs). These are llvmpipe's numbers, not ours, and llvmpipe's
+  Windows build here crashes (below), so they say nothing of the floors yet:
+  - dEQP-GLES2: 172 cases, Pass 111, Crash 61: 111 of 172 run, 64.53%.
+  - dEQP-GLES3: 448 cases, Pass 255, Crash 192, NotSupported 1: 255 of 447, 57.05%.
+  - dEQP-GLES31: 379 cases, Pass 113, Crash 242, NotSupported 24: 113 of 355, 31.83%.
+  - KHR-GLES2: 5 cases, Pass 5: 100%. (A probe of every 20th case: 24, Pass 22, Crash 2.)
+  - KHR-GLES3: 65 cases, Pass 57, Crash 8: 87.69%.
+  - KHR-GLES31: 42 cases, Pass 27, Crash 15: 64.29%.
+  - KHR-GLES32: no results: glcts could not make an OpenGL ES 3.2 context through WGL on
+    llvmpipe ("Failed to create WGL context", tcuWGL.cpp:541).
+  - KHR-GL33: 99 cases, Pass 75, Crash 24: 75.76% (09:19, Mesa rebuilt with our driver beside).
+  - KHR-GL46: 198 cases, Pass 116, Crash 28, NotSupported 54: 116 of 144, 80.56%.
+  Every crash seen ends with exit code 0xc0000374 (heap corruption) within 0.1 to 2 s, in cases
+  that compile shaders (constant expressions, indexing, conversions, draws) and in two
+  renderbuffer cases. Not yet explained. Suspected: the LLVM linked into llvmpipe is LLVM's own
+  Windows release, whose build settings (assertions, ABI-breaking checks, iterator debugging)
+  may differ from what Mesa's build assumes; Mesa's CI builds its own LLVM. To find: a crash's
+  stack (`cdb` or WER's dump of one crashing case run alone), then an LLVM built here if that is
+  the cause. Our driver does not use LLVM, but llvmpipe is the reference the plan holds pictures
+  to, and the share real OpenGL passes is to come from the RTX 3080's own OpenGL (not reachable
+  this way: the CTS loads our `opengl32.dll` from its folder; a second glcts folder without it
+  gives NVIDIA's).
+- The RTX 3080's own OpenGL (NVIDIA's driver, `-Driver system`: glcts hard-linked into a folder
+  without Mesa's DLLs), the same 1% shards, 09:13, 23 s in all: every case run passed. dEQP-GLES2
+  172 of 172; dEQP-GLES3 446 of 446 (Pass 445, Warn 1, NotSupported 2); dEQP-GLES31 378 of 378
+  (NotSupported 1); KHR-GLES2 none run (all 5 NotSupported); KHR-GLES3 65 of 65; KHR-GLES31 42
+  of 42; KHR-GLES32 15 of 15; KHR-GL33 98 of 98 (NotSupported 1); KHR-GL46 175 of 175
+  (NotSupported 23). So the harness is sound, llvmpipe's crashes are its own build's, and this
+  is the reference for "none that real OpenGL on the same GPU passes is left without a reason".
+- Our driver through the harness (`-Driver wcontainers`, Mesa rebuilt with it linked, 09:18):
+  KHR-GLES2's 5 cases all Missing: each glcts process was killed at deqp-runner's 60 s limit
+  with no output at all, not even the driver's refusal of the context. So it hangs in or before
+  the screen's creation. Not yet found; first suspect: the screen is made while Windows holds the
+  loader lock (WGL's DLL attach) and `wgpu`'s Direct3D 12 device creation loads DLLs there. Next
+  run: one case alone under a debugger or with the screen's steps printed, then make the device
+  outside the lock (lazily, on the first context) if that is it.
 
 G8 run 15 (2026-11-20). Complete but for one item waiting on the owner's decision, named below;
 handed to G8's independent check again. Run 15 fixed the second check's findings: route B's
@@ -945,6 +1028,19 @@ Next (after G8's check):
   `C:\wc\graphics-nir`, 4.8 GB at the end of G9 run 1 (the unpacked tools, LLVM most of it; the
   Mesa source, build and install); the downloaded archives were deleted (fetched again only if a
   tool is missing).
+- The conformance suite on the desktop (G9): build once with `tools/graphics-rig/remote
+  'powershell -NoProfile -ExecutionPolicy Bypass -File crates\wcontainers-opengl\cts\build-windows.ps1'`
+  (glcts and deqp-runner; about 40 minutes the first time, at 8 jobs beside other tracks'
+  builds). Run lists as a GPU job: `tools/graphics-rig/gpu-job --desktop --build 'if not exist
+  "%CARGO_TARGET_DIR%" mkdir "%CARGO_TARGET_DIR%"' -- 'powershell -NoProfile -ExecutionPolicy
+  Bypass -File crates\wcontainers-opengl\cts\run-windows.ps1 -Driver <wcontainers|llvmpipe|system>
+  [-Lists gles2-main,gl46-main] [-Fraction 100 -FractionStart 1]'` (a list's name is its file's
+  name without `.txt`). It prints each list's counts and share; deqp-runner's `results.csv`,
+  `failures.csv` and logs are in `C:\wc\graphics-nir\cts\results\<driver>\<list>`. Logs of
+  run 2 in scratch `logs/g9r2-*.log`. The Mesa build (above) must have run first for
+  `wcontainers` and `llvmpipe`. Kept on the desktop after run 2: `C:\wc\graphics-nir\cts`
+  3.8 GB (the suite's source and build), `tools` 3.9 GB (with deqp-runner), `mesa` 0.8 GB,
+  `opengl-target` 0.8 GB (the driver's cargo output, reused by each Mesa build).
 - Build Mesa, from the Mac: `orchestrator/cloud/x86-run <checkout> --name graphics-nir --jobs 64 --
   'crates/wcontainers-nir/mesa/build path:/work/flake/graphics-nir'`. On any Linux machine with Nix:
   `crates/wcontainers-nir/mesa/build` (its argument, the flake, defaults to the checkout). The tools
@@ -1149,6 +1245,16 @@ Next (after G8's check):
   `glcpp-lex.c` flex's (flex's own BSD-style licence). All permissive. The Windows build
   (`mesa/build-windows.ps1`, G9) links nothing into anything of ours yet; G9 lists the driver's
   linked files when there is one.
+- G9 run 2, wcontainers-opengl's dependencies: `pollster` 1 (Apache-2.0 OR MIT), `wgpu` 30.0.2
+  (MIT OR Apache-2.0, the workspace's patched copy), `wcontainers-gpu` and `wcontainers-gpu-webgpu`
+  (ours); build-dependencies `cc` (MIT OR Apache-2.0), `serde` and `serde_json` (MIT OR
+  Apache-2.0). All already in the lock file.
+- Testing only, on the Windows desktop (`crates/wcontainers-opengl/cts`, never linked into
+  anything of ours): VK-GL-CTS `opengl-cts-4.6.8.1` (Apache-2.0, its `LICENSE`) with what its
+  `fetch_sources.py` pins (glslang BSD-3-Clause and others, SPIRV-Tools and SPIRV-Headers
+  Apache-2.0 and MIT, Amber Apache-2.0, jsoncpp MIT, zlib Zlib, libpng libpng-2.0, Vulkan-Docs and
+  the video samples Apache-2.0 and MIT), and deqp-runner v0.23.3 (MIT, as 15.2 says; its own
+  crates from crates.io, built by `cargo install --locked`).
 - zlib (Zlib licence), linked as Mesa's build found it (Nixpkgs' static zlib).
 - `serde_json` 1 and `serde` 1 (both MIT OR Apache-2.0), build- and dev-dependencies of
   wcontainers-nir; `cc` (MIT OR Apache-2.0), already in the workspace.
@@ -1205,6 +1311,18 @@ Next (after G8's check):
   the rig's setup (the rig's scripts are another track's). It fetches its own tools into
   `C:\wc\graphics-nir\tools` rather than installing them system-wide. llvmpipe is built with
   LLVM's own Windows release (static runtime), not an LLVM built here.
+
+- G9 run 2: `wcontainers_screen_create` is in the crate's C bridge, not in a C file of Mesa's
+  driver folder (15.2): the folder holds only its meson file and the public header, so every line
+  of the driver's code is in this repository. The library reaches Mesa's link through one meson
+  option, `wcontainers-link-args`, set after cargo builds it (the native libraries are known only
+  then), not through a path Mesa's meson file computes.
+- G9 run 2: each list runs with the first configuration its `mustpass.xml` gives it (for the
+  KHR lists, 64 by 64 and seed 1; the dEQP lists have one). The KHR lists' other configurations
+  (other sizes and seeds, FBO surfaces) are not run: 15.8's measure names the lists, and gex_wgpu's
+  112,212 GLES cases are one configuration of each.
+- G9 run 2: the pinned CTS is unpatched (Mesa's own CI patches its copy); a case that fails by a
+  CTS fault is listed as such with its reason, not excluded.
 
 - 6.4 states the binding rule for Direct3D. For Vulkan and OpenGL programs the NIR route reads it as
   Direct3D 12's: within the stage's set each kind's resources in the order of the program's own
@@ -1392,6 +1510,10 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 2: not run (the run's budget went to the desktop); the Rust added has no bare literal
+(names, paths and flags are named constants; the build scripts share `mesa/meson_build.rs`
+rather than defining its constants twice). To run first in the next run.
 
 G9 run 1: exit 1 at 248050c5 (x86-64 machine, from a git bundle; marks 0), with the one finding
 outside this track's reach, `CUBE_FACES` (Waiting on others). wcontainers-nir still has no
