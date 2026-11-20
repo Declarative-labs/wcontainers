@@ -13,7 +13,7 @@ compute.cs_counter.dxbc	ok ; glsl absent compute
 compute.cs_shared.dxbc	ok ; glsl absent compute
 compute.cs_structured.dxbc	ok ; glsl absent compute
 compute.cs_texture.dxbc	ok views:R32Float ; glsl absent compute
-compute.ps_overlap.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+compute.ps_overlap.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 constants.ps_slots.dxbc	ok ; glsl compiles
 constants.ps_window.dxbc	ok ; glsl compiles
 depth.ps_depth.dxbc	ok ; glsl compiles
@@ -51,9 +51,9 @@ samplers.ps_sample.dxbc	ok ; glsl compiles
 streamout.gs.dxbc	ok ; glsl absent compute
 streamout.vs_back.dxbc	ok ; glsl compiles
 targets.ps.dxbc	ok ; glsl compiles
-tessellation.ds_line.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-tessellation.ds_quad.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-tessellation.ds_tri.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+tessellation.ds_line.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.ds_quad.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.ds_tri.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 tessellation.hs_line.dxbc	ok ; glsl absent compute
 tessellation.hs_quad_even.dxbc	ok ; glsl absent compute
 tessellation.hs_quad_integer.dxbc	ok ; glsl absent compute
@@ -67,7 +67,7 @@ textures.ps_1d_array.dxbc	ok ; glsl compiles
 textures.ps_2d_array.dxbc	ok ; glsl compiles
 textures.ps_3d.dxbc	ok ; glsl compiles
 textures.ps_cube.dxbc	ok ; glsl compiles
-textures.ps_cube_array.dxbc	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+textures.ps_cube_array.dxbc	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(CUBE_TEXTURES_ARRAY)
 textures.ps_load.dxbc	ok ; glsl compiles
 textures.ps_mips.dxbc	ok ; glsl compiles
 triangle.ps.dxbc	ok ; glsl compiles

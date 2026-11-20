@@ -14,7 +14,7 @@
 013_vs_code_1.dxbc	ok ; glsl compiles
 014_simple_vs.dxbc	ok ; glsl compiles
 015_simple_hs.dxbc	ok ; glsl absent compute
-016_simple_ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+016_simple_ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 017_simple_gs.dxbc	ok ; glsl absent compute
 018_simple_ps.dxbc	ok ; glsl compiles
 019_simple_cs.dxbc	ok ; glsl absent compute
@@ -29,7 +29,7 @@
 028_ps_sample_l_code.dxbc	ok ; glsl compiles
 029_ps_sample_2d_array_code.dxbc	ok ; glsl compiles
 030_ps_cube_code.dxbc	ok ; glsl compiles
-031_ps_cube_array_code.dxbc	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+031_ps_cube_array_code.dxbc	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(CUBE_TEXTURES_ARRAY)
 032_ps_compare_code.dxbc	ok ; glsl compiles
 033_ps_sample_code_1.dxbc	ok ; glsl compiles
 034_ps_stencil_code.dxbc	ok ; glsl compiles
@@ -41,7 +41,7 @@
 040_ps_code_1.dxbc	ok ; glsl compiles
 041_simple_vs_1.dxbc	ok ; glsl compiles
 042_simple_hs_1.dxbc	ok ; glsl absent compute
-043_simple_ds_1.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+043_simple_ds_1.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 044_simple_gs_1.dxbc	ok ; glsl absent compute
 045_simple_ps_1.dxbc	ok ; glsl compiles
 046_simple_cs_1.dxbc	ok ; glsl absent compute
@@ -57,7 +57,7 @@
 056_ps_code_6.dxbc	ok ; glsl compiles
 057_ps_color_code_1.dxbc	ok ; glsl compiles
 058_ps_depth_code.dxbc	ok ; glsl compiles
-059_ps_code_7.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+059_ps_code_7.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 060_ps_code_8.dxbc	ok ; glsl compiles
 061_ps_code_9.dxbc	ok ; glsl compiles
 062_ps_partial_input_code.dxbc	ok ; glsl compiles
@@ -104,12 +104,12 @@
 103_vs_code_9.dxbc	ok ; glsl compiles
 104_ps_code_ddy.dxbc	ok ; glsl compiles
 105_ps_code_ddy_coarse.dxbc	ok ; glsl compiles
-106_ps_code_ddy_fine.dxbc	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+106_ps_code_ddy_fine.dxbc	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
 107_ps_last_register_code.dxbc	ok ; glsl compiles
-108_ps_ld_2d_float_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-109_ps_ld_2d_uint_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-110_ps_ld_2d_int_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-111_ps_ld_2d_uint_arr_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+108_ps_ld_2d_float_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE | IMAGE_SIZE)
+109_ps_ld_2d_uint_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE | IMAGE_SIZE)
+110_ps_ld_2d_int_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE | IMAGE_SIZE)
+111_ps_ld_2d_uint_arr_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE | IMAGE_SIZE)
 112_cs_1_thread_code.dxbc	ok views:R32Float ; glsl absent compute
 113_cs_1_group_code.dxbc	ok views:R32Float ; glsl absent compute
 114_cs_1_store_code.dxbc	ok views:R32Float ; glsl absent compute
@@ -120,26 +120,26 @@
 119_cs_store_unorm_code.dxbc	ok views:R32Float ; glsl absent compute
 120_cs_store_snorm_code.dxbc	ok views:R32Float ; glsl absent compute
 121_cs_code_1.dxbc	ok views:R32Float ; glsl absent compute
-122_ps_code_16.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-123_ps_atomics_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+122_ps_code_16.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE | IMAGE_SIZE)
+123_ps_atomics_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 124_cs_atomics_code.dxbc	ok ; glsl absent compute
 125_ps_code_17.dxbc	ok ; glsl compiles
 126_ps_2d_code.dxbc	ok ; glsl compiles
 127_ps_2d_array_code.dxbc	ok ; glsl compiles
 128_ps_3d_code.dxbc	ok ; glsl compiles
 129_ps_cube_code_2.dxbc	ok ; glsl compiles
-130_ps_cube_array_code_1.dxbc	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-131_ps_srv_structured_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-132_ps_uav_raw_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-133_ps_srv_raw_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+130_ps_cube_array_code_1.dxbc	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(CUBE_TEXTURES_ARRAY)
+131_ps_srv_structured_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+132_ps_uav_raw_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+133_ps_srv_raw_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 134_ps_uav_typed_code.dxbc	ok views:R32Float ; glsl compiles
 135_ps_srv_typed_code.dxbc	ok views:R32Float ; glsl compiles
 136_ps_uint_code.dxbc	ok ; glsl compiles
 137_ps_float_code.dxbc	ok ; glsl compiles
 138_ps_rt_code.dxbc	unsupported SampleCount
-139_ps_float4_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-140_ps_structured_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-141_ps_code_18.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+139_ps_float4_code.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+140_ps_structured_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
+141_ps_code_18.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 142_cs_code_2.dxbc	ok ; glsl absent compute
 143_cs_producer_code.dxbc	ok ; glsl absent compute
 144_cs_consumer_code.dxbc	ok ; glsl absent compute
@@ -150,7 +150,7 @@
 149_gs_5_0_code.dxbc	ok ; glsl absent compute
 150_ps_code_19.dxbc	ok ; glsl compiles
 151_hs_quad_ccw_code.dxbc	ok ; glsl absent compute
-152_ds_quad_code.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+152_ds_quad_code.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 153_hs_quad_cw_code.dxbc	ok ; glsl absent compute
 154_gs_code_1.dxbc	ok ; glsl absent compute
 155_ps_code_20.dxbc	ok ; glsl compiles
@@ -162,30 +162,30 @@
 161_gather4_po_c_code.dxbc	ok ; glsl compiles
 162_vs_code_11.dxbc	ok ; glsl compiles
 163_ps_code_21.dxbc	ok ; glsl compiles
-164_ps_code_22.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+164_ps_code_22.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 165_ps_depth_le_code.dxbc	ok ; glsl compiles
 166_ps_depth_ge_code.dxbc	ok ; glsl compiles
 167_hs_code.dxbc	ok ; glsl absent compute
-168_ds_code.dxbc	ok ; glsl needs VERTEX_STORAGE_READ|CLIP_DISTANCE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+168_ds_code.dxbc	ok ; glsl needs VERTEX_STORAGE_READ|CLIP_DISTANCE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 169_ps_code_23.dxbc	ok ; glsl compiles
 170_ps_code_24.dxbc	ok ; glsl compiles
-171_ps_unused_sample_index_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-172_ps_sample_index_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-173_ps_samplepos_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+171_ps_unused_sample_index_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+172_ps_sample_index_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+173_ps_samplepos_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 174_ps_samplepos_rasterizer_code.dxbc	unsupported SampleCount
 175_ps_samplepos_indexed_code.dxbc	unsupported SampleCount
-176_ps_sampleinfo_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+176_ps_sampleinfo_code.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 177_ps_sampleinfo_rasterizer_code.dxbc	unsupported SampleCount
-178_ps_sample_code_2.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+178_ps_sample_code_2.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 179_ps_color_code_2.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 180_ps_resolve_code.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 181_ps_code_25.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
 182_ps_code_26.dxbc	ok ; glsl compiles
-183_ps_samplepos.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+183_ps_samplepos.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 184_ps_code_27.dxbc	ok ; glsl compiles
 185_ps_code_28.dxbc	ok ; glsl compiles
 186_ps_code_29.dxbc	ok ; glsl compiles
 187_ps_code_30.dxbc	ok ; glsl compiles
 188_ps_code_31.dxbc	unsupported StencilRef
 189_ps_sample_code_3.dxbc	ok ; glsl compiles
-190_ps_code_32.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+190_ps_code_32.dxbc	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
