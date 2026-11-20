@@ -110,21 +110,6 @@ fn texture_view<B: Backend>(
     let (texture, desc) = resource
         .texture()
         .ok_or("a texel buffer (the screen reports none)")?;
-    let identity = [
-        PIPE_SWIZZLE_X,
-        PIPE_SWIZZLE_Y,
-        PIPE_SWIZZLE_Z,
-        PIPE_SWIZZLE_W,
-    ];
-    let swizzle = [
-        view.swizzle_r(),
-        view.swizzle_g(),
-        view.swizzle_b(),
-        view.swizzle_a(),
-    ];
-    if swizzle != identity {
-        return Err("a swizzled texture view");
-    }
     let format = crate::format::format(view.format()).ok_or("a view format the device lacks")?;
     // SAFETY: the view of a texture holds its texture range.
     let range = unsafe { view.u.tex };
