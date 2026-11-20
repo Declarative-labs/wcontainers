@@ -60,6 +60,7 @@ mod table;
 
 use compare::{CompareOptions, DEFAULT_SEED, Verdict};
 use wcontainers_gpu::{Format, VariantKey};
+use wcontainers_nir::direct::Rewrites;
 use wcontainers_nir::mesa::{Nir, Stage};
 
 const PROGRAM: &str = "#version 430
@@ -150,6 +151,20 @@ void main() {
 }
 ";
 
+/// A storage image without a format that the program reads and writes, which the common form takes
+/// only as a one-component view.
+const READ_WRITE_FORMATLESS: &str = "#version 430
+#extension GL_EXT_shader_image_load_formatted : require
+layout(local_size_x = 8) in;
+uniform float scale;
+uniform image2D marks;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    ivec2 at = ivec2(i % 4u, i / 4u);
+    imageStore(marks, at, imageLoad(marks, at) * scale + vec4(float(i)));
+}
+";
+
 const SAMPLING: &str = "#version 430
 layout(local_size_x = 8) in;
 uniform sampler2D colours;
@@ -195,6 +210,23 @@ void main() {
     inserted[i] = bitfieldInsert(mixed, uvec4(i * 0x5bd1e995u), offset, bits);
     signs[i] = sign(signed_words - ivec4(int(i % 3u)));
     significands[i] = frexp(values * float(i * 977u + 1u), exponents[i]);
+}
+";
+
+/// Float comparisons on NaN, made from every seeded value by setting its exponent's bits: the
+/// unordered ones (`isnan`, `!=`, `notEqual`, `any(notEqual)`) hold there, the ordered ones do not.
+const UNORDERED: &str = "#version 430
+layout(local_size_x = 8) in;
+uniform vec4 v;
+layout(std430) buffer Compared { uvec4 isn[16]; uvec4 ne[16]; uvec4 each[16]; uvec4 whole[16]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec4 nan = uintBitsToFloat(floatBitsToUint(v) | uvec4(0x7f800001u));
+    vec4 x = (i & 1u) == 0u ? nan : v * float(i);
+    isn[i] = uvec4(isnan(x));
+    ne[i] = uvec4(notEqual(x, vec4(0.5)));
+    each[i] = uvec4(x.x != x.x, x.y == x.y, !(x.z < 1.0), x.w >= -1.0);
+    whole[i] = uvec4(any(notEqual(x, v)), all(equal(x, x)), x != v, x == x);
 }
 ";
 
@@ -326,9 +358,9 @@ fn a_glsl_program_of_atomic_counters_and_workgroup_memory_matches_llvmpipe_on_ro
     assert_eq!(compute_verdict(COUNTERS_AND_SHARED), Verdict::Matched);
 }
 
-/// The program's verdict through route B and the shaders crate's rewrites, each storage image
-/// without a format bound as four 32-bit floats.
-fn rewritten_verdict(source: &str) -> Verdict {
+/// The program's verdict through route B and the shaders crate's rewrites, its one storage image
+/// without a format bound as a view of `view`; and the rewrites route B asked for.
+fn rewritten_verdict(source: &str, view: Format) -> (Verdict, Rewrites) {
     let mut stage = Nir::from_glsl(&[(Stage::Compute, source)])
         .unwrap()
         .pop()
@@ -336,39 +368,59 @@ fn rewritten_verdict(source: &str) -> Verdict {
     let key = stage.nir.key().unwrap();
     let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
     let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
-    assert!(routed.rewrites.runtime_gather_offsets);
+    let rewrites = routed.rewrites.clone();
     let variant = VariantKey {
         storage_formats: routed
             .rewrites
             .formatless
             .iter()
-            .map(|&slot| (slot, Format::Rgba32Float))
+            .map(|&slot| (slot, view))
             .collect(),
         ..VariantKey::default()
     };
-    assert_eq!(variant.storage_formats.len(), 1);
     let (module, bindings) =
         wcontainers_nir::direct::rewrite(routed, bindings, &variant, &key).unwrap();
     let options = CompareOptions {
         seed: DEFAULT_SEED,
         input_sets: 1,
     };
-    glsl::compare_compute(source, &stage.names, &module.module, &bindings, options)
+    let verdict = glsl::compare_compute(source, &stage.names, &module.module, &bindings, options);
+    (verdict, rewrites)
 }
 
 #[test]
 fn a_glsl_program_needing_the_shaders_crates_rewrites_matches_llvmpipe_on_route_b() {
-    assert_eq!(rewritten_verdict(REWRITTEN), Verdict::Matched);
+    let (verdict, rewrites) = rewritten_verdict(REWRITTEN, Format::Rgba32Float);
+    assert!(rewrites.runtime_gather_offsets);
+    assert_eq!(rewrites.formatless.len(), 1);
+    assert_eq!(verdict, Verdict::Matched);
 }
 
-/// Known failure (run 14): llvmpipe reads the constant element as values no seeded texel holds
-/// (0 and 4.0, where every seeded value lies in [-2, 2)) once the same array is also read at a
-/// run-time index; each read alone matches. Whether llvmpipe or the comparison's OpenGL set-up is at
-/// fault is not yet known.
 #[test]
-#[ignore = "known failure: llvmpipe's constant element read beside a run-time index (status file)"]
+fn a_glsl_program_reading_and_writing_a_storage_image_without_a_format_matches_llvmpipe() {
+    let (verdict, rewrites) = rewritten_verdict(READ_WRITE_FORMATLESS, Format::R32Float);
+    assert_eq!(rewrites.formatless.len(), 1);
+    assert_eq!(verdict, Verdict::Matched);
+}
+
+/// Known failure, llvmpipe's: in a compute program reading one array at a run-time index and at a
+/// constant one, llvmpipe's constant read gives values no texel holds (the same whichever element
+/// it names), and NaN once the two reads are swapped, on the same textures and units. Its final NIR
+/// indexes both correctly (texture 0 plus the offset, texture 2), so the fault is in its code
+/// generation (gallivm's per-invocation path for a run-time index outside the fragment stage).
+/// Each read alone, and two run-time reads, match.
+#[test]
+#[ignore = "known failure: llvmpipe's code for a constant element read beside a run-time index (status file)"]
 fn a_glsl_program_reading_an_array_at_run_time_and_constant_indices_matches_llvmpipe() {
-    assert_eq!(rewritten_verdict(MIXED_INDICES), Verdict::Matched);
+    assert_eq!(
+        rewritten_verdict(MIXED_INDICES, Format::Rgba32Float).0,
+        Verdict::Matched
+    );
+}
+
+#[test]
+fn a_glsl_program_comparing_nans_matches_llvmpipe_on_route_b() {
+    assert_eq!(compute_verdict(UNORDERED), Verdict::Matched);
 }
 
 #[test]

@@ -15,9 +15,15 @@ target=${CARGO_TARGET_DIR:-$repository/target}
 cts_dir=$target/vk-gl-cts
 programs_dir=$target/nir-corpus/vk-gl-cts-programs
 flake=${1:-$repository}
-# The case groups whose programs the corpus takes. Their fragment programs go through
-# Nir::alpha_to_one before the routes (run.rs, by this group's folder name).
-groups=(dEQP-VK.pipeline.monolithic.multisample.alpha_to_one)
+# The case groups whose programs the corpus takes, each into the folder of its last name:
+# alpha_to_one's fragment programs go through Nir::alpha_to_one before the routes (run.rs, by that
+# folder's name); without_format's read and write storage images without a format; buffer_access's
+# reach past their buffers' ends, which robustBufferAccess (15.4) defines.
+groups=(
+    dEQP-VK.pipeline.monolithic.multisample.alpha_to_one
+    dEQP-VK.image.load_store.without_format
+    dEQP-VK.robustness.buffer_access
+)
 
 read -r _ url commit _ < <(grep '^vk-gl-cts ' "$here/sources")
 if [ "$(git -C "$cts_dir/src" rev-parse HEAD 2>/dev/null)" != "$commit" ]; then

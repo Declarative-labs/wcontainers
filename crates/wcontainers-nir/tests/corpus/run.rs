@@ -9,7 +9,7 @@ use crate::glsl;
 use crate::godot;
 use crate::lavapipe;
 use crate::needs;
-use naga::{ImageClass, StorageFormat, TypeInner};
+use naga::{ImageClass, StorageAccess, StorageFormat, TypeInner};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -543,13 +543,16 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
 
 /// Candidate B: the common form's step, then NIR read straight into naga and validated; with the
 /// shaders crate's rewrites (15.4) where the module needs them, each storage image without a
-/// format bound as the four 32-bit components of its kind, as a driver names the bound view.
+/// format bound as a view of its kind (`bound_views`), as a driver names the bound view. The cache
+/// key, which both candidates take from the same NIR, is made outside the time measured, as
+/// candidate A's is.
 fn direct_route(
     mut nir: Nir,
     stage: Stage,
 ) -> (RouteResult, Option<(naga::Module, Vec<ReflectedBinding>)>) {
+    let key = nir.key();
     let started = Instant::now();
-    let converted = nir.key().and_then(|key| {
+    let converted = key.and_then(|key| {
         let reflection = nir.to_common_form(stage)?;
         let routed = wcontainers_nir::direct::route(&mut nir)?;
         let arrays = routed.module.global_variables.iter().any(|(_, g)| {
@@ -593,8 +596,9 @@ fn direct_route(
     }
 }
 
-/// The format of the view bound at each storage slot route B declared without one: the four 32-bit
-/// components of the kind its placeholder has.
+/// The format of the view bound at each storage slot route B declared without one, of the kind its
+/// placeholder has: one 32-bit component where the program reads and writes it (the only storage
+/// formats the common form reads and writes), else four.
 fn bound_views(routed: &Routed) -> Vec<(u32, Format)> {
     let module = &routed.module;
     let placeholder = |slot: u32| {
@@ -612,13 +616,16 @@ fn bound_views(routed: &Routed) -> Vec<(u32, Format)> {
                 _ => (g.ty, 1),
             };
             let TypeInner::Image {
-                class: ImageClass::Storage { format, .. },
+                class: ImageClass::Storage { format, access },
                 ..
             } = module.types[ty].inner
             else {
                 return None;
             };
-            (first..first + count).contains(&slot).then_some(format)
+            let read_write = access.contains(StorageAccess::LOAD | StorageAccess::STORE);
+            (first..first + count)
+                .contains(&slot)
+                .then_some((format, read_write))
         })
     };
     routed
@@ -627,9 +634,12 @@ fn bound_views(routed: &Routed) -> Vec<(u32, Format)> {
         .iter()
         .filter_map(|&slot| {
             let view = match placeholder(slot)? {
-                StorageFormat::R32Sint => Format::Rgba32Sint,
-                StorageFormat::R32Uint => Format::Rgba32Uint,
-                _ => Format::Rgba32Float,
+                (StorageFormat::R32Sint, true) => Format::R32Sint,
+                (StorageFormat::R32Uint, true) => Format::R32Uint,
+                (_, true) => Format::R32Float,
+                (StorageFormat::R32Sint, false) => Format::Rgba32Sint,
+                (StorageFormat::R32Uint, false) => Format::Rgba32Uint,
+                (_, false) => Format::Rgba32Float,
             };
             Some((slot, view))
         })
