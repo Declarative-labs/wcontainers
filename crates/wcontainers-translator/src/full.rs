@@ -700,6 +700,12 @@ fn tracked<G: Guest>() -> Registers {
     G::TRACKED
 }
 
+/// What may be stale in the thread block after a system call: its result, when that lives in a local.
+fn dirty_after_syscall<G: Guest>() -> Registers {
+    let result = G::reg_bit(G::SYSCALL.result).expect("a result register");
+    Registers(1 << result).intersect(tracked::<G>())
+}
+
 /// Where the flags are known to be at a point: a set of flag state bits, one bit when it is known which:
 /// [`FLAGS_IN_LOCALS`], [`FLAGS_IN_BLOCK`], then one for each shape a function uses (at most 126).
 type FlagStates = u128;
@@ -982,8 +988,10 @@ impl<G: Guest> Plan<G> {
             }
         };
         let dirty_after = |d: &Decoded<G>, dirty: Registers| -> Registers {
-            if d.effects.calls || d.effects.syscall {
+            if d.effects.calls {
                 Registers::NONE
+            } else if d.effects.syscall {
+                dirty_after_syscall::<G>()
             } else {
                 dirty.union(d.effects.defs.intersect(tracked::<G>()))
             }
@@ -2973,7 +2981,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let result = G::reg_bit(registers.result).expect("a result register");
         let local = self.register(result);
         self.sink().local_set(local);
-        self.at.dirty = Registers(1 << result).intersect(tracked::<G>());
+        self.at.dirty = dirty_after_syscall::<G>();
         let live = self.plan.live_after[&self.at.offset];
         self.reload(live.minus(Registers(1 << result)), G::passed(result));
         // The kernel raises the flag during the call when the thread must not carry on.
