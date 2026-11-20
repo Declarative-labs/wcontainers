@@ -383,6 +383,10 @@ pub type Rect = [i32; RECT_EDGES];
 pub const RECT_EDGES: usize = 4;
 const COMPUTE_VARIANT_OF_DRAWS: &str = "a compute program variant only draws take";
 const LINES_FACING: &str = "a pixel shader reading its facing on alpha-antialiased lines";
+/// Blending into a target held as its integer twin is done in the program from a copy of the
+/// target (`BlendInShader`), which the shaders crate does not build.
+const BLEND_INTO_INTEGER_TWIN: &str =
+    "blending into a normalised target held as its integer twin (blending in the shader)";
 const VIEWPORT_BEHIND_GEOMETRY: &str =
     "a viewport the back end would round, behind a geometry stage";
 
@@ -1967,7 +1971,8 @@ impl<B: Backend> Device<B> {
                 .and_then(Option::as_deref)
             {
                 Some(ShaderView::Texture(view)) => {
-                    !caps.formats.get(view.format).contains(FormatUse::FILTER)
+                    view.decoded.is_none()
+                        && !caps.formats.get(view.format).contains(FormatUse::FILTER)
                 }
                 _ => false,
             };
@@ -1978,6 +1983,7 @@ impl<B: Backend> Device<B> {
         if matches!(stage, PIXEL | COMPUTE) {
             v.stored_through = self.stored_through_slots(stage, s);
         }
+        (v.decoded, v.decoded_formats) = self.decoded_slots(stage, s);
         if v.stencil != 0 {
             self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
         }
@@ -2078,7 +2084,7 @@ impl<B: Backend> Device<B> {
                     &self.ctx.resources[stage]
                 };
                 match slots.get(t.register as usize).and_then(Option::as_deref) {
-                    Some(ShaderView::Texture(v)) if t.storage && !t.buffer => v.format,
+                    Some(ShaderView::Texture(v)) if t.storage && !t.buffer => v.values(),
                     Some(ShaderView::Buffer(BufferSpan {
                         texel: Some((f, ..)),
                         ..
@@ -2127,7 +2133,42 @@ impl<B: Backend> Device<B> {
                 })
                 .collect();
         }
+        if v.decoded != 0 {
+            let formats = &self.format_lists[v.decoded_formats as usize - 1];
+            key.decoded = (0..u128::BITS)
+                .filter(|t| v.decoded & (1 << t) != 0)
+                .zip(formats.iter().copied())
+                .collect();
+        }
         key
+    }
+
+    /// The texture slots of `s` at `stage` bound to views of textures held as their integer
+    /// twins, which the program decodes (`NormAsInteger`), and the device's number for their
+    /// normalised formats, in slot order; zeros where there are none.
+    fn decoded_slots(&mut self, stage: usize, s: &Shader<B>) -> (u128, u32) {
+        let mut slots = 0u128;
+        let mut formats = Vec::new();
+        for (i, r) in self.ctx.resources[stage]
+            .iter()
+            .enumerate()
+            .take(u128::BITS as usize)
+        {
+            if s.textures & (1 << i) == 0 {
+                continue;
+            }
+            if let Some(ShaderView::Texture(view)) = r.as_deref()
+                && let Some(f) = view.decoded
+            {
+                slots |= 1 << i;
+                formats.push(f);
+            }
+        }
+        if slots == 0 {
+            return (0, 0);
+        }
+        self.backend.slow_paths().hit(SlowPath::NormAsInteger);
+        (slots, self.format_list_id(formats))
     }
 
     /// The targets `ps` writes an output of another kind (float, unsigned, signed) than their
@@ -2137,7 +2178,7 @@ impl<B: Backend> Device<B> {
         let mut retyped = 0u8;
         let mut formats = Vec::new();
         for (n, t) in self.ctx.targets.iter().enumerate() {
-            let Some(f) = t.as_ref().map(|v| v.format) else {
+            let Some(t) = t.as_ref() else {
                 continue;
             };
             let output = ps
@@ -2145,9 +2186,11 @@ impl<B: Backend> Device<B> {
                 .outputs
                 .iter()
                 .find(|o| o.system == Some(SystemValue::Target(n as u8)));
-            if output.is_some_and(|o| !crate::ahead::fits_target(o.scalar, f)) {
+            // A target held as its integer twin takes its output encoded (`NormAsInteger`).
+            let encoded = t.decoded.is_some() && output.is_some();
+            if encoded || output.is_some_and(|o| !crate::ahead::fits_target(o.scalar, t.format)) {
                 retyped |= 1 << n;
-                formats.push(f);
+                formats.push(t.values());
             }
         }
         if retyped == 0 {
@@ -3030,7 +3073,16 @@ impl<B: Backend> Device<B> {
                 Ok(())
             }
             ShaderView::Texture(v) => {
-                let integer = matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
+                // A float clear of a view held as its integer twin clears with the encoded values.
+                let (values, float) = match v.decoded {
+                    Some(f) if float => (
+                        values.map(|c| format::encode_norm(f, f32::from_bits(c))),
+                        false,
+                    ),
+                    _ => (values, float),
+                };
+                let integer = v.decoded.is_none()
+                    && matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
                 if integer && float {
                     return not_implemented(
                         "a float clear of an unordered access view of an integer format",
@@ -4276,6 +4328,19 @@ impl<B: Backend> Device<B> {
             Some(p) => self.retyped_targets(p),
             None => (0, 0),
         };
+        if let Some(b) = &self.ctx.blend {
+            let blends = |n: usize| b.desc.targets[if b.desc.independent { n } else { 0 }].enable;
+            let decoded = |t: &Option<Rc<View<B>>>| t.as_ref().is_some_and(|v| v.decoded.is_some());
+            if self
+                .ctx
+                .targets
+                .iter()
+                .enumerate()
+                .any(|(n, t)| decoded(t) && blends(n))
+            {
+                return not_implemented(BLEND_INTO_INTEGER_TWIN);
+            }
+        }
         let dual_source = ps.is_some()
             && self
                 .ctx
@@ -5536,7 +5601,7 @@ impl<B: Backend> Device<B> {
         }
         let t = &view.texture;
         // Direct3D generates mips of formats it filters only: integer views take none.
-        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 || format::is_integer(view.format) {
+        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 || format::is_integer(view.values()) {
             return;
         }
         let v = &view.desc;
@@ -5545,7 +5610,7 @@ impl<B: Backend> Device<B> {
         let r = self.backend.generate_mips(
             &t.gpu.handle,
             &t.gpu_desc,
-            view.format,
+            view.values(),
             v.first_mip + 1..v.first_mip + v.mip_count,
             layers,
         );
@@ -5735,7 +5800,9 @@ fn pixel_rect([l, t, r, b]: Rect) -> ScissorRect {
 
 /// A target view's clear value of `color`: integer formats take each value cast.
 fn color_value<B: Backend>(view: &View<B>, color: Color) -> ClearValue {
-    ClearValue::Color(if integer_format(view.format) {
+    ClearValue::Color(if let Some(f) = view.decoded {
+        color.map(|c| format::encode_norm(f, c))
+    } else if integer_format(view.format) {
         color.map(|c| c as i64 as u32)
     } else {
         color.map(f32::to_bits)

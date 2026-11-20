@@ -451,6 +451,11 @@ pub struct StageVariant {
     /// number for their formats, in target order.
     pub retyped: u8,
     pub retyped_formats: u32,
+    /// Texture slots bound to views of textures held as their integer twins, which the program
+    /// decodes (`VariantKey::decoded`), and the device's number for their normalised formats, in
+    /// slot order.
+    pub decoded: u128,
+    pub decoded_formats: u32,
     /// Constant buffer slots the program indexes at run time, bound larger than it declares: it
     /// reads them as storage buffers, past its declared array as Direct3D reads them
     /// (`ConstantsAsStorage`).

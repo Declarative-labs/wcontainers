@@ -3428,3 +3428,70 @@ fn a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_view
         1
     );
 }
+
+/// A 16-bit normalised format the back end lacks is held as its integer twin (`NormAsInteger`):
+/// sampled through a decoding program, drawn into through an encoding one, and blending into it
+/// refused by name.
+#[test]
+fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
+    use wcontainers_directx_graphics_infrastructure::dxgi;
+    use wcontainers_gpu::{Format, FormatUse};
+    let mut dev = device();
+    dev.backend.caps.formats.uses[Format::R16Unorm.index()] = FormatUse::empty();
+    let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
+    let target = dev
+        .create_texture(&tex2d(16, 16, dxgi::R16_UNORM, both), &[])
+        .unwrap();
+    assert_eq!(target.format, Format::R16Uint);
+    // Reported as served: sampled, drawn into and its mips generated, never blended.
+    let s = dev.format_support(dxgi::R16_UNORM).support1;
+    let served = support::SHADER_SAMPLE | support::RENDER_TARGET | support::MIP_AUTOGEN;
+    assert_eq!(s & (served | support::BLENDABLE), served, "{s:#x}");
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    assert_eq!(
+        (rtv.format, rtv.decoded),
+        (Format::R16Uint, Some(Format::R16Unorm))
+    );
+    begin(&mut dev, &rtv, None, 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    let p = dev
+        .create_shader(&corpus("samplers.ps_sample"), SourceStage::Pixel)
+        .unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let texture = dev
+        .create_texture(&tex2d(4, 4, dxgi::R16_UNORM, bind::SHADER_RESOURCE), &[])
+        .unwrap();
+    let view = dev
+        .create_view(&texture, None, bind::SHADER_RESOURCE)
+        .unwrap();
+    dev.set_shader_resources(PIXEL, 0, &[Some(Rc::new(ShaderView::Texture(view)))])
+        .unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none(), "{:?}", dev.removed);
+    assert!(dev.backend.slow_paths().count(SlowPath::NormAsInteger) > 0);
+    let mut blend = BlendDesc::default_state();
+    blend.targets[0].enable = true;
+    let blend = dev.create_blend_state(&blend).unwrap();
+    dev.om_set_blend_state(Some(blend), None, u32::MAX);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_some());
+}
+
+/// Direct3D's float to normalised conversion: clamped, NaN as zero, rounded to the nearest.
+#[test]
+fn clear_values_of_integer_twins_are_encoded_as_direct3d_converts_them() {
+    use wcontainers_direct3d_11::format::encode_norm;
+    use wcontainers_gpu::Format;
+    assert_eq!(encode_norm(Format::R16Unorm, 0.5), 32768);
+    assert_eq!(encode_norm(Format::Rg16Unorm, 2.0), u32::from(u16::MAX));
+    assert_eq!(encode_norm(Format::R16Unorm, f32::NAN), 0);
+    assert_eq!(
+        encode_norm(Format::Rgba16Snorm, -1.0),
+        -i32::from(i16::MAX) as u32
+    );
+    assert_eq!(encode_norm(Format::R8Snorm, 1.0), i8::MAX as u32);
+}

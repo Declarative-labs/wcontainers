@@ -13,9 +13,7 @@ use std::process::Command;
 use common::{fresh, place_libraries, profile};
 use wcontainers_directx::com::FEATURES_OFF;
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_SINT, DXGI_FORMAT_R32_UINT,
-};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 
 /// Runs example `name` from `dir` (copying it there) with `args`, returning its exit code and output.
 fn run_with(name: &str, dir: &Path, args: &[&str]) -> (i32, String) {
@@ -255,6 +253,16 @@ fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
     level10("stream");
 }
 
+/// A vertex shader reads a `B8G8R8X8_UNORM` element's three colours and its fourth component as 1
+/// (on the RTX 3080; Wine's test says AMD's is undefined). A known failure: the interface has no
+/// vertex format reading the X byte as 1, so ours reports no vertex buffers of the format and
+/// refuses the layout, as Direct3D refuses a format it does not report (Gap list).
+#[test]
+#[ignore]
+fn b8g8r8x8_elements_read_as_direct3d_reads_them() {
+    case("bgrx");
+}
+
 #[test]
 fn texture_atomics_as_direct3d_does() {
     case("atomics");
@@ -270,24 +278,24 @@ fn typed_storage_stores_as_direct3d_does() {
     case("typed");
 }
 
-/// `ClearView` clears a target's rectangles, clipped to the target, and a whole storage view.
-/// The format support bits compared with real Direct3D: all but the multisampling bits (sample
-/// counts per format are a listed shortfall, plan section 9), monochrome text, and video's (no
-/// video device), which are the bits from `DECODER_OUTPUT` up; of the second word, atomics and
-/// typed stores, typed loads where Direct3D requires them (the 32-bit single-component formats),
-/// and no tiling, sharing or logic operations, which are absent.
-const COMPARED_SUPPORT1: i32 = !(D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET.0
+/// Format support bits of abilities this device reports absent through their own queries, which
+/// real Direct3D may have and ours never claims: video, the first word's bits from
+/// `DECODER_OUTPUT` up (`ID3D11VideoDevice` is not served), logic
+/// operations (`D3D11_OPTIONS.OutputMergerLogicOp`), tiled resources
+/// (`D3D11_OPTIONS1.TiledResourcesTier`), sharing (shared resources are refused) and multiplane
+/// overlays (`IDXGIOutput2::SupportsOverlays`).
+const ABSENT_SUPPORT1: i32 = !(D3D11_FORMAT_SUPPORT_DECODER_OUTPUT.0 - 1);
+/// Multisampling bits, claimed where the back end draws some sample count of the format
+/// (`CheckMultisampleQualityLevels` answers which); real Direct3D's further counts are the plan's
+/// listed shortfall (section 9), so ours may lack these bits where real Direct3D has them, never
+/// the other way.
+const MULTISAMPLE_SUPPORT1: i32 = D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET.0
     | D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD.0
-    | D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE.0
-    | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE_MONO_TEXT.0)
-    & (D3D11_FORMAT_SUPPORT_DECODER_OUTPUT.0 - 1);
-const COMPARED_SUPPORT2: i32 = D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD.0
-    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS.0
-    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE.0
-    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE.0
-    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX.0
-    | D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX.0
-    | D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0;
+    | D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE.0;
+const ABSENT_SUPPORT2: i32 = D3D11_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP.0
+    | D3D11_FORMAT_SUPPORT2_TILED.0
+    | D3D11_FORMAT_SUPPORT2_SHAREABLE.0
+    | D3D11_FORMAT_SUPPORT2_MULTIPLANE_OVERLAY.0;
 
 /// Video formats Microsoft's tables leave optional at 11_0, which ours reports absent altogether.
 const OPTIONAL_FORMATS_ABSENT: &[DXGI_FORMAT] = {
@@ -308,8 +316,8 @@ const OPTIONAL_FORMATS_ABSENT: &[DXGI_FORMAT] = {
     ]
 };
 
-/// Formats whose compared support differs from the RTX 3080's: each with the bits of both words
-/// that differ and why (the status file's Departures name each shortfall).
+/// Formats whose support differs from the RTX 3080's outside the absent abilities: each with the
+/// bits of both words that differ and why (the status file's Gap list names each).
 const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
     use windows::Win32::Graphics::Dxgi::Common::*;
     const TARGET: i32 = D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
@@ -322,7 +330,7 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
             DXGI_FORMAT_R32G32B32_FLOAT,
             D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | D3D11_FORMAT_SUPPORT_SHADER_GATHER.0,
             0,
-            "sampling, optional, served where the back end filters it",
+            "sampling, optional at 11_0: served, where the back end filters the format",
         ),
         (
             DXGI_FORMAT_R10G10B10A2_UNORM,
@@ -379,6 +387,11 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
     ]
 };
 
+/// Both words of every format's support, and whether the second query succeeds, as real Direct3D
+/// answers them, every bit compared: the bits of absent abilities are never claimed, multisampling
+/// is claimed only where real Direct3D claims it, and the others differ only as
+/// `SUPPORT_DIFFERENCES` names. Direct3D fails the second query where a format has none of its
+/// bits, so it fails on ours where real Direct3D's word holds only bits ours lacks.
 #[test]
 fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
     let (code, want) = run_with(
@@ -400,7 +413,6 @@ fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
             w.map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap() as i32);
         (format, std::array::from_fn(|_| hex.next().unwrap()))
     };
-    let mut differing = Vec::new();
     let formats = |t: &str| {
         t.lines()
             .filter(|l| l.starts_with("format "))
@@ -408,33 +420,31 @@ fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
             .collect::<Vec<_>>()
     };
     let (want, got) = (formats(&want), formats(&got));
+    let mut differing = Vec::new();
     for (w, g) in want.iter().zip(&got) {
-        let (format, [_, want1, want2]) = words(w);
-        let (_, [_, got1, got2]) = words(g);
-        let mut compared2 = COMPARED_SUPPORT2;
-        if [
-            DXGI_FORMAT_R32_FLOAT,
-            DXGI_FORMAT_R32_UINT,
-            DXGI_FORMAT_R32_SINT,
-        ]
-        .contains(&DXGI_FORMAT(format))
-        {
-            compared2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0;
-        }
+        let (format, [want_code, want1, want2]) = words(w);
+        let (_, [got_code, got1, got2]) = words(g);
         if OPTIONAL_FORMATS_ABSENT.contains(&DXGI_FORMAT(format)) {
             assert_eq!((got1, got2), (0, 0), "format {format}");
             continue;
         }
-        let diff1 = (want1 ^ got1) & COMPARED_SUPPORT1;
-        let diff2 = (want2 ^ got2) & compared2;
+        let claimed = (
+            got1 & (ABSENT_SUPPORT1 | MULTISAMPLE_SUPPORT1 & !want1),
+            got2 & ABSENT_SUPPORT2,
+        );
+        let diff1 = (want1 ^ got1) & !(ABSENT_SUPPORT1 | MULTISAMPLE_SUPPORT1);
+        let diff2 = (want2 ^ got2) & !ABSENT_SUPPORT2;
         let named = SUPPORT_DIFFERENCES
             .iter()
             .find(|s| s.0 == DXGI_FORMAT(format))
             .map_or((0, 0), |s| (s.1, s.2));
-        if (diff1, diff2) != named {
+        // Direct3D fails the second query of a word without bits.
+        let codes_agree = want_code == got_code || got2 == 0 && got_code != 0;
+        if claimed != (0, 0) || (diff1, diff2) != named || !codes_agree {
             differing.push(format!(
                 "format {format}: support {want1:#010x} ours {got1:#010x} (differing {diff1:#x}), \
-                 support2 {want2:#010x} ours {got2:#010x} (differing {diff2:#x})"
+                 support2 {want_code:#x} {want2:#010x} ours {got_code:#x} {got2:#010x} \
+                 (differing {diff2:#x}), absent bits claimed {claimed:x?}"
             ));
         }
     }
@@ -442,6 +452,7 @@ fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
     assert!(differing.is_empty(), "{}", differing.join("\n"));
 }
 
+/// `ClearView` clears a target's rectangles, clipped to the target, and a whole storage view.
 #[test]
 fn clear_view_of_rectangles_and_storage_as_direct3d_does() {
     case("clear_view");
@@ -469,12 +480,10 @@ fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
 }
 
 /// The same without the 16-bit normalised formats either, as a browser without
-/// `texture-formats-tier1` lacks them: `R16G16_UNORM` then needs `NormAsInteger`. A known failure:
-/// `NormAsInteger` is not built, so a texture of a 16-bit normalised format is refused without the
-/// back end's format.
+/// `texture-formats-tier1` lacks them: `R16G16_UNORM` is then held as its integer twin
+/// (`NormAsInteger`) and stored through a buffer.
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore]
 fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does() {
     let off = [
         wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
@@ -482,7 +491,9 @@ fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d
     ]
     .map(|f| f.as_str().unwrap())
     .join(" ");
-    case_env("typed", "untiered16", &[(FEATURES_OFF, &off)]);
+    let errors = case_env("typed", "untiered16", &[(FEATURES_OFF, &off)]);
+    let route = wcontainers_gpu::SlowPath::NormAsInteger.reason();
+    assert!(errors.contains(route), "{errors}");
 }
 
 #[test]

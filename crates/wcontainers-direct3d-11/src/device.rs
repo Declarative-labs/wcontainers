@@ -407,6 +407,25 @@ impl<B: Backend> Device<B> {
             };
         }
         let mut s = wcontainers_directx_graphics_infrastructure::format_support(caps, dxgi);
+        let as_integer = format::texture_format(dxgi).and_then(|f| self.held_as_integer(f));
+        if let Some(twin) = as_integer.and_then(format::dxgi_of) {
+            // Held as its integer twin: what the twin serves, sampled, gathered and its mips
+            // generated through decoding, never blended (`BlendInShader` is not built), and not
+            // multisampled (plan 4.12).
+            let vertex = s.support1 & (IA_VERTEX_BUFFER | BUFFER);
+            s = wcontainers_directx_graphics_infrastructure::format_support(caps, twin);
+            s.support1 &= !(BLENDABLE
+                | MULTISAMPLE_RENDERTARGET
+                | MULTISAMPLE_LOAD
+                | MULTISAMPLE_RESOLVE
+                | IA_VERTEX_BUFFER
+                | BUFFER);
+            s.support1 |= vertex;
+            if s.support1 & SHADER_LOAD != 0 {
+                s.support1 |= SHADER_SAMPLE | SHADER_GATHER;
+            }
+            s.support2 = 0;
+        }
         if !format::storage_viewed(dxgi) {
             s.support1 &= !TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 &= !(UAV_TYPED_LOAD | UAV_TYPED_STORE);
@@ -440,8 +459,10 @@ impl<B: Backend> Device<B> {
         );
         // Storage views of formats the back end cannot store into go through a buffer of their
         // texels (`StorageFormatThroughBuffer`), which serves loads too.
-        let through =
-            texture.is_some_and(|f| format::storage_viewed(dxgi) && self.stored_through(f));
+        let through = texture.is_some_and(|f| {
+            format::storage_viewed(dxgi)
+                && (self.stored_through(f) || as_integer.is_some_and(|t| self.through_takes(t)))
+        });
         if through {
             s.support1 |= TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 |= UAV_TYPED_STORE | UAV_TYPED_LOAD;
@@ -788,10 +809,20 @@ impl<B: Backend> Device<B> {
     /// Whether storage views of `format` are read and written through a buffer of their texels,
     /// where the back end copies the format but cannot store into it (`StorageFormatThroughBuffer`).
     pub(crate) fn stored_through(&self, format: Format) -> bool {
+        !self
+            .backend
+            .caps()
+            .formats
+            .get(format)
+            .contains(FormatUse::STORAGE_WRITE)
+            && self.through_takes(format)
+    }
+
+    /// Whether storage views of a texture stored as `format` can be read and written through a
+    /// buffer of its texels.
+    pub(crate) fn through_takes(&self, format: Format) -> bool {
         let caps = self.backend.caps();
-        let uses = caps.formats.get(format);
-        !uses.contains(FormatUse::STORAGE_WRITE)
-            && uses.contains(FormatUse::COPY_OUT)
+        caps.formats.get(format).contains(FormatUse::COPY_OUT)
             && format.block().0 == 1
             && caps.has(Features::COMPUTE)
             && caps.limits.storage_buffers_per_stage > 0
@@ -801,6 +832,16 @@ impl<B: Backend> Device<B> {
     /// has no storage buffers (`TexelBufferAsTexture`).
     pub(crate) fn typed_buffers_textured(&self) -> bool {
         self.backend.caps().limits.storage_buffers_per_stage == 0
+    }
+
+    /// The integer twin a texture of normalised `format` is held as where the back end lacks the
+    /// format and samples the twin (`NormAsInteger`): programs decode its loads and encode their
+    /// outputs.
+    pub(crate) fn held_as_integer(&self, format: Format) -> Option<Format> {
+        let formats = &self.backend.caps().formats;
+        format.integer_twin().filter(|&twin| {
+            formats.get(format).is_empty() && formats.get(twin).contains(FormatUse::SAMPLE)
+        })
     }
 
     /// The use storage views of `format` ask of the back end: none where they are stored through
@@ -982,6 +1023,7 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg(SHARING_INVALID));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
+        let format = self.held_as_integer(format).unwrap_or(format);
         // A count and quality the device reports no level for is invalid, as in Direct3D. The
         // standard pattern is the back end's own; the centred one it cannot place. A single
         // sample has quality 0; whether its format serves the bindings is checked below.
@@ -1136,6 +1178,11 @@ impl<B: Backend> Device<B> {
         init: &[SubresourceData<'_>],
     ) -> Result<Rc<Texture<B>>> {
         let (format, mips) = self.check_texture(d, !init.is_empty())?;
+        if format::texture_format(d.format)
+            .is_some_and(|f| f != format && f.integer_twin() == Some(format))
+        {
+            self.backend.slow_paths().hit(SlowPath::NormAsInteger);
+        }
         // The back end's cubes are whole: a cube texture of other layer counts is a 2D array
         // whose cube views see its first sixes.
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0 && d.array_size.is_multiple_of(CUBE_FACES);
@@ -1516,6 +1563,10 @@ impl<B: Backend> Device<B> {
             }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
+        let (format, decoded) = match self.held_as_integer(format) {
+            Some(twin) => (twin, Some(format)),
+            None => (format, None),
+        };
         // Depth-stencil views take the D formats and only they; the others read depth through
         // their own members of the group (R24_UNORM_X8_TYPELESS and the like).
         if (kind == bind::DEPTH_STENCIL) != matches!(v.format, 20 | 40 | 45 | 55) {
@@ -1617,6 +1668,7 @@ impl<B: Backend> Device<B> {
             texture: texture.clone(),
             desc: v,
             format,
+            decoded,
             gpu: Kept::new(gpu, id, Object::TextureView, &self.graveyard),
             twin,
             window,
