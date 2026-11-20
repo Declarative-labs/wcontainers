@@ -26,7 +26,9 @@ struct Dynamic {
     /// The function (index into functions, then entry points) and the using expression.
     function: usize,
     user: Handle<Expression>,
-    elements: usize,
+    /// The arrays its image and its sampler are picked from, at one index.
+    image: Option<usize>,
+    sampler: Option<usize>,
     /// Whether the index is signed (the switch's cases are of its type).
     signed: bool,
     /// Operands passed to the helper, with their types; the rest are copied into it.
@@ -35,7 +37,7 @@ struct Dynamic {
 }
 
 /// The operands of an image expression other than its image, in a fixed order.
-pub(super) fn operands(e: &mut Expression) -> Result<Vec<&mut Handle<Expression>>> {
+pub(crate) fn operands(e: &mut Expression) -> Result<Vec<&mut Handle<Expression>>> {
     let mut out = Vec::new();
     match e {
         Expression::ImageSample {
@@ -79,7 +81,7 @@ pub(super) fn operands(e: &mut Expression) -> Result<Vec<&mut Handle<Expression>
     Ok(out)
 }
 
-fn image_of(e: &mut Expression) -> Option<&mut Handle<Expression>> {
+pub(crate) fn image_of(e: &mut Expression) -> Option<&mut Handle<Expression>> {
     match e {
         Expression::ImageSample { image, .. }
         | Expression::ImageLoad { image, .. }
@@ -88,8 +90,61 @@ fn image_of(e: &mut Expression) -> Option<&mut Handle<Expression>> {
     }
 }
 
+fn sampler_of(e: &mut Expression) -> Option<&mut Handle<Expression>> {
+    match e {
+        Expression::ImageSample { sampler, .. } => Some(sampler),
+        _ => None,
+    }
+}
+
+/// Whether `a` and `b` of `f` give the same value wherever both are used: the same expression, or
+/// the same operations on the same values with nothing read from memory.
+fn same_value(f: &Function, a: Handle<Expression>, b: Handle<Expression>) -> bool {
+    use Expression as E;
+    if a == b {
+        return true;
+    }
+    match (&f.expressions[a], &f.expressions[b]) {
+        (E::Literal(x), E::Literal(y)) => x == y,
+        (E::Constant(x), E::Constant(y)) => x == y,
+        (E::FunctionArgument(x), E::FunctionArgument(y)) => x == y,
+        (E::GlobalVariable(x), E::GlobalVariable(y)) => x == y,
+        (
+            E::As {
+                expr: x,
+                kind: k,
+                convert: c,
+            },
+            E::As {
+                expr: y,
+                kind: l,
+                convert: d,
+            },
+        ) => k == l && c == d && same_value(f, *x, *y),
+        (E::Unary { op, expr: x }, E::Unary { op: other, expr: y }) => {
+            op == other && same_value(f, *x, *y)
+        }
+        (
+            E::Binary {
+                op,
+                left: x,
+                right: r,
+            },
+            E::Binary {
+                op: other,
+                left: y,
+                right: s,
+            },
+        ) => op == other && same_value(f, *x, *y) && same_value(f, *r, *s),
+        (E::AccessIndex { base: x, index: i }, E::AccessIndex { base: y, index: j }) => {
+            i == j && same_value(f, *x, *y)
+        }
+        _ => false,
+    }
+}
+
 /// Whether `e` of `f` is a value known before the program runs, which the helper copies.
-pub(super) fn constant(f: &Function, e: Handle<Expression>) -> bool {
+pub(crate) fn constant(f: &Function, e: Handle<Expression>) -> bool {
     match f.expressions[e] {
         Expression::Literal(_) | Expression::Constant(_) | Expression::ZeroValue(_) => true,
         Expression::Compose { ref components, .. } => components.iter().all(|&c| constant(f, c)),
@@ -99,7 +154,7 @@ pub(super) fn constant(f: &Function, e: Handle<Expression>) -> bool {
 }
 
 /// Copies the constant `e` of `from` into `to`, emitting what is made at run time.
-pub(super) fn copy_constant(
+pub(crate) fn copy_constant(
     from: &Function,
     to: &mut Function,
     e: Handle<Expression>,
@@ -162,6 +217,64 @@ pub(super) fn split(
     if buffers {
         return Err(refused());
     }
+    let vec4 = super::depth::vec4(module);
+    split_with(
+        module,
+        |module, binding, base, size| {
+            // Typed buffers were read as 1D images (`images::prepare`).
+            let buffer = super::images::typed_buffer_at(declared, binding);
+            match module.types[base].inner {
+                TypeInner::Image {
+                    dim,
+                    class:
+                        ImageClass::Sampled { .. }
+                        | ImageClass::Depth { .. }
+                        | ImageClass::Storage { .. },
+                    ..
+                } if dim != ImageDimension::D1 || buffer => {}
+                _ => return Err(refused()),
+            }
+            let &[class, space, register] =
+                resources
+                    .get(binding.binding as usize)
+                    .ok_or(ConvertError::Malformed(
+                        "a binding past the resource list".into(),
+                    ))?;
+            let n = match size {
+                ArraySize::Constant(n) => n.get(),
+                ArraySize::Dynamic => unbounded_length(variant, class, space, register)?,
+                _ => return Err(refused()),
+            };
+            let first = resources.len() as u32;
+            super::images::declare_elements(declared, binding, first..first + n);
+            resources.extend((0..n).map(|i| [class, space, register + i]));
+            Ok((first..first + n)
+                .map(|binding_of_element| ResourceBinding {
+                    group: binding.group,
+                    binding: binding_of_element,
+                })
+                .collect())
+        },
+        |module, f| super::depth::as_widened(module, f, vec4),
+    )
+}
+
+/// Splits every binding array into its elements, each a resource of its own at the binding
+/// `elements` gives it (from the array's binding, element type and size), and rewrites the uses: an
+/// element picked by a constant is that resource; an image read with its image, its sampler or both
+/// picked at run time (at one index) becomes a call of a function switching on the index; a store to
+/// an image picked at run time a switch in place. `typed` gives the copy of a function its
+/// expressions are typed in. Moves the module's functions and compacts it.
+pub(crate) fn split_with(
+    module: &mut Module,
+    mut elements: impl FnMut(
+        &Module,
+        ResourceBinding,
+        Handle<Type>,
+        ArraySize,
+    ) -> Result<Vec<ResourceBinding>>,
+    typed: impl Fn(&Module, &Function) -> Result<Function>,
+) -> Result<()> {
     let mut arrays: Vec<(Handle<GlobalVariable>, Vec<Handle<GlobalVariable>>)> = Vec::new();
     let found: Vec<_> = module
         .global_variables
@@ -176,49 +289,24 @@ pub(super) fn split(
     }
     for (g, base, size, binding) in found {
         let binding = binding.ok_or(refused())?;
-        // Typed buffers were read as 1D images (`images::prepare`).
-        let buffer = super::images::typed_buffer_at(declared, binding);
-        match module.types[base].inner {
-            TypeInner::Image {
-                dim,
-                class:
-                    ImageClass::Sampled { .. } | ImageClass::Depth { .. } | ImageClass::Storage { .. },
-                ..
-            } if dim != ImageDimension::D1 || buffer => {}
-            _ => return Err(refused()),
-        }
-        let &[class, space, register] =
-            resources
-                .get(binding.binding as usize)
-                .ok_or(ConvertError::Malformed(
-                    "a binding past the resource list".into(),
-                ))?;
-        let n = match size {
-            ArraySize::Constant(n) => n.get(),
-            ArraySize::Dynamic => unbounded_length(variant, class, space, register)?,
-            _ => return Err(refused()),
-        };
-        let mut elements = Vec::new();
-        let first = resources.len() as u32;
-        super::images::declare_elements(declared, binding, first..first + n);
-        for i in 0..n {
-            resources.push([class, space, register + i]);
-            elements.push(module.global_variables.append(
-                GlobalVariable {
-                    name: module.global_variables[g].name.clone(),
-                    space: naga::AddressSpace::Handle,
-                    binding: Some(ResourceBinding {
-                        group: binding.group,
-                        binding: resources.len() as u32 - 1,
-                    }),
-                    ty: base,
-                    init: None,
-                    memory_decorations: module.global_variables[g].memory_decorations,
-                },
-                Span::UNDEFINED,
-            ));
-        }
-        arrays.push((g, elements));
+        let bindings = elements(module, binding, base, size)?;
+        let made = bindings
+            .into_iter()
+            .map(|binding| {
+                module.global_variables.append(
+                    GlobalVariable {
+                        name: module.global_variables[g].name.clone(),
+                        space: naga::AddressSpace::Handle,
+                        binding: Some(binding),
+                        ty: base,
+                        init: None,
+                        memory_decorations: module.global_variables[g].memory_decorations,
+                    },
+                    Span::UNDEFINED,
+                )
+            })
+            .collect();
+        arrays.push((g, made));
     }
     let array_of = |e: &Expression| match *e {
         Expression::GlobalVariable(g) => arrays.iter().position(|(a, _)| *a == g),
@@ -261,16 +349,28 @@ pub(super) fn split(
                 }
             }
         }
-        // Run-time picks used as images; one passed to a function is refused (dxil-spirv's
-        // functions take no images), as is an array passed whole.
+        // Run-time picks used as images and samplers; one passed to a function is refused, as is an
+        // array passed whole.
         for (h, e) in f.expressions.iter() {
             let mut e = e.clone();
-            if let Some(image) = image_of(&mut e) {
-                let image = *image;
-                if let Some(&(_, a, index)) = picked.iter().find(|p| p.0 == image) {
-                    dynamic.push((i, h, a, index));
+            let pick_of = |o: Option<&mut Handle<Expression>>| {
+                o.and_then(|o| picked.iter().find(|p| p.0 == *o).copied())
+            };
+            let image = pick_of(image_of(&mut e));
+            let sampler = pick_of(sampler_of(&mut e));
+            let index = match (image, sampler) {
+                (None, None) => continue,
+                (Some((_, a, index)), Some((_, b, other))) => {
+                    if !same_value(f, index, other) || arrays[a].1.len() != arrays[b].1.len() {
+                        return Err(ConvertError::Unsupported(
+                            crate::refusal::RESOURCE_ARRAY_PAIR,
+                        ));
+                    }
+                    index
                 }
-            }
+                (Some((_, _, index)), None) | (None, Some((_, _, index))) => index,
+            };
+            dynamic.push((i, h, image.map(|p| p.1), sampler.map(|p| (p.0, p.1)), index));
         }
         let is_pick = |o| {
             picked
@@ -306,17 +406,22 @@ pub(super) fn split(
                 .collect::<Vec<_>>(),
         );
     }
-    // The types of what the helpers take and give, with plain reads of depth textures typed as
-    // the four components `depth::widen` makes them give.
-    let vec4 = (!dynamic.is_empty()).then(|| super::depth::vec4(module));
+    // Elements picked by constants are their resources from here, so a helper copies them.
+    for &(i, h, element) in &fixed {
+        let f = match i < n {
+            true => module.functions.iter_mut().nth(i).expect("a function").1,
+            false => &mut module.entry_points[i - n].function,
+        };
+        *f.expressions.get_mut(h) = Expression::GlobalVariable(element);
+    }
+    // The types of what the helpers take and give, in the copies `typed` gives.
     let functions = module.functions.iter().map(|(_, f)| f);
     let all: Vec<&Function> = functions
         .chain(module.entry_points.iter().map(|ep| &ep.function))
         .collect();
     let mut plans = Vec::new();
-    for &(i, h, a, index) in &dynamic {
-        let vec4 = vec4.expect("a run-time pick");
-        let mut f = super::depth::as_widened(module, all[i], vec4)?;
+    for &(i, h, image, sampler, index) in &dynamic {
+        let mut f = typed(module, all[i])?;
         // Texel pointers (an access into an image, which atomic operations use) have no type;
         // for typing, each stands for its image.
         let handles: Vec<_> = f.expressions.iter().map(|(h, _)| h).collect();
@@ -346,7 +451,11 @@ pub(super) fn split(
         let mut wanted = alloc::vec![index];
         for o in operands(&mut e)? {
             let o = *o;
-            if !constant(f, o) && !matches!(f.expressions[o], Expression::GlobalVariable(_)) {
+            let picked_sampler = sampler.is_some_and(|(s, _)| s == o);
+            if !constant(f, o)
+                && !picked_sampler
+                && !matches!(f.expressions[o], Expression::GlobalVariable(_))
+            {
                 wanted.push(o);
             }
         }
@@ -360,10 +469,10 @@ pub(super) fn split(
         }
         let result = inners.pop().expect("the user's");
         passed.extend(wanted[..wanted.len() - 1].iter().copied().zip(inners));
-        plans.push((i, h, a, passed, result));
+        plans.push((i, h, image, sampler.map(|s| s.1), passed, result));
     }
     let mut made = Vec::new();
-    for (i, h, a, passed, result) in plans {
+    for (i, h, image, sampler, passed, result) in plans {
         let mut ty = |inner| {
             module
                 .types
@@ -378,7 +487,8 @@ pub(super) fn split(
         made.push(Dynamic {
             function: i,
             user: h,
-            elements: a,
+            image,
+            sampler,
             signed,
             passed,
             result,
@@ -397,7 +507,8 @@ pub(super) fn split(
             }
             false => &module.entry_points[d.function - n].function,
         };
-        built.push(helper(f, d, &arrays[d.elements].1)?);
+        let elements_of = |a: Option<usize>| a.map(|a| arrays[a].1.as_slice());
+        built.push(helper(f, d, elements_of(d.image), elements_of(d.sampler))?);
     }
     let (helpers, moved) = functions_first(module, |module| -> Vec<Handle<Function>> {
         built
@@ -553,9 +664,14 @@ fn switch_stores(
 }
 
 /// The helper for one run-time pick: its arguments are the index and the passed operands; a
-/// switch on the index runs the user on the element it names (the last for any index past the
-/// array, which Direct3D leaves undefined).
-fn helper(f: &Function, d: &Dynamic, elements: &[Handle<GlobalVariable>]) -> Result<Function> {
+/// switch on the index runs the user on the image and sampler elements it names (the last for any
+/// index past the array, which Direct3D leaves undefined).
+fn helper(
+    f: &Function,
+    d: &Dynamic,
+    images: Option<&[Handle<GlobalVariable>]>,
+    samplers: Option<&[Handle<GlobalVariable>]>,
+) -> Result<Function> {
     let mut h = Function {
         arguments: d
             .passed
@@ -579,12 +695,24 @@ fn helper(f: &Function, d: &Dynamic, elements: &[Handle<GlobalVariable>]) -> Res
         })
         .collect();
     let mut user = f.expressions[d.user].clone();
+    let picked_sampler = samplers.and(sampler_of(&mut user).map(|s| *s));
     for o in operands(&mut user)? {
+        if Some(*o) == picked_sampler {
+            continue;
+        }
         *o = match d.passed.iter().position(|p| p.0 == *o) {
             Some(i) => args[i],
             None => copy_constant(f, &mut h, *o),
         };
     }
+    if images.is_none() {
+        let image = image_of(&mut user).expect("an image expression");
+        if !matches!(f.expressions[*image], Expression::GlobalVariable(_)) {
+            return Err(refused());
+        }
+        *image = copy_constant(f, &mut h, *image);
+    }
+    let elements = images.or(samplers).expect("a pick").len();
     let var = h.local_variables.append(
         LocalVariable {
             name: None,
@@ -597,13 +725,19 @@ fn helper(f: &Function, d: &Dynamic, elements: &[Handle<GlobalVariable>]) -> Res
         .expressions
         .append(Expression::LocalVariable(var), Span::UNDEFINED);
     let mut cases = Vec::new();
-    for (k, &element) in elements.iter().enumerate() {
+    for k in 0..elements {
         let mut body = Block::new();
-        let image = h
-            .expressions
-            .append(Expression::GlobalVariable(element), Span::UNDEFINED);
         let mut e = user.clone();
-        *image_of(&mut e).expect("an image expression") = image;
+        if let Some(images) = images {
+            *image_of(&mut e).expect("an image expression") = h
+                .expressions
+                .append(Expression::GlobalVariable(images[k]), Span::UNDEFINED);
+        }
+        if let Some(samplers) = samplers {
+            *sampler_of(&mut e).expect("a sample") = h
+                .expressions
+                .append(Expression::GlobalVariable(samplers[k]), Span::UNDEFINED);
+        }
         let value = h.expressions.append(e, Span::UNDEFINED);
         body.push(
             Statement::Emit(Range::new_from_bounds(value, value)),
@@ -611,7 +745,7 @@ fn helper(f: &Function, d: &Dynamic, elements: &[Handle<GlobalVariable>]) -> Res
         );
         body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
         cases.push(SwitchCase {
-            value: case_value(k, elements.len(), d.signed),
+            value: case_value(k, elements, d.signed),
             body,
             fall_through: false,
         });
