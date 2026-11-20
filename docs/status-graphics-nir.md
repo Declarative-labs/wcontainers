@@ -4,12 +4,13 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 7 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and on
-piglit's GLSL; candidate B leads on both counts (The choice, below). Run 7: the GLSL reference on
-llvmpipe for compute, vertex and fragment programs (vertex and fragment programs drawn as points),
-piglit's shader tests in the corpus (1152 match on route B, 17 differ, all from undefined behaviour
-on the seeded inputs, listed below), and four faults in the GLSL bridge found by it and fixed.
-Textures on the GLSL side, the other GLSL sources, the rest of the SPIR-V corpus, the 15.4 rewrites
+G8 run 8 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's
+GLSL and bgfx's GLSL; candidate B leads on every count (The choice, below). Run 8: route B's
+invalid modules on piglit went from 126 to 25 (the 25 left are binding arrays the common form does
+not allow and vertex programs without a position, both honest); textures and OpenGL's own vertex
+arrays on the GLSL side of the comparison (piglit: 1310 match on route B, up from 1152, no new
+difference); bgfx's desktop GLSL shaders in the corpus (281 match on route B, 3 differ, explained
+below). dEQP's GLES programs, Godot, Dolphin, the rest of the SPIR-V corpus, the 15.4 rewrites
 and robustBufferAccess remain (Next).
 
 Done:
@@ -168,9 +169,9 @@ Done:
   take), twice (they must agree), and lavapipe runs the route's two modules. Attributes at
   llvmpipe's locations and at the bridge's; an attribute the route does not read is fed to llvmpipe
   alone. State values filled as st/mesa does for a framebuffer object. Colour targets (each
-  output's components), depth and storage blocks compared. Not set up yet, by name: textures and
-  images on the GLSL side, OpenGL's other attributes (`gl_Color`, `gl_Normal`, ...), subroutine
-  uniforms, structure and block stage values, an ES vertex program alone.
+  output's components), depth and storage blocks compared. Not set up yet, by name: storage images
+  on the GLSL side, `gl_SecondaryColor` (its array has three components), subroutine uniforms,
+  structure and block stage values, an ES vertex program alone.
 - Faults in the GLSL bridge the reference found (run 7), each fixed: blocks without a layout were
   std140 where st/mesa makes them std430 for a driver that loads its constants from a buffer
   (`UseSTD430AsDefaultPacking`; the one compute program that differed); a source without `#version`
@@ -183,6 +184,34 @@ Done:
   varyings (`gl_FrontColor`/`gl_Color`, back colours, `gl_TexCoord[]`, fog) take locations after
   the 32 generic ones, by their Mesa slot (`MAX_VARYING` + slot). A built-in still refused names
   its Mesa slot.
+- Route B fixes from run 8: a depth comparison gives one value, and NIR's legacy shadow lookups
+  (GLSL 1.10's `shadow2D*`, four components) have it in every component, so route B splats it, as
+  llvmpipe's sampler does before the view's swizzle (OpenGL's depth texture mode is that swizzle:
+  G9's view, not the program's); an infinite or NaN constant is made from its bits (`u32` literal
+  bitcast to `f32`), as naga's literals must be finite; projective lookups are lowered in the
+  bridge (`nir_lower_tex`'s `lower_txp`, all dimensions and arrays); a rectangle texture is 2D
+  after `lower_rect` (its coordinates normalized). Refused by name where the common form has
+  nothing: a comparison with a bias or gradients (WGSL compares at level 0 or the implicit level
+  only), sampling an integer texture (WGSL only loads and gathers those; a rewrite to a load with
+  the sampler's addressing would be a slow path G9 can add), an array of arrays of textures,
+  samplers or images, a structure holding them, clip distances read by a fragment program.
+- The GLSL comparison fills textures (run 8): each route texture resource finds its sampler by the
+  bridge's `GlslNameKind::Sampler` name at its binding; the same seeded texels (as
+  `compare::resources` makes them) become an OpenGL texture of the view's target at its own unit
+  (`SampledTexture`, `Llvmpipe::sampled_texture`: nearest, clamped to the edge, one level; a depth
+  texture compared less or equal with its swizzle `RED` in all four, so llvmpipe's raw comparison
+  is compared); a sampler both stages read gets one set of texels. OpenGL's own attributes
+  (`gl_MultiTexCoord0..7`, `gl_Color`, `gl_Normal`, `gl_FogCoord`) are fed through OpenGL's own
+  arrays (`AttributeSlot`; `glTexCoordPointer` and its kin). Held by `tests/glsl_reference.rs`
+  (a compute program reading a 2D, a 3D unsigned, a cube, a 2D shadow and a 2D array signed
+  texture through `textureLod`, `texelFetch` and a comparison: matched). Checked to see
+  differences: with OpenGL's texels shifted by one texel (temporary, on the x86 machine's copy),
+  236 values differed.
+- bgfx's desktop GLSL shaders in the corpus (run 8; `tests/corpus/bgfx.rs`): its compiled shaders
+  (`examples/runtime/shaders/glsl/*.bin`, shaderc's format 12) read as bgfx's OpenGL renderer
+  hands them to the driver (`#version 430` before a source without one); its `bgfx_ndc` uniform is
+  left a uniform (bgfx makes it a constant from its capabilities; seeded here like any other).
+  A file of another format version is refused by name.
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -276,8 +305,32 @@ x86-64 machine, 192 children, load 4.9 at the start and 13.2 at the end, 245 s):
   and 16) 17, 64-bit values 14, binding arrays the common form does not allow 21, and smaller
   groups (`scripts/glsl_reasons.py <results> nir-naga` in scratch counts them).
 
-The choice, on this corpus (not final: the other sources are still to come; piglit's GLSL gives the
-same order: B matches 1152 GLSL programs, A 3):
+Run 8, with bgfx's 325 desktop GLSL shaders beside piglit and the SPIR-V corpus (3871 files;
+`results/run8/nir-results-r8d.jsonl`; x86-64 machine, 192 children, load 4.5 at the start and
+16.1 at the end, 250 s):
+- SPIR-V corpus: unchanged, A 728 match, B 773 match, 0 differ.
+- piglit: route B 1310 match (up from 1152), 17 differ (the same 17, same reasons), 17 not
+  compared (subroutine uniforms 9, storage images 3, a state value with no name 2, and 3 drawn
+  programs llvmpipe or the bridge refused), 266 fail by name. Of B's failures, 25 are naga
+  validation (21 binding arrays and 1 storage binding array the common form does not allow, 3
+  vertex programs without a position); every other one is a named "not taken: ..." (`load_ubo` 94:
+  64-bit, bindless and uniform block arrays indexed at run time; Mesa slots of other built-ins 17;
+  a stage value interpolated two ways 15; a comparison with a bias or gradients 15; a structure
+  holding samplers 17; 64-bit values and constants 20; and smaller groups). Route A: 3 match.
+- bgfx: 4 files refused by Mesa's compiler (3 compute programs over 256 invocations a group, 1
+  needs `GL_ARB_shader_viewport_layer_array`). Route B 281 match, 3 differ, 23 not compared
+  (storage images on the GLSL side 20, a storage format the harness does not make 3), 14 fail by
+  name (`ubitfield_extract` 6, a storage image of another format 5, `isign` 3). Route A 9 match.
+- bgfx's 3 differences: `fs_hdr_bright` reads seeded texels as RGBE (`exp2(w * 255 - 128)`, with
+  w in [-2, 2)), which overflows to infinity; llvmpipe gives 0 where the route gives NaN, and
+  GLSL leaves operations on infinities to the implementation (the class of piglit's NaN through
+  clamp). `fs_shadowmaps_packdepth_vsm` and `_linear` pack a depth with `fract(255 * z)`, z from a
+  division by a seeded w; the two differ by one unit in the last place of `255 * z` (2^-13 at that
+  size), which `fract` makes an absolute difference past the tolerance; GLSL allows division 2.5
+  units in the last place. That the division is the source is expected, not yet confirmed.
+
+The choice, on this corpus (not final: dEQP, Godot and Dolphin are still to come; the GLSL gives
+the same order: B matches 1310 piglit and 281 bgfx programs, A 3 and 9):
 `corpus/choose`, both routes optimised (`--release`), one shader and route at a time in a child of
 its own, on ten cores (`taskset -c 0-9`), x86-64 machine, load 5.5 at the start and 3.2 at the end
 (another track's tests ran beside it), before the Zink patch: A 726 match, B 773 match; on the 725
@@ -286,20 +339,19 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. Route B's invalid modules on piglit (126 "invalid: ...", most of them type resolution in fragment
-   programs; the first looked at, `glsl-fs-shadow2DGradARB-01`: a depth comparison gives naga a
-   scalar while NIR's `tex` with `is_shadow` has as many components as GLSL's legacy `shadow2D*`
-   (four), and the program reads its components: route B must widen the scalar to NIR's
-   components; the others, and "Expected data type", still to look at): route faults, to fix
-   first. Then textures and images on the GLSL side (84 programs): the same seeded texels as `compare::resources` gives the route, made as
-   OpenGL textures at the sampler's unit (`GlslNameKind::Sampler` gives the route's binding).
-   Then OpenGL's other attributes (`glColorPointer` and its kin, or generic attributes where Mesa
-   aliases them) and subroutine uniforms (`glUniformSubroutinesuiv`, the route's word from the
-   bridge's names).
-2. The other GLSL sources pinned in `corpus/sources`: dEQP's GLES programs, Godot Compatibility,
-   bgfx, Dolphin. Legacy varyings (`gl_TexCoord`, `gl_FrontColor`: `VARYING_SLOT_TEX0`, `COL0`)
-   reach `builtin_at` as "another built-in" and are refused; decide (locations past the generic
-   ones) when the corpus shows how many.
+1. dEQP's GLES programs (VK-GL-CTS `data/gles2/shaders`, `gles3/shaders`, `gles31/shaders`:
+   about 7,700 cases in dEQP's shader library format, Apache-2.0). Looked at in run 8 (commit
+   5bb4c7e8 fetched sparsely on the x86 machine and deleted): most cases are `both` sources
+   with `${DECLARATIONS}`, `${OUTPUT}` and `${SETUP}` that dEQP's C++ expands from the case's
+   `values` block, so the corpus needs our own expansion (inputs as attributes or varyings,
+   outputs as fragment outputs or caught varyings); cases expecting a compile or link failure are
+   refused, as piglit's are. Pin it in `corpus/sources` with sparse paths (`fetch` takes them).
+   Then Godot's Compatibility renderer (its `.glsl` files with Godot's section and variant
+   markers) and Dolphin (it makes its shaders at run time, and is GPL: test data only).
+2. Storage images on the GLSL side (23 programs: 20 bgfx, 3 piglit): an OpenGL texture of the
+   route's format bound with `glBindImageTexture` at the unit `GlslNameKind::Image` names, read
+   back after and compared as the SPIR-V side does. Subroutine uniforms (9:
+   `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names).
 3. The rest of the SPIR-V corpus (Godot Forward+; the shaders of
    `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and `dEQP-VK.robustness.buffer_access.*`),
    each pinned in `corpus/sources`. Then `corpus/choose` again over all of it for the final choice.
@@ -351,7 +403,9 @@ Next, in this order:
   glsl_reference` (with `WCONTAINERS_MESA`, on the x86 machine). The corpus run takes piglit's
   `.shader_test` files beside the `.spv` files, from the same `WC_NIR_CORPUS`; all 3546 take about
   4 minutes at 192 at once. `scripts/glsl_reasons.py <results> [route] [n]` (scratch) counts
-  piglit's reasons.
+  piglit's reasons; `scripts/piglit_outcomes.py <results> [route] [n] [prefix]` counts every
+  outcome of the files under a prefix (`piglit/`, `bgfx/`). bgfx's shaders come with the same
+  `corpus/fetch` and run in the same corpus run (any `.bin` in a folder named `glsl`).
 - Test with Mesa (on the x86 machine, after the build):
   `export WCONTAINERS_MESA=$CARGO_TARGET_DIR/mesa/build; cargo test -p wcontainers-nir` and
   `cargo clippy -p wcontainers-nir --all-targets -- -D warnings`; and both again without the variable.
@@ -382,6 +436,9 @@ Next, in this order:
   at load 0.43 at the start.
 - Corpus run with the comparison, 1005 shaders, 192 children, x86-64 machine at load 0.3 rising to
   5.3: 124 s including an incremental build (run 3).
+- The corpus run with bgfx (run 8, 3871 files, x86-64 machine, 192 children, load 4.5 at the start
+  and 16.1 at the end): 250 s. At 192 at once, on the 735 shaders both routes match: A median
+  441 us, B median 352 us (a busy machine; the choice's times are the ten-core ones).
 - The whole suite with the SPIR-V corpus and piglit compared (run 7, x86-64 machine, 192 children,
   load 4.9 at the start and 13.2 at the end): the corpus run 245 s for 3546 files. Time per shader
   to the validated common form at 192 at once, on the 728 shaders both match: A median 431 us, B
@@ -447,6 +504,8 @@ Next, in this order:
   dependency. `rand` 0.9 and `rand_chacha` 0.9 (MIT OR Apache-2.0, already in the workspace),
   dev-dependencies.
 - Corpus, test data only, fetched into the build folder and never in the repository or shipped:
+  bgfx at e76ecedf (since run 8; BSD-2-Clause, its `LICENSE`; only `examples/runtime/shaders/glsl`
+  and the licence are fetched);
   Sascha Willems' Vulkan samples at d2d49bf7 (MIT, `LICENSE.md`); piglit at 92510281 (since run 7;
   its `COPYING`: MIT for most of it, with some test shaders under their projects' own licences,
   e.g. GStreamer's in `glslparsertest`; piglit is for testing only, as the routed decision says,
@@ -531,6 +590,10 @@ Next, in this order:
   stages do not survive OpenGL's linker, and the draw is how llvmpipe runs a stage. In a vertex
   and fragment pair, what the vertex program computes is compared through what the fragment
   program makes of it; its position is compared only when it is alone (the catcher).
+- The corpus's `sources` lines gained a paths column (`.` for the whole tree): bgfx is fetched
+  sparsely (its shaders and licence only), as dEQP's data files will be.
+- bgfx's 3 differences (infinities from seeded RGBE texels, and one unit in the last place made
+  large by `fract`) are left as differences with their reasons, as piglit's 17 are.
 - The 17 differences from undefined behaviour on seeded inputs are left as differences with their
   reason, not hidden: the seed gives indices out of range and negative square roots, which the
   programs' own tests never give.
