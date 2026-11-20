@@ -1095,7 +1095,7 @@ impl NativeCpu {
         branch.fits(offset).then(|| branch.with(offset as u64))
     }
 
-    /// Makes guest `target` the last target of the return whose call into the inside is at host address `call`:
+    /// Makes guest `target` the last target of the return or call whose call into the inside is at host address `call`:
     /// its moves and test are written, and its direct branch is an exit to `target`, linked while a piece is
     /// loaded there. A target no piece can be at is not made one, so the call comes again at the next miss.
     fn make_last_target(&mut self, memory: MemoryId, call: u64, target: u64) {
@@ -1482,7 +1482,7 @@ enum Ended {
     TurnOver,
     /// The guest announced that the code at this address changed.
     CodeChanged(u64),
-    /// A return's first miss: its last target is to be made, and the guest's level goes on where it was carried.
+    /// A jump's first miss: its last target is to be made, and the guest's level goes on where it was carried.
     LastTarget {
         call: u64,
         target: u64,

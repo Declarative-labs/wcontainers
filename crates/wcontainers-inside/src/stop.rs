@@ -134,8 +134,8 @@ pub enum Resolved {
         then: Interrupted,
         page: RegisterPage,
     },
-    /// A return's first miss, at its call into the inside at host address `call`: the guest's level goes on
-    /// from `then` once `target` is made the return's last target.
+    /// A jump's first miss, at its call into the inside at host address `call`: the guest's level goes on
+    /// from `then` once `target` is made the jump's last target.
     LastTarget {
         call: u64,
         target: u64,

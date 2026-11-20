@@ -52,11 +52,11 @@ pub struct LinkWords {
     pub branch: Field,
     /// The first word of an empty slot, which raises an exception as a fresh page's zeros do.
     pub empty: u32,
-    /// The first move of a return's last target into the scratch register; the others are a slot's.
+    /// The first move of a jump's last target into the scratch register; the others are a slot's.
     pub last_target_first: Field,
-    /// A return's test once its last target is made.
+    /// A jump's test once its last target is made.
     pub last_target_test: u32,
-    /// A return's direct branch to its last target's piece before it is linked.
+    /// A jump's direct branch to its last target's piece before it is linked.
     pub last_target_branch: u32,
 }
 

@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_arm64::carry::{COUNT, SCRATCH, WITHHELD};
 use wcontainers_arm64::encode;
-use wcontainers_arm64::{Address, Arm64, Host, Instruction as I, Reg, decode, forms};
+use wcontainers_arm64::{
+    Address, Arm64, BranchRegister, Host, Instruction as I, Reg, decode, forms,
+};
 use wcontainers_guest_cpu::{
     Guest, InsideCall, Native, NativeReason, Route, Side, counted, effects,
 };
@@ -118,8 +120,15 @@ fn fault(word: u32) -> Option<String> {
                 InsideCall::Answer
                 | InsideCall::FloatBefore
                 | InsideCall::Trap
-                | InsideCall::Misaligned
-                | InsideCall::LastTarget => Side::Before,
+                | InsideCall::Misaligned => Side::Before,
+                // A call through a register has built x30 before its last target is compared.
+                InsideCall::LastTarget => match i {
+                    I::BranchRegister {
+                        op: BranchRegister::Blr,
+                        ..
+                    } => Side::After,
+                    _ => Side::Before,
+                },
             };
             if span.side != side {
                 return Some(format!("{call:?} at {offset} on {:?}", span.side));

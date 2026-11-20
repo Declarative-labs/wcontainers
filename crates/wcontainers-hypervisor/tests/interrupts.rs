@@ -94,6 +94,22 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
+    /// A call through a register in a loop, so that it and the leaf's return go to their last targets.
+    const LOOPED_CALLS: [u32; 12] = [
+        0xa9bf7bfd, // stp x29, x30, [sp, #-16]!
+        0x910003fd, // mov x29, sp
+        0xd28000a0, // mov x0, #5
+        0x100000e3, // adr x3, leaf
+        0xd2800064, // mov x4, #3
+        0xd63f0060, // blr x3
+        0xf1000484, // subs x4, x4, #1
+        0x54ffffc1, // b.ne back to the blr
+        0xa8c17bfd, // ldp x29, x30, [sp], #16
+        0xd65f03c0, // ret
+        0x91000c00, // leaf: add x0, x0, #3
+        0xd65f03c0, // ret
+    ];
+
     /// An exclusive pair in a loop, a compare and swap, loads and stores across a page, a float operation that
     /// raises a flag, and the float status read and written.
     const ATOMICS: [u32; 16] = [
@@ -389,6 +405,7 @@ mod macos {
         vec![
             ("sum", &SUM, vec![start(&[(0, DATA), (1, words)])]),
             ("calls", &CALLS, vec![start(&[])]),
+            ("looped calls", &LOOPED_CALLS, vec![start(&[])]),
             (
                 "atomics",
                 &ATOMICS,
