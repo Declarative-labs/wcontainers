@@ -1091,19 +1091,20 @@ impl<B: Backend> Device<B> {
         }
         // A vertex stage feeding another stage, not the pixel stage.
         let has_geometry = !desc.gs.is_empty() || tessellated;
+        // `GetRenderTargetSampleCount` reads the targets' sample count.
+        let pixel_samples = desc.samples.clamp(1, 32) as u8;
         let mut vs_typed = formats::typed_key(desc.vs, self.texel_route(), &root, bind::VERTEX);
         let ps = if desc.ps.is_empty() {
             None
         } else {
-            // `GetRenderTargetSampleCount` reads the targets' sample count, and dual-source
-            // blending the second output as the blend's second source.
+            // Dual-source blending reads the second output as the blend's second source.
             let mut key = VariantKey {
                 flags: if desc.blend.dual_source() {
                     VariantFlags::DUAL_SOURCE
                 } else {
                     VariantFlags::empty()
                 },
-                samples: desc.samples.clamp(1, 32) as u8,
+                samples: pixel_samples,
                 ..formats::typed_key(desc.ps, self.texel_route(), &root, bind::PIXEL)
             };
             let converted = self.convert_stage(desc.ps, ShaderStage::Fragment, &mut key)?;
@@ -1182,17 +1183,23 @@ impl<B: Backend> Device<B> {
         let clamped_in_shader =
             !desc.raster.depth_clip && !self.backend.caps().has(Features::DEPTH_CLAMP);
         let clamped_in_pixels = clamped_in_shader && desc.dsv_format != 0;
-        if clamped_in_shader && !drawn_directly {
-            return Err(Error::NotImplemented(CLAMP_THROUGH_STAGE_HELPER));
+        // Behind the stage helper the last vertex stage clamps: a geometry shader's pass-through,
+        // the domain program, or the vertex program the cull route runs.
+        let clamped_in_stages = clamped_in_shader && !drawn_directly;
+        if clamped_in_stages && antialiased_lines {
+            return Err(Error::NotImplemented(CLAMP_ANTIALIASED_LINES));
         }
-        if clipped_in_shader || clamped_in_shader {
+        if clamped_in_stages && desc.stream_output.is_some() && desc.gs.is_empty() {
+            return Err(Error::NotImplemented(CLAMP_STREAMED));
+        }
+        if clamped_in_shader {
+            slow_paths.push(SlowPath::DepthClampInShader);
+        }
+        if drawn_directly && (clipped_in_shader || clamped_in_shader) {
             let mut flags = VariantFlags::empty();
             if clipped_in_shader {
                 flags |= VariantFlags::CLIP_DISTANCE;
                 slow_paths.push(SlowPath::ClipDistanceInShader);
-            }
-            if clamped_in_shader {
-                slow_paths.push(SlowPath::DepthClampInShader);
             }
             let pixel_flags = match clamped_in_pixels {
                 true => flags | VariantFlags::DEPTH_CLAMP,
@@ -1205,15 +1212,11 @@ impl<B: Backend> Device<B> {
                 clip_distances: if clipped_in_shader { clip_distances } else { 0 },
             };
             if pixel_reads {
-                let (Some(p), Some(key)) = (&mut ps, &mut ps_key) else {
-                    return Err(Error::NotImplemented(match clipped_in_shader {
-                        true => CLIP_WITHOUT_PIXEL_SHADER,
-                        false => CLAMP_WITHOUT_PIXEL_SHADER,
-                    }));
+                let link = Link {
+                    flags: pixel_flags,
+                    values: linked,
                 };
-                key.flags |= pixel_flags;
-                key.linked = linked;
-                *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+                self.link_pixel_program(desc, pixel_samples, &mut ps, &mut ps_key, link)?;
             }
             if clamped_in_shader {
                 flags |= VariantFlags::DEPTH_CLAMP;
@@ -1256,7 +1259,7 @@ impl<B: Backend> Device<B> {
                     .map(|i| (e, i.location))
             })
             .collect();
-        let made = match staged {
+        let mut made = match staged {
             true => Some(self.geometry_stage(
                 desc.vs,
                 desc.hs,
@@ -1267,18 +1270,33 @@ impl<B: Backend> Device<B> {
                 desc.stream_output.as_ref(),
                 ps.as_ref().map(|p| p.reflection.inputs.as_slice()),
                 lines_key.as_ref(),
+                clamped_in_stages,
                 &root,
             )?),
             false => None,
         };
-        // What a geometry stage passes the pixel program: clip distances the back end lacks, and
-        // the layer it names.
-        if let (Some(m), Some(p), Some(key)) = (&made, &mut ps, &mut ps_key)
+        // Without a depth target the last vertex stage only keeps z inside the clip volume; the
+        // pixel program writes no depth.
+        if let Some(m) = &mut made
+            && !clamped_in_pixels
+            && m.linked.flags.contains(VariantFlags::DEPTH_CLAMP)
+        {
+            if m.linked.flags.contains(VariantFlags::LAYER_FROM_STAGE) {
+                return Err(Error::NotImplemented(CLAMP_NAMED_LAYER_WITHOUT_DEPTH));
+            }
+            m.linked.flags.remove(VariantFlags::DEPTH_CLAMP);
+            if m.linked.flags.is_empty() {
+                m.linked = Link::default();
+            }
+        }
+        // What the last vertex stage behind the stage helper passes the pixel program: clip
+        // distances the back end lacks, the unclamped depth, and the layer a geometry shader names.
+        if let Some(m) = &made
             && m.linked != Link::default()
         {
-            m.linked.apply(key);
-            *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
-            if m.linked.flags.contains(VariantFlags::CLIP_DISTANCE) {
+            let link = m.linked;
+            self.link_pixel_program(desc, pixel_samples, &mut ps, &mut ps_key, link)?;
+            if link.flags.contains(VariantFlags::CLIP_DISTANCE) {
                 slow_paths.push(SlowPath::ClipDistanceInShader);
             }
         }
@@ -1509,7 +1527,7 @@ impl<B: Backend> Device<B> {
                 flags: VariantFlags::LINE_COVERAGE,
                 values: key.linked,
             },
-            (Some(m), None) if m.shader.is_some() => m.linked,
+            (Some(m), None) if m.shader.is_some() || vertex_alone => m.linked,
             _ => Link {
                 flags: vs_typed.flags & VariantFlags::CLIP_DISTANCE
                     | ps_key.as_ref().map_or(VariantFlags::empty(), |k| {
@@ -1582,17 +1600,23 @@ impl<B: Backend> Device<B> {
                 layouts: Default::default(),
             });
         }
-        Ok(PipelineId(self.pipelines.insert(Pipeline {
-            program,
-            render: Some(render),
-            bindings,
-            group_threads: 0,
-            formats: ps.as_ref().zip(ps_key).and_then(|(c, k)| {
-                formats::Formats::of(bind::PIXEL, desc.ps, &k, &c.reflection.sampled_pairs)
-            }),
-            helpers: ps.as_ref().map(Helpers::of).unwrap_or_default(),
-            slow_paths,
-        }) as u32))
+        Ok(PipelineId(
+            self.pipelines.insert(Pipeline {
+                program,
+                render: Some(render),
+                bindings,
+                group_threads: 0,
+                formats: ps
+                    .as_ref()
+                    .zip(ps_key)
+                    .filter(|_| !desc.ps.is_empty())
+                    .and_then(|(c, k)| {
+                        formats::Formats::of(bind::PIXEL, desc.ps, &k, &c.reflection.sampled_pairs)
+                    }),
+                helpers: ps.as_ref().map(Helpers::of).unwrap_or_default(),
+                slow_paths,
+            }) as u32,
+        ))
     }
 
     /// `CreateComputePipelineState`.
@@ -1765,6 +1789,47 @@ impl<B: Backend> Device<B> {
         Ok(converted)
     }
 
+    /// The pixel program of a pipeline without a pixel shader whose variant `key` needs one: the
+    /// shaders crate's program writing nothing, with `key`'s rewrites.
+    fn pixel_program_for_variant(&mut self, key: &VariantKey) -> Result<Converted, Error> {
+        wcontainers_shaders::builtin::pixel_program_for_variant(key).map_err(|e| {
+            self.messages.push(format!(
+                "the pixel program for a variant did not convert: {e}"
+            ));
+            Error::NotImplemented("a shader feature the converter lacks")
+        })
+    }
+
+    /// Converts pipeline `desc`'s pixel shader again with `link`, which the last vertex stage
+    /// passes; without a pixel shader, the pixel program for the variant where `link` asks the
+    /// pixel stage to apply anything.
+    fn link_pixel_program(
+        &mut self,
+        desc: &GraphicsPipelineDesc<'_>,
+        samples: u8,
+        ps: &mut Option<Converted>,
+        ps_key: &mut Option<VariantKey>,
+        link: Link,
+    ) -> Result<(), Error> {
+        if let (Some(p), Some(key)) = (ps.as_mut(), ps_key.as_mut()) {
+            link.apply(key);
+            *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+            return Ok(());
+        }
+        let link = link.unshaded();
+        if link.flags.is_empty() {
+            return Ok(());
+        }
+        let mut key = VariantKey {
+            samples,
+            ..VariantKey::default()
+        };
+        link.apply(&mut key);
+        *ps = Some(self.pixel_program_for_variant(&key)?);
+        *ps_key = Some(key);
+        Ok(())
+    }
+
     /// How programs read typed buffers on this back end.
     fn texel_route(&self) -> TexelBufferRoute {
         match self.backend.caps().has(Features::TEXEL_BUFFERS) {
@@ -1788,14 +1853,13 @@ impl<B: Backend> Device<B> {
         let samples = render.targets.samples.clamp(1, 32) as u8;
         let linked = render.linked;
         let fragment = if pixel.is_empty() {
-            ShaderModule::from_wgsl(
-                &format!(
-                    "@fragment fn {}() -> @location(0) vec4f {{ return vec4f(1.0); }}",
-                    wcontainers_shaders::ENTRY_POINT
-                ),
-                wcontainers_shaders::ENTRY_POINT,
-                ShaderStage::Fragment,
-            )?
+            let mut key = VariantKey {
+                flags: VariantFlags::COUNTING,
+                samples,
+                ..VariantKey::default()
+            };
+            linked.unshaded().apply(&mut key);
+            self.pixel_program_for_variant(&key)?.modules.swap_remove(0)
         } else {
             let mut key = VariantKey {
                 flags: VariantFlags::COUNTING,
@@ -3008,6 +3072,20 @@ enum QueryState {
 }
 
 impl<B: Backend> Replay<B> {
+    /// Gives the depth range a pixel program clamping depth reads (`DepthClampInShader`) to the
+    /// pixel stage's bound helper values.
+    fn bind_depth_range(&self, d: &mut Device<B>) {
+        let depth_range = self
+            .viewports
+            .first()
+            .map_or([0; 2], |v| [v.min_depth, v.max_depth]);
+        d.bound_helpers.push((
+            bind::PIXEL,
+            HelperValue::DepthRange,
+            pull::words(&depth_range),
+        ));
+    }
+
     fn new() -> Self {
         Replay {
             pipeline: None,
@@ -3985,16 +4063,7 @@ impl<B: Backend> Replay<B> {
         d.early_draw = false;
         let (mut sets, bound) = bound?;
         d.vertex_formats(pid)?;
-        // The depth range a pixel program clamping depth reads (`DepthClampInShader`).
-        let depth_range = self
-            .viewports
-            .first()
-            .map_or([0; 2], |v| [v.min_depth, v.max_depth]);
-        d.bound_helpers.push((
-            bind::PIXEL,
-            HelperValue::DepthRange,
-            pull::words(&depth_range),
-        ));
+        self.bind_depth_range(d);
         let early_views = match &self.depth {
             Some(Descriptor::DepthStencil { view, .. }) if early => {
                 let words = self.early_words(d, pid)?;
@@ -5016,14 +5085,15 @@ pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
 
 /// The slow paths converted `programs` take by themselves, each once.
 /// The refusal of clip distances the back end lacks where no pixel shader can apply them.
-const CLIP_WITHOUT_PIXEL_SHADER: &str =
-    "clip distances the back end lacks, without a pixel shader to apply them";
-/// The refusals of depth clamping the back end lacks where no pixel program can apply it.
-const CLAMP_WITHOUT_PIXEL_SHADER: &str =
-    "depth clamping the back end lacks into a depth target, without a pixel shader to apply it";
+/// The refusals of depth clamping the back end lacks where the programs cannot apply it.
 const CLAMP_BOUND_DEPTH: &str = "depth clamping the back end lacks, in a pipeline made with no \
      depth-stencil format drawing while a depth-stencil view is bound";
-const CLAMP_THROUGH_STAGE_HELPER: &str = "depth clamping the back end lacks, behind a geometry, tessellation, stream output, culling or antialiased line stage";
+const CLAMP_ANTIALIASED_LINES: &str =
+    "depth clamping the back end lacks, of alpha-antialiased lines";
+const CLAMP_STREAMED: &str = "depth clamping the back end lacks, in the culled vertex or domain \
+     program stream output records";
+const CLAMP_NAMED_LAYER_WITHOUT_DEPTH: &str = "depth clamping the back end lacks, behind a \
+     geometry shader naming a layer, in a pipeline made with no depth-stencil format";
 
 /// The clip distances `outputs` write.
 fn clip_distances(outputs: &[StageValue]) -> u8 {
@@ -5048,6 +5118,19 @@ impl Link {
     fn apply(self, key: &mut VariantKey) {
         key.flags |= self.flags;
         key.linked = self.values;
+    }
+
+    /// What of the link a pipeline without a pixel shader applies in the pixel program for its
+    /// variant: clip distances and the clamped depth; default where neither.
+    fn unshaded(self) -> Link {
+        let flags = self.flags & (VariantFlags::CLIP_DISTANCE | VariantFlags::DEPTH_CLAMP);
+        match flags.is_empty() {
+            true => Link::default(),
+            false => Link {
+                flags,
+                values: self.values,
+            },
+        }
     }
 }
 

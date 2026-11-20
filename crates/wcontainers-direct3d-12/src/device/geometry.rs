@@ -112,20 +112,27 @@ pub(super) fn writes_cull_distances(c: &Converted) -> bool {
 }
 
 impl<B: Backend> Device<B> {
-    /// The last stage before the rasteriser, a geometry or domain shader `code`, converted with
-    /// `key`, and what it passes the pixel program: where it writes clip distances the back end
-    /// lacks, its pass-through passes them and the pixel program applies them
-    /// (`ClipDistanceInShader`); where a geometry shader names a layer, its pass-through passes it,
-    /// the pixel program reads it there, and a primitive naming a layer past the views is drawn
-    /// into their first layer, as Direct3D draws it (`LAYER_FROM_STAGE`).
+    /// The last stage before the rasteriser, a geometry or domain shader `code` or the vertex
+    /// shader the cull route runs, converted with `key`, and what it passes the pixel program:
+    /// where it writes clip distances the back end lacks, it (or a geometry shader's pass-through)
+    /// passes them and the pixel program applies them (`ClipDistanceInShader`); with `clamp`, it
+    /// keeps z inside the clip volume and passes the unclamped z, which the pixel program writes
+    /// clamped (`DepthClampInShader`); where a geometry shader names a layer, its pass-through
+    /// passes it, the pixel program reads it there, and a primitive naming a layer past the views
+    /// is drawn into their first layer, as Direct3D draws it (`LAYER_FROM_STAGE`).
     fn last_stage_converted(
         &mut self,
         code: &[u8],
         stage: SourceStage,
         key: VariantKey,
         pixel_inputs: Option<&[StageValue]>,
+        clamp: bool,
     ) -> Result<(Converted, Link), Error> {
-        let converted = self.convert_staged(code, stage, key.clone())?;
+        let convert = |d: &mut Self, key: VariantKey| match stage {
+            SourceStage::Vertex => d.convert(code, ShaderStage::Vertex, key),
+            _ => d.convert_staged(code, stage, key),
+        };
+        let converted = convert(self, key.clone())?;
         let outputs = &converted.reflection.outputs;
         let clip_distances = match self.backend.caps().has(Features::CLIP_DISTANCE) {
             true => 0,
@@ -133,8 +140,10 @@ impl<B: Backend> Device<B> {
         };
         let mut flags = VariantFlags::empty();
         if clip_distances != 0 {
-            pixel_inputs.ok_or(Error::NotImplemented(super::CLIP_WITHOUT_PIXEL_SHADER))?;
             flags |= VariantFlags::CLIP_DISTANCE;
+        }
+        if clamp {
+            flags |= VariantFlags::DEPTH_CLAMP;
         }
         if stage == SourceStage::Geometry
             && outputs
@@ -157,7 +166,7 @@ impl<B: Backend> Device<B> {
         };
         let mut key = key;
         link.apply(&mut key);
-        let converted = self.convert_staged(code, stage, key)?;
+        let converted = convert(self, key)?;
         Ok((converted, link))
     }
 
@@ -165,7 +174,8 @@ impl<B: Backend> Device<B> {
     /// or hull and domain shaders `hs` and `ds` (or none): `vs` converted with every input of
     /// `inputs` fetched in the program, the last stage before the pixel stage writing its
     /// outputs as that interpolates them, and the stage helper made from them; with `lines`, the
-    /// pixel program's key, `vs` alone drawing its lines alpha-antialiased.
+    /// pixel program's key, `vs` alone drawing its lines alpha-antialiased; with `clamp`, the last
+    /// vertex stage clamps depth the back end does not.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn geometry_stage(
         &mut self,
@@ -178,6 +188,7 @@ impl<B: Backend> Device<B> {
         so: Option<&(StreamOutput, u32)>,
         pixel_inputs: Option<&[StageValue]>,
         lines: Option<&VariantKey>,
+        clamp: bool,
         root: &RootSignatureDesc,
     ) -> Result<Made<B>, Error> {
         if !self.backend.caps().has(Features::COMPUTE) {
@@ -196,26 +207,32 @@ impl<B: Backend> Device<B> {
             .map(|(e, location)| Ok((*location, vertex_format(e.format)?.0)))
             .collect::<Result<_, Error>>()?;
         let direct = gs.is_empty() && !tessellated;
-        let vertex = self.convert(
-            vs,
-            ShaderStage::Vertex,
-            VariantKey {
-                pulled,
-                draw_base: DrawBaseSource::Helpers,
-                // A vertex stage the rasteriser follows writes its outputs as the pixel stage
-                // interpolates them.
-                output_interpolation: match direct {
-                    true => interpolation.to_vec(),
-                    false => Vec::new(),
-                },
-                ..formats::typed_key(vs, self.texel_route(), root, bind::VERTEX)
+        let vertex_key = VariantKey {
+            pulled,
+            draw_base: DrawBaseSource::Helpers,
+            // A vertex stage the rasteriser follows writes its outputs as the pixel stage
+            // interpolates them.
+            output_interpolation: match direct {
+                true => interpolation.to_vec(),
+                false => Vec::new(),
             },
-        )?;
+            ..formats::typed_key(vs, self.texel_route(), root, bind::VERTEX)
+        };
+        // Behind the cull route (no geometry stage, lines or stream output) the vertex program
+        // is the last vertex stage, and the pass-through passes what it links.
+        let (vertex, mut linked) = match direct && lines.is_none() && so.is_none() {
+            true => {
+                self.last_stage_converted(vs, SourceStage::Vertex, vertex_key, pixel_inputs, clamp)?
+            }
+            false => (
+                self.convert(vs, ShaderStage::Vertex, vertex_key)?,
+                Link::default(),
+            ),
+        };
         let interpolated = VariantKey {
             output_interpolation: interpolation.to_vec(),
             ..VariantKey::default()
         };
-        let mut linked = Link::default();
         let (shader, domain, late) = match (gs.is_empty(), tessellated) {
             (false, false) => {
                 let (gs, l) = self.last_stage_converted(
@@ -223,6 +240,7 @@ impl<B: Backend> Device<B> {
                     SourceStage::Geometry,
                     interpolated,
                     pixel_inputs,
+                    clamp,
                 )?;
                 linked = l;
                 (Some(gs), None, None)
@@ -249,6 +267,7 @@ impl<B: Backend> Device<B> {
                             SourceStage::Domain,
                             domain_key,
                             pixel_inputs,
+                            clamp,
                         )?;
                         linked = l;
                         domain
@@ -263,6 +282,7 @@ impl<B: Backend> Device<B> {
                             SourceStage::Geometry,
                             interpolated,
                             pixel_inputs,
+                            clamp,
                         )?;
                         linked = l;
                         Some(gs)
@@ -592,6 +612,7 @@ impl<B: Backend> Replay<B> {
                     StageSet::FRAGMENT,
                     Some(super::formats::VertexKind::Staged),
                 )?;
+                self.bind_depth_range(d);
                 if !d.through.is_empty() {
                     return Err(Error::NotImplemented(
                         "storage textures read through buffers behind a geometry or domain shader",
