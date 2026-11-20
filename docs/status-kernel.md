@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## For the orchestrator
 
+- Eighteenth run (13:30 to about 14:10 UTC on the 20th): the ARM64 machine (3.134.104.48) still
+  could not be reached (arm-run 125) and Docker Desktop on the Mac still started no container (a
+  probe stayed "Created" for two minutes; 54 others were stuck, none named for this run; the
+  probe was removed). The bar's ARM part is now one command for when either is back: scratch
+  kernel/k6c18/arm-final.sh (terminal five times, then the whole suite, at HEAD).
+
 - Seventeenth run (13:09 to about 13:45 UTC on the 20th): the rented ARM64 machine (now
   3.134.104.48 in arm-run) still could not be reached and Docker Desktop on the Mac still started
   no container (55 stuck "Created", one of them this track's), so no ARM64 reference could run.
@@ -49,6 +55,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   ARM64 machine (native Docker, no vsock link); the Mac's run was stopped at 07:40 on the 19th.
 
 ## Where things stand
+
+K6c, eighteenth run: no code changed; nothing could run against a reference (no ARM64 machine,
+no working Docker Desktop). The literal check gives only the second start again, with the
+baseline at 8448 lines. See "K6c, eighteenth run".
 
 K6c, seventeenth run: terminal `splice_holds_the_pipe` is settled by measuring Linux: for
 `cat /dev/tty | cat` Linux itself prints the line once or twice from run to run, so that case is
@@ -185,6 +195,24 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, eighteenth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge (13:31 UTC). The ARM64
+machine and the Mac's Docker were down all run (For the orchestrator); the code did not change,
+so 3c4a7075's guest change is still the last change to anything tested.
+
+Literal check at 432cb0b9 (Mac, load 5.7; scratch k6c18/lit.txt): one finding, the second start;
+the baseline is 8448 lines. docs/literals.md says a track adopts the check through main, not by
+merging phase-1-literals itself; this branch and phase-1-streams both merged phase-1-literals and
+each started a baseline, which is how two starts met on origin/phase-1. Settling it needs the
+orchestrator (one of the starts accepted by the check, or the merge redone through main); this
+branch cannot rewrite history.
+
+Ready for when a machine is back: scratch k6c18/arm-final.sh runs the terminal test five times
+against the ARM64 reference and then the whole suite (fmt, clippy with warnings denied, every test
+of the three crates), each with its log beside the script. The Mac's part stays k6c15/mac4.sh
+with fresh layer 1 seeds from 9191123.
 
 ## K6c, seventeenth run
 
@@ -4814,6 +4842,12 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the eighteenth run: unchanged from the seventeenth's list just below, with item 2 now
+one command: `bash <scratch>/kernel/k6c18/arm-final.sh` once the ARM64 machine answers
+(`arm-run --ssh true`), then `k6c15/mac4.sh` with seeds from 9191123 once Docker Desktop starts
+containers. If every test passes but the ARM list, say the bar is met as far as code goes, with
+the literal check's second start and the owner's rulings still open.
 
 K6c, after the seventeenth run: the bar waits on rulings and on a machine with Docker.
 1. The literal check's second baseline start and the owner's rulings, as items 1 and 2 below.
