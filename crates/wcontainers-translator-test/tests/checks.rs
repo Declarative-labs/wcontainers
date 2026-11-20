@@ -4,6 +4,7 @@
 
 use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
@@ -362,7 +363,7 @@ fn loops_running_onto_a_forbidden_page() {
             );
             dump(&mut ops);
             // Three more pages for the loop to walk through first.
-            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            ops.extend(std::iter::repeat_n(0u8, 3 * PAGE_SIZE as usize));
             let name = format!("loop-step-{step}-{}", if write { "store" } else { "load" });
             compare(&blob(&name, ops));
         }
@@ -398,7 +399,7 @@ fn structure_loops_running_onto_a_forbidden_page() {
                 ; b ->turn
             );
             dump(&mut ops);
-            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            ops.extend(std::iter::repeat_n(0u8, 3 * PAGE_SIZE as usize));
             compare(&blob(&format!("structure-step-{step}-{name}"), ops));
         }
     }
@@ -421,7 +422,7 @@ fn loop_not_proven_is_counted() {
             ; b.ne ->turn
         );
         dump(&mut ops);
-        ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+        ops.extend(std::iter::repeat_n(0u8, 3 * PAGE_SIZE as usize));
         for full in compare(&blob(&format!("not-proven-{turns}"), ops)) {
             assert_eq!(full.count(Reason::LoopNotProven), entries, "{turns} turns");
         }
@@ -453,7 +454,7 @@ fn structure_loops_are_proven() {
                 ; b.ne ->turn
             );
             dump(&mut ops);
-            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            ops.extend(std::iter::repeat_n(0u8, 3 * PAGE_SIZE as usize));
             for full in compare(&blob(&format!("structure-proven-{name}-{span}"), ops)) {
                 assert_eq!(
                     full.count(Reason::LoopNotProven),

@@ -11,6 +11,7 @@ use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
 use std::sync::Mutex;
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_arm64::forms;
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
@@ -225,7 +226,7 @@ fn step_edges_match_the_cpu() {
                 vectors[1] = a;
                 vectors[2] = b;
                 let mut registers = [0u64; 34];
-                registers[31] = DATA + 0x1000;
+                registers[31] = DATA + PAGE_SIZE;
                 let case = Case {
                     word,
                     registers,
@@ -260,7 +261,7 @@ fn words_in_no_form_are_illegal_as_on_the_cpu() {
     });
     let result = runner.run(&unallocated, |word| {
         let mut registers = [0u64; 34];
-        registers[31] = DATA + 0x1000;
+        registers[31] = DATA + PAGE_SIZE;
         let case = Case {
             word,
             registers,
@@ -286,7 +287,7 @@ fn designed_answers_and_faults() {
         let mut registers = [0u64; 34];
         registers[1] = x1;
         registers[2] = x2;
-        registers[31] = DATA + 0x1000;
+        registers[31] = DATA + PAGE_SIZE;
         translated(&Case {
             word,
             registers,

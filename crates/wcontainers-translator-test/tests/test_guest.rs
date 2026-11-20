@@ -1267,7 +1267,7 @@ fn run<const F: bool>(
             events: Vec::new(),
         },
     );
-    let pages = MEMORY_BYTES / 65536;
+    let pages = MEMORY_BYTES / contract::WASM_PAGE_BYTES;
     let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).unwrap();
     store.data_mut().memory = Some(memory);
     for &(address, value) in &start.memory {
