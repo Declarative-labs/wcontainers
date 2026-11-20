@@ -17,8 +17,11 @@ use wcontainers_inside::translation::{
 };
 use wcontainers_translator::{LookAhead, translate_native};
 
-/// The slow paths of the directory of kept translations, as counted and warned.
+/// The slow paths of translating, as counted and warned.
 pub mod reason {
+    /// A piece's host code did not fit the link at the look-ahead, so it was translated again at half as many
+    /// instructions.
+    pub const LOOK_AHEAD_HALVED: &str = "native translation's look-ahead halved to fit the link";
     /// A file of the directory could not be read whole or did not read as a kept translation.
     pub const FILE_REFUSED: &str = "native translation in the cache's directory refused";
     /// A translation could not be written to the directory.
@@ -71,7 +74,7 @@ pub struct Translator {
     pub reused: u64,
     /// How many of those were read from the directory.
     pub read: u64,
-    /// Each slow path of the directory taken, by reason, with how often.
+    /// Each slow path taken, by reason, with how often.
     pub slow: BTreeMap<&'static str, u64>,
 }
 
@@ -114,14 +117,11 @@ impl Translator {
         }
     }
 
-    /// Counts and warns a slow path of the directory.
-    fn slow(&mut self, reason: &'static str, file: &Path) {
+    /// Counts and warns a slow path.
+    fn slow(&mut self, reason: &'static str, detail: impl std::fmt::Display) {
         let times = self.slow.entry(reason).or_default();
         *times += 1;
-        eprintln!(
-            "wcontainers warning: {reason}, {}, {times} so far",
-            file.display()
-        );
+        eprintln!("wcontainers warning: {reason}, {detail}, {times} so far");
     }
 
     /// The file `key`'s translation is kept in.
@@ -141,7 +141,7 @@ impl Translator {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
             Err(_) => {
-                self.slow(reason::FILE_REFUSED, file);
+                self.slow(reason::FILE_REFUSED, file.display());
                 return None;
             }
         };
@@ -149,7 +149,7 @@ impl Translator {
             .strip_prefix(FILE_MAGIC)
             .and_then(|rest| postcard::from_bytes(rest).ok());
         if kept.is_none() {
-            self.slow(reason::FILE_REFUSED, file);
+            self.slow(reason::FILE_REFUSED, file.display());
         }
         kept
     }
@@ -167,7 +167,7 @@ impl Translator {
             .and_then(|()| std::fs::rename(&partial, file));
         if written.is_err() {
             let _ = std::fs::remove_file(&partial);
-            self.slow(reason::FILE_NOT_KEPT, file);
+            self.slow(reason::FILE_NOT_KEPT, file.display());
         }
     }
 
@@ -224,6 +224,10 @@ impl Translator {
                     let half =
                         u32::try_from(instructions / 2).expect("a piece's instructions fit u32");
                     look_ahead = LookAhead::Bounded(half);
+                    self.slow(
+                        reason::LOOK_AHEAD_HALVED,
+                        format_args!("{:#x} to {half} instructions", request.address),
+                    );
                 }
                 Err(TooLarge) => panic!("one instruction's piece does not fit the link"),
             }
@@ -249,7 +253,7 @@ mod tests {
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_arm64::{Arm64, encode};
     use wcontainers_guest_cpu::{Guest, Native};
-    use wcontainers_inside::link::Link;
+    use wcontainers_inside::link::{LINK_BYTES, Link};
     use wcontainers_inside::translation::{self, Translate};
     use wcontainers_translator::{LookAhead, translate_native};
 
@@ -421,6 +425,28 @@ mod tests {
             None,
             "no instruction in three bytes"
         );
+    }
+
+    /// A piece too large for the link is translated again at half the instructions, counted as a slow path.
+    #[test]
+    fn a_halved_look_ahead_is_counted() {
+        let at = 0x40_1000;
+        let load = 0xf940_0020u32; // ldr x0, [x1]
+        let bytes: Vec<u8> = std::iter::repeat_n(load, LINK_BYTES / Arm64::MAX_LENGTH as usize / 2)
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let mut link = link();
+        link.ask(
+            &Translate {
+                address: at,
+                exact: 1,
+            },
+            &bytes,
+        );
+        let mut translator = Translator::new(LookAhead::Full, None);
+        translator.answer(&mut link);
+        assert!(translator.slow[super::reason::LOOK_AHEAD_HALVED] > 0);
+        assert!(translation::piece(&link).is_some());
     }
 
     /// The guest addresses a piece holds code for, and the targets of its exits.
