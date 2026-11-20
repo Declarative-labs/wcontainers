@@ -324,6 +324,12 @@ Running at 91d85e31 on the ARM64 machine:
 - The whole suite at 18eda16f stands for 91d85e31 but for the stand-in on the machine's clock,
   which only the LTP and cpulimit use; cpulimit passed at 91d85e31.
 
+The Mac's part at 91d85e31 (scratch k6c19/mac5.sh, log k6c19/mac5.log; 18:10 to 18:22 UTC, load
+5 to 12, -j 4): layer 1 seeds 9191123 to 9191125 passed (300 sequences, 32 on the backend, 32 on
+the cached backend each); the Mac list (18 test files and the 9 single tests the manual keeps on
+the Mac) passed, 36 results, none failed; timers `timers_match_reference` passed 3 of 3; the
+check's seeds 4747001 to 4747003 with 10000 sequences each passed (156 to 158 s each).
+
 ## K6c, nineteenth and twentieth runs
 
 origin/phase-1 and origin/phase-1-literals had nothing new to merge (14:10 and 15:08 UTC).
