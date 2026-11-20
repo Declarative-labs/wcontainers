@@ -48,6 +48,10 @@ measured, and the milestone is reported complete for the independent check (head
   first draw).
 - The whole bar at 9e0960d9 (logs/r7f-*), then the library, the programs and the dxgi file again
   at 4658a6e1 (logs/r7i-*): see Measurements.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (21.1 GB) was deleted;
+  nothing was built on the Mac. Made on the desktop and kept, as run-dxgi.sh needs it:
+  C:\wc\out\phase-2-graphics-direct3d-11\d3d10_1fwd (the test-only forwarder, 3,829 bytes).
+  Nothing installed.
 
 G4 round 2, run 6 (2026-11-19, about 14:15 to 16:00 Pacific). Worked the independent check's
 findings on run 5. The milestone is not complete: Wine's tests still fail outside the absent
