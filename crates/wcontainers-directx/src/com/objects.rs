@@ -18,10 +18,70 @@ use windows::Win32::Graphics::Gdi::{CreateCompatibleDC, DeleteDC, GdiFlush, HDC}
 use windows::core::{BOOL, OutRef, Result};
 
 use super::counted::{Held, counted};
+use super::sharing::{self, Share};
 
 use wcontainers_direct3d_11::object as front;
 
 use super::*;
+
+/// The device front of a device of ours.
+fn device_front(device: &ID3D11Device) -> Shared {
+    device
+        .cast_object_ref::<Device>()
+        .expect("a resource's device is ours")
+        .front
+        .clone()
+}
+
+/// What a buffer and a texture share: their share's handles and keyed mutex.
+macro_rules! sharing_methods {
+    () => {
+        /// The object with its share (an opened resource's, or a made one's).
+        pub fn sharing(self, share: Option<Rc<Share>>) -> Self {
+            Self {
+                share: Locked::new(share),
+                ..self
+            }
+        }
+
+        /// `IDXGIResource::GetSharedHandle`: none for a resource not shared.
+        pub(super) fn shared_handle(&self) -> Result<HANDLE> {
+            self.share
+                .as_ref()
+                .map_or(Ok(HANDLE::default()), |s| s.kmt_handle())
+        }
+
+        /// `IDXGIResource1::CreateSharedHandle`: only for a resource shared through NT handles.
+        pub(super) fn nt_shared_handle(
+            &self,
+            attributes: *const windows::Win32::Security::SECURITY_ATTRIBUTES,
+            name: windows::core::PCWSTR,
+        ) -> Result<HANDLE> {
+            match self.share.as_ref() {
+                Some(s) => s.nt_handle(attributes, name),
+                None => Err(windows::Win32::Foundation::E_INVALIDARG.into()),
+            }
+        }
+
+        fn keyed_mutex(&self) -> bool {
+            self.share.as_ref().is_some_and(|s| s.keyed())
+        }
+
+        /// `IDXGIKeyedMutex::AcquireSync`, which takes the library's lock itself to let it go
+        /// while waiting.
+        pub(super) fn acquire_sync(&self, key: u64, milliseconds: u32) -> Result<()> {
+            let mut held = lock();
+            let share = self.share.as_ref().ok_or(DXGI_ERROR_INVALID_CALL)?.clone();
+            let device = self.child.front();
+            share.acquire(&mut held, &device, key, milliseconds)
+        }
+
+        pub(super) fn release_sync(&self, key: u64) -> Result<()> {
+            let share = self.share.as_ref().ok_or(DXGI_ERROR_INVALID_CALL)?;
+            share.release(&self.child.front(), key)
+        }
+    };
+}
 
 /// The front resource behind a resource of ours; none for a foreign object.
 pub fn resource_of(r: &ID3D11Resource) -> Option<front::Resource<Chosen>> {
@@ -78,6 +138,7 @@ pub struct Buffer {
     pub front: Locked<Rc<front::Buffer<Chosen>>>,
     pub(super) child: Child,
     priority: Cell<u32>,
+    share: Locked<Option<Rc<Share>>>,
 }
 
 counted!(Buffer => Buffer_Impl {
@@ -85,6 +146,7 @@ counted!(Buffer => Buffer_Impl {
     dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
     surface: IDXGISurface1, IDXGISurface1_Vtbl, -3;
     d3d10: ID3D10Buffer, ID3D10Buffer_Vtbl, -4, if offers_d3d10;
+    keyed: IDXGIKeyedMutex, IDXGIKeyedMutex_Vtbl, -5, if keyed_mutex;
 });
 
 impl Buffer {
@@ -102,7 +164,17 @@ impl Buffer {
             front: Locked::new(front),
             child: Child::new(device),
             priority: Cell::new(DXGI_RESOURCE_PRIORITY_NORMAL.0),
+            share: Locked::new(None),
         }
+    }
+
+    /// A buffer just made: shared if its misc flags say so.
+    pub fn made(front: Rc<front::Buffer<Chosen>>, device: ID3D11Device) -> Self {
+        let share = sharing::made(
+            &device_front(&device),
+            &front::Resource::Buffer(front.clone()),
+        );
+        Buffer::new(front, device).sharing(share)
     }
 
     pub(super) fn get_desc(&self, out: *mut D3D11_BUFFER_DESC) {
@@ -129,13 +201,7 @@ impl Buffer {
         Ok(dxgi_usage(self.front.desc.bind_flags))
     }
 
-    pub(super) fn shared_handle(&self) -> Result<HANDLE> {
-        shared_handle(self.front.desc.misc_flags)
-    }
-
-    pub(super) fn nt_shared_handle(&self) -> Result<HANDLE> {
-        nt_shared_handle(self.front.desc.misc_flags)
-    }
+    sharing_methods!();
 
     /// DXGI's surface of a buffer: a row of its bytes of no format.
     pub(super) fn get_desc_dxgi(&self) -> Result<DXGI_SURFACE_DESC> {
@@ -166,29 +232,6 @@ fn dxgi_usage(bind: u32) -> DXGI_USAGE {
     DXGI_USAGE(u)
 }
 
-/// The sharing calls not served, by name.
-const GET_SHARED_HANDLE: &str = "IDXGIResource::GetSharedHandle of a shared resource";
-const CREATE_SHARED_HANDLE: &str = "IDXGIResource1::CreateSharedHandle";
-
-/// `IDXGIResource::GetSharedHandle` of a resource of these misc flags: none for an unshared one, as
-/// Direct3D answers; the sharing itself is not served.
-fn shared_handle(misc: u32) -> Result<HANDLE> {
-    if misc & (desc::MISC_SHARED | desc::MISC_SHARED_KEYEDMUTEX) == 0 {
-        Ok(HANDLE::default())
-    } else {
-        Err(missing(GET_SHARED_HANDLE))
-    }
-}
-
-/// `IDXGIResource1::CreateSharedHandle`: invalid for a resource not shared through NT handles.
-fn nt_shared_handle(misc: u32) -> Result<HANDLE> {
-    if misc & desc::MISC_SHARED_NTHANDLE == 0 {
-        Err(E_INVALIDARG.into())
-    } else {
-        Err(missing(CREATE_SHARED_HANDLE))
-    }
-}
-
 /// A texture of one dimension: its interface, description structure, conversion and resource type.
 macro_rules! texture {
     ($name:ident, $imp:ident, $iface:ident $(| $also:ident)*, $vtbl:ident, $desc:ident, $back:path, $dim:ident, $iface10:ident, $vtbl10:ident, $at10:expr $(, $surface:ident)?) => {
@@ -198,6 +241,7 @@ macro_rules! texture {
             priority: Cell<u32>,
             /// The device context `GetDC` handed out, until `ReleaseDC`.
             dc: Cell<Option<Dc>>,
+            share: Locked<Option<Rc<Share>>>,
         }
 
         counted!($name => $imp {
@@ -205,6 +249,7 @@ macro_rules! texture {
             dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
             $($surface: IDXGISurface1, IDXGISurface1_Vtbl, -3, if one_subresource;)?
             d3d10: $iface10, $vtbl10, $at10, if offers_d3d10;
+            keyed: IDXGIKeyedMutex, IDXGIKeyedMutex_Vtbl, $at10 - 1, if keyed_mutex;
         });
 
         impl $name {
@@ -214,7 +259,17 @@ macro_rules! texture {
                     child: Child::new(device),
                     priority: Cell::new(DXGI_RESOURCE_PRIORITY_NORMAL.0),
                     dc: Cell::new(None),
+                    share: Locked::new(None),
                 }
+            }
+
+            /// A texture just made: shared if its misc flags say so.
+            pub fn made(front: Rc<front::Texture<Chosen>>, device: ID3D11Device) -> Self {
+                let share = sharing::made(
+                    &device_front(&device),
+                    &front::Resource::Texture(front.clone()),
+                );
+                $name::new(front, device).sharing(share)
             }
 
             /// `IDXGISurface1::GetDC`: a memory device context on a bitmap holding the
@@ -279,13 +334,7 @@ macro_rules! texture {
                 Ok(dxgi_usage(self.front.desc.bind_flags))
             }
 
-            pub(super) fn shared_handle(&self) -> Result<HANDLE> {
-                shared_handle(self.front.desc.misc_flags)
-            }
-
-            pub(super) fn nt_shared_handle(&self) -> Result<HANDLE> {
-                nt_shared_handle(self.front.desc.misc_flags)
-            }
+            sharing_methods!();
 
             /// Whether DXGI sees the texture as a surface: one level of one layer or slice.
             fn one_subresource(&self) -> bool {

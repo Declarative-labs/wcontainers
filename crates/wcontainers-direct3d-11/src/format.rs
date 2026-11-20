@@ -157,11 +157,17 @@ pub fn nv12_plane(view: u32) -> Option<usize> {
     }
 }
 
+/// Whether textures of DXGI format `dxgi` are a plane of 8-bit luma and one of chroma pairs at
+/// half size: NV12, and 420_OPAQUE, whose layout is the driver's and which is held as NV12.
+pub fn two_planes(dxgi: u32) -> bool {
+    matches!(dxgi, NV12 | dxgi::OPAQUE_420)
+}
+
 /// Bytes of a row and rows of a subresource of DXGI format `dxgi` stored as `format`, as the
 /// program lays it out: NV12's chroma rows follow its luma rows at the same pitch.
 pub fn subresource_rows(dxgi: u32, format: Format, width: u32, height: u32) -> (u32, u32) {
     let (row, rows) = row_bytes(format, width, height);
-    if dxgi == NV12 {
+    if two_planes(dxgi) {
         (row, rows + rows / 2)
     } else {
         (row, rows)
@@ -228,7 +234,7 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
         // Its bits: such textures are never bound, so nothing reads them as values.
         (dxgi::R10G10B10_XR_BIAS_A2_UNORM, _) => Rgb10a2Unorm,
         // The luma plane; the chroma plane is a texture of its own.
-        (NV12, _) => R8Unorm,
+        (NV12 | dxgi::OPAQUE_420, _) => R8Unorm,
         (YUY2, _) => Rgba8Unorm,
         _ => return texture_format_of(dxgi),
     };
@@ -477,6 +483,47 @@ pub fn typeless_group(dxgi: u32) -> u32 {
         dxgi::BC7_TYPELESS..=dxgi::BC7_UNORM_SRGB => dxgi::BC7_TYPELESS,
         f => f,
     }
+}
+
+/// Whether Direct3D takes render target views in the other formats of its group of a swap chain's
+/// buffer of DXGI format `dxgi` (Microsoft's 11_0 table's BackBuffer Castable Even Fully Typed row).
+pub fn back_buffer_cast(dxgi: u32) -> bool {
+    matches!(
+        dxgi,
+        dxgi::R10G10B10A2_UNORM
+            | dxgi::R10G10B10_XR_BIAS_A2_UNORM
+            | dxgi::R8G8B8A8_UNORM
+            | dxgi::R8G8B8A8_UNORM_SRGB
+            | dxgi::B8G8R8A8_UNORM
+            | dxgi::B8G8R8A8_UNORM_SRGB
+    )
+}
+
+/// Whether Direct3D 11 shares resources of DXGI format `dxgi` between devices (Microsoft's 11_0
+/// table's Shared Resource row, as the RTX 3080 answers it).
+pub fn shared(dxgi: u32) -> bool {
+    matches!(
+        typeless_group(dxgi),
+        dxgi::R32G32B32A32_TYPELESS
+            | dxgi::R16G16B16A16_TYPELESS
+            | dxgi::R10G10B10A2_TYPELESS
+            | dxgi::R11G11B10_FLOAT
+            | dxgi::R8G8B8A8_TYPELESS
+            | dxgi::R16G16_TYPELESS
+            | dxgi::R32_TYPELESS
+            | dxgi::R8G8_TYPELESS
+            | dxgi::R16_TYPELESS
+            | dxgi::R8_TYPELESS
+            | dxgi::A8_UNORM
+            | dxgi::BC1_TYPELESS
+            | dxgi::BC2_TYPELESS
+            | dxgi::BC3_TYPELESS
+            | dxgi::B8G8R8A8_TYPELESS
+            | dxgi::B8G8R8X8_TYPELESS
+            | dxgi::NV12
+            | dxgi::OPAQUE_420
+            | dxgi::YUY2
+    )
 }
 
 /// Whether Direct3D copies between `a` and `b`, of different groups, as the same bits (Direct3D 10.1's

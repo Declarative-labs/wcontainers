@@ -19,6 +19,7 @@ CHILD = ["ID3D11DeviceChild"]
 # What DXGI offers on every resource, and on buffers and textures of one subresource.
 DXGI_RESOURCE = ["IDXGIResource1", "IDXGIResource", "IDXGIDeviceSubObject", "IDXGIObject"]
 DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
+DXGI_KEYED = ["IDXGIKeyedMutex"]
 # Direct3D 10's interfaces, which Direct3D 11's objects also offer.
 D3D10_CHILD = ["ID3D10DeviceChild"]
 D3D10_RESOURCE = ["ID3D10Resource"] + D3D10_CHILD
@@ -36,13 +37,13 @@ structs = {
                 "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
     "SwapChain": ["IDXGISwapChain4", "IDXGISwapChain3", "IDXGISwapChain2", "IDXGISwapChain1",
                   "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
-    "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE + DXGI_KEYED
     + ["ID3D10Buffer"] + D3D10_RESOURCE,
-    "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE + DXGI_KEYED
     + ["ID3D10Texture1D"] + D3D10_RESOURCE,
-    "Texture2D": ["ID3D11Texture2D1", "ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    "Texture2D": ["ID3D11Texture2D1", "ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE + DXGI_KEYED
     + ["ID3D10Texture2D"] + D3D10_RESOURCE,
-    "Texture3D": ["ID3D11Texture3D1", "ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    "Texture3D": ["ID3D11Texture3D1", "ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE + DXGI_KEYED
     + ["ID3D10Texture3D"] + D3D10_RESOURCE,
     "RenderTargetView": ["ID3D11RenderTargetView1", "ID3D11RenderTargetView", "ID3D11View"] + CHILD
     + ["ID3D10RenderTargetView"] + D3D10_VIEW,
@@ -73,8 +74,8 @@ structs = {
 }
 
 hand = {
-    "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CreateGeometryShader CreateGeometryShaderWithStreamOutput CreateHullShader CreateDomainShader CreateDeferredContext CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport CheckCounterInfo GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
-    "ID3D11Device1": "GetImmediateContext1 CreateDeferredContext1 CreateDeviceContextState CreateBlendState1 CreateRasterizerState1",
+    "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CreateGeometryShader CreateGeometryShaderWithStreamOutput CreateHullShader CreateDomainShader CreateDeferredContext CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport CheckCounterInfo OpenSharedResource GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
+    "ID3D11Device1": "GetImmediateContext1 CreateDeferredContext1 CreateDeviceContextState CreateBlendState1 CreateRasterizerState1 OpenSharedResource1 OpenSharedResourceByName",
     "ID3D11Device2": "GetImmediateContext2 CreateDeferredContext2 CheckMultisampleQualityLevels1",
     "ID3D11Device3": "CreateTexture2D1 CreateTexture3D1 CreateRasterizerState2 CreateShaderResourceView1 CreateUnorderedAccessView1 CreateRenderTargetView1 CreateQuery1 GetImmediateContext3 CreateDeferredContext3",
     "ID3D11DeviceContext2": "IsAnnotationEnabled SetMarkerInt BeginEventInt",
@@ -86,6 +87,7 @@ hand = {
     "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
     "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
     "IDXGIResource": "GetUsage",
+    "IDXGIKeyedMutex": "AcquireSync ReleaseSync",
     "IDXGISurface1": "GetDC ReleaseDC",
     "ID3D11BlendState1": "GetDesc1",
     "ID3D11RasterizerState1": "GetDesc1",
@@ -133,13 +135,13 @@ on_resource = {
     ("IDXGISurface", "GetDesc"): "self.get_desc_dxgi()",
     ("IDXGIResource", "GetEvictionPriority"): "Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))",
     ("IDXGIResource", "GetSharedHandle"): "self.shared_handle()",
-    ("IDXGIResource1", "CreateSharedHandle"): "self.nt_shared_handle()",
+    ("IDXGIResource1", "CreateSharedHandle"): "self.nt_shared_handle(pattributes, *lpname)",
 }
 # Direct3D 10's device on the device: calls of the same form as Direct3D 11's served by those, the
-# counters (but their absence) and shared resources not served, every other by a method named with a 10 after it.
+# counters (but their absence) not served, every other by a method named with a 10 after it.
 dev10_same = {"GetDeviceRemovedReason", "SetExceptionMode", "GetExceptionMode", "GetCreationFlags",
               "CheckFormatSupport", "CheckMultisampleQualityLevels"}
-dev10_missing = {"CreateCounter", "CheckCounter", "OpenSharedResource"}
+dev10_missing = {"CreateCounter", "CheckCounter"}
 # The immediate context's calls that do nothing while Direct3D 10's behaviour is active on it: all
 # but the swap itself and the getters, which read the default state then, except `PSGetSamplers`,
 # which writes nothing (as real Direct3D's does: Wine's test_device_context_state).
@@ -251,7 +253,9 @@ for struct, tlist in structs.items():
                 last = outs[-1]
                 body = f"creating({last}, |{last}| {body})"
             out.append(f"    {sig} {{")
-            out.append("        let _call = self.call();" if struct in removes else "        let _lock = lock();")
+            # The keyed mutex's acquire takes the lock itself, to let it go while it waits.
+            if (t, name) != ("IDXGIKeyedMutex", "AcquireSync"):
+                out.append("        let _call = self.call();" if struct in removes else "        let _lock = lock();")
             early = struct == "Context" and t in CONTEXTS and off(name, ret)
             if early:
                 out.append(f"        if self.emulates10() {{ {early} }}")

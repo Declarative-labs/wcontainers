@@ -3538,6 +3538,11 @@ fn creation_refuses_what_direct3d_refuses() {
     assert!(invalid(dev.check_texture(&faces, false)));
     let stored = tex2d(side, side, dxgi::B5G6R5_UNORM, bind::UNORDERED_ACCESS);
     assert!(invalid(dev.check_texture(&stored, false)));
+    // 420_OPAQUE is made bound to nothing and of default usage only.
+    let opaque = tex2d(side, side, dxgi::OPAQUE_420, 0);
+    assert!(dev.check_texture(&opaque, false).is_ok());
+    let viewed = tex2d(side, side, dxgi::OPAQUE_420, bind::SHADER_RESOURCE);
+    assert!(invalid(dev.check_texture(&viewed, false)));
     let bytes = 64;
     let typed = BufferDesc {
         byte_width: bytes,
@@ -3567,4 +3572,26 @@ fn creation_refuses_what_direct3d_refuses() {
     assert_eq!(l10.format_support(dxgi::BC7_UNORM).support1, 0);
     let bc7 = tex2d(side, side, dxgi::BC7_UNORM, bind::SHADER_RESOURCE);
     assert!(invalid(l10.check_texture(&bc7, false)));
+}
+
+/// Sharing is claimed for the formats Direct3D 11 shares, and only them.
+#[test]
+fn formats_direct3d_shares_claim_sharing() {
+    use wcontainers_directx_graphics_infrastructure::dxgi;
+    let dev = device();
+    for (format, shared) in [
+        (dxgi::R8G8B8A8_UNORM, true),
+        (dxgi::D32_FLOAT, true),
+        (dxgi::NV12, true),
+        (dxgi::OPAQUE_420, true),
+        (dxgi::R32G32_FLOAT, false),
+        (dxgi::D24_UNORM_S8_UINT, false),
+    ] {
+        let s = dev.format_support(format);
+        assert_eq!(
+            s.support2 & SUPPORT2_SHAREABLE != 0,
+            shared,
+            "format {format}"
+        );
+    }
 }

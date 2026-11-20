@@ -1,5 +1,6 @@
 //! A small Direct3D 11 program using a YUY2 texture: made with initial data, viewed as
-//! `R8G8B8A8` (loaded and sampled by pixel shaders, cleared as a target), written by
+//! `R8G8B8A8` (loaded, sampled and gathered by pixel shaders, cleared as a target, written
+//! through a storage view by a compute shader), written by
 //! `UpdateSubresource` and copied by `CopySubresourceRegion` at even and odd boxes, and written
 //! and read through staging maps. Prints each answer and the texture's bytes after each step (as
 //! hex, in the layout a map gives), for comparing with real Direct3D line by line.
@@ -7,10 +8,12 @@
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
     use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
     use windows::Win32::Graphics::Direct3D::*;
     use windows::Win32::Graphics::Direct3D11::*;
     use windows::Win32::Graphics::Dxgi::Common::*;
     use windows::Win32::Graphics::Dxgi::IDXGIAdapter;
+    use windows::core::{PCSTR, s};
 
     const VS: &[u8] =
         include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/common.vs_full.dxbc");
@@ -22,6 +25,54 @@ fn main() -> windows::core::Result<()> {
     const H: u32 = 4;
 
     let code = |r: windows::core::Result<()>| r.err().map_or(0, |e| e.code().0) as u32;
+    // Shaders compiled by the system's d3dcompiler_47.dll.
+    let compile = |src: &str, target: PCSTR| -> Vec<u8> {
+        let mut blob = None;
+        unsafe {
+            D3DCompile(
+                src.as_ptr().cast(),
+                src.len(),
+                PCSTR::null(),
+                None,
+                None::<&ID3DInclude>,
+                s!("main"),
+                target,
+                0,
+                0,
+                &mut blob,
+                None,
+            )
+        }
+        .expect("the shader compiles");
+        let blob = blob.unwrap();
+        unsafe {
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
+                .to_vec()
+        }
+    };
+    // Each texel's red and its neighbours' to the right and below, gathered at its centre.
+    // With the argument `sizes` the view's size is the one `GetDimensions` reports, otherwise its
+    // pairs and rows.
+    let size = if std::env::args().nth(1).as_deref() == Some("sizes") {
+        "uint w, h; t.GetDimensions(w, h);".to_string()
+    } else {
+        format!("uint w = {}, h = {H};", W / 2)
+    };
+    let gather_ps = compile(
+        &format!(
+            "Texture2D t : register(t0); SamplerState s : register(s0);\n\
+             float4 main(float4 p : SV_Position) : SV_Target {{\n\
+             {size} return t.GatherRed(s, p.xy / float2(w, h)); }}"
+        ),
+        s!("ps_4_1"),
+    );
+    // Each texel written through a storage view from its place.
+    let store_cs = compile(
+        "RWTexture2D<float4> o : register(u0);\n\
+         [numthreads(1, 1, 1)] void main(uint3 i : SV_DispatchThreadID) {\n\
+         o[i.xy] = float4((i.x + 1) / 9.0, (i.y + 1) / 7.0, (i.x + i.y + 1) / 11.0, 1.0); }",
+        s!("cs_5_0"),
+    );
     let (mut device, mut context) = (None, None);
     unsafe {
         D3D11CreateDevice(
@@ -182,12 +233,13 @@ fn main() -> windows::core::Result<()> {
         MaxLOD: f32::MAX,
         ..Default::default()
     };
-    let (mut sampler, mut vs, mut sample, mut load) = (None, None, None, None);
+    let (mut sampler, mut vs, mut sample, mut load, mut gather) = (None, None, None, None, None);
     unsafe {
         device.CreateSamplerState(&sampler_desc, Some(&mut sampler))?;
         device.CreateVertexShader(VS, None, Some(&mut vs))?;
         device.CreatePixelShader(SAMPLE, None, Some(&mut sample))?;
         device.CreatePixelShader(LOAD, None, Some(&mut load))?;
+        device.CreatePixelShader(&gather_ps, None, Some(&mut gather))?;
         context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context.VSSetShader(vs.as_ref(), None);
         context.PSSetSamplers(0, Some(&[sampler.clone()]));
@@ -213,7 +265,11 @@ fn main() -> windows::core::Result<()> {
     let mut rtv = None;
     unsafe { device.CreateRenderTargetView(&target, None, Some(&mut rtv))? };
     for (plane, view, w, h) in [("pairs", &pairs, W / 2, H)] {
-        for (how, ps) in [("loaded", &load), ("sampled", &sample)] {
+        for (how, ps) in [
+            ("loaded", &load),
+            ("sampled", &sample),
+            ("gathered", &gather),
+        ] {
             unsafe {
                 context.OMSetRenderTargets(Some(&[rtv.clone()]), None);
                 context.RSSetViewports(Some(&[D3D11_VIEWPORT {
@@ -299,6 +355,47 @@ fn main() -> windows::core::Result<()> {
             context.CopySubresourceRegion(&other, 0, b.0, b.1, 0, &yuy2, 0, Some(&dst_box));
         }
         show(&format!("copied {name}"), &other);
+    }
+
+    // Each plane written through a storage view of its format by a compute shader.
+    let stored = texture(
+        W,
+        H,
+        DXGI_FORMAT_YUY2,
+        D3D11_USAGE_DEFAULT,
+        (D3D11_BIND_UNORDERED_ACCESS.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        0,
+        None,
+    );
+    println!(
+        "CreateTexture2D(unordered access) {:#010x}",
+        code(stored.as_ref().map(|_| ()).map_err(|e| e.clone()))
+    );
+    if let Ok(stored) = stored {
+        let mut cs = None;
+        unsafe { device.CreateComputeShader(&store_cs, None, Some(&mut cs))? };
+        let planes = [("R8G8B8A8_UNORM", DXGI_FORMAT_R8G8B8A8_UNORM, W / 2, H)];
+        for (name, format, w, h) in planes {
+            let desc = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                Format: format,
+                ViewDimension: D3D11_UAV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_UAV { MipSlice: 0 },
+                },
+            };
+            let mut v = None;
+            let r = unsafe { device.CreateUnorderedAccessView(&stored, Some(&desc), Some(&mut v)) };
+            println!("CreateUnorderedAccessView({name}) {:#010x}", code(r));
+            if let Some(v) = v {
+                unsafe {
+                    context.CSSetShader(cs.as_ref(), None);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&Some(v)), None);
+                    context.Dispatch(w, h, 1);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&None), None);
+                }
+            }
+        }
+        show("stored", &stored);
     }
 
     // A staging texture written through a map and copied in whole.
