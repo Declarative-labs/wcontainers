@@ -26,6 +26,7 @@ tar = "0.4.46"
 proptest = "1.12.0"
 fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "zerocopy"] }
 zerocopy.workspace = true
+coarsetime = "0.1.38"
 
 [features]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)

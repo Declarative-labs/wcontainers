@@ -52,8 +52,10 @@ struct Stopped {
     fault: Option<(u64, Access)>,
     /// Instructions of the blocks entered, for how long the turn took.
     instructions: u64,
-    /// When a turn on the machine's clock ends, whatever it has run.
-    deadline: Option<std::time::Instant>,
+    /// When a turn on the machine's clock ends, whatever it has run: on the clock at the
+    /// resolution of the machine's tick, which is cheap to read at every block, as Linux looks at
+    /// CPU time at its tick.
+    deadline: Option<coarsetime::Instant>,
 }
 
 struct Memory {
@@ -154,7 +156,7 @@ impl Memory {
                 stopped.instructions += u64::from(size / 4);
                 if stopped
                     .deadline
-                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                    .is_some_and(|deadline| coarsetime::Instant::now() >= deadline)
                 {
                     unicorn.emu_stop().expect("stopping unicorn");
                 }
@@ -510,7 +512,8 @@ impl StandIn {
             deadline: slice_nanoseconds
                 .filter(|_| self.wall_clock)
                 .map(|nanoseconds| {
-                    std::time::Instant::now() + std::time::Duration::from_nanos(nanoseconds)
+                    coarsetime::Instant::now()
+                        + coarsetime::Duration::from(std::time::Duration::from_nanos(nanoseconds))
                 }),
             ..Stopped::default()
         };
