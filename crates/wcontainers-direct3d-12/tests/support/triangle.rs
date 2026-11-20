@@ -5,16 +5,19 @@ use std::sync::Arc;
 
 use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
-use wcontainers_direct3d_12::root::{RootSignatureDesc, serialize};
+use wcontainers_direct3d_12::root::{
+    FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, RootSignatureDesc, VERSION_1_0, serialize,
+};
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, GraphicsPipelineDesc, PipelineId, ResourceId};
-use wcontainers_gpu::Backend;
+use wcontainers_directx_graphics_infrastructure::dxgi;
+use wcontainers_gpu::{Backend, ColorWrites};
 
 pub const VS: &[u8] =
     include_bytes!("../../../wcontainers-graphics-test/shaders/dxil/triangle.vs.dxil");
 pub const PS: &[u8] =
     include_bytes!("../../../wcontainers-graphics-test/shaders/dxil/triangle.ps.dxil");
-pub const RGBA8: u32 = 28;
+pub const RGBA8: u32 = dxgi::R8G8B8A8_UNORM;
 pub const SIZE: u32 = 256;
 /// The scene's clear colour and vertices (crates/wcontainers-graphics-test/src/scene.rs).
 pub const CLEAR: [f32; 4] = [26.0 / 255.0, 26.0 / 255.0, 38.0 / 255.0, 1.0];
@@ -32,7 +35,7 @@ pub fn buffer(size: u64) -> ResourceDesc {
         depth_or_array_size: 1,
         mip_levels: 1,
         sample_count: 1,
-        layout: 1,
+        layout: LAYOUT_ROW_MAJOR,
         ..Default::default()
     }
 }
@@ -42,16 +45,24 @@ pub fn pipeline<B: Backend>(device: &mut Device<B>, vs: &[u8]) -> Result<Pipelin
         device,
         vs,
         PS,
-        vec![element("POSITION", 16, 0), element("COLOR", 6, 8)],
+        inputs(),
         Raster {
-            fill: 3,
-            cull: 1,
+            fill: FILL_MODE_SOLID,
+            cull: CULL_MODE_NONE,
             depth_clip: true,
             ..Default::default()
         },
-        3,
-        0,
+        TOPOLOGY_TYPE_TRIANGLE,
+        dxgi::UNKNOWN,
     )
+}
+
+/// The scene's inputs: a two-component position, then a colour.
+pub fn inputs() -> Vec<InputElement> {
+    vec![
+        element("POSITION", dxgi::R32G32_FLOAT, 0),
+        element("COLOR", dxgi::R32G32B32_FLOAT, size_of::<[f32; 2]>() as u32),
+    ]
 }
 
 /// Input element `name` of `format` at `offset` in slot 0.
@@ -78,13 +89,13 @@ pub fn pipeline_with<B: Backend>(
     dsv_format: u32,
 ) -> Result<PipelineId, Error> {
     let root = device.create_root_signature(&serialize(&RootSignatureDesc {
-        version: 1,
+        version: VERSION_1_0,
         parameters: vec![],
         samplers: vec![],
-        flags: 1,
+        flags: FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
     }))?;
     let mut blend = Blend::default();
-    blend.targets[0].write_mask = 15;
+    blend.targets[0].write_mask = ColorWrites::all().bits();
     device.create_graphics_pipeline(&GraphicsPipelineDesc {
         root: Some(root),
         vs,
@@ -178,7 +189,7 @@ pub fn record_with<B: Backend>(
         ..Default::default()
     }]));
     list.record(Command::Scissors(vec![[0, 0, SIZE as i32, SIZE as i32]]));
-    list.record(Command::Topology(4));
+    list.record(Command::Topology(TOPOLOGY_TRIANGLELIST));
     list.record(Command::VertexBuffers {
         start: 0,
         views: vec![VertexBufferView {

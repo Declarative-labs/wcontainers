@@ -32,6 +32,7 @@ impl IDXGIFactory6_Impl for Factory_Impl {
         riid: *const windows_core::GUID,
         ppvadapter: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvadapter);
         Factory::EnumAdapterByGpuPreference(self, adapter, gpupreference, riid, ppvadapter)
     }
 }
@@ -54,6 +55,7 @@ impl IDXGIFactory4_Impl for Factory_Impl {
         riid: *const windows_core::GUID,
         ppvadapter: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvadapter);
         Factory::EnumAdapterByLuid(self, adapterluid, riid, ppvadapter)
     }
     fn EnumWarpAdapter(
@@ -61,6 +63,7 @@ impl IDXGIFactory4_Impl for Factory_Impl {
         riid: *const windows_core::GUID,
         ppvadapter: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvadapter);
         Factory::EnumWarpAdapter(self, riid, ppvadapter)
     }
 }
@@ -215,8 +218,9 @@ impl IDXGIObject_Impl for Factory_Impl {
     fn GetParent(
         &self,
         _riid: *const windows_core::GUID,
-        _ppparent: *mut *mut core::ffi::c_void,
+        ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppparent);
         Err(self.unsupported("GetParent"))
     }
 }
@@ -320,6 +324,7 @@ impl IDXGIObject_Impl for Adapter_Impl {
         riid: *const windows_core::GUID,
         ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppparent);
         Adapter::GetParent(self, riid, ppparent)
     }
 }
@@ -502,6 +507,7 @@ impl IDXGIObject_Impl for Output_Impl {
         riid: *const windows_core::GUID,
         ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppparent);
         Output::GetParent(self, riid, ppparent)
     }
 }
@@ -584,8 +590,9 @@ impl IDXGISwapChain1_Impl for SwapChain_Impl {
     fn GetCoreWindow(
         &self,
         _refiid: *const windows_core::GUID,
-        _ppunk: *mut *mut core::ffi::c_void,
+        ppunk: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppunk);
         Err(self.unsupported("GetCoreWindow"))
     }
     fn Present1(
@@ -626,6 +633,7 @@ impl IDXGISwapChain_Impl for SwapChain_Impl {
         riid: *const windows_core::GUID,
         ppsurface: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppsurface);
         SwapChain::GetBuffer(self, buffer, riid, ppsurface)
     }
     fn SetFullscreenState(
@@ -678,6 +686,7 @@ impl IDXGIDeviceSubObject_Impl for SwapChain_Impl {
         riid: *const windows_core::GUID,
         ppdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppdevice);
         SwapChain::GetDevice(self, riid, ppdevice)
     }
 }
@@ -711,6 +720,7 @@ impl IDXGIObject_Impl for SwapChain_Impl {
         riid: *const windows_core::GUID,
         ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppparent);
         SwapChain::GetParent(self, riid, ppparent)
     }
 }
@@ -742,6 +752,7 @@ impl ID3D12Device8_Impl for Device_Impl {
         riidresource: *const windows_core::GUID,
         ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvresource);
         Device::CreateCommittedResource2(
             self,
             pheapproperties,
@@ -764,6 +775,7 @@ impl ID3D12Device8_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvresource);
         Device::CreatePlacedResource1(
             self,
             pheap,
@@ -814,16 +826,18 @@ impl ID3D12Device7_Impl for Device_Impl {
         _paddition: *const D3D12_STATE_OBJECT_DESC,
         _pstateobjecttogrowfrom: windows_core::Ref<ID3D12StateObject>,
         _riid: *const windows_core::GUID,
-        _ppnewstateobject: *mut *mut core::ffi::c_void,
+        ppnewstateobject: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppnewstateobject);
         Err(self.unsupported("AddToStateObject"))
     }
     fn CreateProtectedResourceSession1(
         &self,
         _pdesc: *const D3D12_PROTECTED_RESOURCE_SESSION_DESC1,
         _riid: *const windows_core::GUID,
-        _ppsession: *mut *mut core::ffi::c_void,
+        ppsession: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppsession);
         Err(self.unsupported("CreateProtectedResourceSession1"))
     }
 }
@@ -851,8 +865,9 @@ impl ID3D12Device5_Impl for Device_Impl {
         &self,
         _powner: windows_core::Ref<ID3D12LifetimeOwner>,
         _riid: *const windows_core::GUID,
-        _ppvtracker: *mut *mut core::ffi::c_void,
+        ppvtracker: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvtracker);
         Err(self.unsupported("CreateLifetimeTracker"))
     }
     fn RemoveDevice(&self) {
@@ -891,6 +906,7 @@ impl ID3D12Device5_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppmetacommand: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppmetacommand);
         Device::CreateMetaCommand(
             self,
             commandid,
@@ -905,8 +921,9 @@ impl ID3D12Device5_Impl for Device_Impl {
         &self,
         _pdesc: *const D3D12_STATE_OBJECT_DESC,
         _riid: *const windows_core::GUID,
-        _ppstateobject: *mut *mut core::ffi::c_void,
+        ppstateobject: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppstateobject);
         Err(self.unsupported("CreateStateObject"))
     }
     fn GetRaytracingAccelerationStructurePrebuildInfo(
@@ -934,14 +951,16 @@ impl ID3D12Device4_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppcommandlist: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppcommandlist);
         Device::CreateCommandList1(self, nodemask, r#type, flags, riid, ppcommandlist)
     }
     fn CreateProtectedResourceSession(
         &self,
         _pdesc: *const D3D12_PROTECTED_RESOURCE_SESSION_DESC,
         _riid: *const windows_core::GUID,
-        _ppsession: *mut *mut core::ffi::c_void,
+        ppsession: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppsession);
         Err(self.unsupported("CreateProtectedResourceSession"))
     }
     fn CreateCommittedResource1(
@@ -955,6 +974,7 @@ impl ID3D12Device4_Impl for Device_Impl {
         riidresource: *const windows_core::GUID,
         ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvresource);
         Device::CreateCommittedResource1(
             self,
             pheapproperties,
@@ -974,6 +994,7 @@ impl ID3D12Device4_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvheap);
         Device::CreateHeap1(self, pdesc, pprotectedsession, riid, ppvheap)
     }
     fn CreateReservedResource1(
@@ -983,8 +1004,9 @@ impl ID3D12Device4_Impl for Device_Impl {
         _poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
         _pprotectedsession: windows_core::Ref<ID3D12ProtectedResourceSession>,
         _riid: *const windows_core::GUID,
-        _ppvresource: *mut *mut core::ffi::c_void,
+        ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvresource);
         Err(self.unsupported("CreateReservedResource1"))
     }
     fn GetResourceAllocationInfo1(
@@ -1009,16 +1031,18 @@ impl ID3D12Device3_Impl for Device_Impl {
         &self,
         _paddress: *const core::ffi::c_void,
         _riid: *const windows_core::GUID,
-        _ppvheap: *mut *mut core::ffi::c_void,
+        ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvheap);
         Err(self.unsupported("OpenExistingHeapFromAddress"))
     }
     fn OpenExistingHeapFromFileMapping(
         &self,
         _hfilemapping: windows::Win32::Foundation::HANDLE,
         _riid: *const windows_core::GUID,
-        _ppvheap: *mut *mut core::ffi::c_void,
+        ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvheap);
         Err(self.unsupported("OpenExistingHeapFromFileMapping"))
     }
     fn EnqueueMakeResident(
@@ -1047,6 +1071,7 @@ impl ID3D12Device2_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         pppipelinestate: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(pppipelinestate);
         Device::CreatePipelineState(self, pdesc, riid, pppipelinestate)
     }
 }
@@ -1059,6 +1084,7 @@ impl ID3D12Device1_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         pppipelinelibrary: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(pppipelinelibrary);
         Device::CreatePipelineLibrary(self, plibraryblob, bloblength, riid, pppipelinelibrary)
     }
     fn SetEventOnMultipleFenceCompletion(
@@ -1098,6 +1124,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppcommandqueue: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppcommandqueue);
         Device::CreateCommandQueue(self, pdesc, riid, ppcommandqueue)
     }
     fn CreateCommandAllocator(
@@ -1106,6 +1133,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppcommandallocator: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppcommandallocator);
         Device::CreateCommandAllocator(self, r#type, riid, ppcommandallocator)
     }
     fn CreateGraphicsPipelineState(
@@ -1114,6 +1142,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         pppipelinestate: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(pppipelinestate);
         Device::CreateGraphicsPipelineState(self, pdesc, riid, pppipelinestate)
     }
     fn CreateComputePipelineState(
@@ -1122,6 +1151,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         pppipelinestate: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(pppipelinestate);
         Device::CreateComputePipelineState(self, pdesc, riid, pppipelinestate)
     }
     fn CreateCommandList(
@@ -1133,6 +1163,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppcommandlist: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppcommandlist);
         Device::CreateCommandList(
             self,
             nodemask,
@@ -1157,6 +1188,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvheap);
         Device::CreateDescriptorHeap(self, pdescriptorheapdesc, riid, ppvheap)
     }
     fn GetDescriptorHandleIncrementSize(
@@ -1173,6 +1205,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvrootsignature: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvrootsignature);
         Device::CreateRootSignature(
             self,
             nodemask,
@@ -1290,6 +1323,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riidresource: *const windows_core::GUID,
         ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvresource);
         Device::CreateCommittedResource(
             self,
             pheapproperties,
@@ -1307,6 +1341,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvheap);
         Device::CreateHeap(self, pdesc, riid, ppvheap)
     }
     fn CreatePlacedResource(
@@ -1319,6 +1354,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvresource);
         Device::CreatePlacedResource(
             self,
             pheap,
@@ -1336,8 +1372,9 @@ impl ID3D12Device_Impl for Device_Impl {
         _initialstate: D3D12_RESOURCE_STATES,
         _poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
         _riid: *const windows_core::GUID,
-        _ppvresource: *mut *mut core::ffi::c_void,
+        ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvresource);
         Err(self.unsupported("CreateReservedResource"))
     }
     fn CreateSharedHandle(
@@ -1353,8 +1390,9 @@ impl ID3D12Device_Impl for Device_Impl {
         &self,
         _nthandle: windows::Win32::Foundation::HANDLE,
         _riid: *const windows_core::GUID,
-        _ppvobj: *mut *mut core::ffi::c_void,
+        ppvobj: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvobj);
         Err(self.unsupported("OpenSharedHandle"))
     }
     fn OpenSharedHandleByName(
@@ -1385,6 +1423,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppfence: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppfence);
         Device::CreateFence(self, initialvalue, flags, riid, ppfence)
     }
     fn GetDeviceRemovedReason(&self) -> windows_core::Result<()> {
@@ -1419,6 +1458,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvheap);
         Device::CreateQueryHeap(self, pdesc, riid, ppvheap)
     }
     fn SetStablePowerState(&self, _enable: windows_core::BOOL) -> windows_core::Result<()> {
@@ -1431,6 +1471,7 @@ impl ID3D12Device_Impl for Device_Impl {
         riid: *const windows_core::GUID,
         ppvcommandsignature: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvcommandsignature);
         Device::CreateCommandSignature(self, pdesc, prootsignature, riid, ppvcommandsignature)
     }
     fn GetResourceTiling(
@@ -1555,6 +1596,7 @@ impl ID3D12DeviceChild_Impl for Queue_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -1602,6 +1644,7 @@ impl ID3D12DeviceChild_Impl for Allocator_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2225,6 +2268,7 @@ impl ID3D12DeviceChild_Impl for List_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2288,6 +2332,7 @@ impl ID3D12DeviceChild_Impl for Fence_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2333,6 +2378,7 @@ impl ID3D12Resource1_Impl for Resource_Impl {
         riid: *const windows_core::GUID,
         ppprotectedsession: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppprotectedsession);
         Resource::GetProtectedResourceSession(self, riid, ppprotectedsession)
     }
 }
@@ -2406,6 +2452,7 @@ impl ID3D12DeviceChild_Impl for Resource_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2447,6 +2494,7 @@ impl ID3D12DeviceChild_Impl for RootSignature_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2494,6 +2542,7 @@ impl ID3D12DeviceChild_Impl for PipelineState_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2537,6 +2586,7 @@ impl ID3D12DeviceChild_Impl for QueryHeap_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2580,6 +2630,7 @@ impl ID3D12DeviceChild_Impl for CommandSignature_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2627,6 +2678,7 @@ impl ID3D12DeviceChild_Impl for Heap_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }
@@ -2680,6 +2732,7 @@ impl ID3D12DeviceChild_Impl for DescriptorHeap_Impl {
         riid: *const windows_core::GUID,
         ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
+        cleared(ppvdevice);
         self.base().GetDevice(riid, ppvdevice)
     }
 }

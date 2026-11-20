@@ -262,7 +262,10 @@ bitflags! {
     }
 }
 
-/// Per-format abilities, indexed by [`Format::index`].
+/// Per-format abilities, indexed by [`Format::index`]. A format with any use is served in every
+/// texture dimension: 1D where its blocks are one texel high, 2D, cube, and 3D but for depth and
+/// stencil formats. A back end whose API lacks a dimension for a format holds such textures decoded
+/// or converted (slow paths [`crate::SlowPath::BlockDecoded`], [`crate::SlowPath::FormatConverted`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormatCaps {
     pub uses: [FormatUse; Format::COUNT],
