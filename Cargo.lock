@@ -2002,6 +2002,11 @@ dependencies = [
 [[package]]
 name = "wcontainers-process"
 version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-executor",
+ "wcontainers-kernel",
+]
 
 [[package]]
 name = "wcontainers-process-conformance"

@@ -5,3 +5,8 @@ edition = "2024"
 
 [lib]
 path = "interface.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-executor = { path = "../executor" }
+wcontainers-kernel = { path = "../wcontainers-kernel" }
