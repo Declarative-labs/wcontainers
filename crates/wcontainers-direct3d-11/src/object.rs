@@ -275,6 +275,9 @@ pub struct View<B: Backend> {
     /// The description, with defaults resolved.
     pub desc: ViewDesc,
     pub format: Format,
+    /// The normalised format the view reads and writes where `format` is its integer twin, which
+    /// the back end holds in its place (`NormAsInteger`).
+    pub decoded: Option<Format>,
     pub gpu: Kept<B, B::TextureView>,
     /// The texture of the view's format the view is made on, where it reinterprets the texture's
     /// bits; its levels and layers are copied in before each use and out after each write
@@ -310,8 +313,13 @@ impl<B: Backend> View<B> {
         if self.reads_stencil() {
             FormatKind::Uint
         } else {
-            self.format.kind()
+            self.values().kind()
         }
+    }
+
+    /// The format whose values the view reads and writes.
+    pub fn values(&self) -> Format {
+        self.decoded.unwrap_or(self.format)
     }
 
     /// Whether what is drawn into the view is copied out of the texture the pass draws into.

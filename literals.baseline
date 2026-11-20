@@ -5107,9 +5107,6 @@ code	crates/wcontainers-gpu/src/backend.rs	int	generate_mips_by_draws	24
 code	crates/wcontainers-gpu/src/backend.rs	int	generate_mips_by_draws	28
 code	crates/wcontainers-gpu/src/backend.rs	int	generate_mips_by_draws	32
 code	crates/wcontainers-gpu/src/backend.rs	int	generate_mips_by_draws	4
-code	crates/wcontainers-gpu/src/backend.rs	int	norm_twin	127
-code	crates/wcontainers-gpu/src/backend.rs	int	norm_twin	32767
-code	crates/wcontainers-gpu/src/backend.rs	int	norm_twin	65535
 code	crates/wcontainers-gpu/src/backend.rs	str	Backend::resolve_queries	"query results go to multiples of 8 bytes"
 code	crates/wcontainers-gpu/src/caps.rs	int	FormatCaps::takes_samples	128
 code	crates/wcontainers-gpu/src/caps.rs	int	Limits	3

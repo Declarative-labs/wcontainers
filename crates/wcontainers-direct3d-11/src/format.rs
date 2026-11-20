@@ -562,3 +562,24 @@ pub fn row_bytes(format: Format, width: u32, height: u32) -> (u32, u32) {
 pub fn components(format: Format) -> u32 {
     format.components()
 }
+
+/// Direct3D's conversion of `value` into a channel of normalised `format` (clamped to its range,
+/// NaN as zero, scaled and rounded to the nearest integer), as the bits of a channel of its
+/// integer twin (`NormAsInteger`).
+pub fn encode_norm(format: Format, value: f32) -> u32 {
+    let signed = signed_normalized(format);
+    let bits = format.block().2 * u8::BITS / format.components().count_ones();
+    let max = (1u32 << (bits - u32::from(signed))) - 1;
+    let low = if signed { -1.0 } else { 0.0 };
+    let v = if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(low, 1.0)
+    };
+    (v * max as f32).round() as i32 as u32
+}
+
+/// The typed DXGI format a texture of `format` is stored for.
+pub fn dxgi_of(format: Format) -> Option<u32> {
+    (dxgi::UNKNOWN..=dxgi::B4G4R4A4_UNORM).find(|&d| texture_format(d) == Some(format))
+}
