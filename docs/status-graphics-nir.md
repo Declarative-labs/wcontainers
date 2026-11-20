@@ -5,6 +5,62 @@ G9).
 
 ## Where it stands
 
+G9 run 4 (2026-11-20). G9 is still far from its bar, but our driver now has a context and passes
+its first conformance cases. This run:
+- The context (`crates/wcontainers-opengl/src/`, all Rust on the Gallium bindings, generic over
+  the back end; the screen too, `Screen<B>`), by file:
+  - `resource.rs`: buffers (every use, a whole number of storage words) and textures (1D as 2D
+    one texel high, cubes, arrays, 3D) on the interface's; Gallium's references; maps as copies
+    (a read map reads back now, `ReadBackWait`; a write map writes on unmap or on each flushed
+    range, with the write mode Gallium's flags give: discard whole, unsynchronised as
+    `NoOverwrite`, otherwise `Ordered`); `buffer_subdata` and `texture_subdata` written from the
+    frontend's bytes with no copy; depth and stencil texels split into and joined from the two
+    aspects the interface moves. A map of a multisampled texture is refused (null, OpenGL's out
+    of memory). Objects whose owner went are given back to the back end at its next use (Mesa
+    destroys resources from inside the driver's own calls).
+  - `context.rs`: the context with st/mesa's upload buffers (`u_upload_create_default`), the
+    framebuffer as the pass tracker's targets, clears through the tracker (full clears as the
+    pass's load) and `clear_rects` (surface clears), flush and fences, texture and memory
+    barriers (the open pass ends). Entry points not built end the process with their name
+    (`unbuilt!`: queries, render conditions, geometry, tessellation and compute stages, stream
+    output, polygon stipple), never a call that does nothing.
+  - `state.rs`: blend, depth and stencil, rasterizer, sampler and vertex element states as the
+    interface's blocks (blend built per framebuffer at the draw: no blending on integer
+    targets); programs kept as st/mesa's NIR. What a block cannot hold is refused by name
+    (different fill modes per face, a sampler's LOD bias, advanced blend equations, client-memory
+    vertex streams, a vertex format the screen does not report).
+  - `draw.rs`: each stage converted by route B (`direct::module`) at its first draw for its
+    variant, then `create_shader` and `create_program`, cached by shader and variant. The
+    variant: the vertex program's position moved to the host's clip space (`wc_nir_transform_
+    position`: y negated where Gallium's viewport scale is positive, depth from -w..w to 0..w,
+    `ClipDepthRewrite`, and w - z for a depth range whose near value is the larger,
+    `ViewportDepthFlip`), and each bound view's swizzle applied in the program
+    (`wc_nir_swizzle_textures`, `SwizzleInShader`). Uniform blocks bound by the route's
+    reflection (the frontend's bytes through the ring, grown to the declared size), textures
+    and samplers likewise; indices from the frontend through the ring (8-bit widened where the
+    back end lacks them, `IndexWidened`), fans and loops through `draw_fan_or_loop`. Refused by
+    name: indirect draws, fans and loops from an index buffer, restart at another index.
+  - `view.rs`: sampler views, `resource_copy_region` (`copy_buffer`, `copy_texture`),
+    `generate_mipmap` (the interface's `generate_mips`). `blit.rs`: blits through Gallium's
+    blitter, which draws through the driver's own draws (the state saved as Mesa's inline
+    helpers save it). `present.rs`: `flush_frontbuffer` shows the frame in the device
+    context's window (a `wgpu` surface over `WindowFromDC`'s window, a copy drawn into the
+    surface's texture).
+- wcontainers-nir gained the driver's NIR steps in its bridge: a copy of a program, vertex
+  elements by rank and gl_FragColor to every buffer (moved from `glsl.cpp`, which now calls
+  them), the position transform and the texture swizzles.
+- The screen now reports what st/mesa needs for OpenGL ES 2.0 and what the context serves:
+  separate blend equations, independent blending where the back end has it, mixed framebuffer
+  sizes (the tracker fits them), seamless cubes, LOD in fragment programs, instance ids, packed
+  uniforms, the host's fragment coordinates, both clip depth spaces; and leaves to st/mesa what
+  the host lacks (flat shading, alpha test, two-sided colour, user clip planes, rectangle
+  textures, GL_CLAMP). Maps are never persistent. GLSL 1.20 and ESSL 1.00.
+- Windows: bindgen now allows the undeclared intrinsics of Mesa's Visual C++ atomics (inside
+  inline bodies the bindings never hold), and the driver compares Gallium's enums the same where
+  C enums are signed (Visual C++) and where they are not.
+- First case on our driver: `dEQP-GLES2.functional.color_clear.single_rgba` passes (desktop,
+  through the GPU queue, 11:15, 0.7 s; frames shown in the window).
+
 G9 run 3 (2026-11-20). G9 is still far from its bar: our driver has no context yet, so it
 passes no conformance case and there is still no table of lists and shares on it. This run:
 - The hang under glcts is found and fixed. glcts unloads `opengl32.dll` before it exits; Mesa's
