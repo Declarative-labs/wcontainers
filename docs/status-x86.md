@@ -143,6 +143,25 @@ Measured:
   test at seed 6061: pass. Bounded against none, x86: 4 cases a program at seed 1, and 40 a program at seed
   6062 (74 s): pass.
 - The program another thread changes: passes (29 s, load 3); the mutation above timed out at 200 s.
+- The suite at b38ce04a, rented x86-64 machine (`x6r2-suite-x86m-attach.log`, `x6r2-suite-x86m-full.log`, 3,319
+  s, load 2 to 24 on 96): clippy with warnings denied for the five crates passes; 120 passed, 15 ignored, 30
+  failed, the same 30 kinds as X5 run 8 and for the same reasons: 25 ARM64 tests (no ARM64 reference there),
+  `every_form_matches_the_cpu_x86_64`, `sample_matches_the_cpu_in_chrome_x86_64` and
+  `the_x86_64_reference_refuses_what_linux_refuses` (5-level paging), `unoffered_forms_are_illegal_x86_64` (that
+  CPU has the features) and `hand_cases_do_what_they_must_x86_64` (it runs `movbe` with 66 and REX.W). Every x86
+  program test, in wasmtime and Chrome, the changes tests, layer 2 and layer 3 for x86, validity and bounded
+  look-ahead pass. Those five keep their i7-8750H verdicts of X5 run 8: nothing they translate changed (one
+  instruction at none; the translator change only touches starts that used to stop it).
+- ARM64's tests, rented ARM64 machine (`x6r2-suite-arm.log`, 1,485 s, load 9 to 27): all pass but the two layer 1
+  tests its manual keeps on the Mac (`every_form_matches_the_cpu_arm64`, `sample_matches_the_cpu_in_chrome_arm64`),
+  as in X5 run 8. Not run on the Mac this run; expected to pass as in run 7, not measured.
+- The literal check (the Mac): exits 0, no line added. Baseline lines of this track's crates: x86 125, guest-cpu
+  28, the test crate 2,090, the translator 72.
+
+So every part of X6's bar holds on the rented machines: the bar's programs (the three that write code, setjmp, C++
+exceptions, Rust panics, the nine trap flag cases) at every look-ahead in wasmtime and in Chrome against the
+reference, with the program another thread changes beside them in wasmtime. What comes next: X6's independent
+check.
 
 ## X6, run 1 (2026-11-20)
 
