@@ -78,6 +78,8 @@ pub(crate) struct ProcessAway {
     pub parent_thread: Tid,
     pub group: Pid,
     pub exit_signal: u32,
+    /// The `vfork` parent its first thread keeps waiting.
+    pub vfork_parent: Option<Tid>,
     /// Signals the kernel sent the process while it was away (a child's end), sent again when
     /// it is back.
     pub signals: Vec<(u32, [u8; SIGNAL_INFORMATION_SIZE])>,
@@ -298,6 +300,7 @@ impl Kernel {
                 parent_thread: process.parent_thread,
                 group: process.group,
                 exit_signal: process.exit_signal,
+                vfork_parent: process.away.get(&pid).and_then(|away| away.vfork_parent),
                 signals: Vec::new(),
             },
         );
@@ -330,13 +333,7 @@ impl Kernel {
             if tid == pid {
                 process.ended_leader = Leader::of(thread);
             }
-            process.away.insert(
-                tid,
-                Away {
-                    signal_mask: thread.signal_mask,
-                    pending: Pending::default(),
-                },
-            );
+            process.away.insert(tid, Away::of(thread));
         }
         let announced = self
             .shared_announced
@@ -430,13 +427,7 @@ impl Kernel {
         if tid == thread.process {
             process.ended_leader = Leader::of(&thread);
         }
-        process.away.insert(
-            tid,
-            Away {
-                signal_mask: thread.signal_mask,
-                pending: Pending::default(),
-            },
-        );
+        process.away.insert(tid, Away::of(&thread));
         SuspendedTask {
             id: tid,
             thread: alloc::boxed::Box::new(thread),
@@ -454,10 +445,11 @@ impl Kernel {
         mut task: SuspendedTask,
     ) -> Result<(), SuspendedTask> {
         let tid = task.id;
+        // A task whose process ended or ran a new program while it was away ended with it.
         let Some(process) = self
             .processes
             .get(&task.thread.process)
-            .filter(|process| process.ended.is_none())
+            .filter(|process| process.ended.is_none() && process.away.contains_key(&tid))
         else {
             return Err(task);
         };

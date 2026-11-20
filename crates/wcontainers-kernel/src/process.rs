@@ -178,12 +178,38 @@ impl Drop for Charge {
     }
 }
 
-/// What the kernel keeps of a task taken off it: the signals it blocked, and those sent to it since,
-/// which it takes when it is put back.
-#[derive(Clone, Default)]
+/// What the kernel keeps of a task taken off it: the signals it blocked, those sent to it since
+/// (which it takes when it is put back), what `/proc` shows of it, and what its end does if its
+/// process ends while it is away.
+#[derive(Clone)]
 pub(crate) struct Away {
     pub signal_mask: u64,
     pub pending: Pending,
+    pub shown: Leader,
+    /// Its file system context while the task lives, for `/proc`'s links.
+    pub fs: alloc::rc::Weak<RefCell<FsContext>>,
+    /// `set_robust_list`'s head and `set_tid_address`'s word, for the end's last stores.
+    pub robust_list: u64,
+    pub clear_child_tid: u64,
+    /// The `vfork` parent it keeps waiting.
+    pub vfork_parent: Option<Tid>,
+}
+
+impl Away {
+    pub fn of(thread: &Thread) -> Self {
+        Self {
+            signal_mask: thread.signal_mask,
+            pending: Pending::default(),
+            shown: Leader {
+                schedule: thread.schedule,
+                ..Leader::of(thread)
+            },
+            fs: Rc::downgrade(&thread.fs),
+            robust_list: thread.robust_list.0,
+            clear_child_tid: thread.clear_child_tid,
+            vfork_parent: thread.vfork_parent,
+        }
+    }
 }
 
 /// Signals sent and not yet taken: one set, and their information in the order sent. A standard

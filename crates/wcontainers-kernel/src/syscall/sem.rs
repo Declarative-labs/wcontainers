@@ -356,8 +356,7 @@ pub(crate) fn renumber(kernel: &mut Kernel, from: Tid, to: Tid) {
 
 /// `exit_sem`: when the last thread using an undo list ends, each set's adjustments are added
 /// (the values held between 0 and `SEMVMX`) and waiting operations looked at again.
-pub(crate) fn exit_sem(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
-    let pid = kernel.threads[&tid].process;
+pub(crate) fn exit_sem(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid, tid: Tid) {
     let sems = &mut kernel.ipc.sem;
     let Some(list) = sems.list_of.remove(&tid) else {
         return;

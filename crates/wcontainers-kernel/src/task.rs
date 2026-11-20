@@ -845,7 +845,7 @@ impl Kernel {
         self.unschedule(tid);
         self.release_vfork(tid);
         syscall::sem::forget(self, tid);
-        syscall::sem::exit_sem(self, cx, tid);
+        syscall::sem::exit_sem(self, cx, self.threads[&tid].process, tid);
         syscall::mqueue::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         self.ids_let_go.push(tid);
@@ -882,6 +882,9 @@ impl Kernel {
                 self.end_thread(cx, other);
             }
         }
+        // Its tasks taken off the kernel end too, as stopped threads do in Linux; the caller still
+        // uses the memory.
+        self.end_tasks_away(cx, pid, |_| true);
         if tid == pid {
             return tid;
         }
@@ -916,6 +919,31 @@ impl Kernel {
         pid
     }
 
+    /// Ends the tasks of process `pid` taken off the kernel, as Linux ends stopped threads: their
+    /// last stores into the memory (`others_use_memory` of each in turn), the semaphore
+    /// adjustments and waits they leave, the `vfork` parent they kept waiting; their numbers are
+    /// let go of, and putting one back hands it back.
+    fn end_tasks_away(
+        &mut self,
+        cx: &mut Context<'_>,
+        pid: Pid,
+        others_use_memory: impl Fn(usize) -> bool,
+    ) {
+        let away = core::mem::take(&mut self.processes.get_mut(&pid).expect("process exists").away);
+        for (index, (tid, task)) in away.into_iter().enumerate() {
+            let end = syscall::futex::TaskEnd::of_away(pid, tid, &task);
+            syscall::futex::task_end(self, cx, &end, others_use_memory(index));
+            syscall::timer::thread_end(self, tid);
+            if task.vfork_parent.is_some() {
+                self.wake(Channel::Vfork(tid));
+            }
+            syscall::sem::forget(self, tid);
+            syscall::sem::exit_sem(self, cx, pid, tid);
+            syscall::mqueue::forget(self, tid);
+            self.ids_let_go.push(tid);
+        }
+    }
+
     /// Ends a whole process with a wait status, as `exit_group` and fatal signals do: its threads
     /// and memory go, its children go to a reaper, and its parent is told. It stays as a zombie
     /// until its parent reaps it, unless the parent does not want it.
@@ -929,8 +957,13 @@ impl Kernel {
         let shared = self.memory_in_use_elsewhere(pid, memory);
         // The kernel's last stores into the process's memory, as Linux's `mm_release`, come
         // before the embedder hears of the end, so a watch it sets then has nothing left to meet.
+        // Its tasks taken off the kernel end first, as stopped threads do; each end sees the
+        // memory still used by those yet to end.
+        let away = self.processes[&pid].away.len();
+        self.end_tasks_away(cx, pid, |index| {
+            shared || index + 1 < away || !threads.is_empty()
+        });
         for (index, &tid) in threads.iter().enumerate() {
-            // Each thread's end sees the memory still used by those yet to end.
             syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
         }
         let ending = self.ending_process.replace(pid);
@@ -960,7 +993,7 @@ impl Kernel {
             self.unschedule(tid);
             self.release_vfork(tid);
             syscall::sem::forget(self, tid);
-            syscall::sem::exit_sem(self, cx, tid);
+            syscall::sem::exit_sem(self, cx, pid, tid);
             syscall::mqueue::forget(self, tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);
@@ -984,8 +1017,6 @@ impl Kernel {
         process.stopped = false;
         process.report = None;
         process.pending = Default::default();
-        // Tasks of it taken off the kernel end with it: putting one back hands it back.
-        process.away.clear();
         let memory = process.memory;
         let empty = crate::memory::AddressMap::new(
             self.machine.memory_bytes,
@@ -1024,6 +1055,11 @@ impl Kernel {
                 .processes
                 .values()
                 .flat_map(|process| [process.pid, process.group, process.session])
+                .chain(
+                    self.processes_away
+                        .iter()
+                        .flat_map(|(pid, away)| [*pid, away.group]),
+                )
                 .collect();
             self.ids_let_go.extend(carried);
             return;
@@ -1057,7 +1093,20 @@ impl Kernel {
                     && process.ended_leader.credentials.uid == uid
             })
             .count();
-        let tasks = (live + ended) as i64;
+        // A task taken off the kernel counts, as a stopped one does; a first thread among them is
+        // counted above.
+        let away = self
+            .processes
+            .values()
+            .flat_map(|process| {
+                process
+                    .away
+                    .iter()
+                    .filter(move |(tid, _)| **tid != process.pid)
+            })
+            .filter(|(_, away)| away.shown.credentials.uid == uid)
+            .count();
+        let tasks = (live + ended + away) as i64;
         i128::from(tasks + more) > i128::from(limit.min(i64::MAX as u64))
     }
 

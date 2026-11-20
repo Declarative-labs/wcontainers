@@ -90,10 +90,17 @@ fn reset_on_fork(schedule: &mut crate::process::Schedule) {
 
 /// A `vfork` parent waits, not to be interrupted, until its child starts a program or ends.
 fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
-    let borrowing = kernel
-        .threads
-        .get(&child)
-        .is_some_and(|thread| thread.vfork_parent == Some(tid));
+    // A child taken off the kernel, or whose context is, still borrows the memory.
+    let borrowing = match kernel.threads.get(&child) {
+        Some(thread) => thread.vfork_parent,
+        None => match kernel.processes.get(&child) {
+            Some(process) => process.away.get(&child).and_then(|away| away.vfork_parent),
+            None => kernel
+                .processes_away
+                .get(&child)
+                .and_then(|away| away.vfork_parent),
+        },
+    } == Some(tid);
     if borrowing {
         kernel.park(tid, Channel::Vfork(child));
         return Outcome::Parked;

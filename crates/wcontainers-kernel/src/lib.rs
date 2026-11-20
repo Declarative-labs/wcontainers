@@ -646,14 +646,16 @@ impl Kernel {
         Err(Errno::EAGAIN)
     }
 
-    /// Whether a process, thread, process group or session carries a number.
+    /// Whether a process, thread, process group or session carries a number: a task or process
+    /// taken off the kernel counts.
     fn carried(&self, id: i32) -> bool {
         self.processes.contains_key(&id)
             || self.threads.contains_key(&id)
-            || self
-                .processes
-                .values()
-                .any(|process| process.group == id || process.session == id)
+            || self.processes_away.contains_key(&id)
+            || self.processes.values().any(|process| {
+                process.group == id || process.session == id || process.away.contains_key(&id)
+            })
+            || self.processes_away.values().any(|away| away.group == id)
     }
 
     /// Gives back to the embedder the numbers let go of that nothing carries any more.
