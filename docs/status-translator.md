@@ -6,8 +6,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 - Eighth run: every T3 check against Linux passed on the rented ARM64 machine (13.59.176.235; see "Eighth run
   of T3"), except layer 1, whose verdict is the Mac's. The Mac's Docker ran containers from 06:10:32 (after your
-  restart) only until 06:11:43; since then every new container stays "Created" (this track's probes at 06:37
-  and 07:16 too), and the guard has been stopped by its stop file since 06:11:38, so nothing restarts it. When
+  restart) only until 06:11:43; since then every new container stays "Created" (this track's probes at 06:37,
+  07:16 and 08:00 too), and the guard has been stopped by its stop file since 06:11:38, so nothing restarts it. When
   it starts containers again, scratch `translator/t3/r7/verify-mac.sh` runs layer 1 at seed 600 and layer 1's
   tests in one command; that is the last check T3 waits for. On the Graviton the same layer 1 run differed
   only on `MSR_SR_systemmove`, the known reference difference.
