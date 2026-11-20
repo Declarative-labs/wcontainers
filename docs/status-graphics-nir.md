@@ -4,9 +4,10 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 4 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and candidate
-B leads on both counts (The choice, below); GLSL, the rest of the corpus, the 15.4 rewrites,
-alphaToOne and robustBufferAccess remain (Next).
+G8 run 5 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and candidate
+B leads on both counts (The choice, below). Run 5: route B takes stage values in one form, lowered
+IO (what the OpenGL linker hands over), and alphaToOne's two steps are made and tested. GLSL, the
+rest of the corpus, the 15.4 rewrites and robustBufferAccess remain (Next).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -56,7 +57,36 @@ Done:
   atomic type, as naga requires), `fmod` (a - b floor(a / b)), `frem`, point coordinates, storage
   buffers always readable (the common form has no write-only buffers). What it does not take is
   refused by name ("not taken: ..."). Held by
-  `tests/route.rs` (both candidates bind a sampling program alike; a compute program). every `.spv` under `WC_NIR_CORPUS`, each
+  `tests/route.rs` (both candidates bind a sampling program alike; a compute program).
+- Stage values in route B are lowered IO, one form for every source: `wc_nir_lower_io` (bridge.c)
+  runs Mesa's `nir_lower_io_passes` on a Vulkan program (after splitting gl_PerVertex), which the
+  OpenGL linker has already run on a GLSL one. `flat.c` gathers every slot `load_input`,
+  `load_interpolated_input` and `store_output` reach into one variable a slot (the widest access;
+  one kind, u32 where accesses disagree; clip distances folded into one array; a built-in keeps its
+  own type), with a fragment input's interpolation from its barycentric (`load_input`: flat); Rust
+  reads them as `LOAD_STAGE` and `STORE_STAGE` on that variable's local. Refused by name: a slot
+  indexed at run time, other than 32 bits, a second blend source, interpolation at a sample or an
+  offset, a slot interpolated two ways. The corpus gives the same results as with variables (run 5).
+- alphaToOne's two steps (15.4): `Nir::alpha_to_one` (`wc_nir_alpha_to_one`) lowers IO and runs
+  Mesa's `nir_lower_alpha_to_coverage` and `nir_lower_alpha_to_one`. Route B turns
+  `demote_samples` into a local of the samples kept (all ones at the start, ANDed with the
+  complement of each demoted set) that becomes the sample mask output, ANDed with the program's
+  own where it writes one; the pass's 16-bit operations (u2u16, u2u32, mov, and, or, multiply,
+  shifts) are carried in 32-bit words holding the zero-extended value (multiply and shift left
+  masked to 16 bits, shift counts to their low 4 bits); every other 16-bit operation is refused by
+  name. Held by `tests/route.rs` (a program with and one without its own sample mask: one sample
+  mask output, alpha one, validated) and `tests/narrow.rs`: a SPIR-V program with native 16-bit
+  integers (written word by word in the test) run by lavapipe natively and through route B, both
+  held to Rust's 16-bit arithmetic, over every 16-bit value and every shift count 0 to 31 (2,097,152
+  invocations, 14,680,064 results, seed 0x5eed for the second operand and the upper bits; 0 differ).
+  Checked to see differences: with the multiply's and the shift count's masks taken out (temporary),
+  6,151,775 results differed.
+- Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
+  Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
+  lavapipe have no code for it (searched in the source). So the fragment programs of
+  `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` after the two passes are held by G10's
+  CTS cases, not by lavapipe; they are to be listed so when they are in the corpus.
+- The corpus run: every `.spv` under `WC_NIR_CORPUS`, each
   shader and route in a child process of its own; a crash or hang is named and attributed to the step
   it happened in (the route, or the comparison). One JSON line a shader. Knobs: `WC_NIR_SHADERS` (a
   seeded sample), `WC_NIR_SEED` (the sample and every shader's inputs; default 0x5eed),
@@ -92,7 +122,9 @@ crash Mesa's `spirv_to_nir` before any route (HLSL's variable rate shading); 25 
 rate 3, minimum LOD 3, barycentrics 2, ray query 2). 839 reach both routes.
 
 Run 4's results, held to lavapipe (x86-64 machine, 192 children at once, load 9.2 at the start and
-25.2 at the end, shared with other tracks; 293 s with the Mesa rebuild; Zink patched):
+25.2 at the end, shared with other tracks; 293 s with the Mesa rebuild; Zink patched). Run 5, with
+route B on lowered IO, gave the same counts and the same reasons (x86-64 machine, load 0.07 at the
+start and 5.96 at the end, 256 s; `results/run5/nir-results-r5a.jsonl`):
 - Candidate A: 728 match, 0 differ, 8 not compared, 103 fail by name.
 - Candidate B: 773 match, 0 differ, 8 not compared, 58 fail by name.
 - Shader by shader: 727 match on both routes, 1 on A only, 46 on B only.
@@ -137,16 +169,11 @@ Next, in this order:
    SPIR-V; the shaders of `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and
    `dEQP-VK.robustness.buffer_access.*`), each pinned in `corpus/sources`. Then `corpus/choose` again
    over all of it for the final choice.
-3. alphaToOne's two steps in route B. Found this run: `nir_lower_alpha_to_coverage` acts on
-   `store_output` (IO lowered by `nir_lower_io`), and route B takes outputs as variables; so the
-   bridge must lower the fragment outputs to `store_output` for that pass (or route B take
-   `store_output` for outputs), then `demote_samples` becomes the sample mask output ANDed with the
-   program's, and the pass's 16-bit operations (`u2u16`, `iand`, `ior`, `imul`, `ishl`, `ushr`,
-   `u2u32`; read in `nir_lower_alpha.c`) are carried in 32-bit words as 15.4 says. The exhaustive
-   test: a compute program with those 16-bit operations over every value and shift count, folded
-   into one word an invocation, run by lavapipe natively (it has `shaderInt16`) against route B's
-   module; it needs a corpus mode that does not count `Int16` apart (a route step, not a program's
-   need). Check whether lavapipe runs `demote_samples` first.
+3. The alpha_to_one programs into the corpus: the fragment programs of
+   `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` (VK-GL-CTS makes them in its C++;
+   take them from a CTS build's shader dump, pinned), each through `Nir::alpha_to_one` then the
+   routes, converted and validated, and listed as held by G10's CTS cases (lavapipe does not run
+   `demote_samples`).
 4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
    shaders crate (Requests; not there at shaders' tip 2fa6dc19); robustBufferAccess's three steps
@@ -212,6 +239,8 @@ Next, in this order:
   at load 0.43 at the start.
 - Corpus run with the comparison, 1005 shaders, 192 children, x86-64 machine at load 0.3 rising to
   5.3: 124 s including an incremental build (run 3).
+- `tests/narrow.rs` (2,097,152 invocations, both programs on lavapipe): 0.47 s, x86-64 machine,
+  load 0.08 (run 5).
 - The choice's timing (run 4, `corpus/choose`, x86-64 machine, ten cores, one child at a time, load
   5.5 at the start and 3.2 at the end with another track's tests running): 1781 s in all; time per
   shader to the validated common form on the 725 shaders both match: A median 219 us, mean 261 us;
@@ -293,6 +322,12 @@ Next, in this order:
   is included from Cargo's `OUT_DIR`, whose name the literal check refuses as a new code string here
   (its one constant, `CARGO_OUT_DIR`, is private to wcontainers-literals).
 
+- Lowered IO keeps a stage value's interpolation only where a fragment input is loaded. Route B
+  gives a vertex output Perspective (Flat for an integer one); where a fragment program reads it
+  another way, the pipeline (G9, G10) must give the vertex side the fragment side's. The plan does
+  not say; the comparison runs each stage alone, so it does not see this.
+- The 16-bit test's reference is lavapipe running the same program with native 16-bit integers and
+  Rust's 16-bit arithmetic, both, rather than a corpus mode (the program is the test's own).
 - The route's module is run by lavapipe through naga's SPIR-V writer, not by the recording back
   end's interpreter (`wcontainers-gpu-test`) or the WebGPU back end on the RTX 3080 (15.3). Reasons:
   the interpreter's limits (no derivatives, implicit levels only on one-level views, no atomics or
