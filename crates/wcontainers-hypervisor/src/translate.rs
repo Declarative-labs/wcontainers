@@ -238,6 +238,7 @@ fn piece(translation: Translation) -> Piece {
         spans: translation.spans,
         exits: translation.exits,
         sites: translation.sites,
+        tables: translation.tables,
     }
 }
 

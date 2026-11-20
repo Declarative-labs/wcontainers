@@ -40,6 +40,7 @@ fn made(bytes: &[u8], at: u64, look_ahead: LookAhead) -> Option<Piece> {
             spans: t.spans,
             exits: t.exits,
             sites: t.sites,
+            tables: t.tables,
         }
     })
 }
