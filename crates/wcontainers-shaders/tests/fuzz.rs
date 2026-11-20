@@ -7,6 +7,8 @@
 //! the corpus in `WCONTAINERS_SHADER_CORPUS`. Each case is written to stderr before it runs, so a case
 //! that ends the process names itself; `WCONTAINERS_FUZZ_FIRST` starts at that case.
 
+use md5::block_api::{Md5Core, compress};
+use md5::digest::common::hazmat::SerializableState;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -54,9 +56,8 @@ impl Rng {
     }
 }
 
-/// Direct3D's container checksum: MD5's block function over the container past the checksum, with its
-/// own last block (as dxbc-spirv's `hashDxbcBinary`). The RustCrypto `md-5` crate keeps its block
-/// function private, so it is written out here.
+/// Direct3D's container checksum: MD5's block function (the `md-5` crate's) over the container past
+/// the checksum, with its own last block (as dxbc-spirv's `hashDxbcBinary`), from MD5's initial state.
 fn sign(container: &mut [u8]) {
     let data = &container[20..];
     let bits = (data.len() as u32).wrapping_mul(8);
@@ -78,40 +79,15 @@ fn sign(container: &mut [u8]) {
         tail.resize(60, 0);
         tail.extend_from_slice(&b);
     }
-    let mut state = [0x67452301u32, 0xefcdab89, 0x98badcfe, 0x10325476];
-    for block in data[..full].chunks(64).chain(tail.chunks(64)) {
-        md5_block(&mut state, block);
+    let initial = Md5Core::default().serialize();
+    let mut state = [0u32; 4];
+    for (word, bytes) in state.iter_mut().zip(initial.as_chunks::<4>().0) {
+        *word = u32::from_le_bytes(*bytes);
     }
+    compress(&mut state, data[..full].as_chunks::<64>().0);
+    compress(&mut state, tail.as_chunks::<64>().0);
     for (i, word) in state.iter().enumerate() {
         container[4 + 4 * i..8 + 4 * i].copy_from_slice(&word.to_le_bytes());
-    }
-}
-
-/// MD5's block function (RFC 1321).
-fn md5_block(state: &mut [u32; 4], block: &[u8]) {
-    const SHIFTS: [u32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-    let m: Vec<u32> = block
-        .chunks(4)
-        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-        .collect();
-    let [mut a, mut b, mut c, mut d] = *state;
-    for i in 0..64 {
-        let (f, g) = match i / 16 {
-            0 => ((b & c) | (!b & d), i),
-            1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-            2 => (b ^ c ^ d, (3 * i + 5) % 16),
-            _ => (c ^ (b | !d), (7 * i) % 16),
-        };
-        let k = ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32;
-        let rotated = a
-            .wrapping_add(f)
-            .wrapping_add(k)
-            .wrapping_add(m[g])
-            .rotate_left(SHIFTS[i / 16 * 4 + i % 4]);
-        (a, b, c, d) = (d, b.wrapping_add(rotated), b, c);
-    }
-    for (s, v) in state.iter_mut().zip([a, b, c, d]) {
-        *s = s.wrapping_add(v);
     }
 }
 

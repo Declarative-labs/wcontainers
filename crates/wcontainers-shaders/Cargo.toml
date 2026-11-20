@@ -22,6 +22,7 @@ cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
 fastrand = "2"
+md-5 = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "hlsl-out", "msl-out", "wgsl-out"] }
 
