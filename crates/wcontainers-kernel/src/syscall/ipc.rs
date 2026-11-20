@@ -691,6 +691,16 @@ pub(crate) fn settle(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid) {
     settle_segments(kernel);
 }
 
+/// Whether a segment's file is still its segment's, which a mapping of it reopens by (`__shm_open`).
+pub(super) fn segment_exists(kernel: &Kernel, file: &Node) -> bool {
+    kernel
+        .ipc
+        .shm
+        .slots
+        .values()
+        .any(|segment| alloc::rc::Rc::ptr_eq(&segment.file, file))
+}
+
 /// Destroys removed segments nothing shows (`shm_destroy`).
 fn settle_segments(kernel: &mut Kernel) {
     let ipc = &mut kernel.ipc;

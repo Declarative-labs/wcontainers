@@ -548,6 +548,19 @@ pub(super) fn remap_file_pages(
         return Err(Errno::EOVERFLOW);
     }
     let offset = pgoff * PAGE_SIZE;
+    // `shm_mmap`: the window's old mappings close first, which destroys a removed segment nothing
+    // else shows; a segment its id no longer names fails the open and leaves the window unmapped.
+    if node.borrow().is_segment() {
+        let pid = kernel.threads[&tid].process;
+        let process = kernel.process_of_mut(tid);
+        let memory = process.memory;
+        process.map.borrow_mut().unmap(cx.cpu, memory, start, end)?;
+        super::ipc::settle(kernel, cx, pid);
+        if !super::ipc::segment_exists(kernel, &node) {
+            crate::shared::release(kernel, cx);
+            return Err(Errno::EINVAL);
+        }
+    }
     if matches!(node.borrow().content, Content::Backend(_)) {
         crate::fs::backend::getattr(&node, None)?;
         let writer = first.allowed.contains(Permissions::WRITE);

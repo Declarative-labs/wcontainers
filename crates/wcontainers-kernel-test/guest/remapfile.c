@@ -1,5 +1,6 @@
 // remap_file_pages: its refusals, then windows of a tmpfs file, a /dev/shm file and shared anonymous
-// memory remapped page by page, each checked by its bytes and by /proc/self/maps.
+// memory remapped page by page, each checked by its bytes and by /proc/self/maps; then a System V
+// segment remapped before and after its removal.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -7,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/shm.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -93,6 +95,43 @@ static void window(const char *what, int fd, char *at, long locked) {
     result("munmap", munmap(data, PAGES * PAGE));
 }
 
+static void attached(const char *what, int id) {
+    struct shmid_ds state;
+    long got = shmctl(id, IPC_STAT, &state);
+    printf("%s: stat %ld errno %d attached %lu\n", what, got, got < 0 ? errno : 0,
+           got < 0 ? 0 : (unsigned long)state.shm_nattch);
+}
+
+// A System V segment remapped while it lives and after its removal while other mappings show it;
+// then a segment removed and shown only by the window remapped.
+static void segment(char *at) {
+    int id = shmget(IPC_PRIVATE, 2 * PAGE, IPC_CREAT | 0600);
+    char *data = shmat(id, at, 0);
+    result("segment attached", data == at ? 0 : -1);
+    memset(data + PAGE, 7, PAGE);
+    result("segment remap", remap(data, PAGE, 0, 1, 0));
+    printf("segment first byte %d\n", data[0]);
+    attached("segment live", id);
+    char *again = shmat(id, at + 4 * PAGE, 0);
+    result("segment attached again", again == at + 4 * PAGE ? 0 : -1);
+    result("segment removed", shmctl(id, IPC_RMID, NULL));
+    result("segment remap shown elsewhere", remap(data, PAGE, 0, 1, 0));
+    attached("segment removed shown elsewhere", id);
+    maps("segment removed");
+    result("segment detach other", shmdt(again));
+    result("segment detach", shmdt(data));
+    attached("segment detached", id);
+
+    int alone = shmget(IPC_PRIVATE, PAGE, IPC_CREAT | 0600);
+    char *window = shmat(alone, at, 0);
+    result("lone segment attached", window == at ? 0 : -1);
+    result("lone segment removed", shmctl(alone, IPC_RMID, NULL));
+    result("lone segment remap", remap(window, PAGE, 0, 0, 0));
+    maps("lone segment gone");
+    attached("lone segment gone", alone);
+    result("lone segment detach", shmdt(window));
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int fd = open("/tmp/remapfile", O_RDWR | O_CREAT | O_TRUNC, 0600);
@@ -122,6 +161,7 @@ int main(void) {
     ftruncate(shm, PAGES * PAGE);
     window("shm file", shm, WINDOW + PAGES * PAGE, 1);
     window("shared anonymous", -1, WINDOW + 2 * PAGES * PAGE, 0);
+    segment(WINDOW + 3 * PAGES * PAGE);
     unlink("/dev/shm/remapfile");
     unlink("/tmp/remapfile");
     return 0;
