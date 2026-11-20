@@ -1,6 +1,6 @@
-//! The tests every implementation of wcontainers-process runs, written against its traits alone.
+//! The tests every implementation of wcontainers-kernel-interface runs, written against its traits alone.
 
-use wcontainers_process::Kernel;
+use wcontainers_kernel_interface::Kernel;
 
 /// Checks that suspending an empty batch takes no task.
 pub fn suspend_no_tasks<K: Kernel>(mut kernel: K) {

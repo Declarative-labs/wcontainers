@@ -1969,6 +1969,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-kernel-interface"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-executor",
+ "wcontainers-kernel",
+]
+
+[[package]]
+name = "wcontainers-kernel-interface-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-kernel-interface",
+]
+
+[[package]]
 name = "wcontainers-kernel-test"
 version = "0.1.0"
 dependencies = [
@@ -2000,28 +2016,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-process"
-version = "0.1.0"
-dependencies = [
- "wcontainers-abi",
- "wcontainers-executor",
- "wcontainers-kernel",
-]
-
-[[package]]
-name = "wcontainers-process-conformance"
-version = "0.1.0"
-dependencies = [
- "wcontainers-process",
-]
-
-[[package]]
 name = "wcontainers-system"
 version = "0.1.0"
 dependencies = [
  "wcontainers-abi",
  "wcontainers-kernel",
- "wcontainers-process",
+ "wcontainers-kernel-interface",
 ]
 
 [[package]]

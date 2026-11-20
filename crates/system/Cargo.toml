@@ -9,4 +9,4 @@ path = "interface.rs"
 [dependencies]
 wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../wcontainers-kernel" }
-wcontainers-process = { path = "../process" }
+wcontainers-kernel-interface = { path = "../kernel-interface" }

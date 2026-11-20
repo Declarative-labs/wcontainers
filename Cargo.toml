@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "crates/executor/conformance", "crates/process/conformance", "crates/system/conformance", "crates/container/conformance"]
+members = ["crates/*", "crates/executor/conformance", "crates/kernel-interface/conformance", "crates/system/conformance", "crates/container/conformance"]
 
 [workspace.metadata.reviewable]
 prefix = "wcontainers"

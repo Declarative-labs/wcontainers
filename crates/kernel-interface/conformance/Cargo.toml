@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-process-conformance"
+name = "wcontainers-kernel-interface-conformance"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -8,4 +8,4 @@ publish = false
 path = "conformance.rs"
 
 [dependencies]
-wcontainers-process = { path = ".." }
+wcontainers-kernel-interface = { path = ".." }

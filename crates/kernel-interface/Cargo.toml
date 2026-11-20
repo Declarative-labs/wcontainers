@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-process"
+name = "wcontainers-kernel-interface"
 version = "0.1.0"
 edition = "2024"
 

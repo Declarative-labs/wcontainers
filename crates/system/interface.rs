@@ -7,7 +7,7 @@ use core::ops::{ControlFlow, Range};
 
 use wcontainers_abi::SystemCallRequest;
 use wcontainers_kernel::TaskId;
-use wcontainers_process::{
+use wcontainers_kernel_interface::{
     AccessKind, MemoryObject, Process, SignalInformation, SystemCallResponse,
 };
 
