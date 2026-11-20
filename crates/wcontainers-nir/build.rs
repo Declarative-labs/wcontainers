@@ -4,11 +4,14 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+#[path = "mesa/meson_build.rs"]
+mod meson_build;
+use meson_build::{RERUN_IF_CHANGED, mesa_flags, source_folder};
+
 const MESA_VARIABLE: &str = "WCONTAINERS_MESA";
 const CHECK_CFG: &str = "cargo::rustc-check-cfg=cfg(mesa)";
 const CFG: &str = "cargo::rustc-cfg=mesa";
 const RERUN_IF_ENV_CHANGED: &str = "cargo::rerun-if-env-changed=";
-const RERUN_IF_CHANGED: &str = "cargo::rerun-if-changed=";
 const LINK_SEARCH: &str = "cargo::rustc-link-search=native=";
 const LINK_STATIC: &str = "cargo::rustc-link-lib=static=";
 const LINK_DYNAMIC: &str = "cargo::rustc-link-lib=dylib=";
@@ -23,15 +26,10 @@ const GLSL_SOURCE: &str = "bridge/glsl.cpp";
 const PRIVATE_HEADER: &str = "bridge/bridge_private.h";
 const GLSL_LIBRARY: &str = "wcontainers_nir_glsl";
 const BRIDGE_LIBRARY: &str = "wcontainers_nir_bridge";
-/// Meson's record of the build, which names the source folder it was made from.
-const MESON_INFO: &str = "meson-info/meson-info.json";
-/// Mesa's own compile commands, and the file whose flags (defines and C standard) the bridge takes.
-const COMPILE_COMMANDS: &str = "compile_commands.json";
+/// The file whose flags (defines and C standard) the bridge takes from Mesa's compile commands.
 const FLAGS_FROM: &str = "nir_to_spirv.c";
 /// The C++ file of Mesa's GLSL compiler whose flags the GLSL front takes.
 const CPP_FLAGS_FROM: &str = "standalone.cpp";
-const DEFINE_FLAG: &str = "-D";
-const STANDARD_FLAG: &str = "-std=";
 
 /// Folders of the Mesa tree, each under both its source and its build folder (generated headers).
 const INCLUDES: &[&str] = &[
@@ -217,22 +215,6 @@ fn target_file(build: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("Mesa's build has no target {name}"))
 }
 
-/// The source folder Meson made the build from.
-fn source_folder(build: &Path) -> PathBuf {
-    #[derive(serde::Deserialize)]
-    struct Info {
-        directories: Directories,
-    }
-    #[derive(serde::Deserialize)]
-    struct Directories {
-        source: PathBuf,
-    }
-    let path = build.join(MESON_INFO);
-    let text = std::fs::read_to_string(&path).expect("Mesa's build has Meson's record");
-    let info: Info = serde_json::from_str(&text).expect("Meson's record is JSON");
-    info.directories.source
-}
-
 /// Links what Meson found for the dependencies the compiler libraries use.
 fn mesa_dependencies(build: &Path) {
     #[derive(serde::Deserialize)]
@@ -272,27 +254,4 @@ fn mesa_dependencies(build: &Path) {
             }
         }
     }
-}
-
-/// The defines and language standard Mesa compiled `file` with, from its compile commands.
-fn mesa_flags(build: &Path, file: &str) -> Vec<String> {
-    #[derive(serde::Deserialize)]
-    struct Command {
-        file: String,
-        command: String,
-    }
-    let path = build.join(COMPILE_COMMANDS);
-    println!("{RERUN_IF_CHANGED}{}", path.display());
-    let text = std::fs::read_to_string(&path).expect("Mesa's build has its compile commands");
-    let commands: Vec<Command> = serde_json::from_str(&text).expect("compile commands are JSON");
-    let command = commands
-        .iter()
-        .find(|c| c.file.ends_with(file))
-        .unwrap_or_else(|| panic!("Mesa's build compiles {file}"));
-    command
-        .command
-        .split_whitespace()
-        .filter(|a| a.starts_with(DEFINE_FLAG) || a.starts_with(STANDARD_FLAG))
-        .map(String::from)
-        .collect()
 }
