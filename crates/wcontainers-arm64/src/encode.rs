@@ -61,9 +61,10 @@ pub mod form {
     pub const MRS: &str = "MRS_RS_systemmove";
     pub const MSR: &str = "MSR_SR_systemmove";
     pub const SYS: &str = "SYS_CR_systeminstrs";
+    pub const ADRP: &str = "ADRP_only_pcreladdr";
 
     /// Every form above.
-    pub const ALL: [&str; 49] = [
+    pub const ALL: [&str; 50] = [
         MOVZ,
         MOVK,
         MOVN,
@@ -113,6 +114,7 @@ pub mod form {
         MRS,
         MSR,
         SYS,
+        ADRP,
     ];
 }
 
@@ -131,6 +133,8 @@ pub mod field {
     pub const IMM19: &str = "imm19";
     pub const IMM14: &str = "imm14";
     pub const IMM26: &str = "imm26";
+    pub const IMMHI: &str = "immhi";
+    pub const IMMLO: &str = "immlo";
     pub const B5: &str = "b5";
     pub const B40: &str = "b40";
     pub const RM: &str = "Rm";
@@ -261,6 +265,32 @@ pub fn move_constant(rd: Register, value: u64) -> Vec<u32> {
                 .map(|h| movk(rd, half(h), h)),
         )
         .collect()
+}
+
+/// The moves that build `value` in `rd` in as many words for every value whose top half is the same all zeros or
+/// all ones (an address under 2^48, or an entry slot's address): a `movz`, or a `movn` when the top half is all ones,
+/// of the lowest half, then a `movk` for each half below the top. Any other value takes [`move_constant`]'s.
+pub fn move_address(rd: Register, value: u64) -> Vec<u32> {
+    let halves = u64::BITS / MOVE_BITS;
+    let half = |h: u32| (value >> (h * MOVE_BITS)) as u16;
+    let first = match half(halves - 1) {
+        0 => movz(rd, half(0), 0),
+        u16::MAX => move_wide(form::MOVN, rd, !half(0), 0),
+        _ => return move_constant(rd, value),
+    };
+    std::iter::once(first)
+        .chain((1..halves - 1).map(|h| movk(rd, half(h), h)))
+        .collect()
+}
+
+/// How far a direct branch reaches either way, in bytes.
+pub fn branch_reach() -> u64 {
+    (UNIT as u64) << (width(form::B, field::IMM26) - 1)
+}
+
+/// How far `adrp` reaches either way from its page, in bytes, for pages of `page` bytes.
+pub fn page_reach(page: u64) -> u64 {
+    page << (width(form::ADRP, field::IMMHI) + width(form::ADRP, field::IMMLO) - 1)
 }
 
 fn bitfield(name: &str, rd: Register, rn: Register, immr: u32, imms: u32) -> u32 {

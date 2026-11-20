@@ -1,6 +1,8 @@
 //! How the native output carries each ARM64 instruction over to ARM64 host code (docs/native.md section 3.4).
 
-use wcontainers_guest_cpu::position::{Base, DirectExit, Index, Operand};
+use std::ops::Range;
+
+use wcontainers_guest_cpu::position::{AddressPlace, Base, DirectExit, Index, Operand};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
 use crate::Arm64;
@@ -235,6 +237,14 @@ impl Native for Arm64 {
         linked
             .map(|word| code.patch(at, &word.to_le_bytes()))
             .is_ok()
+    }
+
+    fn movable() -> Range<u64> {
+        carry::movable()
+    }
+
+    fn write_place(code: &mut [u8], place: &AddressPlace) {
+        carry::write_place(code, place);
     }
 
     fn stopping(i: &I, _address: u64) -> Stopping {

@@ -3,11 +3,12 @@
 //! position map.
 
 use std::mem::offset_of;
+use std::ops::Range;
 
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
-    Fixup, Guest, Held, HostCode, InsideCall, Native, NativeReason, Registers, Resume, Route, Span,
-    effects,
+    AddressPlace, Fixup, Guest, Held, Holds, HostCode, InsideCall, Native, NativeReason, Registers,
+    Resume, Route, Span, effects,
 };
 
 use crate::encode::{self, Register, ZERO, field, form};
@@ -245,6 +246,31 @@ impl Out<'_> {
             value,
         });
         self.put_all(&moves[1..]);
+        self.code.fixed();
+    }
+
+    /// `rd` built from guest `address` in place, each word an address place; the first is the commit point.
+    fn build_address(&mut self, rd: Reg, address: u64, resume: Resume) {
+        if rd == Reg::Zero {
+            self.code.after(resume);
+            return;
+        }
+        let rd = number(rd);
+        for (part, word) in address_words(rd, address, Holds::Address)
+            .into_iter()
+            .enumerate()
+        {
+            note_place(self.code, rd, address, Holds::Address, part);
+            if part == 0 {
+                self.commit(word, resume);
+                self.code.fixup(Fixup::Address {
+                    register: rd,
+                    value: address,
+                });
+            } else {
+                self.put(word);
+            }
+        }
         self.code.fixed();
     }
 }
@@ -775,7 +801,7 @@ fn rebase(out: &mut Out, i: &I) {
     let (rt, bytes, offset, name) = match *i {
         I::PcRelative { rd, page, offset } => {
             let from = if page { at & !(ADRP_PAGE - 1) } else { at };
-            return out.build(rd, from.wrapping_add_signed(offset), next);
+            return out.build_address(rd, from.wrapping_add_signed(offset), next);
         }
         I::Load {
             bytes,
@@ -805,7 +831,13 @@ fn rebase(out: &mut Out, i: &I) {
         _ => unreachable!("only pc-relative forms are rebased"),
     };
     let target = at.wrapping_add_signed(offset);
-    out.put_all(&encode::move_constant(SCRATCH, target));
+    for (part, word) in address_words(SCRATCH, target, Holds::Address)
+        .into_iter()
+        .enumerate()
+    {
+        note_place(out.code, SCRATCH, target, Holds::Address, part);
+        out.put(word);
+    }
     // Whether the access crosses a page is known here, from the guest address.
     let last = u64::from(bytes) - 1;
     if target % PAGE_SIZE + last >= PAGE_SIZE {
@@ -825,19 +857,61 @@ pub(crate) fn exit(code: &mut HostCode, target: u64) {
         Arm64::call(code, InsideCall::Exit);
         return;
     }
-    let moves = encode::move_constant(SCRATCH, mirror::slot(target));
+    let moves = address_words(SCRATCH, target, Holds::EntrySlot);
     let lead = code.lead();
     if lead > 0 {
         let settle = encode::add_immediate(COUNT, COUNT, -i64::from(lead)).expect("a lead fits");
         code.settling_exit(&settle.to_le_bytes(), target);
+        note_place(code, SCRATCH, target, Holds::EntrySlot, 0);
         code.push(&moves[0].to_le_bytes());
     } else {
+        note_place(code, SCRATCH, target, Holds::EntrySlot, 0);
         code.exit(&moves[0].to_le_bytes(), target);
     }
-    for w in &moves[1..] {
+    for (part, w) in moves.iter().enumerate().skip(1) {
+        note_place(code, SCRATCH, target, Holds::EntrySlot, part);
         code.push(&w.to_le_bytes());
     }
     code.push(&encode::branch_register(form::BR, SCRATCH).to_le_bytes());
+}
+
+/// The words that build guest `address`, or its entry slot's address, in `rd`: as many for every address of a
+/// movable page.
+fn address_words(rd: Register, address: u64, holds: Holds) -> Vec<u32> {
+    encode::move_address(
+        rd,
+        match holds {
+            Holds::Address => address,
+            Holds::EntrySlot => mirror::slot(address),
+        },
+    )
+}
+
+/// Notes that the next word written is word `part` of those building `address` in `rd`.
+fn note_place(code: &mut HostCode, rd: Register, address: u64, holds: Holds, part: usize) {
+    code.place(AddressPlace {
+        start: 0,
+        register: rd,
+        part: u8::try_from(part).expect("a value builds in few words"),
+        address,
+        holds,
+    });
+}
+
+/// The guest pages between which translated code moves by its address places alone (section 3.2): from one of
+/// them `adrp`'s furthest page is still at or above zero, and a direct branch's furthest target from anywhere on
+/// it is still under the mirror's reach, so no address the code names wraps or leaves the mirror, and each builds
+/// in as many words.
+pub(crate) fn movable() -> Range<u64> {
+    encode::page_reach(ADRP_PAGE)..(1 << REACH_BITS) - encode::branch_reach() - PAGE_SIZE
+}
+
+/// Writes the word at `place` for its address.
+pub(crate) fn write_place(code: &mut [u8], place: &AddressPlace) {
+    let words = address_words(place.register, place.address, place.holds);
+    let start = usize::try_from(place.start).expect("a host offset fits usize");
+    code[start..start + size_of::<u32>()]
+        .copy_from_slice(&words[usize::from(place.part)].to_le_bytes());
 }
 
 /// The words a loader fills: a slot's moves and jump, and a direct branch (section 3.2).
@@ -879,7 +953,7 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
         I::Branch { link, offset } => {
             let target = at.wrapping_add_signed(offset);
             if link {
-                out.build(Reg::X(LINK), return_address, Resume::At(target));
+                out.build_address(Reg::X(LINK), return_address, Resume::At(target));
             } else {
                 out.code.after(Resume::At(target));
             }
@@ -950,7 +1024,7 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         |t| {
             t.resume = Some(Resume::Through(held));
             if op == BranchRegister::Blr {
-                t.fixups.push(Fixup::Constant {
+                t.fixups.push(Fixup::Address {
                     register: LINK,
                     value: return_address,
                 });
@@ -975,7 +1049,7 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
             out.commit(encode::branch_register(form::BR, SCRATCH), slot)
         }
         BranchRegister::Blr => {
-            out.build(Reg::X(LINK), return_address, slot);
+            out.build_address(Reg::X(LINK), return_address, slot);
             out.put(encode::branch_register(form::BR, SCRATCH));
         }
     }
