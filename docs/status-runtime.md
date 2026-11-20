@@ -202,6 +202,13 @@ size the guest is told (plan section 8), which `Machine` holds once the kernel t
   Linux, which runs no ARM64 container: Docker there only pulls and saves alpine's arm64 image; load 0 to 9;
   j5run10/surface-x86.out): as expected at full (2.2 s), none (14.0 s) and bound 7 (8.3 s), so the public
   surface serves a TCP connection from the host and reads and writes a host directory on x86-64 hosts as well.
+- Whether the kernel branch's 7579e667 is enough for LTP pth_str01 and pth_str03: a scratch tree of 44f305a5
+  with only that commit's one-line change to `AddressMap::find_free` (its floor is the lowest address, not the
+  break; j5run10/kmix-floor.patch; the rest of 7579e667 builds on kernel work not on origin/phase-1), never
+  committed, run by the LTP harness's `ours` with the executor at full on the x86 machine (load 3 to 21;
+  j5run10/kmix-x86.out): both pass (9.7 s each). The same at the unchanged tip (control,
+  j5run10/kmix-control-x86.out): both broken, as on the ARM machine. So the change suffices for those two once
+  it reaches origin/phase-1. The scratch tree and its build folder there were removed.
 
 ## J5 run 8 (2026-11-20, the task's run 6; the rented ARM and x86 machines, and this Mac for git, edits and the literal check)
 
