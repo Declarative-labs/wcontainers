@@ -2302,6 +2302,9 @@ Run 49 (the gap list in the fronts' order: the Direct3D 11 front's `GeometryStre
     one GPU job, 10 s): every WGSL file compiles (own 128, runner 1435: the four newly converted
     geometry shaders among them); WebGL 2 refuses the same own 5 and runner 11 as run 47, each of
     a shader whose record names a need the back end declares absent.
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB) and the
+  desktop's `C:\wc\target\phase-2-graphics-shaders` (8.3 GB) deleted; scratch keeps the logs and
+  `run49/out` (the files Chrome compiled).
 
 Run 48 (the gap list in the fronts' order, item 1: the Direct3D 12 front's two named items):
 - Merged origin/phase-2-graphics-direct3d-12 (its status only; the other branches had nothing new).
