@@ -5,6 +5,45 @@ G9).
 
 ## Where it stands
 
+G9 run 3 (2026-11-20). G9 is still far from its bar: our driver has no context yet, so it
+passes no conformance case and there is still no table of lists and shares on it. This run:
+- The hang under glcts is found and fixed. glcts unloads `opengl32.dll` before it exits; Mesa's
+  WGL target then destroys its screen inside `DllMain` (`stw_cleanup`, under the loader lock), and
+  releasing the `wgpu` Direct3D 12 device there never returns (shown by printing each step: the
+  device was made, the context refused, the screen's destroy entered, the back end's drop never
+  left). The driver's module now pins itself once it holds a device (`GetModuleHandleExW` with
+  `GET_MODULE_HANDLE_EX_FLAG_PIN`, `src/device.rs`), so it is only detached at the process's end,
+  where Mesa releases nothing. With it the same case ends at once (glcts reports that no pixel
+  format fits and falls back to EGL, which this build lacks; the honest answer while no format is
+  reported). Not a slow path: the device simply lives until the process ends.
+- `cts/run-case-windows.ps1` runs one case alone with a time limit and prints glcts's output, its
+  exit code and the case's log (for hangs and crashes); the two run scripts share
+  `cts/cts-windows.ps1`.
+- The screen is now Rust (`src/screen.rs`), written against bindgen's bindings of the pinned
+  Gallium headers (`bridge/gallium.h`, made by `build.rs`), as the plan says; the C screen is
+  gone. It reports formats from the interface's `FormatCaps` (`src/format.rs`: every Gallium format
+  the interface holds, and what each Gallium binding needs), the vertex and fragment stages' shader
+  caps from the interface's limits, and wcontainers-nir's NIR options (`wc_compiler_options`) for
+  every stage, so st/mesa will hand shaders over in route B's shape. Contexts are still refused
+  by name.
+- wcontainers-nir builds only its bridge into the driver: its new default feature `standalone`
+  (the SPIR-V steps, now in `bridge/spirv.c`, the GLSL front and Mesa's libraries, for the corpus
+  and tests) is off in wcontainers-opengl, so Mesa is not linked twice into `libgallium_wgl.dll`.
+  `Nir::from_raw` takes the NIR a Gallium shader state hands over, and `mesa::compiler_options`
+  the options (a crate the driver never names is not linked, so the bridge is reached through
+  its Rust). The Windows Mesa build writes the same `wcontainers-made-from` record as the Linux
+  one (the converter's version), fetches the shaders crate's submodules, and builds route B with
+  the Visual C++ compiler (`flat.c` had a variable-length array, which it lacks; now allocated).
+- Checked on the desktop through the GPU queue, 2026-11-20 10:11 to 10:12, beside other tracks'
+  jobs: the Mesa build with the Rust screen links (42 s incremental, 8 jobs); the case alone on
+  our driver now reaches the context (WGL found pixel formats) and is refused by name, then
+  glcts stops at its EGL fallback, 0.5 s, exit -1; the same case on llvmpipe passes (0.4 s);
+  1% shards of KHR-GLES2 and dEQP-GLES2 on our driver: every case Missing or no results, each
+  process ending at once (no hang). Lint clean on the desktop (clippy with Mesa,
+  `wcontainers-opengl` and `wcontainers-nir` without `standalone`) and on the x86-64 machine
+  (with and without Mesa, both features of wcontainers-nir); wcontainers-nir's tests pass there
+  (route 11, narrow 2, glsl_buffers 1, glsl_reference 10 and 2 ignored as known failures).
+
 G9 run 2 (2026-11-20). G9 is far from its bar. This run: the one conformance release and its
 lists chosen, glcts and deqp-runner built on the desktop, the harness proven through the GPU
 queue on llvmpipe and on the RTX 3080's own OpenGL (1% of every list), the Mesa patch adding our
@@ -102,7 +141,8 @@ G9 (OpenGL natively), where it stands:
   `wcontainers_public.h` declares `wcontainers_screen_create`), and `wgl.c`'s three places (the
   screen by name, ours first after `GALLIUM_DRIVER`'s choice, present through
   `flush_frontbuffer`). Applied and built on Linux (x86-64 machine, driver not selected there).
-- The driver's first slice, `crates/wcontainers-opengl`: the C bridge (`bridge/screen.c`, built
+- The driver's first slice, `crates/wcontainers-opengl` (as run 2 left it; run 3 moved the
+  screen into Rust, above): the C bridge (`bridge/screen.c`, built
   by `cc` against the pinned headers and `u_screen.c`'s compile flags, as wcontainers-nir's
   bridge is) makes the `pipe_screen`: Gallium's default caps (`u_init_pipe_screen_caps`) with
   the interface's limits (texture sizes and levels, layers, colour targets, vertex streams and
@@ -117,14 +157,21 @@ G9 (OpenGL natively), where it stands:
   own target folder `C:\wc\graphics-nir\opengl-target`), passes it and rustc's
   `native-static-libs` through `meson configure`, and links it into `libgallium_wgl.dll` with
   `gallium-drivers = ['wcontainers', 'llvmpipe']`.
-- Next, in order: (0) the hang above, so that our screen is made and the context refusal is
-  what glcts sees; (1) the context (`pipe_context`): blocks from `create_*_state`, dirty marks,
-  `draw_vbo` naming blocks and binding sets, resources, transfers, `util_blitter` clears and
-  blits, queries, `flush_frontbuffer` presenting through a surface over the DC's window; shaders
-  from st/mesa's NIR through route B, so the screen's `nir_options` are wcontainers-nir's
-  (`wc_compiler_options`); wcontainers-nir must then build only its bridge into the driver, not
-  link Mesa's own libraries a second time (libgallium_wgl.dll already holds NIR); then formats
-  reported from the interface's `FormatCaps`; (2) the lists through the queue in shards on our
+- Next, in order (after run 3; the hang, the NIR options, the bridge-only build and the formats
+  are done): (1) the context (`pipe_context`, a new `src/context.rs` on the bindings): the
+  `stream_uploader` and `const_uploader` st/mesa needs at creation (`u_upload_create_default`,
+  so buffer maps first), resources (`resource_create`, `resource_destroy` on the interface's
+  buffers and textures, buffers a whole number of storage words), transfers (`buffer_map`,
+  `texture_map` through the interface's write modes and read backs), surfaces and
+  `set_framebuffer_state`, `clear` (`clear_texture`/`clear_rects`), `flush` and the screen's
+  fences, `flush_frontbuffer` presenting through a `wgpu` surface over `WindowFromDC`'s window
+  (`WebGpu::add_window`), and every state object stored as a block (`create_*_state`); an entry
+  point not built yet ends the process with its name (a Crash in the results, never a silent
+  no-op). Then shaders (`create_vs_state`/`create_fs_state` keep the NIR, `Nir::from_raw`; at the
+  first draw route B with the variant key), `draw_vbo`, `util_blitter` blits, queries. Shader
+  storage, images and atomic counters are reported absent until bound (caps 0). Then the GL
+  screen caps that decide the version (`glsl_feature_level`, `essl_feature_level` and the rest
+  st/mesa reads, from what the context does); (2) the lists through the queue in shards on our
   driver, the table, every failure with a reason; (3) bgfx's and Godot's OpenGL renderers on the
   rig.
 - G9's report, the table of lists and shares on OUR driver: none yet. dEQP-GLES2, dEQP-GLES3,
@@ -163,11 +210,8 @@ G9 (OpenGL natively), where it stands:
   is the reference for "none that real OpenGL on the same GPU passes is left without a reason".
 - Our driver through the harness (`-Driver wcontainers`, Mesa rebuilt with it linked, 09:18):
   KHR-GLES2's 5 cases all Missing: each glcts process was killed at deqp-runner's 60 s limit
-  with no output at all, not even the driver's refusal of the context. So it hangs in or before
-  the screen's creation. Not yet found; first suspect: the screen is made while Windows holds the
-  loader lock (WGL's DLL attach) and `wgpu`'s Direct3D 12 device creation loads DLLs there. Next
-  run: one case alone under a debugger or with the screen's steps printed, then make the device
-  outside the lock (lazily, on the first context) if that is it.
+  with no output at all (its output is buffered and was lost when it was killed). Found and fixed
+  in run 3 (above): not the screen's creation but its destruction, at `opengl32.dll`'s unload.
 
 G8 run 15 (2026-11-20). Complete but for one item waiting on the owner's decision, named below;
 handed to G8's independent check again. Run 15 fixed the second check's findings: route B's
@@ -1036,9 +1080,20 @@ Next (after G8's check):
   Bypass -File crates\wcontainers-opengl\cts\run-windows.ps1 -Driver <wcontainers|llvmpipe|system>
   [-Lists gles2-main,gl46-main] [-Fraction 100 -FractionStart 1]'` (a list's name is its file's
   name without `.txt`). It prints each list's counts and share; deqp-runner's `results.csv`,
-  `failures.csv` and logs are in `C:\wc\graphics-nir\cts\results\<driver>\<list>`. Logs of
+  `failures.csv` and logs are in `C:\wc\graphics-nir\cts\results\<driver>\<list>`. One case
+  alone, for a hang or a crash: `tools/graphics-rig/gpu-job --desktop --build 'echo sent' --
+  'powershell -NoProfile -ExecutionPolicy Bypass -File
+  crates\wcontainers-opengl\cts\run-case-windows.ps1 -Driver wcontainers -List gles2-khr-main
+  -Case <case> [-Seconds 40]'` (glcts's output, exit code and log printed; killed and reported
+  as hung after the limit). Linting the driver on the desktop: `tools/graphics-rig/remote 'set
+  WCONTAINERS_MESA=C:\wc\graphics-nir\mesa\build&& set RUSTFLAGS=-C target-feature=+crt-static&&
+  set LIBCLANG_PATH=C:\wc\graphics-nir\tools\clang+llvm-21.1.8-x86_64-pc-windows-msvc\bin&& cargo
+  clippy -q -p wcontainers-opengl --release --target-dir C:\wc\graphics-nir\opengl-target -- -D
+  warnings'`; on the x86 machine with `WCONTAINERS_MESA` set and `LIBCLANG_PATH=$(nix build
+  --no-link --print-out-paths --inputs-from path:/work/flake/graphics-nir
+  nixpkgs#llvmPackages.libclang.lib)/lib`. Logs of
   run 2 in scratch `logs/g9r2-*.log`, its `results.csv` files in `results/g9r2/cts/<driver>/<list>`. The Mesa build (above) must have run first for
-  `wcontainers` and `llvmpipe`. Kept on the desktop after run 2: `C:\wc\graphics-nir\cts`
+  `wcontainers` and `llvmpipe`. Kept on the desktop after run 3 (reused by every build): `cts` 3.5 GB, `mesa` 0.7 GB, `opengl-target` 2.4 GB (now with wcontainers-nir and the shaders crate's C++), `tools` 3.9 GB; the run copy's submodules are checked out by the build. After run 2: `C:\wc\graphics-nir\cts`
   3.8 GB (the suite's source and build), `tools` 3.9 GB (with deqp-runner), `mesa` 0.8 GB,
   `opengl-target` 0.8 GB (the driver's cargo output, reused by each Mesa build).
 - Build Mesa, from the Mac: `orchestrator/cloud/x86-run <checkout> --name graphics-nir --jobs 64 --
@@ -1249,6 +1304,14 @@ Next (after G8's check):
   (MIT OR Apache-2.0, the workspace's patched copy), `wcontainers-gpu` and `wcontainers-gpu-webgpu`
   (ours); build-dependencies `cc` (MIT OR Apache-2.0), `serde` and `serde_json` (MIT OR
   Apache-2.0). All already in the lock file.
+- G9 run 3, wcontainers-opengl: `windows-sys` 0.61.2 (MIT OR Apache-2.0, already in the lock
+  file, Windows only), `wcontainers-nir` (ours, without `standalone`: its bridge, route B and
+  through it naga and wcontainers-shaders, as listed above), and the build-dependency `bindgen`
+  0.71.1 (BSD-3-Clause, already in the lock file for unicorn-engine-sys) in place of `cc`.
+  bindgen runs libclang at build time only (on the desktop, the LLVM 21.1.8 release the Mesa
+  build already fetches, Apache-2.0 WITH LLVM-exception; on Linux Nixpkgs' clang 21.1.8);
+  nothing of it is linked. The driver now links Gallium's `u_init_pipe_screen_caps`
+  (`u_screen.c`, MIT) from Mesa's own library.
 - Testing only, on the Windows desktop (`crates/wcontainers-opengl/cts`, never linked into
   anything of ours): VK-GL-CTS `opengl-cts-4.6.8.1` (Apache-2.0, its `LICENSE`) with what its
   `fetch_sources.py` pins (glslang BSD-3-Clause and others, SPIRV-Tools and SPIRV-Headers
@@ -1351,6 +1414,14 @@ Next (after G8's check):
 - Candidate B reads NIR through a flattened copy the bridge makes (`bridge/flat.c`), not through
   NIR's own structures from Rust: bindgen is out (below), and the copy keeps Mesa's numbering and
   layout on the C side, so a Mesa update changes C only.
+- wcontainers-opengl does use bindgen, for Gallium's headers (G9 run 3), as 15.2 says: Gallium's
+  structs are what the driver fills, and copying them by hand would define their layout twice. The
+  literal check's objection (below) is met by reading `OUT_DIR` inline in `env::var_os`, which
+  the check accepts, and by handing the bindings' path to the crate through its own variable.
+- wcontainers-nir's bridge-only build for the driver is the absence of a default feature,
+  `standalone`, not a feature of its own: Cargo unifies features, so a `driver` feature would have
+  taken the SPIR-V steps and the GLSL front away from the corpus and tests whenever both crates
+  are built together; an additive `standalone` cannot. Its tests and the corpus run require it.
 - The bridge's functions are declared by hand in `src/mesa.rs` and `src/direct.rs`, not by bindgen: bindgen's output
   is included from Cargo's `OUT_DIR`, whose name the literal check refuses as a new code string here
   (its one constant, `CARGO_OUT_DIR`, is private to wcontainers-literals).
@@ -1458,6 +1529,11 @@ None.
 
 ## Requests to other tracks
 
+- Literals track (G9 run 3): a lawful form for a build script's output folder. The check accepts
+  `env!("OUT_DIR")` but not `env::var_os("OUT_DIR")`, the only way a build script can read it,
+  and its own constant for the name (`CARGO_OUT_DIR`) is private; and `include!` takes only a
+  literal, so the file a build script writes there is named twice. Either accept those two
+  positions or export the constant; until then the two findings stay (Literal check).
 - Interface track (15.7): everything 15.7 lists; G8 needs `HelperValue::BufferRange` and the slow path
   names `RobustAccessInShader` and `AlphaToOneInShader` before its robustness and alphaToOne parts can
   be reflected.
@@ -1510,6 +1586,19 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 3: exit 1 at d6bd4c8a (x86-64 machine, from a git bundle; marks 0; the clone and its
+build deleted after). The first try found 11; fixed this run: the cargo words and the Mesa
+variable both build scripts defined (`MESA_VARIABLE`, `CHECK_CFG`, `CFG`,
+`RERUN_IF_ENV_CHANGED`, `RUSTC_ENV`, `ASSIGN`) now live once in `mesa/meson_build.rs`, which both
+include, with the defines bindgen takes (`mesa_defines`); the driver's `'\0'` (run 2's) is gone.
+Left, 4 findings: `CUBE_FACES` twice (Waiting on others), and two of the driver's that no legal
+form avoids today: `env::var_os("OUT_DIR")` in its build script (the check accepts `OUT_DIR` only
+inside `env!`, which a build script cannot use for it, and its own name for it, `CARGO_OUT_DIR`,
+is private) and `include!(concat!(env!("OUT_DIR"), "/gallium.rs"))` (a macro that takes only a
+literal; handing the path through a variable of the build script's instead was found as a
+restated name the same way). Asked of the literals track under Requests. wcontainers-nir and
+wcontainers-opengl have no baseline lines.
 
 G9 run 2: not run (the run's budget went to the desktop); the Rust added has no bare literal
 (names, paths and flags are named constants; the build scripts share `mesa/meson_build.rs`
