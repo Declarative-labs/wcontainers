@@ -310,6 +310,12 @@ fn waited(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Result<(), Err
     Err(error)
 }
 
+/// Whether a thread waits in a set's queue with its operation not yet done.
+pub(crate) fn queued(kernel: &Kernel, tid: Tid) -> bool {
+    let sems = &kernel.ipc.sem;
+    !sems.told.contains_key(&tid) && sems.array_of(tid).is_some()
+}
+
 /// A thread that ends leaves the queue it waits in.
 pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
     let sems = &mut kernel.ipc.sem;

@@ -12,8 +12,9 @@ use std::ops::ControlFlow;
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::linux::general;
 use wcontainers_kernel::{
-    AccessKind, Errno, Kernel, MemoryError, MemoryObject, Process, SignalInformation, System,
-    SystemCallResponse, SystemVSegmentId, TaskId, WatchesFor, reason, task_id_after,
+    AccessKind, Errno, ExecutionConfig, Kernel, MemoryError, MemoryObject, Process,
+    SignalInformation, SuspendedTask, System, SystemCallResponse, SystemVSegmentId, TaskId,
+    WatchesFor, reason, task_id_after,
 };
 use wcontainers_kernel_test::driver::{self, Run};
 use wcontainers_kernel_test::hooks::Hooks;
@@ -2375,4 +2376,369 @@ fn processes_in_one_memory_have_one_memory_id_and_a_new_program_a_new_one() {
     }
     assert_eq!(seen[1].2, first);
     assert!(shared > 0 && fresh > 0, "{seen:?}");
+}
+
+thread_local! {
+    /// Tasks a hook suspended, for the test to put back between steps (they are the kernel's
+    /// records, which stay on the thread that drives it).
+    static SUSPENDED: std::cell::RefCell<Vec<SuspendedTask>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How the suspending test takes tasks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SuspendPlan {
+    /// From hooks: the other threads, waiting in their calls, at the main thread's second sleep, kept away while the main thread
+    /// wakes the futex and lets the mutex go; the main thread itself at its write, before the
+    /// call, and again once the call has begun (refused).
+    Hooks,
+    /// Between steps, while every thread waits: one at a time, every thread, the whole process,
+    /// and the process through a second kernel.
+    Kernel,
+}
+
+/// Where the suspending test is in its plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SuspendStage {
+    /// Waiting for the main thread's sleep.
+    Start,
+    /// The main thread slept once; the others wait in their calls.
+    SleptOnce,
+    /// The other threads are away.
+    Away,
+    /// The main thread is away too, taken at its write.
+    MainAway,
+    /// The main thread is back.
+    MainBack,
+    /// The main thread waits to join the others, still away.
+    Joining,
+    /// Every thread waits in its call.
+    Waiting,
+    Done,
+}
+
+/// Suspends and resumes embedder.c's `suspend` threads as `plan` says, putting them back in
+/// `order`.
+struct Suspender {
+    plan: SuspendPlan,
+    order: [usize; SUSPENDED_THREADS],
+    stage: SuspendStage,
+    process: Option<TaskId>,
+    threads: Vec<TaskId>,
+    /// What went otherwise than the test expects.
+    wrong: Arc<Mutex<Vec<String>>>,
+    /// How many tasks a hook got asking for its own thread once its call had begun.
+    refused_in_step: Arc<Mutex<Option<usize>>>,
+    /// Every step of the plan ran.
+    done: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The threads embedder.c's `suspend` starts besides its main thread.
+const SUSPENDED_THREADS: usize = 3;
+
+impl Suspender {
+    fn check(&self, what: &str, holds: bool) {
+        if !holds {
+            self.wrong.lock().unwrap().push(what.to_owned());
+        }
+    }
+
+    /// Every thread, the main one first.
+    fn every_thread(&self) -> Vec<TaskId> {
+        self.process
+            .into_iter()
+            .chain(self.threads.clone())
+            .collect()
+    }
+
+    /// Takes `tasks` and puts them back in this test's order, checking each step.
+    fn one_by_one(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        let mut taken = Vec::new();
+        for &at in &self.order {
+            let thread = self.threads[at];
+            let got: Vec<_> = kernel.suspend_tasks(cpu, &[thread]).collect();
+            self.check("one thread taken", got.len() == 1 && got[0].0 == thread);
+            taken.extend(got.into_iter().map(|(_, task)| task));
+        }
+        let absent = TaskId(u32::MAX);
+        self.check(
+            "a task not on the kernel is absent",
+            kernel.suspend_tasks(cpu, &[absent]).next().is_none(),
+        );
+        for task in taken {
+            self.check(
+                "a thread put back",
+                kernel.resume_tasks(cpu, [task]).next().is_none(),
+            );
+        }
+    }
+
+    /// Takes the whole process and puts it back, its tasks first without the context.
+    fn whole_process(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        let process = self.process.expect("the process");
+        let config = ExecutionConfig::default();
+        let copy = kernel.copy_process_context(process).expect("a copy");
+        let every = self.every_thread();
+        let got: Vec<_> = kernel.suspend_tasks(cpu, &every).collect();
+        self.check("every thread taken", got.len() == every.len());
+        let tasks = got.into_iter().map(|(_, task)| task).collect::<Vec<_>>();
+        self.check(
+            "every thread put back",
+            kernel.resume_tasks(cpu, tasks).next().is_none(),
+        );
+        let (context, tasks) = kernel.suspend_process(cpu, process).expect("the process");
+        let tasks: Vec<_> = tasks.map(|(_, task)| task).collect();
+        self.check("the process's every task", tasks.len() == every.len());
+        self.check(
+            "the process is gone",
+            kernel.process(cpu, process).is_none()
+                && kernel.copy_process_context(process).is_none(),
+        );
+        let back: Vec<_> = kernel.resume_tasks(cpu, tasks).collect();
+        self.check(
+            "tasks without their context handed back",
+            back.len() == every.len(),
+        );
+        self.check(
+            "the context put back",
+            kernel.resume_process(context, config).is_none(),
+        );
+        let twice = kernel.resume_process(copy, config);
+        self.check(
+            "a context already there handed back",
+            twice.as_ref().map(|context| context.id()) == Some(process),
+        );
+        self.check(
+            "the tasks put back with their context",
+            kernel.resume_tasks(cpu, back).next().is_none(),
+        );
+    }
+
+    /// Moves the process to a second kernel, checks it is there as it was, and brings it back.
+    fn second_kernel(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        let process = self.process.expect("the process");
+        let config = ExecutionConfig::default();
+        let memory = kernel.process(cpu, process).expect("here").memory_id();
+        let mapped = kernel
+            .process(cpu, process)
+            .expect("here")
+            .info()
+            .memory_mapped();
+        let (context, tasks) = kernel.suspend_process(cpu, process).expect("the process");
+        let tasks: Vec<_> = tasks.map(|(_, task)| task).collect();
+        let mut other = Kernel::new();
+        let tasks: Vec<_> = other.resume_tasks(cpu, tasks).collect();
+        self.check(
+            "no context on the second kernel yet",
+            tasks.len() == self.every_thread().len(),
+        );
+        self.check(
+            "the context on the second kernel",
+            other.resume_process(context, config).is_none(),
+        );
+        self.check(
+            "the tasks on the second kernel",
+            other.resume_tasks(cpu, tasks).next().is_none(),
+        );
+        let there = other.process(cpu, process).expect("on the second kernel");
+        self.check(
+            "the same memory on the second kernel",
+            there.memory_id() == memory && there.info().memory_mapped() == mapped,
+        );
+        let (context, tasks) = other.suspend_process(cpu, process).expect("the process");
+        let tasks: Vec<_> = tasks.map(|(_, task)| task).collect();
+        self.check(
+            "every task from the second kernel",
+            tasks.len() == self.every_thread().len(),
+        );
+        self.check(
+            "the context back on the first kernel",
+            kernel.resume_process(context, config).is_none(),
+        );
+        let ordered: Vec<_> = self
+            .order
+            .iter()
+            .map(|&at| self.threads[at])
+            .chain(self.process)
+            .collect();
+        let mut tasks = tasks;
+        tasks.sort_by_key(|task| ordered.iter().position(|id| *id == task.id()));
+        self.check(
+            "the tasks back on the first kernel",
+            kernel.resume_tasks(cpu, tasks).next().is_none(),
+        );
+    }
+}
+
+impl Suspender {
+    /// The other threads, in this test's order.
+    fn others(&self) -> Vec<TaskId> {
+        self.order.iter().map(|&at| self.threads[at]).collect()
+    }
+
+    /// Puts back what the hooks took of the main thread (`main`) or of the others.
+    fn put_back(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, main: bool) {
+        let tasks: Vec<SuspendedTask> = SUSPENDED.with_borrow_mut(|stash| {
+            let (chosen, kept) = std::mem::take(stash)
+                .into_iter()
+                .partition(|task| (Some(task.id()) == self.process) == main);
+            *stash = kept;
+            chosen
+        });
+        self.check("the tasks a hook took put back", !tasks.is_empty());
+        self.check(
+            "the tasks a hook took put back",
+            kernel.resume_tasks(cpu, tasks).next().is_none(),
+        );
+    }
+
+    fn take_in_hook(&self, process: &mut Process<'_>, tasks: &[TaskId]) {
+        let taken: Vec<_> = process.suspend_tasks(tasks).collect();
+        self.check("a hook takes what it names", taken.len() == tasks.len());
+        SUSPENDED.with_borrow_mut(|stash| stash.extend(taken.into_iter().map(|(_, task)| task)));
+    }
+}
+
+impl Hooks for Suspender {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        self.process.get_or_insert(process.id());
+    }
+
+    fn on_thread_starting(&mut self, _: Process<'_>, thread: TaskId) {
+        self.threads.push(thread);
+    }
+
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if Some(thread) != self.process {
+            return ControlFlow::Continue(request);
+        }
+        let number = request.number;
+        let sleep = number == u64::from(general::__NR_nanosleep);
+        match (self.plan, self.stage) {
+            (SuspendPlan::Hooks, SuspendStage::Start) if sleep => {
+                self.stage = SuspendStage::SleptOnce;
+            }
+            (SuspendPlan::Hooks, SuspendStage::SleptOnce) if sleep => {
+                self.take_in_hook(&mut process, &self.others());
+                self.stage = SuspendStage::Away;
+            }
+            (SuspendPlan::Hooks, SuspendStage::Away)
+                if number == u64::from(general::__NR_write) =>
+            {
+                self.take_in_hook(&mut process, &[thread]);
+                self.stage = SuspendStage::MainAway;
+            }
+            (SuspendPlan::Hooks, SuspendStage::MainBack)
+                if number == u64::from(general::__NR_futex)
+                    && [general::FUTEX_WAIT, general::FUTEX_WAIT_BITSET]
+                        .map(|wait| wait as i32)
+                        .contains(&(request.arguments[1] as i32 & general::FUTEX_CMD_MASK)) =>
+            {
+                self.stage = SuspendStage::Joining;
+            }
+            (SuspendPlan::Kernel, SuspendStage::Start) if sleep => {
+                self.stage = SuspendStage::Waiting;
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn intercept_system_call_response(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: &SystemCallRequest,
+        response: SystemCallResponse,
+    ) -> SystemCallResponse {
+        let write = request.number == u64::from(general::__NR_write);
+        if write && self.stage == SuspendStage::MainBack && Some(thread) == self.process {
+            let mut refused = self.refused_in_step.lock().unwrap();
+            if refused.is_none() {
+                *refused = Some(process.suspend_tasks(&[thread]).count());
+            }
+        }
+        response
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        match self.stage {
+            SuspendStage::MainAway => {
+                self.put_back(kernel, cpu, true);
+                self.stage = SuspendStage::MainBack;
+                true
+            }
+            SuspendStage::Joining => {
+                self.put_back(kernel, cpu, false);
+                self.stage = SuspendStage::Done;
+                self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            SuspendStage::Waiting => {
+                self.one_by_one(kernel, cpu);
+                self.whole_process(kernel, cpu);
+                self.second_kernel(kernel, cpu);
+                self.stage = SuspendStage::Done;
+                self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            SuspendStage::Start
+            | SuspendStage::SleptOnce
+            | SuspendStage::Away
+            | SuspendStage::MainBack
+            | SuspendStage::Done => false,
+        }
+    }
+}
+
+#[test]
+fn tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["suspend", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let seeds: Vec<u64> = wcontainers_kernel_test::schedule_seeds().collect();
+    let orders = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    for plan in [SuspendPlan::Hooks, SuspendPlan::Kernel] {
+        for (index, order) in orders.into_iter().enumerate() {
+            let seed = seeds[index % seeds.len()];
+            let wrong = Arc::new(Mutex::new(Vec::new()));
+            let refused_in_step = Arc::new(Mutex::new(None));
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let suspender = Suspender {
+                plan,
+                order,
+                stage: SuspendStage::Start,
+                process: None,
+                threads: Vec::new(),
+                wrong: wrong.clone(),
+                refused_in_step: refused_in_step.clone(),
+                done: done.clone(),
+            };
+            let run = run_embedder("suspend", Box::new(suspender), seed);
+            let label = format!("{plan:?}, order {order:?}, seed {seed}");
+            assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
+            assert_eq!(*wrong.lock().unwrap(), Vec::<String>::new(), "{label}");
+            assert!(done.load(std::sync::atomic::Ordering::Relaxed), "{label}");
+            let refused = (plan == SuspendPlan::Hooks).then_some(0);
+            assert_eq!(*refused_in_step.lock().unwrap(), refused, "{label}");
+            assert_eq!(
+                counted(&run, reason::TASK_IN_A_STEP_NOT_SUSPENDED),
+                u64::from(plan == SuspendPlan::Hooks),
+                "{label}: {:?}",
+                run.counters
+            );
+        }
+    }
 }

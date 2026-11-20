@@ -527,6 +527,11 @@ fn waited(
     Err(error)
 }
 
+/// Whether a thread waits in a queue's line with nothing handed to it yet.
+pub(crate) fn queued(kernel: &Kernel, tid: Tid) -> bool {
+    kernel.ipc.mq_waiting.contains_key(&tid)
+}
+
 /// A thread leaves the line it waits in, as when it ends.
 pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
     kernel.ipc.mq_ready.remove(&tid);

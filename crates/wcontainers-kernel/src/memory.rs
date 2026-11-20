@@ -496,6 +496,11 @@ impl AddressMap {
         Ok(())
     }
 
+    /// Notes what changes for another kernel from now on, as a map put on it.
+    pub fn note_to(&mut self, notes: Rc<MapNotes>) {
+        self.notes = notes;
+    }
+
     /// Sets the embedder's watch on the mapped pages of `[start, end)` (page aligned) and tells
     /// the CPU side; whether any page's watch changed, and how many pages' were raised (set, or
     /// widened to `All`).

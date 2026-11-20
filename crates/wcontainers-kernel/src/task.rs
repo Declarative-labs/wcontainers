@@ -180,9 +180,15 @@ impl Kernel {
             let pid = self.threads[&tid].process;
             let thread = crate::TaskId::of(tid);
             let mut decision = core::ops::ControlFlow::Continue(call);
+            self.call_not_begun = true;
             self.announce(cx, pid, |system, process| {
                 decision = system.intercept_system_call_request(process, thread, call);
             });
+            self.call_not_begun = false;
+            // The embedder took the thread, which makes the call again where it is put back.
+            if self.stepping.is_none() {
+                return;
+            }
             match decision {
                 core::ops::ControlFlow::Break(response) => {
                     let value = crate::system::return_of(response);
@@ -535,7 +541,9 @@ impl Kernel {
                     number: x[SYSTEM_CALL_NUMBER_REGISTER],
                     arguments,
                 };
+                self.stepping = Some(tid);
                 self.system_call(cx, tid, call, true);
+                self.stepping = None;
                 // A call that went back to its program has its thread's turn.
                 if self.run_queue.contains(tid) {
                     self.take_out_of_line(tid);
@@ -585,7 +593,9 @@ impl Kernel {
                 // after a stop acts on its signals and goes back in line.
                 let resume = thread.resume;
                 self.take_out_of_line(tid);
+                self.stepping = Some(tid);
                 self.return_to_user(cx, tid, resume);
+                self.stepping = None;
                 continue;
             }
             break;
@@ -710,7 +720,10 @@ impl Kernel {
     /// Ends a thread's wait; it goes in line and its call runs again when its turn comes.
     pub(crate) fn wake_thread(&mut self, tid: Tid) {
         let entry_now = self.entry_now;
-        let thread = self.thread_mut(tid);
+        // A task suspended off the kernel runs its call again when it is put back.
+        let Some(thread) = self.threads.get_mut(&tid) else {
+            return;
+        };
         if let Some(channel) = thread.call.wait.take() {
             thread.woken_at = Some(entry_now);
             let deadline = thread.call.deadline;
@@ -840,8 +853,10 @@ impl Kernel {
         if let Some(leader) = leader {
             process.ended_leader = leader;
         }
-        let heir = process.threads[0];
-        self.hand_children_to(cx, tid, heir);
+        // With its other tasks suspended, its children wait for one to come back.
+        if let Some(&heir) = process.threads.first() {
+            self.hand_children_to(cx, tid, heir);
+        }
         if !self.released.is_empty() {
             self.files_released(cx);
         }
@@ -901,10 +916,12 @@ impl Kernel {
             // Each thread's end sees the memory still used by those yet to end.
             syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
         }
+        let ending = self.ending_process.replace(pid);
         self.announce(cx, pid, |system, process| {
             system.on_process_exiting(process)
         });
         self.withdraw_sharing(cx, pid);
+        self.ending_process = ending;
         // The container ends with its first process, and the rest are killed then, as Linux's
         // first process of a namespace kills them on its way out (`zap_pid_ns_processes`).
         if self.init == Some(pid) {

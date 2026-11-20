@@ -859,6 +859,7 @@ impl Kernel {
         self.files_released(cx);
         crate::shared::release(self, cx);
         self.update_watching();
+        let starting = self.starting_task.replace(tid);
         if first {
             self.announce_start(cx, pid, |system, process| {
                 system.on_process_starting(process)
@@ -867,6 +868,7 @@ impl Kernel {
         self.announce(cx, pid, |system, process| {
             system.on_program_starting(process)
         });
+        self.starting_task = starting;
     }
 
     /// A tmpfs's count, kept for the machine's memory in use.

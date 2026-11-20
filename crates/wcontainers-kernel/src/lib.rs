@@ -30,6 +30,7 @@ mod seccomp;
 mod shared;
 mod sharing;
 mod signal;
+mod suspend;
 mod syscall;
 mod system;
 mod task;
@@ -47,6 +48,7 @@ pub use container::{Attributes, FileRecord, NewFile, Start};
 pub use counters::reason;
 pub use ends::Standard;
 pub use errno::Errno;
+pub use suspend::{ProcessContext, SuspendedTask};
 pub use system::{
     AccessKind, AnonymousMemoryId, DeviceId, ExecutionConfig, InodeNumber, MemoryError,
     MemoryObject, Process, ProcessInfo, ReplayDeterminism, SignalInformation, System,
@@ -148,6 +150,15 @@ pub struct Kernel {
     resched: bool,
     /// The thread the driver is running, between [`Kernel::next`] and [`Kernel::exit`].
     running: Option<Tid>,
+    /// The thread whose call, signal or fault the kernel is in the middle of, which a hook cannot
+    /// take unless its call has not begun.
+    stepping: Option<Tid>,
+    /// The stepping thread's call has not begun: a hook may take it, to make the call again.
+    call_not_begun: bool,
+    /// A task the kernel is starting, which a hook cannot take.
+    starting_task: Option<Tid>,
+    /// A process the kernel is ending, whose tasks a hook cannot take.
+    ending_process: Option<Pid>,
     /// Parked threads by channel and deadline.
     parked: schedule::Parked,
     /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
@@ -270,6 +281,10 @@ impl Kernel {
             current: None,
             resched: false,
             running: None,
+            stepping: None,
+            call_not_begun: false,
+            starting_task: None,
+            ending_process: None,
             parked: schedule::Parked::default(),
             released: Vec::new(),
             notices: Vec::new(),
@@ -393,8 +408,10 @@ impl Kernel {
             syscall::timer::cpu_check(self, &mut cx, tid);
         }
         if self.threads.contains_key(&tid) {
+            self.stepping = Some(tid);
             self.tell_continued(&mut cx, tid);
             self.came_back(&mut cx, tid, exit);
+            self.stepping = None;
         }
         self.settle(&mut cx);
     }

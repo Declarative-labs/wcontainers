@@ -126,6 +126,10 @@ impl Kernel {
         let announced = core::mem::replace(&mut self.shared_announced, mapped.clone());
         let none = Pieces::new();
         for ((source, pid), pieces) in &announced {
+            // A process suspended meanwhile took what it was told with its context.
+            if !self.processes.contains_key(pid) {
+                continue;
+            }
             let now = mapped.get(&(*source, *pid)).unwrap_or(&none);
             for (offset, range) in missing_from(pieces, now) {
                 self.announce_shared(cx, *pid, |system, process| {
@@ -134,6 +138,9 @@ impl Kernel {
             }
         }
         for ((source, pid), pieces) in &mapped {
+            if !self.processes.contains_key(pid) {
+                continue;
+            }
             let before = announced.get(&(*source, *pid)).unwrap_or(&none);
             for (offset, range) in missing_from(pieces, before) {
                 self.announce_shared(cx, *pid, |system, process| {

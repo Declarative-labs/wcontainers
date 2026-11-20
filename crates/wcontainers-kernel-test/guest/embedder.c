@@ -45,6 +45,9 @@
 //     /proc/self/maps.
 //   environ WHOSE LONG: runs itself again with LONG in its environment, then reads that
 //     environment through /proc as cmdline reads the command line.
+//   suspend: three threads block, one reading an empty pipe, one on a mutex the main thread
+//     holds and one in a futex wait with a timeout; the main thread sleeps twice, then writes the pipe,
+//     changes and wakes the futex, lets the mutex go, joins them and prints what each saw.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -1201,6 +1204,50 @@ static int exec_program(char *path) {
     return 0;
 }
 
+static int suspend_pipe[2], suspend_word, suspend_locked;
+static pthread_mutex_t suspend_lock = PTHREAD_MUTEX_INITIALIZER;
+static char suspend_read[8];
+static long suspend_got;
+
+static void *suspend_reader(void *argument) {
+    suspend_got = read(suspend_pipe[0], suspend_read, sizeof suspend_read);
+    return argument;
+}
+
+static void *suspend_locker(void *argument) {
+    pthread_mutex_lock(&suspend_lock);
+    suspend_locked++;
+    pthread_mutex_unlock(&suspend_lock);
+    return argument;
+}
+
+static void *suspend_timed(void *argument) {
+    struct timespec limit = {10, 0};
+    while (!__atomic_load_n(&suspend_word, __ATOMIC_SEQ_CST))
+        syscall(SYS_futex, &suspend_word, FUTEX_WAIT_PRIVATE, 0, &limit, NULL, 0);
+    return argument;
+}
+
+static int suspend_threads(void) {
+    void *(*mains[])(void *) = {suspend_reader, suspend_locker, suspend_timed};
+    enum { COUNT = sizeof mains / sizeof *mains };
+    pthread_t threads[COUNT];
+    pipe(suspend_pipe);
+    pthread_mutex_lock(&suspend_lock);
+    for (int at = 0; at < COUNT; at++) pthread_create(&threads[at], NULL, mains[at], NULL);
+    struct timespec wait = {0, 200 * 1000 * 1000}, moment = {0, 1000 * 1000};
+    syscall(SYS_nanosleep, &wait, NULL);
+    syscall(SYS_nanosleep, &moment, NULL);
+    write(suspend_pipe[1], "data", strlen("data"));
+    __atomic_store_n(&suspend_word, 1, __ATOMIC_SEQ_CST);
+    syscall(SYS_futex, &suspend_word, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    pthread_mutex_unlock(&suspend_lock);
+    for (int at = 0; at < COUNT; at++) pthread_join(threads[at], NULL);
+    printf("read %ld %.*s\nlocked %d\nword %d\n", suspend_got, (int)suspend_got, suspend_read,
+           suspend_locked, suspend_word);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) return 2;
     buffer = (char *)strtoul(argv[2], NULL, 0);
@@ -1231,6 +1278,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "vm")) return vm();
     if (!strcmp(mode, "signals")) return signals();
     if (!strcmp(mode, "sharing")) return sharing();
+    if (!strcmp(mode, "suspend")) return suspend_threads();
     if (!strcmp(mode, "interrupted") && argc > 4) return interrupted(argv[4]);
     if (!strcmp(mode, "cmdline") && argc > 4) return proc_strings("cmdline", argv[4]);
     if (!strcmp(mode, "environ") && argc > 5) return environment(argv, argv[4], argv[5]);
