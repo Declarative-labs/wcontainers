@@ -11,9 +11,10 @@ use wcontainers_gpu::{
     IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
     PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler,
     ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StencilOp,
-    StepMode, StoreOp, SystemValue, Target, TargetInShader, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport as GpuViewport, WriteMode, helper_binding,
+    StepMode, StoreOp, SystemValue, TEXEL_BUFFER_TEXTURE_WIDTH, Target, TargetInShader,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension, Viewport as GpuViewport,
+    WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -32,7 +33,7 @@ mod geometry;
 mod split;
 mod tessellation;
 mod through;
-pub(crate) use geometry::StageRun;
+pub(crate) use geometry::{STREAM_OUT_WITHOUT_COMPUTE, StageRun};
 pub(crate) use tessellation::TessRun;
 use through::Through;
 
@@ -65,6 +66,14 @@ type ConstantWindow<B> = (u32, Rc<Buffer<B>>, u64, u64, u64, ConstantsReadAs);
 
 /// Bytes of one constant: four 32-bit components.
 const CONSTANT_ROW_BYTES: u64 = size_of::<[u32; 4]>() as u64;
+
+/// Texels copied from a buffer into a texture's rows: their count, bytes each, and texels a row.
+#[derive(Clone, Copy)]
+struct TexelRows {
+    count: u32,
+    bytes: u32,
+    width: u32,
+}
 
 /// The binding set `stage`'s slots are in.
 pub(crate) fn set_of(stage: usize) -> u32 {
@@ -2467,7 +2476,13 @@ impl<B: Backend> Device<B> {
                     }
                 }
                 WindowCopy::Texture { texture, .. } => {
-                    self.copy_constant_rows(&c.handle(), offset, length, &texture.handle);
+                    let rows = (length / CONSTANT_ROW_BYTES) as u32;
+                    let texels = TexelRows {
+                        count: rows,
+                        bytes: CONSTANT_ROW_BYTES as u32,
+                        width: CONSTANTS_TEXTURE_WIDTH,
+                    };
+                    self.copy_rows(&c.handle(), offset, texels, &texture.handle);
                 }
             }
             w.copied.set(Some(source));
@@ -2545,19 +2560,18 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// Copies `length` bytes of constants at `offset` in `buffer` into a constants texture's rows.
-    fn copy_constant_rows(
+    /// Copies `texels` from `offset` in `buffer` into a texture of their rows, from its first.
+    fn copy_rows(
         &mut self,
         buffer: &B::Buffer,
         offset: u64,
-        length: u64,
+        texels: TexelRows,
         texture: &B::Texture,
     ) {
-        let rows = (length / CONSTANT_ROW_BYTES) as u32;
-        let row_pitch = CONSTANTS_TEXTURE_WIDTH * CONSTANT_ROW_BYTES as u32;
-        let whole = rows / CONSTANTS_TEXTURE_WIDTH;
-        let rest = rows % CONSTANTS_TEXTURE_WIDTH;
-        for (first, width, height) in [(0, CONSTANTS_TEXTURE_WIDTH, whole), (whole, rest, 1)] {
+        let row_pitch = texels.width * texels.bytes;
+        let whole = texels.count / texels.width;
+        let rest = texels.count % texels.width;
+        for (first, width, height) in [(0, texels.width, whole), (whole, rest, 1)] {
             if width == 0 || height == 0 {
                 continue;
             }
@@ -2588,10 +2602,103 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// Copies again the constant buffer windows read through copies whose buffers were written
-    /// since.
+    /// The texture copy of `b`'s elements as `format` (`TexelBufferAsTexture`), made at its first
+    /// use and copied again where `b` was written since.
+    fn texel_copy(&mut self, b: &Buffer<B>, format: Format) -> Result<B::TextureView> {
+        let source = (b.writes.get(), b.gpu.borrow().id);
+        let (.., bytes) = format.block();
+        let texels = TexelRows {
+            count: b.desc.byte_width / bytes,
+            bytes,
+            width: TEXEL_BUFFER_TEXTURE_WIDTH,
+        };
+        let found = b.texels.borrow().iter().position(|t| t.format == format);
+        let i = match found {
+            Some(i) => i,
+            None => {
+                self.settle();
+                let height = texels.count.div_ceil(texels.width).max(1);
+                let texture = self.backend.create_texture(&wcontainers_gpu::TextureDesc {
+                    dimension: wcontainers_gpu::TextureDimension::D2,
+                    format,
+                    width: texels.width,
+                    height,
+                    depth_or_layers: 1,
+                    mip_levels: 1,
+                    samples: 1,
+                    usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+                    cube: false,
+                    reinterpret: false,
+                });
+                let texture = self.gpu(texture)?;
+                let view = self.backend.create_view(
+                    &texture,
+                    &TextureViewDesc {
+                        format,
+                        dimension: ViewDimension::D2,
+                        base_mip: 0,
+                        mip_count: 1,
+                        base_layer: 0,
+                        layer_count: 1,
+                        stencil: false,
+                    },
+                );
+                let view = self.gpu(view)?;
+                let (t, v) = (self.id(), self.id());
+                let mut copies = b.texels.borrow_mut();
+                copies.push(TexelCopy {
+                    format,
+                    texture: Kept::new(texture, t, Object::Texture, &self.graveyard),
+                    view: Kept::new(view, v, Object::TextureView, &self.graveyard),
+                    copied: Cell::new(None),
+                });
+                copies.len() - 1
+            }
+        };
+        let copies = b.texels.borrow();
+        let copy = &copies[i];
+        if copy.copied.get() != Some(source) {
+            self.settle();
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::TexelBufferAsTexture);
+            self.copy_rows(&b.handle(), 0, texels, &copy.texture.handle);
+            copy.copied.set(Some(source));
+        }
+        Ok(copy.view.handle.clone())
+    }
+
+    /// The texture copies of the typed buffers `stage`'s shader reads through them, by slot.
+    fn texel_copies(&mut self, stage: usize) -> Result<Vec<(u32, B::TextureView)>> {
+        let mut copies = Vec::new();
+        if !self.typed_buffers_textured() {
+            return Ok(copies);
+        }
+        let Some(shader) = self.stage_shader(stage).clone() else {
+            return Ok(copies);
+        };
+        for t in shader.typed.iter().filter(|t| t.textured) {
+            let bound = self.ctx.resources[stage]
+                .get(t.register as usize)
+                .and_then(Option::clone);
+            if let Some(view) = bound
+                && let ShaderView::Buffer(BufferSpan {
+                    buffer,
+                    texel: Some((format, ..)),
+                    ..
+                }) = &*view
+            {
+                copies.push((t.register, self.texel_copy(buffer, *format)?));
+            }
+        }
+        Ok(copies)
+    }
+
+    /// Copies again the constant buffer windows and the typed buffers read through copies whose
+    /// buffers were written since.
     fn refresh_windows(&mut self) -> Result<()> {
         for stage in 0..STAGES {
+            self.texel_copies(stage)?;
             if self.ctx.windows[stage].is_empty() {
                 continue;
             }
@@ -2996,6 +3103,8 @@ impl<B: Backend> Device<B> {
         let stages = match stage {
             VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
             DOMAIN if !self.ctx.domain_compute => StageSet::VERTEX,
+            // A geometry shader's replay form is a vertex program (`GeometryAsReplay`).
+            GEOMETRY if !self.backend.caps().has(Features::COMPUTE) => StageSet::VERTEX,
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -3008,6 +3117,9 @@ impl<B: Backend> Device<B> {
         };
         // Whether a shader resource binding reads a structured or raw buffer, not a texture.
         let reads_buffer = |n| matches!(stand_in(n), Some(StandIn::ZeroBuffer));
+        // Typed buffers the program reads through texture copies, by slot.
+        let texel_copies = self.texel_copies(stage)?;
+        let textured_buffers = !texel_copies.is_empty();
         // What stands in for each empty slot the shader reads, by binding number.
         let mut empty: Vec<(u32, Zero<B>)> = Vec::new();
         for b in wanted() {
@@ -3032,7 +3144,9 @@ impl<B: Backend> Device<B> {
                                     _ => true,
                                 }
                         }
-                        Some(ShaderView::Buffer(_)) => reads_buffer(b.binding),
+                        Some(ShaderView::Buffer(span)) => {
+                            reads_buffer(b.binding) || (textured_buffers && span.texel.is_some())
+                        }
                         None => false,
                     }
                 }
@@ -3283,6 +3397,12 @@ impl<B: Backend> Device<B> {
                         if !empty.iter().any(|(n, _)| *n == b.binding) =>
                     {
                         Some(BindingResource::Texture(&v.gpu.handle))
+                    }
+                    (Some(ShaderView::Buffer(_)), _)
+                        if let Some((_, copy)) =
+                            texel_copies.iter().find(|c| c.0 == b.register) =>
+                    {
+                        Some(BindingResource::Texture(copy))
                     }
                     (_, Some((buffer, span))) if reads_buffer(b.binding) => {
                         Some(BindingResource::StorageBuffer {

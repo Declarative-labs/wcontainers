@@ -307,8 +307,6 @@ const OPTIONAL_FORMATS_ABSENT: &[DXGI_FORMAT] = {
 /// that differ and why (the status file's Departures name each shortfall).
 const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
     use windows::Win32::Graphics::Dxgi::Common::*;
-    const THREE_D: i32 = D3D11_FORMAT_SUPPORT_TEXTURE3D.0;
-    const BLOCK_3D: &str = "3D textures of block-compressed formats (Caps has no sliced 3D)";
     const TARGET: i32 = D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
         | D3D11_FORMAT_SUPPORT_BLENDABLE.0
         | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN.0;
@@ -327,39 +325,6 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
             0,
             "back buffer views of other formats than the sRGB twin",
         ),
-        (
-            DXGI_FORMAT_R8G8_B8G8_UNORM,
-            D3D11_FORMAT_SUPPORT_TEXTURE1D.0 | THREE_D,
-            0,
-            "1D and 3D textures of packed pairs",
-        ),
-        (
-            DXGI_FORMAT_G8R8_G8B8_UNORM,
-            D3D11_FORMAT_SUPPORT_TEXTURE1D.0 | THREE_D,
-            0,
-            "1D and 3D textures of packed pairs",
-        ),
-        (DXGI_FORMAT_BC1_TYPELESS, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC1_UNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC1_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC2_TYPELESS, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC2_UNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC2_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC3_TYPELESS, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC3_UNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC3_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC4_TYPELESS, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC4_UNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC4_SNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC5_TYPELESS, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC5_UNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC5_SNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC6H_TYPELESS, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC6H_UF16, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC6H_SF16, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC7_TYPELESS, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC7_UNORM, THREE_D, 0, BLOCK_3D),
-        (DXGI_FORMAT_BC7_UNORM_SRGB, THREE_D, 0, BLOCK_3D),
         (
             DXGI_FORMAT_B5G6R5_UNORM,
             TARGET,
