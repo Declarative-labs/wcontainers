@@ -4,19 +4,22 @@ use wcontainers_abi::{Exit, Permissions};
 use wcontainers_arm64::Arm64;
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator_test::guest::GuestTest;
+use wcontainers_translator_test::guest::{GuestTest, UNKNOWN_SYSTEM_CALL};
 use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls, fields};
+use wcontainers_x86::X86_64;
 
 const LOAD: u64 = 0x10000;
-/// The one executable page the programs run in.
+/// The one executable page the programs run in, and the stack's page below it.
 const PAGE: u64 = wcontainers_abi::PAGE_SIZE;
 
-/// Load `code` at `LOAD` at `look_ahead`, every register 0 but the pc.
+/// Load `code` at `LOAD` at `look_ahead`, every register 0 but the pc and the stack pointer, which is at the
+/// top of the writable page below.
 fn ready<G: GuestTest>(code: &[u8], look_ahead: LookAhead) -> Machine<G> {
     let mut machine = Machine::<G>::new(1 << 20, LOAD, (PAGE / G::ALIGN) as u32, Syscalls::StandIn);
     machine.set_permissions(LOAD..LOAD + PAGE, Permissions::READ | Permissions::EXECUTE);
+    machine.set_permissions(LOAD - PAGE..LOAD, Permissions::READ | Permissions::WRITE);
     machine.load(code, 0..code.len() as u64, LOAD, &[0], look_ahead);
-    machine.set_registers(&G::initial_block(LOAD, 0));
+    machine.set_registers(&G::initial_block(LOAD, LOAD));
     machine
 }
 
@@ -66,7 +69,7 @@ fn slow_paths_are_counted_and_warned_once_per_place<G: GuestTest>() {
         .filter(|w| w.reason == Reason::SystemCallNotImplemented.name())
         .map(|w| (w.detail, w.count))
         .collect();
-    assert_eq!(warnings, [(999, 1)]);
+    assert_eq!(warnings, [(UNKNOWN_SYSTEM_CALL, 1)]);
 }
 
 /// A flag raised by another thread while a translated loop runs is seen, at every look-ahead: the check must
@@ -146,4 +149,34 @@ fn stop_flag_raised_while_running_arm64() {
 #[test]
 fn instructions_not_offered_are_illegal_and_counted_arm64() {
     instructions_not_offered_are_illegal_and_counted::<Arm64>();
+}
+
+#[test]
+fn exit_status_x86_64() {
+    exit_status::<X86_64>();
+}
+
+#[test]
+fn loop_and_call_x86_64() {
+    loop_and_call::<X86_64>();
+}
+
+#[test]
+fn a_raised_stop_flag_is_cleared_and_the_thread_carries_on_x86_64() {
+    a_raised_stop_flag_is_cleared_and_the_thread_carries_on::<X86_64>();
+}
+
+#[test]
+fn slow_paths_are_counted_and_warned_once_per_place_x86_64() {
+    slow_paths_are_counted_and_warned_once_per_place::<X86_64>();
+}
+
+#[test]
+fn stop_flag_raised_while_running_x86_64() {
+    stop_flag_raised_while_running::<X86_64>();
+}
+
+#[test]
+fn instructions_not_offered_are_illegal_and_counted_x86_64() {
+    instructions_not_offered_are_illegal_and_counted::<X86_64>();
 }

@@ -205,13 +205,16 @@ pub struct Designed {
     pub compared: bool,
 }
 
+/// The system call `Smoke::unknown_call` makes, which the stand-in does not have.
+pub const UNKNOWN_SYSTEM_CALL: u64 = 999;
+
 /// The smoke test's programs, each started at its first byte with every register 0 but the pc.
 pub struct Smoke {
     /// Exits with 42.
     pub exit: Vec<u8>,
     /// Adds 10 down to 1 in a loop around a call and exits with the sum, 55.
     pub loop_and_call: Vec<u8>,
-    /// Makes system call 999, which the stand-in does not have, from two places in a row, then exits with 3.
+    /// Makes system call `UNKNOWN_SYSTEM_CALL` from two places in a row, then exits with 3.
     pub unknown_call: Vec<u8>,
     /// Counts the field `long_loop_counter` down from 2^30 to 0 in a loop of the instructions at the offsets
     /// `long_loop_body`, then exits with 0.

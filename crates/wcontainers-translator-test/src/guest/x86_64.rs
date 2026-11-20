@@ -4,6 +4,7 @@
 mod assemble;
 mod loops;
 mod segments;
+mod smoke;
 
 use super::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
@@ -511,7 +512,7 @@ impl GuestTest for X86_64 {
     }
 
     fn smoke() -> Smoke {
-        panic!("x86-64's smoke programs are milestone X5's")
+        smoke::smoke()
     }
 
     fn checks() -> Vec<Check> {

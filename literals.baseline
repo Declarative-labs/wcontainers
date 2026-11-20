@@ -7561,7 +7561,6 @@ code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as Guest
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::excluded	"int 0x80: a 32-bit system call on the reference"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::excluded	"sysenter: a 32-bit system call on the reference"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::no_form	"not in no form"
-code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::smoke	"x86-64's smoke programs are milestone X5's"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	hand_cases	"endbr64"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	hand_cases	"int 0x80"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	hand_cases	"int 0x81"
