@@ -1027,13 +1027,15 @@ exact bit numbers, so everything derived from them, and the output, stays the sa
 
 Passed registers (T16). Two ordered lists instead of "x0 and x1, from x0 up, plus sp". A piece's
 parameters are `PASSED_IN`, then the expected return address and the depth; its results are `PASSED_OUT`.
-ARM64: both [x0, x1, sp]. x86 starts with in = [rdi, rsi, rsp] and out = [rax, rsp]; which and how many is
-a tuning number, measured at milestone X5 (section 11): of five pairs of lists timed on the benchmark set in
-wasmtime at full look-ahead, these starting lists ran fewest instructions on six of the eight workloads and
-the set fastest in all (20.9 s against 21.6 s), but with them layer 2 differs at bounded look-ahead (a
-register passed out and not in, which no list before had, loses its value there). Until that is fixed (X6,
-bounded look-ahead) x86 keeps in = [rsp, rdi, rsi, rdx, rcx, r8, r9, rax] and out = [rsp, rax, rdx]. `tracked()`, `register()`, the none emitter's get
-and set and `reload(live, passed_from)` go through the lists.
+ARM64: both [x0, x1, sp]. x86: in = [rsp, rdi, rsi] and out = [rsp, rax]; which and how many is a tuning
+number, measured at milestone X5 (section 11): of five pairs of lists timed on the benchmark set in wasmtime
+at full look-ahead, these ran fewest instructions on six of the eight workloads and the set fastest in all
+(20.9 s against 21.6 s for in = [rsp, rdi, rsi, rdx, rcx, r8, r9, rax] and out = [rsp, rax, rdx], the
+lists used before). They are the first with the system call's result register in a local rather than a
+parameter, which showed that the analysis of what may be stale in the thread block took a system call to
+leave nothing stale, while the emitter leaves its result in a local: one rule (`dirty_after_syscall`) now
+serves both. `tracked()`, `register()`, the none emitter's get and set and `reload(live, passed_from)` go
+through the lists.
 
 Flags (T22 to T25). The translator keeps its machinery: a current shape, a local per completed flag, the
 out-of-line flags-word functions, the liveness that leaves out flag work nothing reads, and the choice "direct
@@ -1699,6 +1701,19 @@ Tests (section 7 gives the detail):
   with a selector Linux allows changes nothing a user program sees, except that a trap flag the program
   set stops after the instruction after it, as on the CPU: its meaning writes 1 to the `StepHeld` control
   (section 5.1).
+- What may vary between x86-64 CPUs (`may_vary` true; the list reviewed at X5):
+  instructions that leave flags undefined (mul, imul, div, idiv, shifts and rotates, and, or, xor, test,
+  the bit tests, bsf, bsr, tzcnt, lzcnt, shld, shrd) and `bswap` of 16 bits; answers by design (`rdtsc`,
+  `rdtscp`, `cpuid`, `popf`, the descriptor table reads `lsl`, `sldt`, `str`, `smsw`, `sgdt`, `sidt`, the
+  segment loads and far transfers); the estimates `rcpps`,
+  `rcpss`, `rsqrtps`, `rsqrtss`; `dpps` and `dppd` (the flags of one stopped part way by an unmasked
+  exception follow the reference's micro-operations); `maskmovdqu` (faults under an all-zero mask are
+  implementation dependent); `ldmxcsr` (AMD's misaligned SSE mode takes MXCSR bit 17, which Intel refuses);
+  Linux's 32-bit system call gates; kernel-only instructions a kernel may open to user code (`rdpmc`, port
+  I/O, `cli`, `sti`); and everything that stops as illegal instruction here (invalid encodings, anything
+  outside the default claims). Not per instruction, and so not in the mark: the address width of the CPU
+  presented (a CPU with 5-level paging takes addresses up to bit 56 as canonical, where the i7-8750H stops at
+  bit 47), which changes the fault of every access between the two.
 
 ### 5.3 Calls and returns
 
@@ -3076,8 +3091,8 @@ one command recorded in the status file.
 
 ## 11. Tuning numbers
 
-Internal constants, part of the cache key, as in phase one: x86's passed registers in and out (starting
-values in section 3.4, measured at X5), the bulk string chunk (1 MiB), and phase one's own numbers, which
+Internal constants, part of the cache key, as in phase one: x86's passed registers in and out (section 3.4,
+measured and chosen at X5), the bulk string chunk (1 MiB), and phase one's own numbers, which
 apply unchanged.
 
 ## 12. Not yet measured
