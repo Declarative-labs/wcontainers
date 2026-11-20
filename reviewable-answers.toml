@@ -507,6 +507,7 @@ other = 'Neither a noun phrase nor a clause, such as "Used for parsing."'
 "The accesses of a process's memory that come back to the embedder." = { answer = "noun_phrase", confidence = 0.7079975660788823, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The addresses a process may use: from [`LOWEST_ADDRESS`] up to, not including, `end`." = { answer = "noun_phrase", confidence = 0.6298735694267709, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The answer to a system call: its value, or the error it fails with." = { answer = "noun_phrase", confidence = 0.8402916934503142, model = "perplexity/pplx-decider-v1.2-20261016" }
+"The answers to what a program reads from its processor without a system call." = { answer = "noun_phrase", confidence = 0.9143407982594146, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The blob and where its code is." = { answer = "noun_phrase", confidence = 0.7986263543308275, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The bytes a frame is made of, each at its address, written in Linux's order." = { answer = "noun_phrase", confidence = 0.8168326859098469, model = "perplexity/pplx-decider-v1.2-20261016" }
 "The calling thread's memory as the walk sees it." = { answer = "noun_phrase", confidence = 0.8332120970274385, model = "perplexity/pplx-decider-v1.2-20261016" }

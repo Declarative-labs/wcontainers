@@ -14,6 +14,7 @@ use wcontainers_kernel_interface::{
 /// The embedder of a kernel, as the union of every concern below.
 pub trait System:
     ProcessTracer
+    + ProcessorInputs
     + TaskIdSource
     + StreamPeer
     + Clocks
@@ -75,14 +76,6 @@ pub trait ProcessTracer {
     ) {
     }
 
-    fn on_signal_delivering<P: Process<State = Self::ProcessState>>(
-        &self,
-        process: P,
-        thread: TaskId,
-        signal: &SignalInformation,
-    ) {
-    }
-
     fn on_shared_memory_mapping<P: Process<State = Self::ProcessState>>(
         &self,
         process: P,
@@ -100,10 +93,21 @@ pub trait ProcessTracer {
     ) {
     }
 
+    fn on_signal_delivering<P: Process<State = Self::ProcessState>>(
+        &self,
+        process: P,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+    }
+
     /// Another process is about to read this one's internal state.
     fn on_inspection_starting<P: Process<State = Self::ProcessState>>(&self, process: P) {}
     fn on_inspection_ended<P: Process<State = Self::ProcessState>>(&self, process: P) {}
+}
 
+/// The answers to what a program reads from its processor without a system call.
+pub trait ProcessorInputs: ProcessTracer {
     fn choose_processor_features<P: Process<State = Self::ProcessState>>(
         &self,
         process: P,
