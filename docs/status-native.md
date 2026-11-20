@@ -74,7 +74,10 @@ fault, and the bar's command passes: +18.85% [+18.23 .. +19.21] against +21.2%, 
 alternating pairs the compute part is +20.53%, inside the layout luck (below, "N4 run 15"). Run 16 tested a loop's
 aligned bases once before it (matrix -10.8% cycles; by pairs the compute part +20.96% to +19.19%) and measured the bar
 and the layout luck again: the bar's command gives +17.24% [+16.32 .. +17.43] and the system-call part 74.4 ns, and by
-pairs every one of five layouts of the build is under +21.2% (+18.06% to +20.12%) (below, "N4 run 16").
+pairs every one of five layouts of the build is under +21.2% (+18.06% to +20.12%) (below, "N4 run 16"). Run 17 held the
+rest of an inner loop's turn in its piece and counted parts ahead along their likely way (search -2.4% cycles): the bar's
+command gives +17.00% [+16.14 .. +17.42] and the system-call part 80.3 ns; by pairs the build is at +18.54% and four
+new layouts of it at +17.75% to +19.03%, every one under +21.2% (below, "N4 run 17").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -101,6 +104,75 @@ pairs every one of five layouts of the build is under +21.2% (+18.06% to +20.12%
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 17 (2026-11-20): an inner loop's turn held; parts counted ahead along their likely way
+
+Start: origin/main and origin/phase-1-literals had nothing new; no new ruling in the brief since run 15. Files in scratch
+native/n4r18 (logs, scripts, the A/B builds, dump/ with the pieces of bench's hot loops as the emitter makes them, from a
+scratch test not kept, zz_dump.rs). Timings on the Mac (Hypervisor.framework); lint and unit tests of the translator,
+arm64 and guest-cpu on the rented ARM64 machine.
+
+Found by reading the pieces: search's inner loop left its piece on every match (`b.ne` back not taken: the code after a
+branch back into the piece was never held, so the match went out by a linked exit to a piece of its own and came back
+by another). Holding that code when it comes back into the piece (run 9's rule, now for every branch back) made search
+much slower at first (+77% to +83% cycles in one pair): the outer loop's piece now held the inner loop too, and the inner
+loop's first part, whose `b.eq` goes out to the outer loop inside the piece, then had two ways on, so the loop's two
+parts kept an add each, two adds a turn on the count register's chain.
+
+Built (plan 3.2 and 4; no knob; E and the count at every stop unchanged):
+- The walk holds the code after any branch back when it comes back into the piece (`walk`, `reach`).
+- Each part has a likely way on (the emitter's `likely`): the one that stays in the innermost loop holding the part
+  (the smallest span from a branch back's target to the branch), else a branch back, else falling through. A part
+  entered only from parts whose likely way it is, each going on only to it or with an add of its own to join, is
+  counted by their adds (`counted_ahead`); a loop of parts that would all be counted ahead keeps its first part's
+  add, and a part whose fall-through is not its likely way never ends with the count ahead. A part's other way
+  inside the piece, taken with the count ahead, goes through the out-of-line exit's `sub`: the emitter links past
+  it, as a loader does, when the target part is entered with the guest's count. So search's nest is one piece and
+  its inner loop adds once a turn, its way out to the outer loop subtracting one.
+- Tests: two more cases of the monitor's `pieces_hold_the_rest_of_a_turn` (search's match held), five unit tests of
+  `counted_ahead` (an inner loop, a fork counting its likely fall-through, a fork falling through elsewhere, a loop
+  all counted ahead, a join), and a forced-interrupt function "nest" (search's two loops on seeded bytes, 347
+  boundaries; at full look-ahead the whole run is one piece, 415 landing points).
+
+Results:
+- Alternating pairs against run 16's build (10 pairs, load 2.9 to 5.7, pairs.log): search 0.976 cycles [0.967 .. 0.992]
+  (instructions 0.980), every other workload within 1% and its instructions within 0.3%; compute part by pairs: run 16
+  +18.76%, this run +18.54%. A first 8 pairs at load 8 to 12 (turns.log) had too many runs on efficiency cores to
+  read.
+- Speed bar, the test's own command (15 pairs, look-ahead 256, seed 1, 2000 resamples, speed.log and speed.jsonl,
+  load 3.7 to 8.5, every run 97 to 100% on performance cores): compute part +17.00% [+16.14 .. +17.42], PASSES against
+  +21.2%. Native against plain, cycles (instructions): fib +26.9 (+65.6), sieve +18.4 (+31.5), hash +3.0 (+27.2), sort
+  +23.7 (+129.6), interpret -0.2 (+76.1), matrix +26.6 (+28.6), walk +17.2 (+81.4), search +23.9 (+24.3); calls +47.3
+  (+92.0). System-call part: 171.8 ns a call, the kernel's share 91.4, the back end's 80.3 ns [78.3 .. 84.0], PASSES
+  against 100 ns.
+- The same build over four new seeded layouts, by pairs (scripts/layouts.sh, run 16's scratch patch to the inside's
+  `place` with seeds 5 to 8, restored after; each seed's build against the unpadded one, 6 pairs a program,
+  layouts.log and layouts.jsonl, 03:14 to 03:21, load 3.3 to 6.8): compute part +19.03%, +18.25%, +17.83%, +17.75%;
+  the unpadded build in the same runs +18.53%, +18.90%, +18.12%, +18.45% (and +18.54% above). So all nine figures of
+  this build by pairs are under +21.2%, the worst (seed 5) by 2.17 points; the spread over these layouts is 1.28
+  points (matrix 0.955 to 1.009, fib 1.007 to 1.037 times the unpadded build's cycles).
+- Headroom, plainly: by the bar's command 4.20 points (its interval's top 3.78 under the line); by alternating pairs
+  2.66 points for the build as it is (2.3 to 3.1 over its five runs here) and 2.17 for the worst of its four other
+  layouts. Over the eight seeded layouts measured in runs 16 and 17 the spread was 1.3 to 2.1 points and in run 15 3.4
+  points (one layout of run 15's build over the line). So this build passes by pairs in every layout measured, with
+  headroom about the size of the larger spreads measured, not clearly more; the change of this run moved the
+  compute part by about 0.2 points by pairs.
+- Suites (scripts/mac.sh, suite/*.log, load 6 to 11): forced interrupts 12257 stops over 14 functions at 3 look-aheads,
+  0 failed (seed 0x14057b7ef767814f); the kernel test alike with the reference and the WebAssembly side, and with a stop
+  at every counted event alike at none and 256: bench 177,072 stops, hash 10937141521840235265, the same as runs 15 and
+  16, calls.c 3,004, jumptables 5,484 (17339527552300285948, as before); the differential test with new seeds, 0
+  failing each: none 32,554 cases (seed 0x8a3c51d2e1), bounded 16 32,522 (0x8a3c51d2e16), bounded 256 32,322
+  (0x8a3c51d2e256); busybox's 56 commands as the reference at none and 256, and at whole page with the kernel test
+  alike there too; floor (21 cases and 1 measurement, 0 failed), probe (0 forms of 16 bytes or fewer differ, 44 larger
+  as before), registers, exits (4 programs, 0 failed), carry, kept, the monitor's lib tests (9), the inside's and the
+  policy crate's tests, the literal check's tests; the literal check exits 0, the baseline unchanged at 8148 lines (the
+  inside 25, the monitor 1). On the rented
+  ARM64 machine: clippy with warnings denied for the translator with and without its native feature (all targets),
+  the translator's native unit tests (7), arm64's and guest-cpu's tests pass; the monitor's clippy (all targets) on
+  the Mac.
+
+What N4 still needs: the orchestrator's word on the bar (headroom below, "For the orchestrator"), on the table's size
+(run 15), and on loaded translations shared between processes (run 12); then the independent check.
 
 ## N4 run 16 (2026-11-20): a loop's aligned bases tested once; the layout luck measured again
 
@@ -144,7 +216,7 @@ Results:
   back end's 74.4 ns [72.7 .. 77.7], PASSES against 100 ns.
 - The same build over seeded layouts, by pairs (scripts/layouts.sh: a scratch patch to the inside's `place`, restored
   after, putting a seeded number of words, 0 to 15, before each piece; each seed's build against the unpadded one, 6
-  pairs a program, layouts.log and layouts.jsonl, 02:16 to 02:56, load 1.9 to 6.3): compute part with seeds 1 to 4
+  pairs a program, layouts.log and layouts.jsonl, 02:16 to 02:23, load 1.9 to 6.3): compute part with seeds 1 to 4
   +18.64%, +18.06%, +19.07%, +20.12%; the unpadded build in the same runs +18.98%, +18.42%, +18.83%, +18.89% (and
   +19.19% above). So every one of the nine figures of this build is under +21.2% by pairs, the worst layout by 1.08
   points and the unpadded build by about 2.3; the spread over layouts is about 2.1 points (seed 4: fib 1.061 and
@@ -2693,6 +2765,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 17: plan 3.2 had the walk leave the code after a branch back into the piece to a piece of its own, and
+  section 4 (run 9) counted a part ahead only by the one part it is entered from when that part goes on only to it.
+  As built, the code after any branch back is held when it comes back into the piece, and a part is counted ahead by
+  every part whose likely way it is, the other ways settling as exits do. Only where the adds sit moves (E, the
+  count at every counted event and every stop's position are unchanged, by the kernel test's hash); it trades no run
+  speed (search -2.4% cycles, the rest within 1%). Plan 3.2 and 4 say so.
+
 - N4 run 16: plan 3.1 put the page test in front of every access that may cross a page. As built, a straight-line
   part that loops to its own start tests the alignment of the bases no instruction of it writes once, at its start,
   and loops in a copy made without those tests; the part as made before is the way when a base is not aligned. It
@@ -2902,6 +2981,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 17: (1) The code after an inner loop's branch back is now held when it comes back into the piece, and each
+  part is counted ahead along its likely way (the way that stays in its innermost loop), its other way inside the
+  piece settling as an exit does; nothing a guest can see changes, the count at every counted event of the benchmark
+  set is the same as before (same hash), and search runs 2.4% fewer cycles. (2) The bar: its command passes at
+  +17.00% [+16.14 .. +17.42], the system-call part at 80.3 ns; by alternating pairs the build is at +18.54% (headroom
+  2.66 points) and four new seeded layouts of it at +17.75% to +19.03%, all under +21.2%, the worst by 2.17 points;
+  the spread over layouts was 1.3 to 2.1 points in runs 16 and 17 and 3.4 in run 15. Please rule whether that is a
+  pass. (3) Still open: the table's size (run 15) and loaded translations shared between processes (run 12).
 
 - N4 run 16: (1) A loop's aligned bases are now tested once before it, in a copy of the loop (nothing a guest can see
   changes; it costs code size, a copy of each such loop: busybox has 41 such loops, musl's loader 66, bench 2), and
