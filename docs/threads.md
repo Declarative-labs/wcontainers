@@ -1802,7 +1802,7 @@ kernel is withdrawn, 4.6.)
 - Choosing per program arrives with the suspend and resume calls, at `on_program_starting`, which the
   owner already named as the cheap moment to move a process: one thread, a fresh memory, few records.
 
-## 7. The WebAssembly output for a group whose threads run at once
+## 7. The WebAssembly output for a process whose threads run at once
 
 ### 7.1 Today
 
@@ -1857,25 +1857,27 @@ a process never changes form while it is in a kernel, which was the main cost of
 What two forms mean elsewhere:
 - **Which form a process runs.** The Parallel form if it was given `Parallel`, else the Serial form. It
   is fixed while the process is in a kernel. `resume` makes the instances again in any case.
-- **A group forced to `Serial`** (a neighbour's config, or the executor's limits of 7.4 and section 9)
-  keeps running the Parallel form where it has it. That is correct: the Parallel form is right under
+- **A process that runs as `Serial` with `Parallel` code** (the executor's limits of 7.4 and section 9,
+  or (`Parallel`, `External`) until its form is built; section 3) keeps running the Parallel form. That is correct: the Parallel form is right under
   both orderings, and only pays for it. Counted "Parallel form run under Serial".
 - **A process with one thread, given `Parallel`**, runs the Parallel form from its start. Its byte is
   zero (7.3), so a barrier or a 128 bit atomic costs it one test, and the compiler setting costs it the
-  0.0% to 1.8% above. Rejected: the Serial form until the group's second thread, then the Parallel
+  0.0% to 1.8% above. Rejected: the Serial form until the process's second thread, then the Parallel
   form. It spares programs that never start a thread. But every runtime that starts threads at once
   (Java, Node, Go) would have its start-up code translated and compiled twice, and it is one more path.
 - **A memory has one form.** Processes that own one memory together (`CLONE_VM`) run the Parallel form
   exactly when every one of them was given `Parallel`. It is worked out again when the owners change,
-  and a change is made with the memory's threads called in.
+  and a change is made with the memory's threads called in. With `Serial` code all their threads take
+  turns, by the rule of section 3: that is the one case where a neighbour's ordering reaches a
+  process, because a second form on one memory is not possible.
 - **Two wasmtime engines** in the executor, one for each form. They differ in one compiler setting
   (7.6). A process's stores, modules and memory belong to one engine.
 
 **The cache key** (wt/lib.rs:107-115, :183) changes once for the shared import and its declared maximum,
 through `OUTPUT_FORM`, and gains two fields:
 - the form by ordering, Serial or Parallel;
-- whether the code holds the progress count, which is exactly "the guarantee in force is `Exact`"
-  (sections 2 and 3). The count is the translator track's to build and measure; this plan only fixes
+- whether the code holds the progress count, which is exactly "the process was given `Exact`" (section
+  2). A neighbour's guarantee never changes it, so no process is translated again for a neighbour. The count is the translator track's to build and measure; this plan only fixes
   that it is a field of the key and never a switch of its own.
 So a program has up to four entries at one look-ahead. Two more values would join the first field if
 they are ever built: the form that orders atomic instructions for (`Parallel`, `External`) (4.6), and
@@ -1922,19 +1924,22 @@ What follows from a shared import:
     reaches its thread block today (wt/lib.rs:2271-2276).
   - What it keeps per process (page records, code lists, shown blocks, wt/lib.rs:451-474) goes behind
     that process's own lock.
-    - In a group in force `Serial` the worker that runs the thread takes it when it enters
+    - For a thread that runs as `Serial` the worker that runs it takes it when it enters
       `Execution::run` and keeps it until it leaves, as it takes the store out today
       (wt/lib.rs:2245-2251). Its hooks use what it already has. It asks for the kernel's lock under it
       at every system call. That is the one exception to the lock order (4.5), and it is safe because
       nobody who has the kernel's lock ever waits for this lock: a worker that does not have it only
       ever tries it. Six rules make every try succeed, and the try checks them:
-      - the kernel reaches a `Serial` group from outside only after calling it in (4.4 item 5);
-      - two groups become one `Serial` group only once every other running thread of both has come in
-        (section 3). So a `Serial` group never has two workers that each hold a process's lock of
-        it for a running thread;
+      - the kernel reaches a memory that runs as `Serial` from outside only after calling it in (4.4
+        item 5);
+      - two memories come to overlap, with a side that runs as `Serial`, only once every handed-out
+        thread of the other side has come in (section 3), and a task that runs as `Serial` is handed
+        out only when no overlapper is (section 3, rule 1). So two overlapping memories never have
+        two workers that each hold a process's lock for a running thread where one side runs as
+        `Serial`;
       - **a worker lets its process's lock go before it lets the kernel's lock go, whenever its
         thread is not told to carry on.** A thread is told to carry on only when it is handed out
-        again in the same entry, and a thread of a group that is called in is not handed out. So
+        again in the same entry, and a thread of a memory that is called in is not handed out. So
         whoever takes the kernel's lock next finds no lock held for a thread that has come in.
         How the order is kept: the answer that tells the thread to leave hands the executor the
         kernel's handle with it (`Carry::Leave(why, entered)`, 4.2). The executor puts the thread's
@@ -1944,44 +1949,45 @@ What follows from a shared import:
         plan's earlier form had the thread let the lock go when it found its asked-in bit set, before
         the entry. Its fourth check showed the gap: the bit can be set after that look, while the
         thread waits for the kernel's lock. The thread then came in with the lock, the kernel woke
-        the call that wanted the group, and that call could run on another worker before the lock
+        the call that wanted the memory, and that call could run on another worker before the lock
         was let go. The rule now does not look at the bit;
       - **a `Cpu` call made inside an entry uses the lock when the worker that makes the entry has
         it.** That covers the thread's own calls. It also covers what else the kernel does in that
-        entry: the call that wanted the group in may run again right there, on the worker of the
+        entry: the call that wanted the memory in may run again right there, on the worker of the
         thread that came in last, and reach that thread's memory. That worker is in the kernel, not
-        in guest code, and no other thread of the group runs;
+        in guest code, and no other thread of the memory runs;
       - the kernel does a thread's work only when the thread is chosen for a processor (4.3). So a
-        woken call of a `Serial` group's thread never runs again, and no signal frame is written to
-        its stack, while a sibling runs and its worker has the lock. That holds for a waiter too: it
-        is chosen whatever is called in, but never while a thread of its `Serial` group runs (4.5);
+        woken call of a thread that runs as `Serial` never runs again, and no signal frame is written
+        to its stack, while an overlapper runs and its worker has the lock. That holds for a waiter
+        too: it is chosen whatever is called in, but never while an overlapper is handed out (4.5);
       - **a write to a block reaches every memory that shows it, and each of their locks is free or
         the worker's own.** `block_write` puts the bytes in the block and in every memory that shows
         them (wt/lib.rs:1409-1433). It has two callers, and neither leaves a memory out:
         - the copies a `Serial` thread's written shared pages get when it leaves (`flush`,
           wt/lib.rs:1341-1388, :1376). The block is writable through a mapping, so every memory that
-          shows it is of the writer's own group (section 3). That group is `Serial` and its one
-          running thread is the writer, so the other memories' locks are free. This is the ordinary
+          shows it overlaps the writer's (section 3). The writer runs as `Serial`, so none of them
+          is handed out (section 3, rule 1), and their locks are free. This is the ordinary
           case of a parent and its forked child sharing a mapping, and it stays as today (7.4);
         - a write of the kernel's, for a `write` to a file that memories map. A memory of the
-          caller's group has its lock free or held by this worker. A memory of another `Serial`
-          group has been called in first (4.5), so its lock is free. A memory in force `Parallel`
+          caller's process has its lock free or held by this worker. A memory of another process
+          that runs as `Serial` has been called in first (4.5), so its lock is free. A memory that
+          runs as `Parallel`
           takes the bytes with its stop lock shared (4.5).
         The plan's earlier form said such a walk "skips every other memory in force `Serial`". As a
         rule about where bytes are written that was wrong, and it contradicted 7.4 and 4.5: the
         fifth check showed that a child would stop seeing its parent's stores, and that a file's
-        new bytes would not reach a group called in to receive them. The reason given there holds
+        new bytes would not reach a memory called in to receive them. The reason given there holds
         for a memory as a **source** only, and that is all that is left of it: nobody reads a
-        `Serial` memory of another group to bring a block up to date. A `read` of the file takes the
-        block's bytes as they are, which hold all that group wrote before its last entry (7.4);
+        `Serial` memory of another process to bring a block up to date. A `read` of the file takes
+        the block's bytes as they are, which hold all that memory wrote before its last entry (7.4);
       - so on a worker that does not have it, taking a `Serial` process's lock is a try-lock. A
         failure is a bug, and it panics, naming both threads. The stress schedule of section 12 runs
         with it, and one test there asks a thread in while it waits for the kernel's lock.
-    - In a group in force `Parallel` each hook takes it for as long as it needs it, and never asks for
+    - For a thread that runs as `Parallel` each hook takes it for as long as it needs it, and never asks for
       the kernel's lock while it has it.
   - A block's bytes go behind that block's own lock. `block_write` finds who shows a block by going
-    through every process (wt/lib.rs:1413-1414). It may no longer read the records of processes of other
-    groups, so each block keeps the list of the memories that show it.
+    through every process (wt/lib.rs:1413-1414). It may no longer read the records of other processes,
+    so each block keeps the list of the memories that show it.
   - Order: the kernel's lock, then a stop lock, then a process's lock, then a block's, with the one
     exception above.
 
@@ -1991,18 +1997,21 @@ All of this section is about the Parallel form. The Serial form keeps today's tr
 these instructions.
 
 **The byte.** Each process has one byte in its state memory, at a place the translator's contract fixes
-(suggested name `runs_in_parallel`). It is 1 when the process's group is in force `Parallel` and has
-more than one thread, else 0. The Parallel form reads it with a plain load, as it reads its stop word
+(suggested name `runs_in_parallel`). It is 1 when the process's memory runs as `Parallel` and has more
+than one thread, else 0. It follows the memory's own threads, not its overlappers (the mixed-ordering
+check: in the form before it followed the group): a `Serial` task beside it never runs at the same
+time, and its code does not read the byte. The Parallel form reads it with a plain load, as it reads its stop word
 (tr/code.rs:1300). It is what lets a process that has one thread, or was forced to `Serial`, run the
 Parallel form at nearly the Serial form's speed.
 
-The kernel tells the executor each memory's config in force and whether its group has more than one
-thread (suggested `Cpu::set_execution_config(memory, thread_ordering, replay_determinism,
-several_threads)`). From it the executor sets the byte, and knows which primitive of 4.5 may reach the
-memory: a group stop whenever the ordering is `Parallel`, with one thread too, because a file that
-changes size reaches the memory from another process. The call is made inside the entry that makes the
-group's second thread or changes its config in force, when every other thread of the memory is stopped
-or about to start.
+The kernel tells the executor each memory's form of code, whether it runs as `Serial`, whether a
+process that owns it was given `Exact`, and whether it has more than one thread (suggested
+`Cpu::set_execution_config(memory, thread_ordering, replay_determinism, several_threads)`, with the
+ordering it runs as). From it the executor sets the byte, and knows which primitive of 4.5 may reach the
+memory: a group stop whenever it runs as `Parallel`, with one thread too, because a file that changes
+size reaches the memory from another process. The call is made inside the entry that makes the
+memory's second thread or changes how it runs, when every other thread of the memory is stopped or
+about to start.
 
 - **ARM64's atomic forms listed in 7.1: nothing changes.** They are atomic operations already, in both
   forms.
@@ -2027,7 +2036,7 @@ or about to start.
     wasmtime and 6.1 ns in Node on this Mac, 19 ns and 16 ns on the x86 laptop. The test with the byte
     zero: 0.17 and 0.12 ns on this Mac, 0.8 and 0.18 ns on the laptop.
   - On an x86 host the two weaker kinds of `dmb` need nothing, and they still pay `mfence` in a parallel
-    group, because the output is the same for every host. How often real programs run them is T3's
+    process, because the output is the same for every host. How often real programs run them is T3's
     measurement.
 - **Exclusives are a compare and exchange.** The store succeeds when memory holds the value the load saw,
   even if another thread changed it and changed it back. Hardware would fail that store. A program can
@@ -2059,12 +2068,12 @@ or about to start.
     lock shared and the hook has it exclusively. Counted "memory with one thread stopped for a write
     from outside".
     - It costs that write one stop of one thread (230 ns on average by the Chrome measurement of
-      4.5), and only when the target is in force `Parallel`, has one thread and shows the pages
+      4.5), and only when the target runs as `Parallel`, has one thread and shows the pages
       written.
-    - Rejected: the byte at 1 whenever the ordering in force is `Parallel`. Every barrier and every
+    - Rejected: the byte at 1 whenever the memory runs as `Parallel`. Every barrier and every
       128 bit atomic of a process with one thread would then pay the fence and the hook, which is
       what the byte is there to spare.
-  Exact, and slow: counted "128 bit atomic made with the group stopped". How often real programs run
+  Exact, and slow: counted "128 bit atomic made with the memory stopped". How often real programs run
   them is measured in T3.
 - **A dependency the WebAssembly compiler removes.** Arm orders two loads when the second one's address
   is computed from the first one's value, and that holds even when the computation cannot change the
@@ -2104,20 +2113,31 @@ learned from it holds until its thread's next stop (tr/contract.rs:17-27). So:
 block carries a write lock; the first write lifts it and marks the page written; and before the kernel
 sees anything, at every exit, written pages are copied to the block and to every other place that shows
 them, and locked again (docs/runtime.md section 8; `flush`, wt/lib.rs:1341-1388, called at :2322). That
-is exact only while one thread of everything that shows the page runs at a time. Two things follow.
+is exact only while one thread of everything that shows the page runs at a time. Three things follow.
 
-- **A group in which a page of a block that is writable through a mapping is shown in more than one
-  place runs `Serial` on this executor**, whatever was asked. More than one place means two memories, or
-  one memory twice (a ring buffer mapped twice side by side). The executor states this as a fact about
-  itself (suggested `Cpu::parallel_limits()`: blocks are shown by copying; and, for section 9, plain
-  accesses are ordered more weakly than the guest's), and the kernel, which knows every mapping, applies
-  it (section 3). Counted "group kept Serial: a shared page is shown in two places". The native executor
+- **Tasks whose memories show a page of a block that is writable through a mapping in more than one
+  place run as `Serial` on this executor**, whatever was asked, but for the next item. More than one
+  place means two memories, or one memory twice (a ring buffer mapped twice side by side). The executor
+  states this as a fact about itself (suggested `Cpu::parallel_limits()`: blocks are shown by copying;
+  and, for section 9, plain accesses are ordered more weakly than the guest's), and the kernel, which
+  knows every mapping, applies it (section 3). Counted "task kept Serial: a shared page is shown in two
+  places".
+- **A `Serial` task beside `Parallel` ones can alternate with them** (the mixed-ordering check, for
+  `MAP_SHARED` and `shmat`, not `CLONE_VM`). Under section 3's rule A, the task that runs as `Serial`,
+  and the `Parallel` memories B that share the block with it are never handed out at once. So at each
+  switch to A every thread of B has come in (rule 2), and B's written shared pages are copied from B's
+  memory to the block and on to A's memory before A is handed out; at A's exits its written pages go
+  to the block and into B's memory as today, with none of B running. The two phases never overlap, so
+  one copy each way keeps the places in step. `Cpu::parallel_limits()` then says "can alternate",
+  which is not "Serial only". B's threads run together in their phase from B's one place. Expected to
+  work, not built (known fault 8); until it is, A and B all run as `Serial`. It costs a copy of the
+  dirty shared pages at every switch, not measured. The native executor
   maps the same frames in each place (native.md section 5.3) and has no such limit. A real shared mapping
   under wasmtime is possible only where the host's pages are no larger than the guest's (docs/runtime.md
   section 8: this Mac's are 16 KiB); it is not in this plan.
-- **In a group in force `Parallel`, a written shared page is not locked again at a turn's end.** Such a
-  group has every such page in one place, so the memory's own bytes are the only ones a guest thread
-  can see. Locking the page again would lower a permission, which is a group stop, at every system call
+- **In a memory that runs as `Parallel`, a written shared page is not locked again at a turn's end.**
+  Such a memory has every such page in one place, and no other place is in use while its threads run,
+  so the memory's own bytes are the only ones a guest thread can see. Locking the page again would lower a permission, which is a group stop, at every system call
   of every thread that had written a shared page (SQLite's shared index, a shared memory file, shared
   anonymous memory). Instead the page stays written, and the executor copies it to the block when the
   block's bytes are asked for: `shared_read` (a `read` of the file, kernel/fs/mod.rs:585), a new
@@ -2132,14 +2152,15 @@ is exact only while one thread of everything that shows the page runs at a time.
     again.
   - A `write` to the file still goes through `block_write`, into the block and into the memory, as any
     write of the kernel's does (4.5).
-  - When a second place comes to show a page, the group is called in, its written pages are copied and
-    locked, and it runs `Serial` from then on. Counted "shared pages locked again: a second place shows
-    them". `Serial` groups keep today's copies at every exit unchanged.
+  - When a second place comes to show a page, the memory is called in, its written pages are copied
+    and locked, and it runs as `Serial` from then on, or alternates by the item above when that is
+    built and the other place's task runs as `Serial`. Counted "shared pages locked again: a second
+    place shows them". Memories that run as `Serial` keep today's copies at every exit unchanged.
 
 ### 7.5 Code a program writes while another thread runs it
 
-- **Dropping code** stops the memory's other threads by 4.5's rule (a group stop, or a call-in where the
-  group is in force `Exact`), and every other thread of the memory gives up its frames before it
+- **Dropping code** stops the memory's other threads by 4.5's rule (a group stop, or a call-in where a
+  process that owns the memory was given `Exact`), and every other thread of the memory gives up its frames before it
   carries on. ARM64 announces a change with `ic ivau`, which is already a hook
   (arm64/memory.rs:375-383); it is made a stop point (4.5). x86 does not announce; its code pages carry
   a write lock, and the x86 plan already says the other threads are stopped first (x86 plan lines
@@ -2159,15 +2180,17 @@ is exact only while one thread of everything that shows the page runs at a time.
   comes later faults into a drop, which moves the count.
   Rejected: the stop lock or the process's lock kept from reading the bytes to installing the pieces.
   Every group stop of the memory, and every other hook of the process, would then wait for a compile.
-- **A drop reaches the caller's group only.** Today `ic ivau` also drops the same line in every other
-  memory that shows the block (wt/lib.rs:2008-2010). Across groups that is not needed and not allowed.
-  Memories of different groups share only blocks that no mapping may write (section 3), so no guest
-  store can have changed their bytes; and the executor must not change a `Serial` group's code from
+- **A drop reaches the caller's memory only.** Today `ic ivau` also drops the same line in every other
+  memory that shows the block (wt/lib.rs:2008-2010). Across memories that is not needed and not
+  allowed. A block of code that a mapping may write would make the memories overlap, and a guest store
+  into it reaches the other places through the block, where the write lock of 7.4 and the kernel's
+  copy drop the code as for any write; a block no mapping may write cannot have changed through a
+  guest store; and the executor must not change the code of a memory that runs as `Serial` from
   outside it (4.4 item 5). Such a block's bytes change only through a `write` to the file, which is the
   kernel's entry (4.5).
-  - **This one is T1's, not T2's.** Groups already run at the same time in T1. A hook that walked
-    every memory showing the block would reach the process records of another group, which that
-    group's running thread has locked for its whole stay (7.2). The try-lock would panic.
+  - **This one is T1's, not T2's.** Processes already run at the same time in T1. A hook that walked
+    every memory showing the block would reach the process records of another process, which that
+    process's running thread has locked for its whole stay (7.2). The try-lock would panic.
 - **Adding code needs no stop.** Today new code is instantiated in every thread of the process at once
   (docs/runtime.md section 9). With one store per thread, a thread cannot touch another's store. Instead:
   the new module goes on the process's list, its slots are written to the array of slots last, and each
@@ -2177,7 +2200,7 @@ is exact only while one thread of everything that shows the page runs at a time.
   stop lock shared, as any install is.
 - **Growing the tables.** A lookup beyond a thread's table would trap, so every thread's table must cover
   every slot written. Tables grow by doubling, each thread growing its own at a group stop, so a stop for
-  this happens only when the process's slot count crosses a doubling. Counted "group stopped to grow the
+  this happens only when the process's slot count crosses a doubling. Counted "memory stopped to grow the
   lookup tables".
 
 A runtime that compiles code while its other threads run (Java, Node) pays a group stop at each change of
