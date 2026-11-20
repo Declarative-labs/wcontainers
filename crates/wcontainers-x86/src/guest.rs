@@ -916,7 +916,7 @@ impl Guest for X86_64 {
         blob: &[u8],
         _code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Instruction)>,
-    ) -> Option<Vec<u64>> {
+    ) -> Option<JumpTable> {
         crate::habits::jump_table(at, reg, blob, before)
     }
 

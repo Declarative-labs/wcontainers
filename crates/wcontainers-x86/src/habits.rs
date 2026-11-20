@@ -7,7 +7,7 @@ use crate::flags::{Condition, Test};
 use crate::guest::ALL_FLAGS;
 use crate::operand::{General, general, jcc, memory_bytes};
 use iced_x86::{Mnemonic, OpKind, Register};
-use wcontainers_guest_cpu::{Comparison, Effects, Relation, Value};
+use wcontainers_guest_cpu::{Comparison, Effects, JumpTable, Relation, Value};
 
 /// How far back a switch's instructions are looked for.
 const LOOK_BACK: usize = 64;
@@ -69,7 +69,7 @@ pub fn jump_table(
     reg: u8,
     blob: &[u8],
     before: impl Fn(u64) -> Option<(u64, Instruction)>,
-) -> Option<Vec<u64>> {
+) -> Option<JumpTable> {
     let mut walk = Vec::new();
     let mut o = at;
     while walk.len() < LOOK_BACK {
@@ -164,7 +164,10 @@ pub fn jump_table(
             targets.push(target);
         }
     }
-    Some(targets)
+    Some(JumpTable {
+        targets,
+        read: table..end,
+    })
 }
 
 /// See `Guest::branch_comparison`.

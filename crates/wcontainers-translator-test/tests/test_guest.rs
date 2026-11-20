@@ -21,10 +21,10 @@ use wasmtime::{
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_guest_cpu::{
     Access, AccessBytes, AccessKind, Base, Bit, Class, CodeChanges, Comparison, Effects, Emitter,
-    Flow, FlowKind, GUEST_REASONS, Guest, GuestId, HookBody, HookDone, HookType, Induction, Locals,
-    MemoryAccess, MemoryFault, Personality, Reason as Runtime, Registers, ReturnAddress, StackMove,
-    StateBytes, SyscallRegisters, Target, Through, TrapDetail, TrapKind, TrapPc, Ty, Value,
-    WriteBack,
+    Flow, FlowKind, GUEST_REASONS, Guest, GuestId, HookBody, HookDone, HookType, Induction,
+    JumpTable, Locals, MemoryAccess, MemoryFault, Personality, Reason as Runtime, Registers,
+    ReturnAddress, StackMove, StateBytes, SyscallRegisters, Target, Through, TrapDetail, TrapKind,
+    TrapPc, Ty, Value, WriteBack,
 };
 use wcontainers_translator::contract::{self, permission_byte};
 use wcontainers_translator::{LookAhead, Optimise, Sites, Translation, thread_module, translate};
@@ -720,11 +720,17 @@ impl<const F: bool> Guest for Test<F> {
         _blob: &[u8],
         code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Op)>,
-    ) -> Option<Vec<u64>> {
+    ) -> Option<JumpTable> {
         match before(at)? {
             (_, Op::Add(r, _)) if r == reg => {
                 let targets: Vec<u64> = (1..=4).map(|k| at + 2 * k).collect();
-                targets.iter().all(|t| code.contains(t)).then_some(targets)
+                targets
+                    .iter()
+                    .all(|t| code.contains(t))
+                    .then_some(JumpTable {
+                        targets,
+                        read: at..at,
+                    })
             }
             _ => None,
         }

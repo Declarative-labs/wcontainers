@@ -172,8 +172,8 @@ pub trait Guest: Personality {
         code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Self::Instruction)>,
     ) -> Option<u64>;
-    /// The targets of the jump through `reg` at blob offset `at`, made from a switch statement, as blob
-    /// offsets, each once, in table order. `before(o)` is the function's instruction that falls through
+    /// The jump table of the jump through `reg` at blob offset `at`, made from a switch statement: its
+    /// targets as blob offsets, each once, in table order, and the blob bytes it was read from. `before(o)` is the function's instruction that falls through
     /// into offset `o`, with its offset, or `None` at the start of a block more than one edge enters: the
     /// way back for a CPU whose code cannot be decoded backwards.
     fn jump_table(
@@ -182,7 +182,7 @@ pub trait Guest: Personality {
         blob: &[u8],
         code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Self::Instruction)>,
-    ) -> Option<Vec<u64>>;
+    ) -> Option<JumpTable>;
     /// Plain computation, which the flags' liveness may look past: registers from registers only (no memory,
     /// hook, control, trap or leaving).
     fn plain(i: &Self::Instruction) -> bool;
@@ -557,6 +557,14 @@ impl Relation {
             other => other,
         }
     }
+}
+
+/// A switch's jump table: the targets, as blob offsets, each once in table order, and the blob bytes read
+/// for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JumpTable {
+    pub targets: Vec<u64>,
+    pub read: Range<u64>,
 }
 
 /// How the stack pointer moves at an instruction: by a known amount (before or after its access), or to

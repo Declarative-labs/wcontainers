@@ -3,7 +3,7 @@
 
 use crate::Arm64;
 use crate::instruction::*;
-use wcontainers_guest_cpu::Guest;
+use wcontainers_guest_cpu::{Guest, JumpTable};
 
 /// Where a jump through a register made from a switch statement can go: a bound check (`cmp` with an
 /// immediate, then `b.hi` or `b.hs`), a table of 1, 2 or 4 byte entries loaded from a known address, and a
@@ -14,7 +14,7 @@ pub fn jump_table(
     before: &[(u64, Instruction)],
     rn: Reg,
     read: impl Fn(u64, u8) -> Option<u64>,
-) -> Option<Vec<u64>> {
+) -> Option<JumpTable> {
     let add = last_def(before, rn, before.len())?;
     let Instruction::AddSub {
         width: Width::X64,
@@ -74,7 +74,10 @@ pub fn jump_table(
             targets.push(target);
         }
     }
-    Some(targets)
+    Some(JumpTable {
+        targets,
+        read: table..table + count * u64::from(bytes),
+    })
 }
 
 /// The index of the last instruction before `end` that writes `r`.

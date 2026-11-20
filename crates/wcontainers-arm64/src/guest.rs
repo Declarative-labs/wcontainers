@@ -13,8 +13,8 @@ use wasm_encoder::{InstructionSink, ValType};
 use wcontainers_abi::RegisterBlock as B;
 use wcontainers_guest_cpu::{
     AccessBytes, AccessKind, Base, Bit, Class, CodeChanges, Comparison, Effects, Extend, Flow,
-    FlowKind, Guest, GuestId, HookBody, HookDone, HookType, Index, Induction, Locals, MemoryAccess,
-    MemoryFault, Reason, Registers, Relation, ReturnAddress, StackMove, StateBytes,
+    FlowKind, Guest, GuestId, HookBody, HookDone, HookType, Index, Induction, JumpTable, Locals,
+    MemoryAccess, MemoryFault, Reason, Registers, Relation, ReturnAddress, StackMove, StateBytes,
     SyscallRegisters, Through, TrapDetail, TrapKind, TrapPc, Ty, Value, WriteBack,
 };
 
@@ -683,7 +683,7 @@ impl Guest for Arm64 {
         blob: &[u8],
         code: Range<u64>,
         _before: impl Fn(u64) -> Option<(u64, Instruction)>,
-    ) -> Option<Vec<u64>> {
+    ) -> Option<JumpTable> {
         let first = at.saturating_sub(4 * 64).max(code.start);
         let before: Vec<(u64, Instruction)> = (first..at)
             .step_by(4)

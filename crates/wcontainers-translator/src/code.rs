@@ -81,7 +81,7 @@ pub enum Error {
 pub struct Translation {
     pub modules: Vec<CodeModule>,
     /// The blob's bytes the translation was made from, as sorted ranges of blob offsets that neither
-    /// overlap nor touch: every instruction it decoded. Its code is right only while these bytes stay as
+    /// overlap nor touch: every instruction it decoded and every jump table it read. Its code is right only while these bytes stay as
     /// they were.
     pub read: Vec<Range<u64>>,
     /// How many of the pieces in the lookup table each means found, by [`Means`] number.
@@ -377,7 +377,12 @@ fn translate_within<G: Guest>(
         LookAhead::Bounded(0) => return Err(Error::NoBound),
         LookAhead::None | LookAhead::Bounded(1) => {
             let found = none_found(&blob_code, starts, look_ahead == LookAhead::None);
-            read = spans(found.iter().map(|(o, d)| (*o, d.length)));
+            read = spans(
+                found
+                    .iter()
+                    .map(|(o, d)| *o..*o + u64::from(d.length))
+                    .collect(),
+            );
             let entries: Vec<u64> = found.iter().map(|f| f.0).collect();
             for entry in &entries {
                 let means = if given.contains(entry) {
@@ -406,7 +411,7 @@ fn translate_within<G: Guest>(
                 let first = planned.emit(0..entries.len());
                 let over: Vec<usize> = (0..first.len()).filter(|&i| first[i].too_large()).collect();
                 if over.is_empty() {
-                    read = spans(planned.decoded());
+                    read = spans(planned.read());
                     // Starts added to cut a function too large for an engine count as cuts.
                     for entry in &entries {
                         let means = match planned.means(*entry) {
@@ -432,11 +437,8 @@ fn translate_within<G: Guest>(
     })
 }
 
-/// The bytes of instructions given by offset and length, as sorted ranges that neither overlap nor touch.
-fn spans(instructions: impl Iterator<Item = (u64, u8)>) -> Vec<Range<u64>> {
-    let mut all: Vec<Range<u64>> = instructions
-        .map(|(offset, length)| offset..offset + u64::from(length))
-        .collect();
+/// Byte ranges as sorted ranges that neither overlap nor touch.
+fn spans(mut all: Vec<Range<u64>>) -> Vec<Range<u64>> {
     all.sort_unstable_by_key(|r| r.start);
     let mut spans: Vec<Range<u64>> = Vec::new();
     for r in all {

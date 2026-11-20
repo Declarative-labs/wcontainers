@@ -52,6 +52,7 @@ pub(crate) fn plan<'a, G: Guest>(
     let mut finder = Finder {
         code,
         decoded: Decodes::default(),
+        tables_read: Default::default(),
         means: FxHashMap::default(),
     };
     let functions = match bound {
@@ -119,9 +120,13 @@ impl<G: Guest> Planned<'_, G> {
         self.functions.iter().map(|f| f.entry).collect()
     }
 
-    /// Every instruction decoded while finding and planning, by offset and length.
-    pub(crate) fn decoded(&self) -> impl Iterator<Item = (u64, u8)> + '_ {
-        self.finder.decoded.iter().map(|(&o, d)| (o, d.length))
+    /// Every blob byte read while finding and planning: the instructions decoded and the jump tables.
+    pub(crate) fn read(&self) -> Vec<std::ops::Range<u64>> {
+        let decoded = self.finder.decoded.iter();
+        let mut read: Vec<std::ops::Range<u64>> =
+            decoded.map(|(&o, d)| o..o + u64::from(d.length)).collect();
+        read.extend(self.finder.tables_read.lock().unwrap().iter().cloned());
+        read
     }
 
     /// What made an entry one: [`Means::Given`] for every start of the plan.
@@ -234,6 +239,8 @@ impl Function {
 struct Finder<'a, G: Guest> {
     code: &'a Code<'a, G>,
     decoded: Decodes<G>,
+    /// The blob bytes of every jump table read.
+    tables_read: std::sync::Mutex<Vec<std::ops::Range<u64>>>,
     /// What made each function's entry one, where it is not a start given.
     means: FxHashMap<u64, Means>,
 }
@@ -602,11 +609,12 @@ impl<G: Guest> Finder<'_, G> {
         r: G::Reg,
         before: impl Fn(u64) -> Option<(u64, G::Instruction)>,
     ) -> Option<Vec<u64>> {
-        let targets = G::jump_table(offset, r, self.code.blob, self.code.range.clone(), before)?;
-        targets
-            .iter()
-            .all(|&t| self.code.inside(t))
-            .then_some(targets)
+        let table = G::jump_table(offset, r, self.code.blob, self.code.range.clone(), before)?;
+        if !table.targets.iter().all(|&t| self.code.inside(t)) {
+            return None;
+        }
+        self.tables_read.lock().unwrap().push(table.read);
+        Some(table.targets)
     }
 }
 
