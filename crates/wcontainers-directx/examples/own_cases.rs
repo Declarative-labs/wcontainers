@@ -652,6 +652,311 @@ fn main() -> windows::core::Result<()> {
             }
             print("clear view rects", &target, 4);
             print("clear view storage", &stored, 4);
+
+            let mut options = D3D11_FEATURE_DATA_D3D11_OPTIONS::default();
+            let r = unsafe {
+                device.CheckFeatureSupport(
+                    D3D11_FEATURE_D3D11_OPTIONS,
+                    (&raw mut options).cast(),
+                    size_of_val(&options) as u32,
+                )
+            };
+            println!(
+                "options {:#010x} ClearView {}",
+                code(r),
+                options.ClearView.as_bool()
+            );
+
+            // Rectangles of storage views: floats, integers (above their range, fractions,
+            // NaN), and targets of an integer format, below their range too. Negative values
+            // into integer storage views are left out: the RTX 3080 does not clamp them.
+            let odd = [300.0, -5.0, 2.7, f32::NAN];
+            for (name, format, bind, value, texel) in [
+                (
+                    "storage rects float",
+                    DXGI_FORMAT_R32_FLOAT,
+                    D3D11_BIND_UNORDERED_ACCESS,
+                    [0.75, 0.0, 0.0, 0.0],
+                    4,
+                ),
+                (
+                    "storage rects unorm",
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    D3D11_BIND_UNORDERED_ACCESS,
+                    [1.5, 0.5, -1.0, 0.25],
+                    4,
+                ),
+                (
+                    "storage rects snorm",
+                    DXGI_FORMAT_R8G8B8A8_SNORM,
+                    D3D11_BIND_UNORDERED_ACCESS,
+                    [-1.0, 0.5, 2.0, -0.25],
+                    4,
+                ),
+                (
+                    "storage rects uint",
+                    DXGI_FORMAT_R8G8B8A8_UINT,
+                    D3D11_BIND_UNORDERED_ACCESS,
+                    [300.0, 2.7, f32::NAN, 0.0],
+                    4,
+                ),
+                (
+                    "storage rects sint",
+                    DXGI_FORMAT_R16G16B16A16_SINT,
+                    D3D11_BIND_UNORDERED_ACCESS,
+                    [40000.0, 3.9, 0.0, 7.0],
+                    8,
+                ),
+                (
+                    "storage rects r32 uint",
+                    DXGI_FORMAT_R32_UINT,
+                    D3D11_BIND_UNORDERED_ACCESS,
+                    [5e9, 0.0, 0.0, 0.0],
+                    4,
+                ),
+                (
+                    "target rects uint",
+                    DXGI_FORMAT_R8G8B8A8_UINT,
+                    D3D11_BIND_RENDER_TARGET,
+                    odd,
+                    4,
+                ),
+            ] {
+                let zeros = vec![0u8; (8 * 4 * texel) as usize];
+                let t = make(&at(format, bind), Some((&zeros, 8 * texel)))?;
+                unsafe {
+                    if bind == D3D11_BIND_RENDER_TARGET {
+                        context1.ClearView(&rtv(&t).unwrap(), &value, Some(&rects));
+                    } else {
+                        context1.ClearView(&uav(&t).unwrap(), &value, Some(&rects));
+                    }
+                }
+                print(name, &t, texel);
+            }
+
+            // Rectangles of a storage view of both layers of a two-layer array.
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: 8,
+                Height: 4,
+                MipLevels: 1,
+                ArraySize: 2,
+                Format: DXGI_FORMAT_R32G32_FLOAT,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_UNORDERED_ACCESS.0 as u32,
+                ..Default::default()
+            };
+            let mut array = None;
+            let zeros = [0u8; 8 * 4 * 8];
+            let layers = [D3D11_SUBRESOURCE_DATA {
+                pSysMem: zeros.as_ptr().cast(),
+                SysMemPitch: 8 * 8,
+                SysMemSlicePitch: 0,
+            }; 2];
+            unsafe { device.CreateTexture2D(&desc, Some(layers.as_ptr()), Some(&mut array))? };
+            let array = array.unwrap();
+            let mut view = None;
+            unsafe {
+                device.CreateUnorderedAccessView(&array, None, Some(&mut view))?;
+                context1.ClearView(&view.unwrap(), &[0.5, -2.0, 0.0, 0.0], Some(&rects));
+            }
+            let layer = make(&at(DXGI_FORMAT_R32G32_FLOAT, D3D11_BIND_FLAG(0)), None)?;
+            let whole = make(
+                &at(DXGI_FORMAT_R8G8B8A8_UINT, D3D11_BIND_RENDER_TARGET),
+                None,
+            )?;
+            unsafe { context.ClearRenderTargetView(&rtv(&whole).unwrap(), &odd) };
+            print("target whole uint", &whole, 4);
+            for l in 0..desc.ArraySize {
+                unsafe { context.CopySubresourceRegion(&layer, 0, 0, 0, 0, &array, l, None) };
+                print(&format!("storage rects layer {l}"), &layer, 8);
+            }
+
+            // Views of buffers and of 1D and 3D textures, holding 0x11 bytes before, cleared
+            // whole, then the textures' rectangles.
+            use windows::Win32::Foundation::RECT;
+            let filled = [0x11u8; 64];
+            let data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: filled.as_ptr().cast(),
+                SysMemPitch: 16,
+                SysMemSlicePitch: 32,
+            };
+            let unordered = D3D11_BIND_UNORDERED_ACCESS.0 as u32;
+            let mut buffer = None;
+            let mut buffer_view = None;
+            unsafe {
+                device.CreateBuffer(
+                    &D3D11_BUFFER_DESC {
+                        ByteWidth: 16,
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: unordered,
+                        ..Default::default()
+                    },
+                    Some(&data),
+                    Some(&mut buffer),
+                )?;
+                let buffer = buffer.as_ref().unwrap();
+                device.CreateUnorderedAccessView(
+                    buffer,
+                    Some(&D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                        Format: DXGI_FORMAT_R32_UINT,
+                        ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
+                        Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                            Buffer: D3D11_BUFFER_UAV {
+                                FirstElement: 0,
+                                NumElements: 4,
+                                Flags: 0,
+                            },
+                        },
+                    }),
+                    Some(&mut buffer_view),
+                )?;
+                context1.ClearView(&buffer_view.unwrap(), &[7.0, 0.0, 0.0, 0.0], None);
+            }
+            print_buffer("storage buffer", buffer.as_ref().unwrap(), 16);
+
+            let mut line = None;
+            let mut line_view = None;
+            unsafe {
+                device.CreateTexture1D(
+                    &D3D11_TEXTURE1D_DESC {
+                        Width: 4,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_R32_FLOAT,
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: unordered,
+                        ..Default::default()
+                    },
+                    Some(&data),
+                    Some(&mut line),
+                )?;
+                let line = line.as_ref().unwrap();
+                device.CreateUnorderedAccessView(line, None, Some(&mut line_view))?;
+                let line_view = line_view.unwrap();
+                context1.ClearView(&line_view, &[0.75, 0.0, 0.0, 0.0], None);
+                context1.ClearView(
+                    &line_view,
+                    &[0.5, 0.0, 0.0, 0.0],
+                    Some(&[RECT {
+                        left: 1,
+                        top: 0,
+                        right: 3,
+                        bottom: 1,
+                    }]),
+                );
+            }
+            let mut volume = None;
+            let (mut volume_target, mut volume_view) = (None, None);
+            unsafe {
+                device.CreateTexture3D(
+                    &D3D11_TEXTURE3D_DESC {
+                        Width: 4,
+                        Height: 2,
+                        Depth: 2,
+                        MipLevels: 1,
+                        Format: DXGI_FORMAT_R32_FLOAT,
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: unordered | D3D11_BIND_RENDER_TARGET.0 as u32,
+                        ..Default::default()
+                    },
+                    Some(&data),
+                    Some(&mut volume),
+                )?;
+                let volume = volume.as_ref().unwrap();
+                device.CreateRenderTargetView(volume, None, Some(&mut volume_target))?;
+                device.CreateUnorderedAccessView(volume, None, Some(&mut volume_view))?;
+                let (volume_view, volume_target) = (volume_view.unwrap(), volume_target.unwrap());
+                context1.ClearView(&volume_view, &[0.25, 0.0, 0.0, 0.0], None);
+                context1.ClearView(&volume_target, &[0.5, 0.0, 0.0, 0.0], None);
+                let rect = |left, top, right, bottom| RECT {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                };
+                context1.ClearView(
+                    &volume_view,
+                    &[1.0, 0.0, 0.0, 0.0],
+                    Some(&[rect(1, 0, 3, 1)]),
+                );
+                context1.ClearView(
+                    &volume_target,
+                    &[2.0, 0.0, 0.0, 0.0],
+                    Some(&[rect(0, 1, 2, 2)]),
+                );
+            }
+            // Both read back through a staging copy, all of their bytes in order.
+            let read = |what: &str, resource: &ID3D11Resource, staging: &ID3D11Resource| {
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                unsafe {
+                    context.CopyResource(staging, resource);
+                    context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                    for row in 0..filled.len() / 16 {
+                        let (slice, y) = (row / 2, row % 2);
+                        let at = slice * mapped.DepthPitch as usize + y * mapped.RowPitch as usize;
+                        let bytes =
+                            std::slice::from_raw_parts(mapped.pData.cast::<u8>().add(at), 16);
+                        let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                        println!("{what}: row {row} {}", hex.join(""));
+                    }
+                    context.Unmap(staging, 0);
+                }
+                windows::core::Result::Ok(())
+            };
+            let staged = D3D11_CPU_ACCESS_READ.0 as u32;
+            let (mut line_staging, mut volume_staging) = (None, None);
+            unsafe {
+                device.CreateTexture1D(
+                    &D3D11_TEXTURE1D_DESC {
+                        Width: 4,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_R32_FLOAT,
+                        Usage: D3D11_USAGE_STAGING,
+                        CPUAccessFlags: staged,
+                        ..Default::default()
+                    },
+                    None,
+                    Some(&mut line_staging),
+                )?;
+                device.CreateTexture3D(
+                    &D3D11_TEXTURE3D_DESC {
+                        Width: 4,
+                        Height: 2,
+                        Depth: 2,
+                        MipLevels: 1,
+                        Format: DXGI_FORMAT_R32_FLOAT,
+                        Usage: D3D11_USAGE_STAGING,
+                        CPUAccessFlags: staged,
+                        ..Default::default()
+                    },
+                    None,
+                    Some(&mut volume_staging),
+                )?;
+            }
+            // The 1D texture holds one row of 16 bytes.
+            let cast = |r: &windows::core::IUnknown| -> windows::core::Result<ID3D11Resource> {
+                windows::core::Interface::cast(r)
+            };
+            let line_staging = cast(&line_staging.unwrap().into())?;
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            unsafe {
+                context.CopyResource(&line_staging, &cast(&line.unwrap().into())?);
+                context.Map(&line_staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                let bytes = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), 16);
+                let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                println!("storage 1d: row 0 {}", hex.join(""));
+                context.Unmap(&line_staging, 0);
+            }
+            read(
+                "target and storage 3d",
+                &cast(&volume.unwrap().into())?,
+                &cast(&volume_staging.unwrap().into())?,
+            )?;
         }
         "cs_min_lod" => {
             // An 8x8 chain of four levels; texel (x, y) of level l is (l * 60, x * 32, y * 32, 255).

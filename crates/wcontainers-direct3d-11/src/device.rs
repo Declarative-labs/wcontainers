@@ -87,6 +87,9 @@ pub struct Device<B: Backend> {
     /// pixel shader's id and variant; and the pixel counter's, by the vertex shader's id and variant
     /// and a number no pixel shader has.
     pub(crate) counting: HashMap<CountingKey, Kept<B, B::Program>>,
+    /// The storage clear programs (`ClearView` of storage views' rectangles), by format and view
+    /// dimension.
+    pub(crate) storage_clears: HashMap<(Format, ViewDimension), Kept<B, B::Program>>,
     /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
     /// tracker holds them for the counter; the front opens and ends its own passes).
     pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
@@ -370,6 +373,7 @@ impl<B: Backend> Device<B> {
             interpolated: HashMap::new(),
             variants: HashMap::new(),
             counting: HashMap::new(),
+            storage_clears: HashMap::new(),
             counter: Default::default(),
             pixel_counter: Default::default(),
             tests_off: None,
