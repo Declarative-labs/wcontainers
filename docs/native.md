@@ -1912,7 +1912,13 @@ Handled, and proven by tests rather than assumed:
   run maps the same file's segments at their own addresses in a host process, with a breakpoint over each
   `svc` put in a copy of the file before any run (since N4 run 24: until then the plain process found the `svc`
   words itself through the shared decoder, about 70 million cycles of test work no plain program does), whose
-  handler answers write and exit, so both sides run the workloads as the same bytes at the same addresses. Every run is its own process, measured at its end with `proc_pid_rusage` (`RUSAGE_INFO_V6`:
+  handler answers write and exit, so both sides run the workloads as the same bytes at the same addresses. Every
+  child starts without the dynamic loader's variables (`DYLD_*`) of the shell that runs the test (since N4 run 25: a
+  build shell's library path added about 85 million cycles to every child's start, plain and native alike, which
+  pulled every ratio toward 1). Busybox, python and git are not measured: their plain run needs a Linux kernel on the
+  host, which on the Mac is only Docker Desktop's, inside its own virtual machine where one process's counters
+  cannot be read from macOS; they join the method with N10, where the plain run is the host's own Linux. The
+  compute part is defined over the eight workloads, so the bar does not depend on them. Every run is its own process, measured at its end with `proc_pid_rusage` (`RUSAGE_INFO_V6`:
   cycles, instructions, and cycles on performance cores for the share); both runs' output and exit code must
   be equal. The system-call part (N4 run 3) runs tests/guest/answered.c, a million `getppid` calls in a loop,
   against its build with a `nop` in each call's place, both in `native-kernel`, in alternating pairs; beside each
@@ -1936,25 +1942,31 @@ Handled, and proven by tests rather than assumed:
   cost of the shared decoder, crates/wcontainers-arm64/src/forms.rs, which the WebAssembly output pays too;
   building it form by form instead of bucket by bucket gives the same index for about 0.1 million, measured
   with a scratch patch: put to the translator track).
-  The result (N4 run 24, the native code of commit 1736f6a1 with the plain run's breakpoints put before the run,
-  on the M5 under Hypervisor.framework). Compute part, against +21.2%: +19.10% [+18.57 .. +19.95] by the bar's own
-  command (15 pairs, look-ahead 256, seed 1, 2000 resamples, load 7.6 to 10.2, every run 98 to 100% on
-  performance cores): it passes by the decision rule, 2.1 points under the line, the interval's top 1.25 under.
-  By alternating pairs (10 pairs a program with a plain run beside each, the build against itself, load 7.7 to
-  10.2): +20.97% and +21.05%, and as the first side of five more such runs +20.54%, +21.13%, +20.79%, +21.12% and
-  +21.13%: 0.07 to 0.66 points under the line. Over four new seeded layouts of the same build by pairs (6 pairs a
-  program, load 7.9 to 14.3): +19.38%, +21.59%, +20.84%, +20.94%, so one layout of four is over the line. So the
-  bar passes by its own command, but by pairs it sits on the line, inside the layout spread (1.3 to 3.4 points
-  measured in runs 15 to 18, 2.2 in run 24): no headroom can be claimed. With the faster index of forms of the
-  shared decoder (a scratch build, not committed; the translator track's file), by pairs +14.71% against this
-  build's +21.13% in the same runs (10 pairs, load 7.7 to 9.3). The figures ruled on before (+11.08% by the
-  command, +12.51% by pairs and +13.05% on the worst layout, N4 run 18) were wrong: the plain side carried the
-  harness's own decoding. System-call part, against 100 ns: the back end's share 78.6 ns [75.9 .. 83.9] (a
-  call 178.4 ns, the kernel's share 99.7 ns), unchanged by the plain run. Each program against plain, cycles in
-  percent, native (instructions) and untranslated, by the bar's command: fib +28.2 (+71.1) and +0.4, sieve
-  +20.2 (+38.2) and +11.9, hash +3.6 (+35.2) and +0.2, sort +24.1 (+157.5) and +0.4, interpret +0.3 (+86.7)
-  and +0.2, matrix +33.4 (+38.9) and +1.0, walk +18.1 (+113.7) and +17.6, search +29.4 (+30.0) and +1.4,
-  calls.c +65.0 (+142.9) and +1.0.
+  The result (N4 run 25, the native code of commit 1736f6a1, with the plain run's breakpoints put before the run
+  and every child started without the loader's variables, on the M5 under Hypervisor.framework). Compute part,
+  against +21.2%: +20.09% [+19.89 .. +20.32] by the bar's own command (15 pairs, look-ahead 256, seed 1, 2000
+  resamples, 1-minute load 2.7 to 3.1, every run 99 to 100% on performance cores): it passes by the decision rule, 1.1
+  points under the line, the interval's top 0.88 under. By alternating pairs (the build against itself, a plain
+  run beside each pair): +20.18% and +20.28% (10 pairs a program, load 2.6 to 12.1), and as the first side of seven
+  more runs +21.29% (load 11.9 to 18.3, many runs on efficiency cores), +20.35%, +20.10%, +19.31%, +20.45%,
+  +20.20% and +20.51% (load 3.3 to 11.9): from 0.9 points under the line to 0.1 over. Over four new seeded layouts of the same
+  build by pairs (6 pairs a program): +20.83% (seed 17, load 4.7 to 7.3; +22.27% at load 11.9 to 18.3 with most
+  runs on efficiency cores), +22.84% and +22.81% (seed 18, load 3.3 to 4.7 and 5.8 to 11.9; interpret +12% and fib
+  +6% cycles against the unpadded build), +19.66% (seed 19), +18.67% (seed 20): one layout of four is over the line
+  in both of its runs. So the bar passes by its own command and decision rule with about one point of headroom,
+  but by pairs the build sits on the line and the layout spread (4.2 points over these four) is larger than the
+  headroom: the pass rests on this build's layout, and no headroom can be claimed. Aligning every piece's start to
+  64 bytes (a scratch build, not kept) does not change that: +20.45% against +20.51% by pairs (matrix -4.4%, sieve
+  +1.9% cycles). With the faster index of forms of the shared decoder (a scratch build, not committed; the
+  translator track's file), N4 run 24 measured +14.71% by pairs against this build's +21.13% in the same runs.
+  Withdrawn: every figure of runs 2 to 24 against the plain run flattered the native side, first because the plain
+  process decoded the program itself (to run 23, so run 18's +11.08%, +12.51% and +13.05% that the orchestrator's
+  ruling rested on), then because every child inherited the build shell's loader variables (to run 24: +19.10%).
+  System-call part, against 100 ns: the back end's share 80.3 ns [79.7 .. 81.1] (a call 172.6 ns, the kernel's
+  share 92.4 ns). Each program against plain, cycles in percent, native (instructions) and untranslated, by the
+  bar's command: fib +28.0 (+74.3) and +0.0, sieve +18.5 (+42.1) and +12.0, hash +3.6 (+40.0) and +0.3, sort
+  +26.6 (+179.7) and -0.3, interpret +0.2 (+93.6) and +0.3, matrix +40.9 (+45.8) and +0.9, walk +17.9 (+144.1)
+  and +17.2, search +30.6 (+33.0) and +0.8, calls.c +87.5 (+200.6) and +2.0.
 
 ## 9. Milestones
 
@@ -2045,8 +2057,9 @@ the ruling).
   left out, recorded, not a pass condition). Bar: N3's bar still
   passes at every look-ahead, the count test of section 4 gives the same count at every stop under every
   look-ahead (native side), and the speed method of section 8 on the Mac meets the speed bar by its
-  decision rule, every program's figures recorded beside the untranslated run's. Met at N4 run 18 (section 8,
-  the result); the count at every counted event is the same at look-ahead none, 256 and the whole page on the
+  decision rule, every program's figures recorded beside the untranslated run's. Met at N4 run 25 by the bar's
+  command with about one point of headroom; by alternating pairs it sits on the line, and one seeded layout of four
+  is over it (section 8, the result; the figures of runs 2 to 24 flattered the native side and are withdrawn there); the count at every counted event is the same at look-ahead none, 256 and the whole page on the
   benchmark set (runs 15 to 21, the kernel test's hash).
 - **N5, the execution side.** Needs decisions 1, 10 and 12 and the changes they bring (R2, R3, and R4 under
   option A), done by their owners or by this track if they agree. `Execution` and `Executor` for native,
