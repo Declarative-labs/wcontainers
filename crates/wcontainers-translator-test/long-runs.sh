@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The long runs to the plan's pass bars (section 9), in chunks, resumable. At 100 percent: layer 1 at 10,000
-# cases a form (100 a form in Chrome), layer 2 at one million programs (1,000 on the real CPU, 200 in Chrome),
+# cases a form (100 a form in Chrome), layer 2 at one million programs (every one also on the real CPU, 200 in Chrome),
 # layer 3 at 100,000 Csmith programs compared with Linux (1,000 in Chrome; programs that do not end on Linux in
 # time are made but not compared, so it runs chunks until that many were compared). Each chunk is one test run;
 # when it ends, one line is appended to the ledger. A chunk the ledger holds as passed on an accepted commit is
@@ -198,10 +198,10 @@ fi
 if [[ ",$layers," == *,2,* ]]; then
   total=$(part 1000000)
   chunks=$(ceil "$total" 25000)
-  natives=$(ceil "$(part 1000)" "$chunks")
   chrome=$(ceil "$(part 200)" "$chunks")
   for ((k = 0; k < chunks; k++)); do
     cases=$(( k < chunks - 1 ? 25000 : total - 25000 * (chunks - 1) ))
+    natives=$cases
     knobs="WC_LAYER2_SEED=$base WC_LAYER2_FROM=$((k * 25000)) WC_LAYER2_CASES=$cases WC_LAYER2_NATIVE=$natives WC_LAYER2_CHROME=$chrome WC_LAYER2_JOBS=$jobs"
     run_chunk 2 $((k + 1)) "$chunks" "$knobs" ""
   done

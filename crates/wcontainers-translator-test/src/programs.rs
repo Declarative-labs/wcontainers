@@ -1,12 +1,17 @@
 //! C programs built as flat blobs, run through the translator and on real ARM64 Linux.
 
-use crate::layout::initial_stack;
-use crate::reference::{build as build_reference, container_name};
+use crate::layout::{REQUEST_END, REQUEST_SEPARATOR, SERVE_BLOBS, initial_stack};
+use crate::reference::{
+    DOCKER, IMAGE, PROGRAMS_FOLDER, REFERENCE_CONTAINER, RUNNER_FOLDER, RUNNER_NAME,
+    build as build_reference, container_name, mount, serving,
+};
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
 use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
+use std::cell::RefCell;
+use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, ChildStdin, ChildStdout, Command};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
@@ -218,8 +223,7 @@ pub struct Ran {
     pub status: i32,
 }
 
-/// The exit status of a process that a signal ended is this plus the signal, as the shell and Docker give it.
-pub const SIGNALLED: i32 = 128;
+pub use crate::layout::SIGNALLED;
 
 /// Where a flat blob and its stack go in guest memory, the same for every runner.
 pub struct Placement {
@@ -399,8 +403,7 @@ pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
 /// is counted).
 pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     let reference = build_reference();
-    let directory = out_directory().join("native");
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = native_directory();
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
     let script = format!(
@@ -410,12 +413,9 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
         headers_arguments(blob).join(" ")
     );
     let output = run_container("timing", |command| {
-        command
-            .arg("-v")
-            .arg(format!("{}:/r:ro", reference.display()))
-            .arg("-v")
-            .arg(format!("{}:/p:ro", directory.display()))
-            .args(["alpine:latest", "sh", "-c", &script]);
+        mount(command, &reference, RUNNER_FOLDER);
+        mount(command, &directory, PROGRAMS_FOLDER);
+        command.args([IMAGE, "sh", "-c", &script]);
     });
     std::fs::remove_file(directory.join(&file)).unwrap();
     let times: Vec<f64> = String::from_utf8_lossy(&output.stderr)
@@ -442,9 +442,9 @@ pub fn run_container(purpose: &str, add: impl FnOnce(&mut Command)) -> std::proc
     std::fs::create_dir_all(&directory).unwrap();
     // Docker writes the container's id here once it has made the container.
     let made = directory.join(&name);
-    let mut command = Command::new("docker");
+    let mut command = Command::new(DOCKER);
     command
-        .args(["run", "--rm", "--network", "none", "--name"])
+        .args(REFERENCE_CONTAINER)
         .arg(&name)
         .arg("--cidfile")
         .arg(&made);
@@ -467,46 +467,112 @@ pub fn run_container(purpose: &str, add: impl FnOnce(&mut Command)) -> std::proc
 const DOCKER_FAILED: std::ops::RangeInclusive<i32> = 125..=127;
 const DOCKER_FAILED_SAYS: &[u8] = b"docker: Error response from daemon: ";
 
-/// Run a blob natively on ARM64 Linux in Docker.
+/// Run a blob natively on ARM64 Linux in Docker, through this thread's blob server.
 pub fn native(blob: &Blob) -> Ran {
-    let reference = build_reference();
-    // Every run reads a file of its own that nothing replaces while Docker reads it.
-    let directory = out_directory().join("native");
-    std::fs::create_dir_all(&directory).unwrap();
+    // Every run reads a file of its own that nothing replaces while the server reads it.
+    let directory = native_directory();
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
-    let output = run_container("program", |command| {
-        command
-            .arg("-v")
-            .arg(format!("{}:/r:ro", reference.display()))
-            .arg("-v")
-            .arg(format!("{}:/p:ro", directory.display()))
-            .args(["alpine:latest", "/r/wcontainers-reference", "blob"])
-            .arg(format!("/p/{file}"))
-            .arg(format!("{:#x}", blob.load))
-            .arg(format!("{STACK_TOP:#x}"))
-            .arg(format!("{:#x}", blob.stack_bytes))
-            .args(headers_arguments(blob));
-    });
+    let request: Vec<String> = [
+        format!("/p/{file}"),
+        format!("{:#x}", blob.load),
+        format!("{STACK_TOP:#x}"),
+        format!("{:#x}", blob.stack_bytes),
+    ]
+    .into_iter()
+    .chain(headers_arguments(blob))
+    .collect();
+    // Taken out while in use: a server that failed mid-answer is dropped, never used again.
+    let mut server = BLOB_SERVER
+        .with_borrow_mut(Option::take)
+        .unwrap_or_else(BlobServer::start);
+    let ran = server.run(&request);
+    BLOB_SERVER.with_borrow_mut(|kept| *kept = Some(server));
     std::fs::remove_file(directory.join(&file)).unwrap();
-    let status = output.status.code().expect("an exit status");
     // The runner's own failure is no result of the guest's: it fails the case, never compares.
     assert!(
-        !(status == RUNNER_FAILED
-            && output
+        !(ran.status == RUNNER_FAILED
+            && ran
                 .stderr
-                .windows(RUNNER_FAILED_SAYS.len())
-                .any(|w| w == RUNNER_FAILED_SAYS)),
+                .windows(RUNNER_NAME.len())
+                .any(|w| w == RUNNER_NAME.as_bytes())),
         "the reference runner failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&ran.stderr)
     );
-    Ran {
-        stdout: output.stdout,
-        stderr: output.stderr,
-        status,
+    ran
+}
+
+/// Where blobs are written for the reference to read, mounted at `PROGRAMS_FOLDER`.
+fn native_directory() -> PathBuf {
+    let directory = out_directory().join(NATIVE_FOLDER);
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+/// The folder of `out_directory` that holds blobs for the reference.
+const NATIVE_FOLDER: &str = "native";
+
+thread_local! {
+    static BLOB_SERVER: RefCell<Option<BlobServer>> = const { RefCell::new(None) };
+}
+
+/// A reference runner serving blobs (`SERVE_BLOBS`) in a container of its own, which ends when its input does.
+struct BlobServer {
+    client: Child,
+    requests: Option<ChildStdin>,
+    answers: ChildStdout,
+}
+
+impl BlobServer {
+    fn start() -> Self {
+        let mut client = serving(SERVE_BLOBS, SERVE_BLOBS, |command| {
+            mount(command, &native_directory(), PROGRAMS_FOLDER);
+        });
+        let requests = client.stdin.take();
+        let answers = client.stdout.take().unwrap();
+        BlobServer {
+            client,
+            requests,
+            answers,
+        }
+    }
+
+    fn run(&mut self, request: &[String]) -> Ran {
+        let requests = self.requests.as_mut().unwrap();
+        let mut line = request.join(&char::from(REQUEST_SEPARATOR).to_string());
+        line.push(char::from(REQUEST_END));
+        requests
+            .write_all(line.as_bytes())
+            .expect("send a blob to the reference");
+        requests.flush().unwrap();
+        let mut status = [0u8; size_of::<i32>()];
+        self.answers.read_exact(&mut status).expect(
+            "an answer from the blob server (Docker or the server failed; its stderr says why)",
+        );
+        let [stdout, stderr] = [(); 2].map(|()| {
+            let mut length = [0u8; size_of::<u32>()];
+            self.answers
+                .read_exact(&mut length)
+                .expect("an output's length");
+            let mut bytes = vec![0u8; u32::from_le_bytes(length) as usize];
+            self.answers.read_exact(&mut bytes).expect("an output");
+            bytes
+        });
+        Ran {
+            stdout,
+            stderr,
+            status: i32::from_le_bytes(status),
+        }
     }
 }
 
-/// How the reference runner ends when it fails itself, and what it writes on stderr before.
+impl Drop for BlobServer {
+    fn drop(&mut self) {
+        // The server ends at the end of its input, and Docker then removes its container.
+        self.requests = None;
+        let _ = self.client.wait();
+    }
+}
+
+/// How the reference runner ends when it fails itself, after writing its name (`RUNNER_NAME`) on stderr.
 const RUNNER_FAILED: i32 = 101;
-const RUNNER_FAILED_SAYS: &[u8] = b"wcontainers-reference: ";

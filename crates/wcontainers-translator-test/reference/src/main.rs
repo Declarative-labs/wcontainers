@@ -5,9 +5,9 @@
 //! and returns into the instruction; wherever control then lands raises the next signal, whose frame holds
 //! the registers after it. System calls made from the instruction are caught by seccomp and never run.
 //!
-//! `wcontainers-reference blob <file> <load address> <stack top> <stack bytes>` runs a flat blob from its first
-//! byte with all registers zero and the starting stack of `initial_stack`, for real; its output and exit status
-//! are the program's.
+//! `wcontainers-reference blobs` runs flat blobs, as `SERVE_BLOBS` describes, each from its first byte with all
+//! registers zero and the starting stack of `initial_stack`, for real; its output and exit status are the
+//! program's.
 //!
 //! `wcontainers-reference time <runs> <file> <load address> <stack top> <stack bytes>` runs the blob that many
 //! times, each in a child process, and writes each run's time in seconds to stderr: from just before the child
@@ -16,11 +16,14 @@
 #![allow(clippy::missing_safety_doc)]
 
 use core::ptr::{addr_of, addr_of_mut};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 
 include!("../../src/layout.rs");
 
 const PAGE: u64 = 4096;
+/// What a served blob reads as its stdin.
+const EMPTY_INPUT: &str = "/dev/null";
 /// How long a blob may run.
 const BLOB_SECONDS: u32 = 20;
 const NZCV: u64 = 0xf000_0000;
@@ -344,7 +347,7 @@ fn cases() {
 
 /// The blob ran out of time: the status of a process killed by SIGALRM.
 extern "C" fn timed_out(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    unsafe { libc::_exit(128 + libc::SIGALRM) };
+    unsafe { libc::_exit(SIGNALLED + libc::SIGALRM) };
 }
 
 /// Run a flat blob at `load`; `headers` is where its program headers are and how many.
@@ -363,7 +366,11 @@ fn blob(path: &str, load: u64, stack_top: u64, stack_bytes: u64, headers: Option
         synchronise(address);
         address += 64;
     }
-    map(stack_top - stack_bytes, stack_bytes, libc::PROT_READ | libc::PROT_WRITE);
+    map(
+        stack_top - stack_bytes,
+        stack_bytes,
+        libc::PROT_READ | libc::PROT_WRITE,
+    );
     let (sp, stack) = initial_stack(stack_top, headers);
     unsafe { core::ptr::copy_nonoverlapping(stack.as_ptr(), sp as *mut u8, stack.len()) };
     handle(libc::SIGUSR1, enter);
@@ -379,6 +386,95 @@ fn blob(path: &str, load: u64, stack_top: u64, stack_bytes: u64, headers: Option
         libc::alarm(BLOB_SECONDS);
         libc::raise(libc::SIGUSR1);
     }
+    unreachable!("the blob returned without exiting");
+}
+
+/// Serve blobs (`SERVE_BLOBS`) until stdin ends.
+fn serve_blobs() {
+    let mut requests = std::io::stdin().lock();
+    let mut answers = std::io::stdout().lock();
+    let mut request = Vec::new();
+    loop {
+        request.clear();
+        if requests
+            .read_until(REQUEST_END, &mut request)
+            .expect("read a request")
+            == 0
+        {
+            return;
+        }
+        let arguments: Vec<String> = request
+            .strip_suffix(&[REQUEST_END])
+            .expect("a whole request")
+            .split(|&byte| byte == REQUEST_SEPARATOR)
+            .map(|argument| String::from_utf8_lossy(argument).into_owned())
+            .collect();
+        // As in a container of its own: stdin empty, stdout and stderr pipes.
+        let [stdout, stderr] = [(); 2].map(|()| {
+            let mut ends = [0; 2];
+            let made = unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) };
+            assert_eq!(
+                made,
+                0,
+                "a pipe for the output: {}",
+                std::io::Error::last_os_error()
+            );
+            ends.map(|end| unsafe { std::fs::File::from_raw_fd(end) })
+        });
+        let nothing = std::fs::File::open(EMPTY_INPUT).expect("open the empty input");
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            let [[_, out], [_, errors]] = [&stdout, &stderr];
+            for (from, to) in [
+                (nothing.as_raw_fd(), libc::STDIN_FILENO),
+                (out.as_raw_fd(), libc::STDOUT_FILENO),
+                (errors.as_raw_fd(), libc::STDERR_FILENO),
+            ] {
+                let made = unsafe { libc::dup2(from, to) };
+                assert_eq!(made, to, "dup2: {}", std::io::Error::last_os_error());
+            }
+            run_blob(&arguments);
+        }
+        assert!(child > 0, "fork: {}", std::io::Error::last_os_error());
+        let [outputs, errors] = [stdout, stderr].map(|[mut read, write]| {
+            drop(write);
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                read.read_to_end(&mut bytes)
+                    .expect("read the blob's output");
+                bytes
+            })
+        });
+        let mut status = libc::c_int::default();
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        let status = if libc::WIFSIGNALED(status) {
+            SIGNALLED + libc::WTERMSIG(status)
+        } else {
+            libc::WEXITSTATUS(status)
+        };
+        answers.write_all(&status.to_le_bytes()).unwrap();
+        for output in [outputs, errors] {
+            let bytes = output.join().expect("the output's reader");
+            let length = u32::try_from(bytes.len()).expect("output that fits its length");
+            answers.write_all(&length.to_le_bytes()).unwrap();
+            answers.write_all(&bytes).unwrap();
+        }
+        answers.flush().unwrap();
+    }
+}
+
+/// Run a blob from its arguments: file, load address, stack top, stack bytes, and optional program headers.
+fn run_blob(arguments: &[String]) -> ! {
+    let [path, load, stack_top, stack_bytes, headers_and_count @ ..] = arguments else {
+        panic!("a blob's arguments: {arguments:?}");
+    };
+    blob(
+        path,
+        number(load),
+        number(stack_top),
+        number(stack_bytes),
+        headers(headers_and_count),
+    );
     unreachable!("the blob returned without exiting");
 }
 
@@ -421,19 +517,13 @@ fn main() {
     // fails the case on. (An abort is not enough: in Docker the runner is the first process, which ignores its
     // own SIGABRT, so musl's abort ends it with SIGSEGV, as if the guest had faulted.)
     std::panic::set_hook(Box::new(|info| {
-        eprintln!("wcontainers-reference: {info}");
+        eprintln!("{}: {info}", env!("CARGO_PKG_NAME"));
         unsafe { libc::_exit(101) };
     }));
     let arguments: Vec<String> = std::env::args().collect();
     match arguments.get(1).map(String::as_str) {
         Some("cases") => cases(),
-        Some("blob") => blob(
-            &arguments[2],
-            number(&arguments[3]),
-            number(&arguments[4]),
-            number(&arguments[5]),
-            headers(&arguments[6..]),
-        ),
+        Some(SERVE_BLOBS) => serve_blobs(),
         Some("time") => time(
             arguments[2].parse().expect("a number of runs"),
             &arguments[3],
@@ -443,7 +533,8 @@ fn main() {
             headers(&arguments[7..]),
         ),
         _ => panic!(
-            "usage: wcontainers-reference cases | blob <file> <load> <stack top> <stack bytes> [<headers> <count>] | time <runs> <file> <load> <stack top> <stack bytes> [<headers> <count>]"
+            "usage: {} cases | {SERVE_BLOBS} | time <runs> <file> <load> <stack top> <stack bytes> [<headers> <count>]",
+            env!("CARGO_PKG_NAME")
         ),
     }
 }

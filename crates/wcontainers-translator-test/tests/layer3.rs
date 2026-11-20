@@ -6,9 +6,10 @@
 //!
 //! `WC_LAYER3_CASES` Csmith programs (default 4), seeded from `WC_LAYER3_SEED` (default 1): case `i` is
 //! Csmith seed `seed * 1_000_003 + i`, with the compiler, level and position picked from the same number,
-//! so a failure replays from the two values: `WC_LAYER3_FROM=i` (default 0) starts at case `i`. The first
-//! `WC_LAYER3_CHROME` of them that end in time (default one) also run in Chrome, at none and full in both
-//! settings.
+//! so a failure replays from the two values: `WC_LAYER3_FROM=i` (default 0) starts at case `i`. Of every
+//! `WC_LAYER3_CASES / WC_LAYER3_CHROME` cases the first (default one in all) also runs in Chrome, at none and
+//! full in both settings, when it ends in time. Which programs end in time depends on the reference's speed
+//! (Linux's 20 s alarm); everything else replays exactly.
 //! `WC_LAYER3_JOBS` cases run at once (default one). A line every thousand cases shows progress.
 
 use linux_raw_sys::general::{SIGABRT, SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
@@ -117,9 +118,9 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
     }
     // Bounded of an N and pieces mixed with events injected, both from the blob's own hash.
     let seed = {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        blob.bytes.hash(&mut hasher);
+        use std::hash::Hasher;
+        let mut hasher = rustc_hash::FxHasher::default();
+        hasher.write(&blob.bytes);
         hasher.finish()
     };
     let bound = 2 + (seed % 63) as u32;
@@ -189,6 +190,7 @@ fn csmith_programs_match_linux() {
     let from = setting("WC_LAYER3_FROM", 0);
     let chrome = setting("WC_LAYER3_CHROME", 1);
     let jobs = setting("WC_LAYER3_JOBS", 1).max(1);
+    let chrome_every = cases.div_ceil(chrome.max(1));
     let in_chrome = AtomicU64::new(0);
     let (ran, too_long, done) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
     let failures = Mutex::new(Vec::new());
@@ -198,7 +200,8 @@ fn csmith_programs_match_linux() {
         let blob = build(&source, compiler, level, position);
         let own = || ordinary(&source, compiler, level, position);
         let checked = compare(&blob, own).and_then(|theirs| match theirs {
-            Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
+            Some(theirs) if chrome > 0 && i.is_multiple_of(chrome_every) => {
+                in_chrome.fetch_add(1, Ordering::Relaxed);
                 compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
             }
             other => Ok(other),
@@ -223,7 +226,7 @@ fn csmith_programs_match_linux() {
     eprintln!(
         "layer 3: {cases} Csmith programs from case {from}, seed {seed}, {jobs} at once: {} compared ({} also in Chrome), {} did not end in time on Linux, {} failing: {failures:?}",
         ran.into_inner(),
-        in_chrome.into_inner().min(chrome),
+        in_chrome.into_inner(),
         too_long.into_inner(),
         failures.len()
     );

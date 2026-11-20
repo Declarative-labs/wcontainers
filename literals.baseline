@@ -6276,24 +6276,18 @@ code	crates/wcontainers-translator-test/reference/src/main.rs	int	land	33
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	land	34
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	101
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	3
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	3
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	4
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	4
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	5
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	5
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	6
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	6
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	main	7
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	number	16
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	time	- 1
-code	crates/wcontainers-translator-test/reference/src/main.rs	int	timed_out	128
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	trap_test_system_calls	3
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	trap_test_system_calls	32
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	trap_test_system_calls	8
 code	crates/wcontainers-translator-test/reference/src/main.rs	int	word	8
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	alternate_stack	"sigaltstack"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	handle	"sigaction"
-code	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"blob"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"cases"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"time"
 code	crates/wcontainers-translator-test/reference/src/main.rs	str	map	"/proc/self/maps"
@@ -7306,38 +7300,17 @@ code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"objcopy"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"{own}.bin"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"{own}.text"
 code	crates/wcontainers-translator-test/src/programs.rs	str	flatten	"{}.elf"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"-v"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"-v"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native	"/p/{file}"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"/r/wcontainers-reference"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"alpine:latest"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"blob"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"native"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"program"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native	"{}.bin"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"{}:/p:ro"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native	"{}:/r:ro"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	" "
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"-c"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"-v"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"-v"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {:#x} {} > /dev/null"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"alpine:latest"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"native"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"sh"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"timing"
 code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"{}.bin"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"{}:/p:ro"
-code	crates/wcontainers-translator-test/src/programs.rs	str	native_seconds	"{}:/r:ro"
 code	crates/wcontainers-translator-test/src/programs.rs	str	out_directory	"../../target/programs"
 code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"--cidfile"
-code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"--name"
-code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"--network"
-code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"--rm"
 code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"containers"
-code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"docker"
-code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"none"
-code	crates/wcontainers-translator-test/src/programs.rs	str	run_container	"run"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"--edition"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"--target"
 code	crates/wcontainers-translator-test/src/programs.rs	str	rust	"-C"
@@ -7392,18 +7365,8 @@ code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
 code	crates/wcontainers-translator-test/src/reference.rs	int	Cases::run	8
 code	crates/wcontainers-translator-test/src/reference.rs	int	Landed	32
 code	crates/wcontainers-translator-test/src/reference.rs	int	Landed	35
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"--name"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"--network"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"--rm"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"-i"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"-v"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"/r/wcontainers-reference"
 code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"cases"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"docker"
 code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"layer1"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"none"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"run"
-code	crates/wcontainers-translator-test/src/reference.rs	str	Cases::start	"{}:/r:ro"
 code	crates/wcontainers-translator-test/src/reference.rs	str	build	"--manifest-path"
 code	crates/wcontainers-translator-test/src/reference.rs	str	build	"--quiet"
 code	crates/wcontainers-translator-test/src/reference.rs	str	build	"--release"
@@ -7722,8 +7685,6 @@ restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1048576
 restated	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	4096
-restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"usage: wcontainers-reference cases | blob <file> <load> <stack top> <stack bytes> [<headers> <count>] | time <runs> <file> <load> <stack top> <stack bytes> [<h… #f6e51dcf9a177200
-restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"wcontainers-reference: {info}"
 restated	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	NOTICE	"\\n# Every A64 instruction encoding, taken from Arm's machine readable specification\n# (AARCHMRS, BSD release {release}) by `cargo run -p wcontainers-translat… #a00fca9f6cd09923
 restated	crates/wcontainers-translator-test/src/layout.rs	int	BLOB_HWCAP	0x183
 restated	crates/wcontainers-translator-test/tests/benchmarks.rs	float	measure_calls_between_modules	1e9
@@ -8096,7 +8057,6 @@ script	crates/wcontainers-translator-test/long-runs.sh	int	line: knobs="WC_LAYER
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: layers=${WC_LONG_LAYERS:-1,2,3}	3
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: limit=${WC_LONG_LIMIT:-90}	90
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: local log="$dir/logs/layer$layer-$k${of:+-of-$of}-${commit:0:12}.log"	12
-script	crates/wcontainers-translator-test/long-runs.sh	int	line: natives=$(ceil "$(part 1000)" "$chunks")	1000
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: part() { local n=$(( $1 * percent / 100 )); echo $(( n > 0 ? n : 1 )); }	100
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: percent=${WC_LONG_PERCENT:-100}	100
 script	crates/wcontainers-translator-test/long-runs.sh	int	line: run_chunk 3 $((k + 1)) "" "$knobs" csmith_programs_match_linux	3

@@ -2,13 +2,56 @@
 
 use crate::layout::*;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The Docker image the reference runs in.
-const IMAGE: &str = "alpine:latest";
+pub const IMAGE: &str = "alpine:latest";
+/// Docker's command line program, and `docker run`'s arguments for every container here: removed at its end,
+/// with no network, and named by the argument that follows.
+pub const DOCKER: &str = "docker";
+pub const REFERENCE_CONTAINER: [&str; 5] = ["run", "--rm", "--network", "none", "--name"];
+/// `docker run`'s flag that keeps the container's stdin open, for a runner that takes requests.
+const DOCKER_INPUT: &str = "-i";
+/// `docker run`'s flag that mounts a host folder, as `host:inside:ro`, and the parts of its value.
+pub const DOCKER_MOUNT: &str = "-v";
+const MOUNT_SEPARATOR: &str = ":";
+const READ_ONLY: &str = "ro";
+/// Where a container sees the reference runner's folder and the programs' folder.
+pub const RUNNER_FOLDER: &str = "/r";
+pub const PROGRAMS_FOLDER: &str = "/p";
+/// The reference runner's program, its package's name.
+pub const RUNNER_NAME: &str = "wcontainers-reference";
+
+/// Mount the host folder `host` read only at `inside` in a container.
+pub fn mount(command: &mut Command, host: &Path, inside: &str) {
+    let host = host.to_str().expect("a folder named in UTF-8");
+    command
+        .arg(DOCKER_MOUNT)
+        .arg([host, inside, READ_ONLY].join(MOUNT_SEPARATOR));
+}
+
+/// A container of the reference runner in `mode`, for `purpose`, taking requests on stdin and answering on
+/// stdout, with the further folders `add` mounts.
+pub fn serving(purpose: &str, mode: &str, add: impl FnOnce(&mut Command)) -> Child {
+    let mut command = Command::new(DOCKER);
+    command
+        .args(REFERENCE_CONTAINER)
+        .arg(container_name(purpose))
+        .arg(DOCKER_INPUT);
+    mount(&mut command, &build(), RUNNER_FOLDER);
+    add(&mut command);
+    command
+        .arg(IMAGE)
+        .arg(Path::new(RUNNER_FOLDER).join(RUNNER_NAME))
+        .arg(mode)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run docker")
+}
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -76,17 +119,7 @@ pub struct Cases {
 
 impl Cases {
     pub fn start() -> Self {
-        let directory = build();
-        let mut child = Command::new("docker")
-            .args(["run", "--rm", "-i", "--network", "none", "--name"])
-            .arg(container_name("layer1"))
-            .arg("-v")
-            .arg(format!("{}:/r:ro", directory.display()))
-            .args([IMAGE, "/r/wcontainers-reference", "cases"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("start docker");
+        let mut child = serving("layer1", "cases", |_| {});
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         Cases {

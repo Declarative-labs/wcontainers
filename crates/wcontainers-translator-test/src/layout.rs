@@ -1,6 +1,18 @@
 // Layer 1's memory layout and wire format, and the starting stack of a flat blob. The native reference
 // runner includes this file too, so both sides always agree.
 
+/// The exit status of a process that a signal ended is this plus the signal, as the shell and Docker give it.
+pub const SIGNALLED: i32 = 128;
+
+/// The reference runner's mode that runs blobs one after another, each in a child of its own, for requests on
+/// stdin: a blob's file, load address, stack top, stack bytes and optional program headers and
+/// count. Each answer is the status as a shell reports it (`i32`), then stdout and stderr, each as a `u32`
+/// length and its bytes.
+pub const SERVE_BLOBS: &str = "blobs";
+/// What separates a request's arguments, and what ends a request.
+pub const REQUEST_SEPARATOR: u8 = b' ';
+pub const REQUEST_END: u8 = b'\n';
+
 /// `AT_HWCAP` as the guest is told it; a test checks it against `wcontainers_abi::HWCAP`.
 pub const BLOB_HWCAP: u64 = 0x183;
 

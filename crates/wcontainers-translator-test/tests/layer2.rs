@@ -6,7 +6,7 @@
 //! Knobs: `WC_LAYER2_CASES` (default 64), `WC_LAYER2_SEED` (default 1), `WC_LAYER2_FROM` (the first case,
 //! default 0; case `i` is generated from the seed and `i` alone, so a failure replays with `WC_LAYER2_FROM=i`
 //! and `WC_LAYER2_CASES=1`), `WC_LAYER2_JOBS` (cases run at once, default 1), `WC_LAYER2_NATIVE` (how many
-//! of the cases, the first, also run on the real CPU, default 8; each starts a container) and
+//! of the cases, the first, also run on the real CPU, default all; each job keeps one reference container) and
 //! `WC_LAYER2_CHROME` (how many, the first, also run in Chrome at none and at full in both settings, default
 //! 1; each starts Chrome three times).
 
@@ -49,7 +49,7 @@ fn full_matches_none_and_the_cpu() {
     let cases = knob("WC_LAYER2_CASES", 64);
     let seed = knob("WC_LAYER2_SEED", 1);
     let from = knob("WC_LAYER2_FROM", 0);
-    let natives = knob("WC_LAYER2_NATIVE", 8);
+    let natives = knob("WC_LAYER2_NATIVE", cases);
     let chrome = knob("WC_LAYER2_CHROME", 1);
     let jobs = knob("WC_LAYER2_JOBS", 1).max(1);
     let [ran, faulted, left, lost, forgotten] = std::array::from_fn(|_| AtomicU64::new(0));
