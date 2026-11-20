@@ -235,8 +235,8 @@ fn level_targets(level: u32) -> u32 {
 
 /// Whether `caps` serves every requirement of feature level `level` (plan section 9): its texture
 /// sizes and targets within the adapter's limits; from 10_0 `D32_FLOAT_S8X24_UINT` targets, float
-/// targets, and the geometry stage and stream output, which only the stage helper's compute route
-/// serves (`GeometryAsReplay` is not built); at 11_0 compute.
+/// targets, and the geometry stage and stream output, which the stage helper's compute route serves
+/// whole (its replay serves geometry shaders but not stream output without one); at 11_0 compute.
 fn serves(caps: &wcontainers_gpu::Caps, level: u32) -> bool {
     let limits = &caps.limits;
     let [extent, cube_extent, volume, layers] = level_texture_limits(level);
@@ -382,11 +382,15 @@ impl<B: Backend> Device<B> {
             }
         };
         // Typed buffers decode each element as the vertex format of the same bytes
-        // (`TexelBufferAsStorage`).
-        add(
-            caps.limits.storage_buffers_per_stage > 0 && format::vertex_format(dxgi).is_some(),
-            BUFFER,
-        );
+        // (`TexelBufferAsStorage`), or are read through a texture copy of the format
+        // (`TexelBufferAsTexture`).
+        let typed_buffer = if caps.limits.storage_buffers_per_stage > 0 {
+            format::vertex_format(dxgi).is_some()
+        } else {
+            format::vertex_format(dxgi).is_some()
+                && texture.is_some_and(|f| caps.formats.get(f).contains(FormatUse::SAMPLE))
+        };
+        add(typed_buffer, BUFFER);
         add(format::stream_output_format(dxgi), SO_BUFFER);
         add(held, CPU_LOCKABLE);
         // `GenerateMips` filters every format it draws into but integers.
@@ -753,6 +757,12 @@ impl<B: Backend> Device<B> {
             && caps.limits.storage_buffers_per_stage > 0
     }
 
+    /// Whether typed buffers are read through texture copies of their buffers, where the back end
+    /// has no storage buffers (`TexelBufferAsTexture`).
+    pub(crate) fn typed_buffers_textured(&self) -> bool {
+        self.backend.caps().limits.storage_buffers_per_stage == 0
+    }
+
     /// The use storage views of `format` ask of the back end: none where they are stored through
     /// a buffer.
     fn storage_use(&self, format: Format) -> FormatUse {
@@ -845,6 +855,7 @@ impl<B: Backend> Device<B> {
             staged: RefCell::new(Staged::Current),
             writes: Cell::new(0),
             windows: RefCell::new(Vec::new()),
+            texels: RefCell::new(Vec::new()),
             filled: RefCell::new(None),
         }))
     }
@@ -1769,10 +1780,21 @@ impl<B: Backend> Device<B> {
                 .max(4),
         );
         if let Some(f) = typed {
-            if self.backend.caps().limits.storage_buffers_per_stage == 0 {
-                return not_implemented(
-                    "typed buffer views read through a texture (TexelBufferAsTexture)",
-                );
+            // A texture copy holds the whole buffer, its first element at its first texel.
+            if self.typed_buffers_textured() {
+                if !self
+                    .backend
+                    .caps()
+                    .formats
+                    .get(f)
+                    .contains(FormatUse::SAMPLE)
+                {
+                    return not_implemented(
+                        "a typed buffer view of a format the back end holds no texture of",
+                    );
+                }
+                let within = u32::try_from(offset).map_err(|_| Error::OutOfMemory)?;
+                return Ok((0, u64::from(d.byte_width), Some((f, within, count))));
             }
             let start = offset / align * align;
             let end = (offset + size).next_multiple_of(4);
@@ -1943,10 +1965,15 @@ impl<B: Backend> Device<B> {
             ));
         }
         let mut typed = shader::typed_views(bytecode)?;
-        if typed.iter().any(|t| t.buffer)
-            && self.backend.caps().limits.storage_buffers_per_stage == 0
-        {
-            return not_implemented("typed buffers read through a texture (TexelBufferAsTexture)");
+        if self.typed_buffers_textured() {
+            if typed.iter().any(|t| t.buffer && t.storage) {
+                return not_implemented(
+                    "typed unordered access buffers without the back end's storage buffers",
+                );
+            }
+            for t in typed.iter_mut().filter(|t| t.buffer) {
+                t.textured = true;
+            }
         }
         let layered = shader::multisampled_arrays(bytecode)?;
         let texture_info = !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY);
@@ -2103,17 +2130,25 @@ impl<B: Backend> Device<B> {
         if rasterized != 0 && outputs.iter().any(|o| o.stream == rasterized) {
             return not_implemented(GEOMETRY_STREAM_DRAWN_PAST_ZERO);
         }
-        if !self.backend.caps().has(Features::COMPUTE) {
+        // Without compute programs a geometry shader is replayed through transform feedback
+        // (`GeometryAsReplay`), which takes no stream output without a geometry stage.
+        let caps = self.backend.caps();
+        let replayed = !caps.has(Features::COMPUTE);
+        if replayed && !caps.has(Features::TRANSFORM_FEEDBACK) {
             return not_implemented(
-                "geometry shaders and stream output without the back end's compute programs",
+                "geometry shaders and stream output without the back end's compute programs or \
+                 transform feedback",
             );
+        }
+        if replayed && vertex {
+            return not_implemented(crate::context::STREAM_OUT_WITHOUT_COMPUTE);
         }
         let stage = if vertex {
             None
         } else {
             let typed = shader::typed_views(bytecode)?;
             let layered = shader::multisampled_arrays(bytecode)?;
-            let key = shader::geometry_key(&typed, layered, None);
+            let key = shader::geometry_key(&typed, layered, None, replayed);
             let mut converted = shader::convert_geometry(bytecode, &key)?;
             // A pass-through writing clip distances the back end lacks passes them on for the
             // pixel program to apply, at the location past the stage's outputs.
@@ -2128,7 +2163,7 @@ impl<B: Backend> Device<B> {
                 )
             });
             if clip.is_some() {
-                let key = shader::geometry_key(&typed, layered, clip);
+                let key = shader::geometry_key(&typed, layered, clip, replayed);
                 converted = shader::convert_geometry(bytecode, &key)?;
             }
             let stage = self.geometry_stage(bytecode, &converted, typed, layered, clip)?;

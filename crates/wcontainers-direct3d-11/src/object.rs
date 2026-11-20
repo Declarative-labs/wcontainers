@@ -85,9 +85,21 @@ pub struct Buffer<B: Backend> {
     pub writes: Cell<u64>,
     /// Copies of its windows read by blocks longer than them.
     pub windows: RefCell<Vec<Window<B>>>,
+    /// Copies of its elements in textures, one per typed view format read through one.
+    pub texels: RefCell<Vec<TexelCopy<B>>>,
     /// Bytes stream output has filled it to (one u32 on the GPU), made at its first binding as a
     /// stream output target.
     pub filled: RefCell<Option<Kept<B, B::Buffer>>>,
+}
+
+/// A buffer's elements as a 2D texture of a typed view's format, `TEXEL_BUFFER_TEXTURE_WIDTH` a
+/// row, for programs reading typed buffers through textures (`TexelBufferAsTexture`).
+pub struct TexelCopy<B: Backend> {
+    pub format: Format,
+    pub texture: Kept<B, B::Texture>,
+    pub view: Kept<B, B::TextureView>,
+    /// The buffer's write count and back-end buffer at the last copy.
+    pub copied: Cell<Option<(u64, u64)>>,
 }
 
 /// A copy of a constant buffer window of `length` bytes at `offset`, read by a block of `size` bytes:

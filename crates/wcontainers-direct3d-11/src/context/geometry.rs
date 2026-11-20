@@ -12,8 +12,8 @@ use wcontainers_gpu::{BufferUsage, VariantFlags};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
-    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw,
-    StageError, StageIndex, Stages, StreamTargets,
+    DomainSets, FinalDraw, GeometryReplay, InputTopology, ReplayDraw, STREAM_BUFFERS,
+    STREAM_FILLED_WORDS, STREAMS, StageDraw, StageError, StageIndex, Stages, StreamTargets,
 };
 
 /// The stage helper of one vertex shader, input layout, hull and domain shader where bound,
@@ -21,6 +21,8 @@ use wcontainers_shaders::stage::{
 pub(crate) struct StageRun<B: Backend> {
     /// Out while a draw runs it.
     stages: Option<Stages<B>>,
+    /// On a back end without compute programs, the geometry stage's replay in place of `stages`.
+    replay: Option<GeometryReplay<B>>,
     /// Where the vertex stage's compute form reads its helper constants and fetched streams.
     vertex_helpers: Rc<Helpers>,
     /// The vertex layout of the draw after a geometry stage.
@@ -44,6 +46,21 @@ pub(crate) struct StageRun<B: Backend> {
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
 const FILLED_BYTES: u64 = (STREAM_FILLED_WORDS * COUNTER_BYTES) as u64;
+
+/// Stream output without a geometry shader where the back end has no compute programs: the
+/// shaders crate's replay takes a geometry stage only.
+pub(crate) const STREAM_OUT_WITHOUT_COMPUTE: &str =
+    "stream output without a geometry shader on a back end without compute programs";
+
+/// One API draw through a replayed geometry stage: its input topology, (start, count, base
+/// vertex), whether indexed, and its instances.
+pub(super) struct Replayed {
+    topology: InputTopology,
+    range: [u32; 3],
+    indexed: bool,
+    first_instance: u32,
+    instances: u32,
+}
 
 /// Direct3D's primitive topology as the stage helper takes it; `None` for patch lists.
 pub(super) fn input_topology(t: u32) -> Option<InputTopology> {
@@ -207,7 +224,7 @@ impl<B: Backend> Device<B> {
             Some((shader, _)) => {
                 let mut key = VariantKey {
                     output_interpolation: interpolation,
-                    ..crate::shader::geometry_key(&shader.typed, shader.layered, shader.clip)
+                    ..crate::shader::geometry_key(&shader.typed, shader.layered, shader.clip, false)
                 };
                 if layer_named {
                     key.flags |= VariantFlags::LAYER_FROM_STAGE;
@@ -295,6 +312,7 @@ impl<B: Backend> Device<B> {
         };
         Ok(StageRun {
             stages: Some(stages),
+            replay: None,
             vertex_helpers: Rc::new(Helpers::of(&vertex)),
             layout,
             passthrough,
@@ -343,7 +361,8 @@ impl<B: Backend> Device<B> {
         let own_route = (vs.culled || pk.line_coverage) && gs.stage.is_none();
         let passed = (StageVariant { pulled: 0, ..vk }) == StageVariant::default()
             || (own_route && drawn_variant == StageVariant::default());
-        if !passed {
+        let replayed = !self.backend.caps().has(Features::COMPUTE);
+        if !passed && !replayed {
             return not_implemented("a vertex shader variant behind a geometry shader");
         }
         let (start, count, base, indexed) = match range {
@@ -363,6 +382,16 @@ impl<B: Backend> Device<B> {
         }
         if let Some((s, _)) = &gs.stage {
             self.program_paths(s);
+        }
+        if replayed {
+            let draw = Replayed {
+                topology,
+                range: [start, count, base as u32],
+                indexed,
+                first_instance,
+                instances,
+            };
+            return self.draw_replayed(gs, vs, vk, ps, pk, raster, draw);
         }
         let tess = match topology {
             InputTopology::PatchList(_) => self.ctx.hs.clone().zip(self.ctx.ds.clone()),
@@ -507,7 +536,7 @@ impl<B: Backend> Device<B> {
                 self.write_helpers(&[Rc::default(), ph.clone()], bases, None)?;
             }
         }
-        let vertex_set = self.compute_helper_set(&vertex_block)?;
+        let vertex_set = self.helper_set(&vertex_block, StageSet::COMPUTE)?;
         let pixel_helpers = if !selects
             && program
                 .as_ref()
@@ -520,34 +549,13 @@ impl<B: Backend> Device<B> {
         self.helper_blocks = None;
         self.compute_helpers = None;
 
-        // Stream output: each target's filled size gathered into one block the helper advances. A
-        // running query counts the primitives needed even with no target bound.
-        let streamed = gs.stream.is_some()
-            && (self.ctx.so_targets.iter().any(Option::is_some) || self.queries.streams_running());
-        let filled = if streamed {
-            Some(self.stream_filled()?)
-        } else {
-            None
-        };
+        let (filled, counters) = self.stream_begin(gs)?;
         self.end_pass();
         let twin_writes = if tessellated {
             self.twins_in(&[VERTEX, HULL, DOMAIN, GEOMETRY, PIXEL], PIXEL)
         } else {
             self.twins_in(&[VERTEX, GEOMETRY, PIXEL], PIXEL)
         };
-        let mut counters: [Option<B::Buffer>; STREAM_BUFFERS] = Default::default();
-        if let Some(f) = &filled {
-            self.backend
-                .write_buffer(f, 0, &[0; FILLED_BYTES as usize], WriteMode::Ordered);
-            for (i, t) in self.ctx.so_targets.clone().iter().enumerate() {
-                if let Some(t) = t {
-                    let c = self.filled_counter(t)?;
-                    let at = (COUNTER_BYTES * i) as u64;
-                    self.backend.copy_buffer(&c, 0, f, at, COUNTER_BYTES as u64);
-                    counters[i] = Some(c);
-                }
-            }
-        }
 
         let ctx = &self.ctx;
         let target_handles: [_; STREAM_BUFFERS] = std::array::from_fn(|i| {
@@ -646,15 +654,7 @@ impl<B: Backend> Device<B> {
             Err(StageError::TopologyMismatch) => None,
             Err(e) => return Err(self.staged_error(e)),
         };
-        if let Some(f) = &filled {
-            for (i, c) in counters.iter().enumerate() {
-                if let Some(c) = c {
-                    let at = (COUNTER_BYTES * i) as u64;
-                    self.backend.copy_buffer(f, at, c, 0, COUNTER_BYTES as u64);
-                }
-            }
-            self.stream_counted(f)?;
-        }
+        self.stream_end(filled.as_ref(), &counters)?;
         if !geometry && !tessellated && !culled && !lines {
             return Ok(gs.drawn);
         }
@@ -672,6 +672,26 @@ impl<B: Backend> Device<B> {
             }
             return Ok(false);
         }
+        let pixel = (&program, &ph, pixel_helpers.as_ref());
+        self.draw_made(staged, pixel, raster, &out, bases, selects)?;
+        if twin_writes {
+            self.twins_out(PIXEL);
+        }
+        Ok(false)
+    }
+
+    /// The draw of what a geometry, cull or line stage made, through `staged`'s layout, with the
+    /// pixel stage's program, helpers and helper set; once per layer and viewport where the stage
+    /// `selects` them.
+    fn draw_made(
+        &mut self,
+        staged: &StageRun<B>,
+        (program, ph, pixel_helpers): (&B::Program, &Rc<Helpers>, Option<&B::BindingSet>),
+        raster: Option<&B::Raster>,
+        out: &FinalDraw<B>,
+        bases: [u32; 2],
+        selects: bool,
+    ) -> Result<()> {
         let layout = staged
             .layout
             .as_ref()
@@ -680,20 +700,354 @@ impl<B: Backend> Device<B> {
             .clone();
         if selects {
             let run = staged.run_helpers.clone();
-            self.draw_runs(&layout, &program, [&run, &ph], raster, &out, bases)?;
+            self.draw_runs(&layout, program, [&run, ph], raster, out, bases)
         } else {
-            self.draw_output(&layout, &program, pixel_helpers.as_ref(), raster, &out, 0)?;
+            self.draw_output(&layout, program, pixel_helpers, raster, out, 0)
+        }
+    }
+
+    /// Stream output's start: each bound target's filled size gathered into one block the stage
+    /// helper advances, and each target's counter. A running query counts the primitives needed
+    /// even with no target bound. Ends the pass.
+    #[allow(clippy::type_complexity)]
+    fn stream_begin(
+        &mut self,
+        gs: &Geometry<B>,
+    ) -> Result<(Option<B::Buffer>, [Option<B::Buffer>; STREAM_BUFFERS])> {
+        let mut counters: [Option<B::Buffer>; STREAM_BUFFERS] = Default::default();
+        let streamed = gs.stream.is_some()
+            && (self.ctx.so_targets.iter().any(Option::is_some) || self.queries.streams_running());
+        if !streamed {
+            return Ok((None, counters));
+        }
+        let f = self.stream_filled()?;
+        self.end_pass();
+        self.backend
+            .write_buffer(&f, 0, &[0; FILLED_BYTES as usize], WriteMode::Ordered);
+        for (i, t) in self.ctx.so_targets.clone().iter().enumerate() {
+            if let Some(t) = t {
+                let c = self.filled_counter(t)?;
+                let at = (COUNTER_BYTES * i) as u64;
+                self.backend
+                    .copy_buffer(&c, 0, &f, at, COUNTER_BYTES as u64);
+                counters[i] = Some(c);
+            }
+        }
+        Ok((Some(f), counters))
+    }
+
+    /// Stream output's end: each target's counter advanced from the block, and the running queries
+    /// counted.
+    fn stream_end(
+        &mut self,
+        filled: Option<&B::Buffer>,
+        counters: &[Option<B::Buffer>; STREAM_BUFFERS],
+    ) -> Result<()> {
+        let Some(f) = filled else {
+            return Ok(());
+        };
+        // Copies of the targets read since (windows, texture copies) are copied again.
+        for t in self.ctx.so_targets.iter().flatten() {
+            t.writes.set(t.writes.get() + 1);
+        }
+        for (i, c) in counters.iter().enumerate() {
+            if let Some(c) = c {
+                let at = (COUNTER_BYTES * i) as u64;
+                self.backend.copy_buffer(f, at, c, 0, COUNTER_BYTES as u64);
+            }
+        }
+        self.stream_counted(f)
+    }
+
+    /// The stage run of a geometry shader replayed (`GeometryAsReplay`): the vertex shader as
+    /// drawn, and the geometry shader's replay form converted for the pixel shader's interpolation.
+    fn make_replayed(
+        &mut self,
+        gs: &Geometry<B>,
+        vs: &Shader<B>,
+        vk: StageVariant,
+    ) -> Result<StageRun<B>> {
+        let (shader, _) = gs.stage.as_ref().expect("a geometry stage");
+        let key = self.variant_key(vs, vk, SourceStage::Vertex);
+        let vertex = crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &key)?;
+        let layer_named = crate::shader::names_layer(&shader.reflection.outputs);
+        let mut key = VariantKey {
+            output_interpolation: interpolation(self.ctx.ps.as_deref()),
+            ..crate::shader::geometry_key(&shader.typed, shader.layered, shader.clip, true)
+        };
+        if layer_named {
+            key.flags |= VariantFlags::LAYER_FROM_STAGE;
+            key.linked.location = crate::shader::linked_location(
+                shader
+                    .reflection
+                    .outputs
+                    .iter()
+                    .chain(self.ctx.ps.iter().flat_map(|p| &p.reflection.inputs)),
+            );
+        }
+        let geometry = crate::shader::convert_geometry(&shader.bytecode, &key)?;
+        let replay = GeometryReplay::new(&mut self.backend, &vertex, &geometry, gs.stream.as_ref());
+        let replay = replay.map_err(|e| self.staged_error(e))?;
+        let gpu = self.backend.create_shader(replay.passthrough());
+        let gpu = self.gpu(gpu)?;
+        let passthrough_id = self.id();
+        let passthrough = Kept::new(gpu, passthrough_id, Object::Shader, &self.graveyard);
+        let run_helpers = if replay.selects() {
+            Rc::new(Helpers::of_passthrough(replay.passthrough(), layer_named))
+        } else {
+            Rc::default()
+        };
+        let gpu = self.backend.create_vertex_layout(&replay.vertex_layout());
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        let layout = Kept::new(gpu, id, Object::VertexLayout, &self.graveyard);
+        Ok(StageRun {
+            stages: None,
+            replay: Some(replay),
+            vertex_helpers: Rc::new(Helpers::of(&vertex)),
+            layout: Some(layout),
+            passthrough: Some(passthrough),
+            passthrough_id,
+            run_helpers,
+            domain: None,
+            culled: false,
+            lines: false,
+        })
+    }
+
+    /// A draw through a geometry shader on a back end without compute programs: the shaders
+    /// crate's replay captures the vertex stage as drawn, then the geometry shader's replay form,
+    /// outside a pass, and the pass-through draws what it captured with the pixel program.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_replayed(
+        &mut self,
+        gs: &Rc<Geometry<B>>,
+        vs: &Rc<Shader<B>>,
+        vk: StageVariant,
+        ps: Option<&Rc<Shader<B>>>,
+        pk: StageVariant,
+        raster: Option<&B::Raster>,
+        draw: Replayed,
+    ) -> Result<bool> {
+        if gs.stage.is_none() {
+            return not_implemented(STREAM_OUT_WITHOUT_COMPUTE);
+        }
+        // The vertex stage is captured as drawn, so a variant applying what follows the geometry
+        // stage (the viewport, clip distances) or fetching its inputs has no place there.
+        if (StageVariant {
+            texture_info: false,
+            ..vk
+        }) != StageVariant::default()
+        {
+            return not_implemented("a vertex shader variant behind a replayed geometry shader");
+        }
+        if self.ctx.topology == topology::UNDEFINED || (draw.indexed && self.ctx.index.is_none()) {
+            return Ok(false);
+        }
+        let key = (
+            vs.gpu.id,
+            self.ctx.layout.as_ref().map_or(0, |l| l.id),
+            [0; 2],
+            gs.id,
+            ps.map_or(0, |p| p.gpu.id),
+            None,
+        );
+        let mut staged = match self.staged.remove(&key) {
+            Some(s) => s,
+            None => self.make_replayed(gs, vs, vk)?,
+        };
+        let r = self.run_replayed(gs, &mut staged, vs, ps, pk, raster, draw);
+        self.staged.insert(key, staged);
+        r.map(|()| false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_replayed(
+        &mut self,
+        gs: &Geometry<B>,
+        staged: &mut StageRun<B>,
+        vs: &Rc<Shader<B>>,
+        ps: Option<&Rc<Shader<B>>>,
+        pk: StageVariant,
+        raster: Option<&B::Raster>,
+        draw: Replayed,
+    ) -> Result<()> {
+        let [start, count, base] = draw.range;
+        let bases = [if draw.indexed { base } else { start }, draw.first_instance];
+        let selects = staged.replay.as_ref().is_some_and(GeometryReplay::selects);
+        let program = match &staged.passthrough {
+            Some(k) if gs.drawn => {
+                let vertex = k.handle.clone();
+                Some(self.stage_program(&vertex, staged.passthrough_id, ps, pk)?)
+            }
+            _ => None,
+        };
+
+        // The vertex stage's slots and helper block, as for its own draw; the geometry stage's
+        // slots, read by its replay form's vertex program.
+        self.ctx.vertex_compute = false;
+        self.ctx.sets_dirty[VERTEX] = true;
+        self.grow_constants()?;
+        self.refresh_windows()?;
+        self.update_set(VERTEX, &[], &[])?;
+        let vertex_helpers = staged.vertex_helpers.clone();
+        let vertex_block = self.helper_block(&vertex_helpers, VERTEX, bases, None)?;
+        self.update_set(GEOMETRY, &[], &[])?;
+        if let Some((_, ph)) = &program {
+            self.update_set(PIXEL, &[], &ph.relocated)?;
+            if !self.ctx.through[PIXEL].is_empty() {
+                return not_implemented(
+                    "storage textures read through buffers behind a geometry shader",
+                );
+            }
+            if !selects && (ph.size > 0 || !ph.merged.is_empty()) {
+                self.write_helpers(&[Rc::default(), ph.clone()], bases, None)?;
+            }
+        }
+        let vertex_set = self.helper_set(&vertex_block, StageSet::VERTEX)?;
+        let pixel_helpers = match &program {
+            Some((_, ph)) if !selects && (ph.size > 0 || !ph.merged.is_empty()) => {
+                self.helper_blocks.as_ref().map(|h| h.set.handle.clone())
+            }
+            _ => None,
+        };
+        self.helper_blocks = None;
+        self.compute_helpers = None;
+        let vertex_layout = self.vertex_layout(vs)?;
+        let empty_streams = self.ctx.layout.as_ref().is_some_and(|l| {
+            l.elements
+                .iter()
+                .any(|e| self.ctx.vertex_buffers[e.slot as usize].is_none())
+        });
+        let zero_stream = if empty_streams {
+            Some(self.zero_buffer()?)
+        } else {
+            None
+        };
+        let (filled, counters) = self.stream_begin(gs)?;
+        self.end_pass();
+        let twin_writes = self.twins_in(&[VERTEX, GEOMETRY, PIXEL], PIXEL);
+
+        let ctx = &self.ctx;
+        let target_handles: [_; STREAM_BUFFERS] = std::array::from_fn(|i| {
+            ctx.so_targets[i]
+                .as_ref()
+                .map(|b| (b.gpu.borrow(), b.desc.byte_width))
+        });
+        let vertex_handles: [_; VERTEX_SLOTS] = std::array::from_fn(|slot| {
+            ctx.vertex_buffers[slot]
+                .as_ref()
+                .map(|(b, _, offset)| (b.gpu.borrow(), *offset))
+        });
+        let read = |slot: usize| {
+            ctx.layout
+                .as_ref()
+                .is_some_and(|l| l.elements.iter().any(|e| e.slot as usize == slot))
+        };
+        let vertex_buffers: [Option<VertexBinding<'_, B>>; VERTEX_SLOTS] =
+            std::array::from_fn(|slot| match (&vertex_handles[slot], &zero_stream) {
+                (Some((b, offset)), _) => Some(VertexBinding {
+                    buffer: &b.handle,
+                    offset: u64::from(*offset),
+                }),
+                (None, Some(zero)) if read(slot) => Some(VertexBinding {
+                    buffer: zero,
+                    offset: 0,
+                }),
+                _ => None,
+            });
+        let used = vertex_buffers
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1);
+        let index_handle = ctx
+            .index
+            .as_ref()
+            .filter(|_| draw.indexed)
+            .map(|(b, f, offset)| (b.gpu.borrow(), *offset, *f));
+        let mut vertex_sets: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
+        vertex_sets[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
+        vertex_sets[HELPER_SET as usize] = vertex_set.as_ref();
+        let mut geometry_sets: [Option<&B::BindingSet>; MAX_BINDING_SETS] =
+            [None; MAX_BINDING_SETS];
+        geometry_sets[0] = ctx.sets[GEOMETRY].as_ref().map(|k| &k.handle);
+        let range = if draw.indexed {
+            DrawRange::Indexed {
+                first: start,
+                count,
+                base_vertex: base as i32,
+                first_instance: draw.first_instance,
+                instances: draw.instances,
+            }
+        } else {
+            DrawRange::Vertices {
+                first: start,
+                count,
+                first_instance: draw.first_instance,
+                instances: draw.instances,
+            }
+        };
+        let replay = ReplayDraw {
+            vertex_sets,
+            vertex_layout: &vertex_layout,
+            vertex_buffers: &vertex_buffers[..used],
+            index: index_handle
+                .as_ref()
+                .map(|(b, offset, format)| IndexBinding {
+                    buffer: &b.handle,
+                    offset: u64::from(*offset),
+                    format: *format,
+                }),
+            immediates: &[],
+            geometry_sets,
+            topology: draw.topology,
+            range,
+            stream_output: filled.as_ref().map(|f| StreamTargets {
+                buffers: std::array::from_fn(|i| {
+                    target_handles[i].as_ref().map(|(b, size)| BufferRange {
+                        buffer: &b.handle,
+                        offset: 0,
+                        size: u64::from(*size),
+                    })
+                }),
+                filled: BufferRange {
+                    buffer: f,
+                    offset: 0,
+                    size: FILLED_BYTES,
+                },
+            }),
+        };
+        let mut route = staged.replay.take().expect("the replay");
+        let ran = route.run(&mut self.backend, replay);
+        staged.replay = Some(route);
+        drop(target_handles);
+        drop(vertex_handles);
+        drop(index_handle);
+        let out = match ran {
+            Ok(out) => out,
+            // Primitives the geometry shader does not take, which Direct3D does not draw either.
+            Err(StageError::TopologyMismatch) => None,
+            Err(e) => return Err(self.staged_error(e)),
+        };
+        self.stream_end(filled.as_ref(), &counters)?;
+        if let (Some(out), Some((program, ph))) = (out, program) {
+            let pixel = (&program, &ph, pixel_helpers.as_ref());
+            self.draw_made(staged, pixel, raster, &out, bases, selects)?;
         }
         if twin_writes {
             self.twins_out(PIXEL);
         }
-        Ok(false)
+        Ok(())
     }
 
-    /// The vertex stage's helper block bound for the stage helper's compute programs, where it has
-    /// one. The stage helper and these blocks write the data ring, so the draws' and dispatches'
-    /// blocks as last written are forgotten by the caller.
-    pub(super) fn compute_helper_set(&mut self, block: &[u8]) -> Result<Option<B::BindingSet>> {
+    /// A helper block bound for `stages` at the vertex stage's helper binding, where it has one.
+    /// The stage helper and these blocks write the data ring, so the draws' and dispatches' blocks
+    /// as last written are forgotten by the caller.
+    pub(super) fn helper_set(
+        &mut self,
+        block: &[u8],
+        stages: StageSet,
+    ) -> Result<Option<B::BindingSet>> {
         if block.is_empty() {
             return Ok(None);
         }
@@ -708,7 +1062,7 @@ impl<B: Backend> Device<B> {
         let ring = self.gpu(ring)?;
         let set = self.backend.create_binding_set(&[BindingEntry {
             binding: helper_binding(ShaderStage::Vertex),
-            stages: StageSet::COMPUTE,
+            stages,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &ring,
                 offset: offsets[0],
