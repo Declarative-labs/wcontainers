@@ -670,7 +670,9 @@ fn main() -> windows::core::Result<()> {
             // Rectangles of storage views: floats, integers (above their range, fractions,
             // NaN), and targets of an integer format, below their range too. Negative values
             // into integer storage views are left out: the RTX 3080 does not clamp them.
-            let odd = [260.0, -5.0, 2.7, f32::NAN];
+            // Twice the largest 8-bit channel.
+            let above = f32::from(u8::MAX) * 2.0;
+            let odd = [above, -5.0, 2.7, f32::NAN];
             for (name, format, bind, value, texel) in [
                 (
                     "storage rects float",
@@ -697,7 +699,7 @@ fn main() -> windows::core::Result<()> {
                     "storage rects uint",
                     DXGI_FORMAT_R8G8B8A8_UINT,
                     D3D11_BIND_UNORDERED_ACCESS,
-                    [260.0, 2.7, f32::NAN, 0.0],
+                    [above, 2.7, f32::NAN, 0.0],
                     4,
                 ),
                 (
