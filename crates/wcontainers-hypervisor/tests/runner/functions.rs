@@ -224,6 +224,57 @@ pub const NEST: [u32; 29] = [
     0xd65f03c0, // ret
 ];
 
+/// Accesses through sp that may cross a page, and a vector pair into one register through sp, `x3` turns from
+/// the stack `x0`.
+pub const STACK_CROSSING: [u32; 9] = [
+    0x910003e9, // mov x9, sp
+    0x9100001f, // mov sp, x0
+    0x3cc083e0, // ldur q0, [sp, #8]
+    0xf840c3e1, // ldur x1, [sp, #12]
+    0xad4007e1, // ldp q1, q1, [sp]
+    0xf1000463, // subs x3, x3, #1
+    0x54ffff81, // b.ne back to the ldur q0
+    0x9100013f, // mov sp, x9
+    0xd65f03c0, // ret
+];
+
+/// A 128-bit exclusive pair in a loop at `x0`, an acquire load and release store at `x1`, and a load and
+/// store exclusive through sp.
+pub const EXCLUSIVE_PAIR_LOOP: [u32; 9] = [
+    0xc87f0c02, // ldxp x2, x3, [x0]
+    0x91000442, // add x2, x2, #1
+    0xc8240c02, // stxp w4, x2, x3, [x0]
+    0x35ffffa4, // cbnz w4, back to the ldxp
+    0xc8dffc25, // ldar x5, [x1]
+    0xc89ffc25, // stlr x5, [x1]
+    0xc85fffe6, // ldaxr x6, [sp]
+    0xc807ffe6, // stlxr w7, x6, [sp]
+    0xd65f03c0, // ret
+];
+
+/// Test-bit branches forward and back, a backward `cbnz` on a withheld register, forward `b`s and a backward
+/// `b` across more than the short look-ahead: guest branches E does not count, beside ones it does.
+pub const FORWARD_BRANCHES: [u32; 18] = [
+    0xd2800000, // mov x0, #0
+    0xd28000bc, // mov x28, #5
+    0x91000400, // add x0, x0, #1
+    0xd100079c, // sub x28, x28, #1
+    0x37000060, // tbnz w0, #0, to the eor
+    0x91000800, // add x0, x0, #2
+    0x14000002, // b to the tbz
+    0xd27d0000, // eor x0, x0, #8
+    0xb6f8005c, // tbz x28, #63, to the cbnz
+    0x14000008, // b to the ret
+    0xb5ffff1c, // cbnz x28, back to the add x0, x0, #1
+    0x91000400, // add x0, x0, #1
+    0x91000400, // add x0, x0, #1
+    0x91000400, // add x0, x0, #1
+    0x91000400, // add x0, x0, #1
+    0xb400005c, // cbz x28, to the ret
+    0x17fffff2, // b back to the first add x0, x0, #1
+    0xd65f03c0, // ret
+];
+
 /// `clrex` between a load and a store exclusive: the store fails.
 pub const CLEARED: [u32; 4] = [
     0xc85f7c02, // ldxr x2, [x0]
@@ -375,6 +426,10 @@ pub fn functions(seed: u64) -> Vec<(&'static str, &'static [u32], Vec<Case>)> {
     let misaligned = writable + size_of::<u32>() as u64;
     // Misaligned, and the access at index two crosses into the next page.
     let crossing = DATA + PAGE_SIZE - 2 * size_of::<u64>() as u64 - size_of::<u32>() as u64;
+    // A stack whose accesses past its first vector cross into the next page.
+    let stack_at_page_end = DATA + PAGE_SIZE - size_of::<u128>() as u64;
+    let turns = 3;
+    let acquired = writable + 2 * size_of::<u128>() as u64;
     let mut rng = fastrand::Rng::with_seed(seed);
     let system = [
         (3, rng.u64(..)),
@@ -441,6 +496,23 @@ pub fn functions(seed: u64) -> Vec<(&'static str, &'static [u32], Vec<Case>)> {
             &NEST,
             vec![start(&[(0, writable), (1, words), (2, rounds)])],
         ),
+        (
+            "stack crossing",
+            &STACK_CROSSING,
+            vec![
+                start(&[(0, stack_at_page_end), (3, turns)]),
+                start(&[(0, writable), (3, turns)]),
+            ],
+        ),
+        (
+            "exclusive pair loop",
+            &EXCLUSIVE_PAIR_LOOP,
+            vec![
+                start(&[(0, writable), (1, acquired)]),
+                start(&[(0, writable), (1, acquired + size_of::<u32>() as u64)]),
+            ],
+        ),
+        ("forward branches", &FORWARD_BRANCHES, vec![start(&[])]),
         ("float", &FLOAT, float_cases(seed, 8, 10, &[])),
         ("system", &SYSTEM, float_cases(seed, 13, 8, &system)),
         (
