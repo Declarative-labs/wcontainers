@@ -156,15 +156,17 @@ is only expected. Measurements are in section 14 and in docs/status-threads.md.
 Today one guest thread runs at a time in a whole container. A build with sixteen jobs on a sixteen-core
 machine uses one core. This plan lifts that on every executor, in this order:
 
-1. **Different groups run at the same time**, each group still running one thread at a time. A build's
-   compiler processes are separate groups, so this alone uses the cores. Translated code does not change.
-   A process that asks for exact replay still gets it, and one that does not pays nothing for it.
-2. **The threads of one group run at the same time**, where its ordering says so, from a second form of
-   code. The first form, for `Serial`, stays as it is.
+1. **Tasks that overlap nobody run at the same time**, each `Serial` process still running one thread at
+   a time. A build's compiler processes share no writable memory, so this alone uses the cores.
+   Translated code does not change. A process that asks for exact replay still gets it, and one that
+   does not pays nothing for it, whatever its neighbours asked for.
+2. **The threads of one process run at the same time**, where its ordering says so, from a second form
+   of code. The first form, for `Serial`, stays as it is. A `Serial` task and `Parallel` tasks that
+   share memory with it take turns by the one rule of section 3.
 3. The same on the native executor, and for x86-64 guests.
 
-It also settles what each replay guarantee records and what it costs, what the embedder composes itself,
-and what is refused until it is built.
+It also says what each replay guarantee asks of the kernel now that replay is per process, what the
+embedder composes itself, and what is refused until it is built.
 
 ## 2. Rules, and what is already ruled
 
@@ -175,38 +177,30 @@ Ruled by the owner on 2026-11-18, and taken as given. Where the brief's and the 
 disagree, the last one is followed (brief-threads.md lines 134-160, interface notes lines 155-181).
 - **Two separate choices per process**, in `ExecutionConfig<E> { thread_ordering: ThreadOrdering,
   replay_determinism: ReplayDeterminism, translator: E::TranslatorConfig }`.
-  - `enum ThreadOrdering { Serial, Parallel }`: how the threads of one group are run. `Serial`: one at a
-    time. `Parallel`: at the same time.
+  - `enum ThreadOrdering { Serial, Parallel }`: how the threads of one process are run. `Serial`: one at
+    a time. `Parallel`: at the same time.
   - `enum ReplayDeterminism { Exact, External, None }`: what a replay of the process promises. `Exact`:
     identical registers and memory at every logged position. `External`: "Consistent in everything the
     process does to the outside; no guarantee about its internal state." `None`: nothing.
   - `ParallelOptimistic` is no longer a value: it is the pair (`Parallel`, `External`). The getter
     `ThreadOrdering::replay_determinism()` is gone. The guarantee is a field.
 - **The progress count is paid only for `Exact`.** Translated code holds the count if and only if the
-  process's `replay_determinism` is `Exact`. That is derived from the field, never a switch of its own,
-  and it is part of the translation cache key. With `External`, kernel entries are put in order and
-  logged, with no count; in a `Parallel` group so are locking and atomic instructions. With `None`
-  nothing is recorded.
+  process was given `Exact`. That is derived from the field, never a switch of its own, and it is part
+  of the translation cache key. With `None` nothing is recorded.
 - **(`Parallel`, `Exact`)**: the kernel does its part (the count, and an exact position for everything it
   controls). The order of memory accesses between threads is the embedder's, through per-thread memory
-  watches (`memory_watch_thread`, on executors that implement `PerThreadWatch`).
+  watches (`memory_watch_thread` in that ruling, on executors that implement `PerThreadWatch`).
 - **There is no setter for the ordering.** A process is given its config when the container starts and
-  when it is resumed. Taking a process out of its kernel is `suspend`, putting it back is `resume`, and
-  the value between is `SuspendedProcess<E>`. Neither converts anything. `export` and `import` only make
-  and read the form that crosses a wire (interface notes lines 110-123, 131-137). The getter is
-  `Process::execution_config()`. A call that changes the config inside a hook without `run` returning was
-  proposed (`Process::suspend_and_resume(self, config)`, interface notes lines 165-166; the brief calls
-  it `Process::replace_execution_config`). It has since been measured as not needed for speed, and this
-  plan needs it for nothing else, so it is not in the plan's interface (section 6).
-- Hooks receive `Process<'_, E>` by value, and `suspend(self)` consumes it. Suspending a process inside a
-  hook makes `run` return at once.
-- The call that runs a container is `run`. It returns `StopReason { Interrupted, Suspended, Idle {
-  until }, Finished { status } }`. Today's run-to-the-end call becomes `run_until_finished`.
+  when it is resumed. The getter is `Process::execution_config()`. How a process is taken out and put
+  back is now by task (below, 2026-11-19).
+- Hooks receive `Process<'_, E>` by value. The call that runs a container is `run`. It returns
+  `StopReason { Interrupted, Suspended, Idle { until }, Finished { status } }`. Today's run-to-the-end
+  call becomes `run_until_finished`.
 - **Processes that share memory need not be on one kernel.** The owner dropped the "process closure" as a
-  hard rule. The kernel reports which processes share memory, and marks shared pages watched when one of
-  them leaves. Replay of processes that share memory across kernels is the embedder's concern (interface
-  notes lines 158-162).
-- Different groups always run in parallel with each other.
+  hard rule. Replay of processes that share memory across kernels is the embedder's concern (interface
+  notes lines 158-162). Since 2026-11-19 one task may also be on another kernel than its siblings
+  (below).
+- Different processes that share no writable memory always run in parallel with each other.
 - The kernel is the same under every executor. It is entered by one caller at a time to begin with. The
   interface must not prevent several at once later.
 - Using cores by running more kernels of one container is rejected.
@@ -220,23 +214,78 @@ disagree, the last one is followed (brief-threads.md lines 134-160, interface no
   `on_inspection_starting` and `on_inspection_ended` announce it. They are the embedder interface
   track's to build. What this plan adds is only which threads are stopped first (4.5).
 
+Ruled by the owner on 2026-11-19, from "Ruled by the owner, 2026-11-19: where replay is recorded" to
+the end of the interface notes. Each heading is quoted where the plan relies on it.
+- **Replay is per process, at the process's own system calls** ("where replay is recorded"). A copy of
+  a process is built from a memory transfer (a snapshot, or changed pages) and from running the process
+  again as a pure function of its recorded system call results. Its log is those results, plus what
+  reaches it without a system call: signals at a counted position, and shared memory through watches.
+  It is not the kernel's outer boundary. A process given `None` costs nothing and breaks no neighbour;
+  an unrecorded process that writes to a recorded one is covered because the reader's read result is
+  logged. "A kernel is recorded whole or not at all" (this plan's earlier decision 1) is withdrawn. Not
+  yet designed: the two kernel primitives this needs (4.6).
+- **The system call proxy** ("the system call proxy and the kernel-write hook"):
+  `SystemCallRequest { number, arguments: [u64; SYSTEM_CALL_ARGUMENT_COUNT] }`, `SystemCallResponse =
+  Result<u64, Errno>`, `System::intercept_system_call_request(&self, process, thread, request) ->
+  ControlFlow<SystemCallResponse, SystemCallRequest>` and `System::intercept_system_call_response(&self,
+  process, thread, &request, response) -> SystemCallResponse`, each with a default that changes nothing.
+- **The kernel's writes** (same heading): `on_memory_written_by_kernel(&self, process, thread, range)`
+  fires after every write the kernel makes into a process's memory, with the exact range. Watches and
+  dirty marks treat the kernel's writes exactly like the program's own. `memory_changed` is renamed
+  `take_dirty_memory`, and method names are verb first (`read_memory`, `write_memory`, `watch_memory`).
+  Watches are `Process::watch_memory(&mut self, range, watches: WatchesFor)` with `WatchesFor { None,
+  Writes, All }`, and the hook `on_watched_memory_accessing(&self, process, thread, address, kind:
+  AccessKind)`, which the kernel's own accesses to watched memory fire too. It replaces
+  `on_memory_accessing`. The embedder's own writes fire neither hook.
+- **Signals as an input** ("signals as an input"): `on_signal_delivering(&self, process, thread,
+  &SignalInformation)` before the kernel delivers, and `Process::send_signal(thread, signal)`. In the
+  middle of computing a signal's position is the count under `Exact`; otherwise the embedder takes a
+  fresh snapshot there. "Later, with the threads plan: reading a thread's progress count and stopping a
+  thread at a given count (needed only under Exact)" (decision 12).
+- **Optimistic replay stays** ("optimistic replay STAYS (owner)"): `External` stays in the interface, as
+  a mode chosen per program. The prototype's figures that this plan's earlier decision 3 leaned on are
+  withdrawn: its replayer invented failures, and its comparison was stricter than the owner's
+  definition. They are being measured again.
+- **One scheduling rule, inside the kernel** ("threads plan decision 1 reworked" and "shared memory is
+  announced per process"): a task whose code is `Serial` is given a processor only while no task that
+  overlaps its memory has one; `Parallel` tasks may run beside their overlappers. It replaces groups in
+  force, the config in force and "the strictest wins". The replay guarantee is never forced onto a
+  neighbour. The embedder chooses orderings and builds its own view from the hooks; nothing about the
+  rule is on the interface (section 3).
+- **Shared memory is announced per process** (same heading): `MemoryObject { File { device, inode },
+  SystemVSegment(id), Anonymous(id) }` with branded ids, and the hooks `on_shared_memory_mapping` and
+  `on_shared_memory_unmapped(&self, process, source: MemoryObject, offset, range)`, fired per process for
+  mmap, shmat, a mapping inherited at fork, and the ends, only for sources some process can write
+  through a mapping. They replace the kernel's report of which processes share memory.
+- **Suspend and resume by task** ("suspend and resume by task, and the process context"): a `Kernel`
+  trait with `suspend_tasks`, `suspend_process`, `copy_process_context`, `resume_process(context,
+  config)` and `resume_tasks`, the types `SuspendedTask` and `ProcessContext`, and the same calls on a
+  `Process` handle, limited to its one process. A batch is taken as of one moment, and how the kernel
+  stops the tasks is its own. Suspending some tasks in a hook does not use up the handle; taking the
+  process does. Resume stays outside hooks. They replace `Process::suspend(self)` and
+  `SuspendedProcess<E>`.
+- **Per-thread distribution is core** ("the embedder-side view `WorkloadPlacement`"): the kernel must be
+  able to move one task apart from its siblings.
+- **Locks across machines** ("locks across machines", agreed in substance, details open): on the process
+  handle, `wake_waiters(address, count, bitset)` and `move_waiters(from, to, count)` (4.5).
+
 **What each pair means, and what it pays.** The count costs translated code 11.9% to 16.3% more
 instructions in its best measured form (orchestrator/progress-count-cost.json, form 3, the x86 laptop
 and this Mac). So the pairs differ in cost, and the plan keeps the cheap ones cheap. What is listed here
-is what a process is given. In a recorded kernel no process runs below `External`, and so none runs
-`Parallel` without `Exact` (section 3, "A kernel is recorded whole, or not at all").
-- (`Serial`, `None`): today's run without its count. One thread of the group at a time. Nothing is
+is what a process is given, and it is what the process runs under, whatever its neighbours were given.
+What is logged, and where, is the embedder's, through the proxy and the hooks above (4.6).
+- (`Serial`, `None`): today's run without its count. One thread of the process at a time. Nothing is
   recorded and nothing is asked of the embedder.
-- (`Serial`, `External`): the same code. Each kernel entry of the process is put in order and logged,
-  with no position. A replay is checked against the log and thrown away when it differs (4.6).
-- (`Serial`, `Exact`): code with the count. Each entry is logged with its position. A replay is the same
-  at every logged position (4.6).
-- (`Parallel`, `None`): the group's threads run at once. Nothing is recorded.
+- (`Serial`, `External`): the same code. The embedder logs the process's system call results, and a
+  replay is checked against the log and thrown away when it differs (4.6).
+- (`Serial`, `Exact`): code with the count. What reaches the process without a system call is logged at
+  a position (4.6).
+- (`Parallel`, `None`): the process's threads run at once. Nothing is recorded.
 - (`Parallel`, `External`): as (`Serial`, `External`), and each locking or atomic instruction also takes
-  its place in one order. That needs a third kind of translated code. Section 16 recommends not
-  building it now; until it is, the group runs as (`Serial`, `External`), which keeps the same promise.
-- (`Parallel`, `Exact`): code with the count. Every stop the kernel or the executor causes is an entry at
-  a position. The order of memory accesses is the embedder's, through per-thread watches (section 8).
+  its place in one order. That needs a third kind of translated code, not built. Until it is, the
+  process runs as `Serial` (section 3), which keeps the same promise.
+- (`Parallel`, `Exact`): code with the count. Every stop the kernel or the executor causes is at a
+  position. The order of memory accesses is the embedder's, through per-thread watches (section 8).
 
 ## 3. Groups
 
