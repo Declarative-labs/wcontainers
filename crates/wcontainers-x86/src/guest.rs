@@ -560,6 +560,10 @@ impl Guest for X86_64 {
                 MemoryFault::GeneralProtection
             };
         }
+        // Every access of `enter` is through the stack segment, the frame pointers it copies included.
+        if i.iced.mnemonic() == Mnemonic::Enter && !crate::is_canonical(address) {
+            return MemoryFault::Stack;
+        }
         MemoryFault::Page
     }
 
@@ -716,6 +720,25 @@ impl Guest for X86_64 {
                 }
             }
             Ret => [Some(through(RSP, 0, SLOT, AccessKind::Read)), None],
+            // The push of rbp; the frame pointers it copies are checked as they are made.
+            Enter => {
+                let bytes = stack_bytes(i);
+                [
+                    Some(through(RSP, -i64::from(bytes), bytes, AccessKind::Write)),
+                    None,
+                ]
+            }
+            // The upper half, then the lower, each wrapped by itself under an address-size prefix.
+            Maskmovdqu => {
+                let half = crate::XMM_BYTES / 2;
+                [half, 0].map(|by| {
+                    Some(MemoryAccess {
+                        segment: segment(i),
+                        address_bits: if i.address32 { W32 } else { W64 },
+                        ..through(RDI, by.into(), half, AccessKind::Write)
+                    })
+                })
+            }
             Bt | Bts | Btr | Btc if ins.op_kind(1) == OpKind::Register => [
                 explicit.map(|m| MemoryAccess {
                     index: Some(Index::BitOffset {
@@ -749,7 +772,7 @@ impl Guest for X86_64 {
                 before_access: true,
             },
             Pop if writes_rsp => StackMove::Unknown,
-            Leave => StackMove::Unknown,
+            Leave | Enter => StackMove::Unknown,
             Pop | Popf | Popfq => StackMove::By {
                 delta: stack_bytes(i).into(),
                 before_access: false,
@@ -905,6 +928,7 @@ impl Guest for X86_64 {
             Rdtsc | Rdtscp | Cpuid | Popf | Popfq => true,
             // Intel's approximations are its own (plan 5.8).
             m if crate::float::estimates(m) => true,
+            m if crate::descriptors::may_vary(m) => true,
             // Intel leaves the result of 16 bits undefined.
             Bswap => crate::meaning::width(i, 0) == crate::operand::W16,
             m => matches!(

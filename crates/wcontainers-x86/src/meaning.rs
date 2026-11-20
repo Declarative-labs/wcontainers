@@ -77,7 +77,12 @@ pub fn written(i: &Instruction) -> bool {
                 | Scasq
         );
     }
-    if crate::simd::written(i) || crate::float::written(i) {
+    if crate::simd::written(i)
+        || crate::float::written(i)
+        || crate::text::written(m)
+        || crate::descriptors::written(m)
+        || m == Maskmovdqu
+    {
         return true;
     }
     // Every operand of these is a general register, memory or an immediate.
@@ -99,6 +104,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Shld | Shrd | Adcx | Adox | Loop | Loope | Loopne | Lahf | Sahf | Clflush
                     | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase | Popf | Popfq | Rdtsc
                     | Rdtscp | Cpuid | Xlatb | Movnti | Lfence | Mfence | Sfence | Crc32
+                    | Enter
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
@@ -139,6 +145,16 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     }
     if crate::float::written(i) {
         crate::float::emit(e, i, m);
+        e.next();
+        return true;
+    }
+    if crate::descriptors::written(m) {
+        crate::descriptors::emit(e, i, m);
+        e.next();
+        return true;
+    }
+    if crate::text::written(m) {
+        crate::text::emit(e, i, m);
         e.next();
         return true;
     }
@@ -241,6 +257,8 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             set_general(e, register(RBP, (bytes * u8::BITS) as u8), value);
         }
         Call => call(e, i),
+        Enter => enter(e, i),
+        Maskmovdqu => masked_store(e, i),
         Ret => {
             ret(e, i);
             return true;
@@ -392,7 +410,7 @@ fn accumulator(width: u8) -> General {
 }
 
 /// Compute and check the explicit memory operand's address, before anything changes.
-fn checked<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> Option<u32> {
+pub(crate) fn checked<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> Option<u32> {
     let kind = memory_use(i)?;
     let at = address(e, i);
     e.check(at, memory_bytes(i), check_kind(kind), 0);
@@ -413,7 +431,12 @@ fn linear_free_address<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) 
 }
 
 /// Operand `n`'s value, zero-extended from its width, into a fresh i64 local.
-fn read<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, n: u32, mem: Option<u32>) -> u32 {
+pub(crate) fn read<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    n: u32,
+    mem: Option<u32>,
+) -> u32 {
     let ins = &i.iced;
     let w = width(i, n);
     let value = e.local(ValType::I64);
@@ -431,7 +454,7 @@ fn read<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, n: u32, mem: Op
 }
 
 /// Write the i64 in `value` to operand `n`.
-fn write<E: Emitter<X86_64> + ?Sized>(
+pub(crate) fn write<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     i: &Instruction,
     n: u32,
@@ -495,7 +518,7 @@ fn word_with<E: Emitter<X86_64> + ?Sized>(e: &mut E, new: &[(Flag, u32)]) -> u32
 }
 
 /// Each flag in an i32 local: these from their locals, the rest read as they are.
-fn each_with<E: Emitter<X86_64> + ?Sized>(
+pub(crate) fn each_with<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     new: &[(Flag, u32)],
 ) -> [u32; Flag::ALL.len()] {
@@ -683,6 +706,114 @@ fn push_value<E: Emitter<X86_64> + ?Sized>(
     e.get(RSP);
     e.sink().i64_const(-i64::from(bytes)).i64_add();
     e.set(RSP);
+}
+
+/// `enter` takes its nesting level modulo this.
+const ENTER_LEVELS: u8 = 32;
+
+/// `enter size, level`: push rbp, copy `level - 1` frame pointers down from the old frame and push the new
+/// frame's address, then rbp is the new frame and rsp moves down by `size`. Each access is checked just before
+/// it is made, and the registers change only at the end.
+fn enter<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let ins = &i.iced;
+    let bytes = stack_bytes(i);
+    let size = ins.immediate16();
+    let level = ins.immediate8_2nd() % ENTER_LEVELS;
+    let (at, frame_pointer, value, frame) = (
+        e.local(ValType::I64),
+        e.local(ValType::I64),
+        e.local(ValType::I64),
+        e.local(ValType::I64),
+    );
+    e.get(RSP);
+    e.sink().local_set(frame);
+    e.get(RBP);
+    e.sink().local_set(frame_pointer);
+    // Each push writes below the last; `which` 0 is the push of rbp, as `Guest::accesses` describes it.
+    let push = |e: &mut E, value: u32, which: u8| {
+        e.sink()
+            .local_get(frame)
+            .i64_const(-i64::from(bytes))
+            .i64_add()
+            .local_tee(frame)
+            .local_set(at);
+        e.check(at, bytes, Access::Write, which);
+        store(e, at, bytes, value);
+    };
+    push(e, frame_pointer, 0);
+    let pushed = e.local(ValType::I64);
+    e.sink().local_get(frame).local_set(pushed);
+    if level > 0 {
+        for _ in 1..level {
+            e.sink()
+                .local_get(frame_pointer)
+                .i64_const(-i64::from(bytes))
+                .i64_add()
+                .local_tee(frame_pointer)
+                .local_set(at);
+            e.check(at, bytes, Access::Read, 1);
+            load(e, at, bytes);
+            e.sink().local_set(value);
+            push(e, value, 1);
+        }
+        push(e, pushed, 1);
+    }
+    // After the pushes the CPU checks a write at the final stack pointer (Intel's manual: "a write using the
+    // final value of the stack pointer").
+    e.sink()
+        .local_get(frame)
+        .i64_const(-i64::from(size))
+        .i64_add()
+        .local_set(at);
+    e.check(at, bytes, Access::Write, 1);
+    // A word-sized `enter` writes bp alone, over what the copies left in rbp.
+    e.sink().local_get(frame_pointer);
+    e.set(RBP);
+    set_general(e, register(RBP, (bytes * u8::BITS) as u8), pushed);
+    e.sink()
+        .local_get(frame)
+        .i64_const(-i64::from(size))
+        .i64_add();
+    e.set(RSP);
+}
+
+/// `maskmovdqu`: the bytes of the first register whose byte in the second has its top bit set, stored at
+/// [rdi]. The CPU checks the 16 bytes whatever the mask, the upper 8 first; each half's address wraps by
+/// itself under an address-size prefix, so the halves are stored apart.
+fn masked_store<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let ins = &i.iced;
+    let half = crate::XMM_BYTES / 2;
+    let [low, high] = [0, half].map(|by| {
+        let at = register_address(e, i, RDI, by.into());
+        if let Some(base) = segment(i) {
+            e.sink().local_get(at);
+            e.get(base);
+            e.sink().i64_add().local_set(at);
+        }
+        at
+    });
+    e.check(high, half, Access::Write, 0);
+    e.check(low, half, Access::Write, 1);
+    let (merged, value) = (e.local(ValType::V128), e.local(ValType::I64));
+    e.get_vector(xmm(ins.op_register(1)).expect("an xmm register"));
+    e.sink().v128_const(0);
+    load(e, low, half);
+    e.sink().i64x2_replace_lane(0);
+    load(e, high, half);
+    e.sink().i64x2_replace_lane(1);
+    e.get_vector(xmm(ins.op_register(2)).expect("an xmm register"));
+    e.sink()
+        .i32_const((u8::BITS - 1) as i32)
+        .i8x16_shr_s()
+        .v128_bitselect()
+        .local_set(merged);
+    for (lane, at) in [low, high].into_iter().enumerate() {
+        e.sink()
+            .local_get(merged)
+            .i64x2_extract_lane(lane as u8)
+            .local_set(value);
+        store(e, at, half, value);
+    }
 }
 
 fn pop<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {

@@ -1,11 +1,11 @@
 //! The integer, bitwise and move instructions of SSE to SSE4.2 on xmm registers, each a few WebAssembly
 //! vector operations or shuffles.
 
-use crate::X86_64;
 use crate::decode::Instruction;
 use crate::flags::{Flag, Flags};
 use crate::guest::Trap;
 use crate::operand::*;
+use crate::{X86_64, XMM_BYTES};
 use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_guest_cpu::Emitter;
@@ -310,7 +310,6 @@ fn shift(m: Mnemonic) -> Option<(u8, u8)> {
 }
 
 /// The bytes of a vector, of its halves, and of its elements.
-pub(crate) const XMM_BYTES: u32 = size_of::<u128>() as u32;
 const HALF: u8 = (XMM_BYTES / 2) as u8;
 const BYTE: u32 = size_of::<u8>() as u32;
 const WORD: u32 = size_of::<u16>() as u32;

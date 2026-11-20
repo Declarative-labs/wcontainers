@@ -239,8 +239,8 @@ pub fn size_of_memory(size: MemorySize) -> u32 {
         UInt128 | Int128 | Packed128_UInt8 | Packed128_Int8 | Packed128_UInt16
         | Packed128_Int16 | Packed128_UInt32 | Packed128_Int32 | Packed128_UInt64
         | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 => 16,
-        SegPtr32 => 6,
-        SegPtr64 => 10,
+        SegPtr32 | Fword6 => 6,
+        SegPtr64 | Fword10 => 10,
         _ => 0,
     }
 }
@@ -263,14 +263,16 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
         }
         (0, Ldmxcsr) => AccessKind::Read,
         (0, Stmxcsr) => AccessKind::Write,
-        (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt | Clflush | Xlatb) => {
-            AccessKind::Read
-        }
+        (
+            0,
+            Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt | Clflush | Xlatb | Verr
+            | Verw,
+        ) => AccessKind::Read,
         (
             0,
             Mov | Pop | Movaps | Movups | Movapd | Movupd | Movdqa | Movdqu | Movq | Movd | Movnti
             | Movntdq | Movntps | Movntpd | Movss | Movsd | Movlps | Movlpd | Movhps | Movhpd
-            | Pextrb | Pextrw | Pextrd | Pextrq | Extractps,
+            | Pextrb | Pextrw | Pextrd | Pextrq | Extractps | Sldt | Str | Smsw | Sgdt | Sidt,
         ) => AccessKind::Write,
         (0, m) if setcc(m).is_some() => AccessKind::Write,
         (0, _) => AccessKind::ReadWrite,
@@ -365,10 +367,13 @@ pub fn setcc(m: Mnemonic) -> Option<Condition> {
 pub fn stack_bytes(i: &Instruction) -> u32 {
     let ins = &i.iced;
     let width = match ins.op_kind(0) {
-        // `pushf`, `popf` and `leave` with 66 move a word; they have no operand.
+        // `pushf`, `popf`, `leave` and `enter` with 66 move words; they have no register or memory operand.
         _ if matches!(
             ins.code(),
-            iced_x86::Code::Pushfw | iced_x86::Code::Popfw | iced_x86::Code::Leavew
+            iced_x86::Code::Pushfw
+                | iced_x86::Code::Popfw
+                | iced_x86::Code::Leavew
+                | iced_x86::Code::Enterw_imm16_imm8
         ) =>
         {
             u16::BITS as u8

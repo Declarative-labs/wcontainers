@@ -41,7 +41,11 @@ fn module() -> Vec<u8> {
     let mut exports = ExportSection::new();
     exports.export("rcp", ExportKind::Func, 0);
     exports.export("rsqrt", ExportKind::Func, 1);
-    exports.export("memory", ExportKind::Memory, 0);
+    exports.export(
+        wcontainers_translator::contract::MEMORY,
+        ExportKind::Memory,
+        0,
+    );
     module.section(&exports);
     let mut code = CodeSection::new();
     for sqrt in [false, true] {
@@ -112,7 +116,9 @@ fn reciprocals_match_the_cpu_on_every_input() {
             scope.spawn(|| {
                 let mut store = Store::new(&engine, ());
                 let instance = Instance::new(&mut store, &module, &[]).expect("an instance");
-                let memory: Memory = instance.get_memory(&mut store, "memory").unwrap();
+                let memory: Memory = instance
+                    .get_memory(&mut store, wcontainers_translator::contract::MEMORY)
+                    .unwrap();
                 let functions: [TypedFunc<i32, ()>; 2] =
                     ["rcp", "rsqrt"].map(|name| instance.get_typed_func(&mut store, name).unwrap());
                 let mut results = vec![0u8; RESULT_BYTES as usize];

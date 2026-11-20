@@ -3,13 +3,13 @@
 //! path through the float hook (`crate::exact`) for the rest. The approximate reciprocals are one closed
 //! formula on every path.
 
+use crate::XMM_BYTES;
 use crate::decode::Instruction;
 use crate::exact::{DOT_PRODUCT_SHIFT, Operation, ROUND_FROM_MXCSR, encode};
 use crate::flags::{Flag, Flags};
 use crate::guest::{Control, Hook, Reason, Trap};
 use crate::host::{DEFAULT32, DEFAULT64, QUIET32, QUIET64, splat32, splat64};
 use crate::operand::*;
-use crate::simd::XMM_BYTES;
 use crate::{CF, MXCSR_WRITABLE, PF, X86_64, ZF};
 use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, InstructionSink, ValType};

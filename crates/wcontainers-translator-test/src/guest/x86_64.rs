@@ -243,6 +243,19 @@ impl GuestTest for X86_64 {
             let mxcsr = &mut expected.state.0[MXCSR];
             *mxcsr = *mxcsr & !flags | case.state.0[MXCSR] & flags;
         }
+        // The per-CPU segment's limit is the processor's number there and processor 0 by design here: every
+        // limit `lsl` gives but a whole segment's.
+        if instruction.mnemonic() == Mnemonic::Lsl
+            && matches!(expected.stop, Stop::Landed(_))
+            && expected.state.0[RFLAGS] & u128::from(wcontainers_x86::ZF) != 0
+            && let Some(field) = field_of(instruction.op0_register())
+        {
+            let width = (instruction.op0_register().size() * u8::BITS as usize) as u32;
+            let limit = u128::MAX >> (u128::BITS - width.min(u32::BITS));
+            if expected.state.0[field] & limit != limit {
+                expected.state.0[field] &= !(u128::MAX >> (u128::BITS - width));
+            }
+        }
         if instruction.mnemonic() == Mnemonic::Syscall {
             const R11: usize = 11;
             expected.state.0[R11] &= !u128::from(wcontainers_x86::TF);
@@ -316,6 +329,7 @@ impl GuestTest for X86_64 {
             Code::Sysenter => Some("sysenter: a 32-bit system call on the reference"),
             Code::Rdtsc | Code::Rdtscp => Some(TIME_STAMP_BY_DESIGN),
             Code::Cpuid => Some(CPUID_BY_DESIGN),
+            Code::Sgdt_m1664 | Code::Sidt_m1664 => Some(TABLES_BY_DESIGN),
             _ => None,
         }
     }
@@ -518,6 +532,7 @@ fn build(code: Code, ops: &[Operand]) -> Option<Instruction> {
         [M(a), Signed(b)] => Instruction::with2(code, a, b),
         [M(a), Unsigned(b)] => Instruction::with2(code, a, b),
         [Unsigned(a), R(b)] => Instruction::with2(code, a, b),
+        [Unsigned(a), Unsigned(b)] => Instruction::with2(code, a, b),
         [R(a), R(b), Signed(c)] => Instruction::with3(code, a, b, c),
         [R(a), R(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
         [R(a), M(b), Signed(c)] => Instruction::with3(code, a, b, c),
@@ -530,16 +545,21 @@ fn build(code: Code, ops: &[Operand]) -> Option<Instruction> {
     made.ok()
 }
 
-/// A string instruction of `code`, with this address size and segment for rsi.
+/// A string instruction of `code` (or `maskmovdqu`, of these registers, through rdi), with this address size
+/// and segment for rsi.
 fn string(
     code: Code,
     address_size: u32,
     segment: Register,
     rep: RepPrefixKind,
+    xmm: [Register; 2],
 ) -> Option<Instruction> {
     use Code::*;
     let n = rep;
     let made = match code {
+        Maskmovdqu_rDI_xmm_xmm => {
+            Instruction::with_maskmovdqu(address_size, xmm[0], xmm[1], segment)
+        }
         Movsb_m8_m8 => Instruction::with_movsb(address_size, segment, n),
         Movsw_m16_m16 => Instruction::with_movsw(address_size, segment, n),
         Movsd_m32_m32 => Instruction::with_movsd(address_size, segment, n),
@@ -574,10 +594,16 @@ fn string(
 /// In a hundred rep string cases: counts of zero, counts that run past the data area, and (of the rest)
 /// destinations just above their sources.
 const ZERO_COUNTS: u64 = 12;
+/// In a hundred `lar`, `lsl`, `verr` and `verw` cases: a selector of a segment Linux has.
+const NAMED_SELECTORS: u64 = 60;
+/// In a hundred `enter` cases: rbp in the data area.
+const FRAME_IN_DATA: u64 = 70;
 const LONG_COUNTS: u64 = 12;
 const OVERLAPPED: u64 = 8;
 /// Why layer 1 leaves out `cpuid`.
 const CPUID_BY_DESIGN: &str = "cpuid: the claims and designed leaves, not the CPU's";
+/// Why layer 1 leaves out `sgdt` and `sidt`.
+const TABLES_BY_DESIGN: &str = "sgdt and sidt: designed answers, not the kernel's addresses";
 /// Why layer 1 leaves out `rdtsc` and `rdtscp`.
 const TIME_STAMP_BY_DESIGN: &str = "the time stamp counter: answered by design";
 /// How near an edge of the address space a memory operand drawn there points.
@@ -653,7 +679,12 @@ fn case(code: Code, seed: u64) -> Option<Case> {
             RepPrefixKind::Repne,
         ];
         let rep = reps[draw.below(reps.len() as u64) as usize];
-        string(code, if address32 { 32 } else { 64 }, segment, rep)
+        let pair = if code == Code::Maskmovdqu_rDI_xmm_xmm {
+            [xmm(&mut draw), xmm(&mut draw)]
+        } else {
+            [Register::None; 2]
+        };
+        string(code, if address32 { 32 } else { 64 }, segment, rep, pair)
     } {
         // Each of rsi and rdi where the draw says.
         let bytes = u64::from(memory_size(&i));
@@ -826,8 +857,35 @@ fn case(code: Code, seed: u64) -> Option<Case> {
             state[2] = high.into();
         }
     }
+    // `enter`'s copies of frame pointers read below rbp: most cases have rbp in the data area.
+    if code.mnemonic() == Mnemonic::Enter && draw.chance(FRAME_IN_DATA) {
+        state[usize::from(wcontainers_x86::RBP)] = (DATA + draw.below(DATA_BYTES)).into();
+    }
+    // The descriptor instructions' selectors: most name a segment Linux has, with any privilege level and
+    // either table.
+    if matches!(
+        code.mnemonic(),
+        Mnemonic::Lar | Mnemonic::Lsl | Mnemonic::Verr | Mnemonic::Verw
+    ) && draw.chance(NAMED_SELECTORS)
+    {
+        let source = instruction.op_count() - 1;
+        if instruction.op_kind(source) == OpKind::Register
+            && let Some(field) = field_of(instruction.op_register(source))
+        {
+            use wcontainers_x86::{
+                CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, TASK_STATE, USER_CS, USER_DS, USER32_CS,
+            };
+            let named = [
+                USER32_CS, USER_DS, USER_CS, CPU_NUMBER, TASK_STATE, KERNEL_CS,
+            ];
+            let selector = named[draw.below(named.len() as u64) as usize] & !(SELECTOR_INDEX - 1)
+                | draw.below(SELECTOR_INDEX.into()) as u16;
+            state[field] = state[field] & !u128::from(u16::MAX) | u128::from(selector);
+        }
+    }
     // Point the memory operand where the draw says, through its registers or the segment base.
     let mut seed = None;
+    let mut source = None;
     if let Some(m) = memory {
         let size = u64::from(memory_size(&instruction)).max(1);
         let mut to = target(&mut draw, size);
@@ -850,6 +908,23 @@ fn case(code: Code, seed: u64) -> Option<Case> {
             0
         };
         aim(&mut draw, &mut state, &m, to.wrapping_sub(moved), address32);
+        // A string compare's strings made of the memory operand's own elements.
+        if is_text_compare(code)
+            && (DATA..=DATA + DATA_BYTES - u64::from(wcontainers_x86::XMM_BYTES)).contains(&to)
+            && draw.chance(FEW_VALUES)
+        {
+            let s = draw.next();
+            let mut data = vec![0; DATA_BYTES as usize];
+            crate::layout::fill(s, &mut data);
+            let at = (to - DATA) as usize;
+            source = data[at..at + wcontainers_x86::XMM_BYTES as usize]
+                .try_into()
+                .ok();
+            seed = Some(s);
+        }
+    }
+    if is_text_compare(code) {
+        text_strings(&mut draw, &mut state, &instruction, source);
     }
     if reaches_runner(&bytes, &state) {
         return None;
@@ -874,6 +949,77 @@ const NEGATIVE: u64 = 50;
 const VECTOR_KINDS: u64 = 3;
 /// Data seeds tried for a value `ldmxcsr` takes.
 const SEEDS_TRIED: usize = 8;
+
+/// In a hundred: string compare cases with short lengths in rax and rdx, with strings of a few element values,
+/// and with zero among an xmm register's values. Lengths are drawn up to this many past a register's elements.
+const SHORT_LENGTHS: u64 = 70;
+const FEW_VALUES: u64 = 70;
+const ZERO_AMONG: u64 = 50;
+const VALUES: usize = 4;
+const LENGTHS_PAST: u64 = 4;
+
+fn is_text_compare(code: Code) -> bool {
+    use Mnemonic::*;
+    matches!(
+        code.mnemonic(),
+        Pcmpestri | Pcmpestri64 | Pcmpestrm | Pcmpestrm64 | Pcmpistri | Pcmpistrm
+    )
+}
+
+/// Short lengths in rax and rdx (in the low half alone or the whole register), and xmm registers made of a few
+/// element values, those of the memory operand's 16 bytes when given.
+fn text_strings(
+    draw: &mut Draw,
+    state: &mut [u128],
+    instruction: &Instruction,
+    source: Option<[u8; wcontainers_x86::XMM_BYTES as usize]>,
+) {
+    let element = if instruction.immediate8() & wcontainers_x86::STRING_COMPARE_WORDS != 0 {
+        size_of::<u16>()
+    } else {
+        size_of::<u8>()
+    };
+    let count = u64::from(wcontainers_x86::XMM_BYTES) / element as u64;
+    let elements = |v: u128| -> Vec<u128> {
+        let mask = u128::MAX >> (u128::BITS - element as u32 * u8::BITS);
+        (0..count)
+            .map(|n| v >> (n * element as u64 * u64::from(u8::BITS)) & mask)
+            .collect()
+    };
+    if draw.chance(SHORT_LENGTHS) {
+        for field in [RAX_FIELD, RDX_FIELD] {
+            let span = count + LENGTHS_PAST;
+            let length = (draw.below(2 * span + 1) as i64 - span as i64) as u64;
+            state[field] = if draw.chance(NEGATIVE) {
+                u128::from(length)
+            } else {
+                state[field] & !u128::from(u32::MAX) | u128::from(length as u32)
+            };
+        }
+    }
+    if !draw.chance(FEW_VALUES) {
+        return;
+    }
+    let mut values = match source {
+        Some(bytes) => elements(u128::from_le_bytes(bytes)),
+        None => (0..VALUES)
+            .map(|_| elements(draw.value().into())[0])
+            .collect(),
+    };
+    for x in &mut state[XMM..YMMH] {
+        let zero = draw.chance(ZERO_AMONG);
+        if zero {
+            values.push(0);
+        }
+        *x = (0..count).fold(0, |v, n| {
+            let pick = values[draw.below(values.len() as u64) as usize];
+            v | pick << (n * element as u64 * u64::from(u8::BITS))
+        });
+        if zero {
+            values.pop();
+        }
+    }
+}
 
 /// MXCSR at the start of a case: mostly the default mode, with or without flags, else any mode.
 fn mxcsr(draw: &mut Draw) -> u32 {
@@ -1012,6 +1158,7 @@ fn bit_offset_move(instruction: &Instruction, state: &[u128]) -> u64 {
 /// segment's base (FS and GS; the others are zero in 64-bit mode).
 /// rax's field.
 const RAX_FIELD: usize = wcontainers_x86::RAX as usize;
+const RDX_FIELD: usize = wcontainers_x86::RDX as usize;
 
 fn register_value(r: Register, state: &[u128]) -> Option<u64> {
     match r {
@@ -1347,7 +1494,46 @@ fn hand_cases() -> Vec<Designed> {
     ]
     .into_iter()
     .chain(cpuid_cases())
+    .chain(table_cases())
     .collect()
+}
+
+/// The answers given by design where the reference's depend on the processor (plan 5.10): `lsl` of the
+/// per-CPU segment gives processor 0 on node 0, and `sgdt` and `sidt` land with their store made.
+fn table_cases() -> Vec<Designed> {
+    let encoded = |instruction: Instruction| {
+        let mut encoder = Encoder::new(wcontainers_x86::MODE_BITS);
+        encoder.encode(&instruction, CODE).expect("an encoding");
+        plain(&encoder.take_buffer())
+    };
+    let name = |code: Code| -> &'static str { Box::leak(format!("{code:?}").into_boxed_str()) };
+    let landed = |case: &Case| Some(Stop::Landed(CODE + u64::from(case.code.length)));
+    let lsl = Code::Lsl_r32_r32m16;
+    let mut case = encoded(Instruction::with2(lsl, Register::EAX, Register::ECX).expect("lsl"));
+    let rax = usize::from(wcontainers_x86::RAX);
+    case.state.0[usize::from(wcontainers_x86::RCX)] = wcontainers_x86::CPU_NUMBER.into();
+    case.state.0[rax] = u128::from(u32::MAX);
+    let mut cases = vec![Designed {
+        name: name(lsl),
+        stop: landed(&case),
+        fields: vec![(rax, 0)],
+        case,
+        compared: false,
+    }];
+    for code in [Code::Sgdt_m1664, Code::Sidt_m1664] {
+        let case = encoded(
+            Instruction::with1(code, MemoryOperand::with_base(Register::RSP))
+                .expect("a table store"),
+        );
+        cases.push(Designed {
+            name: name(code),
+            stop: landed(&case),
+            fields: vec![],
+            case,
+            compared: false,
+        });
+    }
+    cases
 }
 
 /// `cpuid` gives the table's answer for its leaf and sub-leaf, read from the low halves of rax and rcx, with

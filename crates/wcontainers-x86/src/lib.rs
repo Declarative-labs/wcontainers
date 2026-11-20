@@ -10,6 +10,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 #[cfg(feature = "translate")]
 mod decode;
 #[cfg(feature = "translate")]
+mod descriptors;
+#[cfg(feature = "translate")]
 mod exact;
 #[cfg(feature = "translate")]
 mod flags;
@@ -27,6 +29,8 @@ mod meaning;
 mod operand;
 #[cfg(feature = "translate")]
 mod simd;
+#[cfg(feature = "translate")]
+mod text;
 
 pub mod claims;
 pub mod cpuid;
@@ -34,6 +38,10 @@ pub mod encoding;
 
 #[cfg(feature = "translate")]
 pub use decode::{Instruction, claim_group, decode};
+#[cfg(feature = "translate")]
+pub use descriptors::{
+    CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, TASK_STATE, USER_CS, USER_DS, USER32_CS,
+};
 #[cfg(feature = "translate")]
 pub use flags::{Condition, Flag, Flags, Shape, Test};
 #[cfg(feature = "translate")]
@@ -151,6 +159,10 @@ pub struct X86Private {
 }
 /// The bits of an x87 slot that hold its register.
 pub const X87_REGISTER_BITS: u32 = 80;
+/// The bytes of an xmm register.
+pub const XMM_BYTES: u32 = size_of::<u128>() as u32;
+/// The bit of a string compare's (`pcmpestri` and its kin) immediate that makes its elements words.
+pub const STRING_COMPARE_WORDS: u8 = 1;
 
 /// rsp's number in the general registers.
 pub const RSP_NUMBER: u8 = 4;
