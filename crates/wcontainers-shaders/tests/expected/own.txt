@@ -1,7 +1,9 @@
 cs_atomics.dxbc	ok ; glsl absent compute
+cs_buffer_array.dxbc	unsupported UnboundedResourceArray
 cs_decrement.dxbc	ok ; glsl absent compute
 cs_divide.dxbc	ok ; glsl absent compute
 cs_escape.dxbc	ok ; glsl absent compute
+cs_image_array.dxbc	ok views:R32Uint ; glsl absent compute
 cs_images.dxbc	unsupported StorageFormatKind (with views)
 cs_one_d.dxbc	unsupported StorageFormatKind (with views)
 cs_readonly.dxbc	ok ; glsl absent compute
@@ -56,6 +58,7 @@ hs_tri_odd_point.dxbc	ok ; glsl absent compute
 hs_tri_pow2_ccw.dxbc	ok ; glsl absent compute
 hs_tri_pow2_cw.dxbc	ok ; glsl absent compute
 hs_tri_pow2_point.dxbc	ok ; glsl absent compute
+ps_array.dxbc	ok ; glsl compiles
 ps_cases.dxbc	ok ; glsl compiles
 ps_clip.dxbc	ok ; glsl compiles
 ps_coarse.dxbc	ok ; glsl compiles
@@ -65,6 +68,7 @@ ps_depth.dxbc	ok ; glsl compiles
 ps_deriv.dxbc	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 ps_dual.dxbc	ok ; glsl compiles
 ps_early.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+ps_eval_exact.dxbc	unsupported SampleCount
 ps_evaluate.dxbc	unsupported SampleCount
 ps_fill.dxbc	ok ; glsl needs SAMPLE_SHADING compile
 ps_filter.dxbc	ok ; glsl compiles
@@ -117,6 +121,7 @@ vs_clip_six.dxbc	ok ; glsl needs CLIP_DISTANCE compile
 vs_cull.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile
 vs_deep.dxbc	ok ; glsl compiles
 vs_early.dxbc	ok ; glsl compiles
+vs_eval_exact.dxbc	ok ; glsl compiles
 vs_evaluate.dxbc	ok ; glsl compiles
 vs_filter.dxbc	ok ; glsl compiles
 vs_fullscreen.dxbc	ok ; glsl compiles

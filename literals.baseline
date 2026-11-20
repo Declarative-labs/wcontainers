@@ -13326,22 +13326,16 @@ code	crates/wcontainers-shaders/src/lower.rs	int	Lowering	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::arrays	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	10
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	5
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	36
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	37
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	47
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	64
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4u32
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::new	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::storage_image	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::struct_ty	4u32
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::texel_buffer	4
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::texel_image	4
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic on a vector"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic without its operation"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image	"not an image"
@@ -13365,7 +13359,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::walk_s
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::walk_struct	"a struct member's address"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_io	"in"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_io	"out"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_op	"image type"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_op	"temporary left after SSA"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"Outputs"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"vertex"

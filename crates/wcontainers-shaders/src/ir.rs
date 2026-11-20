@@ -42,6 +42,13 @@ impl Ty {
     }
 }
 
+/// The places of a resource declaration's literals, in the order dxbc-spirv's `DclSrv` and `DclUav`
+/// take them.
+pub mod resource_literal {
+    pub const KIND: usize = 3;
+    pub const UAV_FLAGS: usize = 4;
+}
+
 // dxbc-spirv's enums the lowering reads, and the C++ boundary's own (`ResourceClass`), as modules of
 // constants written by build.rs from their headers.
 include!(concat!(env!("OUT_DIR"), "/ir_codes.rs"));

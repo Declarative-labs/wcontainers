@@ -2129,7 +2129,10 @@ against the same Rust from the start; back ends never read them.
   front finds each binding's descriptor in the bound root signature
   by its `ReflectedBinding::space` and `register`. A binding's slot (`ReflectedBinding::slot`, its place
   in its kind's range) is what `VariantKey`'s per-slot fields and the sampled pairs name; under Direct3D
-  11's numbering it is the register. Unbounded ranges (bindless) need `RESOURCE_TABLES`.
+  11's numbering it is the register. An array of resources is a binding per element at its own
+  register; an array declared without a length inside a descriptor range of finite length is the
+  rest of that range, which the front gives as `VariantKey::register_ranges` (the root signature's
+  ranges by kind and space). Unbounded ranges (bindless) need `RESOURCE_TABLES`.
 - Bindings a variant adds, for every API: pulled vertex streams, constant buffers read as storage or
   through a texture, the layers after the first of a multisampled array texture, and (Direct3D 12) root constants spilled past `immediate_bytes` as one uniform
   buffer (`ImmediatesSpilled`). Each lives in the set of the one stage that reads it (set 0 for vertex
