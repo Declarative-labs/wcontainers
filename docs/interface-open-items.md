@@ -40,7 +40,7 @@ depend on wcontainers-system, as the ruling requires. But both interfaces depend
 wcontainers-kernel (for `TaskId`, `Errno`, `siginfo` and `task_id_after`), and that crate also holds today's
 `pub trait System: Host + Sync` (system.rs:125). So until those items move out (see d), the kernel
 interface still reaches today's system through that dependency, and whoever writes a system cannot read
-system/interface.rs alone: the default body of `allocate_task_id` (system 111) calls the kernel's
+system/interface.rs alone: the default body of `allocate_task_id` (system 128) calls the kernel's
 `task_id_after`, and `TaskId` is the kernel's. The "strong contract" holds only after that move.
 
 ## (a) Items in the files that were never ruled
@@ -49,7 +49,8 @@ All three crates the kernel uses (executor, kernel-interface, system)
 - line 3: `#![no_std]`, with `core::ops::Range`, `core::time::Duration`, `core::ops::ControlFlow` and
   `alloc::vec::Vec`. The kernel is `#![no_std]` (kernel lib.rs:9) and implements or calls all three. These
   are the same types as the `std::` paths you named; only the path differs. container/interface.rs keeps
-  `std::`, since only the runtime uses it.
+  `std::`, since only the runtime uses it. kernel-interface line 7, `alloc::string::String`, is there only
+  for the proposed contents of `ProcessorFeatures` (see h), and goes if they do.
 
 executor/interface.rs
 - line 16: `PerThreadWatch::set_thread_permissions(&mut self, thread: ThreadId, range: Range<u64>,
@@ -62,9 +63,9 @@ executor/interface.rs
 
 kernel-interface/interface.rs
 - line 1: the crate doc now names the kernel; line 17: the doc comment of `Kernel`.
-- lines 18 to 44 (`Kernel`) and 49, 70 to 80 (on `Process`) are as ruled ("suspend and resume by task,
+- lines 18 to 44 (`Kernel`) and 49, 69 to 79 (on `Process`) are as ruled ("suspend and resume by task,
   and the process context"). Only rustfmt's line breaks differ.
-- lines 53 and 66: the executor is reached through the kernel, as `<Self::Kernel as Kernel>::Executor`,
+- lines 53 and 65: the executor is reached through the kernel, as `<Self::Kernel as Kernel>::Executor`,
   in `execution_config` and in the `where` of `watch_thread_memory`. The ruling gives `Kernel` its
   `type Executor` and `Process` its `type Kernel: Kernel`, and so settles where the executor parameter
   goes; the spelling of the path is mine.
@@ -78,34 +79,33 @@ kernel-interface/interface.rs
   with the process, mutable, no lock), the name and signature are not.
 - line 55: `memory_id(&self) -> MemoryId`: the getter is ruled (WorkloadPlacement, evening), the name is
   not. See (d) on what the id means across exec.
-- line 58: `read_memory` returns `Result<impl Iterator<Item = &[u8]>, MemoryError>`. "Pieces of borrowed
+- line 57: `read_memory` returns `Result<impl Iterator<Item = &[u8]>, MemoryError>`. "Pieces of borrowed
   bytes" is ruled; the iterator type, the `Result` and `MemoryError` are not.
-- line 62: `write_memory` returns `Result<(), MemoryError>`: not ruled.
-- line 64: `watch_thread_memory`: the verb-first spelling of the ruled `memory_watch_thread`, and the
+- line 61: `write_memory` returns `Result<(), MemoryError>`: not ruled.
+- line 63: `watch_thread_memory`: the verb-first spelling of the ruled `memory_watch_thread`, and the
   `where ...Executor: PerThreadWatch` form of "only where the executor implements the subtrait". See
   (e) for what that form does to a conformance suite.
-- line 67: `take_dirty_memory` returns `Vec<Range<u64>>` (today's type; not ruled).
-- lines 85 to 87: the accessor names `memory_mapped`, `ceiling_distance`, `compute_used` are today's;
+- line 66: `take_dirty_memory` returns `Vec<Range<u64>>` (today's type; not ruled).
+- lines 84 to 86: the accessor names `memory_mapped`, `ceiling_distance`, `compute_used` are today's;
   the ruling names the concepts ("memory mapped, distance to the ceiling, compute used").
-- line 88: `ProcessInfo::parent(&self) -> Option<TaskId>` (today's system.rs:256).
-- line 89: `ProcessInfo::is_inspected(&self) -> bool`. It is in the inspection proposal ("Proposed to the
+- line 87: `ProcessInfo::parent(&self) -> Option<TaskId>` (today's system.rs:256).
+- line 88: `ProcessInfo::is_inspected(&self) -> bool`. It is in the inspection proposal ("Proposed to the
   owner 2026-11-18 night, NOT ruled": "the kernel announces `on_inspection_starting` at the first and
   `on_inspection_ended` after the last; `ProcessInfo::is_inspected()`"), and that proposal was then
   "RULED" "as proposed above" ("Ruled and named by the owner, 2026-11-18 night"). The two hooks come from
   the same sentence, so all three are written. No later section names it again; strike it if your ruling
   covered only the line Linux draws.
-- lines 100, 107, 116, 124, 132: derives `Clone, Copy, Debug, PartialEq, Eq`, as today.
-- lines 131 to 139: `MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }`
+- lines 99, 106, 115, 123, 131: derives `Clone, Copy, Debug, PartialEq, Eq`, as today.
+- lines 130 to 138: `MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }`
   (today's system.rs:106).
-- line 145: `SignalInformation = siginfo`, the generated binding of Linux's `siginfo` (kernel
+- line 144: `SignalInformation = siginfo`, the generated binding of Linux's `siginfo` (kernel
   linux/general.rs:814). The ruling says "Linux's own record of a signal"; that it is this binding is
   my reading.
-- lines 148, 159, 163, 167, 171: derives `Clone, Copy, Debug, PartialEq, Eq, Hash` on `MemoryObject` and
+- lines 147, 158, 162, 166, 170: derives `Clone, Copy, Debug, PartialEq, Eq, Hash` on `MemoryObject` and
   its four ids, which distributed-everything's `MemoryShard` needs (workload-placement/interface.rs:5).
 - lines 14 and 15: `TaskId`, `Errno` and `siginfo` are imported from wcontainers-kernel (see d).
-- Every doc comment except the ruled one on `ReplayDeterminism::External` (line 111).
-- line 56, `Process::processor_features`, and lines 174 to 179, the contents of `ProcessorFeatures`:
-  PROPOSED (see h). The type's name is ruled.
+- Every doc comment except the ruled one on `ReplayDeterminism::External` (line 110).
+- lines 173 to 178, the contents of `ProcessorFeatures`: PROPOSED (see h). The type's name is ruled.
 
 system/interface.rs (the split into concerns, their names and the thirteen service methods are in g)
 - line 4: `#![allow(unused_variables)]` (see f).
@@ -158,7 +158,7 @@ Kernel, crates/wcontainers-kernel/src/system.rs
 - [ ] `pub struct Kernel` (lib.rs:137) implements the trait `Kernel` (kernel-interface 18): `type Executor`,
       `type SuspendedTask`, `type ProcessContext` and the five calls. Today's kernel has no suspend or
       resume at all.
-- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (kernel-interface 84);
+- [ ] `pub struct ProcessInfo<'a>` and its impl (234) become the trait `ProcessInfo` (kernel-interface 83);
       `info` returns `impl ProcessInfo` instead of `ProcessInfo<'_>`. New on it: `is_inspected`.
 - [ ] `execution_config(&self) -> ExecutionConfig` (284, by value) becomes
       `-> &ExecutionConfig<<Self::Kernel as Kernel>::Executor>`.
@@ -423,11 +423,11 @@ through the trait's own operations, and nothing is passed in from outside.
 ## (f) The linter, and the rules
 
 Run with the model check over the whole workspace (`cargo-reviewable reviewable check`, the linter at
-its commit 2d9604a). For the four interface crates and their suites there are 59 findings:
-- 57 `conformance-untested-method`: 31 in system (every method but the four the suite calls, see e),
-  23 in kernel-interface (every method but `Kernel::suspend_tasks` and `Kernel::resume_tasks`), 1 in
+its commit 2d9604a). For the four interface crates and their suites there are 58 findings:
+- 56 `conformance-untested-method`: 31 in system (every method but the four the suite calls, see e),
+  22 in kernel-interface (every method but `Kernel::suspend_tasks` and `Kernel::resume_tasks`), 1 in
   executor, 2 in container. They are kept as findings, as section (e) explains.
-- 1 `verb-not-first`: `memory_mapped` (kernel-interface/interface.rs:85), read by the model as a verb in
+- 1 `verb-not-first`: `memory_mapped` (kernel-interface/interface.rs:84), read by the model as a verb in
   second place. The name is today's and follows your words "memory mapped", so it is kept, not disputed;
   `mapped_memory` would pass.
 - 1 `function-summary-not-third-person`: your doc of `on_inspection_starting` (system/interface.rs:103),
@@ -440,7 +440,7 @@ its commit 2d9604a). For the four interface crates and their suites there are 59
   answer is disputed: "credit is the verb, as in credit an account: the kernel credits the embedder
   bytes on a stream; the name is ruled". Remove either dispute if you would rather see the finding.
 
-The rest of the workspace, not yet in the layout, has 35,529 findings (35,588 in all). The model's
+The rest of the workspace, not yet in the layout, has 35,529 findings (35,587 in all). The model's
 answers for the new names (`fill_random_bytes`, `send_backend` and the four suite functions) are all
 first_word, at confidence 0.85 or more.
 
@@ -450,9 +450,10 @@ kernel's and the abi's included, and its answers are in reviewable-answers.toml.
 changed. Four of my type summaries it rejected were rewritten as plain noun phrases (`ExecutionConfig`,
 `MemoryObject`, `GuestMachine`, `StreamPeer`), and the summary of every suite's `tests!` was put on one
 line, as the stricter `comments` rules now need. After the review of the reorganisation the trait
-summaries lost their endings on what is ruled; the model's answers for
-the shorter summaries are recorded, and the findings are the same 55. The processor features (h) add
-four, each a `conformance-untested-method`; their names and the summary of `ProcessorFeatures` pass.
+summaries lost their endings on what is ruled; the model's answers for the shorter summaries are
+recorded, and the findings are the same 55. The processor features (h) add three, each a
+`conformance-untested-method`: `choose_processor_features` and the two proposed reads, whose names the
+model reads as verb first. The summary of `ProcessorFeatures` passes as a noun phrase.
 
 Getters and the verb-first rule. "method names are verb first" ("Ruled by the owner, 2026-11-19
 afternoon"), and in the naming rules you agreed for the linter the same day, "getters stay noun phrases".
@@ -489,11 +490,11 @@ The split, one concern per piece an embedder would write or reuse whole (name, t
 - `ProcessTracer` (line 30; or `ProcessSupervisor`): the two proxy calls and every hook, with
   `type ProcessState`, and after them `choose_processor_features` (ruled onto "the embedder's
   process-tracing concern") and the two proposed reads (see h). The proxy calls and the hooks are
-  ruled; the trait is mine, and so is putting `ProcessState` on it ("per-process state" ruled it onto the embedder's trait, then `System`; see the end of this section).
-  One piece because every method is handed the same process with the same state, and the ruled uses
-  combine them (locks across machines read the proxy and `on_memory_written_by_kernel` together). The
-  name is ptrace's: a tracer stops a process at system call entry and exit, at signal delivery, exec,
-  clone and exit.
+  ruled; the trait is mine, and so is putting `ProcessState` on it ("per-process state" ruled it onto
+  the embedder's trait, then `System`; see the end of this section). One piece because every method is
+  handed the same process with the same state, and the ruled uses combine them (locks across machines
+  read the proxy and `on_memory_written_by_kernel` together). The name is ptrace's: a tracer stops a
+  process at system call entry and exit, at signal delivery, exec, clone and exit.
 - `TaskIdSource` (line 127; or `TaskIdAllocator`): `allocate_task_id`, `free_task_id`. The methods are
   ruled; the trait is mine. Apart from the hooks because the first ruling made it "an id source given at
   start", and because a stock counter is reused unchanged by an embedder that writes its own hooks, while
@@ -503,6 +504,8 @@ The split, one concern per piece an embedder would write or reuse whole (name, t
   calls share it.
 - `Clocks` (line 142; or `TimeSource`): `monotonic_nanoseconds` (143), `realtime_nanoseconds` (144).
   Plural because it holds two clocks. Apart, because a replaying or simulated embedder replaces time alone.
+  These are the kernel's own reads, with no process; a program's time read by an instruction is not on
+  it (proposed on `ProcessTracer`, see h, proposal 2, where this is weighed).
 - `RandomSource` (line 148; or `EntropySource`): `fill_random_bytes` (149). Apart, because replay replaces
   it alone, as with time.
 - `WarningLog` (line 153; or `WarningSink`): `warn` (154). Apart: logging is reused whatever else is
@@ -571,8 +574,9 @@ Ruled, and written as ruled
   The kernel asks once per program, before its first instruction. `supported` is what this host's
   executor runs at full speed; the default passes it on unchanged; an embedder returns less to keep a
   process portable. It returns a value, so it is a service, like the task ids, not a hook.
-- The type's name `ProcessorFeatures` (kernel-interface 174), and that it can be cloned (the ruled
-  `supported.clone()`). Its contents are PROPOSED (below).
+- The type's name `ProcessorFeatures` (kernel-interface 173), and that it can be cloned (the ruled
+  `supported.clone()`). Its contents are PROPOSED (below). Its doc comment is mine and fits both its
+  uses, the host's `supported` set and the set chosen for one program.
 - `ExecutionConfig` did NOT gain a field, and there is no setter: the list cannot change while a program
   runs. The ruling withdraws the sketch of a `processor_features` field with a getter on the executor.
   The kernel passes the chosen list to its executor internally; nothing on `Executor` names it.
@@ -584,17 +588,31 @@ Ruled, and written as ruled
 - A process arriving with features the host lacks is accepted and runs with the missing instructions done
   in software, from the start. That is ruled and belongs to the executors (each emulated instruction a
   named slow path, counted and warned; each routine checked against hardware by the single-instruction
-  differential test). Nothing is on the interface for it. The embedder sees which features a host runs at
-  full speed as `supported`; no other getter was added.
-- It supersedes "the processor is fixed for the whole container". Today's fixed claim becomes what an
-  executor reports as `supported`: abi machine.rs's `HWCAP` and `HWCAP2` on ARM64, and on x86-64 the
-  claim lists of origin/phase-2-x86 (crates/wcontainers-x86/src/claims.rs). abi machine.rs's module doc
-  ("it is never emulated in software") is contradicted by the ruling and changes at the migration.
-- The clock and random services stay as they are, with no process: they are the kernel's own reads.
-  This replaces the midday direction's "through the System's existing clock and random-number concerns".
+  differential test). Nothing is on the interface for it.
+- It supersedes "the processor is fixed for the whole container". abi machine.rs's module doc ("it is never
+  emulated in software") is contradicted by the ruling and changes at the migration.
+- Agreed in discussion, not shown as code: "the kernel reading the clock for itself is a separate concern
+  (the existing clock service, no process)". So `Clocks` is unchanged.
+
+My reading, which the ruling does not state
+- "The embedder can see which features a host runs at full speed": in the files it sees them only as
+  `supported`, once per program, on the host the program starts on. An embedder choosing where to send a
+  process may need to see them beforehand, for any host; nothing on the interface gives that, and no
+  getter was added for it. Open with you.
+- Today's fixed claim becomes what an executor reports as `supported`: abi machine.rs's `HWCAP` and
+  `HWCAP2` on ARM64, and on x86-64 the claim lists of origin/phase-2-x86
+  (crates/wcontainers-x86/src/claims.rs).
+- No getter of the chosen list on `Process`: the embedder already has it, as what its own
+  `choose_processor_features` returned, and can keep it in its `ProcessState`. The other way is a getter
+  `Process::processor_features(&self) -> &ProcessorFeatures`, which a receiving embedder could read
+  after a process moves without relying on its state.
+- `RandomSource` is unchanged. The ruling says nothing of the kernel's own random reads; the midday
+  direction put an instruction's random read through "the System's existing ... random-number concerns,
+  which must be told which process and thread asked". Proposal 2 below puts it beside the time read
+  instead, and gives that direction's form as the other way.
 
 PROPOSED, for you to rule (none of these is in the ruling as code)
-1. The contents of `ProcessorFeatures` (kernel-interface 174 to 179):
+1. The contents of `ProcessorFeatures` (kernel-interface 173 to 178):
    ```rust
    pub enum ProcessorFeatures {
        Arm64 { hwcap: u64, hwcap2: u64 },
@@ -611,10 +629,7 @@ PROPOSED, for you to rule (none of these is in the ruling as code)
    ECX and EDX, leaf 7 EBX, ECX and EDX, leaf 0x80000001 ECX and EDX) as `u32` fields: `Copy`, no
    allocation, and exactly what CPUID answers; but it is not what the x86 branch writes today, and which
    leaves is my choice.
-2. `Process::processor_features(&self) -> &ProcessorFeatures` (kernel-interface 56): the one getter for
-   what a process was told, a noun phrase, lending like `execution_config`. Alternative name:
-   `claimed_features` (the midday direction's word "claim").
-3. The two reads by an instruction, each an input of that process, on `ProcessTracer` after the ruled
+2. The two reads by an instruction, each an input of that process, on `ProcessTracer` after the ruled
    items (system 114 to 123):
    ```rust
    fn read_monotonic_nanoseconds<P: Process<State = Self::ProcessState>>(
@@ -641,3 +656,12 @@ PROPOSED, for you to rule (none of these is in the ruling as code)
    bare constant in the kernel's bindings. So `Clock` would be new, in the kernel interface.
    Alternative for random: `fill_random_bytes_for(process, thread, into: &mut [u8])`, the shape of
    `RandomSource::fill_random_bytes` with the process, which serves any width.
+   Where they live. On `ProcessTracer`, because each is handed the process with its state, as every hook
+   is, and is an input of that process, as a system call's response is: a replaying embedder then replays
+   all of a process's inputs on one concern. This does not match why `Clocks` is apart (g: "a replaying
+   or simulated embedder replaces time alone"), since a program's time reads are now replaced with the
+   tracer, and only the kernel's own reads with `Clocks`.
+   Alternative for where: the midday direction's form, each on its existing concern and told the process
+   and thread, `Clocks::read_monotonic_nanoseconds` and `RandomSource::read_random_number` with the same
+   signatures; time is then replaced alone again, but `Clocks` and `RandomSource` gain `ProcessState`,
+   and the afternoon ruling calls the kernel's own clock reads "a separate concern" from a program's.
