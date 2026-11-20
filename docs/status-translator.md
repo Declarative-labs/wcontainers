@@ -6,7 +6,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 - T3 (this milestone) is under way; see "T3" below for what is done and what is left. Not met yet: the speed
   bar in Chrome (fib, sort and walk 0.5 to 1 percent slower, from runner.js, not from the translator, whose
-  output is byte for byte the same) only; layers 1, 2 and 3 reran on the merged code with no mismatch.
+  output is byte for byte the same). Met: layers 1, 2 and 3 reran on the merged code with no mismatch; the
+  awk count; the literal check passing with a smaller baseline.
 - FPSR (the P2 check's first finding): a program whose code reads FPSR now has its flags kept exact from its
   start, decided by `wcontainers_arm64::reads_float_status(code)` and applied by whoever starts the thread
   (`FLOAT_TRACKING` set to 1 before it runs). This track's runners do it; the runtime's CPU side
