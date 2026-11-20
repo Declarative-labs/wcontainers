@@ -1,6 +1,7 @@
 //! Storage textures read and written through a buffer of their texels
 //! (`VariantKey::texels_through_buffer`), where the back end has no atomics on storage textures
-//! (`AtomicsThroughBuffer`): the view's texels are copied into a buffer before each draw or
+//! (`AtomicsThroughBuffer`) or cannot store into the view's format (`StorageFormatThroughBuffer`):
+//! the view's texels are copied into a buffer before each draw or
 //! dispatch, outside a pass, and back after it; the program decodes and encodes the view's format.
 
 use super::*;
@@ -20,6 +21,7 @@ pub(crate) struct Through<B: Backend> {
     row_pitch: u32,
     /// `HelperValue::TexelLayout`: row pitch in texels, rows per layer, width, height, layers.
     layout: [u32; 5],
+    why: SlowPath,
 }
 
 impl<B: Backend> Through<B> {
@@ -46,7 +48,24 @@ impl<B: Backend> Device<B> {
             s.typed
                 .iter()
                 .any(|t| t.storage && !t.buffer && t.through && t.register == register)
+                || register < u64::BITS
+                    && self.stored_through_slots(stage, s) & (1 << register) != 0
         })
+    }
+
+    /// The storage texture slots of `s` whose view bound at `stage` is of a format the back end
+    /// cannot store into (`StorageFormatThroughBuffer`).
+    pub(super) fn stored_through_slots(&self, stage: usize, s: &Shader<B>) -> u64 {
+        s.typed
+            .iter()
+            .filter(|t| t.storage && !t.buffer && !t.through && t.register < u64::BITS)
+            .filter(|t| {
+                matches!(
+                    self.ctx.uavs[stage].get(t.register as usize).and_then(Option::as_deref),
+                    Some(ShaderView::Texture(v)) if self.stored_through(v.format)
+                )
+            })
+            .fold(0, |m, t| m | 1 << t.register)
     }
 
     /// A buffer holding the texels of storage view `v`, bound at `register` of a stage.
@@ -85,6 +104,11 @@ impl<B: Backend> Device<B> {
             buffer: Kept::new(buffer, id, Object::Buffer, &self.graveyard),
             row_pitch,
             layout: [row_pitch / bytes, height, width, height, layers],
+            why: if self.stored_through(v.format) {
+                SlowPath::StorageFormatThroughBuffer
+            } else {
+                SlowPath::AtomicsThroughBuffer
+            },
         })
     }
 
@@ -103,10 +127,8 @@ impl<B: Backend> Device<B> {
             return false;
         }
         self.end_pass();
-        self.backend
-            .slow_paths()
-            .hit(SlowPath::AtomicsThroughBuffer);
         for t in &self.ctx.through[stage] {
+            self.backend.slow_paths().hit(t.why);
             let texture = t.texture.gpu.handle.clone();
             self.backend.copy_texture_to_buffer(
                 &region(t, &texture),

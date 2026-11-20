@@ -1337,6 +1337,14 @@ impl Device_Impl {
         self.flags
     }
 
+    /// No device-dependent counters, as Direct3D answers for a device without them.
+    pub(super) fn check_counter_info(&self, info: *mut D3D11_COUNTER_INFO) {
+        if !info.is_null() {
+            // SAFETY: the program passes its own structure to fill.
+            unsafe { info.write(D3D11_COUNTER_INFO::default()) };
+        }
+    }
+
     pub(super) fn get_device_removed_reason(&self) -> Result<()> {
         removal(self.front.borrow_mut().poll_removed())
     }

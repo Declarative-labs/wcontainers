@@ -454,6 +454,9 @@ pub struct StageVariant {
     /// Constant buffer slots past the back end's uniform buffers per stage: the program reads them
     /// through textures the front copies the bound windows into (`ConstantsAsTexture`).
     pub constants_as_texture: u16,
+    /// Storage texture slots whose bound view's format the back end cannot store into: the
+    /// program reads and writes them through a buffer of their texels (`StorageFormatThroughBuffer`).
+    pub stored_through: u64,
 }
 
 /// The constant buffer slots of `reflection`'s set `set` read as uniform buffers (all but those in
@@ -519,6 +522,7 @@ impl StageVariant {
         key.mirror_once_in_shader = self.mirror_once_in_shader;
         key.filter_in_shader = self.filter_in_shader;
         key.min_lod_clamped = self.min_lod_clamped;
+        key.texels_through_buffer |= self.stored_through;
         key.swizzled = (0..128)
             .filter(|i| self.stencil & (1 << i) != 0)
             .map(|i| (i, STENCIL_READ))

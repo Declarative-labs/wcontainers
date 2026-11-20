@@ -701,6 +701,28 @@ impl<B: Backend> Device<B> {
 
     /// A format the back end lacks altogether is not served; one it holds without these uses is
     /// refused as a driver without them refuses it.
+    /// Whether storage views of `format` are read and written through a buffer of their texels,
+    /// where the back end copies the format but cannot store into it (`StorageFormatThroughBuffer`).
+    pub(crate) fn stored_through(&self, format: Format) -> bool {
+        let caps = self.backend.caps();
+        let uses = caps.formats.get(format);
+        !uses.contains(FormatUse::STORAGE_WRITE)
+            && uses.contains(FormatUse::COPY_OUT)
+            && format.block().0 == 1
+            && caps.has(Features::COMPUTE)
+            && caps.limits.storage_buffers_per_stage > 0
+    }
+
+    /// The use storage views of `format` ask of the back end: none where they are stored through
+    /// a buffer.
+    fn storage_use(&self, format: Format) -> FormatUse {
+        if self.stored_through(format) {
+            FormatUse::empty()
+        } else {
+            FormatUse::STORAGE_WRITE
+        }
+    }
+
     fn check_format(&self, format: Format, needs: FormatUse) -> Result<()> {
         let has = self.backend.caps().formats.get(format);
         if has.is_empty() {
@@ -986,10 +1008,10 @@ impl<B: Backend> Device<B> {
             (bind::SHADER_RESOURCE, FormatUse::SAMPLE),
             (bind::RENDER_TARGET, FormatUse::RENDER),
             (bind::DEPTH_STENCIL, FormatUse::DEPTH_STENCIL),
-            (bind::UNORDERED_ACCESS, FormatUse::STORAGE_WRITE),
+            (bind::UNORDERED_ACCESS, self.storage_use(format)),
         ] {
             if d.bind_flags & flag != 0
-                && !(n == FormatUse::STORAGE_WRITE && format::is_srgb(d.format))
+                && !(flag == bind::UNORDERED_ACCESS && format::is_srgb(d.format))
             {
                 needs |= n;
             }
@@ -1034,7 +1056,8 @@ impl<B: Backend> Device<B> {
             (bind::UNORDERED_ACCESS, TextureUsage::STORAGE),
         ] {
             if d.bind_flags & flag != 0
-                && !(u == TextureUsage::STORAGE && format::is_srgb(d.format))
+                && !(u == TextureUsage::STORAGE
+                    && (format::is_srgb(d.format) || self.stored_through(format)))
             {
                 usage |= u;
             }
@@ -1559,7 +1582,7 @@ impl<B: Backend> Device<B> {
         if format::is_srgb(v.desc.format) {
             return Err(Error::InvalidArg("an sRGB unordered access view"));
         }
-        self.check_format(v.format, FormatUse::STORAGE_WRITE)?;
+        self.check_format(v.format, self.storage_use(v.format))?;
         Ok(Rc::new(ShaderView::Texture(v)))
     }
 
