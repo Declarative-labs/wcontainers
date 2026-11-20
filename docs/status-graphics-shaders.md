@@ -2337,6 +2337,21 @@ Run 54 (the gap list in the fronts' order: A4's `decoded` and normalised targets
     denied, Linux, clean; `cargo test -p wcontainers-shaders` without the corpora: every test
     passes (variants 36, geometry 17, glsl_writer 11, corpus 8 and 3 ignored, cache 6, compute
     3, fuzz 1).
+  - The whole suite with every corpus, at the run's last code, on the rented x86 machine this
+    time (the laptop was at load 80 from other work): the corpora copied from the laptop to
+    `/work/probes/shaders-corpus` there (4,184 files), `cargo test -p wcontainers-shaders --
+    --include-ignored --skip mutated` with the three corpus variables. Every test passes but
+    `runner_shaders_give_their_recorded_verdicts` on `hlsl+distance-4-ps.dxil` (A1, left
+    failing); the corpus, game, rig, rig DXIL and own verdicts equal their records. glslang is
+    not on that machine, so the GLSL ES outcomes read as `written` (no record's compile part
+    checked this run; no corpus key uses what changed). A first try failed on macOS `._` files
+    the copy from the Mac had added; they were deleted there.
+  - Desktop, every test binary of this crate in one GPU job at default seeds (gpu-all.log, at the
+    run's last code): 22 binaries, 129 pass, 0 fail, 5 ignored.
+- Clean-up: this branch's build folder on the desktop deleted at the end; nothing built on the
+  laptop or the Mac (only rustfmt there). The x86 machine keeps `/work/target/graphics-shaders`
+  and the corpora copy for the next run (a 5 TB disk; both go with the machine). Logs in scratch
+  `graphics-shaders/run54`.
 
 Run 53 (the gap list in the fronts' order: A5, stream output after a replayed geometry shader):
 - Merged nothing: no branch had anything new. Checked and committed run 52's work (below). The
@@ -2938,6 +2953,9 @@ The older list, kept for its detail:
   `typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does` (its
   storage views of them go through `texels_through_buffer`, built since run 18). The Direct3D 12
   front's view-typed reads (texture-load lines 235 to 267) still need an interface field.
+- The Direct3D 11 track (run 54): indexed strips run through `GeometryReplay` on WebGL 2 now
+  (drawn equal to Direct3D 11 on ANGLE, stream output after them too); make index buffers with
+  `BufferUsage::COPY_SRC` there, as the route reads an indexed strip's indices back.
 
 - The Direct3D 11 track (run 53): geometry shaders run on WebGL 2 by replay (`GeometryAsReplay`):
   `stage::GeometryReplay`, called as under "How the Direct3D fronts call `convert`", drawn equal
@@ -4224,6 +4242,18 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   Windows line ends the check reads multi-line strings differently and fails on other crates'.
 - A GPU job running several test binaries needs `--no-fail-fast`, or the first failing binary
   ends the job before the others run.
+- The rented x86 machine (the default for work without a GPU since 2026-11-19; run 54): from the
+  checkout, `<orchestrator>/cloud/x86-run . --name graphics-shaders -- '<command>'` copies the
+  working tree (submodules included) and runs the command in the checkout's `nix develop`, cargo
+  building into `/work/target/graphics-shaders`. Clippy and the crate's tests run as on the
+  laptop. The corpora are at `/work/probes/shaders-corpus/{dxbc,games,runner}` (copied from the
+  laptop's `~/wcontainers-graphics/corpus`; copy again without macOS `._` files if the machine is
+  new): `C=/work/probes/shaders-corpus; export WCONTAINERS_SHADER_CORPUS=$C/dxbc
+  WCONTAINERS_GAME_SHADERS=$C/games WCONTAINERS_RUNNER_SHADERS=$C/runner
+  WCONTAINERS_SHADERS_OUT=$PWD/target/shaders-out; cargo test --no-fail-fast -p
+  wcontainers-shaders -- --include-ignored --skip mutated` (about 3 minutes). It has no glslang,
+  so GLSL ES outcomes are not compiled there; the laptop's suite does that. The literal check
+  needs `.git`, which the copy leaves out: run it on the desktop.
 - Linux laptop (no GPU), one command from the Mac: `tools/graphics-rig/linux <command>`. It copies the
   working tree (submodules included) to `~/wcontainers-graphics/src/<branch>` and builds into
   `~/wcontainers-graphics/target/<branch>`, with 5 cargo jobs (2 when the laptop's load is 8 or more).
