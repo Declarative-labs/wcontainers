@@ -16,6 +16,8 @@ pub mod spirv;
 pub enum ConvertError {
     /// Mesa refused the input, at the named step.
     Mesa(&'static str),
+    /// Mesa's GLSL compiler or linker refused the program, with its messages.
+    Glsl(String),
     /// naga's SPIR-V reader cannot read what the route wrote.
     Reader(String),
     /// The module failed naga's validation.
@@ -31,6 +33,7 @@ impl core::fmt::Display for ConvertError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ConvertError::Mesa(step) => write!(f, "mesa refused at {step}"),
+            ConvertError::Glsl(log) => write!(f, "glsl: {log}"),
             ConvertError::Reader(s) => write!(f, "spirv-reader: {s}"),
             ConvertError::Invalid(s) => write!(f, "invalid: {s}"),
             ConvertError::Bindings(why) => write!(f, "bindings: {why}"),

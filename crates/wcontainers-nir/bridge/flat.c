@@ -151,7 +151,8 @@ type_index(struct flattening *f, const struct glsl_type *type, uint32_t *index)
       }
    } else if (glsl_type_is_matrix(type)) {
       t.kind = WC_TYPE_MATRIX;
-      t.row_major = glsl_matrix_type_is_row_major(type);
+      /* Only a matrix laid out in memory has a layout; any other is column-major. */
+      t.row_major = glsl_get_explicit_stride(type) && glsl_matrix_type_is_row_major(type);
       if (!type_index(f, glsl_get_column_type(type), &t.element))
          return false;
    } else if (is_resource(type)) {

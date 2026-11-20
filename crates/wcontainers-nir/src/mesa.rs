@@ -2,7 +2,7 @@
 
 use crate::ConvertError;
 use crate::bind::{self, KINDS};
-use std::ffi::{CString, c_char};
+use std::ffi::{CStr, CString, c_char};
 use std::sync::Once;
 use wcontainers_gpu::{ReflectedBinding, ShaderStage};
 
@@ -16,6 +16,9 @@ pub enum Stage {
 }
 
 impl Stage {
+    /// Every stage, in the bridge's order (`WC_STAGES`).
+    pub const ALL: &[Stage] = &[Stage::Vertex, Stage::Fragment, Stage::Compute];
+
     pub const fn shader_stage(self) -> ShaderStage {
         match self {
             Stage::Vertex => ShaderStage::Vertex,
@@ -70,6 +73,12 @@ struct Bytes {
 }
 
 #[repr(C)]
+struct GlslProgram {
+    stages: [*mut NirShader; Stage::ALL.len()],
+    log: *mut c_char,
+}
+
+#[repr(C)]
 struct Words {
     data: *mut u32,
     count: usize,
@@ -83,6 +92,8 @@ unsafe extern "C" {
         stage: Stage,
         entry_point: *const c_char,
     ) -> *mut NirShader;
+    fn wc_glsl_to_nir(sources: *const *const c_char, out: *mut GlslProgram) -> bool;
+    fn wc_glsl_program_free(program: *mut GlslProgram);
     fn wc_nir_to_common_form(
         nir: *mut NirShader,
         set: u32,
@@ -123,6 +134,55 @@ impl Nir {
             return Err(ConvertError::Mesa(SPIRV_TO_NIR));
         }
         Ok(Nir(nir))
+    }
+
+    /// The stages of one GLSL program as the OpenGL driver receives them: compiled and linked by
+    /// Mesa's GLSL compiler, then st/mesa's steps for the driver's capabilities (`bridge/glsl.cpp`),
+    /// each buffer an array of words. One entry a source, in `Stage::ALL`'s order.
+    pub fn from_glsl(sources: &[(Stage, &str)]) -> Result<Vec<(Stage, Nir)>, ConvertError> {
+        initialised();
+        let owned = sources
+            .iter()
+            .map(|(stage, text)| Ok((*stage, CString::new(*text)?)))
+            .collect::<Result<Vec<_>, std::ffi::NulError>>()
+            .map_err(|e| ConvertError::Glsl(e.to_string()))?;
+        let pointers: Vec<*const c_char> = Stage::ALL
+            .iter()
+            .map(|stage| {
+                owned
+                    .iter()
+                    .find(|(s, _)| s == stage)
+                    .map_or(std::ptr::null(), |(_, text)| text.as_ptr())
+            })
+            .collect();
+        let mut program = GlslProgram {
+            stages: [std::ptr::null_mut(); Stage::ALL.len()],
+            log: std::ptr::null_mut(),
+        };
+        // SAFETY: one source pointer a stage (or null), each alive for the call; the bridge fills
+        // `program` and Mesa copies what it keeps.
+        let linked = unsafe { wc_glsl_to_nir(pointers.as_ptr(), &mut program) };
+        let log = if program.log.is_null() {
+            String::new()
+        } else {
+            // SAFETY: the bridge's log is a NUL-terminated string until wc_glsl_program_free.
+            unsafe { CStr::from_ptr(program.log) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        let stages = Stage::ALL
+            .iter()
+            .zip(program.stages.iter_mut())
+            .filter(|(_, nir)| !nir.is_null())
+            .map(|(stage, nir)| (*stage, Nir(std::mem::replace(nir, std::ptr::null_mut()))))
+            .collect();
+        // SAFETY: program came from the bridge; the shaders taken above are no longer in it.
+        unsafe { wc_glsl_program_free(&mut program) };
+        if linked {
+            Ok(stages)
+        } else {
+            Err(ConvertError::Glsl(log))
+        }
     }
 
     /// Gives the program of `stage` the common form's meaning (sampled array layers rounded to

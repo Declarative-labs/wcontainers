@@ -18,12 +18,18 @@ const BRIDGE_HEADER: &str = "bridge/bridge.h";
 /// Candidate B's flattening of NIR.
 const FLAT_SOURCE: &str = "bridge/flat.c";
 const FLAT_HEADER: &str = "bridge/flat.h";
+/// The GLSL front (C++, Mesa's GLSL compiler) and what the bridge's files share.
+const GLSL_SOURCE: &str = "bridge/glsl.cpp";
+const PRIVATE_HEADER: &str = "bridge/bridge_private.h";
+const GLSL_LIBRARY: &str = "wcontainers_nir_glsl";
 const BRIDGE_LIBRARY: &str = "wcontainers_nir_bridge";
 /// Meson's record of the build, which names the source folder it was made from.
 const MESON_INFO: &str = "meson-info/meson-info.json";
 /// Mesa's own compile commands, and the file whose flags (defines and C standard) the bridge takes.
 const COMPILE_COMMANDS: &str = "compile_commands.json";
 const FLAGS_FROM: &str = "nir_to_spirv.c";
+/// The C++ file of Mesa's GLSL compiler whose flags the GLSL front takes.
+const CPP_FLAGS_FROM: &str = "standalone.cpp";
 const DEFINE_FLAG: &str = "-D";
 const STANDARD_FLAG: &str = "-std=";
 
@@ -33,6 +39,7 @@ const INCLUDES: &[&str] = &[
     "src",
     "src/compiler",
     "src/compiler/nir",
+    "src/compiler/glsl",
     "src/compiler/spirv",
     "src/gallium/include",
     "src/gallium/auxiliary",
@@ -41,6 +48,7 @@ const INCLUDES: &[&str] = &[
     "src/mesa",
     "src/mapi",
     "src/util",
+    "src/util/format",
 ];
 
 /// The static libraries, by their folder in Mesa's build, in link order (users before what they use).
@@ -48,6 +56,8 @@ const LIBRARIES: &[(&str, &str)] = &[
     ("src/gallium/drivers/zink", "zink"),
     ("src/compiler/glsl", "glsl_standalone"),
     ("src/compiler/glsl", "glsl"),
+    ("src/compiler/glsl", "glsl_util"),
+    ("src/compiler/glsl/glcpp", "glcpp_standalone"),
     ("src/compiler/glsl/glcpp", "glcpp"),
     ("src/mesa", "mesa"),
     ("src/compiler/spirv", "vtn"),
@@ -94,6 +104,8 @@ fn main() {
     println!("{RERUN_IF_CHANGED}{BRIDGE_HEADER}");
     println!("{RERUN_IF_CHANGED}{FLAT_SOURCE}");
     println!("{RERUN_IF_CHANGED}{FLAT_HEADER}");
+    println!("{RERUN_IF_CHANGED}{GLSL_SOURCE}");
+    println!("{RERUN_IF_CHANGED}{PRIVATE_HEADER}");
     let roots = [source_folder(build), build.clone()];
     let includes: Vec<PathBuf> = INCLUDES
         .iter()
@@ -101,7 +113,7 @@ fn main() {
         .collect();
 
     let mut bridge = cc::Build::new();
-    let flags = mesa_flags(build);
+    let flags = mesa_flags(build, FLAGS_FROM);
     // Mesa's headers warn under the flags cc adds by default; Mesa builds them without those.
     bridge
         .file(BRIDGE_SOURCE)
@@ -112,6 +124,15 @@ fn main() {
         bridge.flag(flag);
     }
     bridge.compile(BRIDGE_LIBRARY);
+    let mut glsl = cc::Build::new();
+    glsl.cpp(true)
+        .file(GLSL_SOURCE)
+        .includes(&includes)
+        .warnings(false);
+    for flag in mesa_flags(build, CPP_FLAGS_FROM) {
+        glsl.flag(flag);
+    }
+    glsl.compile(GLSL_LIBRARY);
 
     for (folder, name) in LIBRARIES {
         println!("{LINK_SEARCH}{}", build.join(folder).display());
@@ -212,8 +233,8 @@ fn mesa_dependencies(build: &Path) {
     }
 }
 
-/// The defines and C standard Mesa compiled its NIR users with, from its compile commands.
-fn mesa_flags(build: &Path) -> Vec<String> {
+/// The defines and language standard Mesa compiled `file` with, from its compile commands.
+fn mesa_flags(build: &Path, file: &str) -> Vec<String> {
     #[derive(serde::Deserialize)]
     struct Command {
         file: String,
@@ -225,8 +246,8 @@ fn mesa_flags(build: &Path) -> Vec<String> {
     let commands: Vec<Command> = serde_json::from_str(&text).expect("compile commands are JSON");
     let command = commands
         .iter()
-        .find(|c| c.file.ends_with(FLAGS_FROM))
-        .expect("Mesa's build compiles Zink's NIR to SPIR-V compiler");
+        .find(|c| c.file.ends_with(file))
+        .unwrap_or_else(|| panic!("Mesa's build compiles {file}"));
     command
         .command
         .split_whitespace()

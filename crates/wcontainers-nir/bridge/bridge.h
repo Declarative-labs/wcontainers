@@ -6,6 +6,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct nir_shader;
 
 /* The program stages the routes take, apart from Mesa's own numbering. */
@@ -13,6 +17,7 @@ enum wc_stage {
    WC_STAGE_VERTEX,
    WC_STAGE_FRAGMENT,
    WC_STAGE_COMPUTE,
+   WC_STAGES,
 };
 
 /* The binding kinds of the common form, in the order of wcontainers_gpu::SlotKind. */
@@ -75,6 +80,19 @@ void wc_finish(void);
 struct nir_shader *wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage,
                                    const char *entry_point);
 
+/* One GLSL program's stages as the OpenGL driver receives them, by enum wc_stage (NULL where the
+ * program has none), and the compiler's and linker's messages; given back with
+ * wc_glsl_program_free. */
+struct wc_glsl_program {
+   struct nir_shader *stages[WC_STAGES];
+   char *log;
+};
+
+/* Compiles and links the sources (by enum wc_stage, NULL for none) with Mesa's GLSL compiler, then
+ * takes st/mesa's steps for the OpenGL driver's capabilities; false when either step fails. */
+bool wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out);
+void wc_glsl_program_free(struct wc_glsl_program *program);
+
 /* What every route does to the NIR to give it the common form's meaning and bindings: array layers of
  * sampling rounded to the nearest integer (Vulkan's rule; the common form's layer is an integer);
  * dispatches counted from workgroup 0 with no global offset;
@@ -105,5 +123,9 @@ void wc_nir_free(struct nir_shader *nir);
 void wc_bytes_free(struct wc_bytes *bytes);
 void wc_words_free(struct wc_words *words);
 void wc_bindings_free(struct wc_bindings *bindings);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

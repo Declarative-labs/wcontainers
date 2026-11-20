@@ -4,6 +4,7 @@
 #![cfg(mesa)]
 
 use wcontainers_gpu::{ShaderStage, SlotKind};
+use wcontainers_nir::ConvertError;
 use wcontainers_nir::bind::stage_set;
 use wcontainers_nir::mesa::{Nir, Stage};
 use wcontainers_shaders::ENTRY_POINT;
@@ -170,4 +171,81 @@ fn alpha_to_one_gives_route_b_a_sample_mask_and_alpha_one() {
         wcontainers_nir::spirv::validate(&module).unwrap();
         assert_eq!(sample_mask_and_alpha_one(&module), (true, true));
     }
+}
+
+const GLSL_VERTEX: &str = "#version 450
+layout(location = 0) in vec4 position;
+layout(location = 1) in vec2 at;
+uniform mat4 transform;
+uniform float scale[3];
+layout(std140, binding = 2) uniform Light { vec4 colour; vec3 direction; } light;
+layout(std430, binding = 1) readonly buffer Offsets { vec4 offsets[]; };
+out vec2 texel;
+out vec4 shade;
+void main() {
+    gl_Position = transform * position * scale[gl_VertexID % 3] + offsets[gl_InstanceID];
+    texel = at;
+    shade = light.colour * max(dot(light.direction, position.xyz), 0.0);
+}
+";
+
+const GLSL_FRAGMENT: &str = "#version 450
+in vec2 texel;
+in vec4 shade;
+uniform sampler2D picture;
+layout(std430, binding = 0) buffer Count { uint hits; float last[]; };
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = texture(picture, texel) * shade;
+    atomicAdd(hits, 1u);
+    last[int(gl_FragCoord.x)] = colour.a;
+}
+";
+
+#[test]
+fn route_b_reads_a_linked_glsl_program() {
+    let stages = Nir::from_glsl(&[
+        (Stage::Vertex, GLSL_VERTEX),
+        (Stage::Fragment, GLSL_FRAGMENT),
+    ])
+    .unwrap();
+    assert_eq!(
+        stages.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        [Stage::Vertex, Stage::Fragment]
+    );
+    for (stage, mut nir) in stages {
+        assert!(!nir.serialized().unwrap().is_empty());
+        let bindings = nir.to_common_form(stage).unwrap();
+        let module = wcontainers_nir::direct::module(&mut nir).unwrap();
+        wcontainers_nir::spirv::validate(&module).unwrap();
+        let kinds = |kind| bindings.iter().filter(|b| b.kind == kind).count();
+        match stage {
+            // The default block, the uniform block, the storage block.
+            Stage::Vertex => {
+                assert_eq!((kinds(SlotKind::Uniform), kinds(SlotKind::Storage)), (2, 1))
+            }
+            // The default block (the coordinates' transform), the storage block, the texture
+            // and its sampler.
+            _ => assert_eq!(
+                (
+                    kinds(SlotKind::Uniform),
+                    kinds(SlotKind::Storage),
+                    kinds(SlotKind::Texture),
+                    kinds(SlotKind::Sampler)
+                ),
+                (1, 1, 1, 1)
+            ),
+        }
+    }
+}
+
+#[test]
+fn a_glsl_program_that_does_not_compile_is_refused_with_its_log() {
+    let Err(ConvertError::Glsl(log)) = Nir::from_glsl(&[(
+        Stage::Fragment,
+        "#version 450\nvoid main() { undeclared = 1; }\n",
+    )]) else {
+        panic!("Mesa's compiler refuses the program");
+    };
+    assert!(log.contains("undeclared"), "{log}");
 }

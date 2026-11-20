@@ -1,6 +1,7 @@
 /* The C side of wcontainers-nir (bridge.h). */
-#include "bridge.h"
+#include "bridge_private.h"
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,8 @@
 #include "nir_builder.h"
 #include "nir_serialize.h"
 #include "nir_to_spirv.h"
+#include "pipe/p_state.h"
+#include "util/bitset.h"
 #include "util/blob.h"
 #include "util/ralloc.h"
 
@@ -48,8 +51,14 @@ static const struct nir_shader_compiler_options compiler_options = {
    .float_mul_add32 = nir_float_muladd_support_keep_weak_ffma,
 };
 
-static mesa_shader_stage
-mesa_stage(enum wc_stage stage)
+const struct nir_shader_compiler_options *
+wc_compiler_options(void)
+{
+   return &compiler_options;
+}
+
+mesa_shader_stage
+wc_mesa_stage(enum wc_stage stage)
 {
    switch (stage) {
    case WC_STAGE_VERTEX:
@@ -58,6 +67,8 @@ mesa_stage(enum wc_stage stage)
       return MESA_SHADER_FRAGMENT;
    case WC_STAGE_COMPUTE:
       return MESA_SHADER_COMPUTE;
+   case WC_STAGES:
+      break;
    }
    return MESA_SHADER_NONE;
 }
@@ -74,9 +85,8 @@ wc_finish(void)
    glsl_type_singleton_decref();
 }
 
-/* The clean-up every route starts from: functions inlined, variables in SSA, constants folded. */
-static void
-optimize(nir_shader *nir)
+void
+wc_optimize(nir_shader *nir)
 {
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_inline_functions);
@@ -107,9 +117,9 @@ wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage, const 
       .environment = NIR_SPIRV_VULKAN,
    };
    nir_shader *nir =
-      spirv_to_nir(words, count, NULL, mesa_stage(stage), entry_point, &options, &compiler_options);
+      spirv_to_nir(words, count, NULL, wc_mesa_stage(stage), entry_point, &options, &compiler_options);
    if (nir)
-      optimize(nir);
+      wc_optimize(nir);
    return nir;
 }
 
@@ -419,4 +429,180 @@ wc_bindings_free(struct wc_bindings *bindings)
 {
    free(bindings->data);
    bindings->data = NULL;
+}
+
+/* The words of a uniform block are read as vectors of this many, the step of a uniform array. */
+#define WC_UNIFORM_VECTOR_WORDS 4
+#define WC_WORD_BYTES sizeof(uint32_t)
+
+struct word_blocks {
+   nir_variable **uniform;
+   uint32_t uniforms;
+   nir_variable **storage;
+   uint32_t storages;
+};
+
+static nir_variable *
+word_block(nir_shader *nir, nir_variable_mode mode, uint32_t binding, uint32_t bytes, bool writable)
+{
+   const struct glsl_type *words;
+   if (mode == nir_var_mem_ubo) {
+      const uint32_t vector_bytes = WC_UNIFORM_VECTOR_WORDS * WC_WORD_BYTES;
+      words = glsl_array_type(glsl_vector_type(GLSL_TYPE_UINT, WC_UNIFORM_VECTOR_WORDS),
+                              MAX2(DIV_ROUND_UP(bytes, vector_bytes), 1), vector_bytes);
+   } else {
+      words = glsl_array_type(glsl_uint_type(), 0, WC_WORD_BYTES);
+   }
+   const struct glsl_struct_field field = {.type = words, .name = "words", .location = -1};
+   const struct glsl_type *block =
+      glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false, field.name);
+   nir_variable *var = nir_variable_create(nir, mode, block, NULL);
+   var->interface_type = block;
+   var->data.binding = binding;
+   var->data.explicit_binding = true;
+   var->data.access = writable ? 0 : ACCESS_NON_WRITEABLE;
+   return var;
+}
+
+/* The 32-bit word `word` of a block. */
+static nir_deref_instr *
+word_at(nir_builder *b, nir_variable *var, nir_def *word)
+{
+   nir_deref_instr *words = nir_build_deref_struct(b, nir_build_deref_var(b, var), 0);
+   if (var->data.mode != nir_var_mem_ubo)
+      return nir_build_deref_array(b, words, word);
+   nir_deref_instr *vector =
+      nir_build_deref_array(b, words, nir_ushr_imm(b, word, util_logbase2(WC_UNIFORM_VECTOR_WORDS)));
+   return nir_build_deref_array(b, vector, nir_iand_imm(b, word, WC_UNIFORM_VECTOR_WORDS - 1));
+}
+
+/* Where an access names its block and its byte offset, and which blocks it reaches. */
+static bool
+buffer_access(const nir_intrinsic_instr *intr, int *block, int *offset, bool *uniform, bool *writes)
+{
+   *offset = -1;
+   *uniform = false;
+   *writes = false;
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_ubo:
+      *uniform = true;
+      FALLTHROUGH;
+   case nir_intrinsic_load_ssbo:
+      *block = 0;
+      *offset = 1;
+      return true;
+   case nir_intrinsic_store_ssbo:
+      *block = 1;
+      *offset = 2;
+      *writes = true;
+      return true;
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+      *block = 0;
+      *offset = 1;
+      *writes = true;
+      return true;
+   case nir_intrinsic_get_ssbo_size:
+      *block = 0;
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* What the accesses show of the storage blocks: how many there are, and which are written. */
+struct storage_use {
+   uint32_t blocks;
+   BITSET_DECLARE(written, PIPE_MAX_SHADER_BUFFERS);
+};
+
+static bool
+note_storage(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct storage_use *use = data;
+   int block, offset;
+   bool uniform, writes;
+   if (!buffer_access(intr, &block, &offset, &uniform, &writes) || uniform ||
+       !nir_src_is_const(intr->src[block]) || nir_src_as_uint(intr->src[block]) >= PIPE_MAX_SHADER_BUFFERS)
+      return false;
+   uint32_t index = nir_src_as_uint(intr->src[block]);
+   use->blocks = MAX2(use->blocks, index + 1);
+   if (writes)
+      BITSET_SET(use->written, index);
+   return false;
+}
+
+static bool
+access_words(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const struct word_blocks *w = data;
+   int block, offset;
+   bool uniform, writes;
+   if (!buffer_access(intr, &block, &offset, &uniform, &writes) || !nir_src_is_const(intr->src[block]))
+      return false;
+   uint32_t index = nir_src_as_uint(intr->src[block]);
+   if (index >= (uniform ? w->uniforms : w->storages))
+      return false;
+   nir_variable *var = uniform ? w->uniform[index] : w->storage[index];
+   b->cursor = nir_before_instr(&intr->instr);
+   if (offset < 0) {
+      nir_deref_instr *words = nir_build_deref_struct(b, nir_build_deref_var(b, var), 0);
+      nir_def *length = nir_deref_buffer_array_length(b, intr->def.bit_size, &words->def);
+      nir_def_replace(&intr->def, nir_imul_imm(b, length, WC_WORD_BYTES));
+      return true;
+   }
+   bool stores = intr->intrinsic == nir_intrinsic_store_ssbo;
+   unsigned bits = stores ? nir_src_bit_size(intr->src[0]) : intr->def.bit_size;
+   if (bits != WC_WORD_BYTES * CHAR_BIT)
+      return false;
+   nir_def *first = nir_ushr_imm(b, intr->src[offset].ssa, util_logbase2(WC_WORD_BYTES));
+   if (stores) {
+      nir_def *value = intr->src[0].ssa;
+      u_foreach_bit(c, nir_intrinsic_write_mask(intr))
+         nir_store_deref(b, word_at(b, var, nir_iadd_imm(b, first, c)), nir_channel(b, value, c), 1);
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   nir_def *result;
+   if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+      result = nir_deref_atomic(b, bits, &word_at(b, var, first)->def, intr->src[2].ssa,
+                                .atomic_op = nir_intrinsic_atomic_op(intr));
+   } else if (intr->intrinsic == nir_intrinsic_ssbo_atomic_swap) {
+      result = nir_deref_atomic_swap(b, bits, &word_at(b, var, first)->def, intr->src[2].ssa,
+                                     intr->src[3].ssa, .atomic_op = nir_intrinsic_atomic_op(intr));
+   } else {
+      nir_def *words[NIR_MAX_VEC_COMPONENTS];
+      for (unsigned c = 0; c < intr->def.num_components; c++)
+         words[c] = nir_load_deref(b, word_at(b, var, nir_iadd_imm(b, first, c)));
+      result = nir_vec(b, words, intr->def.num_components);
+   }
+   nir_def_replace(&intr->def, result);
+   return true;
+}
+
+void
+wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms)
+{
+   /* Block indices that are constants show as constants. */
+   wc_optimize(nir);
+   struct storage_use use = {0};
+   nir_shader_intrinsics_pass(nir, note_storage, nir_metadata_all, &use);
+   nir_variable **vars = calloc(uniforms + use.blocks + 1, sizeof(*vars));
+   if (!vars)
+      return;
+   nir_foreach_variable_with_modes_safe(var, nir, nir_var_mem_ubo | nir_var_mem_ssbo)
+      exec_node_remove(&var->node);
+   for (uint32_t i = 0; i < uniforms; i++)
+      vars[i] = word_block(nir, nir_var_mem_ubo, i, uniform_bytes[i], false);
+   for (uint32_t j = 0; j < use.blocks; j++)
+      vars[uniforms + j] =
+         word_block(nir, nir_var_mem_ssbo, uniforms + j, 0, BITSET_TEST(use.written, j));
+   const struct word_blocks blocks = {
+      .uniform = vars,
+      .uniforms = uniforms,
+      .storage = vars + uniforms,
+      .storages = use.blocks,
+   };
+   nir_shader_intrinsics_pass(nir, access_words, nir_metadata_control_flow, (void *)&blocks);
+   free(vars);
 }
