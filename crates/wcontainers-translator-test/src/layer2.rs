@@ -15,6 +15,7 @@
 use crate::guest::GuestTest;
 use crate::programs::Blob;
 use proptest::prelude::*;
+use wcontainers_guest_cpu::ReturnAddress;
 
 /// Bytes of the area random loads and stores use.
 pub const AREA: u32 = 512;
@@ -522,18 +523,23 @@ fn group<G: GuestTest>() -> impl Strategy<Value = Op> {
 
 /// Accesses fitted to their base: Arm leaves a transfer register that is also a base written back, or a pair
 /// loaded into one register, unpredictable (the CPU may raise illegal instruction). With `keep`, no access
-/// loads into the base either. An access may follow a value an earlier one loaded into the base, which may
-/// be a code address (x86's pushed return addresses), so a program may write over its own code. Vector
-/// registers are never the base, and `fitted` already keeps a vector pair's two apart.
+/// loads into the base either. Where calls write return addresses into memory (x86), only the last access
+/// may load into the base: an access through a value loaded from the area may follow a code address and
+/// write over the program's code, which then runs bytes no case defines. Vector registers are never the
+/// base, and `fitted` already keeps a vector pair's two apart.
 fn through<G: GuestTest>(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Vec<GroupAccess> {
+    let code_addresses_in_memory = matches!(G::RETURN_ADDRESS, ReturnAddress::Stack { .. });
+    let last = accesses.len() - 1;
     accesses
         .into_iter()
-        .map(|mut a| {
+        .enumerate()
+        .map(|(n, mut a)| {
             if a.vector {
                 return a;
             }
             let writes_back = !matches!(a.indexing, Indexing::Offset);
-            let base_kept = writes_back || (keep && a.load);
+            let followed = code_addresses_in_memory && n < last;
+            let base_kept = writes_back || (a.load && (keep || followed));
             if base_kept {
                 a.rt = other::<G>(a.rt, &[base]);
             }
