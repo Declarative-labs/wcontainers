@@ -49,6 +49,10 @@ int convert(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size, u
   auto dynamic = dynamic_constant_buffers(container);
 
   dxbc::Converter::Options convert = { };
+  // Its check bounds every vertex-indexed load by the input vertex count, a hull shader's reads of
+  // its output control points too; a stage's inputs are arrays of the declared count here, and an
+  // index past them is undefined in Direct3D.
+  convert.boundCheckShaderIo = false;
 
   ir::CompileOptions compile = { };
   compile.resourceOptions.allowSubDwordScratchAndLds = false;
