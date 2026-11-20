@@ -23,10 +23,12 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   speed with no hook implemented unchanged (+0.05 % user CPU, 12 alternating rounds). The first
   independent check of S3 found four blocking and three minor problems; run 4 settled them (see
   "S3 first check findings"). The second check found three blocking and five minor problems;
-  run 5 settled them (see "S3 second check findings"). What is left: the reference's verdicts
-  for run 5 (the new tests against Docker and the whole suite), which could not be run: Docker
-  Desktop on the Mac starts no container since about 04:30 Pacific and the ARM machine is gone
-  (see "Measurements", S3 run 5). Then the next independent check.
+  run 5 settled them (see "S3 second check findings"). Run 6 changed no code: on the ARM
+  machine the new tests equal the reference, the whole suite's verdicts are unchanged, and the
+  speed with no hook implemented is unchanged (see "Measurements", S3 run 6). Still owed: the
+  Mac's verdicts for the 25 tests the ARM manual keeps on the Mac (Docker Desktop there still
+  starts no container); their failures on the ARM machine are word for word run 4's. Then the
+  next independent check.
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -228,7 +230,8 @@ The check (scratch streams/s3check2, its own program s3chk.c and test s3chk.rs) 
   "Departures"). The first finding's fix also covers a context resumed on a second kernel
   sharing the executor, as far as the first kernel goes: the first keeps the memory while the
   map lives.
-- Minor, the reference's verdicts were owed: still owed (Docker and the ARM machine down again).
+- Minor, the reference's verdicts were owed: given in run 6 on the ARM machine, but for the
+  Mac-only list (see "Measurements", S3 run 6).
 Each new test fails without its fix (checked on this Mac with the expected output written from
 the program in place of the reference's: SIGSEGV, "the kernel is idle with nothing to wake it",
 the panic at system.rs:341, "read 1" and "recv -1 Resource temporarily unavailable"; scratch
@@ -861,6 +864,31 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 6, tests (ARM machine, tree 8ea3508e, nothing changed since): fmt and clippy with
+  warnings denied over the three crates passed; away (12 passed, the known failure ignored) and
+  embedder (35 passed) at 3 seeds equal the reference (scratch streams/s3f-arm-away.log,
+  s3f/s3f-away-embedder.log, 14:21 to 14:25 UTC, load 16 to 30); the known failure still fails
+  when run ("read 1" against "read -1 Interrupted system call"). Whole suite (the command in "How
+  to run" with `-j $ARM_JOBS` and 12 test threads; scratch streams/s3f-arm-suite.log,
+  s3f/s3f-suite.log, 14:25 to 15:03 UTC, load 39 falling to 17): 599 passed, 26 failed, 7
+  ignored. The 26 are the manual's 25 kept on the Mac and the literal workspace test (no .git
+  there), s3f/failed-arm.txt; against run 4 (s3d) `fdinfo_matches_reference` and
+  `splice_holds_the_pipe` pass now and the seven new tests pass, every other name has its
+  verdict. Each of the 26 failures prints the same differences as in run 4, line for line
+  (thread numbers and the backtrace note aside), `socket_edges_match_reference` among them, so
+  the socket timeout change altered none of them. Their verdicts on the Mac are owed: Docker
+  Desktop there still created containers that never started (07:07 and about 07:17 Pacific, `docker
+  run alpine:3 echo hi`, removed after).
+- S3 run 6, speed with no hook implemented (ARM machine, load 12.4 to 21.9, about 15:19 to 15:26
+  UTC; scratch streams/s3f/speed.sh, speed.log): the memory test binary of c22154df (run 4's
+  tree, as streams-base) and of 8ea3508e, alternately, 13 rounds, round 0 a warm-up, each with a
+  2 MB guest folder holding only that binary's programs. User CPU, rounds 1 to 12: before
+  12.051 12.060 11.800 11.840 11.807 12.067 12.794 12.089 11.810 12.140 11.883 11.776 (mean
+  12.010, median 11.967); after 12.120 11.836 12.097 11.878 11.806 11.887 12.005 13.027 12.279
+  11.811 11.815 12.076 (mean 12.053, median 11.946), faster in 6 of 12. Wall means 15.594 and
+  15.648 s. No difference beyond noise. A first try (s3f/speed-unequal-guest.log, 15:06 to
+  15:13 UTC) showed +4.5 % user and three times the system time: this tree's guest folder held
+  the whole suite's programs (257 MB against 1.7 MB), the pitfall noted under S2's fourth run.
 - S3 run 5, tests (this Mac, 05:45 to 06:20 Pacific, load 2 to 3): Docker Desktop started no
   container (58 in "Created", `docker run ... alpine echo hi` never returned, from at least 05:45
   to 06:20; the check saw the same from 04:30), the ARM machine could not be reached
@@ -1052,6 +1080,8 @@ Found on the way, fixed:
 - After S3's third run: unchanged, 7577 lines (same per crate); the check passes on this Mac
   (exit 0, scratch streams/literals-s3r3.log). The literal check does not read the C guests.
 - After S3's fourth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
+- After S3's sixth run: unchanged, 7577 lines; the check passes on this Mac (exit 0, scratch
+  streams/s3f/literals.log).
 - After S3's fifth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
@@ -1195,10 +1225,11 @@ anything shipped.
 
 ## For the orchestrator
 
-- Run 5: Docker Desktop on this Mac starts no container since about 04:30 Pacific (58 in
-  "Created"), and the ARM machine is unreachable; the reference's verdicts for S3's run 5 (and
-  the second check's) are owed. Once either works: `RUST_TEST_THREADS=3 nix develop -c cargo test
-  -j 4 -p wcontainers-kernel-test --test away --test embedder`, then the whole suite.
+- Run 6: Docker Desktop on this Mac still starts no container (created, never started, at 07:07
+  and about 07:17 Pacific; the daemon answers and one container of another project runs). The ARM
+  machine gave every other verdict. Owed on the Mac once Docker starts containers: the 20 test
+  binaries holding the manual's 25 Mac-only tests and `splice_holds_the_pipe` (the list in
+  scratch streams/s3d/mac-only.log).
 
 - For the owner (S3 run 4): `ProcessContext::origin() -> ContextOrigin { Suspended, Copied }` is
   new (names suggested): through a hook's handle, a process whose own thread is in the middle of
