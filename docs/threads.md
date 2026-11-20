@@ -1671,146 +1671,136 @@ the interface. That `System` is also `Sync` does not follow from them, and stays
   - What it asks of this plan: one bound. The kernel's state moves between host threads under the
     lock (4.2), so the type must be `Send`. It need not be `Sync`: one host thread has it at a time.
 
-## 6. Changing the config of a running process
+## 6. Changing the config of a running process, and taking tasks out
 
-The brief asked for two forms to be weighed, a setter and no setter. A later section of it has since
-settled it: there is no setter. The weighing is kept, because it is what the rest of this section
-stands on. One piece was open, a call that changes the config inside a hook. It has been measured
-since, and it is settled at the end of this section.
+The brief asked for two forms to be weighed, a setter and no setter. A later section of it settled it:
+there is no setter. The weighing is kept, because it is what the rest of this section stands on. Since
+then the owner has ruled how a process is taken out and put back ("suspend and resume by task, and the
+process context"), which replaces `Process::suspend(self)` and `SuspendedProcess<E>` everywhere below.
 
 **Form A, a setter** (not ruled in). `Process::set_thread_ordering(ordering)`, taking effect at the
-group's next stop.
+process's next stop.
 
 **Form B, no setter** (ruled). A process's config is fixed while it is in a kernel. It is given when the
-container starts and when a process is resumed, and changed by `suspend` and `resume` on the same
-kernel: `process.suspend()` gives a `SuspendedProcess<E>`, and `kernel.resume(suspended, config)` puts
-it back with the new config. Nothing is converted and no memory is copied: the process's records and its
-memory move out and back by ownership (interface notes lines 110-114). `export` and `import` are not
-part of it. That meets the orchestrator's condition for agreeing (the brief, lines 91-94): the memory
-moves and is not copied, and no ends are made for what the process has open, so there are none to
-turn back into local objects.
+container starts and when a process is resumed: `resume_process(context, config)` takes it, and it is
+never stored in the value. To change it on the same kernel, the embedder takes the process out with
+`suspend_process`, which hands back its `ProcessContext` and every task of it still on this kernel,
+then puts the context back with `resume_process(context, new_config)` and the tasks with
+`resume_tasks`. Nothing is converted and no memory is copied: the records move out and back by
+ownership. The form that crosses a wire is not part of it. That meets the orchestrator's condition for
+agreeing (the brief, lines 91-94): the memory moves and is not copied, and no ends are made for what the
+process has open.
 
-One thing this plan asks of `suspend`, so that the value may be held, moved and dropped on any host
-thread: it shares no `Rc` with what stays in the kernel. What the process shares with a process that
-stays (an open file description after a fork, say) is kept inside the kernel for it under a key (4.2).
-On the same kernel that is still no conversion: `resume` puts the same references back.
+One thing this plan asks of the values, so that they may be held, moved and dropped on any host thread:
+they share no `Rc` with what stays in the kernel (4.2). On the same kernel that is still no conversion:
+the resume calls put the same references back.
 
 What each costs and makes simpler:
-- **Work in the kernel.** A: the setter, on top of what section 3 needs anyway. B: nothing beyond
-  `suspend` and `resume`, which the embedder interface builds for other reasons.
+- **Work in the kernel.** A: the setter. B: nothing beyond the suspend and resume calls, which the
+  embedder interface builds for other reasons.
 - **Work in the executors.** The same in both. A change of ordering or of guarantee can change the form
   of code the process runs (7.2), so its instances are made again; the native executor sets the
-  process's page tables up again (native.md section 5.3). In B this is on the path of `resume`, which
-  must do it for a process come from elsewhere too.
-- **Cost of one change.** A: the threads called in, once. B: the stop that `suspend` needs (below), then
-  the process's kernel records taken out of the kernel's tables and put back (its threads out of the
-  run queue and the waits, its timers, its place in its parent's children). Their count is the
-  process's threads and waits, not its memory. From inside a hook the embedder can suspend but must
-  resume after `run` has returned (interface notes lines 134-135, 149-150).
-  - What that return costs was measured since, by the interface track, on a prototype
+  process's page tables up again (native.md section 5.3). In B this is on the path of `resume_process`,
+  which must do it for a process come from elsewhere too.
+- **Cost of one change.** A: the threads called in, once. B: the stop that taking the process needs
+  (below), then the process's records taken out of the kernel's tables and put back (its threads out
+  of the run queue and the waits, its timers, its place in its parent's children). Their count is the
+  process's threads and waits, not its memory. From inside a hook the embedder can take the process
+  out but must resume after `run` has returned ("Resume stays outside hooks").
+  - What that return costs was measured by the interface track, on a prototype
     (orchestrator/interface-measurements.json, part "run-return"; this Mac, load 56 to 184). At a
     program start on the WebAssembly executor it costs nothing that could be measured: `run` already
     returns there at every exec, because exec gives the program a new store (20,001 returns for
     20,000 execs with and without the suspend). Returning and resuming, against changing the process
     inside the hook, differed by under 100 instructions of the 6.3 million a program start takes.
   - Elsewhere it costs that worker one leave of `Execution::run` (300 ns, docs/runtime.md section 10).
-  - Not measured: a real `suspend` and `resume` with the records moved out and back, and anything on
+  - Not measured: real suspend and resume calls with the records moved out and back, and anything on
     the native executor. The prototype only took the process's threads out of line and put them back,
     which cost 1,100 to 1,400 instructions.
-- **A consistent starting point for a replica.** A change towards `Exact` starts a promise, and a
-  replica needs the process's whole state at that moment. B hands it over: the `SuspendedProcess` is
-  that state, whole and stopped. With A the embedder must suspend at the same moment anyway.
+- **A consistent starting point for a copy.** A change towards `Exact` starts a promise. Since the
+  ruling on where replay is recorded, a copy starts from a memory transfer and runs on from the
+  process's recorded system call results (4.6). Taking the process out gives the moment at which
+  memory and the kernel's records are one consistent view. With A the embedder must take that moment
+  anyway.
 - **Ways a process gets a config.** A: two. B: one. A reader of an embedder's code sees every change of
-  what replay promises as a `resume` with the config written on it.
+  what replay promises as a `resume_process` with the config written on it.
 
-Weighed so, the plan recommends B, which is what was ruled: the kernel gets no second path, a change of
-what replay promises comes with its starting point, and nothing has to be built for it here. What B
-costs is that each change moves the process's records out and back, and that a change made inside a hook
-waits for `run` to return. The second was measured as nothing at a program start, which is where a
-config is chosen.
+Weighed so, the plan recommends B, which is what was ruled. What B costs is that each change moves the
+process's records out and back, and that a change made inside a hook waits for `run` to return. The
+second was measured as nothing at a program start, which is where a config is chosen.
 
-**What "the next stop" is, and how `suspend` stops a process.** `suspend(self)` must hand back the whole
-process at once. It is called with the kernel's lock held, in a hook or on a handle from
-`kernel.process(id)`. So it cannot call threads in itself: a call-in parks its caller, and the threads
-come in through entries that need the lock (4.5). It works with what is already stopped, or with a stop
-the executor can make in place:
-- **On a handle from `kernel.process(id)`** (section 5): nothing to stop when none of the group's
-  threads runs, which is always so inside `System::stopped` and after a container stop. With threads
-  running it is as in a hook below: a group stop in a group in force `Parallel` and not `Exact`, and
-  an error otherwise, after which the embedder asks with `process_call_in`.
-- **In `on_process_called_in`** (section 5): the kernel has stopped the group before the hook.
-- **In any other hook, the group in force `Serial`**: no thread of the group runs guest code (4.4 item
-  7). Nothing to stop. The hook's own thread is in its entry, with its registers saved.
-- **In any other hook, the group in force `Parallel` and not `Exact`**: the process's other threads may
-  be in guest code. `suspend` asks the executor for a group stop of the process's memory and takes the
-  process while every thread is held.
+**How the kernel takes a batch of tasks.** The ruling leaves it to the kernel ("one atomic batch, taken
+as of one moment; how the kernel stops them is internal"). A task that had already exited is simply
+absent from what comes back, and a thread started just before the call is not in the batch and keeps
+running. `suspend_process` is the same for every task of the process, with its context. What the
+kernel does depends on where it is called from, because a call-in parks its caller and the tasks come
+in through entries that need the kernel's lock (4.5):
+- **On the `Kernel`, from outside any hook**: the call may wait. For each memory of the batch it makes
+  the stop 4.5 names: nothing when none of the named tasks is handed out, a group stop where it may hold
+  them, a call-in otherwise, after which it waits, outside the lock, until they are in. Then it takes
+  the batch in one entry. This is the path an embedder uses for a running `Serial` or `Exact` process.
+- **On a hook's handle, the process running as `Serial`**: no other thread of it runs (4.4 item 7).
+  Nothing to stop. The hook's own thread is in its entry, with its registers saved.
+- **On a hook's handle, the process with `Parallel` code and not `Exact`**: the named tasks may be in
+  guest code. The kernel asks the executor for a group stop of the memory and takes them while every
+  thread is held.
   - A held thread is at a stop point, so all its registers are saved (4.5).
   - A thread held with an exit it has not yet handed to the kernel (it was waiting for the lock) is put
-    back to the instruction that made the exit. It makes the exit again wherever the process is resumed,
+    back to the instruction that made the exit. It makes the exit again wherever the task is resumed,
     as Linux runs an interrupted call again.
-  - When the group stop ends, each held thread finds its process gone, as a dropped thread does today
-    (wt/lib.rs:2303-2306), and leaves `Execution::run`. The kernel has already cleared its processor.
-  Counted "group stopped to suspend a process".
-- **In any other hook, the group in force `Parallel` and `Exact`**: the other threads must stop at
-  positions, which only a call-in gives, and a hook cannot wait for one. When other threads of the
-  group run, `suspend` there answers an error that says so, and the embedder asks with
-  `process_call_in` and suspends in its hook. When none runs it works as in a `Serial` group.
-  - **This is less than the owner ruled.** His guarantee is that a hook fires only when every
-    operation on its process is legal (interface notes lines 57-58). Here two are not: `suspend` and
-    the change of config below. The hooks it reaches are those that fire with other threads of the
-    group running: `on_thread_starting`, `on_process_outgrown` and `on_memory_accessing`, and
-    `on_process_starting` for a child made with `CLONE_VM`.
-  - The way to keep the guarantee whole is for the kernel to call the group in before each of those
-    hooks. Then every watched access, which is what a (`Parallel`, `Exact`) process's record is made
-    of, stops every thread of the group through the kernel: for each thread its stop and 300 ns
-    (docs/runtime.md section 10), where section 8 stops one thread. An embedder would pay that at
-    every hand-over to keep an operation it uses at a few of them.
-  - So the plan narrows the guarantee and says so, and the owner rules on it (decision 8).
+  - When the group stop ends, each held thread that was taken finds its task gone, as a dropped thread
+    does today (wt/lib.rs:2303-2306), and leaves `Execution::run`. The kernel has already cleared its
+    processor. Threads that were held and not taken carry on.
+  Counted "memory stopped to take tasks out".
+- **On a hook's handle, the process given `Exact`, with a named task other than the hook's own
+  running**: the task must stop at a position, which only a call-in gives, and a hook cannot wait for
+  one. What the batch does then is open: the ruling lists it ("the batch that cannot wait inside a hook
+  when it names other running tasks of an exactly recorded process"), and its return has no error and
+  reads a task left out as one that had exited (decision 11). When none of the named tasks runs, it
+  works as for a `Serial` process.
+- When the hook's own thread is in the batch, that worker's `run` returns `StopReason::Suspended`
+  (section 5). Taking some tasks does not use up the handle; taking the process does.
 
-So `suspend` never stops a thread of a group in force `Serial` or `Exact` in place, and item 5 of 4.4
-holds. Two things it does to the rules, and only in the group-stop case: a thread of a suspended process
+So the kernel never stops a thread that runs as `Serial`, or of an `Exact` process, in place, and item 5
+of 4.4 holds. Two things it does to the rules, and only in the group-stop case: a thread that is taken
 leaves `Execution::run` without an exit of its own, and is taken, not ended, outside its own entry.
 
+**One task apart from its siblings.** Per-thread distribution is core (section 2). `suspend_tasks` of one
+task leaves its siblings running here and the process's context on this kernel. The task runs again
+only where a context for its process exists ("a task can only run where a context for its process
+exists (embedder coordinates)"); `copy_process_context` makes one for another kernel without stopping
+anything, because the context changes only inside system calls, which are entries under the lock.
+Keeping several copies in step is the embedder's: it sees every change through the proxy. On this kernel
+the scheduling rule then counts one task fewer, and what the moved task shares with its siblings is the
+embedder's, through watches, as for a process on another kernel (section 3).
+
 **A call that changes the config inside a hook is not in this plan.** The interface notes proposed one
-(`Process::replace_execution_config` in the brief), and the plan's earlier form recommended it, to
-save the return of `run`. That return has been measured as nothing on the WebAssembly executor
-(above), so it is not needed for speed there. On the native executor it was not measured; at worst
-it is one return of `run` in the life of a process. The plan was read again for any other need of
-the call, and has none:
-- the kernel changes a group's config in force itself when groups are joined (section 3). That is
-  inside the kernel and needs no call on `Process`;
-- the two moments an embedder chooses a config are a program's start and a process's first new
-  thread, where the ordering begins to matter (section 3). Both have a hook, and in both a `suspend`
-  followed by a `resume` does it, for one return of `run` in the life of the process;
-- where `suspend` answers an error in a hook (a group in force `Parallel` and `Exact` with other
-  threads running, above), the call would answer the same error for the same reason.
-So there stays one way to give a process a config, `resume`, and it is off decision 9's list.
+(`Process::replace_execution_config` in the brief), and an earlier form of the plan recommended it, to
+save the return of `run`. That return has been measured as nothing on the WebAssembly executor (above),
+so it is not needed for speed there. On the native executor it was not measured; at worst it is one
+return of `run` in the life of a process. The plan has no other need of it: no config changes inside
+the kernel now (section 3), and the two moments an embedder chooses a config, a program's start and a
+process's first new thread, both have a hook in which taking the process out and resuming it after the
+return does it. So there stays one way to give a process a config, `resume_process`, and it is off
+decision 9's list.
 
-**A config in a recorded kernel.** `resume` in a recorded kernel with a guarantee of `None` gives a
-process in force `External` (section 3). `resume` with `Parallel` and a guarantee below `Exact` gives
-a group in force `Serial` there. Both are counted and warned as section 3 says, and
-`ProcessInfo::execution_config_in_force()` answers what runs. Neither call fails.
-
-**A group of several processes.** `suspend` takes one process, and the config in force is the group's
-(section 3). With the strictest winning:
-- to make a group stricter, resume any one of its processes with the stricter config. The whole group
-  has it once its other running threads have come in;
-- to make it looser, every process of the group that was given the stricter config must be suspended
-  and resumed. The embedder learns who shares with whom from the kernel (interface notes lines 161-162).
-The group stop of `suspend` is of the process's memory, so a process made with `CLONE_VM` that shares
-the memory is held too. When one process of a group leaves the kernel, the pages it shared are marked
-watched for those that stay (section 2); that is the embedder interface's to build.
+**Processes that own one memory.** Its form of code is `Serial` code when any of them was given
+`Serial` (section 3). To make it `Parallel` code, every owner given `Serial` is taken out and resumed
+with `Parallel`. The form before also had a "group of several processes", with the strictest config
+winning; both are gone, and a process that only shares a block with others keeps its own config
+whatever theirs is. (The form before also said how a config was read "in a recorded kernel"; that
+kernel is withdrawn, 4.6.)
 
 **What is built here.**
 - The container's first process gets its `ExecutionConfig` at the start (through `Start`,
   kernel/container.rs:55, read by `Kernel::start`). A child inherits its parent's at fork and keeps it
   across exec.
-- Until `suspend` and `resume` exist, that is the only way to give a config. This loses less than it
-  seems: a group is born with one thread (section 3), where the ordering makes no difference, so "this
-  container's threaded programs run in parallel" or "everything in this container replays exactly" is
-  one value at the start.
-- Choosing per program arrives with `suspend` and `resume`, at `on_program_starting`, which the owner
-  already named as the cheap moment to move a process: one thread, a fresh memory, few records.
+- Until the suspend and resume calls exist, that is the only way to give a config. This loses less
+  than it seems: a memory is born with one task (section 3), where the ordering makes no difference,
+  so "this container's threaded programs run in parallel" or "everything in this container replays
+  exactly" is one value at the start.
+- Choosing per program arrives with the suspend and resume calls, at `on_program_starting`, which the
+  owner already named as the cheap moment to move a process: one thread, a fresh memory, few records.
 
 ## 7. The WebAssembly output for a group whose threads run at once
 
