@@ -1249,177 +1249,114 @@ What is stopped before what, where M is the memory changed:
 - **The container's first process ends**: every other process is ended as by a fatal signal, as Linux
   ends a container. Each worker's `next` then answers `Finished`.
 
-### 4.6 The order of kernel entries, recorded and replayed
+### 4.6 Replay, per process, at its own system calls
 
-Whether anything is recorded follows from the kernel: it is recorded or it is not (section 3). What is
-recorded about a process in a recorded kernel follows from its guarantee in force and from nothing
-else.
+The owner ruled where replay is recorded ("where replay is recorded"): per process, at the process's
+own system calls, and not at the kernel's outer boundary. The form before recorded and replayed the
+order of every kernel entry of the whole kernel: a service asked before each entry took effect
+(`kernel_entry_admit`, answered `Now` or `Later`), a field of `Start` saying whether the system orders
+entries, a digest of each entry for `External` (`on_kernel_entry_ended`), a replayer that called `run`
+in the log's order, entries kept aside when told `Later`, and the rule that a kernel is recorded whole.
+All of it is withdrawn. What replaced it: the system call proxy, the hook for the kernel's writes and
+the signal hook (section 2), with the embedder keeping each process's log.
 
-**One recording point.** Before a kernel entry takes effect, the kernel asks the system whether it may,
-with the lock held (suggested: a `Host` service `kernel_entry_admit(entry) -> EntryAdmission`, with
-`Now` and `Later`). The entry says what it is: a thread chosen for a processor (the processor and the
-thread), a thread come back (the thread and why), an event, a signal from outside. For a choice it is
-asked when the thread is chosen, before the thread's woken call runs again or its signal's frame is
-written, so that what those do is the effect of an entry that has its place (4.3).
-- A system says once, when the kernel starts, whether it orders entries (suggested: a field of
-  `Start`, `kernel_entry_admission`, with `Unasked` and `Asked`).
-- A system that neither records nor replays says `Unasked` and is not asked at all. Each entry then
-  tests that one value. The shipped system is such a system, and so pays no indirect call for this on
-  any system call (4.2). This is the kernel in which "with `None` nothing is recorded".
-- A system that said `Asked` is asked about every entry of every thread, and about every event and
-  every signal from outside. No thread is left out, because every thread's entries move the state
-  that every other thread's replay stands on (section 3). In such a kernel no process is in force
-  `None`.
-- A system that records answers `Now` and writes the entry down. The order of its log is the order of
-  effects, because it was asked under the lock.
-- A system that replays answers `Now` when the entry is the next one in its log, and `Later` otherwise.
-- **What the kernel takes from the system inside an entry is part of that entry's record**: the clock
-  it charges the thread by (`account`, kernel/task.rs:77-86, reads `Host::monotonic_nanoseconds`), an
-  id from the id source (interface notes lines 16-19), random bytes. They are the host's answers,
-  which a recording logs today (docs/runtime.md section 12, "Repeatable runs"). So in a replay each
-  thread is charged what it was charged in the recording, whatever its guarantee and however long its
-  turn took this time, and the scheduler makes the same choices.
+**What a process's log is.** The results of its system calls, and what reaches it without one: signals
+at a counted position, and shared memory through watches (section 2). The embedder sees:
+- each system call of each thread through the proxy: the request before the kernel acts, the response
+  after, both with the process and the thread. A call answered from a log is a `Break` in the request
+  hook;
+- every write the kernel makes into the process's memory, with its exact range
+  (`on_memory_written_by_kernel`): the data of a `read`, a signal frame, a page of a mapped file being
+  filled, the word cleared at a thread's exit. The writes of a woken call that runs again inside `next`
+  (4.3) are its thread's;
+- every signal before it is delivered (`on_signal_delivering`), in the entry of the thread that takes
+  it, so at that thread's position;
+- each turn's end with its position, as the system hears it today (`turn` and `ran`, docs/runtime.md
+  section 12). A stop that the kernel or the executor causes to a thread that stops only at its own
+  entry (4.4 item 5) is such a turn's end.
 
-**What an entry carries, by guarantee.**
-- `Exact`: the thread's position. The system already hears each thread's progress (`System::ran`), and
-  the thread's code has the count, so it has (count, pc).
-- `External`: no position, because the code has no count. The entry's place is its place in the order,
-  and among its own thread's entries. When the entry is over, the kernel hands the system a digest of
-  everything it took from the thread for it: what the exit says (a system call's number and arguments,
-  a fault's address and access, nothing for a stop), what a woken call read again when the entry is a
-  choice, and each byte it read from the thread's memory
-  (suggested: a hook `on_kernel_entry_ended(thread, digest)`, made only for a thread in force
-  `External` and only when the system orders entries; BLAKE3, which the cache key already uses,
-  tr/contract.rs:163-166). The registers at a stop are not in it, since a replay stops elsewhere. The
-  kernel is a pure function of what it is handed (docs/runtime.md section 12), so the same digests in
-  the same order mean the same effects on everything outside the process. This is the one recording
-  point of the brief: the kernel keeps no list of which calls are "outside".
+**Not every call can be answered from the log.** The interface notes record, as a note to tell the owner
+and not as a ruling, that calls which change the process's own records in the kernel (`mmap`, `munmap`,
+`mprotect`, `brk`, `rt_sigaction`, `rt_sigprocmask`, `clone`, `futex`, `exit`) must really run on the
+replaying kernel, and only calls that bring something in from outside are answered from the log. The
+proxy allows both, and which is which is the embedder's table. For threads this matters: a futex call
+between two threads of one process runs for real in a replay, so its result depends on where the other
+threads are, and the threads must take their turns as they did (decision 17).
 
-**What is exact.** A process in force `Exact` replays with the same registers and memory at every logged
-position when two things hold.
-- Nothing reaches its memory except through an entry in the log, or in an order the log fixes:
-  - in a `Serial` group this is so by construction. Memories that can see each other's stores with no
-    kernel entry between are one group (section 3). The WebAssembly executor's copies of written shared
-    pages at a turn's end (`flush`, wt/lib.rs:1341) reach only memories that show the same block's
-    pages, which are in the writer's group, and none of them is running. Everything else that crosses
-    groups is done by the kernel inside an entry, with the other group called in first (4.5);
-  - in a `Parallel` group every stop the kernel or the executor causes is an entry at a position (4.5),
-    and the order of the threads' memory accesses is recorded by the embedder through per-thread
-    watches (section 8). Without that record the kernel's part is exact and the memory is not.
-- Every entry of the kernel is in the log, in order, and every process in it is at least `External`.
-  In a recorded kernel that is so by section 3's rule. A neighbour in force `External` can still end
-  the replay: when one of its entries differs, the replay is thrown away for everyone (below). It
-  cannot make an `Exact` process differ with nobody told.
+**What the kernel must still give, and nobody has designed.** The ruling names two primitives: handing the
+embedder each system call result of a recorded process, and running a process with its system calls
+answered from a log. Threads add three needs to the second:
+- **the order of a process's threads' turns, and a way to make a replay follow it.** With one thread a
+  process's log orders itself. With two or more, which thread runs next is the kernel's choice, made
+  on state that other processes move (weighted time and the run queue, 4.3), and a replay of one
+  process alone does not have that state. The form before fixed it by logging the whole kernel's order.
+  Nothing replaces that yet (decision 17);
+- **reading a thread's progress count, and stopping a thread at a given count**, needed only under
+  `Exact` and ruled to come with this plan ("signals as an input"; decision 12). Counted turns
+  (`Turn::Counted`, rt/lib.rs:25-27) already end a turn at a count for a system that asks for one, and
+  only code with the count can be given one, so `turn` is told the thread's guarantee. `thread_stop` is
+  asked of the system (4.5), so a replaying system can do nothing for a stop and end the turn at the
+  recorded count instead;
+- **a moment before a `Serial` `Exact` task's turn**, or a take of dirty memory across every place
+  that shows a page, for what other processes wrote to its shared memory (section 3, decision 16).
 
-So a run is fixed by what is recorded today (the host's answers, each event and each turn's end with its
-position, docs/runtime.md section 12) and one new thing: the order in which kernel entries took effect.
-A clock read without a system call (`Answer::clock`, rt/lib.rs:120-122) is a host answer of its thread.
-It changes nothing in the kernel and needs no place in the order.
+**What each guarantee asks of the kernel.**
+- `None`: nothing. The proxy's defaults change nothing, and nobody logs anything. A process given
+  `None` beside a recorded one costs nothing and breaks nothing: a recorded process that reads what it
+  wrote has the read's result in its own log.
+- `External`: no count. The embedder logs results, and a replay checks each request against the log and
+  is thrown away when one differs. The check must cover what a call takes from the process's memory,
+  and not only its arguments: the bytes of a `write` are what the process does to the outside. The
+  embedder reads them through the handle the request hook is given. A stop has no position, so a
+  process with one thread that takes no signal while it computes replays every time; anything else may
+  differ inside, which is what "not guaranteed to succeed" means. A signal that arrives while it
+  computes is a fresh snapshot (section 2).
+- `Exact`: code with the count. Everything that reaches it without a system call is logged at a
+  position.
 
-**An entry told `Later` never holds a host thread.**
-- A thread come back too early: the kernel keeps the thread and its exit aside and returns. The thread
-  leaves `Execution::run`, and its worker is free. After each entry that takes effect, the kernel offers
-  the kept ones again.
-- A thread chosen too early: nothing is done for it, and `next` answers `Idle`. It does not mark the
-  processor idle (section 5): whoever was told `Later` comes back by its log and is owed no wake. A
-  choice that the same call of `next` made before it, and that took effect, stands.
-- An event too early: the replaying system delivers its events itself, from its log, in their place.
-  The kernel's timer is such an event (section 5).
+**What is exact.** A process given `Exact` replays with the same registers and memory at every logged
+position when everything that reaches its memory is in its log, in order:
+- its own calls' results, answered from the log or run again for real;
+- the kernel's writes into it. Where its threads run as `Serial` the kernel has called it in first
+  (4.5), so each lands while every one of its threads is at an entry, at a position. With `Parallel`
+  code they are ordered through the embedder's watches, which the kernel's own accesses fire (section
+  8);
+- other processes' stores through shared memory: through watches, and for a task that runs as `Serial`
+  the moment of decision 16;
+- signals at counted positions;
+- its own threads' order: through watches with `Parallel` code (section 8), and by decision 17 with
+  `Serial` code and two or more threads.
+A neighbour's guarantee never enters into it.
 
-**How a replay proceeds.** It is not `run_until_finished`. It is the same `run`, called in the log's
-order: the replayer takes the log's next "thread chosen" entry and calls `run` for its processor,
-from any free worker. With one worker it walks the log. With more, several threads run their turns at
-once and only their entries are put in order. It cannot get stuck: the entry that is due is a choice,
-which a free worker makes; or the return of a thread some worker is running, which will arrive; or an
-event, which the system delivers. A choice that handed nobody out in the recording hands nobody out in
-the replay, because the kernel is a pure function of what it is handed. `next` then chooses again, and
-is told `Now` or `Later` for that choice like any other. A return that is kept aside is never the due
-one, since it is offered again the moment it becomes due. A worker whose thread came back early is free
-again at once, so even one worker always has something to do.
+**In a `Parallel` process given `External`**, the ruling also puts each locking and atomic instruction in
+one order. Its design is the prototype's (optimistic-replay-results.json): a third form of code in which
+each such instruction takes the next number of one sequence for the process, logs it for its thread,
+and in a replay waits for its number. It is a form of its own in the cache key (7.2). The form before
+quoted the prototype's figures (it replayed none of 11 programs on ARM64; 24 to 97 ns an event). The
+independent checks of those figures found that the replayer invented failures and that the comparison
+was stricter than the owner's definition, so the figures are withdrawn here, and the owner ruled that
+`External` stays ("optimistic replay STAYS"). They are being measured again. Until the form is built,
+such a process runs as `Serial` (section 3), which keeps the same promise. When it is built is decision
+3.
 
-"Handed the same" is the condition, and it holds because every entry of every thread is in the log
-(above) and every answer the kernel took from the system is too. The plan's earlier form left the
-entries of a thread in force `None` out, and its replay could wait for ever (section 3).
+**Instructions that read the outside world without a system call** are still open in the interface
+notes ("signals as an input": "Still open: ... instructions that read the outside world without a
+system call"). A clock read without a system call (`Answer::clock`, rt/lib.rs:120-122) is one. Today a
+recording logs it as a host answer of its thread, and the plan leaves it so.
 
-**A replay that has left its recording ends. It never waits.** With every process `Exact` a replay
-cannot leave its recording. A process in force `External` can make it: its inside may differ, and so
-may what it does next. The replaying system sees that in one of four ways, and each ends the replay:
-- an entry's digest differs from the log's (below);
-- a thread comes back with another kind of exit than the log has next for that thread;
-- **the due entry is a choice for a processor, and `next` for that processor chooses another thread.**
-  A choice depends only on the kernel's state and the processor. So this is not an entry that came
-  too early: the state is no longer the recording's. `Later` would bring the same choice back for
-  ever. The system is asked about a choice for the due processor that is not the due thread, and that
-  is how it knows;
-- the due entry is the return of a thread, and the thread has ended or is parked.
-In each case the system marks the replay thrown away and asks for a container stop (section 5).
-Counted "replay thrown away", by which of the four. One thing is left that no rule of the kernel's
-can end: a process in force `External` whose inside differs may compute on and never make its due
-entry. The embedder bounds that with a limit of its own. It is what "not guaranteed to succeed" means.
-
-The log need not exist beforehand. A system that makes its order up as the run goes answers the same
-way: `Now` for the entry it wants next and `Later` for any other. The tests' repeatable order with one
-worker is that (section 11). So there is one `run` and one way to order entries, for a recording, a
-replay and a seeded test.
-
-**Stops in a replay.**
-- `Exact`: a thread must stop where it stopped in the recording, not where a flag happens to reach it.
-  The replaying system gives each turn a counted limit that ends it at the thread's next recorded
-  position (`Turn::Counted`, rt/lib.rs:25-27), and its `thread_stop` does nothing. This is why
-  `thread_stop` is asked of the system (4.5), and why `System::turn` is told the thread (section 5).
-  Only code with the count can be given a counted turn, so `turn` is also told the thread's guarantee in
-  force, and a counted turn asked for any other thread is the system's error.
-- `External`: a stop the log holds for a thread (its slice ended, a signal reached it, its group was
-  called in) has no position to stop it at. The replaying system asks the thread in as soon as its entry
-  before the stop has taken effect, and the thread comes in at its next stop check. So it has done less
-  before the stop than it did in the recording, and the same in the end.
-  - A process with one thread that takes no signal while it computes replays every time: nothing inside
-    it can tell where it was stopped. Most processes of a build are such.
-  - Anything else may differ inside: threads of a `Serial` group take turns at other places, and a
-    signal's handler runs at another place (its return then hands the kernel a frame with other
-    registers in it). When that changes what the process hands the kernel, the digest of that entry
-    differs from the log's, the replaying system sees it, and the replay is thrown away, as the ruling
-    says. Counted "replay thrown away: an entry differed". The digest covers more
-    than what leaves the process (a private futex word, an argument of `mprotect`), so a replay can be
-    thrown away for a difference nobody outside could see. After the split (4.7) only entries that
-    reach beyond the group are digested.
-- A group stop never stops a thread of a group in force `Exact` for a change of the kernel's (4.5), so
-  there is nothing of it to repeat.
-
-**In a `Parallel` group in force `External`**, the ruling also puts each locking and atomic instruction
-in one order. Its design is the prototype's (optimistic-replay-results.json): a third form of code in
-which each such instruction takes the next number of one sequence for the group, logs it for its thread,
-and in a replay waits for its number. It is a form of its own in the cache key (7.2). Measured there: it
-would not replay any of the 11 programs measured on ARM64, because C libraries and language runtimes
-read lock words with plain loads; and the one sequence costs 24 to 97 ns an event, which by calculation
-adds 0.7 to 4 times the run time for Go and Java. Whether it is built is decision 3. Until it is, a
-group asked for (`Parallel`, `External`) runs (`Serial`, `External`) by the rule of section 3, which
-keeps the same promise.
-
-**After the split** (4.7) the point is the taking of any lock that is not the entering group's own, asked
-with that lock held. An entry that stays inside its group (`brk`, a private `mmap`, a private futex,
-`sigaction`) is then not asked about and waits for nobody, in a recording and in a replay. This is the
-brief's rule: what another process or the system can observe goes through the one point, what touches
-only the process's own state does not, and the kernel keeps no list of system calls.
-- One thing must change with it, or the sixth check's fault comes back in another place. Today every
-  return charges its thread and moves the run queue's least weighted time (`account`,
-  kernel/task.rs:77-86), so every entry touches the scheduler that all share. An entry that is to stay
-  out of the order must not. Its charge is kept in the thread's own record and reaches the scheduler
-  at the thread's next entry that takes the scheduler's lock, which is asked about. The clock it read
-  is a host answer of its thread, as a clock read without a system call is. T7's bar for the group's
-  split has the replay tests of section 12, the recorded kernel's among them.
+**After the split** (4.7) nothing here changes. No entry is ordered across processes, so an entry that
+stays inside its process waits for nobody. (The form before had to keep a thread's charge out of the
+shared scheduler for that; with no order of entries it is not needed.)
 
 **What this needs of other tracks.** `Exact` at full speed needs the translator's progress count
-(docs/runtime.md section 9, not built), in the form of code a process in force `Exact` runs. Until then
-a process in force `Exact` runs counted turns in which stop checks stand in for the count
-(wt/lib.rs:1792-1818), which costs a hook call a check and repeats only at one look-ahead, as the kernel
-tests' `repeats` does today. That is for tests. `External` and `None` need nothing of it.
+(docs/runtime.md section 9, not built), in the form of code a process given `Exact` runs. Until then a
+process given `Exact` runs counted turns in which stop checks stand in for the count (wt/lib.rs:1792-1818),
+which costs a hook call a check and repeats only at one look-ahead, as the kernel tests' `repeats` does
+today. That is for tests. The two kernel primitives are the embedder interface track's to design;
+decisions 12 and 17 are what this plan asks of them.
 
-Rejected: the kernel hands out sequence numbers and makes an early entry wait for its number. A thread
-that waits holds its host thread, and with fewer host threads than the recording had, the entry it waits
-for has nobody to make it. Rejected: a recording hook that returns nothing. It cannot gate a replay.
 Rejected: comparing only a system call's arguments for `External`. The bytes of a `write` would then go
-unchecked, and a process in force `Exact` that read them would differ with nobody told.
+unchecked, and a process given `Exact` that read them would differ with nobody told.
 
 ### 4.7 What stays one at a time, and how it is split later
 
@@ -1427,10 +1364,9 @@ At first the whole kernel is one at a time. Guest code runs in parallel; kernel 
 that costs a build is T1's first measurement (section 13): the time processors spend waiting for the lock.
 
 The split is made only where that measurement points, in this order of expected worth:
-1. **The group's own state** under the group's own lock: its address map, signal handlers, private
-   futexes, its threads' records. Calls that touch nothing else then run in parallel between groups, and
-   stop being recorded and ordered (4.6).
-2. **The scheduler** (run queue, processors, parked threads) under its own lock.
+1. **A process's own state** under its own lock: its address map, signal handlers, private futexes, its
+   threads' records. Calls that touch nothing else then run in parallel between processes.
+2. **The scheduler** (run queue, processors, parked threads, overlaps and marks) under its own lock.
 3. **Files**: one lock for all files first, then per file system object, as Linux has.
 4. The process table, timers, sockets, System V objects: each its own lock, when measured to matter.
 
