@@ -4,6 +4,17 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## For the orchestrator
 
+- From the sixteenth run ADSP038 (aiodio_sparse with 1000 readers) is named on the gap list under
+  plan section 15's "same behaviour, slower: file access, until the cache in section 8 exists",
+  with the one CPU, instead of waiting for a verdict (Known gaps, first part; Departures). It gave
+  none in 3 h 49 min, 4 h and 7 h 20 min; the same program with 6 to 512 readers (ADSP030 to 037)
+  gives the reference's verdict. If the owner rules that it must give its verdict, the work is the
+  cache section 8 places after phase one (Linux's page cache for backend files opened without
+  direct I/O, with attributes held for a jiffy as Linux holds them), not a K6c fix.
+- At the sixteenth run's start (12:40 UTC on the 20th) the rented ARM64 machine was unreachable
+  (arm-run 125; taken at about 12:35) and Docker Desktop on the Mac started no container: every
+  track's new containers stayed "Created" (45 at 12:54). No reference and no LTP could run.
+
 - The literal check fails on this branch since the fifteenth run's merge of origin/phase-1, with
   one finding only: "literals.baseline was started more than once, by 68214b2eec10, da21d326f277".
   da21d326 is the streams track's own start of the baseline ("took the literal check from
@@ -32,6 +43,14 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   ARM64 machine (native Docker, no vsock link); the Mac's run was stopped at 07:40 on the 19th.
 
 ## Where things stand
+
+K6c, sixteenth run: no code changed (265fd927 is the last code; its whole suite and the Mac's
+part are the fifteenth run's). ADSP038 is named on the gap list under section 15's slower file
+access and one CPU, which settles the last LTP test without a verdict. Terminal
+`splice_holds_the_pipe`'s failures are traced, from the code, to which of two threads runs
+first on one CPU (Known issues; to confirm against a one-CPU reference). K6c's bar is still
+not met: the literal check fails on the second baseline start (For the orchestrator), and the
+gap list past section 15 and ADSP038's entry wait for the owner. See "K6c, sixteenth run".
 
 K6c, fifteenth run: origin/phase-1 (the streams track's embedder trait, hooks, watches and
 ceiling) is merged, with the conflicts settled so both sides' tests keep working; a large write
@@ -154,6 +173,43 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, sixteenth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge (12:38 UTC). No heavy run
+could be made: the ARM64 machine was gone (For the orchestrator) and Docker Desktop on the Mac
+left every new container "Created", so neither a reference nor LTP could run (LTP never runs on
+the Mac). The code did not change, so the fifteenth run's results at 265fd927 stand.
+
+ADSP038 is named on the gap list (Known gaps, first part), as section 15's slower file access
+and its one CPU. What ties its time to them, all measured in earlier runs:
+- Every reader's 4 KiB read of the unmapped backend file is a backend message, where Linux's
+  readers read its page cache (fifteenth run, from the code and the profiles).
+- On one CPU the writer waits for the readers' turns: on the machine's clock the fair scheduler
+  charges the writer the real time its kernel work takes, so each reader adds to every turn of
+  the writer (thirteenth run: dio_sparse's ADSP073 arguments took 117, 200, 393 and 899 s with 16,
+  32, 64 and 128 readers on the machine's clock, 36 and 41 s with 16 and 64 on the repeatable one).
+- aiodio_sparse with ADSP037/038's arguments: 1 reader 82.6 s, 32 104.1 s, 128 326.4 s
+  (fifteenth run, before the write fix), 512 (ADSP037) 4282.6 s with the reference's verdict;
+  1000 (ADSP038) none in 3 h 49 min (f84695a7), 4 h (684b15ec) and 7 h 20 min (684b15ec). The
+  time past the first reader grows about as the square of the readers.
+- ADSP030 to ADSP037, the same program with 6 to 512 readers, give the reference's verdict.
+The fifteenth run's Next proposed Linux's page cache for unmapped backend files. Not built
+(Departures): the plan's section 8 places the cache after phase one, and with
+FUSE_AUTO_INVAL_DATA a cached read asks for the attributes first (`fuse_cache_read_iter`), which
+Linux keeps for a jiffy and this kernel asks again in every call (K4's departure), so the cache
+alone would not stop a message per read.
+
+Terminal `splice_holds_the_pipe`, read from the code (Known issues): which of two threads runs
+first on one CPU decides the first command's output. Not measured: the one-CPU reference that
+would confirm it could not start (Docker Desktop).
+
+Literal check at d704ed8c (Mac, load 3; scratch k6c16/lit.txt): one finding, the second start
+(For the orchestrator); the baseline is 8448 lines, as at the fifteenth run's end. The changes
+that could add lines, as it prints them: 708289f32f51 the start, fcbc680781dd the init after the
+baseline arrived by a merge, 61e581eb8243, 89f882810517, 7119e3f3a527, c3bf56d4ed9f, 31ec396f9a4a
+and 0f1875633508 new rules for literals already in the tree, 68214b2eec10 the start, da21d326f277
+the start.
 
 ## K6c, fifteenth run
 
@@ -2498,7 +2554,7 @@ Everything a reviewer should know about what is not compared, in one place.
   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv, the reference run once at load 20 to
   30), each difference either fixed or named on the gap list with its section 15 cause; tests
   slower than the time limit on the stand-in are timeouts, not verdicts, until a longer limit
-  shows theirs. One test is `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test
+  shows theirs; ADSP038, which no limit tried has shown, is on the gap list (sixteenth run). One test is `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test
   --bin ltp -- ours <results> <test>` (and `reference` for Docker's). The literals check: `cargo
   run -q -p wcontainers-literals -- check` (exit 0); its baseline had 8592 lines at its start
   (708289f3) and may only shrink (8511 at e1d37089, under the seventh rules; 8491 at a67cd731;
@@ -3041,6 +3097,13 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
   machine). Plan section 15's "the address space is small". vm.mmap_rnd_bits shows the bits in
   use (11 here, the reference 18). An unlimited stack or
   ADDR_COMPAT_LAYOUT keeps the top-down layout, counted "bottom-up mapping layout not built".
+- Slower file access and one CPU (section 15's "same behaviour, slower: file access, until the
+  cache in section 8 exists" and "more than one CPU"), from the sixteenth run: ADSP038
+  (aiodio_sparse, 1000 processes reading a file one process writes with direct I/O) gives no
+  verdict within 7 h 20 min. Each reader's read is a backend message and the writer takes its
+  turns after every reader; the same program with 6 to 512 readers (ADSP030 to 037) gives the
+  reference's verdict ("K6c, sixteenth run" has the measurements). No warning beyond the
+  backend's per-message counts: nothing in the kernel knows that a wait is long.
 - IPV6_RTHDR (setsockopt11, cve-2026-53362): routing headers reroute IPv6 packets, and the made-up
   network has no IPv6 route outside the container; section 15's "the network is not Linux's
   network stack".
@@ -3947,6 +4010,11 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, sixteenth run: ADSP038 is excused as section 15's slower file access with one CPU,
+  although section 15's "slower" entries were read until now as giving the reference's verdict
+  with a longer limit; seven hours were not enough and the plan defers the cache that would
+  shorten it. Linux's page cache for backend files was not built (the fifteenth run's Next
+  proposed it): section 8 places the cache after phase one.
 - K6c, fourteenth run: clock_nanosleep02, select02 and prctl09, which Docker Desktop's
   reference fails by oversleeping and ours passes, are counted under section 15's "clock and
   timer precision are the host's", read as covering the reference host's precision too (the
@@ -4531,10 +4599,21 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 ## Known issues
 
 - terminal `splice_holds_the_pipe` (guest/ttylock.c, `cat /dev/tty | cat`) failed 1 time in the
-  fifteenth run's whole suite on the ARM machine and 2 times in 9 run alone there: ours printed
-  the typed line once ("abc\r\n"), the reference twice (its echo and cat's copy). It passed on
-  the Mac. Not seen before the merge of phase-1's streams work; which side varies is not known
-  yet: keep a failing run's output and compare it with a passing one's.
+  fifteenth run's whole suite on the ARM machine and 2 times in 9 run alone there, as before in
+  K3's sixth run and K6c's ninth: ours printed the typed line once ("abc\r\n", the echo), the
+  reference twice (the echo and the second cat's copy). It passes on the Mac. Read from the code
+  (sixteenth run), not measured: the first cat's splice from the terminal holds the pipe's lock
+  while it waits (Linux's `splice_file_to_pipe` holds `pipe_lock` across the terminal's read).
+  When the line comes it puts it in the pipe, lets the lock go and wakes the second cat. If the
+  second cat runs first, it reads the line and copies it (twice). If the first cat runs first,
+  its next splice takes the lock again and waits for a line that never comes, and the second cat
+  waits for the lock (once). Ours decides that by wake preemption on vruntimes measured on the
+  machine's clock, so load changes it; the reference's second cat runs on another CPU. Linux on
+  one CPU is expected to give once (`wakeup_pipe_readers` is a sync wake, so the first cat goes
+  on). To confirm: run guest ttylock in the reference with `--cpuset-cpus=0` (`run_one_cpu`)
+  several times; if Linux on one CPU gives once, the test compares one CPU with many (section
+  15's "more than one CPU") and belongs with the one-CPU reference, with ours following Linux's
+  sync wake.
 - timers `timers_match_reference` failed once on the Mac in the thirteenth run's check (its
   output was not kept) and passed 33 runs since. If it fails again, keep the whole output: it
   says which side's line differs.
@@ -4694,6 +4773,16 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the sixteenth run: the bar waits on rulings, not on code.
+1. The literal check's second baseline start (For the orchestrator): the literals track's or the
+   orchestrator's ruling. Every other finding is settled; the baseline is 8448 lines.
+2. The owner's ruling on the gap list past section 15 and on ADSP038's entry (For the
+   orchestrator).
+3. When a machine with Docker is up: the one-CPU reference for terminal `splice_holds_the_pipe`
+   (Known issues), then settle it as that finds.
+4. Then say the bar is met; the independent check follows "For the independent check" and
+   scratch k6c15/mac4.sh (fresh layer 1 seeds from 9191123).
 
 K6c, after the fifteenth run: three things stand between the bar and the independent check.
 1. ADSP038 has no verdict and its runs were lost with the spot machine (fifteenth run). Its
