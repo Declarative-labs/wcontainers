@@ -10,6 +10,7 @@ repository.workspace = true
 wcontainers-abi.workspace = true
 wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu", default-features = false }
 rustc_apfloat = { version = "0.2.3", optional = true }
+strum = { version = "0.27.2", features = ["derive"], optional = true }
 wasm-encoder = { version = "0.263.0", optional = true }
 yaxpeax-arch = { version = "0.3.3", default-features = false, optional = true }
 yaxpeax-arm = { version = "0.5.0", optional = true }
@@ -20,6 +21,7 @@ default = ["translate"]
 # core alone, with this off.
 translate = [
     "dep:rustc_apfloat",
+    "dep:strum",
     "dep:wasm-encoder",
     "dep:yaxpeax-arch",
     "dep:yaxpeax-arm",

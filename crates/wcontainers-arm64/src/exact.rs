@@ -76,106 +76,178 @@ impl Operation {
         )
     }
 
-    /// The i32 the hook receives: kind, size, flags and a number.
+    /// The i32 the hook receives: the bytes of a [`Code`], lowest first.
     pub fn encode(self, size: u8) -> i32 {
         use Operation as O;
-        let rounding = |r: Rounding| ROUNDINGS.iter().position(|&x| x == r).unwrap() as u32;
-        let (kind, flags, number): (u32, u32, u32) = match self {
-            O::Add => (0, 0, 0),
-            O::Sub => (1, 0, 0),
-            O::Mul => (2, 0, 0),
-            O::Div => (3, 0, 0),
-            O::Max => (4, 0, 0),
-            O::Min => (5, 0, 0),
-            O::MaxNumber => (6, 0, 0),
-            O::MinNumber => (7, 0, 0),
-            O::MulExtended => (8, 0, 0),
-            O::MulAdd => (9, 0, 0),
-            O::ReciprocalStep => (10, 0, 0),
-            O::ReciprocalSqrtStep => (11, 0, 0),
-            O::Sqrt => (12, 0, 0),
-            O::Round(r) => (13, rounding(r), 0),
-            O::Compare { signaling } => (14, u32::from(signaling), 0),
+        let rounding = |r: Rounding| ROUNDINGS.iter().position(|&x| x == r).unwrap() as u8;
+        let integer = |signed: bool, bits: u8| {
+            (u8::from(signed) * SIGNED) | (u8::from(u32::from(bits) == u64::BITS) * LONG)
+        };
+        let (kind, flags, number) = match self {
+            O::Add => (Kind::Add, 0, 0),
+            O::Sub => (Kind::Sub, 0, 0),
+            O::Mul => (Kind::Mul, 0, 0),
+            O::Div => (Kind::Div, 0, 0),
+            O::Max => (Kind::Max, 0, 0),
+            O::Min => (Kind::Min, 0, 0),
+            O::MaxNumber => (Kind::MaxNumber, 0, 0),
+            O::MinNumber => (Kind::MinNumber, 0, 0),
+            O::MulExtended => (Kind::MulExtended, 0, 0),
+            O::MulAdd => (Kind::MulAdd, 0, 0),
+            O::ReciprocalStep => (Kind::ReciprocalStep, 0, 0),
+            O::ReciprocalSqrtStep => (Kind::ReciprocalSqrtStep, 0, 0),
+            O::Sqrt => (Kind::Sqrt, 0, 0),
+            O::Round(r) => (Kind::Round, rounding(r), 0),
+            O::Compare { signaling } => (Kind::Compare, u8::from(signaling), 0),
             O::ToInteger {
                 signed,
                 bits,
                 rounding: r,
                 fraction_bits,
             } => (
-                15,
-                rounding(r) | u32::from(signed) << 3 | u32::from(bits == 64) << 4,
-                fraction_bits.into(),
+                Kind::ToInteger,
+                rounding(r) | integer(signed, bits),
+                fraction_bits,
             ),
             O::FromInteger {
                 signed,
                 bits,
                 fraction_bits,
-            } => (
-                16,
-                u32::from(signed) << 3 | u32::from(bits == 64) << 4,
-                fraction_bits.into(),
-            ),
-            O::Convert { to, odd } => (17, u32::from(odd), to.into()),
-            O::ReciprocalEstimate => (18, 0, 0),
-            O::ReciprocalSqrtEstimate => (19, 0, 0),
-            O::ReciprocalExponent => (20, 0, 0),
-            O::ReadStatus => (21, 0, 0),
+            } => (Kind::FromInteger, integer(signed, bits), fraction_bits),
+            O::Convert { to, odd } => (Kind::Convert, u8::from(odd), to),
+            O::ReciprocalEstimate => (Kind::ReciprocalEstimate, 0, 0),
+            O::ReciprocalSqrtEstimate => (Kind::ReciprocalSqrtEstimate, 0, 0),
+            O::ReciprocalExponent => (Kind::ReciprocalExponent, 0, 0),
+            O::ReadStatus => (Kind::ReadStatus, 0, 0),
         };
-        (kind | u32::from(size) << 8 | flags << 16 | number << 24) as i32
+        u32::from_le_bytes(
+            Code {
+                kind: kind as u8,
+                size,
+                flags,
+                number,
+            }
+            .into(),
+        )
+        .cast_signed()
     }
 
     pub fn decode(code: i32) -> (Operation, u8) {
         use Operation as O;
-        let code = code as u32;
-        let (kind, size, flags, number) = (
-            code & 0xff,
-            (code >> 8) as u8,
-            (code >> 16) & 0xff,
-            (code >> 24) as u8,
-        );
-        let rounding = ROUNDINGS[(flags & 7) as usize];
-        let signed = flags & 8 != 0;
-        let bits = if flags & 16 != 0 { 64 } else { 32 };
-        let op = match kind {
-            0 => O::Add,
-            1 => O::Sub,
-            2 => O::Mul,
-            3 => O::Div,
-            4 => O::Max,
-            5 => O::Min,
-            6 => O::MaxNumber,
-            7 => O::MinNumber,
-            8 => O::MulExtended,
-            9 => O::MulAdd,
-            10 => O::ReciprocalStep,
-            11 => O::ReciprocalSqrtStep,
-            12 => O::Sqrt,
-            13 => O::Round(rounding),
-            14 => O::Compare {
+        let Code {
+            kind,
+            size,
+            flags,
+            number,
+        } = code.cast_unsigned().to_le_bytes().into();
+        let rounding = ROUNDINGS[usize::from(flags & (SIGNED - 1))];
+        let signed = flags & SIGNED != 0;
+        let bits = if flags & LONG != 0 {
+            u64::BITS
+        } else {
+            u32::BITS
+        } as u8;
+        let op = match Kind::from_repr(kind) {
+            Some(Kind::Add) => O::Add,
+            Some(Kind::Sub) => O::Sub,
+            Some(Kind::Mul) => O::Mul,
+            Some(Kind::Div) => O::Div,
+            Some(Kind::Max) => O::Max,
+            Some(Kind::Min) => O::Min,
+            Some(Kind::MaxNumber) => O::MaxNumber,
+            Some(Kind::MinNumber) => O::MinNumber,
+            Some(Kind::MulExtended) => O::MulExtended,
+            Some(Kind::MulAdd) => O::MulAdd,
+            Some(Kind::ReciprocalStep) => O::ReciprocalStep,
+            Some(Kind::ReciprocalSqrtStep) => O::ReciprocalSqrtStep,
+            Some(Kind::Sqrt) => O::Sqrt,
+            Some(Kind::Round) => O::Round(rounding),
+            Some(Kind::Compare) => O::Compare {
                 signaling: flags & 1 != 0,
             },
-            15 => O::ToInteger {
+            Some(Kind::ToInteger) => O::ToInteger {
                 signed,
                 bits,
                 rounding,
                 fraction_bits: number,
             },
-            16 => O::FromInteger {
+            Some(Kind::FromInteger) => O::FromInteger {
                 signed,
                 bits,
                 fraction_bits: number,
             },
-            17 => O::Convert {
+            Some(Kind::Convert) => O::Convert {
                 to: number,
                 odd: flags & 1 != 0,
             },
-            18 => O::ReciprocalEstimate,
-            19 => O::ReciprocalSqrtEstimate,
-            20 => O::ReciprocalExponent,
-            _ => O::ReadStatus,
+            Some(Kind::ReciprocalEstimate) => O::ReciprocalEstimate,
+            Some(Kind::ReciprocalSqrtEstimate) => O::ReciprocalSqrtEstimate,
+            Some(Kind::ReciprocalExponent) => O::ReciprocalExponent,
+            Some(Kind::ReadStatus) | None => O::ReadStatus,
         };
         (op, size)
     }
+}
+
+/// The parts of an operation's code, one byte each.
+struct Code {
+    kind: u8,
+    size: u8,
+    /// The rounding's place in [`ROUNDINGS`] (or signaling, or odd, in the lowest bit), then [`SIGNED`] and
+    /// [`LONG`].
+    flags: u8,
+    /// Fraction bits, or the size converted to.
+    number: u8,
+}
+
+impl From<Code> for [u8; size_of::<u32>()] {
+    fn from(c: Code) -> Self {
+        [c.kind, c.size, c.flags, c.number]
+    }
+}
+
+impl From<[u8; size_of::<u32>()]> for Code {
+    fn from([kind, size, flags, number]: [u8; size_of::<u32>()]) -> Self {
+        Code {
+            kind,
+            size,
+            flags,
+            number,
+        }
+    }
+}
+
+/// The flag of a signed integer, above the bits that hold a rounding's place in [`ROUNDINGS`].
+const SIGNED: u8 = ROUNDINGS.len().next_power_of_two() as u8;
+/// The flag of a 64 bit integer.
+const LONG: u8 = SIGNED << 1;
+
+/// An operation's kind, as its code's first byte.
+#[derive(Clone, Copy, strum::FromRepr)]
+#[repr(u8)]
+enum Kind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Max,
+    Min,
+    MaxNumber,
+    MinNumber,
+    MulExtended,
+    MulAdd,
+    ReciprocalStep,
+    ReciprocalSqrtStep,
+    Sqrt,
+    Round,
+    Compare,
+    ToInteger,
+    FromInteger,
+    Convert,
+    ReciprocalEstimate,
+    ReciprocalSqrtEstimate,
+    ReciprocalExponent,
+    ReadStatus,
 }
 
 // FPSR's cumulative flags.
