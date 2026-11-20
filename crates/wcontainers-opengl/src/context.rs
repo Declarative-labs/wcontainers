@@ -14,7 +14,7 @@ use crate::gallium::*;
 use crate::resource::{self, Resource};
 use crate::screen::{DRIVER_NAME, Screen};
 use crate::state::{self, Stage, Stages};
-use crate::{blit, draw, present, view};
+use crate::{blit, draw, present, query, view};
 
 /// Ends the process naming a Gallium entry point the driver does not have yet, so that a case
 /// reaching it is a crash with the name in its log, never a call that does nothing.
@@ -58,6 +58,9 @@ pub struct Context<B: Backend> {
     pub blitter: *mut blitter_context,
     /// The fragment stage's uniform bytes the blitter saved, alive until it puts them back.
     pub blit_bytes: Vec<u8>,
+    /// The occlusion query sets, and the query running in them.
+    pub queries: query::Sets<B>,
+    pub running: Option<*mut pipe_query>,
 }
 
 impl<B: Backend> Context<B> {
@@ -97,6 +100,8 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
         present: None,
         blitter: std::ptr::null_mut(),
         blit_bytes: Vec::new(),
+        queries: query::Sets::default(),
+        running: None,
     });
     let base = &mut context.base;
     base.screen = screen;
@@ -130,7 +135,12 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.texture_barrier = Some(texture_barrier::<B>);
     c.memory_barrier = Some(texture_barrier::<B>);
     c.flush_resource = Some(flush_resource);
-    c.set_active_query_state = Some(set_active_query_state);
+    c.create_query = Some(query::create_query::<B>);
+    c.destroy_query = Some(query::destroy_query::<B>);
+    c.begin_query = Some(query::begin_query::<B>);
+    c.end_query = Some(query::end_query::<B>);
+    c.get_query_result = Some(query::get_query_result::<B>);
+    c.set_active_query_state = Some(query::set_active_query_state::<B>);
     c.set_polygon_stipple = Some(set_polygon_stipple);
     c.resource_copy_region = Some(view::resource_copy_region::<B>);
     c.generate_mipmap = Some(view::generate_mipmap::<B>);
@@ -148,11 +158,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     state::fill::<B>(c);
     unbuilt!(
         c,
-        create_query,
-        destroy_query,
-        begin_query,
-        end_query,
-        get_query_result,
         get_query_result_resource,
         render_condition,
         create_gs_state,
@@ -194,6 +199,7 @@ unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
         unsafe { resource::release(surface.texture) };
     }
     context.programs.release(screen);
+    context.queries.release(screen);
     if let Some(copy) = context.present.take() {
         copy.release(screen);
     }
@@ -549,9 +555,6 @@ unsafe extern "C" fn flush_resource(_: *mut pipe_context, _: *mut pipe_resource)
 
 /// The stipple pattern applies only to a rasterizer state that stipples, which is refused by name.
 unsafe extern "C" fn set_polygon_stipple(_: *mut pipe_context, _: *const pipe_poly_stipple) {}
-
-/// Pausing queries around st/mesa's own draws: the driver runs no query yet.
-unsafe extern "C" fn set_active_query_state(_: *mut pipe_context, _: bool) {}
 
 /// The stage slot a Gallium stage's state is kept in, for the stages the driver takes.
 pub fn stage(stage: mesa_shader_stage) -> Option<Stage> {

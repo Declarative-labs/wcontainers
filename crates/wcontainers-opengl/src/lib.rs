@@ -18,6 +18,8 @@ mod gallium;
 #[cfg(mesa)]
 mod present;
 #[cfg(mesa)]
+mod query;
+#[cfg(mesa)]
 mod resource;
 #[cfg(mesa)]
 mod screen;

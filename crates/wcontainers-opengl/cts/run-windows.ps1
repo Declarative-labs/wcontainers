@@ -8,12 +8,14 @@
 #   tools/graphics-rig/gpu-job --desktop -- powershell -ExecutionPolicy Bypass -File crates\wcontainers-opengl\cts\run-windows.ps1 -Driver llvmpipe -Fraction 100
 #
 # Results in $Root\cts\results\<driver>\<list>: deqp-runner's results.csv, failures.csv and the logs.
+# -Include takes regular expressions of case names (deqp-runner's --include-tests), to run groups alone.
 param(
     [Parameter(Mandatory = $true)][string]$Driver,
     [string[]]$Lists = @(),
     [int]$Fraction = 1,
     [int]$FractionStart = 1,
-    [int]$RunnerJobs = 0
+    [int]$RunnerJobs = 0,
+    [string[]]$Include = @()
 )
 . (Join-Path $PSScriptRoot 'cts-windows.ps1')
 if ($RunnerJobs -le 0) { $RunnerJobs = $Jobs }
@@ -22,6 +24,8 @@ $program = New-DriverFolder $Driver
 
 # `powershell -File` hands a comma list over as one string.
 $Lists = $Lists | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
+$Include = $Include | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
+$includeArguments = @($Include | ForEach-Object { '--include-tests'; $_ })
 $all = Get-Lists
 $chosen = if ($Lists) { $all | Where-Object { $Lists -contains [IO.Path]::GetFileNameWithoutExtension($_) } } else { $all }
 if (-not $chosen) { throw "cts run-windows: none of $Lists is in lists.txt" }
@@ -35,7 +39,7 @@ foreach ($list in $chosen) {
     $deqpArguments = Get-ListArguments $list
     Write-Output "cts: $name on $Driver, every ${Fraction}th case from $FractionStart, $RunnerJobs at once: $deqpArguments"
     & $Runner run --deqp $program --caselist $caselist --output $output --fraction $Fraction `
-        --fraction-start $FractionStart --jobs $RunnerJobs -- @deqpArguments | Select-Object -Last 3
+        --fraction-start $FractionStart --jobs $RunnerJobs @includeArguments -- @deqpArguments | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { $failed = $true }
 
     $results = Join-Path $output 'results.csv'

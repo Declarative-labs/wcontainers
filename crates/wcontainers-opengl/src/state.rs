@@ -1,13 +1,15 @@
 //! Gallium's state objects as the interface's blocks, and the state st/mesa sets between draws.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::{c_uint, c_void};
 
 use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor,
     ColorWrites, CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace,
     LogicOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, ProvokingVertex, RasterDesc,
-    RenderTargetBlend, SamplerDesc, StencilFace, StencilOp, StepMode, VertexAttribute,
-    VertexLayoutDesc, VertexStream,
+    RenderTargetBlend, SamplerDesc, SlowPath, StencilFace, StencilOp, StepMode, VertexAttribute,
+    VertexFormat, VertexLayoutDesc, VertexStream,
 };
 use wcontainers_nir::mesa::Nir;
 
@@ -173,9 +175,91 @@ pub struct Sampler<B: Backend> {
 }
 
 pub struct Elements<B: Backend> {
-    pub block: B::VertexLayout,
+    pub desc: VertexLayoutDesc,
     /// The streams the elements read.
     pub streams: u32,
+    /// The inputs the vertex program fetches itself whatever their streams' offsets, by location,
+    /// and why: a layout the back end cannot read (`VertexPulledInShader`) or an instance step it
+    /// lacks (`InstanceRateInShader`).
+    pub pulled: Vec<(u32, SlowPath)>,
+    /// The back end's layouts of the inputs it reads, by the inputs fetched in the program (a bit
+    /// a location).
+    pub blocks: RefCell<HashMap<u32, B::VertexLayout>>,
+    /// The bytes of each input's components, by location: a fetched input's components must lie
+    /// within words.
+    pub component_bytes: Vec<(u32, u32)>,
+}
+
+impl<B: Backend> Elements<B> {
+    /// The format each input reads, by location.
+    pub fn format(&self, location: u32) -> Option<VertexFormat> {
+        self.desc
+            .attributes
+            .iter()
+            .flatten()
+            .find(|a| a.location == location)
+            .map(|a| a.format)
+    }
+
+    /// The stream that feeds the input at `location`.
+    pub fn stream(&self, location: u32) -> Option<usize> {
+        self.desc
+            .attributes
+            .iter()
+            .flatten()
+            .find(|a| a.location == location)
+            .map(|a| usize::from(a.stream))
+    }
+
+    /// The back end's layout of the inputs not in `pulled` (a bit a location), made at its first
+    /// use.
+    pub fn block(&self, backend: &mut B, pulled: u32) -> Result<B::VertexLayout, String> {
+        if let Some(block) = self.blocks.borrow().get(&pulled) {
+            return Ok(block.clone());
+        }
+        let mut desc = self.desc;
+        for attribute in &mut desc.attributes {
+            if attribute.is_some_and(|a| pulled & (1 << a.location) != 0) {
+                *attribute = None;
+            }
+        }
+        for (stream, layout) in desc.streams.iter_mut().enumerate() {
+            let read = desc
+                .attributes
+                .iter()
+                .flatten()
+                .any(|a| usize::from(a.stream) == stream);
+            if !read {
+                *layout = None;
+            }
+        }
+        let block = backend
+            .create_vertex_layout(&desc)
+            .map_err(|e| format!("a vertex layout: {e:?}"))?;
+        self.blocks.borrow_mut().insert(pulled, block.clone());
+        Ok(block)
+    }
+}
+
+/// The alignment WebGPU requires of vertex strides and stream offsets (the interface does not
+/// report one; asked of the interface track), which an input's offset meets up to its size.
+pub const VERTEX_ALIGNMENT: u32 = wgpu::VERTEX_ALIGNMENT as u32;
+
+/// Why the back end cannot read `element` from its stream itself, if it cannot.
+fn pulled_because<B: Backend>(backend: &B, element: &pipe_vertex_element) -> Option<SlowPath> {
+    let stride = element.src_stride;
+    let offset = u32::from(element.src_offset);
+    let bytes = resource::block_bytes(pipe_format::from(element.src_format));
+    let unaligned = !stride.is_multiple_of(VERTEX_ALIGNMENT)
+        || !offset.is_multiple_of(bytes.min(VERTEX_ALIGNMENT))
+        || (stride != 0 && offset + bytes > stride);
+    if unaligned {
+        Some(SlowPath::VertexPulledInShader)
+    } else if element.instance_divisor > 1 && !backend.caps().has(Features::INSTANCE_STEP_RATE) {
+        Some(SlowPath::InstanceRateInShader)
+    } else {
+        None
+    }
 }
 
 /// A program stage as st/mesa handed it over: its NIR, kept to build each variant from.
@@ -663,7 +747,15 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
         attributes: [None; MAX_VERTEX_STREAMS],
     };
     let mut streams = 0;
+    let mut pulled = Vec::new();
+    let mut component_bytes = Vec::new();
+    let backend = context.screen().backend();
     for (location, element) in elements.iter().enumerate() {
+        if let Some(path) = pulled_because(&*backend, element) {
+            pulled.push((location as u32, path));
+        }
+        let format = pipe_format::from(element.src_format);
+        component_bytes.push((location as u32, resource::component_bytes(format)));
         let stream = element.vertex_buffer_index();
         let Some(format) = crate::format::vertex_format(pipe_format::from(element.src_format))
         else {
@@ -684,10 +776,13 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
         });
         streams = streams.max(u32::from(stream) + 1);
     }
-    match context.screen().backend().create_vertex_layout(&desc) {
-        Ok(block) => object(Elements::<B> { block, streams }),
-        Err(error) => refuse(&format!("a vertex layout: {error:?}")),
-    }
+    object(Elements::<B> {
+        desc,
+        streams,
+        pulled,
+        blocks: RefCell::new(HashMap::new()),
+        component_bytes,
+    })
 }
 
 unsafe extern "C" fn bind_vertex_elements_state<B: Backend>(
@@ -704,7 +799,9 @@ unsafe extern "C" fn delete_vertex_elements_state<B: Backend>(
 ) {
     // SAFETY: made by create_vertex_elements_state, deleted once, on this driver's context.
     let (context, state) = unsafe { (Context::<B>::of(pipe), drop_object::<Elements<B>>(state)) };
-    context.screen().retire(Object::VertexLayout(state.block));
+    for (_, block) in state.blocks.into_inner() {
+        context.screen().retire(Object::VertexLayout(block));
+    }
 }
 
 /// Takes the NIR st/mesa hands over in the shape every variant starts from.

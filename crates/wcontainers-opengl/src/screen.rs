@@ -136,6 +136,11 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.fragment_shader_texture_lod = true;
     // The base instance is always zero (no `start_instance`), so the instance index is OpenGL's.
     caps.vs_instanceid = true;
+    // Occlusion predicates (every back end answers whether any sample passed); an exact count is
+    // refused by name where the back end lacks it.
+    caps.occlusion_query = true;
+    // Steps other than one a back end lacks are fetched in the vertex program.
+    caps.vertex_element_instance_divisor = true;
     // Maps are copies the driver writes back, never the device's own memory.
     caps.buffer_map_persistent_coherent = false;
     caps.allow_mapped_buffers_during_execution = false;

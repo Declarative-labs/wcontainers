@@ -6,11 +6,12 @@ use std::collections::hash_map::Entry;
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange, CullMode,
-    DrawCall, DrawRange, FanOrLoop, Features, FormatKind, FormatUse, IndexBinding, IndexFormat,
-    IndexSource, MAX_BINDING_SETS, Object, PassTracker, Program, ProvokingVertex, ReadSource,
-    ReflectedBinding, RingKind, STORAGE_WORD, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, StageSet, Topology, VertexBinding, Viewport, cut_scissors,
+    AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange,
+    CullMode, DrawCall, DrawRange, FanOrLoop, Features, FormatKind, FormatUse, HELPER_SET,
+    HelperSlot, HelperValue, IndexBinding, IndexFormat, IndexSource, MAX_BINDING_SETS, Object,
+    PassTracker, Program, ProvokingVertex, ReadSource, ReflectedBinding, RingKind, STORAGE_WORD,
+    ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, StageSet, StepMode, Topology,
+    VariantKey, VertexBinding, VertexFormat, Viewport, cut_scissors, helper_binding,
 };
 use wcontainers_nir::mesa::{PositionTransform, TextureSwizzle};
 
@@ -31,6 +32,11 @@ struct Built<B: Backend> {
     flat_inputs: bool,
     /// How a fragment program interpolates each input, by location.
     inputs: Vec<Interpolated>,
+    /// The helper constants the program reads, and their block's bytes.
+    helpers: Vec<HelperSlot>,
+    helper_size: u32,
+    /// The storage binding of each stream the program fetches itself, by its input's location.
+    pulled: Vec<(u32, u32)>,
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
@@ -44,6 +50,8 @@ struct Variant {
     swizzles: Vec<TextureSwizzle>,
     /// How the fragment program it meets interpolates each input (vertex programs).
     interpolation: Vec<Interpolated>,
+    /// The inputs the program fetches from their streams itself, by location, and their formats.
+    pulled: Vec<(u32, VertexFormat)>,
 }
 
 /// A value passed between stages at one location, and how it is interpolated.
@@ -238,26 +246,58 @@ fn convert<B: Backend>(
     let key = nir.key().map_err(|e| e.to_string())?;
     let stage = shader.stage.nir();
     let bindings = nir.to_common_form(stage).map_err(|e| e.to_string())?;
-    let mut module = wcontainers_nir::direct::module(&mut nir).map_err(|e| e.to_string())?;
-    if !variant.interpolation.is_empty() {
-        meet_inputs(&mut module, &variant.interpolation);
-    }
-    let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
-    let entry_point = module
-        .entry_points
-        .first()
-        .map(|e| e.name.clone())
-        .ok_or("no entry point")?;
-    let uniform_sizes = uniform_sizes(&module);
-    let flat_inputs = flat_inputs(&module);
-    let inputs = input_interpolation(&module);
-    let module = ShaderModule {
-        module,
-        info,
-        entry_point,
-        stage: stage.shader_stage(),
-        key,
+    let (module, bindings, helpers, helper_size) = if variant.pulled.is_empty() {
+        let mut module = wcontainers_nir::direct::module(&mut nir).map_err(|e| e.to_string())?;
+        if !variant.interpolation.is_empty() {
+            meet_inputs(&mut module, &variant.interpolation);
+        }
+        let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
+        let entry_point = module
+            .entry_points
+            .first()
+            .map(|e| e.name.clone())
+            .ok_or("no entry point")?;
+        (
+            ShaderModule {
+                module,
+                info,
+                entry_point,
+                stage: stage.shader_stage(),
+                key,
+            },
+            bindings,
+            Vec::new(),
+            0,
+        )
+    } else {
+        let mut routed = wcontainers_nir::direct::route(&mut nir).map_err(|e| e.to_string())?;
+        if !variant.interpolation.is_empty() {
+            meet_inputs(&mut routed.module, &variant.interpolation);
+        }
+        let rewrites = VariantKey {
+            pulled: variant.pulled.clone(),
+            ..VariantKey::default()
+        };
+        let (module, reflection) =
+            wcontainers_nir::direct::rewrite(routed, bindings, &rewrites, &key)
+                .map_err(|e| e.to_string())?;
+        (
+            module,
+            reflection.bindings,
+            reflection.helpers,
+            reflection.helper_size,
+        )
     };
+    let uniform_sizes = uniform_sizes(&module.module);
+    let flat_inputs = flat_inputs(&module.module);
+    let inputs = input_interpolation(&module.module);
+    let pulled = bindings
+        .iter()
+        .filter_map(|b| match b.added {
+            Some(AddedBinding::PulledStream(location)) => Some((b.binding, location)),
+            _ => None,
+        })
+        .collect();
     let shader = backend
         .create_shader(&module)
         .map_err(|e| format!("{e:?}"))?;
@@ -267,6 +307,9 @@ fn convert<B: Backend>(
         uniform_sizes,
         flat_inputs,
         inputs,
+        helpers,
+        helper_size,
+        pulled,
     })
 }
 
@@ -416,15 +459,77 @@ enum Uniform<'a, B: Backend> {
     Range(&'a B::Buffer, u64, u64),
 }
 
+/// A stream the vertex program fetches an input from itself.
+struct Pulled<'a, B: Backend> {
+    location: u32,
+    buffer: &'a B::Buffer,
+    /// The bytes of the buffer that hold data.
+    buffer_bytes: u64,
+    /// The stream's offset in the buffer, and the input's in each element.
+    stream_offset: u64,
+    attribute_offset: u32,
+    stride: u32,
+    /// How many instances read one element; zero for a stream read per vertex.
+    divisor: u32,
+}
+
+/// The helper constants of `built` for a draw from `first_instance`.
+fn helper_block<B: Backend>(
+    built: &Built<B>,
+    pulled: &[Pulled<'_, B>],
+    storage_align: u64,
+    first_instance: u32,
+) -> Result<Vec<u8>, String> {
+    let mut block = vec![0; built.helper_size as usize];
+    for slot in &built.helpers {
+        let words = match slot.value {
+            HelperValue::PulledStream { input } => {
+                let p = pulled
+                    .iter()
+                    .find(|p| p.location == input)
+                    .ok_or("a fetched input without its stream")?;
+                let offset = (p.stream_offset % storage_align) as u32 + p.attribute_offset;
+                let bias = p.divisor.saturating_sub(1).wrapping_mul(first_instance);
+                [offset, p.stride, p.divisor, bias]
+            }
+            other => return Err(format!("the helper constant {other:?}")),
+        };
+        let at = slot.offset as usize;
+        for (i, word) in words.iter().enumerate() {
+            let start = at + i * size_of::<u32>();
+            block[start..start + size_of::<u32>()].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+    Ok(block)
+}
+
 /// Binds every resource the two programs read, one set a stage, as the route's reflection
-/// numbers them.
+/// numbers them, with the streams the vertex program fetches itself and its helper constants.
 fn binding_sets<B: Backend>(
     backend: &mut B,
     stages: &state::Stages<B>,
     built: [&Built<B>; Stage::ALL.len()],
+    pulled: &[Pulled<'_, B>],
+    first_instance: u32,
 ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], String> {
     let mut sets = [const { None }; MAX_BINDING_SETS];
-    let align = backend.caps().limits.min_uniform_offset_alignment;
+    let limits = &backend.caps().limits;
+    let align = limits.min_uniform_offset_alignment;
+    let storage_align = u64::from(limits.min_storage_offset_alignment);
+    let largest_storage = limits.max_storage_buffer_size;
+    if built[1].helper_size != 0 {
+        return Err("helper constants in a fragment program".into());
+    }
+    let helpers = if built[0].helper_size == 0 {
+        None
+    } else {
+        Some(helper_block(
+            built[0],
+            pulled,
+            storage_align,
+            first_instance,
+        )?)
+    };
     for (stage, built) in Stage::ALL.into_iter().zip(built) {
         let bound = stages.get(stage);
         let visible = match stage {
@@ -464,7 +569,9 @@ fn binding_sets<B: Backend>(
                 Uniform::Range(buffer, u64::from(slot.offset), size),
             ));
         }
-        let parts: Vec<&[u8]> = copies.iter().map(Vec::as_slice).collect();
+        let mut parts: Vec<&[u8]> = copies.iter().map(Vec::as_slice).collect();
+        let helpers = helpers.as_deref().filter(|_| stage == Stage::Vertex);
+        parts.extend(helpers);
         let mut offsets = vec![0; parts.len()];
         let ring = if parts.is_empty() {
             None
@@ -477,6 +584,42 @@ fn binding_sets<B: Backend>(
         };
         let mut copied = offsets.iter().zip(&copies);
         let mut entries = Vec::new();
+        let mut helper_entry = None;
+        if let Some(bytes) = helpers {
+            let ring = ring.as_ref().ok_or("the ring")?;
+            helper_entry = Some(BindingEntry {
+                binding: helper_binding(ShaderStage::Vertex),
+                stages: visible,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: ring,
+                    offset: offsets[copies.len()],
+                    size: bytes.len() as u64,
+                }),
+            });
+        }
+        for &(binding, location) in &built.pulled {
+            let p = pulled
+                .iter()
+                .find(|p| p.location == location)
+                .ok_or("a fetched input without its stream")?;
+            let start = p.stream_offset - p.stream_offset % storage_align;
+            if start >= p.buffer_bytes {
+                return Err("a fetched vertex stream past its buffer's end".into());
+            }
+            let size = (p.buffer_bytes - start).next_multiple_of(STORAGE_WORD);
+            entries.push(BindingEntry {
+                binding,
+                stages: visible,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: p.buffer,
+                        offset: start,
+                        size: size.min(largest_storage),
+                    },
+                    writable: false,
+                },
+            });
+        }
         for (binding, uniform) in &uniforms {
             let range = match uniform {
                 Uniform::Copied => {
@@ -499,7 +642,7 @@ fn binding_sets<B: Backend>(
                 resource: BindingResource::UniformBuffer(range),
             });
         }
-        for b in &built.bindings {
+        for b in built.bindings.iter().filter(|b| b.added.is_none()) {
             let resource = match b.kind {
                 SlotKind::Uniform => continue,
                 SlotKind::Texture => {
@@ -526,6 +669,13 @@ fn binding_sets<B: Backend>(
                 stages: visible,
                 resource,
             });
+        }
+        if let Some(entry) = helper_entry {
+            sets[HELPER_SET as usize] = Some(
+                backend
+                    .create_binding_set(std::slice::from_ref(&entry))
+                    .map_err(|e| format!("{e:?}"))?,
+            );
         }
         if entries.is_empty() {
             continue;
@@ -621,10 +771,18 @@ fn draw<B: Backend>(
         .built_for(backend, unsafe { &*fs }, &fragment)?
         .inputs
         .clone();
+    let (pulled, paths) = pulled_inputs(elements, &bound.vertex_buffers);
+    for path in paths {
+        backend.slow_paths().hit(path);
+    }
     let vertex = Variant {
         transform,
         swizzles: swizzles(context.stages.get(Stage::Vertex)),
         interpolation: inputs,
+        pulled: pulled
+            .iter()
+            .filter_map(|&l| Some((l, elements.format(l)?)))
+            .collect(),
     };
     // SAFETY: as above.
     programs.built_for(backend, unsafe { &*vs }, &vertex)?;
@@ -652,7 +810,61 @@ fn draw<B: Backend>(
                 .map_err(|e| format!("a program: {e:?}"))?,
         );
     }
-    let sets = binding_sets(backend, &context.stages, built)?;
+    let mut fetched = Vec::new();
+    for &location in &pulled {
+        let stream = elements
+            .stream(location)
+            .ok_or("a fetched input without a stream")?;
+        let attribute = elements
+            .desc
+            .attributes
+            .iter()
+            .flatten()
+            .find(|a| a.location == location)
+            .ok_or("a fetched input without its element")?;
+        let layout = elements.desc.streams[stream].ok_or("an element of no stream")?;
+        let bound_stream = context
+            .bound
+            .vertex_buffers
+            .get(stream)
+            .filter(|s| !s.resource.is_null())
+            .ok_or("a fetched vertex stream that is not bound")?;
+        // SAFETY: a bound stream holds a reference on a live buffer.
+        let resource = unsafe { Resource::<B>::of(bound_stream.resource) };
+        let component = elements
+            .component_bytes
+            .iter()
+            .find(|&&(l, _)| l == location)
+            .map_or(1, |&(_, bytes)| bytes);
+        let starts = [bound_stream.offset, attribute.offset, layout.stride];
+        if starts.iter().any(|s| !s.is_multiple_of(component)) {
+            return Err(
+                "a fetched vertex component across words (the shaders crate's fetch reads aligned components)"
+                    .into(),
+            );
+        }
+        fetched.push(Pulled {
+            location,
+            buffer: resource.buffer().ok_or("a vertex stream in a texture")?,
+            buffer_bytes: u64::from(resource.base.width0),
+            stream_offset: u64::from(bound_stream.offset),
+            attribute_offset: attribute.offset,
+            stride: layout.stride,
+            divisor: match layout.step {
+                StepMode::Vertex => 0,
+                StepMode::Instance(n) => n,
+            },
+        });
+    }
+    let sets = binding_sets(
+        backend,
+        &context.stages,
+        built,
+        &fetched,
+        info.start_instance,
+    )?;
+    let pulled_mask = pulled.iter().fold(0, |mask, l| mask | 1 << l);
+    let layout = elements.block(backend, pulled_mask)?;
     let program = programs.programs[&program_key].clone();
     let (blend, alpha_constant) =
         blend_for(programs, backend, &blend.desc, &context.framebuffer.state);
@@ -665,10 +877,16 @@ fn draw<B: Backend>(
     };
     let mut streams = Vec::new();
     for i in 0..elements.streams as usize {
+        let read = elements
+            .desc
+            .attributes
+            .iter()
+            .flatten()
+            .any(|a| usize::from(a.stream) == i && pulled_mask & (1 << a.location) == 0);
         let stream = bound
             .vertex_buffers
             .get(i)
-            .filter(|s| !s.resource.is_null());
+            .filter(|s| read && !s.resource.is_null());
         streams.push(stream.and_then(|s| {
             // SAFETY: a bound stream holds a reference on a live buffer.
             let resource = unsafe { Resource::<B>::of(s.resource) };
@@ -716,7 +934,7 @@ fn draw<B: Backend>(
         blend: &blend,
         depth_stencil: &depth_stencil.block,
         raster: &raster.block,
-        vertex_layout: &elements.block,
+        vertex_layout: &layout,
         bindings: std::array::from_fn(|set| sets[set].as_ref()),
         vertex_buffers: &streams,
         index: None,
@@ -978,6 +1196,36 @@ fn draw_ranges<B: Backend>(
         });
     }
     Ok(())
+}
+
+/// The inputs the vertex program fetches from their streams itself, by location, and why: those
+/// the elements state named, and those of streams bound at offsets the back end cannot read from.
+fn pulled_inputs<B: Backend>(
+    elements: &state::Elements<B>,
+    streams: &[state::VertexBuffer],
+) -> (Vec<u32>, Vec<SlowPath>) {
+    let mut pulled = Vec::new();
+    let mut paths = Vec::new();
+    let note = |path: SlowPath, paths: &mut Vec<SlowPath>| {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    };
+    for &(location, path) in &elements.pulled {
+        pulled.push(location);
+        note(path, &mut paths);
+    }
+    for a in elements.desc.attributes.iter().flatten() {
+        let unaligned = streams
+            .get(usize::from(a.stream))
+            .is_some_and(|s| !s.offset.is_multiple_of(state::VERTEX_ALIGNMENT));
+        if unaligned && !pulled.contains(&a.location) {
+            pulled.push(a.location);
+            note(SlowPath::VertexPulledInShader, &mut paths);
+        }
+    }
+    pulled.sort_unstable();
+    (pulled, paths)
 }
 
 /// The swizzles of a stage's bound views that rearrange their results.

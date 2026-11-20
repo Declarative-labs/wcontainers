@@ -116,9 +116,11 @@ pub unsafe extern "C" fn resource_release(_: *mut pipe_context, resource: *mut p
 }
 
 /// Every use a Gallium buffer may be put to: OpenGL binds any buffer any way.
+/// Storage too, for vertex streams the vertex program fetches itself.
 const BUFFER_USAGE: BufferUsage = BufferUsage::VERTEX
     .union(BufferUsage::INDEX)
     .union(BufferUsage::UNIFORM)
+    .union(BufferUsage::STORAGE)
     .union(BufferUsage::INDIRECT)
     .union(BufferUsage::COPY_SRC)
     .union(BufferUsage::COPY_DST)
@@ -431,6 +433,23 @@ pub unsafe extern "C" fn buffer_subdata<B: Backend>(
         .screen()
         .backend()
         .write_buffer(buffer, u64::from(offset), data, write_mode(usage));
+}
+
+/// The bytes of one block of a format (of one element, for a vertex format).
+pub fn block_bytes(format: pipe_format) -> u32 {
+    block(format).2
+}
+
+/// The bytes of one component of a vertex format: of its first channel where the format is an
+/// array of channels, of its whole element where they are packed.
+pub fn component_bytes(format: pipe_format) -> u32 {
+    // SAFETY: Mesa's table holds every format.
+    let description = unsafe { &*util_format_description(format) };
+    if description.is_array() != 0 {
+        description.channel[0].size() / u8::BITS
+    } else {
+        description.block.bits / u8::BITS
+    }
 }
 
 /// Gallium's block of a format: width and height in texels, and bytes.
