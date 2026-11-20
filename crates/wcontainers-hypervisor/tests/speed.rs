@@ -120,6 +120,8 @@ mod macos {
     /// The lines a child reports on: the program's output, then its counts and exit code.
     const OUTPUT_LINE: &str = "speed-output";
     const COUNTS_LINE: &str = "speed-counts";
+    /// The line a native child reports its count's events on: the program's count at its end.
+    const EVENTS_LINE: &str = "speed-events";
 
     const PAIRS_VARIABLE: &str = "WCONTAINERS_SPEED_PAIRS";
     const DEFAULT_PAIRS: u64 = 15;
@@ -438,6 +440,10 @@ mod macos {
             turn_events: None,
         };
         let outcome = native_at(&inside, look_ahead(), policy, &files, &starting);
+        println!(
+            "{EVENTS_LINE} {}",
+            outcome.events.expect("a native run reports its count")
+        );
         report(exit_code(outcome.status), &outcome.host.stdout)
     }
 
@@ -523,6 +529,8 @@ mod macos {
         wall_nanoseconds: u128,
         status: i32,
         output: String,
+        /// The count's events at the end, of a native run.
+        events: Option<u64>,
     }
 
     fn run(side: &str, image: &Path, inside: &Path) -> Run {
@@ -557,6 +565,9 @@ mod macos {
                 .to_owned()
         };
         let output = line(OUTPUT_LINE);
+        let events = text
+            .lines()
+            .find_map(|l| l.strip_prefix(EVENTS_LINE)?.strip_prefix(' ')?.parse().ok());
         let numbers: Vec<i64> = line(COUNTS_LINE)
             .split(' ')
             .map(|n| n.parse().expect("a number"))
@@ -573,6 +584,7 @@ mod macos {
             wall_nanoseconds,
             status: status as i32,
             output,
+            events,
         }
     }
 
@@ -812,9 +824,10 @@ mod macos {
                 .collect::<Vec<_>>(),
         );
         println!(
-            "speed: {} over {} pairs, medians native against plain: {}; untranslated against plain: cycles {:+.1}%, instructions {:+.1}%; plain {plain_cycles:.0} cycles; on performance cores {:.0}% plain, {:.0}% native, {:.0}% untranslated",
+            "speed: {} over {} pairs, the count's events {:?}, medians native against plain: {}; untranslated against plain: cycles {:+.1}%, instructions {:+.1}%; plain {plain_cycles:.0} cycles; on performance cores {:.0}% plain, {:.0}% native, {:.0}% untranslated",
             program.name,
             program.pairs.len(),
+            program.pairs.first().and_then(|p| p.native.events),
             medians.join(", "),
             untranslated(cycles),
             untranslated(|r| r.counts.instructions as f64),

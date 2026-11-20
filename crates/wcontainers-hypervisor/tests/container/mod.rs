@@ -156,6 +156,8 @@ pub struct Outcome {
     pub root: Vec<FileRecord>,
     /// How many times its threads stopped and the hash of their positions, natively.
     pub positions: Option<(u64, u64)>,
+    /// The count of the thread that stopped last, at that stop, natively: a one-thread program's count at its end.
+    pub events: Option<u64>,
 }
 
 /// A container of one program at the root, started with `arguments` after its path.
@@ -350,6 +352,7 @@ pub fn native_at(
                         turns,
                         stops,
                         positions,
+                        events,
                     } = link.get();
                     return Outcome {
                         status: status as i32,
@@ -359,6 +362,7 @@ pub fn native_at(
                         exits,
                         root: monitor.root,
                         positions: Some((stops, positions)),
+                        events: Some(events),
                     };
                 }
             }
@@ -424,5 +428,6 @@ pub fn wasm(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> 
         exits: 0,
         root: ring.monitor.root,
         positions: None,
+        events: None,
     }
 }

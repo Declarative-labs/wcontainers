@@ -360,6 +360,8 @@ pub struct NativeCpu {
     /// How many times a thread stopped, and a hash of the position, count and pc, of each stop in order.
     stops: u64,
     positions: FxHasher,
+    /// The count of the thread that stopped last, at that stop.
+    last_count: u64,
 }
 
 fn out_of_memory(_: Full) -> CpuError {
@@ -473,6 +475,7 @@ impl NativeCpu {
             unsent: BTreeMap::new(),
             stops: 0,
             positions: FxHasher::default(),
+            last_count: 0,
         })
     }
 
@@ -1197,6 +1200,7 @@ impl NativeCpu {
         if !matches!(exit, Exit::MemoryFaultWithoutRegisters) {
             self.positions.write_u64(t.state.count);
             self.positions.write_u64(t.state.pc);
+            self.last_count = t.state.count;
         }
         self.threads.insert(thread, t);
         exit
@@ -1208,6 +1212,11 @@ impl NativeCpu {
     /// for itself, which the look-ahead changes.
     pub fn positions(&self) -> (u64, u64) {
         (self.stops, self.positions.finish())
+    }
+
+    /// The count of the thread that stopped last, at that stop: a one-thread program's count at its end.
+    pub fn last_count(&self) -> u64 {
+        self.last_count
     }
 
     /// Hands `warn` every slow path taken since it was last called.

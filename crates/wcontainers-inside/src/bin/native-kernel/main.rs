@@ -72,6 +72,7 @@ mod kernel {
                     turns: policy.turns,
                     stops,
                     positions,
+                    events: cpu.last_count(),
                 },
                 &[],
             );

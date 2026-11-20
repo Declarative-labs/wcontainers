@@ -13,8 +13,8 @@ wcontainers_inside::requests! {
     /// A slow path or refusal the policy kept: its reason in the link's bytes.
     Warned { count, detail } -> ();
     /// The container's first process ended with the wait status `status` after `turns` turns; its threads
-    /// stopped `stops` times, at positions whose hash is `positions`.
-    Ended { status, turns, stops, positions } -> ();
+    /// stopped `stops` times, at positions whose hash is `positions`, the last at count `events`.
+    Ended { status, turns, stops, positions, events } -> ();
 }
 
 /// The test crate's policy's seed, the wall clock's reading at the start, and the counted events after which every
