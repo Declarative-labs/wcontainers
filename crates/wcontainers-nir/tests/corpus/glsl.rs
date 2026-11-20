@@ -356,12 +356,13 @@ enum GlStorage {
     Image(usize, Option<Kind>),
 }
 
-/// Gives a route's texture or storage image resource the texels of the sampler or image it is,
-/// making that uniform's texture on OpenGL's side from it the first time; its index among the
-/// textures.
+/// Gives a route's texture or storage image resource the texels of the sampler or image it is
+/// (`element` of an array the route split), making that uniform's texture on OpenGL's side from it
+/// the first time; its index among the textures.
 fn sampled_texture(
     elements: &mut [Element],
     binding: u32,
+    element: u32,
     names: &[GlslName],
     gl: &Reflection,
     inputs: &mut GlInputs,
@@ -370,9 +371,6 @@ fn sampled_texture(
     let [Element::Image(image)] = elements else {
         return Err("an array of textures or images is not set up for GLSL here".into());
     };
-    if image.samples != vk::SampleCountFlags::TYPE_1 {
-        return Err("multisampled textures are not filled on OpenGL here".into());
-    }
     let kind = if storage {
         GlslNameKind::Image
     } else {
@@ -385,6 +383,11 @@ fn sampled_texture(
         .iter()
         .find(|v| bare(&v.name) == name.name)
         .ok_or_else(|| format!("llvmpipe has no {kind:?} {}", name.name))?;
+    let uniform = if name.count > 1 {
+        format!("{}[{element}]", name.name)
+    } else {
+        variable.name.clone()
+    };
     let cube_layers = if CUBE_IMAGES.contains(&variable.ty) {
         Some(CUBE_FACES)
     } else if CUBE_ARRAY_IMAGES.contains(&variable.ty) {
@@ -398,18 +401,14 @@ fn sampled_texture(
         image.bytes = image.bytes.iter().copied().cycle().take(bytes).collect();
         image.layers = layers;
     }
-    match inputs
-        .sampled
-        .iter()
-        .position(|s| s.uniform == variable.name)
-    {
+    match inputs.sampled.iter().position(|s| s.uniform == uniform) {
         Some(at) => {
             image.clone_from(&inputs.sampled[at].image);
             Ok(at)
         }
         None => {
             inputs.sampled.push(SampledTexture {
-                uniform: variable.name.clone(),
+                uniform,
                 ty: variable.ty,
                 image: image.clone(),
                 storage,
@@ -449,12 +448,15 @@ fn route_resources(
                 &mut inputs.storage_blocks,
             ),
             vk::DescriptorType::SAMPLED_IMAGE => {
-                sampled_texture(&mut r.elements, binding, names, gl, inputs, false)?;
+                let element = r.first_element;
+                sampled_texture(&mut r.elements, binding, element, names, gl, inputs, false)?;
                 continue;
             }
             vk::DescriptorType::STORAGE_IMAGE => {
                 let kind = r.image_kind;
-                let at = sampled_texture(&mut r.elements, binding, names, gl, inputs, true)?;
+                let element = r.first_element;
+                let at =
+                    sampled_texture(&mut r.elements, binding, element, names, gl, inputs, true)?;
                 storage_of.push(GlStorage::Image(at, kind));
                 continue;
             }

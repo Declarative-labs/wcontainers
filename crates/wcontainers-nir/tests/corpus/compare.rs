@@ -257,6 +257,9 @@ fn storage_format(format: naga::StorageFormat) -> Option<(vk::Format, u32, Optio
 /// One resource of the route's module, with where each run binds it.
 pub struct Resource {
     pub reference: (u32, u32),
+    /// The program's element this resource is first, where the route split an array of resources
+    /// into a binding an element.
+    pub first_element: u32,
     route: (u32, u32),
     pub kind: vk::DescriptorType,
     slot: SlotKind,
@@ -359,9 +362,13 @@ pub fn resources(
         let Some(binding) = &global.binding else {
             continue;
         };
+        // An array's elements split into bindings of their own lie in its reflected range.
         let reflected = reflection
             .iter()
-            .find(|r| r.set == binding.group && r.binding == binding.binding)
+            .find(|r| {
+                r.set == binding.group
+                    && (r.binding..r.binding + r.count.max(1)).contains(&binding.binding)
+            })
             .ok_or_else(|| format!("no reflection of {binding:?}"))?;
         let (ty, count) = match module.types[global.ty].inner {
             TypeInner::BindingArray { base, .. } => (base, reflected.count),
@@ -369,6 +376,7 @@ pub fn resources(
         };
         let mut resource = Resource {
             reference: (reflected.space, reflected.register),
+            first_element: binding.binding - reflected.binding,
             route: (binding.group, binding.binding),
             kind: vk::DescriptorType::SAMPLER,
             slot: reflected.kind,
@@ -455,20 +463,20 @@ pub fn descriptors(resources: &[Resource]) -> (Vec<Descriptor>, Vec<Descriptor>)
         })
         .collect();
     let mut reference: Vec<Descriptor> = Vec::new();
-    for r in resources {
+    let mut in_order: Vec<&Resource> = resources.iter().collect();
+    in_order.sort_by_key(|r| r.first_element);
+    for r in in_order {
         let (set, binding) = r.reference;
         let pair = resources.iter().find(|o| {
             o.reference == r.reference
+                && o.first_element == r.first_element
                 && (o.slot == SlotKind::Sampler) != (r.slot == SlotKind::Sampler)
         });
-        match (r.slot, pair) {
-            (SlotKind::Sampler, Some(_)) => {}
-            (SlotKind::Texture, Some(sampler)) => reference.push(Descriptor {
-                set,
-                binding,
-                kind: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                elements: r
-                    .elements
+        let (kind, elements) = match (r.slot, pair) {
+            (SlotKind::Sampler, Some(_)) => continue,
+            (SlotKind::Texture, Some(sampler)) => (
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                r.elements
                     .iter()
                     .zip(&sampler.elements)
                     .map(|(t, s)| match (t, s) {
@@ -478,12 +486,20 @@ pub fn descriptors(resources: &[Resource]) -> (Vec<Descriptor>, Vec<Descriptor>)
                         _ => t.clone(),
                     })
                     .collect(),
-            }),
-            _ => reference.push(Descriptor {
+            ),
+            _ => (r.kind, r.elements.clone()),
+        };
+        // The elements of a split array join the program's array again, in order.
+        match reference
+            .iter_mut()
+            .find(|d| d.set == set && d.binding == binding && d.kind == kind)
+        {
+            Some(array) => array.elements.extend(elements),
+            None => reference.push(Descriptor {
                 set,
                 binding,
-                kind: r.kind,
-                elements: r.elements.clone(),
+                kind,
+                elements,
             }),
         }
     }

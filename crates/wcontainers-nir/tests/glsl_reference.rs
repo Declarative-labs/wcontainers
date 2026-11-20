@@ -59,6 +59,7 @@ mod llvmpipe;
 mod table;
 
 use compare::{CompareOptions, DEFAULT_SEED, Verdict};
+use wcontainers_gpu::{Format, VariantKey};
 use wcontainers_nir::mesa::{Nir, Stage};
 
 const PROGRAM: &str = "#version 430
@@ -107,6 +108,45 @@ void main() {
     barrier();
     sums[g] = total + tally[7u - i];
     halves[g] = half_of[(i + 3u) % 8u];
+}
+";
+
+/// The shaders crate's rewrites on route B's module: an array of samplers indexed at run time, a
+/// gather at an offset known only at run time, a storage image without a format.
+const REWRITTEN: &str = "#version 430
+layout(local_size_x = 8) in;
+uniform sampler2D colours[3];
+uniform sampler2D gathered;
+uniform int pick;
+uniform ivec2 shift;
+writeonly uniform image2D marks;
+layout(std430) buffer Gathered { vec4 g[16]; vec4 t[16]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec2 at = vec2(float(i % 4u) / 4.0 + 0.125, 0.375);
+    int k = abs(pick) % 3;
+    g[i] = textureGatherOffset(gathered, at, shift, 1);
+    t[i] = textureLod(colours[(k + 1) % 3], at, 0.0);
+    imageStore(marks, ivec2(i % 4u, i / 4u), g[i] * 0.5);
+}
+";
+
+/// As `REWRITTEN`, with the array read at a run-time index and at a constant one in one program.
+const MIXED_INDICES: &str = "#version 430
+layout(local_size_x = 8) in;
+uniform sampler2D colours[3];
+uniform sampler2D gathered;
+uniform int pick;
+uniform ivec2 shift;
+writeonly uniform image2D marks;
+layout(std430) buffer Gathered { vec4 g[16]; vec4 t[16]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec2 at = vec2(float(i % 4u) / 4.0 + 0.125, 0.375);
+    int k = abs(pick) % 3;
+    g[i] = textureGatherOffset(gathered, at, shift, 1);
+    t[i] = textureLod(colours[(k + 1) % 3], at, 0.0) + textureLod(colours[2], at, 0.0);
+    imageStore(marks, ivec2(i % 4u, i / 4u), g[i] * 0.5);
 }
 ";
 
@@ -284,6 +324,51 @@ fn a_glsl_compute_program_matches_llvmpipe_on_route_b() {
 #[test]
 fn a_glsl_program_of_atomic_counters_and_workgroup_memory_matches_llvmpipe_on_route_b() {
     assert_eq!(compute_verdict(COUNTERS_AND_SHARED), Verdict::Matched);
+}
+
+/// The program's verdict through route B and the shaders crate's rewrites, each storage image
+/// without a format bound as four 32-bit floats.
+fn rewritten_verdict(source: &str) -> Verdict {
+    let mut stage = Nir::from_glsl(&[(Stage::Compute, source)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    let key = stage.nir.key().unwrap();
+    let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
+    let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
+    assert!(routed.rewrites.runtime_gather_offsets);
+    let variant = VariantKey {
+        storage_formats: routed
+            .rewrites
+            .formatless
+            .iter()
+            .map(|&slot| (slot, Format::Rgba32Float))
+            .collect(),
+        ..VariantKey::default()
+    };
+    assert_eq!(variant.storage_formats.len(), 1);
+    let (module, bindings) =
+        wcontainers_nir::direct::rewrite(routed, bindings, &variant, &key).unwrap();
+    let options = CompareOptions {
+        seed: DEFAULT_SEED,
+        input_sets: 1,
+    };
+    glsl::compare_compute(source, &stage.names, &module.module, &bindings, options)
+}
+
+#[test]
+fn a_glsl_program_needing_the_shaders_crates_rewrites_matches_llvmpipe_on_route_b() {
+    assert_eq!(rewritten_verdict(REWRITTEN), Verdict::Matched);
+}
+
+/// Known failure (run 14): llvmpipe reads the constant element as values no seeded texel holds
+/// (0 and 4.0, where every seeded value lies in [-2, 2)) once the same array is also read at a
+/// run-time index; each read alone matches. Whether llvmpipe or the comparison's OpenGL set-up is at
+/// fault is not yet known.
+#[test]
+#[ignore = "known failure: llvmpipe's constant element read beside a run-time index (status file)"]
+fn a_glsl_program_reading_an_array_at_run_time_and_constant_indices_matches_llvmpipe() {
+    assert_eq!(rewritten_verdict(MIXED_INDICES), Verdict::Matched);
 }
 
 #[test]

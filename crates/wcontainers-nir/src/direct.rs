@@ -13,6 +13,10 @@ use naga::{
     Statement, StorageAccess, StorageFormat, Type, TypeInner, UnaryOperator, VectorSize,
 };
 use std::ffi::{CStr, c_char};
+use wcontainers_gpu::{
+    ReflectedBinding, Reflection, ShaderModule, SlotKind, SourceStage, StageExtras, VariantKey,
+};
+use wcontainers_shaders::cache;
 
 const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
@@ -579,10 +583,45 @@ struct Builder<'a> {
     atomic_vars: Vec<u32>,
     /// The samples `demote_samples` has left, ANDed into the sample mask output on return.
     kept_samples: Option<Handle<LocalVariable>>,
+    /// What only the shaders crate's rewrites make fit for the common form.
+    rewrites: Rewrites,
 }
 
-/// Candidate B: the program of `nir` as a naga module. The shader is changed by the preparation.
+/// What route B leaves for the shaders crate's rewrites (plan 15.4): each storage slot declared
+/// without a format (given a placeholder of its texel's kind until the variant names the bound
+/// view's), and whether a gather takes an offset known only at run time.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rewrites {
+    pub formatless: Vec<u32>,
+    pub runtime_gather_offsets: bool,
+}
+
+/// Route B's module and what it needs of the rewrites.
+pub struct Routed {
+    pub module: Module,
+    pub rewrites: Rewrites,
+}
+
+/// Candidate B: the program of `nir` as a naga module, for a program that needs none of the
+/// shaders crate's rewrites (refused by name otherwise). The shader is changed by the preparation.
 pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
+    let Routed { module, rewrites } = route(nir)?;
+    if !rewrites.formatless.is_empty() {
+        return Err(unsupported(format_args!(
+            "a storage image without a format"
+        )));
+    }
+    if rewrites.runtime_gather_offsets {
+        return Err(unsupported(format_args!(
+            "an offset known only at run time"
+        )));
+    }
+    Ok(module)
+}
+
+/// Candidate B: the program of `nir` as a naga module, with what it leaves for the shaders crate's
+/// rewrites ([`rewrite`]). The shader is changed by the preparation.
+pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
     let mut flat = Flattened(Flat {
         stage: FlatStage::Vertex,
         workgroup_size: WorkgroupSize::default(),
@@ -629,6 +668,7 @@ pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
         atomic_fields: Vec::new(),
         atomic_vars: Vec::new(),
         kept_samples: None,
+        rewrites: Rewrites::default(),
     };
     let instrs = slice(f.instrs, f.instr_count);
     b.mark_atomics(instrs);
@@ -643,7 +683,11 @@ pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
     for instr in instrs {
         b.instr(instr)?;
     }
-    b.finish(f)
+    let rewrites = std::mem::take(&mut b.rewrites);
+    Ok(Routed {
+        module: b.finish(f)?,
+        rewrites,
+    })
 }
 
 /// The step named when the bridge cannot flatten a shader.
@@ -1006,13 +1050,26 @@ impl Builder<'_> {
         access.set(StorageAccess::LOAD, var.readable != 0);
         access.set(StorageAccess::STORE, var.writable != 0);
         let (dim, arrayed) = storage_dimension(t)?;
+        let format = if var.format == Format::None {
+            let first = var
+                .binding
+                .checked_sub(SlotKind::Storage.first_binding())
+                .ok_or_else(|| unsupported(format_args!("a storage image out of its range")))?;
+            self.rewrites
+                .formatless
+                .extend((0..count.unwrap_or(1)).map(|k| first + k));
+            match scalar_of(t.sampled)?.kind {
+                ScalarKind::Sint => StorageFormat::R32Sint,
+                ScalarKind::Uint => StorageFormat::R32Uint,
+                _ => StorageFormat::R32Float,
+            }
+        } else {
+            storage_format(var.format)?
+        };
         let image = self.add_type(TypeInner::Image {
             dim,
             arrayed,
-            class: ImageClass::Storage {
-                format: storage_format(var.format)?,
-                access,
-            },
+            class: ImageClass::Storage { format, access },
         });
         Ok(match count {
             Some(n) => self.add_type(TypeInner::BindingArray {
@@ -3076,6 +3133,8 @@ impl Builder<'_> {
                 }
                 let level = match op {
                     TexOp::Gather => SampleLevel::Zero,
+                    // Outside the fragment stage an implicit level is the base level.
+                    TexOp::Sample if self.stage != ShaderStage::Fragment => SampleLevel::Zero,
                     TexOp::Sample => SampleLevel::Auto,
                     TexOp::Bias => SampleLevel::Bias(
                         scalar_src(self, TexSrc::Bias, Float)?
@@ -3111,6 +3170,12 @@ impl Builder<'_> {
                     Some(def) => match self.value(def)? {
                         Value::Const(v, n, _) => {
                             Some(self.constant_vector(&v[..n as usize], Sint)?)
+                        }
+                        // The shaders crate's rewrite moves a gather's offset into its
+                        // coordinate.
+                        _ if op == TexOp::Gather => {
+                            self.rewrites.runtime_gather_offsets = true;
+                            Some(self.whole(def, Sint)?.0)
                         }
                         _ => {
                             return Err(unsupported(format_args!(
@@ -3278,4 +3343,58 @@ impl Builder<'_> {
         );
         Ok(self.add(Expression::Constant(constant)))
     }
+}
+
+/// The shaders crate's rewrites of plan 15.4 on route B's module: arrays of textures, storage
+/// textures and samplers split into a binding an element, gathers at offsets known only at run
+/// time moved into their coordinates, and each storage texture whose slot `variant` names given
+/// the bound view's format. A slot declared without a format that `variant` does not name is
+/// refused by name, as is a variant asking for more than these (its rewrites read the program's
+/// stage values, which the driver's reflection holds). `bindings` is what `Nir::to_common_form`
+/// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it.
+pub fn rewrite(
+    routed: Routed,
+    bindings: Vec<ReflectedBinding>,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<(ShaderModule, Vec<ReflectedBinding>), ConvertError> {
+    let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
+    if !routed.rewrites.formatless.iter().all(named) {
+        return Err(unsupported(format_args!(
+            "a storage image without a format the variant does not name"
+        )));
+    }
+    let only_15_4 = VariantKey {
+        storage_formats: variant.storage_formats.clone(),
+        texels_through_buffer: variant.texels_through_buffer,
+        ..VariantKey::default()
+    };
+    if *variant != only_15_4 {
+        return Err(unsupported(format_args!(
+            "a variant rewrite reading the program's stage values"
+        )));
+    }
+    let stage = match routed.module.entry_points.first().map(|ep| ep.stage) {
+        Some(ShaderStage::Vertex) => SourceStage::Vertex,
+        Some(ShaderStage::Fragment) => SourceStage::Pixel,
+        _ => SourceStage::Compute,
+    };
+    let reflection = Reflection {
+        stage,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        bindings,
+        helpers: Vec::new(),
+        helper_size: 0,
+        sampled_pairs: Vec::new(),
+        extras: StageExtras::None,
+        slow_paths: Vec::new(),
+    };
+    let mut converted = wcontainers_shaders::rewrite(routed.module, reflection, variant, route_key)
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))?;
+    let module = converted
+        .modules
+        .pop()
+        .ok_or_else(|| ConvertError::Rewrite("no module".into()))?;
+    Ok((module, converted.reflection.bindings))
 }

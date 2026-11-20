@@ -30,6 +30,8 @@ pub enum ConvertError {
     Bindings(&'static str),
     /// Candidate B does not take this part of NIR.
     Unsupported(String),
+    /// The shaders crate's rewrites (plan 15.4) refused route B's module, with their reason.
+    Rewrite(String),
 }
 
 impl core::fmt::Display for ConvertError {
@@ -41,6 +43,7 @@ impl core::fmt::Display for ConvertError {
             ConvertError::Invalid(s) => write!(f, "invalid: {s}"),
             ConvertError::Bindings(why) => write!(f, "bindings: {why}"),
             ConvertError::Unsupported(what) => write!(f, "not taken: {what}"),
+            ConvertError::Rewrite(why) => write!(f, "rewrite: {why}"),
         }
     }
 }

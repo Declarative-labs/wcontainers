@@ -9,6 +9,7 @@ use crate::glsl;
 use crate::godot;
 use crate::lavapipe;
 use crate::needs;
+use naga::{ImageClass, StorageFormat, TypeInner};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,8 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use wcontainers_gpu::ReflectedBinding;
+use wcontainers_gpu::{Format, ReflectedBinding, SlotKind, VariantKey};
+use wcontainers_nir::direct::{Rewrites, Routed};
 use wcontainers_nir::mesa::{Nir, Stage};
 
 /// The corpus's shader files.
@@ -539,16 +541,34 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
     result
 }
 
-/// Candidate B: the common form's step, then NIR read straight into naga and validated.
+/// Candidate B: the common form's step, then NIR read straight into naga and validated; with the
+/// shaders crate's rewrites (15.4) where the module needs them, each storage image without a
+/// format bound as the four 32-bit components of its kind, as a driver names the bound view.
 fn direct_route(
     mut nir: Nir,
     stage: Stage,
 ) -> (RouteResult, Option<(naga::Module, Vec<ReflectedBinding>)>) {
     let started = Instant::now();
-    let converted = nir.to_common_form(stage).and_then(|reflection| {
-        let module = wcontainers_nir::direct::module(&mut nir)?;
-        wcontainers_nir::spirv::validate(&module)?;
-        Ok((module, reflection))
+    let converted = nir.key().and_then(|key| {
+        let reflection = nir.to_common_form(stage)?;
+        let routed = wcontainers_nir::direct::route(&mut nir)?;
+        let arrays = routed.module.global_variables.iter().any(|(_, g)| {
+            matches!(
+                routed.module.types[g.ty].inner,
+                TypeInner::BindingArray { .. }
+            )
+        });
+        if routed.rewrites == Rewrites::default() && !arrays {
+            wcontainers_nir::spirv::validate(&routed.module)?;
+            return Ok((routed.module, reflection));
+        }
+        let variant = VariantKey {
+            storage_formats: bound_views(&routed),
+            ..VariantKey::default()
+        };
+        let (module, reflection) =
+            wcontainers_nir::direct::rewrite(routed, reflection, &variant, &key)?;
+        Ok((module.module, reflection))
     });
     let convert_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     match converted {
@@ -571,6 +591,49 @@ fn direct_route(
             None,
         ),
     }
+}
+
+/// The format of the view bound at each storage slot route B declared without one: the four 32-bit
+/// components of the kind its placeholder has.
+fn bound_views(routed: &Routed) -> Vec<(u32, Format)> {
+    let module = &routed.module;
+    let placeholder = |slot: u32| {
+        module.global_variables.iter().find_map(|(_, g)| {
+            let first = g
+                .binding
+                .as_ref()?
+                .binding
+                .checked_sub(SlotKind::Storage.first_binding())?;
+            let (ty, count) = match module.types[g.ty].inner {
+                TypeInner::BindingArray {
+                    base,
+                    size: naga::ArraySize::Constant(n),
+                } => (base, n.get()),
+                _ => (g.ty, 1),
+            };
+            let TypeInner::Image {
+                class: ImageClass::Storage { format, .. },
+                ..
+            } = module.types[ty].inner
+            else {
+                return None;
+            };
+            (first..first + count).contains(&slot).then_some(format)
+        })
+    };
+    routed
+        .rewrites
+        .formatless
+        .iter()
+        .filter_map(|&slot| {
+            let view = match placeholder(slot)? {
+                StorageFormat::R32Sint => Format::Rgba32Sint,
+                StorageFormat::R32Uint => Format::Rgba32Uint,
+                _ => Format::Rgba32Float,
+            };
+            Some((slot, view))
+        })
+        .collect()
 }
 
 /// Candidate A: the binding rule, Zink's SPIR-V, naga's reader and validation. With `WC_NIR_DUMP` set, Zink's SPIR-V

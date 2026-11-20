@@ -71,6 +71,7 @@ report_capabilities(struct gl_context *ctx)
    ctx->Extensions.ARB_shader_storage_buffer_object = true;
    ctx->Extensions.ARB_shader_image_load_store = true;
    ctx->Extensions.ARB_shader_atomic_counters = true;
+   ctx->Extensions.ARB_shader_atomic_counter_ops = true;
    ctx->Extensions.ARB_texture_buffer_object = true;
    ctx->Extensions.ARB_derivative_control = true;
    ctx->Extensions.ARB_shader_texture_image_samples = true;
