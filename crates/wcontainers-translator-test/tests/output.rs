@@ -90,6 +90,7 @@ fn bench<G: GuestTest>(out: &mut String) {
                     let translation = translate::<G>(
                         &blob.bytes,
                         0..blob.code_bytes,
+                        blob.link_address,
                         &[0],
                         look_ahead,
                         optimise,
@@ -131,6 +132,7 @@ fn binary<G: GuestTest>(out: &mut String, name: &str) {
                     let translation = translate::<G>(
                         &binary.image,
                         binary.code.clone(),
+                        binary.link_address,
                         starts,
                         look_ahead,
                         optimise,

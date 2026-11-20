@@ -20,11 +20,11 @@ use wasmtime::{
 };
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_guest_cpu::{
-    Access, AccessBytes, AccessKind, Base, Bit, Class, CodeChanges, Comparison, Effects, Emitter,
-    Flow, FlowKind, GUEST_REASONS, Guest, GuestId, HookBody, HookDone, HookType, Induction,
-    JumpTable, Locals, MemoryAccess, MemoryFault, Personality, Reason as Runtime, Registers,
-    ReturnAddress, StackMove, StateBytes, SyscallRegisters, Target, Through, TrapDetail, TrapKind,
-    TrapPc, Ty, Value, WriteBack,
+    Access, AccessBytes, AccessKind, Base, Bit, BuiltAddress, Class, CodeChanges, Comparison,
+    Effects, Emitter, Flow, FlowKind, GUEST_REASONS, Guest, GuestId, HookBody, HookDone, HookType,
+    Induction, JumpTable, Locals, MemoryAccess, MemoryFault, Personality, Reason as Runtime,
+    Registers, ReturnAddress, StackMove, StateBytes, SyscallRegisters, Target, Through, TrapDetail,
+    TrapKind, TrapPc, Ty, Value, WriteBack,
 };
 use wcontainers_translator::contract::{self, permission_byte};
 use wcontainers_translator::{LookAhead, Optimise, Sites, Translation, thread_module, translate};
@@ -709,7 +709,7 @@ impl<const F: bool> Guest for Test<F> {
         _blob: &[u8],
         _code: Range<u64>,
         _before: impl Fn(u64) -> Option<(u64, Op)>,
-    ) -> Option<u64> {
+    ) -> Option<BuiltAddress> {
         None
     }
 
@@ -868,6 +868,7 @@ fn every_translation_valid<const F: bool>() {
                 let translation = translate::<Test<F>>(
                     &blob,
                     0..blob.len() as u64,
+                    None,
                     &starts,
                     look_ahead,
                     optimise,
@@ -1128,6 +1129,7 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                 let translation = translate::<Test<F>>(
                     &blob,
                     0..blob.len() as u64,
+                    None,
                     &[address - LOAD],
                     look_ahead,
                     optimise,
@@ -1327,6 +1329,7 @@ fn run<const F: bool>(
     let translation = translate::<Test<F>>(
         code,
         0..code.len() as u64,
+        None,
         starts,
         look_ahead,
         optimise,

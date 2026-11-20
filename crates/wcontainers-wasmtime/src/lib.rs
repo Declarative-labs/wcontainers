@@ -110,6 +110,8 @@ const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
     hash: [u8; 32],
+    /// Where the code is linked, for a program linked at a fixed address (see `translate`).
+    link_address: Option<u64>,
     starts: Vec<u64>,
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -182,6 +184,7 @@ impl<G: Guest> Compiler<G> {
         hasher.update(&key.offer.to_le_bytes());
         hasher.update(format!("{:?} {:?}", key.look_ahead, key.optimise).as_bytes());
         hasher.update(&key.hash);
+        hasher.update(format!("{:?}", key.link_address).as_bytes());
         for start in &key.starts {
             hasher.update(&start.to_le_bytes());
         }
@@ -265,7 +268,7 @@ impl<G: Guest> Compiler<G> {
     fn compiled(
         &self,
         bytes: &[u8],
-        hash: [u8; 32],
+        (hash, link_address): ([u8; 32], Option<u64>),
         mut starts: Vec<u64>,
         look_ahead: LookAhead,
         optimise: Optimise,
@@ -275,6 +278,7 @@ impl<G: Guest> Compiler<G> {
         starts.dedup();
         let key = Key {
             hash,
+            link_address,
             starts,
             look_ahead,
             optimise,
@@ -311,6 +315,7 @@ impl<G: Guest> Compiler<G> {
                 translate::<G>(
                     bytes,
                     0..length,
+                    key.link_address,
                     &key.starts,
                     look_ahead,
                     optimise,
@@ -974,9 +979,10 @@ where
         sources: Option<Sources>,
     ) -> Arc<Compiled> {
         let count = starts.len();
+        // No link address yet: the image's ELF type is not passed down to here.
         let (compiled, origin, slow) = self.compiler.compiled(
             &code.bytes,
-            code.hash,
+            (code.hash, None),
             starts,
             look_ahead,
             self.optimise,

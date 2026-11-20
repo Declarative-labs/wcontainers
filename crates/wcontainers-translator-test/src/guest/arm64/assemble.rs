@@ -1069,6 +1069,8 @@ pub(super) fn assemble(program: &Program) -> Blob {
         bytes,
         code_bytes,
         load: crate::programs::LOAD,
+        link_address: None,
+        main: None,
         program_headers: None,
         stack_bytes: crate::programs::STACK_BYTES,
     }

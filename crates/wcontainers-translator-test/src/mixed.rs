@@ -65,7 +65,7 @@ pub fn mixed<G: GuestTest>(blob: &Blob, seed: u64) -> (Ran, Machine<G>, G::Block
         machine.load_mixed(
             &blob.bytes,
             0..blob.code_bytes,
-            blob.load,
+            (blob.load, blob.link_address),
             &translations,
             seed,
         );

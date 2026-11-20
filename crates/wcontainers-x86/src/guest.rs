@@ -897,17 +897,30 @@ impl Guest for X86_64 {
         }
     }
 
-    /// `lea r, [rip + d]`.
+    /// `lea r, [rip + d]` builds a blob offset; `mov` and `push` of a 32- or 64-bit immediate write out an
+    /// absolute address, as code linked at a fixed address passes a function's.
     fn built_address(
         at: u64,
         i: &Instruction,
         _blob: &[u8],
         _code: Range<u64>,
         _before: impl Fn(u64) -> Option<(u64, Instruction)>,
-    ) -> Option<u64> {
+    ) -> Option<BuiltAddress> {
         let ins = &i.iced;
-        (ins.mnemonic() == Mnemonic::Lea && ins.memory_base() == Register::RIP)
-            .then(|| at.wrapping_add(ins.memory_displacement64()))
+        match ins.mnemonic() {
+            Mnemonic::Lea if ins.memory_base() == Register::RIP => Some(BuiltAddress::Offset(
+                at.wrapping_add(ins.memory_displacement64()),
+            )),
+            Mnemonic::Mov | Mnemonic::Push => {
+                let last = ins.op_count().checked_sub(1)?;
+                matches!(
+                    ins.op_kind(last),
+                    OpKind::Immediate32 | OpKind::Immediate32to64 | OpKind::Immediate64
+                )
+                .then(|| BuiltAddress::Absolute(ins.immediate(last)))
+            }
+            _ => None,
+        }
     }
 
     /// gcc's and clang's position-independent switch: `cmp i, n; ja default` guarding `lea t, [rip + T]`,

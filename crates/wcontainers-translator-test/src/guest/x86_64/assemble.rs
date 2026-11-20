@@ -1521,6 +1521,8 @@ pub(super) fn assemble(program: &Program) -> Blob {
         bytes,
         code_bytes,
         load: LOAD,
+        link_address: Some(LOAD),
+        main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
     }

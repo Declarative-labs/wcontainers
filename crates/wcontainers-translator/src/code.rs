@@ -13,8 +13,8 @@ use wasm_encoder::{
 };
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
-    Access, Effects, Emitter, GUEST_REASONS, Guest, ReturnAddress, Target, TrapDetail, TrapKind,
-    TrapPc,
+    Access, BuiltAddress, Effects, Emitter, GUEST_REASONS, Guest, ReturnAddress, Target,
+    TrapDetail, TrapKind, TrapPc,
 };
 
 /// The shift from an address to its page number.
@@ -296,10 +296,15 @@ pub(crate) fn depth_check<G: Guest>(s: &mut InstructionSink<'_>, depth: u32, ent
 }
 
 /// Translate a blob from the given starts. `code` is where in the blob the code is; starts and every piece
-/// are blob offsets. The output never holds an absolute address.
+/// are blob offsets. `link_address` is the address the blob's first byte is linked at when the program is
+/// linked at a fixed address (an ELF of type `ET_EXEC`), whose code may name its functions by absolute
+/// addresses; `None` for code that may be loaded anywhere. It only adds entries: the output never holds an
+/// absolute address and runs wherever it is loaded.
+#[allow(clippy::too_many_arguments)]
 pub fn translate<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
+    link_address: Option<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -307,7 +312,16 @@ pub fn translate<G: Guest>(
     offer: G::Offer,
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
-    translate_omitting::<G>(blob, code, starts, look_ahead, optimise, host, offer, omit)
+    let placed = (code, link_address);
+    translate_within::<G>(
+        blob,
+        placed,
+        starts,
+        (look_ahead, optimise),
+        (host, offer),
+        omit,
+        MODULE_BYTES,
+    )
 }
 
 /// [`translate`] without some checks at full look-ahead, only to measure what they cost. Look-ahead none
@@ -316,6 +330,7 @@ pub fn translate<G: Guest>(
 pub fn translate_omitting<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
+    link_address: Option<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -324,7 +339,8 @@ pub fn translate_omitting<G: Guest>(
     omit: Omit,
 ) -> Result<Translation, Error> {
     let how = (look_ahead, optimise);
-    translate_within::<G>(blob, code, starts, how, (host, offer), omit, MODULE_BYTES)
+    let placed = (code, link_address);
+    translate_within::<G>(blob, placed, starts, how, (host, offer), omit, MODULE_BYTES)
 }
 
 /// [`translate`] split into modules of at most `module_bytes` of code each, only to test calls between
@@ -334,6 +350,7 @@ pub fn translate_omitting<G: Guest>(
 pub fn translate_in_modules<G: Guest>(
     blob: &[u8],
     code: Range<u64>,
+    link_address: Option<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -343,12 +360,13 @@ pub fn translate_in_modules<G: Guest>(
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
     let how = (look_ahead, optimise);
-    translate_within::<G>(blob, code, starts, how, (host, offer), omit, module_bytes)
+    let placed = (code, link_address);
+    translate_within::<G>(blob, placed, starts, how, (host, offer), omit, module_bytes)
 }
 
 fn translate_within<G: Guest>(
     blob: &[u8],
-    code: Range<u64>,
+    (code, link_address): (Range<u64>, Option<u64>),
     starts: &[u64],
     (look_ahead, optimise): (LookAhead, Optimise),
     (host, offer): (G::Host, G::Offer),
@@ -362,6 +380,7 @@ fn translate_within<G: Guest>(
     let blob_code = Code::<G> {
         blob,
         range: code,
+        link_address,
         host,
         offer,
     };
@@ -552,11 +571,24 @@ fn module<G: Guest>(
 pub(crate) struct Code<'a, G: Guest> {
     pub blob: &'a [u8],
     pub range: Range<u64>,
+    /// See [`translate`].
+    pub link_address: Option<u64>,
     pub host: G::Host,
     pub offer: G::Offer,
 }
 
 impl<G: Guest> Code<'_, G> {
+    /// The blob offset an address the code builds names: a relative one's own, an absolute one's only in a
+    /// program linked at a fixed address.
+    pub fn built_offset(&self, built: BuiltAddress) -> Option<u64> {
+        match built {
+            BuiltAddress::Offset(offset) => Some(offset),
+            BuiltAddress::Absolute(address) => {
+                self.link_address.map(|link| address.wrapping_sub(link))
+            }
+        }
+    }
+
     /// Whether an instruction may start at this offset: aligned, with at least an alignment unit of code
     /// left. Targets can wrap below zero, so nothing here may overflow.
     pub fn inside(&self, offset: u64) -> bool {

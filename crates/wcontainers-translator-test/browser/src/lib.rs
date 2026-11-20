@@ -46,8 +46,8 @@ fn answer(bytes: Vec<u8>) -> i32 {
     length
 }
 
-/// Translate the blob in the input buffer from one start, at look-ahead none (0), full (1) or bounded (2, N
-/// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
+/// Translate the blob in the input buffer from one start, linked at `link_address` when `linked` is 1 (see
+/// `translate`), at look-ahead none (0), full (1) or bounded (2, N in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
 /// stop, 2: permissions, 4: returns, 8: depth; only to measure them), for speed (0) or size (1), split into
 /// modules of at most `module_bytes` of code when not 0 (only to measure calls between modules). Returns the
 /// length of the first code module, or -1 if the start, the code range or the bound is not valid;
@@ -56,6 +56,8 @@ fn answer(bytes: Vec<u8>) -> i32 {
 pub extern "C" fn translate(
     code_start: u64,
     code_end: u64,
+    linked: u32,
+    link_address: u64,
     start: u64,
     look_ahead: u32,
     bound: u32,
@@ -81,10 +83,11 @@ pub extern "C" fn translate(
         Optimise::Speed
     };
     let code = code_start..code_end;
+    let link_address = (linked == 1).then_some(link_address);
     let result = INPUT.with_borrow(|blob| {
         translate_for::<G>(
             blob,
-            code,
+            (code, link_address),
             start,
             look_ahead,
             optimise,
@@ -110,7 +113,7 @@ pub extern "C" fn translate(
 #[allow(clippy::too_many_arguments)]
 fn translate_for<C: Guest>(
     blob: &[u8],
-    code: core::ops::Range<u64>,
+    (code, link_address): (core::ops::Range<u64>, Option<u64>),
     start: u64,
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -124,6 +127,7 @@ fn translate_for<C: Guest>(
         0 => translate_omitting::<C>(
             blob,
             code,
+            link_address,
             &[start],
             look_ahead,
             optimise,
@@ -134,6 +138,7 @@ fn translate_for<C: Guest>(
         _ => translate_in_modules::<C>(
             blob,
             code,
+            link_address,
             &[start],
             look_ahead,
             optimise,

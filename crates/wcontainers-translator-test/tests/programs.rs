@@ -18,8 +18,8 @@ use wcontainers_x86::X86_64;
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
 /// Both ways a C program is built: x86's fixed-address code takes a function's address as an absolute
-/// immediate, which a translation of blob offsets cannot follow, so only its position independent build has
-/// every function in its full translation.
+/// immediate, which the translation follows through the link address, and its position independent code
+/// builds every address relative to the instruction.
 const POSITIONS: [Position; 2] = [Position::Fixed, Position::Independent];
 
 /// The look-aheads every program runs at: none, full for speed and for size, and bounded with every piece but
@@ -193,6 +193,7 @@ fn cut_functions_and_split_translations_match_linux<G: GuestTest>(split: &[(&str
             let modules = wcontainers_translator::translate_in_modules::<G>(
                 &blob.bytes,
                 0..blob.code_bytes,
+                blob.link_address,
                 &[0],
                 LookAhead::Full,
                 wcontainers_translator::Optimise::Speed,
@@ -211,7 +212,7 @@ fn cut_functions_and_split_translations_match_linux<G: GuestTest>(split: &[(&str
                     m.load_split(
                         &blob.bytes,
                         0..blob.code_bytes,
-                        blob.load,
+                        (blob.load, blob.link_address),
                         &[0],
                         module_bytes,
                     )
@@ -230,6 +231,67 @@ fn cut_functions_and_split_translations_match_linux<G: GuestTest>(split: &[(&str
                     == reachable_memory::<G>(&mut none_machine, &blob),
                 "memory of {what}"
             );
+        }
+    }
+}
+
+/// The rare-path C and C++ programs shared by every guest. (Rust's `panics` is left out: the start code
+/// rustc links takes `main` from the global offset table, an address held in data, which no walk follows.)
+const RARE_PATH_C_PROGRAMS: [&str; 6] = [
+    "written_code",
+    "null_call",
+    "jumps",
+    "exceptions",
+    "fibers",
+    "coroutines",
+];
+
+/// The rare-path C programs, those every guest has and the guest's own (`more`, with their definitions), at
+/// each optimisation in each of `positions`: the translation made ahead of time at full look-ahead from the
+/// entry, given the link address, has a piece for `main`, which a program linked at a fixed address may
+/// reach only through an absolute address (musl's `_start_c` passes it as one on x86). Without the link
+/// address a fixed build has that piece exactly when `without_link_address` says.
+fn main_is_in_the_full_translation<G: GuestTest>(
+    more: &[(&str, &[&str])],
+    positions: &[Position],
+    without_link_address: bool,
+) {
+    let shared = RARE_PATH_C_PROGRAMS.map(|name| (name, &[][..]));
+    for &(name, defines) in shared.iter().chain(more) {
+        for (optimisation, position) in levels_and_positions() {
+            if !positions.contains(&position) {
+                continue;
+            }
+            let blob = build_with::<G>(name, optimisation, Library::C, defines, position);
+            let main = blob.main.expect("a main");
+            let has_main = |link_address| {
+                wcontainers_translator::translate::<G>(
+                    &blob.bytes,
+                    0..blob.code_bytes,
+                    link_address,
+                    &[0],
+                    LookAhead::Full,
+                    Optimise::Speed,
+                    wcontainers_translator_test::runner::probe::<G>(),
+                    G::Offer::default(),
+                )
+                .unwrap()
+                .pieces()
+                .any(|piece| piece == main)
+            };
+            assert!(
+                has_main(blob.link_address),
+                "{}: no piece for main at {main:#x}",
+                blob.name
+            );
+            if position == Position::Fixed {
+                assert_eq!(
+                    has_main(None),
+                    without_link_address,
+                    "{} without the link address",
+                    blob.name
+                );
+            }
         }
     }
 }
@@ -449,6 +511,7 @@ fn measure<G: GuestTest>() {
                 let mut translation = translate::<G>(
                     &blob.bytes,
                     0..blob.code_bytes,
+                    blob.link_address,
                     from,
                     look_ahead,
                     wcontainers_translator::Optimise::Speed,
@@ -614,6 +677,13 @@ fn stacks_switched_by_the_program_match_linux_arm64() {
 #[test]
 fn written_code_and_null_calls_match_linux_arm64() {
     written_code_and_null_calls_match_linux::<Arm64>();
+}
+
+/// ARM64 builds an address in code relative to pc, so it needs no link address. Its position independent
+/// code takes `main` from the global offset table, an address held in data, so it is not checked.
+#[test]
+fn main_is_in_the_full_translation_arm64() {
+    main_is_in_the_full_translation::<Arm64>(&[], &[Position::Fixed], true);
 }
 
 #[test]
@@ -799,16 +869,21 @@ fn written_code_and_null_calls_match_linux_x86_64() {
 /// The passes of `self_written`'s loop, each of which writes the page it runs from.
 const SELF_WRITTEN_PASSES: u64 = 200;
 
+/// What `self_written` is built with.
+fn self_written_defines() -> [String; 2] {
+    use wcontainers_abi::PAGE_SIZE;
+    [
+        format!("PAGE_SIZE={PAGE_SIZE}"),
+        format!("PASSES={SELF_WRITTEN_PASSES}"),
+    ]
+}
+
 /// Code that writes the page it runs from: the next instruction's immediate on every pass of a loop, and an
 /// instruction's own first byte, which it runs as it was read. Every look-ahead as on Linux, each write
 /// to a page of translated code counted, and in Chrome.
 #[test]
 fn self_written_code_matches_linux_x86_64() {
-    use wcontainers_abi::PAGE_SIZE;
-    let defines = [
-        format!("PAGE_SIZE={PAGE_SIZE}"),
-        format!("PASSES={SELF_WRITTEN_PASSES}"),
-    ];
+    let defines = self_written_defines();
     let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
     for (optimisation, position) in levels_and_positions() {
         let blob =
@@ -964,23 +1039,53 @@ fn trap_flag_steps_match_linux_x86_64() {
 const SPIN_IMMEDIATE: u64 = 1;
 /// The immediate the other thread writes there.
 const SPIN_WRITTEN: u32 = 2;
+/// What `written_by_another` is built with.
+fn written_by_another_defines() -> [String; 3] {
+    use wcontainers_abi::PAGE_SIZE;
+    [
+        format!("PAGE_SIZE={PAGE_SIZE}"),
+        format!("IMMEDIATE={SPIN_IMMEDIATE}"),
+        format!("NEW={SPIN_WRITTEN}"),
+    ]
+}
+
+/// The rare-path C programs of x86 alone: its full translation has `main` only given the link address.
+#[test]
+fn main_is_in_the_full_translation_x86_64() {
+    let self_written = self_written_defines();
+    let by_another = written_by_another_defines();
+    let self_written: Vec<&str> = self_written.iter().map(String::as_str).collect();
+    let by_another: Vec<&str> = by_another.iter().map(String::as_str).collect();
+    main_is_in_the_full_translation::<X86_64>(
+        &[
+            ("self_written", &self_written),
+            ("written_by_another", &by_another),
+        ],
+        &POSITIONS,
+        false,
+    );
+}
+
+/// How long one run of `written_by_another` may take: past it, a thread still spinning in code that was
+/// written fails the test instead of running for ever.
+const SPIN_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Code another thread changes while this one runs it (`programs/x86_64/written_by_another.c`). On the
 /// reference a second thread writes it; the test runners give one thread, so the runner writes the same
 /// bytes as that thread at the first stop of the spinning thread on the written page, which drops the
 /// page's pieces and makes the thread give up its frames. Every look-ahead as on Linux, with none's
-/// registers and memory. Not in Chrome: its runner has no pause for another thread to act in.
+/// registers and memory, each run within `SPIN_TIME_LIMIT`. Not in Chrome: its runner has no pause for
+/// another thread to act in.
 #[test]
 fn code_written_by_another_thread_matches_linux_x86_64() {
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{RecvTimeoutError, channel};
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_translator_test::runner::Pause;
-    let defines = [
-        format!("PAGE_SIZE={PAGE_SIZE}"),
-        format!("IMMEDIATE={SPIN_IMMEDIATE}"),
-        format!("NEW={SPIN_WRITTEN}"),
-    ];
+    let defines = written_by_another_defines();
     let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
     for (optimisation, position) in levels_and_positions() {
         let blob = build_with::<X86_64>(
@@ -1000,11 +1105,30 @@ fn code_written_by_another_thread_matches_linux_x86_64() {
                 Default::default(),
                 wcontainers_translator_test::runner::probe::<X86_64>(),
             );
+            let what = format!("{} at {how:?}", blob.name);
             let code = blob.load..blob.load + blob.code_bytes;
             let written = Rc::new(Cell::new(false));
             let seen = written.clone();
+            // Past the limit the watchdog raises the stop flag, and the next stop fails the test.
+            let late = Arc::new(AtomicBool::new(false));
+            let (finished, finishing) = channel::<()>();
+            let watchdog = {
+                let late = late.clone();
+                let raise = machine.stop_flag_raiser();
+                std::thread::spawn(move || {
+                    if finishing.recv_timeout(SPIN_TIME_LIMIT) == Err(RecvTimeoutError::Timeout) {
+                        late.store(true, Ordering::SeqCst);
+                        raise();
+                    }
+                })
+            };
+            let late_what = what.clone();
             machine.raise_stop_flag();
             machine.on_pause(move |at, paused| {
+                assert!(
+                    !late.load(Ordering::SeqCst),
+                    "{late_what}: still running after {SPIN_TIME_LIMIT:?}"
+                );
                 if seen.get() {
                     return;
                 }
@@ -1018,7 +1142,8 @@ fn code_written_by_another_thread_matches_linux_x86_64() {
                 }
             });
             let (stopped, registers) = machine.run();
-            let what = format!("{} at {how:?}", blob.name);
+            drop(finished);
+            watchdog.join().expect("the watchdog");
             assert!(written.get(), "{what}: never stopped on the written page");
             assert!(
                 machine.count(Reason::CodeWrittenWithoutAnnouncement) >= 1,

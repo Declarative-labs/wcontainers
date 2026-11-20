@@ -116,7 +116,13 @@ pub fn translated_on<G: GuestTest>(
     }
     machine.write(DATA, &start_data(case));
     let code = case.code.code();
-    machine.load(code, 0..code.len() as u64, CODE, &[0], LookAhead::None);
+    machine.load(
+        code,
+        0..code.len() as u64,
+        (CODE, None),
+        &[0],
+        LookAhead::None,
+    );
     machine.set_thread_state(&start_thread::<G>(case));
     let (stopped, _) = machine.run();
     let stop = translated_stop::<G>(stopped);

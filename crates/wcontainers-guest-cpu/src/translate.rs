@@ -164,15 +164,15 @@ pub trait Guest: Personality {
     fn accesses(i: &Self::Instruction) -> [Option<MemoryAccess<Self::Reg>>; 2];
     /// How the stack pointer moves, where the CPU knows; any other write of it is an unknown move.
     fn stack_move(i: &Self::Instruction) -> StackMove;
-    /// The blob offset of an address the instruction `i` at blob offset `at` builds into a register, for
-    /// code in `code`. `before` as for `jump_table`.
+    /// An address the instruction `i` at blob offset `at` builds into a register or memory, for code in
+    /// `code`. `before` as for `jump_table`.
     fn built_address(
         at: u64,
         i: &Self::Instruction,
         blob: &[u8],
         code: Range<u64>,
         before: impl Fn(u64) -> Option<(u64, Self::Instruction)>,
-    ) -> Option<u64>;
+    ) -> Option<BuiltAddress>;
     /// The jump table of the jump through `reg` at blob offset `at`, made from a switch statement: its
     /// targets as blob offsets, each once, in table order, and the blob bytes it was read from. `before(o)` is the function's instruction that falls through
     /// into offset `o`, with its offset, or `None` at the start of a block more than one edge enters: the
@@ -558,6 +558,15 @@ impl Relation {
             other => other,
         }
     }
+}
+
+/// An address an instruction builds, which may name code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltAddress {
+    /// Built relative to the instruction: a blob offset.
+    Offset(u64),
+    /// Written out in the instruction: names code only in a program linked at a fixed address.
+    Absolute(u64),
 }
 
 /// A switch's jump table: the targets, as blob offsets, each once in table order, and the blob bytes read

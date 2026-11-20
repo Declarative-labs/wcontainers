@@ -18,7 +18,7 @@ fn ready<G: GuestTest>(code: &[u8], look_ahead: LookAhead) -> Machine<G> {
     let mut machine = Machine::<G>::new(1 << 20, LOAD, (PAGE / G::ALIGN) as u32, Syscalls::StandIn);
     machine.set_permissions(LOAD..LOAD + PAGE, Permissions::READ | Permissions::EXECUTE);
     machine.set_permissions(LOAD - PAGE..LOAD, Permissions::READ | Permissions::WRITE);
-    machine.load(code, 0..code.len() as u64, LOAD, &[0], look_ahead);
+    machine.load(code, 0..code.len() as u64, (LOAD, None), &[0], look_ahead);
     machine.set_registers(&G::initial_block(LOAD, LOAD));
     machine
 }

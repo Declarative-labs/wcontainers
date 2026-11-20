@@ -488,6 +488,7 @@ impl<G: Guest> Finder<'_, G> {
             let before = |o: u64| self.before(&body, &entered, o);
             if let Some(address) =
                 G::built_address(offset, &instruction, blob, self.code.range.clone(), before)
+                    .and_then(|built| self.code.built_offset(built))
             {
                 built.push(address);
             }

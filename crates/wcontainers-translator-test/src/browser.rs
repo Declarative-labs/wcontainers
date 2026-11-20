@@ -3,6 +3,7 @@
 
 use crate::guest::GuestTest;
 use crate::programs::{Blob, Ran, placement};
+use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,6 +29,7 @@ const RUNNER_KEY: &str = "runner";
 const LOCK_CODE_KEY: &str = "lockCode";
 const SINGLE_STEP_KEY: &str = "singleStep";
 const STOP_KIND_KEY: &str = "kind";
+const LINK_ADDRESS_KEY: &str = "linkAddress";
 const STOP_STATE_KEY: &str = "stateAtStop";
 
 /// The names and numbers the browser runner shares with the wasmtime runner.
@@ -207,7 +209,7 @@ fn run_in_chrome<G: GuestTest>(
         .iter()
         .map(|(range, permissions)| serde_json::json!([range.start, range.end, permissions.bits()]))
         .collect();
-    let setup = serde_json::json!({
+    let mut setup = serde_json::json!({
         "codeBytes": blob.code_bytes,
         "load": blob.load,
         "memoryBytes": place.memory_bytes,
@@ -231,6 +233,7 @@ fn run_in_chrome<G: GuestTest>(
             | (u8::from(omit.returns) << 2)
             | (u8::from(omit.depth) << 3),
     });
+    setup[LINK_ADDRESS_KEY] = serde_json::json!(blob.link_address);
     let result = launch(&directory, &setup, flags);
     std::fs::remove_dir_all(&directory).unwrap();
     // An array of bytes, or none where the runner gives null (a stop with no thread state).
@@ -245,20 +248,24 @@ fn run_in_chrome<G: GuestTest>(
     let stopped = &result["stopped"];
     // A process killed by a signal is reported as a shell does, 128 plus Linux's number of the signal each
     // stop raises (the same numbers on every guest).
-    let status = match stopped[STOP_KIND_KEY].as_str() {
-        // Linux reports the low 8 bits of the status.
-        Some("finished") => stopped["status"].as_i64().unwrap() as i32 & 0xff,
-        Some("memory fault") => 128 + 11,
-        Some("alignment") => 128 + 7,
-        Some("undefined" | "unsupported") => 128 + 4,
-        Some("breakpoint" | SINGLE_STEP) => 128 + 5,
-        Some("divide error" | "float exception") => 128 + 8,
-        Some("general protection" | "overflow") => 128 + 11,
-        Some("stack fault") => 128 + 7,
+    let signal = match stopped[STOP_KIND_KEY].as_str() {
+        Some("finished") => None,
+        Some("memory fault") => Some(SIGSEGV),
+        Some("alignment") => Some(SIGBUS),
+        Some("undefined" | "unsupported") => Some(SIGILL),
+        Some("breakpoint" | SINGLE_STEP) => Some(SIGTRAP),
+        Some("divide error" | "float exception") => Some(SIGFPE),
+        Some("general protection" | "overflow") => Some(SIGSEGV),
+        Some("stack fault") => Some(SIGBUS),
         _ => panic!(
             "the program stopped without exiting in Chrome: {stopped} at {}",
             result["pc"]
         ),
+    };
+    let status = match signal {
+        // Linux reports the low 8 bits of the status.
+        None => i32::from(stopped["status"].as_i64().unwrap() as u8),
+        Some(signal) => 128 + signal as i32,
     };
     let counters = result["counters"]
         .as_array()

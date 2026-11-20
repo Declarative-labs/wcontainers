@@ -106,6 +106,8 @@ fn blob(name: &str, ops: Ops) -> Blob {
         code_bytes: bytes.len() as u64,
         bytes,
         load: LOAD,
+        link_address: None,
+        main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
     }
@@ -497,6 +499,8 @@ fn data_blob(name: &str, mut ops: Ops) -> Blob {
         code_bytes: PAGE_SIZE,
         bytes,
         load: LOAD,
+        link_address: None,
+        main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
     }

@@ -2076,7 +2076,8 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   (written through one address, run through the other), and two processes sharing a page of code.
 - ARM64 keeps `ic ivau`; `CODE_CHANGES` tells the runner which policy to use.
 - Expected and unmeasured: a JIT that keeps pages writable and executable while writing code next to
-  running code would fault often. The counter shows it; a measurement on such a program comes at X6.
+  running code would fault often. The counter shows it. X6 measured only a loop that writes its own next
+  instruction (section 12), not such a program; a measurement on one comes with real programs (X9, X10).
 - **As built at X6.** A translation says which blob bytes it was made from (`Translation::read`: every
   instruction it decoded and every jump table it read, `JumpTable::read` from `Guest::jump_table`). The
   runners keep the marks as write locks with a reason, one bit per reason on each page (`LOCK_CODE` first),
@@ -3231,11 +3232,12 @@ one's own numbers, which apply unchanged.
   8- and 16-bit indexes, section 3.4) on real programs, measured at X5 and X8. The cost of code written on
   the page that writes it (one fault, one step and two translations a write, section 5.7), measured at X6:
   about 5.5 ms a write in wasmtime at full on the rented x86-64 machine under load (a loop writing its next
-  instruction, 20,000 more passes against 200), nearly all of it translating and compiling the two pieces;
-  the JIT case of section 5.7 pays this for every write next to running code.
+  instruction, 20,000 more passes against 200), nearly all of it translating and compiling the two pieces.
+  Expected, not measured: the JIT case of section 5.7 pays about this for every write next to running code.
 - Not seen, expected: which fault a gather element, a masked span or a `maskmovdqu` half that reaches a
-  non-canonical address gives (section 5.4 applies the stack-segment rule to it); that an instruction
-  writing into its own bytes runs as it was read (section 5.7). Layer 1 and X6's programs check both.
+  non-canonical address gives (section 5.4 applies the stack-segment rule to it); layer 1 checks it. Seen at
+  X6: an instruction writing into its own bytes runs as it was read (section 5.7); on the reference
+  `programs/x86_64/self_written.c` prints `100 93 90`, and the translation matches it at every look-ahead.
 - A known gap shared with ARM64 today: a signal handler that reads the sticky float flags from its
   frame (MXCSR on x86, FPSR on ARM64) while they are not kept sees the flags last written, and nothing
   counts it (section 5.8).

@@ -90,6 +90,7 @@ fn size<G: GuestTest>(blob: &Blob) {
         let mut translation = translate::<G>(
             &blob.bytes,
             0..blob.code_bytes,
+            blob.link_address,
             &[0],
             LookAhead::Full,
             optimise(),
@@ -227,7 +228,13 @@ fn measure_calls_between_modules<G: GuestTest>() {
                 wcontainers_translator_test::runner::probe::<G>(),
                 |m| {
                     m.optimise_for(optimise);
-                    m.load_split(&blob.bytes, 0..blob.code_bytes, blob.load, &[0], 1);
+                    m.load_split(
+                        &blob.bytes,
+                        0..blob.code_bytes,
+                        (blob.load, blob.link_address),
+                        &[0],
+                        1,
+                    );
                 },
             );
             let started = Instant::now();

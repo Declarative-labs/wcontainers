@@ -125,6 +125,8 @@ pub struct Binary {
     /// Where the code is in the image: from the start of the first section of instructions to the end of the
     /// last (the whole runnable segment if the file has no sections).
     pub code: Range<u64>,
+    /// The image's lowest address, for a file that is not moved when loaded (`ET_EXEC`).
+    pub link_address: Option<u64>,
     /// Start addresses (image offsets in the code) by where the file says they are.
     pub starts: Starts,
     /// Entries of the unwind tables that could not be read, each skipped.
@@ -209,10 +211,12 @@ impl Binary {
             start..instructions.iter().map(|r| r.end).max().unwrap()
         };
         let code = code.start.next_multiple_of(G::ALIGN)..code.end / G::ALIGN * G::ALIGN;
+        let fixed = file.elf_header().e_type(endian) == elf::ET_EXEC;
         let mut binary = Binary {
             name: name.to_string(),
             image,
             code,
+            link_address: fixed.then_some(base),
             starts: Starts::default(),
             unwind_errors: 0,
         };

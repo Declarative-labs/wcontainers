@@ -451,7 +451,7 @@ impl<G: GuestTest> Machine<G> {
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         translations: &[(LookAhead, Optimise, Vec<u64>)],
         seed: u64,
     ) {
@@ -463,7 +463,7 @@ impl<G: GuestTest> Machine<G> {
             let load = translate_load(
                 &mut self.store,
                 (bytes, load_address),
-                code.clone(),
+                (code.clone(), link_address),
                 starts,
                 (*look_ahead, *optimise),
                 Omit::default(),
@@ -519,19 +519,20 @@ impl<G: GuestTest> Machine<G> {
     }
 
     /// Place a blob at `load_address`, translate it from `starts` (blob offsets) with a look-ahead and add its
-    /// pieces. Code reached at run time with no piece is translated as [`Machine::translate_at_run_time`] says.
+    /// pieces; `link_address` as `wcontainers_translator::translate` says. Code reached at run time with no
+    /// piece is translated as [`Machine::translate_at_run_time`] says.
     pub fn load(
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         starts: &[u64],
         look_ahead: LookAhead,
     ) {
         self.load_omitting(
             bytes,
             code,
-            load_address,
+            (load_address, link_address),
             starts,
             look_ahead,
             Omit::default(),
@@ -543,7 +544,7 @@ impl<G: GuestTest> Machine<G> {
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         starts: &[u64],
         look_ahead: LookAhead,
         omit: Omit,
@@ -553,7 +554,7 @@ impl<G: GuestTest> Machine<G> {
         let load = translate_load(
             &mut self.store,
             (bytes, load_address),
-            code,
+            (code, link_address),
             starts,
             (look_ahead, optimise),
             omit,
@@ -568,7 +569,7 @@ impl<G: GuestTest> Machine<G> {
         &mut self,
         bytes: &[u8],
         code: Range<u64>,
-        load_address: u64,
+        (load_address, link_address): (u64, Option<u64>),
         starts: &[u64],
         module_bytes: usize,
     ) {
@@ -577,6 +578,7 @@ impl<G: GuestTest> Machine<G> {
         let translation = translate_in_modules::<G>(
             bytes,
             code,
+            link_address,
             starts,
             LookAhead::Full,
             host.optimise,
@@ -1523,7 +1525,7 @@ struct Load {
 fn translate_load<G: GuestTest>(
     store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
     (bytes, load_address): (&[u8], u64),
-    code: Range<u64>,
+    (code, link_address): (Range<u64>, Option<u64>),
     starts: &[u64],
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
@@ -1532,6 +1534,7 @@ fn translate_load<G: GuestTest>(
     let translation = translate_omitting::<G>(
         bytes,
         code,
+        link_address,
         starts,
         look_ahead,
         optimise,
@@ -1577,7 +1580,8 @@ fn instantiate_code<G: GuestTest>(
     (look_ahead, sp): (LookAhead, u64),
     (exact, unlocked): (bool, bool),
 ) -> bool {
-    let range = 0..code.0.len() as u64;
+    // As in the runtime, code reached at run time is translated with no link address.
+    let range = (0..code.0.len() as u64, None);
     let how = (look_ahead, store.as_context().data().optimise);
     let load = translate_load(store, code, range, &[start], how, Omit::default());
     let mut store = store.as_context_mut();

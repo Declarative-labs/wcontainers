@@ -32,6 +32,7 @@ function run({
   blob,
   codeBytes,
   load,
+  linkAddress,
   memoryBytes,
   regions,
   fill,
@@ -506,17 +507,21 @@ function run({
     }
   });
 
-  // Translate code `b` (its bytes, where they are, and where in them the code is, all of it when not said)
-  // from `start` and instantiate it, as `instantiateModule` says.
+  // Translate code `b` (its bytes, where they are, where it is linked when its code names its own addresses,
+  // and where in them the code is, all of it when not said) from `start` and instantiate it, as
+  // `instantiateModule` says.
   // With `unlocked`, the pages it was made from are not locked for code. Given the stack pointer of the thread
   // in progress, whether a page it locked may lie in a frame of the thread.
   function instantiateCode(b, start, lookAhead, omit, bound = 0, exact = false, unlocked = false, sp = null) {
     // The translator's memory may grow while it makes room, so its buffer is taken after.
     const at = translator.input(b.bytes.length);
     new Uint8Array(translator.memory.buffer, at, b.bytes.length).set(b.bytes);
+    const linked = b.linkAddress === undefined || b.linkAddress === null ? 0 : 1;
     const length = translator.translate(
       b.codeStart ?? 0n,
       b.codeEnd ?? BigInt(b.bytes.length),
+      linked,
+      BigInt(b.linkAddress ?? 0),
       start,
       lookAhead,
       bound,
@@ -610,7 +615,7 @@ function run({
   // Fresh memory is already 0, and writing it would only take memory.
   if (fill && fill[2] !== 0) guest().fill(fill[2], fill[0], fill[1]);
   guest().set(blob, load);
-  const loaded = { bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) };
+  const loaded = { bytes: blob, load: BigInt(load), linkAddress, codeStart: 0n, codeEnd: BigInt(codeBytes) };
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
   if (moduleBytes.length) return loadModules();
   if (cases) return runCases();

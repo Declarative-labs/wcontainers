@@ -2,7 +2,8 @@
 //! the machine it runs on, so a test program built where the compilers are can be timed on another machine.
 //!
 //! Usage: `time-blob dump <guest> <program> <optimisation> <out file> [define ...]` builds a program (no
-//! library) and writes its blob, its code size first as eight little-endian bytes; `time-blob <how> <guest>
+//! library) and writes its blob, its code size and its link address first as eight little-endian bytes each;
+//! `time-blob <how> <guest>
 //! <blob file> <runs>`, where `how` is `native` (on the guest's reference), `wasmtime` or `chrome` (translated
 //! for speed with every check), runs it that many times and prints the status, the best time the guest ran
 //! and the output; `time-blob rounds <guest> <rounds> <blob file> ...` runs each blob natively, in wasmtime
@@ -19,7 +20,8 @@ use wcontainers_translator_test::programs::{
 };
 use wcontainers_x86::X86_64;
 
-const CODE_SIZE: usize = size_of::<u64>();
+/// The two words before a dumped blob: its code size and its link address.
+const HEADER_WORD: usize = size_of::<u64>();
 /// The commands.
 const DUMP: &str = "dump";
 const NATIVE: &str = "native";
@@ -40,13 +42,15 @@ fn dump<G: GuestTest>(program: &str, optimisation: &str, out: &str, defines: &[&
         Position::Fixed,
     );
     let mut bytes = blob.code_bytes.to_le_bytes().to_vec();
+    bytes.extend(blob.link_address.expect("a fixed blob").to_le_bytes());
     bytes.extend(&blob.bytes);
     std::fs::write(out, bytes).unwrap();
 }
 
 fn read(file: &str) -> Blob {
     let bytes = std::fs::read(file).unwrap();
-    let (size, rest) = bytes.split_at(CODE_SIZE);
+    let (size, rest) = bytes.split_at(HEADER_WORD);
+    let (link, rest) = rest.split_at(HEADER_WORD);
     Blob {
         name: std::path::Path::new(file)
             .file_stem()
@@ -56,6 +60,8 @@ fn read(file: &str) -> Blob {
         bytes: rest.to_vec(),
         code_bytes: u64::from_le_bytes(size.try_into().unwrap()),
         load: LOAD,
+        link_address: Some(u64::from_le_bytes(link.try_into().unwrap())),
+        main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
     }

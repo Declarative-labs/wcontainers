@@ -57,6 +57,7 @@ fn write<G: GuestTest>(
     let mut translation = translate_omitting::<G>(
         &blob.bytes,
         0..blob.code_bytes,
+        blob.link_address,
         &[0],
         LookAhead::Full,
         Optimise::Speed,

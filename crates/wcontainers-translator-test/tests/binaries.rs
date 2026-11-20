@@ -61,6 +61,7 @@ fn translated<G: GuestTest>(binary: &Binary, optimise: Optimise) -> Translation 
     wcontainers_translator::translate::<G>(
         &binary.image,
         binary.code.clone(),
+        binary.link_address,
         &binary.starts.all(),
         LookAhead::Full,
         optimise,

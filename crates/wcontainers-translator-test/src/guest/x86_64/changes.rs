@@ -78,6 +78,8 @@ fn program(
         code_bytes: PAGE_SIZE,
         bytes,
         load: LOAD,
+        link_address: Some(LOAD),
+        main: None,
         program_headers: None,
         stack_bytes: STACK_BYTES,
     };

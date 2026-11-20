@@ -4,6 +4,7 @@ use crate::guest::GuestTest;
 use crate::layout::initial_stack;
 use crate::reference::{BlobRan, BlobRequest, RUNNER_EXECUTABLE, with_reference};
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
+use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -84,6 +85,11 @@ pub struct Blob {
     pub code_bytes: u64,
     /// Where it is placed in guest memory.
     pub load: u64,
+    /// Where its first byte is linked, when its code names its own addresses absolutely (see
+    /// `wcontainers_translator::translate`).
+    pub link_address: Option<u64>,
+    /// The blob offset of its program's `main`, from the ELF's symbols.
+    pub main: Option<u64>,
     /// Where in it its program's ELF program headers are, and how many: the runners tell the program.
     pub program_headers: Option<(u64, u64)>,
     /// How much stack it gets, below [`STACK_TOP`].
@@ -306,10 +312,16 @@ fn rust<G: GuestTest>(
     assert!(status.success(), "rustc {} failed", source.display());
 }
 
+/// The symbol of a program's main function.
+const MAIN: &str = "main";
+/// The section of a program's instructions.
+const TEXT_SECTION: &str = ".text";
+
 /// The flat blob of a linked program, `own` being the unique name its build works under, loaded at `MOVED`
 /// if the linker made it position independent. The ELF file is kept, under the blob's name, for looking at.
 pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     use object::read::elf::FileHeader;
+    use object::{Object, ObjectSection, ObjectSymbol};
     let out = out_directory();
     let text = |p: &Path| p.to_str().unwrap().to_string();
     let built = out.join(format!("{own}.bin"));
@@ -333,6 +345,15 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     } else {
         Position::Fixed
     };
+    // The image starts with its instructions.
+    let text = parsed
+        .section_by_name(TEXT_SECTION)
+        .expect("a text section")
+        .address();
+    let main = parsed
+        .symbols()
+        .find(|s| s.name() == Ok(MAIN))
+        .map(|s| s.address() - text);
     let mut bytes = std::fs::read(&built).unwrap();
     bytes.resize(bytes.len().next_multiple_of(8), 0);
     let at = bytes.len() as u64;
@@ -341,6 +362,8 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         bytes,
         code_bytes: std::fs::metadata(&code).unwrap().len(),
         load: position.load(),
+        link_address: (position == Position::Fixed).then_some(text),
+        main,
         program_headers: Some((at, headers.len() as u64)),
         name,
         stack_bytes: STACK_BYTES,
@@ -484,7 +507,7 @@ pub fn ready_on<G: GuestTest>(
         machine.load_omitting(
             &blob.bytes,
             0..blob.code_bytes,
-            blob.load,
+            (blob.load, blob.link_address),
             &[0],
             look_ahead,
             omit,
@@ -524,17 +547,21 @@ pub fn ran<G: GuestTest>(
     stopped: Stopped,
     registers: &G::Block,
 ) -> Ran {
-    // A process killed by a signal is reported as a shell does, 128 plus the signal's number.
-    let status = match stopped {
+    let finished = |status| Ran {
+        stdout: machine.stdout().to_vec(),
+        stderr: machine.stderr().to_vec(),
+        status,
+    };
+    let signal = match stopped {
         // Linux reports the low 8 bits of the status.
-        Stopped::Finished(status) => status & 0xff,
-        Stopped::Exit(Exit::MemoryFault { .. }) => 128 + 11,
-        Stopped::Exit(Exit::AlignmentFault { .. }) => 128 + 7,
-        Stopped::Exit(Exit::IllegalInstruction) => 128 + 4,
-        Stopped::Exit(Exit::Breakpoint { .. }) | Stopped::Fault(Fault::SingleStep) => 128 + 5,
-        Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => 128 + 8,
-        Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => 128 + 11,
-        Stopped::Fault(Fault::Stack) => 128 + 7,
+        Stopped::Finished(status) => return finished(i32::from(status as u8)),
+        Stopped::Exit(Exit::MemoryFault { .. }) => SIGSEGV,
+        Stopped::Exit(Exit::AlignmentFault { .. }) => SIGBUS,
+        Stopped::Exit(Exit::IllegalInstruction) => SIGILL,
+        Stopped::Exit(Exit::Breakpoint { .. }) | Stopped::Fault(Fault::SingleStep) => SIGTRAP,
+        Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => SIGFPE,
+        Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => SIGSEGV,
+        Stopped::Fault(Fault::Stack) => SIGBUS,
         other => {
             let pc = u64::from_le_bytes(
                 zerocopy::IntoBytes::as_bytes(registers)[G::PC_OFFSET..][..8]
@@ -549,11 +576,8 @@ pub fn ran<G: GuestTest>(
             )
         }
     };
-    Ran {
-        stdout: machine.stdout().to_vec(),
-        stderr: machine.stderr().to_vec(),
-        status,
-    }
+    // A process killed by a signal is reported as a shell does, 128 plus the signal's number.
+    finished(128 + signal as i32)
 }
 
 /// Every byte the guest may reach: the blob's pages, then the stack.
