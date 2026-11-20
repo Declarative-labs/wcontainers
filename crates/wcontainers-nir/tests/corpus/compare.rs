@@ -14,6 +14,10 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use wcontainers_gpu::{ReflectedBinding, SlotKind};
 
+/// The knob of the seed of every input filled in (and of the corpus's sample), and its value when
+/// unset.
+pub const SEED: &str = "WC_NIR_SEED";
+pub const DEFAULT_SEED: u64 = 0x5eed;
 /// The entry point of the vertex program made to feed a fragment program.
 pub const FEEDER_ENTRY: &str = "feed";
 /// Floats filled in are in [-FLOAT_RANGE, FLOAT_RANGE); integers in [-INTEGER_RANGE,
@@ -41,7 +45,7 @@ const FLOAT_ABSOLUTE: f32 = 1.0 / (1 << 20) as f32;
 /// How many differing values a verdict names.
 const NAMED_DIFFERENCES: usize = 3;
 /// The SPIR-V version the route's module is written in for lavapipe (Vulkan 1.1's).
-const SPIRV_VERSION: (u8, u8) = (1, 3);
+pub const SPIRV_VERSION: (u8, u8) = (1, 3);
 
 /// Choices for one comparison.
 #[derive(Clone, Copy)]
@@ -654,7 +658,7 @@ fn feeder(inputs: &[(u32, Ty)]) -> Result<Vec<u32>, String> {
     )
 }
 
-fn write_spirv(
+pub fn write_spirv(
     module: &Module,
     stage: ShaderStage,
     entry: &str,

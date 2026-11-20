@@ -113,6 +113,34 @@ wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage, const 
    return nir;
 }
 
+void
+wc_nir_lower_io(struct nir_shader *nir)
+{
+   if (nir->info.io_lowered)
+      return;
+   NIR_PASS(_, nir, nir_split_per_member_structs);
+   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
+   nir_lower_io_passes(nir, false);
+}
+
+void
+wc_nir_alpha_to_one(struct nir_shader *nir)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return;
+   wc_nir_lower_io(nir);
+   NIR_PASS(_, nir, nir_lower_alpha_to_coverage, false, NULL);
+   NIR_PASS(_, nir, nir_lower_alpha_to_one);
+   /* The pass's own operations in the form the routes take (its fsat lowered, as the options say). */
+   bool progress;
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_algebraic);
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
+      NIR_PASS(progress, nir, nir_opt_dce);
+   } while (progress);
+}
+
 /* The same deref path as `deref`, on `var`. */
 static nir_deref_instr *
 deref_on(nir_builder *b, nir_deref_instr *deref, nir_variable *var)

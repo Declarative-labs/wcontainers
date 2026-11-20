@@ -90,6 +90,7 @@ unsafe extern "C" {
         out: *mut Bindings,
     ) -> BindResult;
     fn wc_bindings_free(bindings: *mut Bindings);
+    fn wc_nir_alpha_to_one(nir: *mut NirShader);
     fn wc_nir_serialize(nir: *const NirShader, out: *mut Bytes) -> bool;
     fn wc_nir_to_spirv(nir: *mut NirShader, out: *mut Words) -> bool;
     fn wc_nir_free(nir: *mut NirShader);
@@ -165,6 +166,14 @@ impl Nir {
             BindResult::Unbounded => Err(ConvertError::Bindings(bind::UNBOUNDED)),
             BindResult::OutOfMemory => Err(ConvertError::Bindings(bind::OUT_OF_MEMORY)),
         }
+    }
+
+    /// Vulkan's `alphaToOne` and OpenGL's `GL_SAMPLE_ALPHA_TO_ONE` made in a fragment program (plan
+    /// 15.4, `AlphaToOneInShader`): Mesa's alpha to coverage demotes the samples alpha does not
+    /// cover, then every colour output's alpha is one. Nothing for another stage.
+    pub fn alpha_to_one(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_alpha_to_one(self.0) };
     }
 
     /// The cache's key of what a route converts from this NIR (plan 15.3): BLAKE3 of NIR's serialised

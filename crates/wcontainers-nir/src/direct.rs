@@ -27,6 +27,8 @@ const ATOMIC_COMPARE: usize = 1;
 const WIDTH: u8 = 4;
 /// NIR's booleans are one bit wide.
 const BOOL_BITS: u32 = 1;
+/// What a 16-bit shift takes of its count, as NIR's 16-bit shifts do.
+const NARROW_SHIFT_MASK: u32 = u16::BITS - 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,6 +293,8 @@ enum Alu {
     BanyInequal4,
     Fmod,
     Frem,
+    U2u16,
+    U2u32,
     Unsupported,
 }
 
@@ -336,6 +340,7 @@ enum Intrinsic {
     DerefAtomicSwap,
     LoadStage,
     StoreStage,
+    DemoteSamples,
     Unsupported,
 }
 
@@ -536,6 +541,8 @@ struct Builder<'a> {
     /// only on atomic types.
     atomic_fields: Vec<(u32, u32)>,
     atomic_vars: Vec<u32>,
+    /// The samples `demote_samples` has left, ANDed into the sample mask output on return.
+    kept_samples: Option<Handle<LocalVariable>>,
 }
 
 /// Candidate B: the program of `nir` as a naga module. The shader is changed by the preparation.
@@ -585,11 +592,18 @@ pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
         builtins: Vec::new(),
         atomic_fields: Vec::new(),
         atomic_vars: Vec::new(),
+        kept_samples: None,
     };
     let instrs = slice(f.instrs, f.instr_count);
     b.mark_atomics(instrs);
     b.emitter.start(&b.function.expressions);
     b.variables()?;
+    if instrs
+        .iter()
+        .any(|i| i.kind == Kind::Intrinsic && intrinsic_op(i.op) == Intrinsic::DemoteSamples)
+    {
+        b.keep_samples();
+    }
     for instr in instrs {
         b.instr(instr)?;
     }
@@ -1591,6 +1605,9 @@ impl Builder<'_> {
 
     fn alu(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
         let op = alu_op(i.op);
+        if i.bits == u16::BITS || matches!(op, Alu::U2u16 | Alu::U2u32) {
+            return self.narrow(i);
+        }
         let n = i.components;
         let (e, kind) = match op {
             Alu::Mov => {
@@ -1929,10 +1946,23 @@ impl Builder<'_> {
     }
 
     fn ret(&mut self) {
-        let value = if self.outputs.is_empty() || self.stage == ShaderStage::Compute {
+        let value = if self.outputs.is_empty() && self.kept_samples.is_none()
+            || self.stage == ShaderStage::Compute
+        {
             None
         } else {
-            let outputs = self.outputs.clone();
+            let mut outputs = self.outputs.clone();
+            let sample_mask = Binding::BuiltIn(BuiltIn::SampleMask);
+            let kept = self.kept_samples.map(|kept| {
+                let pointer = self.add(Expression::LocalVariable(kept));
+                (kept, self.add(Expression::Load { pointer }))
+            });
+            if let Some((kept, _)) = kept
+                && !outputs.iter().any(|o| o.2 == sample_mask)
+            {
+                let ty = self.function.local_variables[kept].ty;
+                outputs.push((kept, ty, sample_mask.clone()));
+            }
             let mut members = Vec::new();
             let mut parts = Vec::new();
             let mut end = 0;
@@ -1943,7 +1973,19 @@ impl Builder<'_> {
                 {
                     self.flip_y(pointer);
                 }
-                parts.push(self.add(Expression::Load { pointer }));
+                let mut part = self.add(Expression::Load { pointer });
+                // The program's own mask, where it writes one, keeps only what is not demoted.
+                if let Some((kept, kept_value)) = kept
+                    && binding == sample_mask
+                    && local != kept
+                {
+                    part = self.add(Expression::Binary {
+                        op: BinaryOperator::And,
+                        left: part,
+                        right: kept_value,
+                    });
+                }
+                parts.push(part);
                 let layout = self.layout(ty).expect("a stage value lays out");
                 let offset = layout.alignment.round_up(end);
                 end = offset + layout.size;
@@ -2034,6 +2076,92 @@ impl Builder<'_> {
         let e = self.builtin(builtin, inner);
         self.set(i, Value::Expr(e, kind));
         Ok(())
+    }
+
+    /// The samples `demote_samples` leaves, all of them at the start.
+    fn keep_samples(&mut self) {
+        let ty = self.add_type(TypeInner::Scalar(Scalar::U32));
+        let local = self.function.local_variables.append(
+            LocalVariable {
+                name: None,
+                ty,
+                init: None,
+            },
+            Span::UNDEFINED,
+        );
+        let pointer = self.add(Expression::LocalVariable(local));
+        let value = self.add(Expression::Literal(Literal::U32(u32::MAX)));
+        self.statement(Statement::Store { pointer, value });
+        self.kept_samples = Some(local);
+    }
+
+    /// The 16-bit integer operations of Mesa's alpha-to-coverage pass, carried in 32-bit words
+    /// holding the zero-extended value (plan 15.4): the same bits as 16-bit operations.
+    fn narrow(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
+        let n = i.components;
+        let op = alu_op(i.op);
+        let a = self.src(i, 0, n, ScalarKind::Uint)?;
+        let binary = |b: &mut Self, op, left, right| b.add(Expression::Binary { op, left, right });
+        let e = match op {
+            Alu::Mov | Alu::U2u32 => a,
+            Alu::U2u16 => self.low_bits(a, n)?,
+            Alu::Iand | Alu::Ior | Alu::Imul => {
+                let b = self.src(i, 1, n, ScalarKind::Uint)?;
+                let o = match op {
+                    Alu::Iand => BinaryOperator::And,
+                    Alu::Ior => BinaryOperator::InclusiveOr,
+                    _ => BinaryOperator::Multiply,
+                };
+                let e = binary(self, o, a, b);
+                if op == Alu::Imul {
+                    self.low_bits(e, n)?
+                } else {
+                    e
+                }
+            }
+            Alu::Ishl | Alu::Ushr => {
+                let count = self.src(i, 1, n, ScalarKind::Uint)?;
+                let mask = self.splat_u32(NARROW_SHIFT_MASK, n)?;
+                let count = binary(self, BinaryOperator::And, count, mask);
+                if op == Alu::Ishl {
+                    let e = binary(self, BinaryOperator::ShiftLeft, a, count);
+                    self.low_bits(e, n)?
+                } else {
+                    binary(self, BinaryOperator::ShiftRight, a, count)
+                }
+            }
+            _ => {
+                return Err(unsupported(format_args!("a {}-bit {}", u16::BITS, name(i))));
+            }
+        };
+        self.set(i, Value::Expr(e, ScalarKind::Uint));
+        Ok(())
+    }
+
+    /// `value`'s low 16 bits, each of its `n` components.
+    fn low_bits(
+        &mut self,
+        value: Handle<Expression>,
+        n: u32,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let mask = self.splat_u32(u32::from(u16::MAX), n)?;
+        Ok(self.add(Expression::Binary {
+            op: BinaryOperator::And,
+            left: value,
+            right: mask,
+        }))
+    }
+
+    fn splat_u32(&mut self, value: u32, n: u32) -> Result<Handle<Expression>, ConvertError> {
+        let value = self.add(Expression::Literal(Literal::U32(value)));
+        Ok(if n == 1 {
+            value
+        } else {
+            self.add(Expression::Splat {
+                size: vector_size(n)?,
+                value,
+            })
+        })
     }
 
     /// The local a stage value's slot is kept in, and its flat type.
@@ -2335,6 +2463,24 @@ impl Builder<'_> {
                     };
                     self.statement(Statement::Store { pointer, value });
                 }
+            }
+            Intrinsic::DemoteSamples => {
+                let kept = self
+                    .kept_samples
+                    .expect("made where the program demotes samples");
+                let pointer = self.add(Expression::LocalVariable(kept));
+                let left = self.add(Expression::Load { pointer });
+                let demoted = self.src(i, 0, 1, Uint)?;
+                let right = self.add(Expression::Unary {
+                    op: UnaryOperator::BitwiseNot,
+                    expr: demoted,
+                });
+                let value = self.add(Expression::Binary {
+                    op: BinaryOperator::And,
+                    left,
+                    right,
+                });
+                self.statement(Statement::Store { pointer, value });
             }
             Intrinsic::Unsupported => return Err(unsupported(name(i))),
         }

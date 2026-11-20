@@ -1,6 +1,7 @@
 /* Candidate B's flattening of NIR (flat.h). */
 #include <stdbool.h>
 #include "flat.h"
+#include "bridge.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -629,6 +630,8 @@ intrinsic_of(nir_intrinsic_op op)
       return WC_INTRINSIC_DEREF_ATOMIC;
    case nir_intrinsic_deref_atomic_swap:
       return WC_INTRINSIC_DEREF_ATOMIC_SWAP;
+   case nir_intrinsic_demote_samples:
+      return WC_INTRINSIC_DEMOTE_SAMPLES;
    default:
       return WC_INTRINSIC_UNSUPPORTED;
    }
@@ -811,6 +814,26 @@ flatten_intrinsic(struct flattening *f, nir_intrinsic_instr *intr)
    return true;
 }
 
+/* The 16-bit operations of Mesa's alpha-to-coverage pass (nir_lower_alpha.c), which route B carries
+ * in 32-bit words holding the zero-extended value; no other 16-bit operation is taken. */
+static bool
+is_narrow_op(nir_op op)
+{
+   switch (op) {
+   case nir_op_mov:
+   case nir_op_iand:
+   case nir_op_ior:
+   case nir_op_imul:
+   case nir_op_ishl:
+   case nir_op_ushr:
+   case nir_op_u2u16:
+   case nir_op_u2u32:
+      return true;
+   default:
+      return false;
+   }
+}
+
 static bool
 flatten_instr(struct flattening *f, nir_instr *instr)
 {
@@ -823,10 +846,16 @@ flatten_instr(struct flattening *f, nir_instr *instr)
       i->op = alu_op(alu->op);
       i->name = nir_op_infos[alu->op].name;
       set_def(i, &alu->def);
+      bool narrow = alu->def.bit_size == WC_NARROW_BITS;
       for (unsigned s = 0; s < nir_op_infos[alu->op].num_inputs; s++) {
          set_src(i, s, &alu->src[s].src);
          for (unsigned c = 0; c < WC_COMPONENTS; c++)
             i->src[s].swizzle[c] = alu->src[s].swizzle[c];
+         narrow = narrow || nir_src_bit_size(alu->src[s].src) == WC_NARROW_BITS;
+      }
+      if (narrow && !is_narrow_op(alu->op)) {
+         i->kind = WC_FLAT_UNSUPPORTED;
+         i->name = "a 16-bit operation other than the alpha-to-coverage pass's";
       }
       return true;
    }
@@ -836,10 +865,13 @@ flatten_instr(struct flattening *f, nir_instr *instr)
          return false;
       set_def(i, &lc->def);
       for (unsigned c = 0; c < lc->def.num_components; c++)
-         i->value[c] = lc->def.bit_size == 1 ? lc->value[c].b : lc->value[c].u32;
-      if (lc->def.bit_size != 1 && lc->def.bit_size != WC_VALUE_BITS) {
+         i->value[c] = lc->def.bit_size == 1                ? lc->value[c].b
+                       : lc->def.bit_size == WC_NARROW_BITS ? lc->value[c].u16
+                                                            : lc->value[c].u32;
+      if (lc->def.bit_size != 1 && lc->def.bit_size != WC_NARROW_BITS &&
+          lc->def.bit_size != WC_VALUE_BITS) {
          i->kind = WC_FLAT_UNSUPPORTED;
-         i->name = "load_const of other than 32 bits";
+         i->name = "load_const of other than 16 or 32 bits";
       }
       return true;
    }
@@ -1012,13 +1044,7 @@ wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
 {
    memset(out, 0, sizeof(*out));
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
-   /* Stage values in one form, lowered IO, as the OpenGL linker hands them over: a Vulkan
-    * program's blocks of them (gl_PerVertex) split a member each first. */
-   if (!nir->info.io_lowered) {
-      NIR_PASS(_, nir, nir_split_per_member_structs);
-      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
-      nir_lower_io_passes(nir, false);
-   }
+   wc_nir_lower_io(nir);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
    nir_rematerialize_derefs_in_use_blocks_impl(impl);

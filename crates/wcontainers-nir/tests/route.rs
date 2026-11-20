@@ -122,3 +122,52 @@ fn candidate_b_reads_a_compute_program() {
     wcontainers_nir::spirv::validate(&module).unwrap();
     assert_eq!(module.entry_points[0].workgroup_size, [1, 1, 1]);
 }
+
+const TRANSLUCENT: &str = "
+@fragment
+fn main(@location(0) colour: vec4<f32>) -> @location(0) vec4<f32> {
+    return colour;
+}
+";
+
+const MASKED: &str = "
+struct Out {
+    @location(0) colour: vec4<f32>,
+    @builtin(sample_mask) mask: u32,
+}
+@fragment
+fn main(@location(0) colour: vec4<f32>, @location(1) @interpolate(flat) mask: u32) -> Out {
+    return Out(colour, mask);
+}
+";
+
+/// The sample mask among a fragment entry point's results, and whether colour 0's alpha is the
+/// constant one.
+fn sample_mask_and_alpha_one(module: &naga::Module) -> (bool, bool) {
+    let entry = &module.entry_points[0].function;
+    let result = entry.result.as_ref().expect("a fragment program returns");
+    let naga::TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
+        panic!("route B returns a struct");
+    };
+    let mask = members
+        .iter()
+        .filter(|m| m.binding == Some(naga::Binding::BuiltIn(naga::BuiltIn::SampleMask)))
+        .count();
+    let one = entry
+        .expressions
+        .iter()
+        .any(|(_, e)| matches!(e, naga::Expression::Literal(naga::Literal::F32(v)) if *v == 1.0));
+    (mask == 1, one)
+}
+
+#[test]
+fn alpha_to_one_gives_route_b_a_sample_mask_and_alpha_one() {
+    for program in [TRANSLUCENT, MASKED] {
+        let mut nir = Nir::from_spirv(&spirv(program), Stage::Fragment, ENTRY_POINT).unwrap();
+        nir.alpha_to_one();
+        nir.to_common_form(Stage::Fragment).unwrap();
+        let module = wcontainers_nir::direct::module(&mut nir).unwrap();
+        wcontainers_nir::spirv::validate(&module).unwrap();
+        assert_eq!(sample_mask_and_alpha_one(&module), (true, true));
+    }
+}

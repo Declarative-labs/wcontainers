@@ -85,6 +85,15 @@ enum wc_bind_result wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
                                 const struct wc_slot_range ranges[WC_SLOT_KINDS],
                                 struct wc_bindings *out);
 
+/* Stage values as lowered IO (load_input, load_interpolated_input, store_output), the one form
+ * route B takes and the one the OpenGL linker hands over; a Vulkan program's blocks of them
+ * (gl_PerVertex) split a member each first. Nothing where the IO is lowered already. */
+void wc_nir_lower_io(struct nir_shader *nir);
+
+/* Vulkan's alphaToOne in a fragment program (plan 15.4): Mesa's alpha to coverage, which demotes
+ * the samples alpha does not cover, then alpha one on every colour output; IO lowered first. */
+void wc_nir_alpha_to_one(struct nir_shader *nir);
+
 /* NIR's own serialised form, the cache's key (plan 15.3). */
 bool wc_nir_serialize(const struct nir_shader *nir, struct wc_bytes *out);
 

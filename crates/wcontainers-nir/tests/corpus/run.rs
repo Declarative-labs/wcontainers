@@ -1,7 +1,7 @@
 //! The parent, which samples the corpus and runs one child a shader, and the child, which takes one
 //! shader through the routes.
 
-use crate::compare::{self, CompareOptions, Verdict};
+use crate::compare::{self, CompareOptions, DEFAULT_SEED, SEED, Verdict};
 use crate::entry;
 use crate::lavapipe;
 use crate::needs;
@@ -38,15 +38,12 @@ const IN_COMPARISON: &str = "in the comparison";
 const CORPUS: &str = "WC_NIR_CORPUS";
 const RESULTS: &str = "WC_NIR_RESULTS";
 const SHADERS: &str = "WC_NIR_SHADERS";
-const SEED: &str = "WC_NIR_SEED";
 const JOBS: &str = "WC_NIR_JOBS";
 const INPUT_SETS: &str = "WC_NIR_INPUT_SETS";
 /// The input sets of each run when `WC_NIR_INPUT_SETS` is unset.
 const DEFAULT_INPUT_SETS: u32 = 64;
 /// A folder for each route's intermediate form, for diagnosis.
 const DUMP: &str = "WC_NIR_DUMP";
-/// The seed of the sample when `WC_NIR_SEED` is unset.
-const DEFAULT_SEED: u64 = 0x5eed;
 /// Lavapipe's worker threads, none: every run in the child's own thread, so a program whose
 /// invocations race gives the same result each time.
 const DRIVER_THREADS_VARIABLE: &str = "LP_NUM_THREADS";
