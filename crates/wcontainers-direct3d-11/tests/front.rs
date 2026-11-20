@@ -1796,11 +1796,12 @@ fn format_support_reports_the_uses_the_front_serves_by_its_own_routes_at_their_l
     ] {
         assert_ne!(uint & bit, 0, "{bit:#x}");
     }
-    // Integers generate no mips; typed depth formats are not read as themselves.
+    // Integers generate no mips; typed depth formats are not read as themselves, but staged.
     let uint1 = l11.format_support(dxgi::R32_UINT).support1;
     assert_eq!(uint1 & support::MIP_AUTOGEN, 0);
     let depth = l11.format_support(dxgi::D32_FLOAT).support1;
-    assert_eq!(depth & (support::SHADER_LOAD | support::CPU_LOCKABLE), 0);
+    assert_eq!(depth & support::SHADER_LOAD, 0);
+    assert_ne!(depth & support::CPU_LOCKABLE, 0);
     // Typed storage views are shader model 5's, gathers 4.1's, buffers and comparisons 10_0's.
     for d in [&l10, &l10_1] {
         let s = d.format_support(dxgi::R32_UINT);
