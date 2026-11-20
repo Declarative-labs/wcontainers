@@ -43,6 +43,10 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - J5 run 12 (19:40 on 2026-11-19): the same again; the kernel branch still 7058ed46 with the assertion (now at
   task.rs:224), the brief and the literal rulings unchanged. The tree is unchanged since run 11's literal check,
   so nothing was rerun.
+- J5 run 13 (19:41 on 2026-11-19): the same again. origin/phase-1 eb515b7a and origin/phase-1-literals 7668c010
+  are already merged; the kernel branch is still 7058ed46 with the assertion at task.rs:224; the brief has not
+  changed since 13:47, and the orchestrator's notes hold no new ruling for this track. The tree has not changed,
+  so nothing was built or run.
 - Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
