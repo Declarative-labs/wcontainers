@@ -91,13 +91,15 @@ pub struct StreamOutput {
     pub strides: [u32; STREAM_BUFFERS],
 }
 
-/// Where one draw's stream output goes.
+/// Where one draw's stream output goes. Its buffers are made with [`BufferUsage::STORAGE`] for
+/// [`Stages`], and with [`BufferUsage::COPY_SRC`] and [`BufferUsage::COPY_DST`] for
+/// [`super::GeometryReplay`].
 #[derive(Debug)]
 pub struct StreamTargets<'a, B: Backend> {
-    /// The bound buffers (made with [`BufferUsage::STORAGE`]), each written from its range's offset
-    /// (aligned as storage bindings are) plus its filled size.
+    /// The bound buffers, each written from its range's offset (aligned as storage bindings are)
+    /// plus its filled size.
     pub buffers: [Option<BufferRange<&'a B::Buffer>>; STREAM_BUFFERS],
-    /// [`STREAM_FILLED_WORDS`] u32 (storage, writable, made with [`BufferUsage::STORAGE`]): the
+    /// [`STREAM_FILLED_WORDS`] u32: the
     /// bytes each buffer is filled to, where the draw appends and which it advances (the front writes
     /// them for Direct3D's explicit offsets and keeps them for `DrawAuto`), then for each stream the
     /// primitives the draw wrote and those it made (Direct3D's stream output statistics); the words

@@ -14,7 +14,7 @@ front's two named items (arrays of views in shader model 5.1 DXBC, the evaluated
 its indexed strips through the stage helper (`StageIndexedStrip`) and, from A7, triangle strips
 with adjacency (see "Run 50"); run 51 the converter's half of A5, the geometry shader's replay form
 for WebGL 2 (see "Run 51"); run 52 the route that runs it, `stage::GeometryReplay`, drawn on ANGLE
-equal to Direct3D 11 (see "Run 52").
+equal to Direct3D 11 (see "Run 52"); run 53 stream output after it (see "Run 53").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -97,8 +97,9 @@ The pass bar, item by item:
    tessellation scene, stream output after a domain stage; `stage_draw`). On WebGL 2 since run 52,
    geometry shaders by replay (`geometry_draw`,
    `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`, on ANGLE: every case of the WebGPU
-   test but the strips with adjacency and the indexed strips, which the route refuses by name).
-   Not met: the rest of WebGL 2 (tessellation, stream output, cull distances, lines: gap A5), DXIL
+   test but the strips with adjacency and the indexed strips, which the route refuses by name), and
+   stream output after them since run 53 (`stream_output_after_replay_matches_direct3d`).
+   Not met: the rest of WebGL 2 (tessellation, cull distances, lines: gap A5), DXIL
    (A6), some topologies and streams (A7), vertex shaders writing storage (A9), and single texels on
    the edges of clipped triangles (A10).
 5. The built-in programs: the storage clear (`clear_draw`, every storage format and dimension
@@ -158,12 +159,13 @@ The gap list (every item of the pass bar not met):
   or the front listing them); records wider than one capture target
   (`GeometryReplayComponents`, past `capture_components`, 16 slots on WebGL 2's minimum);
   layered geometry (`selects`, built on the same pass-through, not drawn on WebGL 2 yet); stream
-  output after a geometry shader (the route takes none: the pass-through's draw captured with
-  `capture_vertices` is the expected way, not built); alpha-antialiased lines, cull distances,
+  output from a geometry shader writing several streams (`GeometryReplayStreams`: the replay runs
+  stream 0 only; stream output of stream 0 runs since run 53, `StreamOutAfterReplay`);
+  alpha-antialiased lines, cull distances,
   primitive numbers and tessellation on WebGL 2 (each the vertex stage captured the same way;
   the tessellator needs compute, so tessellation stays absent there). Waits: the Direct3D 11 front
-  at feature level 10_0 on WebGL 2 (now possible for its geometry shaders; its lines and stream
-  output after them remain). Takes: each its route and its drawn test on ANGLE.
+  at feature level 10_0 on WebGL 2 (its geometry shaders and their stream output now run; its
+  alpha-antialiased lines remain). Takes: each its route and its drawn test on ANGLE.
 - A6. DXIL geometry, hull and domain shaders (`DxilGeometryShader`, `DxilHullShader`,
   `DxilDomainShader`): naga's SPIR-V reader has no such execution models, so the stage helper takes
   them by the DXBC route only. Waits: the Direct3D 12 front (its runner's geometry, tessellation,
@@ -2271,6 +2273,43 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 53 (the gap list in the fronts' order: A5, stream output after a replayed geometry shader):
+- Merged nothing: no branch had anything new. Checked and committed run 52's work (below). The
+  Direct3D 11 front's status says 10_0 on WebGL 2 needs geometry shaders and stream output; it
+  plans its own transform feedback for vertex shaders alone, so stream output after the replay
+  was the item left here.
+- Interface change `SlowPath::StreamOutAfterReplay` (Interface changes); departure recorded.
+- The replay form writes one more flat output after its record, `primitive_whole` (1 when its
+  slot's primitive is whole, 0 when cut), so the captured vertex is the record plus one word; the
+  pass-through's layout skips it. The geometry unit test now counts that output.
+- `GeometryReplay::new` takes the stream output declaration, placed in the records by the
+  compute route's own code (`helper::stream_declaration`, split from the program's making);
+  `ReplayDraw::stream_output` takes the targets. After the replay's capture the route reads back
+  the filled block and the capture, lists the whole primitives in order (instance, primitive,
+  geometry instance, emission), writes those every bound buffer holds (each buffer's written
+  range read back and patched element by element, so gaps and the stride's rest keep their
+  bytes), and writes back the filled sizes and stream 0's written and made counts.
+- Test `stream_output_after_replay_matches_direct3d` (tests/geometry_draw.rs): the geometry cases
+  of `stream_output_matches_direct3d` through the route on ANGLE against real Direct3D 11, every
+  word of both buffers and both counts; the comparison is shared (`streamed_alike`).
+- Results at this run's code (logs in scratch `graphics-shaders/run53`):
+  - Desktop, RTX 3080, `geometry_draw` (gpu2.log, one GPU job, shared queue, 3 cargo jobs, load
+    not taken, 10 s): 7 tests pass at seeds 1 to 4; stream output after replay 20 comparisons, 0
+    failed (buffer 0 fills in some: 27 of 60 and 9 of 16 primitives written, as Direct3D), 12
+    cases refused by name (indexed strips, strips with adjacency).
+  - Desktop, every test binary of this crate in one GPU job at default seeds (gpu-all.log, 20:02
+    to 20:04): 21 binaries, 128 pass, 0 fail, 5 ignored; the filter test's 396 comparisons with 32
+    known (anisotropic footprint) as before.
+  - Laptop (i7-8750H, 4 cargo jobs under choom, load about 4 from other work), the whole suite
+    with every corpus and glslang (`suite-run49.sh`, suite.log): every test passes but
+    `runner_shaders_give_their_recorded_verdicts` on `hlsl+distance-4-ps.dxil` (A1, left
+    failing). Clippy with warnings denied: this crate and the interface's on Windows (desktop),
+    this crate on Linux; clean.
+  - Literal check (desktop, check3.txt): passes; this crate's baseline 597 lines, unchanged. A
+    first try failed: the member's first name, `"whole"`, restated a string of another crate.
+- Clean-up: this branch's build folders on the laptop and the desktop deleted at the end; logs
+  kept. Nothing was built on the Mac (only rustfmt run there).
+
 Run 52 (the gap list in the fronts' order: the route of A5, geometry shaders on WebGL 2), its work
 left uncommitted when it was cut off, checked and committed by run 53:
 - `stage::GeometryReplay` (stage/replay.rs), for back ends with `TRANSFORM_FEEDBACK` (no compute
@@ -2596,8 +2635,8 @@ Next (in order). The gap list (top of this file) in the order the fronts need it
 2. The Direct3D 11 front's: `GeometryAsReplay` and lines on WebGL 2 (A5). Geometry shaders by
    replay done (runs 51 to 53, `stage::GeometryReplay`). Left of A5, in the front's order:
    indexed strips (read the indices back as the back end's own capture does, or list them in the
-   route), alpha-antialiased lines on WebGL 2, stream output after a replayed geometry stage
-   (the pass-through's draw captured with `capture_vertices`), layered geometry drawn there.
+   route), alpha-antialiased lines on WebGL 2,
+   layered geometry drawn there. Stream output after it done (run 53).
 3. `decoded` (A4, both fronts' normalised targets and the Direct3D 12 front's view-typed reads).
 4. DXIL geometry, hull and domain shaders (A6).
 5. The rest of A4, A7, A10, A9, A1, A8, A2 in that order. Each closes with its drawn test and its
@@ -2831,7 +2870,10 @@ The older list, kept for its detail:
   `stage::GeometryReplay`, called as under "How the Direct3D fronts call `convert`", drawn equal
   to Direct3D 11 on ANGLE for every own geometry shader. Its refusals (indexed strips, strips with
   adjacency, indirect draws) are `StageError::Unsupported` with the name; report them through the
-  front's own mechanism. Lines and stream output after it on WebGL 2 are not built yet (A5).
+  front's own mechanism. Stream output after it runs too (run 53, as under "How the Direct3D
+  fronts call `convert`"; drawn equal to Direct3D 11 on ANGLE, counts and overflow included), so
+  with the front's own transform feedback for vertex shaders alone, 10_0's geometry stage and
+  stream output are there. Alpha-antialiased lines on WebGL 2 are not built yet (A5).
 - The Direct3D 12 track (run 51), its ask of clip distances through `Stages::culled`'s
   pass-through on a back end without `CLIP_DISTANCE`: convert the vertex shader with
   `VariantFlags::CLIP_DISTANCE` and `linked` (and the pixel shader with the same): its clip
@@ -2904,7 +2946,13 @@ The older list, kept for its detail:
   returned `FinalDraw`: the program of `replay.passthrough()` and the pixel shader,
   `replay.vertex_layout()`, `buffer` as stream 0, no indices, its list topology, `count`
   vertices, one instance. `None` means nothing to draw. Refused by name: strips with adjacency,
-  indexed strips, indirect draws, records past `capture_components`.
+  indexed strips, indirect draws, records past `capture_components`. Stream output (since run 53):
+  pass the declaration to `new` and `ReplayDraw::stream_output` as on the compute route, but with
+  buffers and the filled block made with `COPY_SRC` and `COPY_DST` (no storage); the route reads
+  the filled block, writes stream 0's whole primitives on the host as Direct3D does (a primitive
+  only while every bound buffer holds it, gaps keeping their bytes) and writes back the filled
+  sizes and stream 0's written and made counts. A shader writing streams past the first with a
+  declaration is refused (`GeometryReplayStreams`).
   `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` does exactly this.
 - Alpha-antialiased lines (Direct3D 10 and 11's `AntialiasedLineEnable` with `MultisampleEnable`
   off, on a line list or strip without a geometry or hull stage; WebGPU, `Features::COMPUTE`; since
@@ -4254,6 +4302,14 @@ were already there.
 
 ## Departures from the plan
 
+- Stream output after a replayed geometry shader on WebGL 2 (run 53) is written on the host from a
+  read back of the replay's capture (`StreamOutAfterReplay`), not by transform feedback as section 7
+  says for WebGL 2's stream output: the replay captures every output slot, cut ones included, and
+  dropping them needs each invocation's count of whole primitives summed over the invocations
+  before it, which neither a vertex program nor transform feedback can make. Exact (drawn equal to
+  Direct3D 11), and slow: two read backs a draw, and one more per buffer written. Stream output from a vertex shader alone
+  stays the front's native transform feedback.
+
 - Indexed strips through the stage helper (run 50) run the vertex stage once per place of the
   listed indices, not once per index of the strip: a vertex shared by a strip's triangles is shaded
   up to three times. This keeps one form (an indexed list) for every route after it instead of
@@ -4543,6 +4599,11 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 53, `SlowPath::StreamOutAfterReplay` (commit "interface: a slow path for stream output after
+  a replayed geometry shader ..."; plan text in section 7's WebGL 2 paragraph): stream output after
+  `GeometryAsReplay` is written on the host from a read back, a slow path of its own with its
+  reason; appended last, so every other reason keeps its number.
 
 - Run 51, `VariantFlags::GEOMETRY_REPLAY` (commit "interface: a variant flag for a geometry
   shader's replay form ..."; plan text in 6.4's flag list): plan section 7's `GeometryAsReplay`
