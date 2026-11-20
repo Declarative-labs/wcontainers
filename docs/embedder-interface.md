@@ -109,13 +109,18 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   stack's top is put at the ceiling and the mmap base below it by Linux's gap (`mmap_base`: 128
   MiB, at most five sixths of the top), so that what is placed stays below the ceiling.
 - `on_watched_memory_accessing`: a thread, or the kernel for it, is about to access a page the
-  embedder watches (below), as `kind` (an instruction fetch is `Execute`). If the watch is gone
-  when the hook returns the access goes on; otherwise the thread waits until the process's
-  watches change, then touches again (and the hook fires again if it is still watched).
+  embedder watches (below), as `kind` (an instruction fetch is `Execute`). `process` is the
+  process whose memory it is and `thread` the thread whose access it is: a thread of that
+  process, or, when a call reads another process's memory through `/proc/<pid>/cmdline` or
+  `environ` (published to anyone, as Linux's `access_remote_vm` reads them), the reading
+  thread of another process. If the watch is gone when the hook returns the access goes on;
+  otherwise the thread waits until that process's watches change, or it ends or runs a program,
+  then touches again (and the hook fires again if it is still watched).
 - `on_memory_written_by_kernel`: after the kernel wrote `range` of a process's memory for
   `thread`: the data a call copies out, a signal's frame, restartable sequence stores, clone's
   `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` words, the word `CLONE_CHILD_CLEARTID` names and
-  the robust list's lock words at a thread's end. Every copy into program memory goes through one
+  the robust list's lock words at a thread's end and at `execve` (in the memory the program
+  leaves, as Linux's `exec_mm_release`). Every copy into program memory goes through one
   routine (crates/wcontainers-kernel/src/user.rs `Guest`), which notes the exact range written
   (adjacent ranges for the same thread joined); the kernel announces them, in order, before the
   next hook of any kind and before any thread runs again, to the process using that memory (the
@@ -256,8 +261,12 @@ terminal requests that predate the encoding, by their structure, `futex` by oper
 and `seccomp` by option. Calls that change a page's bytes without copying are described too: a
 move by `mremap` reads the pages it takes along (and with `MREMAP_DONTUNMAP` writes the old
 ones, put back to zero), and `madvise`'s `MADV_DONTNEED`, `MADV_DONTNEED_LOCKED` and
-`MADV_REMOVE` write theirs. A vfork parent going on after its child let go stores nothing more and
-meets nothing.
+`MADV_REMOVE` write theirs. `process_vm_readv` and `process_vm_writev` on a task of the
+caller's own process meet the other side's segments too (read, or written), which are the
+caller's memory. A read of `/proc/<pid>/cmdline` or `environ` (by `read`, `pread64`, `readv`,
+`preadv`, `preadv2`, `sendfile` or `splice`) meets the strings it copies in the memory of the
+process it names before the caller's buffer, whichever process that is. A vfork parent going on
+after its child let go stores nothing more and meets nothing.
 
 The walk names what a call's arguments say it may touch, before it knows what it will: a read of
 10 bytes into a 1 MiB buffer meets every watched page of the buffer as a write, and `nanosleep`'s
@@ -266,9 +275,10 @@ embedder is told of every access that can happen, and of some that then do not.
 
 The kernel's own stores are met the same way before what makes them acts:
 - the ends of the threads a call or signal ends (`exit`; `exit_group` and a fatal signal, every
-  thread; `execve`, every other thread): each thread's robust list (its head, its entries, and the
-  lock words it holds), and the word `CLONE_CHILD_CLEARTID` named, while others still use the
-  memory;
+  thread; `execve`, every other thread and then the caller's own release of the memory it leaves):
+  each thread's robust list (its head, its entries, and the lock words it holds), and the word
+  `CLONE_CHILD_CLEARTID` named, while others still use the memory (for `execve`'s caller, while
+  another process does, as a vfork child's parent);
 - `clone`'s `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` words (a child without `CLONE_VM`
   copies its parent's watches, so the parent's watch is the one met);
 - a signal handler's frame on the stack it will run on, and its restartable sequence;
@@ -287,24 +297,28 @@ from there, in its own thread. A process with no watched memory ends at once, in
 call, as before.
 
 While the embedder watches anything, every copy a call makes is checked against what its
-description named: a read against anything named, a write against what was named as written
-(a range met as a read meets only `All` watches). A copy outside it is counted (`copy outside the call's description`, with the
-call's number). If such a copy meets a watched page, the copy treats the page as not there (as it
+description named (a read of another process's memory through `/proc` against that process's):
+a read against anything named, a write against what was named as written (a range met as a read
+meets only `All` watches). A copy outside it is counted (`copy outside the call's description`,
+with the call's number). If such a copy meets a watched page, the copy treats the page as not there (as it
 treats a backend file's page not read yet), the hook is announced after the call, and a call that
 failed for it runs again from its instruction: anything it did before the copy is done again
 (counted: `watched memory met at a copy`). One that did part of its work first keeps its short
 result (counted: `call short of watched memory`). Both are gaps in the descriptions, not a second
-way of meeting watches; the tests run the shell scripts and 46 calls with watches and find none.
+way of meeting watches; the tests run the shell scripts, 51 calls, the `process_vm` calls and
+reads of a command line with watches and find none.
 
 Left to the check, and why:
 - `semctl`'s `GETALL` and `SETALL` (their size is the set's), and the `*_INFO` commands of the IPC
   control calls: each copies before it acts or acts on nothing;
 - `restart_syscall`, whose addresses are in the thread's restart record, not its arguments;
-- a priority-inheriting lock handed on at a thread's end, whose word is not on the robust list;
-- memory of another process (`process_vm_readv`, `process_vm_writev`, `/proc/<pid>/mem`): its
-  watches make the copy stop short there, with no hook (looking inside another process is the
-  inspection the owner has not built yet);
+- a priority-inheriting lock handed on at a thread's end or at `execve`, whose word is not on the
+  robust list;
 - the stores of thread ends when the container ends and the kernel kills what is left.
+
+Not built, so nothing reaches another process's memory that way: `process_vm_readv` and
+`process_vm_writev` on a task of another process are refused with ENOSYS and counted (`call on
+another process not built`), and `/proc/<pid>/mem` does not exist.
 
 A program's own access to a watched page faults; the fault's span (an access reaches at most 64
 bytes) is checked only when the CPU side allows the access all of the faulting page, and the hook
