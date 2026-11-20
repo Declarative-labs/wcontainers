@@ -913,7 +913,7 @@ impl<B: Backend> Device<B> {
             TexDim::D3 => (limits.max_texture_3d.min(volume), 1),
             _ if cube => (
                 limits.max_texture_cube.min(cube_extent),
-                limits.max_texture_layers.min(level_layers.max(6)),
+                limits.max_texture_layers.min(level_layers.max(CUBE_FACES)),
             ),
             _ => (
                 limits.max_texture_2d.min(extent),
@@ -1530,7 +1530,7 @@ impl<B: Backend> Device<B> {
         if cube
             && (t.misc_flags & MISC_TEXTURECUBE == 0
                 || !v.layer_count.is_multiple_of(CUBE_FACES)
-                || (v.dimension == ViewDim::TextureCube && v.layer_count != 6))
+                || (v.dimension == ViewDim::TextureCube && v.layer_count != CUBE_FACES))
         {
             return Err(Error::InvalidArg(
                 "a cube view needs faces in sixes of a cube texture",

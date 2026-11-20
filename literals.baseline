@@ -1660,9 +1660,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	0xb000
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	32
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	87
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	90
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	91
@@ -1674,7 +1671,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_la
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	16
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	0xb000
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	12
@@ -1684,16 +1680,10 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	31
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	40
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	45
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	55
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::write_texels	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	24
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	LayoutKey	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Variant	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	check_buffer	16
