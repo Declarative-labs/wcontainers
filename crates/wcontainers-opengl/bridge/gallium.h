@@ -3,6 +3,7 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
+#include "nir/tgsi_to_nir.h"
 #include "util/format/u_format.h"
 #include "util/u_blitter.h"
 #include "util/u_framebuffer.h"

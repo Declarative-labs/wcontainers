@@ -812,15 +812,28 @@ unsafe extern "C" fn delete_vertex_elements_state<B: Backend>(
     }
 }
 
-/// Takes the NIR st/mesa hands over in the shape every variant starts from.
-fn create_shader(state: *const pipe_shader_state, stage: Stage) -> *mut c_void {
-    // SAFETY: Mesa passes a shader state; its NIR is the driver's from now on.
-    let state = unsafe { &*state };
-    if state.type_ != PIPE_SHADER_IR_NIR {
-        refuse("a program not in NIR (the screen takes only NIR)");
+/// Takes the NIR st/mesa hands over (or Mesa's own converter makes of a TGSI program, which
+/// Gallium's helpers hand over) in the shape every variant starts from.
+fn create_shader(
+    pipe: *mut pipe_context,
+    state: *const pipe_shader_state,
+    stage: Stage,
+) -> *mut c_void {
+    // SAFETY: Mesa passes this driver's context and a shader state; its NIR is the driver's from
+    // now on.
+    let (state, screen) = unsafe { (&*state, (*pipe).screen) };
+    let raw: *mut c_void = match state.type_ {
+        // SAFETY: a NIR state's union holds its shader.
+        PIPE_SHADER_IR_NIR => unsafe { state.ir.nir }.cast(),
+        // SAFETY: a TGSI state's tokens; the converter reads the screen's NIR options.
+        PIPE_SHADER_IR_TGSI => unsafe { tgsi_to_nir(state.tokens.cast(), screen, false) }.cast(),
+        _ => refuse("a program neither in NIR nor in TGSI"),
+    };
+    if raw.is_null() {
+        refuse("a TGSI program Mesa's converter did not take");
     }
     // SAFETY: as above.
-    let mut nir = unsafe { Nir::from_raw(state.ir.nir.cast()) };
+    let mut nir = unsafe { Nir::from_raw(raw) };
     nir.uniform_blocks_as_words();
     nir.split_resource_arrays();
     let mut streamed = Ok(None);
@@ -843,17 +856,17 @@ fn create_shader(state: *const pipe_shader_state, stage: Stage) -> *mut c_void {
 }
 
 unsafe extern "C" fn create_vs_state(
-    _: *mut pipe_context,
+    pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_shader(state, Stage::Vertex)
+    create_shader(pipe, state, Stage::Vertex)
 }
 
 unsafe extern "C" fn create_fs_state(
-    _: *mut pipe_context,
+    pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
-    create_shader(state, Stage::Fragment)
+    create_shader(pipe, state, Stage::Fragment)
 }
 
 unsafe extern "C" fn bind_vs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
