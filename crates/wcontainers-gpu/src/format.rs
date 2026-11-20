@@ -207,6 +207,25 @@ impl Format {
         }
     }
 
+    /// The integer format of the same bits a front stores this normalised format as where the back
+    /// end lacks it ([`crate::SlowPath::NormAsInteger`]): unsigned for unsigned normalised, signed
+    /// for signed normalised; None for formats that have no such twin.
+    pub fn integer_twin(self) -> Option<Format> {
+        use Format::*;
+        Some(match self {
+            R16Unorm => R16Uint,
+            Rg16Unorm => Rg16Uint,
+            Rgba16Unorm => Rgba16Uint,
+            R16Snorm => R16Sint,
+            Rg16Snorm => Rg16Sint,
+            Rgba16Snorm => Rgba16Sint,
+            R8Snorm => R8Sint,
+            Rg8Snorm => Rg8Sint,
+            Rgba8Snorm => Rgba8Sint,
+            _ => return None,
+        })
+    }
+
     /// What one sample of a colour target in this format counts toward
     /// [`crate::Limits::color_bytes_per_sample`]: its byte cost and the alignment it starts at, as
     /// WebGPU counts render targets (8 bytes for 8-bit normalised RGBA). Formats WebGPU does not
