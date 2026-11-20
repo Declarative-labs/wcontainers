@@ -941,7 +941,10 @@ Next (after G8's check):
   Tools, source, build and install under `C:\wc\graphics-nir` (kept between runs; the tools'
   downloads with their SHA-256 printed); `opengl32.dll` and `libgallium_wgl.dll` in
   `C:\wc\graphics-nir\mesa\install\bin`. Uses half the desktop's threads. A remote command waits
-  while another track's hazard job holds the GPU slot.
+  while another track's hazard job holds the GPU slot. Kept between runs on the desktop for G9:
+  `C:\wc\graphics-nir`, 4.8 GB at the end of G9 run 1 (the unpacked tools, LLVM most of it; the
+  Mesa source, build and install); the downloaded archives were deleted (fetched again only if a
+  tool is missing).
 - Build Mesa, from the Mac: `orchestrator/cloud/x86-run <checkout> --name graphics-nir --jobs 64 --
   'crates/wcontainers-nir/mesa/build path:/work/flake/graphics-nir'`. On any Linux machine with Nix:
   `crates/wcontainers-nir/mesa/build` (its argument, the flake, defaults to the checkout). The tools
