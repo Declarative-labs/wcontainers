@@ -1037,7 +1037,7 @@ Next (after G8's check):
   [-Lists gles2-main,gl46-main] [-Fraction 100 -FractionStart 1]'` (a list's name is its file's
   name without `.txt`). It prints each list's counts and share; deqp-runner's `results.csv`,
   `failures.csv` and logs are in `C:\wc\graphics-nir\cts\results\<driver>\<list>`. Logs of
-  run 2 in scratch `logs/g9r2-*.log`. The Mesa build (above) must have run first for
+  run 2 in scratch `logs/g9r2-*.log`, its `results.csv` files in `results/g9r2/cts/<driver>/<list>`. The Mesa build (above) must have run first for
   `wcontainers` and `llvmpipe`. Kept on the desktop after run 2: `C:\wc\graphics-nir\cts`
   3.8 GB (the suite's source and build), `tools` 3.9 GB (with deqp-runner), `mesa` 0.8 GB,
   `opengl-target` 0.8 GB (the driver's cargo output, reused by each Mesa build).
