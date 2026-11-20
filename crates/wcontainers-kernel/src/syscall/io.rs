@@ -1,6 +1,5 @@
 //! Reading, writing and moving around in open files, and what descriptors refer to.
 
-use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -1373,7 +1372,7 @@ pub(super) fn lock_backend_writes(
     kernel.take_lock(
         tid,
         holder,
-        Channel::Held(Rc::as_ptr(node) as *const () as usize),
+        Channel::Held(crate::process::ObjectId::of_node(node)),
     )?;
     if let Content::Backend(remote) = &node.borrow().content {
         remote.writer.set(Some(tid));
@@ -1392,7 +1391,7 @@ pub(super) fn lock_position(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Re
     kernel.take_lock(
         tid,
         holder,
-        Channel::Held(Rc::as_ptr(file) as *const () as usize),
+        Channel::Held(crate::process::ObjectId::Numbered(file.borrow().id)),
     )?;
     file.borrow_mut().position_holder = Some(tid);
     Ok(())

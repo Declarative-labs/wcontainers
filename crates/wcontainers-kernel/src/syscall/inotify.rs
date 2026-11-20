@@ -71,6 +71,8 @@ fn padded(name: &[u8]) -> usize {
 /// node number finds while watched.
 #[derive(Default)]
 pub(crate) struct Instance {
+    /// Its number from `Kernel::next_object`.
+    object: u64,
     watches: BTreeMap<i32, Rc<RefCell<Inode>>>,
     last: i32,
     queue: VecDeque<Event>,
@@ -123,7 +125,7 @@ pub(super) fn of(file: &OpenFile) -> Option<Rc<RefCell<Instance>>> {
 }
 
 pub(super) fn channel(instance: &Rc<RefCell<Instance>>) -> Channel {
-    Channel::Object(Rc::as_ptr(instance) as *const () as usize)
+    Channel::Object(crate::process::ObjectId::Numbered(instance.borrow().object))
 }
 
 pub(super) fn inotify_init1(
@@ -150,7 +152,10 @@ pub(super) fn inotify_init1(
         LINK.to_vec(),
         opener,
     );
-    let instance: Rc<RefCell<Instance>> = Rc::default();
+    let instance = Rc::new(RefCell::new(Instance {
+        object: kernel.next_object(),
+        ..Instance::default()
+    }));
     kernel
         .inotify_instances
         .push((uid, Rc::downgrade(&instance)));

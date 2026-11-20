@@ -34,7 +34,7 @@ const WRITE_CHUNK: u64 = 2048;
 
 /// The channel a terminal's waiters park on.
 pub(crate) fn channel(pty: &PtyRef) -> Channel {
-    Channel::Object(Rc::as_ptr(pty) as *const () as usize)
+    Channel::Object(crate::process::ObjectId::Numbered(pty.borrow().object))
 }
 
 /// The terminal side behind an open file, if it is one: the pair, the side and whether the file
@@ -129,7 +129,11 @@ fn open_master(
         .directory_mut()
         .expect("devpts is a directory")
         .insert(&name, slave_node.clone());
-    let pty = Rc::new(RefCell::new(Pty::new(index, slave_node)));
+    let pty = Rc::new(RefCell::new(Pty::new(
+        index,
+        kernel.next_object(),
+        slave_node,
+    )));
     pty.borrow_mut().files[MASTER].push(Rc::downgrade(file));
     file.borrow_mut().terminal = Some(TerminalEnd {
         pty: pty.clone(),

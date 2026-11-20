@@ -20,7 +20,7 @@ const NO_THREAD: Tid = 0;
 
 /// The channel a pipe's waiters park on.
 pub(crate) fn channel(node: &Node) -> Channel {
-    Channel::Object(alloc::rc::Rc::as_ptr(node) as *const () as usize)
+    Channel::Object(crate::process::ObjectId::of_node(node))
 }
 
 /// Whether an open file is a pipe's end.

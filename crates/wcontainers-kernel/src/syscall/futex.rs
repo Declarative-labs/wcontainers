@@ -23,7 +23,7 @@ use crate::{Context, Errno, Kernel};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Private(u32, u64),
-    Shared(usize, u64),
+    Shared(crate::process::ObjectId, u64),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -187,10 +187,7 @@ fn key_of(
         } => {
             let at = offset + (address - mapping.start);
             if mapping.shared || (!writable && !copied.contains(&(at / PAGE_SIZE))) {
-                Ok(Key::Shared(
-                    alloc::rc::Rc::as_ptr(node) as *const () as usize,
-                    at,
-                ))
+                Ok(Key::Shared(crate::process::ObjectId::of_node(node), at))
             } else if writable {
                 Ok(Key::Private(process.memory.0, address))
             } else {

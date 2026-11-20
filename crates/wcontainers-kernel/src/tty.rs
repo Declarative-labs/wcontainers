@@ -524,6 +524,8 @@ impl Tty {
 
 /// A pair of terminals, `/dev/pts/<index>` being the slave.
 pub(crate) struct Pty {
+    /// Its number from `Kernel::next_object`.
+    pub object: u64,
     pub index: u32,
     pub sides: [Tty; 2],
     /// `TTY_PTY_LOCK`: the slave may not be opened.
@@ -545,7 +547,7 @@ pub(crate) struct Pty {
 }
 
 impl Pty {
-    pub fn new(index: u32, slave_node: Node) -> Self {
+    pub fn new(index: u32, object: u64, slave_node: Node) -> Self {
         let mut base = termios2 {
             c_iflag: 0,
             c_oflag: 0,
@@ -562,6 +564,7 @@ impl Pty {
         base.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE | IEXTEN;
         let slave = Tty::new(base);
         Self {
+            object,
             index,
             sides: [master, slave],
             locked: true,

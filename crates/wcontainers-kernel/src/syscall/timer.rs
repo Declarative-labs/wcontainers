@@ -444,7 +444,9 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             timer.expired = true;
             let _ = clock_now;
             if let Some(file) = file.upgrade() {
-                kernel.wake(Channel::Object(Rc::as_ptr(&file) as *const () as usize));
+                kernel.wake(Channel::Object(crate::process::ObjectId::Numbered(
+                    file.borrow().id,
+                )));
             }
         }
         // Disarmed, which tells the sleeper its time has come.
@@ -1326,7 +1328,9 @@ pub(crate) fn clock_was_set(kernel: &mut Kernel, delta: i64) {
         if let Owner::Descriptor { file } = &timer.owner
             && let Some(file) = file.upgrade()
         {
-            kernel.wake(Channel::Object(Rc::as_ptr(&file) as *const () as usize));
+            kernel.wake(Channel::Object(crate::process::ObjectId::Numbered(
+                file.borrow().id,
+            )));
         }
     }
 }
@@ -1398,7 +1402,10 @@ pub(super) fn read(
         if kernel.signal_pending(tid) {
             return Err(Errno::ERESTARTSYS);
         }
-        kernel.park(tid, Channel::Object(Rc::as_ptr(file) as *const () as usize));
+        kernel.park(
+            tid,
+            Channel::Object(crate::process::ObjectId::Numbered(file.borrow().id)),
+        );
         return Err(Errno::PARKED);
     }
     // A setting of the wall clock drops what was counted, without rearming.
@@ -1447,6 +1454,8 @@ pub(super) fn set_ticks(
         return Err(Errno::ECANCELED);
     }
     kernel.timers.all.get_mut(&id).expect("timer").ticks = ticks;
-    kernel.wake(Channel::Object(Rc::as_ptr(file) as *const () as usize));
+    kernel.wake(Channel::Object(crate::process::ObjectId::Numbered(
+        file.borrow().id,
+    )));
     Ok(0)
 }

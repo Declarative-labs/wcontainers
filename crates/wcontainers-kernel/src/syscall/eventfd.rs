@@ -19,6 +19,8 @@ pub(crate) struct Counter {
     pub semaphore: bool,
     /// Its number, the lowest no other counter has (`eventfd_ida`), which fdinfo shows.
     pub id: u32,
+    /// Its number from `Kernel::next_object`.
+    pub object: u64,
 }
 
 /// The counter behind an open file, if it is an event descriptor.
@@ -31,7 +33,7 @@ pub(super) fn of(file: &OpenFile) -> Option<Rc<RefCell<Counter>>> {
 
 /// What waits on a counter, and what epoll watches.
 pub(super) fn channel(counter: &Rc<RefCell<Counter>>) -> Channel {
-    Channel::Object(Rc::as_ptr(counter) as *const () as usize)
+    Channel::Object(crate::process::ObjectId::Numbered(counter.borrow().object))
 }
 
 pub(super) fn eventfd2(
@@ -53,6 +55,7 @@ pub(super) fn eventfd2(
         LINK.to_vec(),
         opener,
     );
+    let object = kernel.next_object();
     let counters = &mut kernel.files.event_counters;
     counters.retain(|counter| counter.strong_count() > 0);
     let mut taken: alloc::vec::Vec<u32> = counters
@@ -68,6 +71,7 @@ pub(super) fn eventfd2(
         count: u64::from(count as u32),
         semaphore: flags & EFD_SEMAPHORE != 0,
         id,
+        object,
     }));
     counters.push(Rc::downgrade(&counter));
     file.borrow_mut().anon = Some(Anon::Event(counter));

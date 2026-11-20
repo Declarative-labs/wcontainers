@@ -549,8 +549,8 @@ impl Taken {
 pub(crate) enum Channel {
     /// Only its deadline or a signal ends the wait.
     Nothing,
-    /// A change to one object, such as a pipe, a terminal or a lock's file (its address).
-    Object(usize),
+    /// A change to one object, such as a pipe, a terminal or a lock's file.
+    Object(ObjectId),
     /// A change to whether any file is ready, for the calls that wait on many.
     Readiness,
     /// A change in the state of a child of the thread's process.
@@ -566,17 +566,36 @@ pub(crate) enum Channel {
     /// An answer from the file backend; no signal ends this wait, as Linux's FUSE waits once a
     /// request is sent.
     Backend,
-    /// A lock that another call holds while it waits (the address of what it guards); no signal
-    /// ends this wait, as none ends Linux's `mutex_lock`.
-    Held(usize),
-    /// An event for an epoll instance (its address), which wakes one waiter at a time.
-    Epoll(usize),
+    /// A lock that another call holds while it waits (what it guards); no signal ends this wait,
+    /// as none ends Linux's `mutex_lock`.
+    Held(ObjectId),
+    /// An event for an epoll instance (its number), which wakes one waiter at a time.
+    Epoll(u64),
     /// Another thread of the process dumps core (Linux's `coredump_task_exit`): the thread waits,
     /// woken by nothing, until the process ends.
     CoreDump,
     /// A change to the embedder's watches on a memory (its handle); no signal ends this wait, as
     /// none ends a wait for the backend.
     Watch(u32),
+}
+
+/// What a kernel object is known by in waits and in what a guest sees, so that nothing depends on
+/// where the host put it: a number from `Kernel::next_object`, or an inode's device and number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ObjectId {
+    Numbered(u64),
+    Inode { device: u64, ino: u64 },
+}
+
+impl ObjectId {
+    /// An inode's identity.
+    pub fn of_node(node: &crate::fs::Node) -> Self {
+        let inode = node.borrow();
+        Self::Inode {
+            device: inode.fs.device,
+            ino: inode.ino,
+        }
+    }
 }
 
 /// What `restart_syscall` runs again.

@@ -13,7 +13,7 @@ use super::Args;
 use crate::file::{Anon, FileRef, OpenFile};
 use crate::fs::Content;
 use crate::linux::general::*;
-use crate::process::{Channel, Pid, Tid};
+use crate::process::{Channel, ObjectId, Pid, Tid};
 use crate::{Context, Errno, Kernel};
 
 /// What `/proc/<pid>/fd` shows.
@@ -41,7 +41,7 @@ pub(crate) type EpollRef = Rc<RefCell<Epoll>>;
 /// process's signals for its signal descriptors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Queue {
-    Object(usize),
+    Object(ObjectId),
     Signals(Pid),
 }
 
@@ -51,6 +51,8 @@ type Key = (i32, u64);
 /// One instance.
 #[derive(Default)]
 pub(crate) struct Epoll {
+    /// Its number from `Kernel::next_object`.
+    object: u64,
     items: BTreeMap<Key, Item>,
     /// Items that had an event, in order (`rdllist`).
     ready: VecDeque<Key>,
@@ -134,13 +136,13 @@ pub(super) fn of(file: &OpenFile) -> Option<EpollRef> {
     }
 }
 
-fn object(epoll: &EpollRef) -> usize {
-    Rc::as_ptr(epoll) as *const () as usize
+fn object(epoll: &EpollRef) -> ObjectId {
+    ObjectId::Numbered(epoll.borrow().object)
 }
 
 /// What threads in `epoll_wait` on an instance park on.
 fn waiting(epoll: &EpollRef) -> Channel {
-    Channel::Epoll(object(epoll))
+    Channel::Epoll(epoll.borrow().object)
 }
 
 /// The queue a file's readiness hangs on, for a file `vfs_poll` can ask (`file_can_poll`); none
@@ -167,7 +169,7 @@ pub(crate) fn queue_of(kernel: &Kernel, tid: Tid, file: &FileRef) -> Result<Opti
         return Ok(Some(Queue::Signals(kernel.threads[&tid].process)));
     }
     if super::timer::of(&open).is_some() {
-        return Ok(Some(Queue::Object(Rc::as_ptr(file) as *const () as usize)));
+        return Ok(Some(Queue::Object(ObjectId::Numbered(open.id))));
     }
     let node = open.node.clone();
     let inode = node.borrow();
@@ -309,7 +311,11 @@ pub(super) fn epoll_create1(
     let node = super::anon_node(kernel, cx);
     let opener = kernel.credentials(tid).serial;
     let file = OpenFile::new(kernel.next_object(), node, O_RDWR, LINK.to_vec(), opener);
-    file.borrow_mut().anon = Some(Anon::Epoll(Rc::default()));
+    let epoll = Epoll {
+        object: kernel.next_object(),
+        ..Epoll::default()
+    };
+    file.borrow_mut().anon = Some(Anon::Epoll(Rc::new(RefCell::new(epoll))));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .files_mut(tid)

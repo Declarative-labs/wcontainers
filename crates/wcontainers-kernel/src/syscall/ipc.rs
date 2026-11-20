@@ -814,8 +814,9 @@ struct Queue {
     last_sender: Pid,
     last_receiver: Pid,
     receivers: Vec<Receiver>,
-    /// Two addresses no other object has: senders wait on the first, receivers on the second.
-    waits: alloc::rc::Rc<[u8; 2]>,
+    /// What waiting senders and receivers wait on: numbers from `Kernel::next_object`.
+    senders: u64,
+    receivers_waiting: u64,
 }
 
 impl Object for Queue {
@@ -826,11 +827,11 @@ impl Object for Queue {
 
 impl Queue {
     fn senders(&self) -> Channel {
-        Channel::Object(alloc::rc::Rc::as_ptr(&self.waits) as *const u8 as usize)
+        Channel::Object(crate::process::ObjectId::Numbered(self.senders))
     }
 
     fn receivers_channel(&self) -> Channel {
-        Channel::Object(alloc::rc::Rc::as_ptr(&self.waits) as *const u8 as usize + 1)
+        Channel::Object(crate::process::ObjectId::Numbered(self.receivers_waiting))
     }
 
     /// `msg_fits_inqueue`: the bytes and the count of messages are both held to the byte limit.
@@ -889,6 +890,7 @@ pub(super) fn msgget(
     let perm = new_perm(&credentials, key, flags, slot);
     let id = perm.id;
     let now = kernel.now(cx).seconds;
+    let (senders, receivers_waiting) = (kernel.next_object(), kernel.next_object());
     kernel.ipc.msg.slots.insert(
         slot.0,
         Queue {
@@ -902,7 +904,8 @@ pub(super) fn msgget(
             last_sender: 0,
             last_receiver: 0,
             receivers: Vec::new(),
-            waits: alloc::rc::Rc::new([0; 2]),
+            senders,
+            receivers_waiting,
         },
     );
     Ok(id as u64)

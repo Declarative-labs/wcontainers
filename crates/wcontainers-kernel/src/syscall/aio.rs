@@ -16,6 +16,8 @@ pub(crate) const MAX_NR: u64 = 65536;
 
 /// One context (`struct kioctx`), named by its ring's address.
 pub(crate) struct Ring {
+    /// Its number from `Kernel::next_object`.
+    object: u64,
     pid: Pid,
     memory: wcontainers_abi::MemoryId,
     /// Its slot in the process's table, which the ring's `id` shows.
@@ -49,7 +51,7 @@ struct Poll {
 
 impl Ring {
     fn channel(&self) -> Channel {
-        Channel::Held(self.address as usize | 1)
+        Channel::Held(crate::process::ObjectId::Numbered(self.object))
     }
 }
 
@@ -153,7 +155,9 @@ pub(super) fn io_setup(
     ];
     let bytes: Vec<u8> = header.iter().flat_map(|word| word.to_le_bytes()).collect();
     guest(kernel, cx, tid).write(address, &bytes)?;
+    let object = kernel.next_object();
     kernel.aio.push(Ring {
+        object,
         pid,
         memory,
         id,

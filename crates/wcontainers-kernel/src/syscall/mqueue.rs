@@ -475,7 +475,7 @@ fn tell(kernel: &mut Kernel, cx: &mut Context<'_>, notify: Notify, pid: Pid, uid
 
 /// Pollers of a queue wait on its inode.
 pub(super) fn channel(node: &Node) -> Channel {
-    Channel::Object(Rc::as_ptr(node) as *const u8 as usize)
+    Channel::Object(crate::process::ObjectId::of_node(node))
 }
 
 fn touch(node: &Node, now: crate::fs::Time) {
