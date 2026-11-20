@@ -40,7 +40,7 @@ mod macos {
     use wcontainers_arm64::thread_state::STACK_ALIGNMENT;
     use wcontainers_hypervisor::{
         Exit as VcpuExit, Host, Hypervisor, Loaded, Memory, Register, VirtualCpu, VirtualMachine,
-        boot, link as link_page, routines, translate,
+        boot, link as link_page, routines, translate::Translator,
     };
     use wcontainers_inside::link::{self, Fatal, LINK_BYTES, Link, Start};
     use wcontainers_inside::reason::IDENTIFIERS_RAN_OUT;
@@ -127,7 +127,7 @@ mod macos {
         println!(
             "exits, exact {exact}, {:?}: {} programs, {failed} failed; {} native pieces; native slow paths {:?}; \
              in {:?}, load {}",
-            native.look_ahead,
+            native.translator.look_ahead(),
             PROGRAMS.len() + 1,
             native.translations,
             native.warnings,
@@ -156,8 +156,8 @@ mod macos {
         warnings: BTreeMap<String, u64>,
         /// Pieces translated.
         translations: u64,
-        /// What the monitor translates at.
-        look_ahead: LookAhead,
+        /// The monitor's translations.
+        translator: Translator,
     }
 
     impl NativeSide {
@@ -174,7 +174,7 @@ mod macos {
                 loaded,
                 warnings: BTreeMap::new(),
                 translations: 0,
-                look_ahead: look_ahead(),
+                translator: Translator::new(look_ahead()),
             };
             side.serve();
             side.begin(exact);
@@ -233,7 +233,7 @@ mod macos {
                         }
                     }
                 } else if let Some(request) = translation::Request::from_word(word) {
-                    translate::answer(link, self.look_ahead);
+                    self.translator.answer(link);
                     self.translations += u64::from(request == translation::Request::Translate);
                 } else if inside_routines::Request::from_word(word).is_some() {
                     routines::answer(link, &self.memory);

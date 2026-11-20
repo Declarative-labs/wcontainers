@@ -1,61 +1,130 @@
 //! The monitor's answer to the inside's translation requests: the native output's piece of the guest code the
-//! link carries, and the words the inside fills to link pieces.
+//! link carries, kept to be loaded again for another address by its address places (docs/native.md section 3.2),
+//! and the words the inside fills to link pieces.
 
+use std::collections::HashMap;
+
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_arm64::Arm64;
 use wcontainers_arm64::carry::link_words;
+use wcontainers_guest_cpu::{Native, Translation};
 use wcontainers_inside::link::Link;
 use wcontainers_inside::translation::{
     self, Field, LinkWords, Piece, Request, TooLarge, Translate,
 };
 use wcontainers_translator::{LookAhead, translate_native};
 
-/// Answers the translation request in `link`, translating at `look_ahead`.
-pub fn answer(link: &mut Link, look_ahead: LookAhead) {
-    match Request::from_word(link.head.request).expect("a translation request") {
-        Request::Translate => translate(link, look_ahead),
-        Request::Linking => {
-            let words = link_words();
-            let field = |(clear, mask)| Field { clear, mask };
-            link.put(&LinkWords {
-                moves: words.moves.map(field),
-                jump: words.jump,
-                branch: field(words.branch),
-                empty: words.empty,
+/// What a translation is kept under: the guest code it is made from, where in its page that starts, whether the
+/// count is written, and the page itself where the code's shape depends on its address.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Key {
+    code: Vec<u8>,
+    offset: u64,
+    exact: bool,
+    page: Option<u64>,
+}
+
+/// A kept translation (none when no instruction starts there) and the page it was made for.
+struct Kept {
+    translation: Option<Translation>,
+    page: u64,
+}
+
+/// The monitor's translations at one look-ahead.
+pub struct Translator {
+    look_ahead: LookAhead,
+    kept: HashMap<Key, Kept>,
+    /// How many answers came from a kept translation.
+    pub reused: u64,
+}
+
+impl Translator {
+    pub fn new(look_ahead: LookAhead) -> Translator {
+        Translator {
+            look_ahead,
+            kept: HashMap::new(),
+            reused: 0,
+        }
+    }
+
+    /// What it translates at.
+    pub fn look_ahead(&self) -> LookAhead {
+        self.look_ahead
+    }
+
+    /// Answers the translation request in `link`.
+    pub fn answer(&mut self, link: &mut Link) {
+        match Request::from_word(link.head.request).expect("a translation request") {
+            Request::Translate => self.translate(link),
+            Request::Linking => {
+                let words = link_words();
+                let field = |(clear, mask)| Field { clear, mask };
+                link.put(&LinkWords {
+                    moves: words.moves.map(field),
+                    jump: words.jump,
+                    branch: field(words.branch),
+                    empty: words.empty,
+                });
+            }
+        }
+    }
+
+    /// Answers a translate request with the piece at the look-ahead, cut shorter where its host code would not
+    /// fit the link, from a kept translation when there is one.
+    fn translate(&mut self, link: &mut Link) {
+        let request: Translate = link.get();
+        let code = link.data().to_vec();
+        let page = request.address - request.address % PAGE_SIZE;
+        let key = Key {
+            code,
+            offset: request.address % PAGE_SIZE,
+            exact: request.exact != 0,
+            page: (!Arm64::movable().contains(&page)).then_some(page),
+        };
+        if let Some(kept) = self.kept.get(&key) {
+            self.reused += 1;
+            let mut translation = kept.translation.clone();
+            if let Some(translation) = &mut translation {
+                translation.moved::<Arm64>(page.wrapping_sub(kept.page));
+            }
+            translation::answer(link, translation.map(piece).as_ref())
+                .unwrap_or_else(|TooLarge| panic!("a kept piece fits the link"));
+            return;
+        }
+        let mut look_ahead = self.look_ahead;
+        loop {
+            let translation =
+                translate_native::<Arm64>(&key.code, request.address, look_ahead, key.exact)
+                    .map(|code| code.translation());
+            let instructions = translation.as_ref().map_or(0, |t| {
+                let mut guests: Vec<u64> = t.spans.iter().map(|span| span.guest).collect();
+                guests.sort_unstable();
+                guests.dedup();
+                guests.len()
             });
+            match translation::answer(link, translation.clone().map(piece).as_ref()) {
+                Ok(()) => {
+                    self.kept.insert(key, Kept { translation, page });
+                    return;
+                }
+                Err(TooLarge) if instructions > 1 => {
+                    let half =
+                        u32::try_from(instructions / 2).expect("a piece's instructions fit u32");
+                    look_ahead = LookAhead::Bounded(half);
+                }
+                Err(TooLarge) => panic!("one instruction's piece does not fit the link"),
+            }
         }
     }
 }
 
-/// Answers a translate request with the piece at `look_ahead`, cut shorter where its host code would not fit the
-/// link.
-fn translate(link: &mut Link, look_ahead: LookAhead) {
-    let request: Translate = link.get();
-    let code = link.data().to_vec();
-    let mut look_ahead = look_ahead;
-    loop {
-        let piece =
-            translate_native::<Arm64>(&code, request.address, look_ahead, request.exact != 0).map(
-                |made| Piece {
-                    code: made.bytes,
-                    spans: made.spans,
-                    exits: made.exits,
-                    sites: made.sites,
-                },
-            );
-        let instructions = piece.as_ref().map_or(0, |p| {
-            let mut guests: Vec<u64> = p.spans.iter().map(|span| span.guest).collect();
-            guests.sort_unstable();
-            guests.dedup();
-            guests.len()
-        });
-        match translation::answer(link, piece.as_ref()) {
-            Ok(()) => return,
-            Err(TooLarge) if instructions > 1 => {
-                let half = u32::try_from(instructions / 2).expect("a piece's instructions fit u32");
-                look_ahead = LookAhead::Bounded(half);
-            }
-            Err(TooLarge) => panic!("one instruction's piece does not fit the link"),
-        }
+/// A translation as the link carries it.
+fn piece(translation: Translation) -> Piece {
+    Piece {
+        code: translation.bytes,
+        spans: translation.spans,
+        exits: translation.exits,
+        sites: translation.sites,
     }
 }
 
@@ -65,10 +134,125 @@ mod tests {
 
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_arm64::{Arm64, encode};
-    use wcontainers_guest_cpu::Guest;
+    use wcontainers_guest_cpu::{Guest, Native};
     use wcontainers_inside::link::Link;
     use wcontainers_inside::translation::{self, Translate};
     use wcontainers_translator::{LookAhead, translate_native};
+
+    use super::{Translator, piece};
+
+    /// The knobs of the moving test: how many cases, and the seed.
+    const MOVED_CASES: &str = "WCONTAINERS_MOVED_CASES";
+    const MOVED_SEED: &str = "WCONTAINERS_MOVED_SEED";
+    const DEFAULT_MOVED_CASES: u64 = 2000;
+    const DEFAULT_MOVED_SEED: u64 = 0x6d6f_7665_6421;
+
+    fn knob(name: &str, default: u64) -> u64 {
+        std::env::var(name).map_or(default, |v| {
+            let v = v.trim();
+            v.strip_prefix("0x")
+                .map_or_else(|| v.parse(), |hex| u64::from_str_radix(hex, 16))
+                .unwrap_or_else(|_| panic!("{name} is a number"))
+        })
+    }
+
+    /// A word of guest code: one of the forms that name an address (`adr`, `adrp`, `b`, `bl`, `b.cond`, a literal
+    /// load, `blr`, `ret`) with random fields, or any word.
+    fn word(rng: &mut fastrand::Rng) -> u32 {
+        let forms = [
+            (0x1000_0001u32, 0x60ff_ffffu32), // adr x1 and up
+            (0x9000_0000, 0x60ff_ffff),       // adrp
+            (0x1400_0000, 0x03ff_ffff),       // b
+            (0x9400_0000, 0x03ff_ffff),       // bl
+            (0x5400_0000, 0x00ff_ffef),       // b.cond
+            (0x5800_0001, 0x00ff_ffff),       // ldr x1 and up, literal
+            (0xd63f_0000, 0x0000_03e0),       // blr
+            (0xd65f_03c0, 0),                 // ret
+            (0xd100_0400, 0x0000_001f),       // sub x, x0, #1
+            (0xb5ff_ffe0, 0x00ff_ffff),       // cbnz x
+            (0, u32::MAX),                    // any word
+        ];
+        let (fixed, free) = forms[rng.usize(..forms.len())];
+        fixed | rng.u32(..) & free
+    }
+
+    /// Translated code moved from one movable page to another is what translating it there gives: its bytes,
+    /// position map, exits and places.
+    #[test]
+    fn moved_code_is_what_translating_there_gives() {
+        let cases = knob(MOVED_CASES, DEFAULT_MOVED_CASES);
+        let seed = knob(MOVED_SEED, DEFAULT_MOVED_SEED);
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let movable = Arm64::movable();
+        let pages = (movable.end - movable.start) / PAGE_SIZE;
+        let page = |rng: &mut fastrand::Rng| movable.start + rng.u64(..pages) * PAGE_SIZE;
+        let step = Arm64::MAX_LENGTH;
+        let mut held = 0;
+        for case in 0..cases {
+            let offset = rng.u64(..PAGE_SIZE / step) * step;
+            let words = rng.usize(1..=usize::try_from((PAGE_SIZE - offset) / step).expect("fits"));
+            let bytes: Vec<u8> = (0..words)
+                .flat_map(|_| word(&mut rng).to_le_bytes())
+                .collect();
+            let look_ahead = [
+                LookAhead::None,
+                LookAhead::Bounded(rng.u32(1..64)),
+                LookAhead::Full,
+            ][rng.usize(..3)];
+            let exact = rng.bool();
+            let (from, to) = (page(&mut rng) + offset, page(&mut rng) + offset);
+            let made = translate_native::<Arm64>(&bytes, from, look_ahead, exact)
+                .map(|code| code.translation());
+            let there = translate_native::<Arm64>(&bytes, to, look_ahead, exact)
+                .map(|code| code.translation());
+            let moved = made.map(|mut t| {
+                t.moved::<Arm64>(to.wrapping_sub(from));
+                t
+            });
+            held += moved.as_ref().map_or(0, |t| t.places.len());
+            assert_eq!(
+                moved, there,
+                "case {case} of seed {seed:#x}: {from:#x} to {to:#x}, {look_ahead:?}, exact {exact}"
+            );
+        }
+        println!("moving: {cases} cases of seed {seed:#x}, {held} address places, 0 failed");
+    }
+
+    /// A piece asked for again at another movable page comes from the kept translation, moved there.
+    #[test]
+    fn a_kept_piece_is_loaded_at_another_page() {
+        let movable = Arm64::movable();
+        let words = [
+            0x9400_0010u32, // bl . + 64
+            0x9000_0001,    // adrp x1, .
+            0x5800_0040,    // ldr x0, . + 8
+            0x17ff_fffd,    // b . - 12
+        ];
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut translator = Translator::new(LookAhead::Bounded(u32::MAX));
+        for (k, at) in [
+            movable.start,
+            movable.start + PAGE_SIZE,
+            movable.end - PAGE_SIZE,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut link = link();
+            link.ask(
+                &Translate {
+                    address: at,
+                    exact: 1,
+                },
+                &bytes,
+            );
+            translator.answer(&mut link);
+            assert_eq!(translator.reused, k as u64);
+            let made = translate_native::<Arm64>(&bytes, at, LookAhead::Bounded(u32::MAX), true)
+                .map(|code| piece(code.translation()));
+            assert_eq!(translation::piece(&link), made, "at {at:#x}");
+        }
+    }
 
     /// A link page on the heap, as the inside writes one.
     fn link() -> Box<Link> {
@@ -98,7 +282,7 @@ mod tests {
                     },
                     &word.to_le_bytes(),
                 );
-                super::answer(&mut link, LookAhead::None);
+                Translator::new(LookAhead::None).answer(&mut link);
                 let got = translation::piece(&link).expect("a piece");
                 let made =
                     translate_native::<Arm64>(&word.to_le_bytes(), at, LookAhead::None, exact)
@@ -117,7 +301,7 @@ mod tests {
             },
             &[0; Arm64::MAX_LENGTH as usize - 1],
         );
-        super::answer(&mut link, LookAhead::None);
+        Translator::new(LookAhead::None).answer(&mut link);
         assert_eq!(
             translation::piece(&link),
             None,
@@ -197,7 +381,7 @@ mod tests {
             },
             &0xd400_0001u32.to_le_bytes(),
         );
-        super::answer(&mut link, LookAhead::None);
+        Translator::new(LookAhead::None).answer(&mut link);
         let answer: translation::Translated = link.get();
         let code = usize::try_from(answer.code).expect("fits");
         link.bytes[code..].fill(u8::MAX);

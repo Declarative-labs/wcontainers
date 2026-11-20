@@ -9,7 +9,7 @@ use wcontainers_abi::{BackendRequestId, ConnectionId, Host, HostError, Stream, W
 use wcontainers_arm64::Arm64;
 use wcontainers_hypervisor::{
     Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
-    link as link_page, routines, translate,
+    link as link_page, routines, translate::Translator,
 };
 use wcontainers_inside::container::{self, File, FileKind, Monitor, Starting};
 use wcontainers_inside::link::{self, Fatal, Link, Parts, Ring};
@@ -253,6 +253,7 @@ pub fn native_at(
     };
     let mut warnings = Vec::new();
     let mut exits = 0;
+    let mut translator = Translator::new(look_ahead);
     loop {
         exits += 1;
         match cpu.run().expect("running") {
@@ -279,7 +280,7 @@ pub fn native_at(
                 request => panic!("no {request:?} here"),
             }
         } else if translation::Request::from_word(word).is_some() {
-            translate::answer(link, look_ahead);
+            translator.answer(link);
         } else if inside_routines::Request::from_word(word).is_some() {
             routines::answer(link, &memory);
         } else if let Some(request) = host::Request::from_word(word) {
