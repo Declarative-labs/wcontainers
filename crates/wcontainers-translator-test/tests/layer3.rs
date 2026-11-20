@@ -1,4 +1,4 @@
-//! Layer 3 against real ARM64 Linux: Csmith's random programs and the hand-picked ones, built with clang
+//! Layer 3 against real Linux on the guest's CPU: Csmith's random programs and the hand-picked ones, built with clang
 //! and gcc at every optimisation level, of fixed position and position independent code, at look-ahead none
 //! and full (for speed and for size, plain and with the thread stopping at every stop check), at bounded
 //! look-ahead of an N picked from the blob, and with pieces of all three mixed and events injected (see
@@ -27,6 +27,7 @@ use wcontainers_translator_test::programs::{
     Blob, Ran, check_ordinary_programs, native, native_program, ran as outcome, reachable_memory,
     ready, translated_for, translated_stopping_everywhere,
 };
+use wcontainers_x86::X86_64;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -200,11 +201,11 @@ fn csmith_programs_match_linux<G: GuestTest>() {
     assert!(failures.is_empty());
 }
 
-/// The hand-picked programs with the C library (number printing, sorting and the differences of section
-/// 8), with both compilers, every level and both positions.
-fn hand_picked_programs_match_linux<G: GuestTest>() {
+/// The hand-picked programs `names` with the C library (number printing, sorting and, for ARM64, the
+/// differences of section 8), with both compilers, every level and both positions.
+fn hand_picked_programs_match_linux<G: GuestTest>(names: &[&str]) {
     let mut failures = Vec::new();
-    for name in ["hello", "differences"] {
+    for &name in names {
         for compiler in [Compiler::Clang, Compiler::Gcc] {
             for level in LEVELS {
                 for position in [Position::Fixed, Position::Independent] {
@@ -240,5 +241,20 @@ fn csmith_programs_match_linux_arm64() {
 
 #[test]
 fn hand_picked_programs_match_linux_arm64() {
-    hand_picked_programs_match_linux::<Arm64>();
+    hand_picked_programs_match_linux::<Arm64>(&["hello", "differences"]);
+}
+
+#[test]
+fn ordinary_executables_run_on_the_reference_x86_64() {
+    ordinary_executables_run_on_the_reference::<X86_64>();
+}
+
+#[test]
+fn csmith_programs_match_linux_x86_64() {
+    csmith_programs_match_linux::<X86_64>();
+}
+
+#[test]
+fn hand_picked_programs_match_linux_x86_64() {
+    hand_picked_programs_match_linux::<X86_64>(&["hello"]);
 }
