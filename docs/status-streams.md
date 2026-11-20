@@ -732,6 +732,20 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 2, speed with no hook implemented (ARM machine, scratch streams/s3b/speed.log, load 9.5
+  to 12.7, about 08:54 to 09:00 UTC): the memory test binary of cefb66ab (S2 as merged, an
+  archive of it at scratch streams/base-s2) and of this run's tree (8a745148 with its docs),
+  each built alone, run alternately 9 rounds, round 0 a warm-up (the base's round 0 took 30.8 s
+  wall and 42.2 s user while it was still settling, and is not used). User CPU, rounds 1 to 8:
+  11.880 12.082 12.105 11.857 12.083 11.935 11.911 11.861 s before (mean 11.964), 12.042 12.035
+  12.058 12.032 11.991 11.978 12.025 12.041 s after (mean 12.025, +0.5 %); the new tree was
+  slower in 5 of 8 rounds. Wall: 15.167 15.397 15.374 15.185 15.364 15.269 15.294 15.219 s
+  before (mean 15.284), 15.337 15.288 15.280 15.320 15.274 15.212 15.362 15.324 s after (mean
+  15.300, +0.1 %), slower in 4 of 8. The base swings between about 11.86 and 12.10 from round
+  to round; the new tree sits near 12.03. Not shown to be unchanged: a difference of this size
+  is within the base's own swing, but the means moved the same way as in run 1. What part 3
+  adds on the no-hook path: two stores around each step and each call's request, one test
+  after the request, a store around each process's end.
 - S3 run 1, tests: the embedder tests (32, seeds 1 to 3) and the kernel's unit tests (5) passed
   on the ARM machine (scratch streams/s3-sharing-5.log, s3-affected-1.log; there `sigframe`
   fails as the manual lists, and passes on this Mac below). Clippy with warnings denied over
