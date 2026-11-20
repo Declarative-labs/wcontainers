@@ -64,6 +64,9 @@ the Gap list with its cause and owner.
   other 10 compared match; atg-simplecomputepc (154,515 pixels) and atg-simplemsaa_pc (8 pixels,
   frame 10) differ as recorded in the Gap list. Release sizes and building ahead were not
   measured again (no change this run touches them; run 5's numbers stand).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (18.9 GB) was deleted; no
+  build folder was made on the Mac (nothing was built there), and nothing was installed on the
+  desktop.
 
 G4 round 2, run 5 (2026-11-19, about 11:00 to 13:30 Pacific; an earlier attempt of this run made
 the alpha-antialiased line commits and was cut off before recording them). What was left on the
