@@ -2075,7 +2075,16 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   (the store frees none); linkers put writable data on pages of its own, and the flat blobs now do the same
   (`flat.ld`). The contract's frame exception covers the red zone (`Guest::RED_ZONE`): x86's frame checks
   include it, so a change to a page under rsp within 128 bytes is noticed at the next function entry, and
-  x86's hand-made change programs read past it.
+  x86's hand-made change programs read past it. Another thread's write, while the test runners give one
+  thread: the pause function writes at a stop (`Paused::write`), which takes the step for a page locked for
+  code and makes the stopped thread give up its WebAssembly frames and carry on from its registers, as this
+  section's "Frames" rule says; `written_by_another.c` spins in code on a page of its own until another
+  thread writes the immediate it compares (on the reference a thread made by `clone`, here the runner at the
+  first stop on that page). Without giving up the frames the thread spins in the dropped piece for ever,
+  which the test was seen to do. Translating from any byte address: a start or an entry found whose
+  instruction runs past the end of the code gets no piece at full and bounded look-ahead, as at none (it is
+  translated from memory when reached); before X6 such an entry stopped the translator, found by x86's
+  validity test from every byte address.
 
 ### 5.8 Floating point: SSE and x87
 

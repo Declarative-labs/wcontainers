@@ -106,7 +106,43 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 - X6 (bounded look-ahead, the rare paths, code written without announcement): run 1 (2026-11-20) fixed the X5
   check's findings, built the hooks' unwind payloads, write locks for code in both runners with the step and
   the exact mark, single steps by the trap flag in both runners, x86's change programs and tests, and the
-  programs the bar names; see "X6, run 1" for what holds and what is left.
+  programs the bar names; see "X6, run 1" for what holds and what is left. The same run, after a restart,
+  added x86's validity tests from every byte address (which found a translator bug, fixed) and its bounded
+  look-ahead test, the program whose running code another thread changes, and ran the suite (see "X6, run 1,
+  after the restart").
+
+## X6, run 1, after the restart (2026-11-20)
+
+Machines: the rented x86-64 machine (now 96 cores, kernel 7.0.0-1018-aws: the orchestrator replaced it during
+the run) for lint, the x86 tests and the suite; the rented ARM64 machine for the ARM64 tests; the Mac for git,
+formatting and the literal check. Logs in scratch `x6r2-*.log`.
+
+What X6's bar asked that x86 did not have yet, now built:
+- Translating from any byte address: `tests/valid.rs` has x86's thread module and random bytes (1 to 255) from
+  every byte address at none, from a few at full and at bounded of a random N, on a host that needs the NaN
+  fix-ups; each module validated. It found a translator bug: at full and bounded look-ahead a start (or an
+  entry a call or a built address names) whose instruction runs past the end of the code stopped the
+  translator (`full.rs`, the entry's block not found; bytes `[0x00]` alone). Such an offset now gets no piece,
+  as at none, and is translated from memory when reached (`Finder::whole`). ARM64 cannot meet it (every
+  offset inside the code holds a whole word), so its output is unchanged for every input that translated
+  before (0191cb20).
+- Bounded look-ahead: `tests/lookaheads.rs` runs `bounded_matches_none` and the two measurements for x86 too.
+- Code another thread changes while a thread runs it: `Paused::write` writes at a stop as another thread does
+  (the step for a page locked for code, then the stopped thread gives up its frames and carries on from its
+  registers; plan 5.7). `programs/x86_64/written_by_another.c` spins on a page of its own until another thread
+  writes the immediate it compares; on the reference that thread comes from `clone`, in the runners (one
+  thread; the stand-in refuses `clone` with ENOSYS) the runner writes the same bytes at the first stop on that
+  page. `code_written_by_another_thread_matches_linux_x86_64` compares at none, full for speed and size, and
+  bounded with pieces made at run time, -O0 and -O2, output with the reference and registers and memory with
+  none. Not in Chrome: its runner has no pause in which another thread could act. With the frames kept
+  instead (a mutation tried by hand, not kept) the thread spins in the dropped piece and the test runs until
+  killed, so the test sees the rule (b38ce04a).
+
+Measured:
+- Validity, x86, rented x86-64 machine (load 6 to 24 on 96): 256 cases a test at seed 1 and 20,000 cases a
+  test at seed 6061: pass. Bounded against none, x86: 4 cases a program at seed 1, and 40 a program at seed
+  6062 (74 s): pass.
+- The program another thread changes: passes (29 s, load 3); the mutation above timed out at 200 s.
 
 ## X6, run 1 (2026-11-20)
 
@@ -2851,7 +2887,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 - X6 (on the rented x86-64 machine, `x86-run <checkout> --name x86 -- '<command>'`): `cargo test -p
   wcontainers-translator-test --test programs -- trap_flag_steps_match_linux_x86_64
   self_written_code_matches_linux_x86_64 written_code_and_null_calls_match_linux_x86_64
-  unwinding_matches_linux_x86_64 stacks_switched_by_the_program_match_linux_x86_64` (Chrome included), and
+  code_written_by_another_thread_matches_linux_x86_64
+  unwinding_matches_linux_x86_64 stacks_switched_by_the_program_match_linux_x86_64` (Chrome included),
+  `--test valid -- x86_64` (`PROPTEST_CASES`, `PROPTEST_RNG_SEED`), `--test lookaheads -- x86_64`
+  (`WC_LOOKAHEAD_CASES`, `WC_LOOKAHEAD_SEED`), and
   `--test changes -- x86_64` (knobs as for ARM64: `WC_CHANGES_CASES`, `WC_CHANGES_SEED`,
   `WC_CHANGES_PROGRAM_SEEDS`). The cost of one write to the page a loop runs from: copy scratch
   `x6/smc_cost.c` into `programs/x86_64/` and `x6/scratch_smc_cost.rs` into the test crate's `tests/`, then
@@ -3216,6 +3255,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   `movbe` forms at 1,000 (seed 9364); ARM64 layer 1 on the Mac at 64 a form (seed 1). Layer 2 for x86 at 3,000
   (seed 9310) and 10,000, all on the CPU (seed 9370); for ARM64 at 3,000 (seed 9371). Layer 3 Csmith for x86 at
   1,000 (seed 9372).
+- X6 run 1: layer 2 for x86 at 20,000, all on the CPU (seed 24621); x86's changes tests at their defaults (seed 1).
+  After the restart: x86's validity tests at 256 a test (seed 1) and 20,000 a test (seed 6061); bounded against
+  none for x86 at 4 a program (seed 1) and 40 a program (seed 6062).
 
 ## Measurements
 
