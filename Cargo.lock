@@ -1930,6 +1930,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-container"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-container-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-container",
+]
+
+[[package]]
+name = "wcontainers-executor"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+]
+
+[[package]]
+name = "wcontainers-executor-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-executor",
+]
+
+[[package]]
 name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
@@ -1972,6 +1997,28 @@ dependencies = [
  "rayon",
  "syn 2.0.119",
  "toml",
+]
+
+[[package]]
+name = "wcontainers-process"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-process-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-process",
+]
+
+[[package]]
+name = "wcontainers-system"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-system-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-system",
 ]
 
 [[package]]

@@ -1,6 +1,20 @@
-//! TODO: say in one sentence what wcontainers-executor is for.
+//! What runs a container's guest threads, as the kernel's interface to its embedder names it.
 
-/// TODO: replace this skeleton with the real traits, data types and constants.
+use std::ops::Range;
+
+use wcontainers_abi::{CpuError, Permissions, ThreadId};
+
+/// A runner of guest threads with its own translator settings.
 pub trait Executor {
-    fn name(&self) -> String;
+    type TranslatorConfig;
+}
+
+/// An executor that can watch one thread and not its siblings.
+pub trait PerThreadWatch: Executor {
+    fn set_thread_permissions(
+        &mut self,
+        thread: ThreadId,
+        range: Range<u64>,
+        permissions: Permissions,
+    ) -> Result<(), CpuError>;
 }
