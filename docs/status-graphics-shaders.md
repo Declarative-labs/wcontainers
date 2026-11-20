@@ -18,7 +18,11 @@ equal to Direct3D 11 (see "Run 52"); run 53 stream output after it (see "Run 53"
 variant key's `decoded` and normalised targets in `targets_in_shader` (`NormAsInteger`, both
 fronts' 16-bit normalised textures; see "Run 54"); run 55 views of another kind than declared,
 read and written by their bits (A2 closed, the Direct3D 12 front's `TypedBufferFormatKind`), and
-arrays of typed buffers on the DXIL route (`ResourceArray` there; see "Run 55").
+arrays of typed buffers on the DXIL route (`ResourceArray` there; see "Run 55"); run 56 the
+Direct3D 12 front's three asks: the pixel program of a pipeline without a pixel shader for its
+variant (`builtin::pixel_program_for_variant`), depth clamped through the geometry stage's
+pass-through, and textures read in their view's component kind (texture-load lines 235 to 267;
+see "Run 56"); run 57 the NIR track's entry point, `wcontainers_shaders::rewrite` (see "Run 57").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -75,11 +79,15 @@ The pass bar, item by item:
      the other kind), `texture_layers`
      (`multisampled_array_layers_read_as_direct3d_does`), `targets_in_shader` into normalised
      targets held as integers (since run 54, against Direct3D 11 drawing into the normalised
-     format, both back ends).
+     format, both back ends). Since run 56 `DEPTH_CLAMP` and `CLIP_DISTANCE` also without a pixel
+     shader, through `builtin::pixel_program_for_variant`, against Direct3D 11 drawing with none
+     (both routes, both back ends).
    - `compute_draw`: `storage_formats` (`storage_textures_match_direct3d`, and since run 55
      `storage_textures_of_another_kind_read_and_write_their_bits_as_direct3d_does`), `texel_buffers`
      and `texel_formats` (`typed_buffers_match_direct3d`, and since run 55
-     `typed_buffers_of_another_kind_read_and_write_their_bits_as_direct3d_does`),
+     `typed_buffers_of_another_kind_read_and_write_their_bits_as_direct3d_does`; since run 56
+     `textures_of_another_kind_load_their_bits_as_direct3d_does`: `texel_formats` at texture
+     slots, both routes),
      `texels_through_buffer` (`storage_textures_through_buffers_match_direct3d`), `STORAGE_OFFSET`
      (`storage_views_at_any_first_element_match_direct3d`), `register_ranges`
      (`buffer_arrays_use_the_elements_picked`: arrays of constant and typed buffers, two declared
@@ -98,7 +106,9 @@ The pass bar, item by item:
    - `stage_draw`: `LINE_COVERAGE` (against the RTX 3080 within a stated allowance),
      `PRIMITIVE_ID_FROM_STAGE`. `geometry_draw`: `LAYER_FROM_STAGE`
      (`layers_past_the_views_draw_into_the_first_as_direct3d_11_does`), `CLIP_DISTANCE` behind a
-     geometry stage (met at the default seeds 1 to 4 only: gap A10).
+     geometry stage (met at the default seeds 1 to 4 only: gap A10), `DEPTH_CLAMP` behind a
+     geometry stage (since run 56, `depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`,
+     within four units in the last place of the interpolated depth).
    - `draw`: `output_interpolation` (every drawn pair links through it; `vs_shade`/`ps_flat` with
      flat, linear and centroid values against Direct3D 11).
    - `linked` is the place the flag-carried values travel; it is exercised by every test of
@@ -117,7 +127,9 @@ The pass bar, item by item:
    (A6), some topologies and streams (A7), vertex shaders writing storage (A9), and single texels on
    the edges of clipped triangles (A10).
 5. The built-in programs: the storage clear (`clear_draw`, every storage format and dimension
-   against WARP and the GPU's Direct3D 11). Met. The fronts do not dispatch it yet (theirs).
+   against WARP and the GPU's Direct3D 11), and since run 56 the pixel program of a pipeline
+   without a pixel shader (`builtin::pixel_program_for_variant`, `tests/builtin.rs` and the
+   `variant_draw` cases above). Met. The fronts do not use them yet (theirs).
 6. The cache of section 8 (`tests/cache.rs`): one file that round-trips
    (`converted_shaders_round_trip_through_the_file`), merges by union in both orders
    (`caches_merge_by_union_in_either_order`), survives a cut at seeded places
@@ -210,10 +222,7 @@ The gap list (every item of the pass bar not met):
   texel, where the pixel program clips by the interpolated distance and leaves the edges as drawn.
   Waits: nobody (a texel on an edge). Takes: clipping the triangles in the stage helper's compute
   (the polygon cut at each plane, as the rasteriser does), then the same seeds compared again.
-- Also open but not on the pass bar's words, for the fronts' real programs: a texture slot read
-  in its view's type where the program declares another (the Direct3D 12 front's runner
-  texture-load lines 235 to 267; needs an interface field giving the view's format per slot, then
-  the reads by their bits as typed buffers' are since run 55), `ResourceArray` on the DXIL route
+- Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the DXIL route
   for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
   holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
   there since run 55), `InterpolateAt` on the DXIL route,
@@ -2284,6 +2293,115 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 57 (the NIR track's request of 2026-11-19: a public entry point for 15.4's rewrites):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the other branches
+  had nothing new.
+- New: `wcontainers_shaders::rewrite(module, reflection, &variant, &route_key) -> Result<Converted,
+  ConvertError>` (src/lib.rs, src/common.rs) and `cache::rewritten_key` (public, with
+  `cache::KEY_BYTES`). It takes a program another route brought into the common form (one entry
+  point named `ENTRY_POINT`, bound by 6.4's rule, its reflection) and makes, in order: arrays of
+  textures, storage textures and samplers split into a binding per element (element k at the
+  array's binding plus k, the slots its reflected `count` names; the sampled pairs recomputed
+  from the split program); gathers whose offset is not a constant moved to a coordinate shifted by
+  the offset in texels of level 0, with no offset (2D textures; others refused `DynamicOffset`);
+  storage textures whose slot `storage_formats` or `texels_through_buffer` names given that format
+  or route (the DXIL route's `images::finish`; a storage texture not named keeps the module's
+  format, so the NIR route refuses a formatless one whose slot the key does not name); then every
+  rewrite of `variant::apply`, the strides, validation. The module carries
+  `rewritten_key(route_key, variant)` (the route's own key, this crate's `CONVERTER_VERSION`, the
+  variant). Refusals by name: an array of anything else (`ResourceArray`), an array without a
+  length (`UnboundedResourceArray`), a sample whose texture and sampler are picked at indices not
+  known to be one value (`ResourceArrayPair`, new), a run-time pick passed to a function.
+- The split is now one (`dxil::arrays::split_with`): the DXIL route numbers elements by its
+  resource list as before; it takes sampler picks too (a sample picking texture and sampler at one
+  index is one switch pairing element k with element k; a sampler picked alone switches the
+  sampler). The DXIL route still refuses arrays of samplers (its closure), unchanged.
+- The gather offset's six bits are one constant (`common::GATHER_OFFSET_BITS`) for the DXBC route
+  and this one (one baseline line fewer); the carried naga's reader keeps its own literal (third
+  party, in the baseline).
+- Tests (`tests/rewrite.rs`, any machine, 7): arrays of textures and samplers split with the
+  bindings and pairs expected, the two-index sample and a buffer array refused by name, a gather at
+  a run-time offset leaving no offset, storage textures given the named format and keeping their
+  own otherwise, the key's parts, and a variant rewrite (`min_lod_clamped`) adding the helper
+  block. Each result validates and its WGSL reads back. Not yet drawn: no test runs the rewritten
+  programs on a GPU against the native feature (binding arrays on wgpu's Vulkan path, a constant
+  gather offset); the NIR track's corpus against llvmpipe is the other check (its G8).
+- Results (rented x86 machine, load 12 to 55 on 192 processors while these ran): clippy with
+  warnings denied clean; the whole suite with every corpus
+  (`cargo test --no-fail-fast -p wcontainers-shaders -- --include-ignored --skip mutated`, 234 s):
+  every binary passes but `runner_shaders_give_their_recorded_verdicts`, which fails only on A1's
+  `hlsl+distance-4-ps.dxil` as before; no verdict changed. Literal check (desktop, check2.txt):
+  passes; this crate's baseline lines (src, build.rs, tests, examples) 589, from 590.
+
+Run 56 (the gap list in the fronts' order: the Direct3D 12 front's three asks):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the other branches
+  had nothing new.
+- The pixel program of a pipeline without a pixel shader whose variant needs one (the Direct3D 12
+  front's "depth clamping ... without a pixel shader" and "clip distances ... without a pixel
+  shader"): `builtin::pixel_program_for_variant(&VariantKey) -> Converted`, a program writing
+  nothing with the variant's pixel rewrites, as `convert` makes them (depth clamped or biased, clip
+  distances, counting, the sample mask), its reflection (helpers, `discards`) and its own content
+  key. Unit test `a_pixel_program_is_made_for_a_variant_alone`. Drawn (`variant_draw`, RTX 3080,
+  gpu2.log): depth clamped (`vs_deep`, range 0.25 to 0.75) against Direct3D 11 drawing with no
+  pixel shader and `DepthClipEnable` false: 975 to 1,086 of 4,096 texels a step or two apart, none
+  more (allowance 2 steps, as with a pixel shader), both routes, WebGPU and WebGL 2. Clip
+  distances (`vs_clip`, `vs_clip_six`) with no pixel shader: the depth buffer shows the same
+  texels drawn as Direct3D's, 0 apart, and their depth equal to Direct3D's unclipped triangle's,
+  0 steps apart, both routes and back ends. Compared with Direct3D's clipped draw the depth
+  differs by up to 462 f32 steps (gpu1.log): Direct3D's clipped polygon has new vertices, whose
+  rounding moves its depth plane; the test compares the drawn texels with the clipped draw and
+  the depth with the unclipped one (`drawn_alike`).
+- Depth clamped behind a geometry shader (the front's "behind a geometry ... stage: the stage
+  helper's pass-through takes no DEPTH_CLAMP"): `convert` of a geometry shader now takes
+  `DEPTH_CLAMP` (no longer `GeometryVariant`) and gives the pass-through the vertex rewrite with
+  `linked`, so the replay route's pass-through has it too. `VIEWPORT_ADJUST`,
+  `VIEWPORT_DEPTH_FLIP` and `CLIP_DEPTH_REWRITE` stay refused there. Unit test
+  `depth_clamping_reaches_the_pass_through`. Drawn: `depth_clamped_behind_a_geometry_shader_
+  draws_as_direct3d_does` (`gs_quads` and `gs_cut`, seeded depths from -1 to 2, range 0.25 to
+  0.75, WebGPU) against Direct3D 11 with `DepthClipEnable` false, 16 seeds, 96 comparisons
+  (gpu2.log): quads exact; triangles at most 3.6e-7 apart (12 f32 steps), within the allowance of
+  four units in the last place of the interpolated clip depth (2.0) mapped by the range, 4.8e-7:
+  the pixel program's depth is an interpolated value, the rasteriser's a plane. Not drawn: the
+  cull, line and tessellation routes, whose pass-through takes the vertex or domain program's own
+  rewrite (expected from the code). Tried on the cull route (`vs_cull`, gpu3.log, 8 seeds): the
+  texels equal, but triangles its clip distance cuts differ by up to 1e-4 in depth for the same
+  reason as above; the case was left out rather than given a loose allowance.
+- Textures read through views of another component kind than declared (the Direct3D 12 front's
+  texture-load lines 235 to 267, `read_as` in its bind.rs): interface change (below) widening
+  `texel_formats` to name such views; `variant/view_kind.rs` declares the slot's texture in the
+  view's kind and each load reads the view's value by its bits (outlined as the other load
+  rewrites, so both routes take it); a sample or gather of such a slot is refused by name
+  (`SampledViewKind`; HLSL samples only float textures). Typed buffers (whose routes already
+  declare the view's kind) and `decoded` slots are not touched. New own shaders `cs_view_kinds`
+  and `cs_view_sampled` (views.hlsl, fxc and dxc 10.0.26100 on the desktop). Unit test
+  `textures_of_another_kind_are_read_by_their_bits`; drawn test
+  `textures_of_another_kind_load_their_bits_as_direct3d_does` (`compute_draw`, `WCONTAINERS_
+  COMPUTE_SEED`, `WCONTAINERS_COMPUTE_CASES`, default 8): eight seeds of seeded views from eleven
+  formats of the three kinds (17 of 24 views of another kind), every word equal to real Direct3D
+  11's on both routes (gpu4.log), the default alpha of a one-component integer view (integer 1
+  read as a float's bits) among them.
+- Corpus: no verdict of any corpus changed; the own corpora gained the four new files (`ok
+  views:R32Float`). The corpus test's view keys give every texture slot a view format, so under
+  `R32Float` an integer texture of a shader with storage views is now read as a float view by its
+  bits; it converts as before.
+- Results (logs in scratch `graphics-shaders/run56`):
+  - x86 machine (192 processors, load 13 to 46 from other jobs), clippy with warnings denied on
+    this crate and the interface's: clean. The whole suite with every corpus (no glslang there):
+    every test passes but `runner_shaders_give_their_recorded_verdicts`, whose one differing entry
+    is A1's, left failing; corpus test about 200 s.
+  - Desktop, RTX 3080, through the queue (3 cargo jobs, load not taken): `variant_draw` 96
+    comparisons, 0 failed; `geometry_draw` every test passes (gpu1.log, default seeds; the new one
+    at 16 seeds in gpu2.log); `compute_draw` view kinds 8 seeds, storage textures of another kind
+    4 seeds, 0 failed. Windows clippy with warnings denied: clean.
+  - Chrome on the RTX 3080 (`web/check` on the own corpora written on the x86 machine, chrome.log,
+    one GPU job, 77 s): own 135 and own DXIL 73 WGSL files compile, the four new ones among them.
+  - Literal check (desktop, check3.txt): passes, nothing to add; this crate's baseline 590 lines,
+    unchanged (the new message is a named constant).
+- Clean-up: the desktop's `C:\wc\target\phase-2-graphics-shaders` and the x86 machine's
+  `/work/target/graphics-shaders` (4.7 GB) and `/work/probes/graphics-shaders-run56` deleted at
+  the end; scratch keeps the logs and `run56/out` (the files Chrome compiled). Nothing was built
+  on the laptop or the Mac.
+
 Run 55 (the gap list in the fronts' order: the Direct3D 12 front's `TypedBufferFormatKind`, A2,
 and the DXIL route's typed buffer arrays):
 - Merged nothing: no branch had anything new. Read both fronts' statuses: the Direct3D 12 front's
@@ -2771,16 +2889,29 @@ Run 47 (the check of run 46's report: every finding fixed or recorded):
   `run47/out` (49 MB, the files Chrome compiled).
 
 Next (in order). The gap list (top of this file) in the order the fronts need it:
-Since run 55: the Direct3D 12 front's srv-buffers, tgsm, uav-rwbuffer, wave-ops-float and
-unbounded-array-5.1 (shader model 6.0) runner files should pass the converter after a merge (the
-last with the front's `register_ranges` in the DXIL key, as for DXBC). Left first, in order:
-the Direct3D 12 front's texture-load lines 235 to 267 (a texture slot read in its view's kind:
-an interface field naming each texture slot's view kind where the front binds an integer view,
-then the loads cast as typed buffers' are; samples of such a slot refused by name); arrays of
-constant and structured buffers on the DXIL route (each element its own buffer, the reader's one
-buffer split); the Direct3D 11 front's aliased lines into multisampled targets (a stage helper
-route drawing each line as the whole pixels the diamond rule picks, and the interface's word for
-it); then items 2 and 4 below.
+Since run 56 the Direct3D 12 front's three asks are built (its texture-load lines, the pixel
+program for a variant alone, depth clamped behind a geometry stage); since run 55 its srv-buffers,
+tgsm, uav-rwbuffer, wave-ops-float and unbounded-array-5.1 (shader model 6.0) runner files should
+pass the converter after a merge. Since run 57 the NIR track's entry point is there (below). Left
+first, in order: a drawn test of `rewrite` on the RTX 3080 (its split arrays against wgpu's
+native binding arrays on the Vulkan path, its moved gathers against constant offsets, seeded);
+arrays of constant and structured
+buffers on the DXIL route (each element its own buffer, the reader's one buffer split); the
+Direct3D 11 front's aliased lines into multisampled targets (a stage helper route drawing each
+line as the whole pixels the diamond rule picks, and the interface's word for it); DXIL
+geometry and hull shaders (A6: the Direct3D 12 front's raster, geometry, streamout and
+tessellation scenes fail on them); then items 2 and 4 below.
+
+For the NIR track (its request of 2026-11-19), provided in run 57: `wcontainers_shaders::rewrite`
+(what is new for the owner; contract under "Run 57"). Route B calls it on its module and
+reflection with the program's variant key and its own content key, in place of a copy of
+`variant::apply`. What route B does on its side: keep binding arrays as naga's `BindingArray`
+indexed by `Access` (the texture's and sampler's index as one expression, or the same operations
+on it, or the sample is refused `ResourceArrayPair`); write a gather's run-time offset as the
+`ImageSample`'s `offset` (the IR wants a constant; `rewrite` takes it out); declare a storage
+image without a format with any format of its texel's kind and name its slot in
+`storage_formats`, refusing it where the key has none; `textureGatherOffsets` is NIR's own
+lowering (`nir_lower_tex`'s `lower_tg4_offsets`) into four gathers before the route.
 0. Done in run 50: indexed strips through the stage helper (the Direct3D 11 front's
    `StageIndexedStrip`) and triangle strips with adjacency (A7). Done in run 49: `GeometryStreams` (several streams of points). The primitive's number behind a
    geometry shader is not waited on now: the Direct3D 11 front draws the rig's geometry scene's
@@ -3023,6 +3154,24 @@ The older list, kept for its detail:
   back end's writing; multisampled reads are absent there.
 
 ## Asked of other tracks
+
+- The NIR track (run 57): the 15.4 rewrites are public as `wcontainers_shaders::rewrite` (under
+  "Next", "For the NIR track"); merge this branch and call it on route B's module in place of a
+  copy of `variant::apply`, then put Godot's RenderingDevice programs with arrays of textures (21)
+  and formatless storage (2) through it against llvmpipe. Report any refusal it gives a program
+  the route should take.
+
+- The Direct3D 12 track (run 56): (1) a pipeline without a pixel shader whose variant needs one
+  (`DEPTH_CLAMP`, `CLIP_DISTANCE` where the back end lacks them) takes
+  `builtin::pixel_program_for_variant(&key)` as its pixel program, keyed as the pixel shader's
+  would be (`linked`, `samples`), with no colour writes, and its helper block from the returned
+  reflection; drawn equal to Direct3D 11 without a pixel shader. (2) A geometry shader converts
+  with `DEPTH_CLAMP` and `linked` (the pass-through clamps), drawn equal to Direct3D 11; the cull,
+  line and tessellation routes take the clamp from the vertex or domain program's key. (3) For
+  texture-load lines 235 to 267: give a texture slot's bound view format in `texel_formats` where
+  its component kind differs from the program's declaration and drop `read_as`; loads read the
+  view's value by its bits (drawn equal to Direct3D 11 on both routes); a sample of such a slot is
+  refused `SampledViewKind`.
 
 - The Direct3D 12 track (run 55): a typed buffer or storage texture bound as a view of another
   kind than the program declares now converts and reads and writes the view by its bits, as
@@ -4816,6 +4965,12 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 56, `VariantKey::texel_formats`'s doc (commit "interface: texel_formats also names the views
+  of textures read in another component kind than declared"; plan text in 6.4's list): the bound
+  view's format at a texture slot, already given for typed buffers, now also for a texture view of
+  another component kind than the program declares, whose loads the program then reads by their
+  bits. Doc only: one field for one fact (the view's format at a texture slot).
 
 - Run 53, `SlowPath::StreamOutAfterReplay` (commit "interface: a slow path for stream output after
   a replayed geometry shader ..."; plan text in section 7's WebGL 2 paragraph): stream output after

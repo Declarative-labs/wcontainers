@@ -140,6 +140,10 @@ for %%e in (gs_tess_point gs_tess_line gs_tess_tri) do (
 "%DXC%" -nologo -T cs_6_0 -E cs_typed_array -Gis -Fo cs_typed_array.dxil arrays.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_one_d /Fo cs_one_d.dxbc one_d.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_one_d -Gis -Fo cs_one_d.dxil one_d.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_view_kinds /Fo cs_view_kinds.dxbc views.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_view_kinds -Gis -Fo cs_view_kinds.dxil views.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_view_sampled /Fo cs_view_sampled.dxbc views.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_view_sampled -Gis -Fo cs_view_sampled.dxil views.hlsl || exit /b 1
 for %%e in (ps_fill ps_msarray) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc msarray.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil msarray.hlsl || exit /b 1

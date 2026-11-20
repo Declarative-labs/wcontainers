@@ -6,6 +6,7 @@ extern crate alloc;
 mod build;
 pub mod builtin;
 pub mod cache;
+mod common;
 mod container;
 mod dxbc;
 mod dxil;
@@ -161,10 +162,12 @@ pub fn convert(
             .contains(VariantFlags::LAYER_FROM_STAGE)
             .then(|| stage::named_layer_location(variant));
         let mut module = stage::passthrough(&reflection, named_layer)?;
-        if variant.flags.contains(VariantFlags::CLIP_DISTANCE) {
-            // The pass-through is the last vertex stage: it passes the distances to the pixel program.
+        let last_vertex_stage = VariantFlags::CLIP_DISTANCE | VariantFlags::DEPTH_CLAMP;
+        if variant.flags.intersects(last_vertex_stage) {
+            // The pass-through is the last vertex stage: it passes the distances and the unclamped
+            // depth to the pixel program.
             let key = VariantKey {
-                flags: VariantFlags::CLIP_DISTANCE | variant.flags & VariantFlags::LAYER_FROM_STAGE,
+                flags: variant.flags & (last_vertex_stage | VariantFlags::LAYER_FROM_STAGE),
                 linked: variant.linked,
                 ..VariantKey::default()
             };
@@ -185,13 +188,63 @@ pub fn convert(
     })
 }
 
-/// Refuses, by name, the rewrites of the last vertex stage for a geometry shader: its draw's vertex
-/// program is the stage helper's, which makes none of them yet.
+/// Makes the rewrites `variant` asks for (plan 6.4, and 15.4's: arrays of textures, storage textures
+/// and samplers split into their elements, gathers whose offset is known only at run time, storage
+/// textures of the bound view's format) on a program another route brought into the common form:
+/// `module` with one entry point named [`ENTRY_POINT`], bound by 6.4's rule with an array's elements
+/// at consecutive bindings from the array's, and `reflection` its reflection. A storage texture keeps
+/// the module's format unless `storage_formats` names its slot, so a route that read one without a
+/// format refuses it where the key does not name it. `route_key` is the key the route gives the
+/// program it made; the module carries [`cache::rewritten_key`] of it.
+pub fn rewrite(
+    module: naga::Module,
+    reflection: Reflection,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<Converted, ConvertError> {
+    unbuilt(variant, None)?;
+    let (module, reflection, stage) = contained(move || {
+        let (mut module, mut reflection) = (module, reflection);
+        let stage = match module.entry_points.as_slice() {
+            [ep] if ep.name == ENTRY_POINT => match ep.stage {
+                naga::ShaderStage::Vertex => ShaderStage::Vertex,
+                naga::ShaderStage::Fragment => ShaderStage::Fragment,
+                naga::ShaderStage::Compute => ShaderStage::Compute,
+                _ => return Err(ConvertError::Unsupported(crate::refusal::STAGE)),
+            },
+            _ => return Err(ConvertError::Malformed(ONE_ENTRY_POINT.into())),
+        };
+        if common::split_arrays(&mut module)? {
+            reflection.sampled_pairs = common::sampled_pairs(&module)?;
+        }
+        common::gather_offsets(&mut module)?;
+        common::storage_textures(&mut module, variant, stage, &mut reflection)?;
+        variant::apply(&mut module, stage, variant, &mut reflection)?;
+        variant::offset::strides(&module, &mut reflection);
+        Ok((module, reflection, stage))
+    })?;
+    let info = validate(&module)?;
+    Ok(Converted {
+        modules: vec![ShaderModule {
+            module,
+            info,
+            entry_point: ENTRY_POINT.into(),
+            stage,
+            key: cache::rewritten_key(route_key, variant),
+        }],
+        reflection,
+    })
+}
+
+/// What [`rewrite`] takes a module to have.
+const ONE_ENTRY_POINT: &str = "a module of one entry point named by ENTRY_POINT";
+
+/// Refuses, by name, the rewrites of the last vertex stage for a geometry shader that its draw's vertex
+/// program, the stage helper's pass-through, does not make.
 fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
     let vertex_flags = VariantFlags::VIEWPORT_ADJUST
         | VariantFlags::VIEWPORT_DEPTH_FLIP
-        | VariantFlags::CLIP_DEPTH_REWRITE
-        | VariantFlags::DEPTH_CLAMP;
+        | VariantFlags::CLIP_DEPTH_REWRITE;
     if variant.flags.intersects(vertex_flags)
         || !variant.pulled.is_empty()
         || variant.draw_base != DrawBaseSource::None

@@ -47,6 +47,56 @@ fn footprints_follow_the_pitch_and_placement_rules() {
 }
 
 #[test]
+fn every_texture_shape_check_feature_support_answers_is_made() {
+    use wcontainers_directx_graphics_infrastructure::{format_support, support1};
+    let mut device = Device::new(Recorder::new());
+    let caps = device.backend().caps().clone();
+    let shapes = [
+        (support1::TEXTURE1D, DIMENSION_TEXTURE1D),
+        (support1::TEXTURE2D, DIMENSION_TEXTURE2D),
+        (support1::TEXTURE3D, DIMENSION_TEXTURE3D),
+    ];
+    let mut made = 0;
+    for value in dxgi::R32G32B32A32_TYPELESS..=dxgi::B4G4R4A4_UNORM {
+        let support = format_support(&caps, value).support1;
+        for (shape, dimension) in shapes {
+            if support & shape == 0 {
+                continue;
+            }
+            let one = ResourceDesc {
+                dimension,
+                width: 1,
+                height: 1,
+                depth_or_array_size: 1,
+                mip_levels: 1,
+                format: value,
+                sample_count: 1,
+                ..Default::default()
+            };
+            let (format, _) = one.texture_format().unwrap();
+            let (block_width, block_height, _) = format.block();
+            let blocks = 4;
+            let desc = ResourceDesc {
+                width: u64::from(block_width * blocks),
+                height: match dimension {
+                    DIMENSION_TEXTURE1D => 1,
+                    _ => block_height * blocks,
+                },
+                ..one
+            };
+            let made_here = check_creation(HeapType::Default, &desc, 0, false)
+                .and_then(|()| device.create_committed(HeapType::Default, &desc));
+            assert!(
+                made_here.is_ok(),
+                "format {value} in dimension {dimension}: {made_here:?}"
+            );
+            made += 1;
+        }
+    }
+    assert!(made > 0);
+}
+
+#[test]
 fn bytecode_that_is_not_dxil_is_refused() {
     let mut device = Device::new(Recorder::new());
     assert!(matches!(

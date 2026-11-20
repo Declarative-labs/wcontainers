@@ -13250,7 +13250,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instru
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::math	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::offset_coordinate	26
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	10
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	4
@@ -22932,7 +22931,6 @@ restated	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw	512
 restated	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	str	answers	"none"
 restated	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	str	answers	"none"
 restated	crates/wcontainers-direct3d-12/examples/directx/main.rs	int	system	260
-restated	crates/wcontainers-direct3d-12/examples/directx/main.rs	int	wc_D3D12CreateDevice	0xb000
 restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	FLAGS_TAKEN	0x800
 restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	PRESENT_ALLOW_TEARING	0x200
 restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	USAGE_UNORDERED_ACCESS	0x400

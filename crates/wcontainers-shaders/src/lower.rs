@@ -4469,7 +4469,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     ) -> Result<Handle<Expression>> {
         let o = self.get_as(b, id, Scalar::I32)?;
         let o = self.e.swizzle(&mut self.f, b, o, 0, 2)?;
-        let six = self.splat_lit(b, Literal::U32(26), 2)?;
+        let shift = u32::BITS - crate::common::GATHER_OFFSET_BITS;
+        let six = self.splat_lit(b, Literal::U32(shift), 2)?;
         let o = self.bin(b, BinaryOperator::ShiftLeft, o, six);
         let o = self.bin(b, BinaryOperator::ShiftRight, o, six);
         let o = self.add(

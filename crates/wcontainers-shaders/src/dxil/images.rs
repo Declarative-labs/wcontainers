@@ -24,7 +24,7 @@ type Result<T> = core::result::Result<T, ConvertError>;
 
 /// A typed buffer or a storage image, as dxil-spirv declared it.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Declared {
+pub(crate) struct Declared {
     /// Its descriptor set and binding in dxil-spirv's SPIR-V (its class and index, `cpp/dxil.cpp`).
     set: u32,
     binding: u32,
@@ -35,6 +35,16 @@ pub(super) struct Declared {
 }
 
 impl Declared {
+    /// A storage image at `binding`, declared by a route other than dxil-spirv's.
+    pub(crate) fn storage_image(binding: naga::ResourceBinding) -> Declared {
+        Declared {
+            set: binding.group,
+            binding: binding.binding,
+            storage: true,
+            buffer: false,
+        }
+    }
+
     /// A typed buffer, not a storage image.
     pub(super) fn buffer(&self) -> bool {
         self.buffer
@@ -208,7 +218,7 @@ pub(super) fn globals(
 /// it on the image indexed by its whole coordinate (the IR has no image atomic with a result);
 /// [`texel_atomics`] makes it a call of a function of its own, whose body [`finish`] writes once the
 /// image's route is known.
-pub(super) struct TexelAtomic {
+pub(crate) struct TexelAtomic {
     function: Handle<Function>,
     image: Handle<GlobalVariable>,
     fun: AtomicFunction,
@@ -1555,7 +1565,7 @@ pub(super) fn remap(atomics: &mut [TexelAtomic], moved: &[Handle<Function>]) {
 /// images of the bound views' formats, and the stand-ins of `atomics` written. Atomic operations on a
 /// storage image are refused unless it is read through a buffer. Runs after the bindings are
 /// numbered and the helper block for the draw's bases is made.
-pub(super) fn finish(
+pub(crate) fn finish(
     module: &mut Module,
     variant: &VariantKey,
     globals: &[(Handle<GlobalVariable>, Declared)],

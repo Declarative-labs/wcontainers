@@ -47,7 +47,7 @@ struct EntryHead {
 }
 
 /// The length of a key, a BLAKE3 hash.
-const KEY_BYTES: usize = blake3::OUT_LEN;
+pub const KEY_BYTES: usize = blake3::OUT_LEN;
 const HEADER: usize = size_of::<Header>();
 const ENTRY_HEAD: usize = size_of::<EntryHead>();
 const VERSION_FIELD: Range<usize> = offset_of!(Header, version)..offset_of!(Header, reserved);
@@ -244,13 +244,33 @@ fn entry(bytes: &[u8], at: usize) -> Option<(u8, [u8; KEY_BYTES], core::ops::Ran
     })
 }
 
+/// What a content key was made from, its first byte.
+#[repr(u8)]
+enum KeyedFrom {
+    Dxbc,
+    Dxil,
+    SpirV,
+    /// A program another route brought into the common form, named by that route's own key.
+    Rewritten,
+}
+
 /// The content key of a converted shader: the source bytes, the converter version and the variant.
 pub fn shader_key(source: Source<'_>, variant: &VariantKey) -> [u8; KEY_BYTES] {
-    let (tag, bytes): (u8, &[u8]) = match source {
-        Source::Dxbc(b) => (0, b),
-        Source::Dxil(b) => (1, b),
-        Source::SpirV(w) => (2, words_as_bytes(w)),
-    };
+    match source {
+        Source::Dxbc(b) => keyed(KeyedFrom::Dxbc, b, variant),
+        Source::Dxil(b) => keyed(KeyedFrom::Dxil, b, variant),
+        Source::SpirV(w) => keyed(KeyedFrom::SpirV, words_as_bytes(w), variant),
+    }
+}
+
+/// The content key of a program [`crate::rewrite`] made: the key its route gave the program, this
+/// crate's converter version and the variant.
+pub fn rewritten_key(route_key: &[u8; KEY_BYTES], variant: &VariantKey) -> [u8; KEY_BYTES] {
+    keyed(KeyedFrom::Rewritten, route_key, variant)
+}
+
+fn keyed(from: KeyedFrom, bytes: &[u8], variant: &VariantKey) -> [u8; KEY_BYTES] {
+    let tag = from as u8;
     let variant = postcard::to_allocvec(variant).expect("a variant key serialises");
     let mut hasher = blake3::Hasher::new();
     hasher.update(&[tag]);

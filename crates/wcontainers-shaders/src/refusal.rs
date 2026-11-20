@@ -91,8 +91,12 @@ pub const READ_WRITE_STORAGE_FORMAT: &str = "ReadWriteStorageFormat";
 pub const REGISTER_SPACE: &str = "RegisterSpace";
 pub const RENDER_TARGET_ARRAY_INDEX: &str = "RenderTargetArrayIndex";
 pub const RESOURCE_ARRAY: &str = "ResourceArray";
+/// A sample whose texture and sampler are picked from arrays at indices not known to be one.
+pub const RESOURCE_ARRAY_PAIR: &str = "ResourceArrayPair";
 pub const ROOT_SIGNATURE_LAYOUT: &str = "RootSignatureLayout";
 pub const SAMPLED_THROUGH_ARGUMENT: &str = "SampledThroughArgument";
+/// A texture sampled or gathered through a view of another kind than the program declares.
+pub const SAMPLED_VIEW_KIND: &str = "SampledViewKind";
 pub const SAMPLER_ARGUMENT: &str = "SamplerArgument";
 pub const SAMPLE_CLAMP: &str = "SampleClamp";
 pub const SAMPLE_COMPARE_BIAS: &str = "SampleCompareBias";

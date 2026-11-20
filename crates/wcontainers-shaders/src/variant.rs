@@ -27,6 +27,7 @@ pub(crate) mod pull;
 mod swizzle;
 mod targets;
 pub(crate) mod texel;
+mod view_kind;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -60,6 +61,7 @@ pub(crate) fn apply(
         draw_arguments(module, reflection, &mut outlined)?;
     }
     let mut clamps = Vec::new();
+    let viewed = view_kind::viewed(module, variant, reflection)?;
     if variant.lod_bias != 0
         || variant.min_lod_clamped != 0
         || variant.mirror_once_in_shader != 0
@@ -76,21 +78,30 @@ pub(crate) fn apply(
             &mut clamps,
         )?;
     }
-    if variant.min_lod_clamped != 0 || !variant.decoded.is_empty() {
+    if variant.min_lod_clamped != 0 || !variant.decoded.is_empty() || !viewed.is_empty() {
         loads(
             module,
             stage,
             variant,
+            &viewed,
             reflection,
             &mut outlined,
             &mut clamps,
         )?;
     }
     if variant.flags.contains(VariantFlags::TEXTURE_INFO) {
-        texture_info(module, stage, &variant.decoded, reflection, &mut outlined)?;
+        // Slots whose texture's type changes below are queried through their variable.
+        let retyped: Vec<u32> = variant
+            .decoded
+            .iter()
+            .map(|(slot, _)| *slot)
+            .chain(viewed.iter().map(|v| v.slot))
+            .collect();
+        texture_info(module, stage, &retyped, reflection, &mut outlined)?;
     }
     outlined.finish(module);
     decoded::retype(module, &variant.decoded, reflection)?;
+    view_kind::retype(module, &viewed);
     if variant.constants_as_texture != 0 {
         // Drops the pointers into the buffers' old variables, and the variables.
         naga::compact::compact(module, naga::compact::KeepUnused::No);
@@ -2528,11 +2539,13 @@ fn min_lod_zero(
 
 /// Loads of textures in `min_lod_clamped` read zero where the clamp leaves their level out; loads of
 /// textures in `decoded` read the integer texel from the slot's variable, which [`decoded::retype`]
-/// then declares as integers, and decode it.
+/// then declares as integers, and decode it; loads of `viewed` slots read the view's value from the
+/// slot's variable, which [`view_kind::retype`] then declares in the view's kind, by its bits.
 fn loads(
     module: &mut Module,
     stage: ShaderStage,
     variant: &VariantKey,
+    viewed: &[view_kind::Viewed],
     reflection: &mut Reflection,
     outlined: &mut Outlined,
     clamps: &mut Vec<(u32, (Handle<GlobalVariable>, u32))>,
@@ -2550,12 +2563,13 @@ fn loads(
             };
             let clamped = r < u128::BITS && variant.min_lod_clamped & (1 << r) != 0;
             let decoded = decoded::format_of(&variant.decoded, Some(r));
-            if clamped || decoded.is_some() {
-                sites.push((owner, h, r, g, clamped, decoded));
+            let view = view_kind::kind_of(viewed, g);
+            if clamped || decoded.is_some() || view.is_some() {
+                sites.push((owner, h, r, g, clamped, decoded, view));
             }
         }
     }
-    for (owner, h, texture, g, clamped, decoded) in sites {
+    for (owner, h, texture, g, clamped, decoded, view) in sites {
         let clamp_at = clamped.then(|| min_lod_helper(module, reflection, stage, texture, clamps));
         let f = function(module, owner).clone();
         let Expression::ImageLoad {
@@ -2585,10 +2599,11 @@ fn loads(
         };
         let mut body = Block::new();
         let n = operands.len() - 1;
-        // A decoded slot's variable is read directly, as its type changes after.
-        let first = usize::from(decoded.is_some());
+        // A decoded or viewed slot's variable is read directly, as its type changes after.
+        let retyped = decoded.is_some() || view.is_some();
+        let first = usize::from(retyped);
         let mut args = Vec::new();
-        if decoded.is_some() {
+        if retyped {
             args.push(push(&mut callee, &mut body, Expression::GlobalVariable(g)));
         }
         for (i, &ty) in types[first..n].iter().enumerate() {
@@ -2627,6 +2642,21 @@ fn loads(
         if let Some(format) = decoded {
             value = decoded::texel(&mut callee, &mut body, value, format, result)?;
         }
+        if view.is_some() {
+            let declared = module.types[result]
+                .inner
+                .scalar_kind()
+                .ok_or_else(|| ConvertError::Malformed(LOAD_TYPE.into()))?;
+            value = push(
+                &mut callee,
+                &mut body,
+                Expression::As {
+                    expr: value,
+                    kind: declared,
+                    convert: None,
+                },
+            );
+        }
         if let Some(clamp_at) = clamp_at {
             let read = match level {
                 Some(l) => push(
@@ -2651,6 +2681,8 @@ fn loads(
 
 /// The name of the function loading from a texture slot, before the slot.
 const LOAD_FUNCTION: &str = "load_";
+/// A texture load whose type has no scalar kind, which is malformed.
+const LOAD_TYPE: &str = "a texture load's type";
 
 /// The name of the function giving a texture slot's size under [`VariantFlags::TEXTURE_INFO`], before
 /// the slot.
@@ -2667,12 +2699,12 @@ enum TextureInfo {
 }
 
 /// Texture level and sample counts read from the helper block instead of asked of the texture, and
-/// sizes zero where the helper's level count leaves the level asked out. A slot in `decoded` is read
+/// sizes zero where the helper's level count leaves the level asked out. A slot in `retyped` is read
 /// through its variable, whose type changes after.
 fn texture_info(
     module: &mut Module,
     stage: ShaderStage,
-    decoded: &[(u32, Format)],
+    retyped: &[u32],
     reflection: &mut Reflection,
     outlined: &mut Outlined,
 ) -> Result<()> {
@@ -2742,7 +2774,7 @@ fn texture_info(
         };
         let mut body = Block::new();
         let arguments = operands.len() - 1;
-        let first = usize::from(decoded::format_of(decoded, Some(texture)).is_some());
+        let first = usize::from(retyped.contains(&texture));
         let mut args = Vec::new();
         if first > 0 {
             args.push(push(&mut callee, &mut body, Expression::GlobalVariable(g)));

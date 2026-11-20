@@ -243,9 +243,10 @@ pub fn check_creation(
         return Err(Error::Invalid("a target state without the target flag"));
     }
     let (format, _) = desc.texture_format()?;
+    // Blocks of one texel's height (the two-pixel formats) also make 1D textures.
     let (bw, bh, _) = format.block();
     if bw > 1
-        && (desc.dimension != DIMENSION_TEXTURE2D && desc.dimension != DIMENSION_TEXTURE3D
+        && (desc.dimension == DIMENSION_TEXTURE1D && bh > 1
             || !desc.width.is_multiple_of(u64::from(bw))
             || !desc.height.is_multiple_of(bh))
     {
@@ -322,7 +323,6 @@ impl ResourceDesc {
         64 - largest.leading_zeros()
     }
 
-    /// Array layers (one for 3D textures and buffers).
     /// Planes: two for formats with depth and stencil, whose subresources are each plane's in turn.
     pub fn planes(&self) -> Result<u32, Error> {
         let (format, _) = self.texture_format()?;
@@ -336,6 +336,7 @@ impl ResourceDesc {
         Ok(self.mips() * self.layers() * self.planes()?)
     }
 
+    /// Array layers (one for 3D textures and buffers).
     pub fn layers(&self) -> u32 {
         match self.dimension {
             DIMENSION_TEXTURE1D | DIMENSION_TEXTURE2D => u32::from(self.depth_or_array_size).max(1),
