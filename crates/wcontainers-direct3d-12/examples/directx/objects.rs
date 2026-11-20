@@ -12,6 +12,7 @@ use wcontainers_direct3d_12::list::{
 };
 use wcontainers_direct3d_12::resource::{
     DIMENSION_BUFFER, Footprint, HeapType, ResourceDesc, check_creation, check_state,
+    has_chroma_plane,
 };
 use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
@@ -52,6 +53,15 @@ pub fn give<I: Interface>(object: I, riid: *const GUID, out: *mut *mut c_void) -
     }
     // SAFETY: both pointers were checked; COM passes them from the caller.
     unsafe { object.query(riid, out).ok() }
+}
+
+/// Sets an interface out pointer to null before the call that fills it, as COM asks of a call that
+/// fails.
+pub(crate) fn cleared(out: *mut *mut c_void) {
+    if !out.is_null() {
+        // SAFETY: COM passes a writable out pointer or null.
+        unsafe { *out = std::ptr::null_mut() };
+    }
 }
 
 macro_rules! not_implemented {
@@ -2498,15 +2508,9 @@ impl Resource {
         if self.cpu_maps.is_none() || subresource >= desc.subresources().map_err(hr)? {
             return Err(E_INVALIDARG.into());
         }
-        let mip = subresource % desc.mips();
-        let size = |n: u64| (n >> mip).max(1) as u32;
-        let (w, h) = (size(desc.width), size(u64::from(desc.height)));
-        let d = if desc.dimension == wcontainers_direct3d_12::resource::DIMENSION_TEXTURE3D {
-            size(u64::from(desc.depth_or_array_size))
-        } else {
-            1
-        };
-        let (bw, bh, bytes) = desc.texture_format().map_err(hr)?.0.block();
+        let shape = desc.subresource_shape(subresource).map_err(hr)?;
+        let (w, h, d) = (shape.width, shape.height, shape.depth);
+        let (bw, bh, bytes) = shape.block;
         // SAFETY: an optional box, as the API allows.
         let b = unsafe { pbox.as_ref() }.copied().unwrap_or(D3D12_BOX {
             left: 0,
@@ -2776,15 +2780,17 @@ unsafe fn descriptor(h: D3D12_CPU_DESCRIPTOR_HANDLE) -> Descriptor {
 }
 
 /// The resource a view of `r` in DXGI format `format` names: `r`'s own, or, for a typeless
-/// texture viewed in a format the back end cannot reinterpret its bits as, its twin in that format
+/// texture viewed in a format the back end cannot reinterpret its bits as, its twin in that format,
+/// or, for a view of an `NV12` texture's chroma plane, the texture holding it
 /// (`Device::view_holder`).
 fn holder(r: &Resource, format: u32) -> ResourceId {
-    let reinterprets = match (dxgi_format(r.desc.Format.0 as u32), dxgi_format(format)) {
-        (Some((stored, true)), Some((view, _))) => stored.linear() != view.linear(),
+    let stored = resource_desc(&r.desc);
+    let reinterprets = match (stored.texture_format(), dxgi_format(format)) {
+        (Ok((stored, true)), Some((view, _))) => stored.linear() != view.linear(),
         _ => false,
     };
     let id = r.id;
-    if !reinterprets {
+    if !reinterprets && !has_chroma_plane(stored.format) {
         return id;
     }
     gpu::call(move |d| d.view_holder(id, format)).unwrap_or_else(|e| {
@@ -3656,7 +3662,13 @@ impl List {
         } else {
             u32::from(d.desc.DepthOrArraySize)
         };
-        for index in 0..u32::from(d.desc.MipLevels) * layers {
+        // A copy moves both planes of a depth-stencil format at once, `NV12`'s one at a time.
+        let planes = if d.desc.Format == DXGI_FORMAT_NV12 {
+            2
+        } else {
+            1
+        };
+        for index in 0..u32::from(d.desc.MipLevels) * layers * planes {
             self.record(Command::CopyTexture {
                 dst: CopyLocation::Subresource {
                     resource: d.id,

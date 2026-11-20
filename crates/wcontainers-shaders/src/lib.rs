@@ -6,6 +6,7 @@ extern crate alloc;
 mod build;
 pub mod builtin;
 pub mod cache;
+mod common;
 mod container;
 mod dxbc;
 mod dxil;
@@ -94,9 +95,6 @@ pub const CONVERTER_VERSION: &str = concat!(
     env!("WCS_CONVERTER_SOURCES")
 );
 
-/// The refusal of a vertex program writing storage views, which WebGPU's vertex stage cannot.
-const VERTEX_STORAGE_WRITE: &str = "VertexStorageWrite";
-
 /// `VariantFlags::GEOMETRY_REPLAY` asked of a shader that is not a geometry shader.
 const REPLAY_OUTSIDE_GEOMETRY: &str = "a geometry shader's replay form asked of another shader";
 
@@ -121,15 +119,7 @@ pub fn convert(
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
             Source::SpirV(_) => return Err(ConvertError::Unsupported(crate::refusal::SPIR_V)),
         };
-        // WebGPU gives vertex programs no writable storage.
-        let writable = |g: &naga::GlobalVariable| {
-            matches!(g.space, naga::AddressSpace::Storage { access }
-                if access.contains(naga::StorageAccess::STORE))
-        };
-        if stage == ShaderStage::Vertex && module.global_variables.iter().any(|(_, g)| writable(g))
-        {
-            return Err(ConvertError::Unsupported(VERTEX_STORAGE_WRITE));
-        }
+        vertex_storage_write(&module, stage)?;
         stage::clip_unpositioned(&mut module)?;
         // A geometry shader's forms take no rewrite of the last vertex stage: its pass-through does.
         let geometry = matches!(reflection.extras, StageExtras::Geometry { .. });
@@ -161,10 +151,12 @@ pub fn convert(
             .contains(VariantFlags::LAYER_FROM_STAGE)
             .then(|| stage::named_layer_location(variant));
         let mut module = stage::passthrough(&reflection, named_layer)?;
-        if variant.flags.contains(VariantFlags::CLIP_DISTANCE) {
-            // The pass-through is the last vertex stage: it passes the distances to the pixel program.
+        let last_vertex_stage = VariantFlags::CLIP_DISTANCE | VariantFlags::DEPTH_CLAMP;
+        if variant.flags.intersects(last_vertex_stage) {
+            // The pass-through is the last vertex stage: it passes the distances and the unclamped
+            // depth to the pixel program.
             let key = VariantKey {
-                flags: VariantFlags::CLIP_DISTANCE | variant.flags & VariantFlags::LAYER_FROM_STAGE,
+                flags: variant.flags & (last_vertex_stage | VariantFlags::LAYER_FROM_STAGE),
                 linked: variant.linked,
                 ..VariantKey::default()
             };
@@ -185,13 +177,79 @@ pub fn convert(
     })
 }
 
-/// Refuses, by name, the rewrites of the last vertex stage for a geometry shader: its draw's vertex
-/// program is the stage helper's, which makes none of them yet.
+/// Makes the rewrites `variant` asks for (plan 6.4, and 15.4's: arrays of textures, storage textures
+/// and samplers split into their elements, gathers whose offset is known only at run time, storage
+/// textures of the bound view's format) on a program another route brought into the common form:
+/// `module` with one entry point named [`ENTRY_POINT`], bound by 6.4's rule with an array's elements
+/// at consecutive bindings from the array's, and `reflection` its reflection. A storage texture keeps
+/// the module's format unless `storage_formats` names its slot, so a route that read one without a
+/// format refuses it where the key does not name it. A vertex program writing storage is refused by
+/// name, as [`convert`] refuses it. `route_key` is the key the route gives the program it made; the
+/// module carries [`cache::rewritten_key`] of it.
+pub fn rewrite(
+    module: naga::Module,
+    reflection: Reflection,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<Converted, ConvertError> {
+    unbuilt(variant, None)?;
+    let (module, reflection, stage) = contained(move || {
+        let (mut module, mut reflection) = (module, reflection);
+        let stage = match module.entry_points.as_slice() {
+            [ep] if ep.name == ENTRY_POINT => match ep.stage {
+                naga::ShaderStage::Vertex => ShaderStage::Vertex,
+                naga::ShaderStage::Fragment => ShaderStage::Fragment,
+                naga::ShaderStage::Compute => ShaderStage::Compute,
+                _ => return Err(ConvertError::Unsupported(crate::refusal::STAGE)),
+            },
+            _ => return Err(ConvertError::Malformed(ONE_ENTRY_POINT.into())),
+        };
+        vertex_storage_write(&module, stage)?;
+        if common::split_arrays(&mut module)? {
+            reflection.sampled_pairs = common::sampled_pairs(&module)?;
+        }
+        common::gather_offsets(&mut module)?;
+        common::storage_textures(&mut module, variant, stage, &mut reflection)?;
+        variant::apply(&mut module, stage, variant, &mut reflection)?;
+        variant::offset::strides(&module, &mut reflection);
+        Ok((module, reflection, stage))
+    })?;
+    let info = validate(&module)?;
+    Ok(Converted {
+        modules: vec![ShaderModule {
+            module,
+            info,
+            entry_point: ENTRY_POINT.into(),
+            stage,
+            key: cache::rewritten_key(route_key, variant),
+        }],
+        reflection,
+    })
+}
+
+/// Refuses, by name, a vertex program writing storage, which WebGPU's vertex stage cannot.
+fn vertex_storage_write(module: &naga::Module, stage: ShaderStage) -> Result<(), ConvertError> {
+    let writable = |g: &naga::GlobalVariable| {
+        matches!(g.space, naga::AddressSpace::Storage { access }
+            if access.contains(naga::StorageAccess::STORE))
+    };
+    if stage == ShaderStage::Vertex && module.global_variables.iter().any(|(_, g)| writable(g)) {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::VERTEX_STORAGE_WRITE,
+        ));
+    }
+    Ok(())
+}
+
+/// What [`rewrite`] takes a module to have.
+const ONE_ENTRY_POINT: &str = "a module of one entry point named by ENTRY_POINT";
+
+/// Refuses, by name, the rewrites of the last vertex stage for a geometry shader that its draw's vertex
+/// program, the stage helper's pass-through, does not make.
 fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
     let vertex_flags = VariantFlags::VIEWPORT_ADJUST
         | VariantFlags::VIEWPORT_DEPTH_FLIP
-        | VariantFlags::CLIP_DEPTH_REWRITE
-        | VariantFlags::DEPTH_CLAMP;
+        | VariantFlags::CLIP_DEPTH_REWRITE;
     if variant.flags.intersects(vertex_flags)
         || !variant.pulled.is_empty()
         || variant.draw_base != DrawBaseSource::None
@@ -256,7 +314,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     let asked = [
         (*storage_packed != 0, crate::refusal::STORAGE_PACKED),
         (
-            *layout != [0; 32] || root_signature.is_some(),
+            *layout != VariantKey::default().layout || root_signature.is_some(),
             crate::refusal::ROOT_SIGNATURE_LAYOUT,
         ),
     ];
@@ -338,18 +396,20 @@ pub fn capabilities(module: &naga::Module) -> Capabilities {
     capabilities
 }
 
-/// Validates a module with the capabilities it needs ([`capabilities`]).
+/// Validates a module with the capabilities it needs ([`capabilities`]). Contained, since a module read
+/// from a cache file may hold handles nothing has checked yet.
 fn validate(module: &naga::Module) -> Result<naga::valid::ModuleInfo, ConvertError> {
-    let capabilities = capabilities(module);
-    Validator::new(ValidationFlags::all(), capabilities)
-        .validate(module)
-        .map_err(|e| {
-            let mut s = format!("{}", e.as_inner());
-            let mut source = core::error::Error::source(e.as_inner());
-            while let Some(inner) = source {
-                s.push_str(&format!(": {inner}"));
-                source = inner.source();
-            }
-            ConvertError::Invalid(s)
-        })
+    contained(|| {
+        Validator::new(ValidationFlags::all(), capabilities(module))
+            .validate(module)
+            .map_err(|e| {
+                let mut s = format!("{}", e.as_inner());
+                let mut source = core::error::Error::source(e.as_inner());
+                while let Some(inner) = source {
+                    s.push_str(&format!(": {inner}"));
+                    source = inner.source();
+                }
+                ConvertError::Invalid(s)
+            })
+    })
 }

@@ -175,3 +175,57 @@ fn params_and_groups() {
     assert_eq!(clear_groups([0, 0, 0], [17, 8, 3]), [3, 1, 3]);
     assert_eq!(clear_groups([4, 4, 2], [5, 12, 3]), [1, 1, 1]);
 }
+
+/// The pixel program of a pipeline without a pixel shader: clamped depth from the linked value and
+/// the depth range, clip distances discarding, the counting output; nothing at all without a variant.
+#[test]
+fn a_pixel_program_is_made_for_a_variant_alone() {
+    use wcontainers_gpu::{HelperValue, LinkedValues, StageExtras, VariantFlags, VariantKey};
+    use wcontainers_shaders::builtin::pixel_program_for_variant;
+    let wgsl = |c: &wcontainers_shaders::Converted| {
+        let m = &c.modules[0];
+        naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())
+            .unwrap()
+    };
+    let linked = LinkedValues {
+        location: 3,
+        clip_distances: 2,
+    };
+    let key = VariantKey {
+        flags: VariantFlags::DEPTH_CLAMP | VariantFlags::CLIP_DISTANCE,
+        linked,
+        samples: 1,
+        ..Default::default()
+    };
+    let made = pixel_program_for_variant(&key).unwrap();
+    let text = wgsl(&made);
+    assert!(text.contains("@builtin(frag_depth)"), "{text}");
+    assert!(text.contains("@location(3)"), "{text}");
+    assert!(text.contains("discard"), "{text}");
+    assert_eq!(made.reflection.helpers.len(), 1);
+    assert_eq!(made.reflection.helpers[0].value, HelperValue::DepthRange);
+    assert!(matches!(
+        made.reflection.extras,
+        StageExtras::Pixel { discards: true, .. }
+    ));
+    let counting = VariantKey {
+        flags: VariantFlags::COUNTING,
+        ..Default::default()
+    };
+    let text = wgsl(&pixel_program_for_variant(&counting).unwrap());
+    assert!(text.contains("@location(0)"), "{text}");
+    let plain = pixel_program_for_variant(&VariantKey::default()).unwrap();
+    assert!(!wgsl(&plain).contains("@location"));
+    assert_ne!(plain.modules[0].key, made.modules[0].key);
+    // What is not built for any program is refused here too.
+    let provoking = VariantKey {
+        flags: VariantFlags::PROVOKING_LAST,
+        ..Default::default()
+    };
+    assert_eq!(
+        pixel_program_for_variant(&provoking).err(),
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::PROVOKING_REWRITE
+        ))
+    );
+}

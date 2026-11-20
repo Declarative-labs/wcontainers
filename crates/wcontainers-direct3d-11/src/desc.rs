@@ -50,7 +50,11 @@ pub mod clear {
 pub mod support {
     pub use wcontainers_directx_graphics_infrastructure::support1::*;
     pub const CPU_LOCKABLE: u32 = 0x20000;
+    pub const MIP_AUTOGEN: u32 = 0x2000;
 }
+
+/// `D3D11_FORMAT_SUPPORT2` bits.
+pub use wcontainers_directx_graphics_infrastructure::support2;
 
 /// `D3D_FEATURE_LEVEL`.
 pub mod level {

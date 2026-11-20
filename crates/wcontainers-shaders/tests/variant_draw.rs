@@ -62,6 +62,46 @@ fn helper_block(source: Source<'_>, key: &VariantKey, values: &[(HelperValue, &[
     block
 }
 
+/// The helper block of the built-in pixel program for `key`, holding `value` (f32s) where its
+/// reflection lays it out.
+fn built_in_helper_block(key: &VariantKey, value: HelperValue, floats_of: &[f32]) -> Vec<u8> {
+    let made = wcontainers_shaders::builtin::pixel_program_for_variant(key).unwrap();
+    let mut block = vec![0; made.reflection.helper_size as usize];
+    let slot = made
+        .reflection
+        .helpers
+        .iter()
+        .find(|s| s.value == value)
+        .unwrap_or_else(|| panic!("no slot for {value:?}"));
+    let bytes = floats(floats_of);
+    let at = slot.offset as usize;
+    block[at..at + bytes.len()].copy_from_slice(&bytes);
+    block
+}
+
+/// Depth buffers cleared to 1 compared for what was drawn: the texels drawn by `clipped` (Direct3D's,
+/// clip distances applied) but not by `ours` or the other way round, and the largest difference in
+/// f32 steps between `ours` and `plain` (Direct3D's without clip distances) where both drew.
+fn drawn_alike(clipped: &[u8], plain: &[u8], ours: &[u8]) -> (usize, u64) {
+    let depths = |t: &[u8]| -> Vec<f32> {
+        t.chunks(std::mem::size_of::<f32>())
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    };
+    let cleared = 1.0f32;
+    let (clipped, plain, ours) = (depths(clipped), depths(plain), depths(ours));
+    let mut one_side = 0;
+    let mut largest = 0;
+    for ((c, p), o) in clipped.iter().zip(&plain).zip(&ours) {
+        if (*c == cleared) != (*o == cleared) {
+            one_side += 1;
+        } else if *o != cleared {
+            largest = largest.max(u64::from(o.to_bits().abs_diff(p.to_bits())));
+        }
+    }
+    (one_side, largest)
+}
+
 /// The first location past every one the draw's two programs list, as a front links them for the
 /// values clip distances and depth clamping add.
 fn linked_location(draw: &Draw<'_>) -> u32 {
@@ -516,8 +556,8 @@ fn variants_draw_as_the_native_feature_does() {
         }
 
         // The sample mask 0b0101 of four samples: natively on WebGPU, and written by the program on
-        // WebGPU; the resolved pictures compared. WebGL 2 cannot take this variant: its language writes
-        // no sample mask (no OES_sample_variables in WebGL).
+        // WebGPU; the resolved pictures compared. The ANGLE drawn on here lacks OES_sample_variables,
+        // which the variant needs on WebGL 2.
         {
             let mut native = plain.clone();
             native.setup.samples = 4;
@@ -829,6 +869,50 @@ fn variants_draw_as_the_native_feature_does() {
                     (SIZE as usize * SIZE as usize, 2),
                 ));
             }
+
+            // The same without a pixel shader, through the built-in pixel program for the variant:
+            // the depth buffer shows which texels were drawn. They must be Direct3D's texels, and
+            // their depth the unclipped triangle's: Direct3D's clipped polygon has new vertices,
+            // whose rounding moves its depth plane by more than the program's own rounding.
+            let alone_reference = || Reference {
+                depth: Some([0.0, 1.0]),
+                no_pixel_shader: true,
+                ..Default::default()
+            };
+            let depth_of = |vs| {
+                direct3d_11(
+                    &d3d,
+                    vs,
+                    "ps_textured",
+                    Format::Rgba8Unorm,
+                    tint,
+                    true,
+                    &alone_reference(),
+                )
+                .0
+            };
+            let (clipped_depth, plain_depth) = (depth_of(vs), depth_of("vs_transform"));
+            let mut alone = variant.clone();
+            alone.setup.depth = true;
+            alone.setup.no_pixel_shader = true;
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &alone, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &alone, ProvokingVertex::Last)),
+            ] {
+                let name = format!(
+                    "clip_distance {vs} {route} {back_end} without a pixel shader against direct3d 11"
+                );
+                let (count, largest) = drawn_alike(&clipped_depth, &plain_depth, &texels);
+                eprintln!(
+                    "{name}: {count} texels drawn on one side only, depth {largest} steps apart"
+                );
+                results.push(Compared {
+                    name,
+                    count,
+                    largest,
+                    allowed: (0, 2),
+                });
+            }
             let mut native4 = native.clone();
             native4.setup.samples = 4;
             let reference4 = ours(&mut vulkan, &native4, ProvokingVertex::First);
@@ -897,6 +981,40 @@ fn variants_draw_as_the_native_feature_does() {
             ] {
                 results.push(compare(
                     format!("depth_clamp {route} {back_end} against direct3d 11"),
+                    &reference,
+                    &texels,
+                    Format::Depth32Float,
+                    (SIZE as usize * SIZE as usize, 2),
+                ));
+            }
+
+            // The same without a pixel shader, through the built-in pixel program for the variant.
+            let reference = direct3d_11(
+                &d3d,
+                "vs_deep",
+                "ps_textured",
+                Format::Rgba8Unorm,
+                [1.0, 0.75, 0.5, 1.5],
+                true,
+                &Reference {
+                    depth: Some(range),
+                    depth_clip_off: true,
+                    no_pixel_shader: true,
+                    ..Default::default()
+                },
+            )
+            .0;
+            variant.setup.no_pixel_shader = true;
+            variant.setup.helpers[1] =
+                built_in_helper_block(&variant.setup.ps_key, HelperValue::DepthRange, &range);
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!(
+                        "depth_clamp {route} {back_end} without a pixel shader against direct3d 11"
+                    ),
                     &reference,
                     &texels,
                     Format::Depth32Float,

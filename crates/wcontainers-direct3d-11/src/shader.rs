@@ -102,6 +102,9 @@ pub struct TypedView {
     /// A storage texture read and written through a buffer of its texels, where the back end
     /// has no atomics on storage textures (`AtomicsThroughBuffer`).
     pub through: bool,
+    /// A typed buffer read through a texture copy of its buffer, where the back end has no
+    /// storage buffers (`TexelBufferAsTexture`).
+    pub textured: bool,
 }
 
 impl TypedView {
@@ -224,6 +227,7 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
             buffer: d.dimension == DIMENSION_BUFFER,
             kind,
             through: false,
+            textured: false,
         });
     }
     Ok(views)
@@ -716,22 +720,32 @@ pub fn convert(
 }
 
 /// The key of a geometry shader declaring `typed`, whose pass-through passes `clip`'s clip
-/// distances at its location (`ClipDistanceInShader`).
-pub fn geometry_key(typed: &[TypedView], layered: u128, clip: Option<(u32, u8)>) -> VariantKey {
+/// distances at its location (`ClipDistanceInShader`); its form `replayed` by a vertex program
+/// where the back end has no compute programs (`GeometryAsReplay`).
+pub fn geometry_key(
+    typed: &[TypedView],
+    layered: u128,
+    clip: Option<(u32, u8)>,
+    replayed: bool,
+) -> VariantKey {
     let (linked, clip_distances) = clip.unwrap_or_default();
-    StageVariant {
+    let mut key = StageVariant {
         linked,
         clip_distances,
         ..StageVariant::default()
     }
-    .key(SourceStage::Geometry, typed, layered, &[])
+    .key(SourceStage::Geometry, typed, layered, &[]);
+    if replayed {
+        key.flags |= VariantFlags::GEOMETRY_REPLAY;
+    }
+    key
 }
 
 /// The variant every shader of `stage` declaring `typed` and the multisampled arrays `layered` is
 /// converted as: vertex shaders read the draw's bases from the helper constants, since
 /// `SV_VertexID` and `SV_InstanceID` leave them out (programs that read neither get no helper
 /// block); typed views take their placeholders, typed buffers read through storage buffers
-/// (`TexelBufferAsStorage`); a multisampled array is one layer, the only kind made
+/// (`TexelBufferAsStorage`) or texture copies (`TexelBufferAsTexture`); a multisampled array is one layer, the only kind made
 /// (`multisampled_arrays`).
 pub fn base_key(stage: SourceStage, typed: &[TypedView], layered: u128) -> VariantKey {
     let formats = |storage: bool| {
@@ -748,7 +762,9 @@ pub fn base_key(stage: SourceStage, typed: &[TypedView], layered: u128) -> Varia
         },
         storage_formats: formats(true),
         texel_formats: formats(false),
-        texel_buffers: if typed.iter().any(|t| t.buffer) {
+        texel_buffers: if typed.iter().any(|t| t.textured) {
+            TexelBufferRoute::Texture
+        } else if typed.iter().any(|t| t.buffer) {
             TexelBufferRoute::Storage
         } else {
             TexelBufferRoute::Native
@@ -838,6 +854,14 @@ pub fn convert_variant(
     key: &VariantKey,
 ) -> Result<Converted> {
     answer(raw(bytecode, expected, key)?, 1)
+}
+
+/// The pixel program of a draw without a pixel shader whose variant `key` needs one.
+pub fn pixel_program_for_variant(key: &VariantKey) -> Result<Converted> {
+    answer(
+        wcontainers_shaders::builtin::pixel_program_for_variant(key),
+        1,
+    )
 }
 
 /// Converts a geometry shader as `key` asks: its compute form, which the stage helper runs, and the
@@ -1000,6 +1024,7 @@ mod tests {
                     buffer: false,
                     kind: FormatKind::Uint,
                     through: false,
+                    textured: false,
                 },
                 TypedView {
                     storage: false,
@@ -1007,6 +1032,7 @@ mod tests {
                     buffer: true,
                     kind: FormatKind::Float,
                     through: false,
+                    textured: false,
                 },
             ]
         );

@@ -11,8 +11,10 @@ const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shade
 const FLOAT_BITS_CLEAR_BY_DRAW: &str = "float colour clear made by a draw keeping its bits";
 
 /// The reason [`SlowPath::StreamOutAfterReplay`] shows.
-const STREAM_OUT_AFTER_REPLAY: &str =
-    "stream output after a replayed geometry shader written on the host";
+const STREAM_OUT_AFTER_REPLAY: &str = "stream output of the replay route written on the host";
+
+/// The reason [`SlowPath::FrameStretched`] shows.
+const FRAME_STRETCHED: &str = "frame stretched to its window against the swap chain's scaling";
 
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
@@ -291,15 +293,20 @@ pub enum SlowPath {
     /// A 32-bit float colour clear whose bits the API's clear value would change (denormals flushed,
     /// NaN payloads quieted), made by a draw writing the bits.
     FloatBitsClearByDraw,
-    /// Stream output after a geometry shader run by replay, written on the host from a read back of
-    /// what the replay captured: the replay captures every output slot, cut ones included, and only
-    /// a count across invocations, which a vertex program cannot make, drops them.
+    /// Stream output on the replay route, written on the host from a read back of what was
+    /// captured: after a geometry shader run by replay, which captures every output slot, cut ones
+    /// included, and only a count across invocations, which a vertex program cannot make, drops
+    /// them; or from a vertex shader alone, whose declared layout, overflow and counts transform
+    /// feedback does not give.
     StreamOutAfterReplay,
+    /// A frame shown stretched to a window of another size than its buffers, where the swap chain
+    /// asked for no stretching (a listed loss: the host's window scales whatever it shows).
+    FrameStretched,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 109] = [
+    pub const ALL: [SlowPath; 110] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -409,6 +416,7 @@ impl SlowPath {
         SlowPath::StorageOffsetInShader,
         SlowPath::FloatBitsClearByDraw,
         SlowPath::StreamOutAfterReplay,
+        SlowPath::FrameStretched,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -543,6 +551,7 @@ impl SlowPath {
             SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
             SlowPath::FloatBitsClearByDraw => FLOAT_BITS_CLEAR_BY_DRAW,
             SlowPath::StreamOutAfterReplay => STREAM_OUT_AFTER_REPLAY,
+            SlowPath::FrameStretched => FRAME_STRETCHED,
         }
     }
 }
@@ -628,7 +637,7 @@ mod tests {
             PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
-            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay";
+            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {

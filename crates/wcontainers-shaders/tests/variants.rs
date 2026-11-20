@@ -1680,3 +1680,56 @@ fn one_d_textures_are_2d_textures_one_texel_high() {
         }
     }
 }
+
+/// Textures bound through views of another component kind than declared (`texel_formats` at texture
+/// slots): each such texture is declared in its view's kind and its loads read the view's values by
+/// their bits; slots of the declared kind are left as they are; a sample through such a view is
+/// refused by name.
+#[test]
+fn textures_of_another_kind_are_read_by_their_bits() {
+    let code = own_pair("cs_view_kinds");
+    let declared = VariantKey {
+        storage_formats: vec![(0, Format::Rgba32Uint)],
+        ..Default::default()
+    };
+    let plain = both(&code, &declared);
+    let key = VariantKey {
+        texel_formats: vec![
+            (0, Format::Rgba8Uint),
+            (1, Format::Rgba8Unorm),
+            (2, Format::Rgba16Sint),
+        ],
+        ..declared.clone()
+    };
+    for (plain, viewed) in plain.iter().zip(both(&code, &key)) {
+        let before = wgsl(plain);
+        assert_eq!(before.matches("texture_2d<f32>").count(), 1, "{before}");
+        let text = wgsl(&viewed);
+        // The float declaration now holds unsigned texels and the unsigned one floats; the signed
+        // one, bound in its own kind, is unchanged.
+        assert_eq!(text.matches("texture_2d<u32>").count(), 1, "{text}");
+        assert_eq!(text.matches("texture_2d<f32>").count(), 1, "{text}");
+        assert_eq!(text.matches("texture_2d<i32>").count(), 1, "{text}");
+        assert!(text.contains("bitcast<vec4<f32>>"), "{text}");
+        assert!(text.contains("bitcast<vec4<u32>>"), "{text}");
+    }
+    let sampled = own_pair("cs_view_sampled");
+    let uint_view = VariantKey {
+        texel_formats: vec![(0, Format::Rgba8Uint)],
+        storage_formats: vec![(0, Format::Rgba32Uint)],
+        ..Default::default()
+    };
+    for source in [Source::Dxbc(&sampled[0]), Source::Dxil(&sampled[1])] {
+        assert_eq!(
+            convert(source, &uint_view, None).err(),
+            Some(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::SAMPLED_VIEW_KIND
+            ))
+        );
+        let float_view = VariantKey {
+            texel_formats: vec![(0, Format::Rgba16Float)],
+            ..uint_view.clone()
+        };
+        convert(source, &float_view, None).unwrap();
+    }
+}

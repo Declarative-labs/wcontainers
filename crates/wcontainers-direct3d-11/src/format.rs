@@ -1,6 +1,6 @@
 //! DXGI formats (their numbers in `dxgiformat.h`) as the interface's formats.
 
-use wcontainers_gpu::{Format, IndexFormat, ScalarKind, VertexFormat};
+use wcontainers_gpu::{Format, FormatKind, IndexFormat, ScalarKind, VertexFormat};
 
 use crate::desc::level;
 use crate::error::{Error, Result, not_implemented};
@@ -89,7 +89,44 @@ pub fn signed_normalized(format: Format) -> bool {
 /// (`Texture::chroma`), its planes viewed through the R8_TYPELESS and R8G8_TYPELESS groups; YUY2
 /// (a pair of pixels in four bytes, Y0 U Y1 V) as an `rgba8unorm` texture of half the width,
 /// viewed through `R8G8B8A8_UNORM` and `_UINT`.
-pub use dxgi::{NV12, R8_TYPELESS, R8G8_TYPELESS, R16_UINT, R32_TYPELESS, R32_UINT, UNKNOWN, YUY2};
+pub use dxgi::{
+    NV12, R8_TYPELESS, R8G8_TYPELESS, R16_UINT, R32_FLOAT, R32_SINT, R32_TYPELESS, R32_UINT,
+    UNKNOWN, YUY2,
+};
+
+/// Whether stream output buffers take elements of DXGI format `dxgi` (`D3D11_FORMAT_SUPPORT_SO_BUFFER`):
+/// one to four 32-bit components.
+pub fn stream_output_format(dxgi: u32) -> bool {
+    matches!(
+        dxgi,
+        dxgi::R32G32B32A32_FLOAT..=dxgi::R32G32B32A32_SINT
+            | dxgi::R32G32B32_FLOAT..=dxgi::R32G32B32_SINT
+            | dxgi::R32G32_FLOAT..=dxgi::R32G32_SINT
+            | dxgi::R32_FLOAT..=dxgi::R32_SINT
+    )
+}
+
+/// Whether Direct3D takes typed storage views of DXGI format `dxgi`: not of sRGB, depth,
+/// shared-exponent, two-pixel, block-compressed, three-component, 16-bit packed or
+/// `B8G8R8X8_UNORM` formats.
+pub fn storage_viewed(dxgi: u32) -> bool {
+    !never_target_or_storage(dxgi)
+        && !is_srgb(dxgi)
+        && !matches!(
+            dxgi,
+            dxgi::R32G32B32_TYPELESS
+                ..=dxgi::R32G32B32_SINT
+                    | dxgi::B5G6R5_UNORM
+                    | dxgi::B5G5R5A1_UNORM
+                    | dxgi::B4G4R4A4_UNORM
+                    | dxgi::B8G8R8X8_UNORM
+        )
+}
+
+/// Whether `format` holds integers, which are neither filtered nor resolved.
+pub fn is_integer(format: Format) -> bool {
+    matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+}
 
 /// The plane of an NV12 texture a view of DXGI format `view` names (0 luma, 1 chroma), or none
 /// for a format no view of NV12 takes.
@@ -141,13 +178,21 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
         (dxgi::R32G32B32_TYPELESS, _) => Rgb32Float,
         (dxgi::R16G16B16A16_TYPELESS, _) => Rgba16Float,
         (dxgi::R32G32_TYPELESS, _) => Rg32Float,
-        (dxgi::R32G8X24_TYPELESS, _) => Depth32FloatStencil8,
+        // The depth and stencil aspects' view formats name their group's textures too.
+        (
+            dxgi::R32G8X24_TYPELESS
+            | dxgi::R32_FLOAT_X8X24_TYPELESS
+            | dxgi::X32_TYPELESS_G8X24_UINT,
+            _,
+        ) => Depth32FloatStencil8,
         (dxgi::R10G10B10A2_TYPELESS, _) => Rgb10a2Unorm,
         (dxgi::R8G8B8A8_TYPELESS, _) => Rgba8Unorm,
         (dxgi::R16G16_TYPELESS, _) => Rg16Float,
         (dxgi::R32_TYPELESS, true) => Depth32Float,
         (dxgi::R32_TYPELESS, false) => R32Float,
-        (dxgi::R24G8_TYPELESS, _) => Depth24PlusStencil8,
+        (dxgi::R24G8_TYPELESS | dxgi::R24_UNORM_X8_TYPELESS | dxgi::X24_TYPELESS_G8_UINT, _) => {
+            Depth24PlusStencil8
+        }
         (dxgi::R8G8_TYPELESS, _) => Rg8Unorm,
         (dxgi::R16_TYPELESS, true) => Depth16Unorm,
         (dxgi::R16_TYPELESS, false) => R16Float,

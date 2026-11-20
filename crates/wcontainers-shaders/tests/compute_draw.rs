@@ -2572,3 +2572,292 @@ fn one_d_textures_match_direct3d() {
     eprintln!("{} seeds, {} failed", seeds, failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// Views `cs_view_kinds` reads its three textures (float, unsigned and signed declarations) through,
+/// of every component kind.
+const VIEW_KIND_FORMATS: [Format; 11] = [
+    Format::Rgba8Unorm,
+    Format::Rgba8Snorm,
+    Format::Rgba16Float,
+    Format::Rgba8Uint,
+    Format::Rgba16Uint,
+    Format::Rgba32Uint,
+    Format::R32Uint,
+    Format::Rgba8Sint,
+    Format::Rgba16Sint,
+    Format::Rgba32Sint,
+    Format::R32Sint,
+];
+/// The side of `cs_view_kinds`'s textures, one group of it.
+const VIEW_KIND_SIDE: u32 = 8;
+/// Its textures, one per declared kind; its output holds each one's loads side by side.
+const VIEW_KIND_TEXTURES: u32 = 3;
+const VIEW_KIND_OUTPUT: Format = Format::Rgba32Uint;
+
+/// A seeded view format for each texture slot, and its texels: seeded bytes, half floats kept finite.
+fn view_kind_views(seed: u64) -> Vec<(Format, Vec<u8>)> {
+    let mut next = rng(seed);
+    (0..VIEW_KIND_TEXTURES)
+        .map(|_| {
+            let format = VIEW_KIND_FORMATS[next() as usize % VIEW_KIND_FORMATS.len()];
+            let n = (VIEW_KIND_SIDE * VIEW_KIND_SIDE * format.block().2) as usize;
+            let mut texels: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+            if format == Format::Rgba16Float {
+                // The top exponent bit of each half cleared: no infinities or NaNs.
+                let top_exponent_bit = 0x40;
+                for high in texels
+                    .iter_mut()
+                    .skip(1)
+                    .step_by(std::mem::size_of::<u16>())
+                {
+                    *high &= !top_exponent_bit;
+                }
+            }
+            (format, texels)
+        })
+        .collect()
+}
+
+/// The output's texels after real Direct3D 11 runs `cs_view_kinds` with `views` bound.
+fn direct3d_view_kinds(gpu: &Gpu, views: &[(Format, Vec<u8>)]) -> Vec<u8> {
+    let shader = gpu.cs(&bytecode("cs_view_kinds.dxbc")).unwrap();
+    let srvs: Vec<_> = views
+        .iter()
+        .map(|(format, texels)| {
+            let row = VIEW_KIND_SIDE * format.block().2;
+            let desc = d3d11::tex2d(
+                VIEW_KIND_SIDE,
+                VIEW_KIND_SIDE,
+                dxgi(*format),
+                D3D11_BIND_SHADER_RESOURCE,
+            );
+            let texture = gpu
+                .texture2d(&desc, &[d3d11::data(texels, row, 0)])
+                .unwrap();
+            Some(gpu.srv(&texture.cast().unwrap(), None).unwrap())
+        })
+        .collect();
+    let width = VIEW_KIND_SIDE * VIEW_KIND_TEXTURES;
+    let desc = d3d11::tex2d(
+        width,
+        VIEW_KIND_SIDE,
+        dxgi(VIEW_KIND_OUTPUT),
+        D3D11_BIND_UNORDERED_ACCESS,
+    );
+    let output = gpu.texture2d(&desc, &[]).unwrap();
+    let uav = Some(gpu.uav(&output.cast().unwrap(), None).unwrap());
+    unsafe {
+        let c = &gpu.context;
+        c.CSSetShader(&shader, None);
+        c.CSSetShaderResources(0, Some(&srvs));
+        c.CSSetUnorderedAccessViews(0, 1, Some(&uav), None);
+        c.Dispatch(1, 1, 1);
+        c.CSSetUnorderedAccessViews(0, 1, Some(&None), None);
+    }
+    let mut staging_desc = desc;
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.BindFlags = 0;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    let staging = gpu.texture2d(&staging_desc, &[]).unwrap();
+    let row = (width * VIEW_KIND_OUTPUT.block().2) as usize;
+    let mut out = Vec::new();
+    unsafe {
+        gpu.context.CopyResource(&staging, &output);
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        gpu.context
+            .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            .unwrap();
+        for y in 0..VIEW_KIND_SIDE as usize {
+            let at = mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize);
+            out.extend_from_slice(std::slice::from_raw_parts(at, row));
+        }
+        gpu.context.Unmap(&staging, 0);
+    }
+    out
+}
+
+/// The same through the WebGPU back end, each texture of its view's format, from fxc's bytecode
+/// (DXBC) or dxc's (DXIL), with the views' formats in `texel_formats`.
+fn ours_view_kinds<B: Backend>(b: &mut B, views: &[(Format, Vec<u8>)], dxil: bool) -> Vec<u8> {
+    let key = VariantKey {
+        texel_formats: (0..).zip(views.iter().map(|v| v.0)).collect(),
+        storage_formats: vec![(0, VIEW_KIND_OUTPUT)],
+        ..Default::default()
+    };
+    let c = match dxil {
+        true => convert(Source::Dxil(&bytecode("cs_view_kinds.dxil")), &key, None),
+        false => convert(Source::Dxbc(&bytecode("cs_view_kinds.dxbc")), &key, None),
+    }
+    .unwrap();
+    let shader = b.create_shader(&c.modules[0]).unwrap();
+    let program = b.create_program(&Program::Compute(&shader)).unwrap();
+    let made = |b: &mut B, format: Format, width: u32, usage: TextureUsage| {
+        let texture = b
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width,
+                height: VIEW_KIND_SIDE,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: usage | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .unwrap();
+        let view = b
+            .create_view(
+                &texture,
+                &TextureViewDesc {
+                    format,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )
+            .unwrap();
+        (texture, view)
+    };
+    let mut textures = Vec::new();
+    for (format, texels) in views {
+        let (texture, view) = made(b, *format, VIEW_KIND_SIDE, TextureUsage::SAMPLE);
+        b.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: VIEW_KIND_SIDE,
+                height: VIEW_KIND_SIDE,
+                depth_or_layers: 1,
+            },
+            texels,
+            VIEW_KIND_SIDE * format.block().2,
+            VIEW_KIND_SIDE,
+            WriteMode::Ordered,
+        );
+        textures.push((texture, view));
+    }
+    let width = VIEW_KIND_SIDE * VIEW_KIND_TEXTURES;
+    let (output, output_view) = made(b, VIEW_KIND_OUTPUT, width, TextureUsage::STORAGE);
+    let entries: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| BindingEntry {
+            binding: r.binding,
+            stages: StageSet::COMPUTE,
+            resource: match r.kind {
+                SlotKind::Texture => BindingResource::Texture(&textures[r.register as usize].1),
+                SlotKind::Storage => BindingResource::StorageTexture {
+                    view: &output_view,
+                    writable: true,
+                },
+                k => panic!("{k:?}"),
+            },
+        })
+        .collect();
+    let set = b.create_binding_set(&entries).unwrap();
+    b.dispatch(&DispatchCall {
+        program: &program,
+        bindings: [Some(&set), None, None, None],
+        immediates: &[],
+        groups: DispatchGroups::Direct([1, 1, 1]),
+    })
+    .unwrap();
+    let mut out = vec![0; (width * VIEW_KIND_SIDE * VIEW_KIND_OUTPUT.block().2) as usize];
+    b.read_back_now(
+        &ReadSource::Texture {
+            region: TextureRegion {
+                texture: &output,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width,
+                height: VIEW_KIND_SIDE,
+                depth_or_layers: 1,
+            },
+        },
+        &mut out,
+    )
+    .unwrap();
+    out
+}
+
+/// Textures bound through views of another component kind than declared (and of the declared kind),
+/// loaded by both routes, against real Direct3D 11: every word of every load equal, the view's value
+/// read by its bits, as Direct3D 12's texture-load test expects too.
+#[test]
+fn textures_of_another_kind_load_their_bits_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(8);
+    let mut failures = Vec::new();
+    let mut other_kind = 0;
+    for seed in seed..seed + seeds {
+        let views = view_kind_views(seed);
+        let formats: Vec<Format> = views.iter().map(|v| v.0).collect();
+        other_kind += formats
+            .iter()
+            .zip([FormatKindOf::Float, FormatKindOf::Uint, FormatKindOf::Sint])
+            .filter(|(f, declared)| FormatKindOf::of(**f) != *declared)
+            .count();
+        let reference = direct3d_view_kinds(&gpu, &views);
+        for (dxil, source) in [(false, "dxbc"), (true, "dxil")] {
+            let made = ours_view_kinds(&mut backend, &views, dxil);
+            let apart = reference
+                .chunks(std::mem::size_of::<u32>())
+                .zip(made.chunks(std::mem::size_of::<u32>()))
+                .filter(|(x, y)| x != y)
+                .count();
+            eprintln!("seed {seed} {source} {formats:?}: {apart} words apart");
+            if apart > 0 {
+                failures.push(format!("seed {seed} {source} {formats:?}"));
+            }
+        }
+    }
+    eprintln!(
+        "{seeds} seeds, {other_kind} views of another kind, {} failed",
+        failures.len()
+    );
+    assert!(other_kind > 0);
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// A view format's component kind as a texture declaration names it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FormatKindOf {
+    Float,
+    Uint,
+    Sint,
+}
+
+impl FormatKindOf {
+    fn of(format: Format) -> FormatKindOf {
+        match format.kind() {
+            wcontainers_gpu::FormatKind::Uint => FormatKindOf::Uint,
+            wcontainers_gpu::FormatKind::Sint => FormatKindOf::Sint,
+            _ => FormatKindOf::Float,
+        }
+    }
+}

@@ -39,6 +39,12 @@ pub const RANGE_SAMPLER: u32 = 3;
 /// `D3D12_DESCRIPTOR_RANGE_UNBOUNDED`.
 pub const RANGE_UNBOUNDED: u32 = u32::MAX;
 
+/// `D3D_ROOT_SIGNATURE_VERSION_1_0` and `_1_1`.
+pub const VERSION_1_0: u32 = 1;
+pub const VERSION_1_1: u32 = 2;
+/// `D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT`.
+pub const FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT: u32 = 1;
+
 /// `D3D12_DESCRIPTOR_RANGE1`; ranges of version 1.0 have flags 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DescriptorRange {
@@ -126,14 +132,18 @@ impl RootSignatureDesc {
                 RootParameterKind::Table(ranges) => {
                     for r in ranges {
                         r.flags = match (version, r.kind) {
-                            (1, _) => 0,
-                            (_, 3) => DESCRIPTORS_VOLATILE,
+                            (VERSION_1_0, _) => 0,
+                            (_, RANGE_SAMPLER) => DESCRIPTORS_VOLATILE,
                             _ => DESCRIPTORS_VOLATILE | DATA_VOLATILE,
                         };
                     }
                 }
                 RootParameterKind::Descriptor { flags, .. } => {
-                    *flags = if version == 1 { 0 } else { DATA_VOLATILE };
+                    *flags = if version == VERSION_1_0 {
+                        0
+                    } else {
+                        DATA_VOLATILE
+                    };
                 }
                 RootParameterKind::Constants { .. } => {}
             }

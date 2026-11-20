@@ -20,6 +20,7 @@ use crate::error::{Error, Result, WARNING_PREFIX, not_implemented};
 use crate::format;
 use crate::object::*;
 use crate::shader::{self, Helpers, StageVariant};
+pub use wcontainers_directx_graphics_infrastructure::FormatSupport;
 
 /// The helper constants of both draw stages as written into the back end's data ring, the indirect
 /// arguments buffer bound beside them (by id, 0 for none), and the set binding them.
@@ -232,10 +233,22 @@ fn level_targets(level: u32) -> u32 {
     }
 }
 
+/// A typed buffer view whose format the back end holds no texture of, where typed buffers are
+/// read through texture copies (`TexelBufferAsTexture`).
+const TYPED_BUFFER_FORMAT_UNHELD: &str =
+    "a typed buffer view of a format the back end holds no texture of";
+/// Typed unordered access buffers where the back end has no storage buffers.
+const TYPED_STORAGE_BUFFERS_UNSERVED: &str =
+    "typed unordered access buffers without the back end's storage buffers";
+/// Geometry shaders and stream output where the back end has neither compute programs nor
+/// transform feedback.
+const GEOMETRY_STAGE_UNSERVED: &str = "geometry shaders and stream output without the back end's \
+     compute programs or transform feedback";
+
 /// Whether `caps` serves every requirement of feature level `level` (plan section 9): its texture
 /// sizes and targets within the adapter's limits; from 10_0 `D32_FLOAT_S8X24_UINT` targets, float
-/// targets, and the geometry stage and stream output, which only the stage helper's compute route
-/// serves (`GeometryAsReplay` is not built); at 11_0 compute.
+/// targets, and the geometry stage and stream output, which the stage helper's compute route serves
+/// whole (its replay serves geometry shaders but not stream output without one); at 11_0 compute.
 fn serves(caps: &wcontainers_gpu::Caps, level: u32) -> bool {
     let limits = &caps.limits;
     let [extent, cube_extent, volume, layers] = level_texture_limits(level);
@@ -352,91 +365,129 @@ impl<B: Backend> Device<B> {
         self.level
     }
 
-    /// What `CheckFormatSupport` answers for DXGI format `dxgi`: the uses this front serves on its
-    /// back end (1D and 3D textures and typed buffers are not reported).
-    pub fn format_support(&self, dxgi: u32) -> u32 {
+    /// What `CheckFormatSupport` and `D3D11_FEATURE_FORMAT_SUPPORT2` answer for DXGI format
+    /// `dxgi`: the infrastructure crate's answer from the back end's uses, with what this front
+    /// serves by its own routes and what its feature level allows.
+    pub fn format_support(&self, dxgi: u32) -> FormatSupport {
         use crate::desc::support::*;
-        let mut bits = 0;
-        if format::vertex_format(dxgi).is_some() && format::level_vertex_buffer(dxgi, self.level) {
-            bits |= IA_VERTEX_BUFFER;
-        }
-        if format::index_format(dxgi).is_some() && format::level_index_buffer(dxgi, self.level) {
-            bits |= IA_INDEX_BUFFER;
-        }
-        // A typeless format is reported as its storage: textures of it, not its uses (its members').
-        if format::is_typeless(dxgi) {
-            let stored = format::storage_format(dxgi, false).ok();
-            if stored.is_some_and(|f| !self.backend.caps().formats.get(f).is_empty()) {
-                bits |= TEXTURE2D | TEXTURECUBE | MIP;
-            }
-            return bits;
-        }
+        use crate::desc::support2::*;
+        let caps = self.backend.caps();
         if matches!(dxgi, format::NV12 | format::YUY2) {
-            // 2D textures of one level, through views of each plane's format (NV12) or of
-            // R8G8B8A8 (YUY2).
-            let formats = &self.backend.caps().formats;
-            let uses = if dxgi == format::NV12 {
-                formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm)
-            } else {
-                formats.get(Format::Rgba8Unorm)
+            return FormatSupport {
+                support1: self.video_format_support(dxgi),
+                support2: 0,
             };
-            if uses.is_empty() {
-                return bits;
-            }
-            bits |= TEXTURE2D;
-            for (has, bit) in [
-                (FormatUse::SAMPLE, SHADER_LOAD),
-                (FormatUse::FILTER, SHADER_SAMPLE),
-                (FormatUse::RENDER, RENDER_TARGET),
-                (FormatUse::COPY_OUT, CPU_LOCKABLE),
-            ] {
-                // Direct3D reports no target use of YUY2, though it takes target views of it.
-                if uses.contains(has) && !(dxgi == format::YUY2 && bit == RENDER_TARGET) {
-                    bits |= bit;
-                }
-            }
-            return bits;
         }
-        let Some(f) = format::texture_format(dxgi) else {
-            return bits;
+        let mut s = wcontainers_directx_graphics_infrastructure::format_support(caps, dxgi);
+        if !format::storage_viewed(dxgi) {
+            s.support1 &= !TYPED_UNORDERED_ACCESS_VIEW;
+            s.support2 &= !(UAV_TYPED_LOAD | UAV_TYPED_STORE);
+        }
+        let level = self.level;
+        let texture = format::texture_format(dxgi);
+        let target = s.support1 & RENDER_TARGET != 0;
+        // Staging resources of every format a buffer or texture takes.
+        let held = s.support1 & (BUFFER | TEXTURE2D) != 0;
+        let mut add = |on: bool, bit: u32| {
+            if on {
+                s.support1 |= bit;
+            }
         };
-        let uses = self.backend.caps().formats.get(f);
-        if uses.is_empty() {
-            return bits;
+        // Typed buffers decode each element as the vertex format of the same bytes
+        // (`TexelBufferAsStorage`), or are read through a texture copy of the format
+        // (`TexelBufferAsTexture`).
+        let typed_buffer = if caps.limits.storage_buffers_per_stage > 0 {
+            format::vertex_format(dxgi).is_some()
+        } else {
+            format::vertex_format(dxgi).is_some()
+                && texture.is_some_and(|f| caps.formats.get(f).contains(FormatUse::SAMPLE))
+        };
+        add(typed_buffer, BUFFER);
+        add(format::stream_output_format(dxgi), SO_BUFFER);
+        add(held, CPU_LOCKABLE);
+        // `GenerateMips` filters every format it draws into but integers.
+        add(
+            target && texture.is_some_and(|f| !format::is_integer(f)),
+            MIP_AUTOGEN,
+        );
+        // Storage views of formats the back end cannot store into go through a buffer of their
+        // texels (`StorageFormatThroughBuffer`), which serves loads too.
+        let through =
+            texture.is_some_and(|f| format::storage_viewed(dxgi) && self.stored_through(f));
+        if through {
+            s.support1 |= TYPED_UNORDERED_ACCESS_VIEW;
+            s.support2 |= UAV_TYPED_STORE | UAV_TYPED_LOAD;
         }
-        bits |= TEXTURE2D | TEXTURECUBE | MIP;
+        // Atomics on storage textures the back end lacks go through a buffer of their texels
+        // (`AtomicsThroughBuffer`).
+        if caps.has(Features::COMPUTE) {
+            s.support2 |= match dxgi {
+                format::R32_UINT | format::R32_SINT => {
+                    UAV_ATOMIC_ADD
+                        | UAV_ATOMIC_BITWISE_OPS
+                        | UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE
+                        | UAV_ATOMIC_EXCHANGE
+                        | UAV_ATOMIC_SIGNED_MIN_OR_MAX
+                        | UAV_ATOMIC_UNSIGNED_MIN_OR_MAX
+                }
+                format::R32_FLOAT => UAV_ATOMIC_EXCHANGE,
+                _ => 0,
+            };
+        }
+        // What the feature level takes away.
+        let mut remove = |off: bool, bit: u32| {
+            if off {
+                s.support1 &= !bit;
+            }
+        };
+        remove(!format::level_vertex_buffer(dxgi, level), IA_VERTEX_BUFFER);
+        remove(!format::level_index_buffer(dxgi, level), IA_INDEX_BUFFER);
+        remove(
+            level < level::L10_0,
+            BUFFER | SO_BUFFER | SHADER_SAMPLE_COMPARISON,
+        );
+        remove(level < level::L10_1, SHADER_GATHER);
+        // Typed storage views and gathers with comparison are shader model 5's.
+        remove(
+            level < level::L11_0,
+            TYPED_UNORDERED_ACCESS_VIEW | SHADER_GATHER_COMPARISON,
+        );
+        remove(
+            level < level::L10_1 && texture.is_some_and(format::signed_normalized)
+                || !format::level_blended(dxgi, level),
+            BLENDABLE,
+        );
+        remove(!format::displayed(dxgi, level), DISPLAY);
+        if level < level::L11_0 || s.support1 == 0 {
+            s.support2 = 0;
+        }
+        s
+    }
+
+    /// `CheckFormatSupport` of NV12 and YUY2: 2D textures of one level, through views of each
+    /// plane's format (NV12) or of R8G8B8A8 (YUY2).
+    fn video_format_support(&self, dxgi: u32) -> u32 {
+        use crate::desc::support::*;
+        let formats = &self.backend.caps().formats;
+        let uses = if dxgi == format::NV12 {
+            formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm)
+        } else {
+            formats.get(Format::Rgba8Unorm)
+        };
+        if uses.is_empty() {
+            return 0;
+        }
+        let mut bits = TEXTURE2D;
         for (has, bit) in [
             (FormatUse::SAMPLE, SHADER_LOAD),
             (FormatUse::FILTER, SHADER_SAMPLE),
             (FormatUse::RENDER, RENDER_TARGET),
-            (FormatUse::BLEND, BLENDABLE),
-            (FormatUse::DEPTH_STENCIL, DEPTH_STENCIL),
             (FormatUse::COPY_OUT, CPU_LOCKABLE),
         ] {
-            if uses.contains(has) {
+            // Direct3D reports no target use of YUY2, though it takes target views of it.
+            if uses.contains(has) && !(dxgi == format::YUY2 && bit == RENDER_TARGET) {
                 bits |= bit;
             }
-        }
-        if [2, 4, 8, 16].iter().any(|&n| self.takes_samples(f, n)) {
-            bits |= MULTISAMPLE_RENDERTARGET;
-            if uses.contains(FormatUse::SAMPLE) {
-                bits |= MULTISAMPLE_LOAD;
-            }
-            if resolvable(f) {
-                bits |= MULTISAMPLE_RESOLVE;
-            }
-        }
-        // A typed depth format is read through its typeless group's other members.
-        if format::depth_only(dxgi) {
-            bits &= !(SHADER_LOAD | SHADER_SAMPLE | MULTISAMPLE_LOAD);
-        }
-        if self.level < crate::desc::level::L10_1 && format::signed_normalized(f)
-            || !format::level_blended(dxgi, self.level)
-        {
-            bits &= !BLENDABLE;
-        }
-        if format::displayed(dxgi, self.level) {
-            bits |= DISPLAY;
         }
         bits
     }
@@ -452,7 +503,9 @@ impl<B: Backend> Device<B> {
     /// textures can have, and for a count the back end draws that format with; none otherwise.
     pub fn multisample_quality_levels(&self, dxgi: u32, samples: u32) -> u32 {
         if samples == 1 {
-            return u32::from(self.format_support(dxgi) & crate::desc::support::TEXTURE2D != 0);
+            return u32::from(
+                self.format_support(dxgi).support1 & crate::desc::support::TEXTURE2D != 0,
+            );
         }
         let format = format::texture_format(dxgi).or_else(|| {
             format::is_typeless(dxgi)
@@ -716,6 +769,12 @@ impl<B: Backend> Device<B> {
             && caps.limits.storage_buffers_per_stage > 0
     }
 
+    /// Whether typed buffers are read through texture copies of their buffers, where the back end
+    /// has no storage buffers (`TexelBufferAsTexture`).
+    pub(crate) fn typed_buffers_textured(&self) -> bool {
+        self.backend.caps().limits.storage_buffers_per_stage == 0
+    }
+
     /// The use storage views of `format` ask of the back end: none where they are stored through
     /// a buffer.
     fn storage_use(&self, format: Format) -> FormatUse {
@@ -808,6 +867,7 @@ impl<B: Backend> Device<B> {
             staged: RefCell::new(Staged::Current),
             writes: Cell::new(0),
             windows: RefCell::new(Vec::new()),
+            texels: RefCell::new(Vec::new()),
             filled: RefCell::new(None),
         }))
     }
@@ -1732,10 +1792,19 @@ impl<B: Backend> Device<B> {
                 .max(4),
         );
         if let Some(f) = typed {
-            if self.backend.caps().limits.storage_buffers_per_stage == 0 {
-                return not_implemented(
-                    "typed buffer views read through a texture (TexelBufferAsTexture)",
-                );
+            // A texture copy holds the whole buffer, its first element at its first texel.
+            if self.typed_buffers_textured() {
+                if !self
+                    .backend
+                    .caps()
+                    .formats
+                    .get(f)
+                    .contains(FormatUse::SAMPLE)
+                {
+                    return not_implemented(TYPED_BUFFER_FORMAT_UNHELD);
+                }
+                let within = u32::try_from(offset).map_err(|_| Error::OutOfMemory)?;
+                return Ok((0, u64::from(d.byte_width), Some((f, within, count))));
             }
             let start = offset / align * align;
             let end = (offset + size).next_multiple_of(4);
@@ -1906,10 +1975,13 @@ impl<B: Backend> Device<B> {
             ));
         }
         let mut typed = shader::typed_views(bytecode)?;
-        if typed.iter().any(|t| t.buffer)
-            && self.backend.caps().limits.storage_buffers_per_stage == 0
-        {
-            return not_implemented("typed buffers read through a texture (TexelBufferAsTexture)");
+        if self.typed_buffers_textured() {
+            if typed.iter().any(|t| t.buffer && t.storage) {
+                return not_implemented(TYPED_STORAGE_BUFFERS_UNSERVED);
+            }
+            for t in typed.iter_mut().filter(|t| t.buffer) {
+                t.textured = true;
+            }
         }
         let layered = shader::multisampled_arrays(bytecode)?;
         let texture_info = !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY);
@@ -2066,17 +2138,22 @@ impl<B: Backend> Device<B> {
         if rasterized != 0 && outputs.iter().any(|o| o.stream == rasterized) {
             return not_implemented(GEOMETRY_STREAM_DRAWN_PAST_ZERO);
         }
-        if !self.backend.caps().has(Features::COMPUTE) {
-            return not_implemented(
-                "geometry shaders and stream output without the back end's compute programs",
-            );
+        // Without compute programs a geometry shader is replayed through transform feedback
+        // (`GeometryAsReplay`), which takes no stream output without a geometry stage.
+        let caps = self.backend.caps();
+        let replayed = !caps.has(Features::COMPUTE);
+        if replayed && !caps.has(Features::TRANSFORM_FEEDBACK) {
+            return not_implemented(GEOMETRY_STAGE_UNSERVED);
+        }
+        if replayed && vertex {
+            return not_implemented(crate::context::STREAM_OUT_WITHOUT_COMPUTE);
         }
         let stage = if vertex {
             None
         } else {
             let typed = shader::typed_views(bytecode)?;
             let layered = shader::multisampled_arrays(bytecode)?;
-            let key = shader::geometry_key(&typed, layered, None);
+            let key = shader::geometry_key(&typed, layered, None, replayed);
             let mut converted = shader::convert_geometry(bytecode, &key)?;
             // A pass-through writing clip distances the back end lacks passes them on for the
             // pixel program to apply, at the location past the stage's outputs.
@@ -2091,7 +2168,7 @@ impl<B: Backend> Device<B> {
                 )
             });
             if clip.is_some() {
-                let key = shader::geometry_key(&typed, layered, clip);
+                let key = shader::geometry_key(&typed, layered, clip, replayed);
                 converted = shader::convert_geometry(bytecode, &key)?;
             }
             let stage = self.geometry_stage(bytecode, &converted, typed, layered, clip)?;

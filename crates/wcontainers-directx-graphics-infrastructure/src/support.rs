@@ -112,7 +112,6 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         return FormatSupport::default();
     };
     let uses = caps.formats.get(format);
-    let block = format.block().0 > 1;
     let depth = format.is_depth_stencil();
     let texture = uses.intersects(
         FormatUse::SAMPLE
@@ -121,16 +120,21 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
             | FormatUse::STORAGE_READ
             | FormatUse::STORAGE_WRITE,
     );
-    // The texture shapes a format may have: no 1D or 3D for blocks (3D blocks need an adapter
-    // feature `Caps` does not carry) and no 3D for depth.
-    let shapes = if !texture {
-        0
-    } else if block {
-        TEXTURE2D | TEXTURECUBE | MIP
-    } else if depth {
-        TEXTURE1D | TEXTURE2D | TEXTURECUBE | MIP
-    } else {
-        TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP
+    // The texture shapes a format may have (`FormatCaps`): 1D only with blocks one texel high, and
+    // no 3D for depth.
+    let one_texel_high = format.block().1 == 1;
+    let shapes = match texture {
+        false => 0,
+        true => {
+            let mut shapes = TEXTURE2D | TEXTURECUBE | MIP;
+            if one_texel_high {
+                shapes |= TEXTURE1D;
+            }
+            if !depth {
+                shapes |= TEXTURE3D;
+            }
+            shapes
+        }
     };
     // Views of another member of the group: natively where the back end reinterprets, otherwise
     // through a twin texture of the view's format (`ReinterpretCopy`).

@@ -602,8 +602,10 @@ pub struct VariantKey {
     pub storage_formats: Vec<(u32, Format)>,
     /// How typed buffers are read.
     pub texel_buffers: TexelBufferRoute,
-    /// Formats of the typed buffer views bound at texture slots, by slot, from the bound view, for the
-    /// routes other than [`TexelBufferRoute::Native`].
+    /// Formats of the views bound at texture slots, by slot, from the bound view: of typed buffer
+    /// views, for the routes other than [`TexelBufferRoute::Native`]; of texture views whose component
+    /// kind (float, unsigned, signed) differs from the program's declaration, whose loads then read
+    /// the view's values by their bits, as Direct3D does.
     pub texel_formats: Vec<(u32, Format)>,
     /// Storage slots packed into one buffer, at offsets from the helper constants
     /// ([`crate::SlowPath::StoragePacked`]).

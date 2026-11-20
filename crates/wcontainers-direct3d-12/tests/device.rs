@@ -8,12 +8,12 @@ mod record;
 mod triangle;
 
 use record::Recorder;
-use triangle::{PS, RGBA8, VS, element};
+use triangle::{PS, RGBA8, VS};
 use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error};
-use wcontainers_directx_graphics_infrastructure::dxgi::D32_FLOAT;
+use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_gpu::{Backend, Features};
 
 #[test]
@@ -44,6 +44,140 @@ fn footprints_follow_the_pitch_and_placement_rules() {
         ..Default::default()
     };
     assert_eq!(buffer.footprints(0, 1, 0).unwrap().1, 60);
+}
+
+#[test]
+fn every_texture_shape_check_feature_support_answers_is_made() {
+    use wcontainers_direct3d_12::features::format_support;
+    use wcontainers_directx_graphics_infrastructure::support1;
+    let mut device = Device::new(Recorder::new());
+    let caps = device.backend().caps().clone();
+    let shapes = [
+        (support1::TEXTURE1D, DIMENSION_TEXTURE1D),
+        (support1::TEXTURE2D, DIMENSION_TEXTURE2D),
+        (support1::TEXTURE3D, DIMENSION_TEXTURE3D),
+    ];
+    let mut made = 0;
+    for value in dxgi::R32G32B32A32_TYPELESS..=dxgi::B4G4R4A4_UNORM {
+        let support = format_support(&caps, value).support1;
+        for (shape, dimension) in shapes {
+            if support & shape == 0 {
+                continue;
+            }
+            let one = ResourceDesc {
+                dimension,
+                width: 1,
+                height: 1,
+                depth_or_array_size: 1,
+                mip_levels: 1,
+                format: value,
+                sample_count: 1,
+                ..Default::default()
+            };
+            let (format, _) = one.texture_format().unwrap();
+            let (block_width, block_height, _) = format.block();
+            let blocks = 4;
+            let desc = ResourceDesc {
+                width: u64::from(block_width * blocks),
+                height: match dimension {
+                    DIMENSION_TEXTURE1D => 1,
+                    _ => block_height * blocks,
+                },
+                ..one
+            };
+            let made_here = check_creation(HeapType::Default, &desc, 0, false)
+                .and_then(|()| device.create_committed(HeapType::Default, &desc));
+            assert!(
+                made_here.is_ok(),
+                "format {value} in dimension {dimension}: {made_here:?}"
+            );
+            made += 1;
+        }
+    }
+    assert!(made > 0);
+}
+
+/// The layouts real Direct3D 12 gives on the RTX 3080 (case `video-formats`).
+#[test]
+fn video_formats_are_laid_out_as_planes_and_pixel_pairs() {
+    let desc = |format, width, height, mip_levels| ResourceDesc {
+        dimension: DIMENSION_TEXTURE2D,
+        width,
+        height,
+        depth_or_array_size: 1,
+        mip_levels,
+        format,
+        sample_count: 1,
+        ..Default::default()
+    };
+    let pitch = PITCH_ALIGNMENT as u32;
+    let planar_pitch = 2 * pitch;
+    let nv12 = desc(dxgi::NV12, 64, 32, 1);
+    let (f, total) = nv12.footprints(0, 2, 0).unwrap();
+    let shape = |i: usize| {
+        let p = f[i].footprint;
+        (
+            p.format,
+            p.offset,
+            p.width,
+            p.height,
+            p.row_pitch,
+            f[i].rows,
+            f[i].row_size,
+        )
+    };
+    assert_eq!(
+        shape(0),
+        (dxgi::R8_TYPELESS, 0, 64, 32, planar_pitch, 32, 64)
+    );
+    assert_eq!(
+        shape(1),
+        (
+            dxgi::R8G8_TYPELESS,
+            u64::from(planar_pitch) * 32,
+            32,
+            16,
+            planar_pitch,
+            16,
+            64
+        )
+    );
+    assert_eq!(total, 24128);
+    let (f, total) = desc(dxgi::OPAQUE_420, 64, 32, 1)
+        .footprints(0, 1, 0)
+        .unwrap();
+    assert_eq!(
+        (f[0].footprint.format, f[0].footprint.row_pitch),
+        (dxgi::R8_TYPELESS, planar_pitch)
+    );
+    assert_eq!(total, 15936);
+    let yuy2 = desc(dxgi::YUY2, 64, 32, 1);
+    let (f, total) = yuy2.footprints(0, 1, 0).unwrap();
+    assert_eq!(
+        (
+            f[0].footprint.width,
+            f[0].row_size,
+            f[0].footprint.row_pitch
+        ),
+        (64, 128, pitch)
+    );
+    assert_eq!(total, 8064);
+    for refused in [
+        desc(dxgi::NV12, 64, 32, 2),
+        desc(dxgi::NV12, 63, 32, 1),
+        desc(dxgi::NV12, 64, 31, 1),
+        desc(dxgi::YUY2, 63, 32, 1),
+    ] {
+        assert!(matches!(
+            check_creation(HeapType::Default, &refused, 0, false),
+            Err(Error::Invalid(_))
+        ));
+    }
+    let mut device = Device::new(Recorder::new());
+    for made in [nv12, yuy2, desc(dxgi::YUY2, 64, 31, 1)] {
+        check_creation(HeapType::Default, &made, 0, false).unwrap();
+        device.create_committed(HeapType::Default, &made).unwrap();
+    }
 }
 
 #[test]
@@ -121,14 +255,13 @@ fn the_triangle_scene_replays() {
 
 /// The scene's inputs, rasterised with depth clipping `depth_clip` and fill mode `fill`.
 fn scene_raster(depth_clip: bool, fill: u32) -> (Vec<InputElement>, Raster) {
-    let inputs = vec![element("POSITION", 16, 0), element("COLOR", 6, 8)];
     let raster = Raster {
         fill,
-        cull: 1,
+        cull: CULL_MODE_NONE,
         depth_clip,
         ..Default::default()
     };
-    (inputs, raster)
+    (triangle::inputs(), raster)
 }
 
 #[test]
@@ -145,7 +278,7 @@ fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
         inputs.clone(),
         raster,
         TOPOLOGY_TYPE_TRIANGLE,
-        0,
+        dxgi::UNKNOWN,
     )
     .unwrap();
     // The back end clips; the programs keep depth inside the clip volume and clamp it.
@@ -169,7 +302,7 @@ fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
             dsv,
         )
     };
-    assert!(depth_only(&mut device, 0).is_ok());
+    assert!(depth_only(&mut device, dxgi::UNKNOWN).is_ok());
     let refused = depth_only(&mut device, D32_FLOAT);
     assert!(
         matches!(refused, Err(Error::NotImplemented(_))),
@@ -190,7 +323,7 @@ fn wireframe_without_polygon_mode_is_refused_by_name() {
         inputs,
         raster,
         TOPOLOGY_TYPE_TRIANGLE,
-        0,
+        dxgi::UNKNOWN,
     );
     assert!(
         matches!(refused, Err(Error::NotImplemented(_))),
@@ -211,7 +344,7 @@ fn a_pipeline_description_with_no_topology_type_is_invalid() {
             inputs,
             raster,
             TOPOLOGY_TYPE_UNDEFINED,
-            0,
+            dxgi::UNKNOWN,
         );
         assert!(matches!(refused, Err(Error::Invalid(_))), "{refused:?}");
     }

@@ -291,7 +291,7 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("storage textures read through buffers behind a hull shader");
         }
-        let vertex_set = self.compute_helper_set(&vertex_block)?;
+        let vertex_set = self.helper_set(&vertex_block, StageSet::COMPUTE)?;
         self.helper_blocks = None;
         self.compute_helpers = None;
         self.end_pass();

@@ -204,7 +204,7 @@ fn geometry_refusals_are_named() {
         stage::vertex_program(&plain, &gs).err(),
         Some(ConvertError::Unsupported(stage::VERTEX_INPUT_NOT_PULLED))
     );
-    // The last vertex stage's rewrites are not made for the stage helper's vertex program yet.
+    // The last vertex stage's rewrites the stage helper's vertex program does not make.
     let key = VariantKey {
         flags: wcontainers_gpu::VariantFlags::CLIP_DEPTH_REWRITE,
         ..Default::default()
@@ -251,6 +251,31 @@ fn geometry_clip_distances_reach_the_pass_through() {
     assert!(!text.contains("clip_distances"), "{text}");
     assert!(text.contains(&format!("@location({location})")), "{text}");
     assert_ne!(linked.modules[1].key, plain.modules[1].key);
+}
+
+/// Depth clamped behind a geometry shader: the pass-through keeps its position inside the clip
+/// volume and passes the unclamped depth at the linked location, as a vertex program would.
+#[test]
+fn depth_clamping_reaches_the_pass_through() {
+    let code = own("gs_quads.dxbc");
+    let plain = convert(Source::Dxbc(&code), &VariantKey::default(), None).unwrap();
+    let location = stage::locations(&plain.reflection.outputs)
+        .last()
+        .map_or(0, |l| l + 1);
+    let key = VariantKey {
+        flags: wcontainers_gpu::VariantFlags::DEPTH_CLAMP,
+        linked: LinkedValues {
+            location,
+            clip_distances: 0,
+        },
+        ..Default::default()
+    };
+    let clamped = convert(Source::Dxbc(&code), &key, None).unwrap();
+    let text = wgsl(&clamped.modules[1]);
+    assert!(text.contains(&format!("@location({location})")), "{text}");
+    assert!(text.contains("min("), "{text}");
+    assert!(!wgsl(&plain.modules[1]).contains(&format!("@location({location})")));
+    assert_ne!(clamped.modules[1].key, plain.modules[1].key);
 }
 
 /// A geometry shader writing its layer and viewport (`gs_layers`): both are in its reflection, its

@@ -30,6 +30,21 @@ pub const TEXTURE_SIZE: u32 = 8;
 /// The 16-bit index that ends a strip.
 pub const RESTART: u16 = u16::MAX;
 
+/// Whether 16-bit `indices` hold, at the places in `drawn`, `vertices` indices in a row with no
+/// restart among them: a strip's first primitive, which a seeded scene must have for its comparison
+/// to show anything.
+pub fn whole_strip_primitive(indices: &[u8], drawn: std::ops::Range<u32>, vertices: u32) -> bool {
+    let mut run = 0;
+    drawn.into_iter().any(|i| {
+        let at = size_of::<u16>() * i as usize;
+        run = match u16::from_le_bytes([indices[at], indices[at + 1]]) {
+            RESTART => 0,
+            _ => run + 1,
+        };
+        run >= vertices
+    })
+}
+
 pub fn bytecode(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
@@ -191,6 +206,8 @@ pub struct Reference {
     pub unbound: bool,
     /// The target cleared to zero instead of [`CLEAR`].
     pub cleared_to_zero: bool,
+    /// Drawn without a pixel shader.
+    pub no_pixel_shader: bool,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -260,6 +277,9 @@ pub fn direct3d_11(
         Vec::new()
     };
     gpu.program(&vs, &ps, &elements).unwrap();
+    if reference.no_pixel_shader {
+        unsafe { gpu.context.PSSetShader(None, None) };
+    }
     let vertices = grid();
     let _buffer = grid_drawn.then(|| gpu.vertices(0, bytes_of(&vertices), 20).unwrap());
     let constants = gpu
@@ -672,6 +692,9 @@ pub struct Setup {
     /// A component mapping applied to the sampled texture's texels as they are uploaded: what a view
     /// with that mapping reads, for comparing `VariantKey::swizzled` against.
     pub texel_map: Option<[wcontainers_gpu::ViewComponent; 4]>,
+    /// Drawn as a pipeline without a pixel shader: the pixel program is the built-in one for
+    /// `ps_key` (`builtin::pixel_program_for_variant`), writing no colour.
+    pub no_pixel_shader: bool,
 }
 
 /// `texels` (Rgba8Unorm) with each texel's components mapped by `map`.
@@ -709,6 +732,7 @@ impl Setup {
             texel_buffers: Vec::new(),
             layers: 0,
             texel_map: None,
+            no_pixel_shader: false,
         }
     }
 }
@@ -965,7 +989,11 @@ pub fn ours<B: Backend + 'static>(
 ) -> Vec<u8> {
     // As a front links the stages: the vertex program writes each output as the pixel program reads it.
     let setup = &draw.setup;
-    let ps = convert(draw.ps, &setup.ps_key, None).unwrap();
+    let ps = if setup.no_pixel_shader {
+        wcontainers_shaders::builtin::pixel_program_for_variant(&setup.ps_key).unwrap()
+    } else {
+        convert(draw.ps, &setup.ps_key, None).unwrap()
+    };
     let key = VariantKey {
         output_interpolation: ps
             .reflection
@@ -1302,7 +1330,11 @@ pub fn ours<B: Backend + 'static>(
         .create_blend(&BlendDesc {
             targets: [RenderTargetBlend {
                 blend: setup.blend,
-                writes: ColorWrites::all(),
+                writes: if setup.no_pixel_shader {
+                    ColorWrites::empty()
+                } else {
+                    ColorWrites::all()
+                },
             }; 8],
             same_for_all: true,
             alpha_to_coverage: false,

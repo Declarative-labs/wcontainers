@@ -15,7 +15,7 @@ use wcontainers_gpu::{
 use super::{Device, Resource, ResourceId, Storage, dxgi as format_of};
 use crate::Error;
 use crate::resource;
-use wcontainers_directx_graphics_infrastructure::dxgi;
+use wcontainers_directx_graphics_infrastructure::{dxgi, typeless_group};
 
 impl<B: Backend> Device<B> {
     /// Lists `id`, just placed, and the live resources it overlaps, `overlaps`, as inheriting from
@@ -33,6 +33,17 @@ impl<B: Backend> Device<B> {
                 buffers || (r.desc == desc && r.placed == at)
             })
             .collect();
+        // An `NV12` texture's chroma plane inherits from the chroma planes of those it does.
+        let chroma = |r: ResourceId| self.resources[r.0 as usize].chroma;
+        if let Some(c) = chroma(id) {
+            let planes = pairs.iter().filter_map(|&o| chroma(o)).collect();
+            self.link(c, planes);
+        }
+        self.link(id, pairs);
+    }
+
+    /// Lists `id` and `pairs` as inheriting from each other.
+    fn link(&mut self, id: ResourceId, pairs: Vec<ResourceId>) {
         for &o in &pairs {
             let r = &mut self.resources[o.0 as usize];
             if r.inherits.is_empty() {
@@ -57,6 +68,14 @@ impl<B: Backend> Device<B> {
     /// `FORMAT_REINTERPRET`, its twin in that format, made at the first such view.
     pub fn view_holder(&mut self, id: ResourceId, format: u32) -> Result<ResourceId, Error> {
         let view = format_of(format)?;
+        // A view of an `NV12` texture in the `R8G8` group views its chroma plane.
+        let id = match self.resources.get(id.0 as usize) {
+            Some(Resource {
+                chroma: Some(chroma),
+                ..
+            }) if typeless_group(format) == Some(dxgi::R8G8_TYPELESS) => *chroma,
+            _ => id,
+        };
         let Some(Resource {
             storage: Storage::Texture { desc, .. },
             twins,
@@ -179,6 +198,7 @@ impl<B: Backend> Device<B> {
             synced: 0,
             twins: Vec::new(),
             twin: true,
+            chroma: None,
         }) as u32);
         let mut family = self.resources[id.0 as usize].twins.clone();
         family.push(id);

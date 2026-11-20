@@ -246,13 +246,13 @@ hlsl+clamp-1-ps.dxbc	ok ; glsl compiles
 hlsl+clamp-2-ps.dxbc	ok ; glsl compiles
 hlsl+clip-1-ps.dxbc	ok ; glsl compiles
 hlsl+clip-2-ps.dxbc	ok ; glsl compiles
-hlsl+clip-cull-distance-1-1-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile
+hlsl+clip-cull-distance-1-1-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-10-ps.dxbc	ok ; glsl compiles
-hlsl+clip-cull-distance-1-11-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-hlsl+clip-cull-distance-1-12-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-hlsl+clip-cull-distance-1-13-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-hlsl+clip-cull-distance-1-14-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-hlsl+clip-cull-distance-1-15-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile
+hlsl+clip-cull-distance-1-11-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-12-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-13-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-14-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-1-15-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-16-gs.dxbc	unsupported ClipDistance
 hlsl+clip-cull-distance-1-17-vs.dxbc	ok ; glsl compiles
 hlsl+clip-cull-distance-1-18-gs.dxbc	unsupported CullDistance
@@ -261,14 +261,14 @@ hlsl+clip-cull-distance-1-2-ps.dxbc	ok ; glsl compiles
 hlsl+clip-cull-distance-1-20-gs.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-21-gs.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-4-ps.dxbc	ok ; glsl compiles
-hlsl+clip-cull-distance-1-5-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile
+hlsl+clip-cull-distance-1-5-vs.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-6-ps.dxbc	unsupported CullDistance
-hlsl+clip-cull-distance-1-9-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-hlsl+clip-cull-distance-2-1-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
+hlsl+clip-cull-distance-1-9-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-2-1-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-2-2-ps.dxbc	unsupported ClipDistance
 hlsl+clip-cull-distance-2-3-ps.dxbc	ok ; glsl compiles
-hlsl+clip-cull-distance-2-4-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-hlsl+clip-cull-distance-2-5-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile
+hlsl+clip-cull-distance-2-4-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+hlsl+clip-cull-distance-2-5-vs.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-planes-1-ps.dxbc	ok ; glsl compiles
 hlsl+color-clamping-1-vs.dxbc	ok ; glsl compiles
 hlsl+color-clamping-2-ps.dxbc	ok ; glsl compiles
@@ -307,7 +307,7 @@ hlsl+const-3-ps.dxbc	ok ; glsl compiles
 hlsl+constructgswithso-1-ps.dxbc	ok ; glsl compiles
 hlsl+constructgswithso-3-ps.dxbc	ok ; glsl compiles
 hlsl+constructgswithso-5-ps.dxbc	ok ; glsl compiles
-hlsl+coverage-1-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+hlsl+coverage-1-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
 hlsl+coverage-2-ps.dxbc	ok views:R32Float through ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 hlsl+cross-1-ps.dxbc	ok ; glsl compiles
 hlsl+cross-2-ps.dxbc	ok ; glsl compiles
@@ -415,19 +415,19 @@ hlsl+entry-point-semantics-7-ps.dxbc	ok ; glsl compiles
 hlsl+entry-point-semantics-8-ps.dxbc	ok ; glsl compiles
 hlsl+entry-point-semantics-9-ps.dxbc	ok ; glsl compiles
 hlsl+eval-attrib-1-vs.dxbc	ok ; glsl compiles
-hlsl+eval-attrib-10-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+hlsl+eval-attrib-10-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-11-ps.dxbc	ok ; glsl compiles
-hlsl+eval-attrib-12-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-13-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+hlsl+eval-attrib-12-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-13-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-14-ps.dxbc	unsupported SampleCount
-hlsl+eval-attrib-2-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-3-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-4-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-5-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-6-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-7-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-8-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+eval-attrib-9-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+hlsl+eval-attrib-2-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-3-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-4-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-5-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-6-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-7-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-8-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-9-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+exp-1-ps.dxbc	ok ; glsl compiles
 hlsl+exp-2-ps.dxbc	ok ; glsl compiles
 hlsl+expr-indexing-1-ps.dxbc	ok ; glsl compiles
@@ -569,8 +569,8 @@ hlsl+geometry-shader-syntax-9-gs.dxbc	ok ; glsl absent compute
 hlsl+get-sample-pos-1-ps.dxbc	ok ; glsl compiles
 hlsl+getdimensions-1-ps.dxbc	ok ; glsl compiles
 hlsl+getdimensions-2-ps.dxbc	ok ; glsl compiles
-hlsl+getdimensions-3-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-hlsl+getdimensions-4-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+hlsl+getdimensions-3-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+getdimensions-4-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 hlsl+half-1-ps.dxbc	ok ; glsl compiles
 hlsl+half-4-ps.dxbc	ok ; glsl compiles
 hlsl+hard-copy-prop-1-ps.dxbc	ok ; glsl compiles
@@ -910,7 +910,7 @@ hlsl+precise-modifier-2-ps.dxbc	ok ; glsl compiles
 hlsl+precise-modifier-3-ps.dxbc	ok ; glsl compiles
 hlsl+primitive-id-1-vs.dxbc	ok ; glsl compiles
 hlsl+primitive-id-2-gs.dxbc	unsupported PrimitiveId
-hlsl+primitive-id-3-ps.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile
+hlsl+primitive-id-3-ps.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 hlsl+ps1-projection-1-vs.dxbc	ok ; glsl compiles
 hlsl+ps1-sampler-1-vs.dxbc	ok ; glsl compiles
 hlsl+ps1-sampler-4-vs.dxbc	ok ; glsl compiles
@@ -1362,12 +1362,12 @@ hlsl+tessellation-patch-vars-3-ds.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write
 hlsl+tessellation-patch-vars-4-ps.dxbc	ok ; glsl compiles
 hlsl+texture-load-1-ps.dxbc	ok ; glsl compiles
 hlsl+texture-load-2-ps.dxbc	ok ; glsl compiles
-hlsl+texture-load-3-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-hlsl+texture-load-4-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-hlsl+texture-load-5-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-hlsl+texture-load-6-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-hlsl+texture-load-7-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
-hlsl+texture-load-8-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+hlsl+texture-load-3-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-4-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-5-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-6-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+hlsl+texture-load-7-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+texture-load-8-ps.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 hlsl+texture-load-offset-1-ps.dxbc	ok ; glsl compiles
 hlsl+texture-load-offset-2-ps.dxbc	ok ; glsl compiles
 hlsl+texture-load-typed-1-ps.dxbc	ok ; glsl compiles
@@ -1387,7 +1387,7 @@ hlsl+tgsm-8-cs.dxbc	ok ; glsl absent compute
 hlsl+tgsm-9-cs.dxbc	ok ; glsl absent compute
 hlsl+tiled-status-1-ps.dxbc	unsupported SparseFeedback
 hlsl+tiled-status-2-ps.dxbc	unsupported SparseFeedback
-hlsl+tiled-status-3-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+hlsl+tiled-status-3-ps.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+tiled-status-4-ps.dxbc	unsupported SparseFeedback
 hlsl+transpose-1-ps.dxbc	ok ; glsl compiles
 hlsl+transpose-2-ps.dxbc	ok ; glsl compiles

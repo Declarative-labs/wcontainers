@@ -1760,11 +1760,75 @@ fn a_counted_occlusion_query_answers_once_the_gpu_has_its_count_and_a_flushing_p
 }
 
 #[test]
+fn format_support_reports_the_uses_the_front_serves_by_its_own_routes_at_their_levels() {
+    use wcontainers_directx_graphics_infrastructure::dxgi;
+    let at = |l: u32| Device::new(Recorder::new(None), &[l]).unwrap();
+    let (l9, l10, l10_1, l11) = (
+        at(level::L9_3),
+        at(level::L10_0),
+        at(level::L10_1),
+        at(level::L11_0),
+    );
+    let rgba = l11.format_support(dxgi::R8G8B8A8_UNORM).support1;
+    for bit in [
+        support::BUFFER,
+        support::TEXTURE1D,
+        support::TEXTURE3D,
+        support::MIP_AUTOGEN,
+        support::SHADER_GATHER,
+        support::TYPED_UNORDERED_ACCESS_VIEW,
+    ] {
+        assert_ne!(rgba & bit, 0, "{bit:#x}");
+    }
+    assert_eq!(rgba & support::SO_BUFFER, 0);
+    let float = l11.format_support(dxgi::R32_FLOAT);
+    assert_ne!(float.support1 & support::SO_BUFFER, 0);
+    assert_ne!(float.support2 & support2::UAV_ATOMIC_EXCHANGE, 0);
+    let uint = l11.format_support(dxgi::R32_UINT).support2;
+    for bit in [
+        support2::UAV_ATOMIC_ADD,
+        support2::UAV_ATOMIC_BITWISE_OPS,
+        support2::UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE,
+        support2::UAV_ATOMIC_EXCHANGE,
+        support2::UAV_ATOMIC_SIGNED_MIN_OR_MAX,
+        support2::UAV_ATOMIC_UNSIGNED_MIN_OR_MAX,
+        support2::UAV_TYPED_STORE,
+    ] {
+        assert_ne!(uint & bit, 0, "{bit:#x}");
+    }
+    // Integers generate no mips; typed depth formats are not read as themselves, but staged.
+    let uint1 = l11.format_support(dxgi::R32_UINT).support1;
+    assert_eq!(uint1 & support::MIP_AUTOGEN, 0);
+    let depth = l11.format_support(dxgi::D32_FLOAT).support1;
+    assert_eq!(depth & support::SHADER_LOAD, 0);
+    assert_ne!(depth & support::CPU_LOCKABLE, 0);
+    // Typed storage views are shader model 5's, gathers 4.1's, buffers and comparisons 10_0's.
+    for d in [&l10, &l10_1] {
+        let s = d.format_support(dxgi::R32_UINT);
+        assert_eq!(s.support1 & support::TYPED_UNORDERED_ACCESS_VIEW, 0);
+        assert_eq!(s.support2, 0);
+    }
+    assert_eq!(
+        l10.format_support(dxgi::R8G8B8A8_UNORM).support1 & support::SHADER_GATHER,
+        0
+    );
+    assert_ne!(
+        l10_1.format_support(dxgi::R8G8B8A8_UNORM).support1 & support::SHADER_GATHER,
+        0
+    );
+    for f in 0..=dxgi::B4G4R4A4_UNORM {
+        let s = l9.format_support(f).support1;
+        let off = support::BUFFER | support::SO_BUFFER | support::SHADER_SAMPLE_COMPARISON;
+        assert_eq!(s & off, 0, "{f:#x}");
+    }
+}
+
+#[test]
 fn format_support_follows_the_feature_level_for_display_and_signed_normalised_blending() {
     use wcontainers_directx_graphics_infrastructure::dxgi;
     let at = |l: u32| Device::new(Recorder::new(None), &[l]).unwrap();
     let (l9, l10, l10_1) = (at(level::L9_3), at(level::L10_0), at(level::L10_1));
-    let has = |d: &Dev, f: u32, bit: u32| d.format_support(f) & bit != 0;
+    let has = |d: &Dev, f: u32, bit: u32| d.format_support(f).support1 & bit != 0;
     for f in [dxgi::R8G8B8A8_UNORM, dxgi::B8G8R8A8_UNORM_SRGB] {
         assert!(has(&l9, f, support::DISPLAY));
     }

@@ -365,7 +365,7 @@ pub(super) const STREAM_FILLED_SIZE: &str =
     "the filled sizes block shorter than the shader's streams";
 const STREAM_OUTPUT_SYSTEM_VALUE: &str = "StreamOutputSystemValue";
 /// Stream output of a vertex stage drawn with adjacency.
-const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
+pub(super) const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
 /// A vertex stage writing cull distances, drawn with adjacency, which Direct3D draws without the
 /// adjacent vertices.
 const CULL_DISTANCE_ADJACENCY: &str = "CullDistanceAdjacency";

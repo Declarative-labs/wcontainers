@@ -1,12 +1,60 @@
-//! Built-in compute programs the fronts dispatch: the clear of a storage texture view (Direct3D's
+//! Built-in programs the fronts use: the clear of a storage texture view (Direct3D's
 //! `ClearUnorderedAccessViewUint` and `ClearUnorderedAccessViewFloat` on textures), one program per
-//! storage format and view dimension, writing one value into a box of the view.
+//! storage format and view dimension, writing one value into a box of the view; and the pixel
+//! program of a pipeline without a pixel shader whose variant needs one.
 
 use alloc::format;
 use alloc::string::String;
-use wcontainers_gpu::{Format, FormatKind, ShaderModule, ShaderStage, ViewDimension};
+use alloc::vec::Vec;
+use wcontainers_gpu::{
+    Format, FormatKind, Reflection, ShaderModule, ShaderStage, SourceStage, StageExtras,
+    VariantKey, ViewDimension,
+};
 
-use crate::ConvertError;
+use crate::{ConvertError, Converted};
+
+/// The pixel program [`pixel_program_for_variant`] rewrites: one writing nothing.
+const EMPTY_PIXEL_PROGRAM: &str = "@fragment fn main() {}\n";
+
+/// The pixel program a pipeline without a pixel shader takes where its variant needs one (depth
+/// clamped or biased, clip distances, counting, the sample mask): a program writing nothing, with
+/// `variant`'s rewrites, as [`crate::convert`] gives them for a pixel shader.
+pub fn pixel_program_for_variant(variant: &VariantKey) -> Result<Converted, ConvertError> {
+    let mut module = naga::front::wgsl::parse_str(EMPTY_PIXEL_PROGRAM)
+        .map_err(|e| ConvertError::Malformed(format!("the empty pixel program: {e}")))?;
+    let mut reflection = Reflection {
+        stage: SourceStage::Pixel,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        bindings: Vec::new(),
+        helpers: Vec::new(),
+        helper_size: 0,
+        sampled_pairs: Vec::new(),
+        extras: StageExtras::Pixel {
+            early_tests: false,
+            side_effects: false,
+            discards: false,
+            per_sample: false,
+        },
+        slow_paths: Vec::new(),
+    };
+    crate::unbuilt(variant, None)?;
+    crate::variant::apply(&mut module, ShaderStage::Fragment, variant, &mut reflection)?;
+    let mut key = blake3::Hasher::new();
+    key.update(EMPTY_PIXEL_PROGRAM.as_bytes())
+        .update(crate::CONVERTER_VERSION.as_bytes())
+        .update(&postcard::to_allocvec(variant).expect("a variant key serialises"));
+    Ok(Converted {
+        modules: alloc::vec![ShaderModule {
+            info: crate::validate(&module)?,
+            module,
+            entry_point: crate::ENTRY_POINT.into(),
+            stage: ShaderStage::Fragment,
+            key: *key.finalize().as_bytes(),
+        }],
+        reflection,
+    })
+}
 use crate::variant::pull::{Kind, layout};
 use crate::variant::texel::vertex_format;
 

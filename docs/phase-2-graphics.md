@@ -546,7 +546,8 @@ bias, storage formats from the bound view, constant buffers past the limits, ver
 the program, how typed buffers are read (`TexelBufferRoute`: native where the back end has
 `TEXEL_BUFFERS`, which neither browser API has, storage on WebGPU, a texture on WebGL 2 whose element e
 is texel (e % 2048, e / 2048), `TEXEL_BUFFER_TEXTURE_WIDTH`; by either, the format of each view at a
-texture slot is `texel_formats`), storage slots
+texture slot is `texel_formats`, which also gives the view of a texture of another component kind than
+the program declares, read by its bits as Direct3D reads it), storage slots
 packed into one buffer, storage textures used with atomics read through a buffer, textures and targets stored as integers (`decoded`, `targets_in_shader`), blending or logic
 operations done in the program, the sample mask written by the program, clip depth, flipped depth
 ranges, depth bias, the counting variant, the interpolation the pixel program reads the vertex
@@ -849,7 +850,9 @@ Surface formats: `FormatUse::PRESENT` names the formats `configure_surface` take
 `rgba8unorm`; a back end whose window lacks a format it declares, as a Metal layer lacks
 `rgba8unorm`, draws the frame into the window's format at present, `PresentConverted`). The DXGI layer configures the back buffer's own format where it has `PRESENT`, otherwise
 `rgba16float` for back buffers of more than 8 bits per channel where present, otherwise `rgba8unorm`;
-the present copy converts. Colour space: SDR only. Colours are shown as sRGB and values beyond one are
+the present copy converts. The host's window scales whatever it shows, so a frame of another size
+than its window, from a swap chain asking for no stretching (`DXGI_SCALING_NONE`,
+`ASPECT_RATIO_STRETCH`), is shown stretched (a listed loss, `FrameStretched`). Colour space: SDR only. Colours are shown as sRGB and values beyond one are
 clipped, as on an SDR display. DXGI reports the output's colour space as
 `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709` (`IDXGIOutput6::GetDesc1`, with the SDR luminance values),
 `CheckColorSpaceSupport` answers present for that space and, on 16-bit float back buffers, for
@@ -881,7 +884,10 @@ answer from), `Features` (bits), `Limits` (numbers) and `FormatCaps` (per format
 blend, resolve, storage read and write, storage atomics, vertex, depth-stencil, copy out, present, and
 the set of sample counts a texture of that format may have, so a native back end can say a format takes
 4 samples but not 8 where others take 8, as Direct3D's `CheckMultisampleQualityLevels` and Vulkan's
-sample count flags ask per format and count). A format a back end does not hold has no bits, and the front takes the route 4.12 names for
+sample count flags ask per format and count). A format with any use is served in every texture
+dimension it can have (1D where its blocks are one texel high, 3D but for depth and stencil), held
+decoded or converted where the back end's API lacks that dimension for it, as Direct3D's format tables
+require. A format a back end does not hold has no bits, and the front takes the route 4.12 names for
 it. The bits are in the
 crate; the values each back end declares (expected, to be confirmed by each back end's milestone against
 the adapter):
@@ -2264,7 +2270,9 @@ They never reach a back end. The shaders crate lowers them, and its stage helper
   texture, then one draw runs the geometry shader once per output vertex slot, each invocation keeping
   only its own emitted vertex and collapsing unused slots (`GeometryAsReplay`). Stream output after
   it is written on the host from a read back of the replay's capture, which holds the collapsed
-  slots too; dropping them needs a count across invocations (`StreamOutAfterReplay`). Hull and domain shaders
+  slots too; dropping them needs a count across invocations (`StreamOutAfterReplay`). Stream
+  output from a vertex shader alone is written the same way from the vertex stage's capture, which
+  the pass-through draws. Hull and domain shaders
   are not offered on WebGL 2 (feature level 10_0 does not have them).
 
 Alpha-antialiased lines (4.12) take the same first step: the vertex stage runs as compute (WebGPU) or is

@@ -1582,11 +1582,9 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::clear_uav	"a f
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_early_per_primitive	"early depth-stencil tests per primitive of indirect draws"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_early_per_primitive	"early depth-stencil tests per primitive of instanced draws"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_early_per_primitive	"early depth-stencil tests per primitive while queries run or with stream output"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a depth bias the back end cannot apply, without a pixel shader to apply it"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a pixel shader reading past its vertex shader's outputs, under clip distances in the program"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a sample mask without the back end's (SampleMaskInShader)"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a topology without a geometry or hull shader"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"depth clamping or clip distances the back end lacks, without a pixel shader to apply them"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"dual-source blending without the back end's"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"indexed or indirect adjacency draws without a geometry shader"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"more vertex inputs fetched in the program than the back end's storage bindings"
@@ -1613,7 +1611,6 @@ code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a vertex shader variant behind a geometry shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"an indirect draw through a geometry shader or stream output"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"a pixel shader reading helper constants behind a domain shader"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a geometry shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a hull shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::target_layers	"a geometry shader choosing a layer of a target view reinterpreting its texture"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::target_layers	"a geometry shader choosing a layer of target views of different layer counts"
@@ -1691,9 +1688,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_view	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::format_support	16
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::format_support	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::format_support	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::write_texels	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	24
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	4
@@ -1740,7 +1734,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	7
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	9
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	9
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::buffer_span	"a buffer view at an offset the back end does not bind at (StorageOffset)"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::buffer_span	"typed buffer views read through a texture (TexelBufferAsTexture)"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_format	"a format the back end lacks"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_format	"a use of a format the back end lacks"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"NV12 textures of more than one level or with misc flags"
@@ -1753,12 +1746,10 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"unordered access needs feature level 11_0"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_blend_state	"blend factors or operations per target below feature level 10_1"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_buffer	"buffers with misc flags other than structured, raw, indirect and shared"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_geometry_shader	"geometry shaders and stream output without the back end's compute programs"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_input_layout	"an input layout has at most 32 elements"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_input_layout	"input slot past 31"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_rasterizer_state	"wireframe without the back end's polygon mode"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_shader	"the primitive index without the back end's (PrimitiveIdAsGeometry)"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_shader	"typed buffers read through a texture (TexelBufferAsTexture)"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_view	"a depth view reinterpreting a typeless texture's bits as another format"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_view	"read-only depth-stencil views need feature level 11_0"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::zero_view	"an empty slot a shader reads as depth or stencil"
@@ -2155,11 +2146,9 @@ code	crates/wcontainers-direct3d-12/src/list.rs	int	SamplerView	3
 code	crates/wcontainers-direct3d-12/src/list.rs	int	SamplerView	4
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	3
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	4
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	4
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::full_chain	64
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	rts0_part	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	serialize	b"DXBC"
-code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::at_version	3
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	12
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	3
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::validate	3
@@ -2245,7 +2234,6 @@ code	crates/wcontainers-direct3d-12/src/root.rs	int	serialize	8
 code	crates/wcontainers-direct3d-12/src/root.rs	str	RootSignatureDesc::validate	"root arguments of more than 64 dwords"
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Blend::dual_source	16
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Blend::dual_source	19
-code	crates/wcontainers-direct3d-12/src/state.rs	int	Raster::block	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Raster::block	32
 code	crates/wcontainers-direct3d-12/src/state.rs	int	Raster::block	32
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_factor	10
@@ -2268,12 +2256,6 @@ code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_factor	9
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_op	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_op	4
 code	crates/wcontainers-direct3d-12/src/state.rs	int	blend_op	5
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	3
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	4
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	5
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	6
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	7
-code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	8
 code	crates/wcontainers-direct3d-12/src/state.rs	int	in_program	4
 code	crates/wcontainers-direct3d-12/src/state.rs	int	in_program	5
 code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	3
@@ -2331,10 +2313,7 @@ code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	5
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	6
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	7
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	8
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	33
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	4
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	5
 code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	64
 code	crates/wcontainers-directx-graphics-infrastructure/src/adapter.rs	int	AdapterDesc::description_utf16	128
 code	crates/wcontainers-directx-graphics-infrastructure/src/adapter.rs	int	AdapterDesc::description_utf16	128
@@ -2419,7 +2398,6 @@ code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	"WEBGL_AN
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	r"C:\wc\tools\angle-mozangle-0.7.1"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::make	"wcontainers direct3d 11: no WebGL 2 back end: {e}"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::own_directory	"\\"
-code	crates/wcontainers-directx/src/com/chosen.rs	str	webgpu::add_window	"wcontainers direct3d 11: no surface for the window: {e}"
 code	crates/wcontainers-directx/src/com/context.rs	int	<Bound as Default>::default	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_render_target_view	4
@@ -13246,7 +13224,6 @@ code	crates/wcontainers-shaders/src/ir.rs	int	first_literal	96
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	str	(file)	"/ir_codes.rs"
-code	crates/wcontainers-shaders/src/lib.rs	int	unbuilt	32
 code	crates/wcontainers-shaders/src/lower.rs	float	FunctionLowering<'l,'a>::coords	0.5
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	4
@@ -13269,7 +13246,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instru
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::math	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::offset_coordinate	26
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	10
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	4
@@ -22951,7 +22927,6 @@ restated	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw	512
 restated	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	str	answers	"none"
 restated	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	str	answers	"none"
 restated	crates/wcontainers-direct3d-12/examples/directx/main.rs	int	system	260
-restated	crates/wcontainers-direct3d-12/examples/directx/main.rs	int	wc_D3D12CreateDevice	0xb000
 restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	FLAGS_TAKEN	0x800
 restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	PRESENT_ALLOW_TEARING	0x200
 restated	crates/wcontainers-direct3d-12/examples/directx/present.rs	int	USAGE_UNORDERED_ACCESS	0x400

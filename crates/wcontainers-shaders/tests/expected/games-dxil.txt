@@ -67,7 +67,7 @@
 2f4511b61ced34cd.dxil	ok ; glsl compiles
 2ff5b26960a7debb.dxil	ok ; glsl compiles
 3186c922775e8e90.dxil	ok ; glsl compiles
-31bd508858afd31a.dxil	ok ; glsl needs MULTISAMPLE_READ compile
+31bd508858afd31a.dxil	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 324d52c636e9b15e.dxil	ok ; glsl compiles
 32980b1526e359e7.dxil	ok ; glsl compiles
 32e381615df42080.dxil	ok ; glsl compiles

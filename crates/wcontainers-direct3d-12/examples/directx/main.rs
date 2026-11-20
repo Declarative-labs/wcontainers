@@ -34,7 +34,10 @@ use wcontainers_direct3d_12::root::{
 };
 use wcontainers_gpu::Backend;
 use windows::Win32::Foundation::{E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
-use windows::Win32::Graphics::Direct3D::ID3DBlob;
+use windows::Win32::Graphics::Direct3D::{
+    D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
+    D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_2, ID3DBlob,
+};
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_UNSUPPORTED, IDXGIAdapter, IDXGIFactory1, IDXGIFactory7,
@@ -170,8 +173,16 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
             None => DXGI_ERROR_UNSUPPORTED,
         };
     }
-    // Direct3D 12's feature levels: 11_0 to 12_2.
-    if ![0xb000, 0xb100, 0xc000, 0xc100, 0xc200].contains(&(minimum_level as u32)) {
+    objects::cleared(out);
+    if ![
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_12_0,
+        D3D_FEATURE_LEVEL_12_1,
+        D3D_FEATURE_LEVEL_12_2,
+    ]
+    .contains(&D3D_FEATURE_LEVEL(minimum_level))
+    {
         return E_INVALIDARG;
     }
     let level = gpu::call(|d| features::feature_level(d.backend().caps()));
