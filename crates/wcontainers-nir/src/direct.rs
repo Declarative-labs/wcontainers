@@ -1502,6 +1502,11 @@ enum AluForm {
     Cast(ScalarKind),
     /// A comparison of each component, then all or any of them.
     Reduce(BinaryOperator, RelationalFunction),
+    /// The logical not of `Binary`: an unordered float comparison, true where either side is NaN,
+    /// as the not of its ordered opposite (naga's float comparisons are ordered).
+    NotBinary(BinaryOperator),
+    /// The logical not of `Reduce`: `bany_fnequal` as not all equal, unordered like `fneu`.
+    NotReduce(BinaryOperator, RelationalFunction),
 }
 
 fn alu_form(op: Alu) -> Option<(ScalarKind, AluForm)> {
@@ -1517,7 +1522,7 @@ fn alu_form(op: Alu) -> Option<(ScalarKind, AluForm)> {
         Alu::Flt => (Float, F::Binary(B::Less)),
         Alu::Fge => (Float, F::Binary(B::GreaterEqual)),
         Alu::Feq => (Float, F::Binary(B::Equal)),
-        Alu::Fneu => (Float, F::Binary(B::NotEqual)),
+        Alu::Fneu => (Float, F::NotBinary(B::Equal)),
         Alu::Fneg => (Float, F::Unary(UnaryOperator::Negate)),
         Alu::Fabs => (Float, F::Math(M::Abs)),
         Alu::Fsign => (Float, F::Math(M::Sign)),
@@ -1590,7 +1595,7 @@ fn alu_form(op: Alu) -> Option<(ScalarKind, AluForm)> {
             (Float, F::Reduce(B::Equal, RelationalFunction::All))
         }
         Alu::BanyFnequal2 | Alu::BanyFnequal3 | Alu::BanyFnequal4 => {
-            (Float, F::Reduce(B::NotEqual, RelationalFunction::Any))
+            (Float, F::NotReduce(B::Equal, RelationalFunction::All))
         }
         Alu::BallIequal2 | Alu::BallIequal3 | Alu::BallIequal4 => {
             (Sint, F::Reduce(B::Equal, RelationalFunction::All))
@@ -1989,8 +1994,9 @@ impl Builder<'_> {
                 };
                 let count = |_: usize| source_count(op, n);
                 let a = self.src(i, 0, count(0), source_kind)?;
-                match form {
-                    AluForm::Binary(o) => {
+                let negated = matches!(form, AluForm::NotBinary(_) | AluForm::NotReduce(..));
+                let (e, kind) = match form {
+                    AluForm::Binary(o) | AluForm::NotBinary(o) => {
                         let right_kind = match o {
                             BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => {
                                 ScalarKind::Uint
@@ -2077,7 +2083,7 @@ impl Builder<'_> {
                         }),
                         to,
                     ),
-                    AluForm::Reduce(o, fun) => {
+                    AluForm::Reduce(o, fun) | AluForm::NotReduce(o, fun) => {
                         let b = self.src(i, 1, count(1), source_kind)?;
                         let each = self.add(Expression::Binary {
                             op: o,
@@ -2092,6 +2098,15 @@ impl Builder<'_> {
                             ScalarKind::Bool,
                         )
                     }
+                };
+                if negated {
+                    let not = self.add(Expression::Unary {
+                        op: UnaryOperator::LogicalNot,
+                        expr: e,
+                    });
+                    (not, kind)
+                } else {
+                    (e, kind)
                 }
             }
         };
