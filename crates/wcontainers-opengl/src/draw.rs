@@ -7,8 +7,8 @@ use std::ffi::c_uint;
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, DrawCall, DrawRange, FanOrLoop,
-    FormatKind, FormatUse, IndexBinding, IndexFormat, IndexSource, MAX_BINDING_SETS, Object,
-    Program, ReflectedBinding, RingKind, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    Features, FormatKind, FormatUse, IndexBinding, IndexFormat, IndexSource, MAX_BINDING_SETS,
+    Object, Program, ReflectedBinding, RingKind, ScissorRect, ShaderModule, ShaderStage, SlotKind,
     SlowPath, StageSet, Topology, VertexBinding, Viewport, cut_scissors,
 };
 use wcontainers_nir::mesa::{PositionTransform, TextureSwizzle};
@@ -226,6 +226,7 @@ fn viewport(v: &pipe_viewport_state, minus_one: bool) -> (Viewport, PositionTran
             flip_y: sy > 0.0,
             half_z: minus_one,
             reverse_z,
+            fixed_point_size: false,
         },
     )
 }
@@ -459,10 +460,11 @@ fn draw<B: Backend>(
     if vs.is_null() || fs.is_null() {
         return Err("a draw without a vertex or fragment program".into());
     }
-    let (viewport, transform) = viewport(&bound.viewport, raster.minus_one);
+    let (viewport, mut transform) = viewport(&bound.viewport, raster.minus_one);
     let screen = context.screen();
     let mut backend = screen.backend();
     let backend = &mut *backend;
+    transform.fixed_point_size = !backend.caps().has(Features::POINT_SIZE);
     if transform.half_z {
         backend.slow_paths().hit(SlowPath::ClipDepthRewrite);
     }
@@ -732,7 +734,7 @@ fn fan_or_loop(topology: Topology) -> FanOrLoop {
 
 /// Whether the back end lacks indices of this width.
 fn needs_widening<B: Backend>(backend: &B, format: IndexFormat) -> bool {
-    format == IndexFormat::U8 && !backend.caps().has(wcontainers_gpu::Features::INDEX_U8)
+    format == IndexFormat::U8 && !backend.caps().has(Features::INDEX_U8)
 }
 
 /// 8-bit indices as 16-bit ones, restart values kept as restart values.

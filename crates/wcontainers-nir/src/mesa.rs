@@ -228,8 +228,8 @@ pub struct TextureSwizzle {
     pub swizzle: [Swizzle; COMPONENTS],
 }
 
-/// How a vertex program's position is changed to meet the host's clip space and viewport
-/// (`struct wc_position_transform`).
+/// How a vertex program's position (and point size) is changed to meet the host's clip space,
+/// viewport and points (`struct wc_position_transform`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PositionTransform {
@@ -239,6 +239,9 @@ pub struct PositionTransform {
     pub half_z: bool,
     /// Depth as w - z, for a depth range whose near value is the larger.
     pub reverse_z: bool,
+    /// The point size output removed: the host draws points of one size, to which OpenGL clamps
+    /// every size a program writes.
+    pub fixed_point_size: bool,
 }
 
 #[cfg(feature = "standalone")]

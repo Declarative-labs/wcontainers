@@ -190,7 +190,8 @@ uint64_t wc_nir_number_vertex_elements(struct nir_shader *nir);
  * (the driver's own, as Zink's) on lowered stage values. */
 void wc_nir_fragcolor_to_buffers(struct nir_shader *nir, unsigned buffers);
 
-/* How a vertex program's position is changed to meet the host's clip space and viewport. */
+/* How a vertex program's position (and point size) is changed to meet the host's clip space,
+ * viewport and points. */
 struct wc_position_transform {
    /* y negated: a Gallium viewport whose y scale is positive. */
    bool flip_y;
@@ -198,6 +199,9 @@ struct wc_position_transform {
    bool half_z;
    /* Depth as w - z, for a depth range whose near value is the larger. */
    bool reverse_z;
+   /* The point size output removed: the host draws points of one size, to which OpenGL clamps
+    * every size a program writes. */
+   bool fixed_point_size;
 };
 
 void wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform);

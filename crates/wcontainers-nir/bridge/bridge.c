@@ -482,10 +482,16 @@ wc_nir_fragcolor_to_buffers(struct nir_shader *nir, unsigned buffers)
 static bool
 transform_position(nir_builder *b, nir_intrinsic_instr *intr, void *transform)
 {
-   if (intr->intrinsic != nir_intrinsic_store_output ||
-       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+   if (intr->intrinsic != nir_intrinsic_store_output)
       return false;
    const struct wc_position_transform *t = transform;
+   const unsigned location = nir_intrinsic_io_semantics(intr).location;
+   if (location == VARYING_SLOT_PSIZ && t->fixed_point_size) {
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   if (location != VARYING_SLOT_POS)
+      return false;
    b->cursor = nir_before_instr(&intr->instr);
    enum { X, Y, Z, W };
    nir_def *at = intr->src[0].ssa;
@@ -507,7 +513,11 @@ wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform t
    if (nir->info.stage != MESA_SHADER_VERTEX)
       return;
    wc_nir_lower_io(nir);
-   nir_shader_intrinsics_pass(nir, transform_position, nir_metadata_control_flow, &transform);
+   if (nir_shader_intrinsics_pass(nir, transform_position, nir_metadata_control_flow, &transform) &&
+       transform.fixed_point_size) {
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+      nir_recompute_io_bases(nir, nir_var_shader_out);
+   }
 }
 
 /* The texture unit a texture instruction samples: its variable's binding plus a constant index. */

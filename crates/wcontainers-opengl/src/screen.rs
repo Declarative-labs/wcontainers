@@ -112,6 +112,12 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.max_vertex_attrib_stride = limits.max_vertex_stride;
     caps.max_point_size = limits.max_point_size;
     caps.max_line_width = limits.max_line_width;
+    caps.max_line_width_aa = limits.max_line_width;
+    // Without wide lines the back end draws one width, to which OpenGL clamps every width.
+    if !ours.has(Features::WIDE_LINES) {
+        caps.min_line_width = limits.max_line_width;
+        caps.min_line_width_aa = limits.max_line_width;
+    }
     caps.max_texture_anisotropy = f32::from(limits.max_anisotropy);
     caps.constant_buffer_offset_alignment = limits.min_uniform_offset_alignment;
     caps.max_varyings = limits.inter_stage_slots;
