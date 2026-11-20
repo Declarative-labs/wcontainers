@@ -77,7 +77,10 @@ and the layout luck again: the bar's command gives +17.24% [+16.32 .. +17.43] an
 pairs every one of five layouts of the build is under +21.2% (+18.06% to +20.12%) (below, "N4 run 16"). Run 17 held the
 rest of an inner loop's turn in its piece and counted parts ahead along their likely way (search -2.4% cycles): the bar's
 command gives +17.00% [+16.14 .. +17.42] and the system-call part 80.3 ns; by pairs the build is at +18.54% and four
-new layouts of it at +17.75% to +19.03%, every one under +21.2% (below, "N4 run 17").
+new layouts of it at +17.75% to +19.03%, every one under +21.2% (below, "N4 run 17"). Run 18 found that a native run
+spent about 164 million cycles before the program started, finding the float state moves by decoding every system
+register six times, and found them in one pass once a process: the bar's command gives +11.08% [+10.42 .. +11.52] and
+the system-call part 76.4 ns; by pairs the compute part went from +18.68% to +12.51% (below, "N4 run 18").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -104,6 +107,69 @@ new layouts of it at +17.75% to +19.03%, every one under +21.2% (below, "N4 run 
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 18 (2026-11-20): what a native run costs before the program starts
+
+Start: origin/main and origin/phase-1-literals had nothing new; no new ruling in the brief since run 15 (its section of
+2026-11-20 is what runs 15 to 17 built). Files in scratch native/n4r19 (logs, scripts, toys, snapshots in ab/).
+
+Found: matrix ran 46% more cycles natively than untranslated, though its hot loop (the aligned copy, checked by
+dumping the pieces at look-ahead 256 and by putting a `udf` in the tested way, which never ran) has one add more than
+plain, and the native piece run on the host costs only 8 to 15% over the guest's own code (piece.c). The rest was
+fixed cost. Each run is its own process, so what a run costs before the program's first instruction is in every
+workload's figure. Measured with the program's rounds skipped (matrix-empty, three runs each, load 3 to 7): native
+162 to 182 million cycles and 1.08 billion instructions, plain 84 to 123 million and 0.58 billion, untranslated 15 to
+22 million and 0.04 billion. Counting instructions around each of the monitor's answers (a scratch patch to
+tests/container/mod.rs, zz-instrument.patch, not kept) put 164 million cycles in one answer: the inside's routines
+request, where `FloatStatusMoves::with` decoded all 2^15 system registers of `msr` and `mrs` through the whole decoder,
+three scans for each of two registers, the first decode also building the decoder's index of forms.
+
+Built (no knob, nothing a guest or replay sees changes): the moves are found in one pass over `msr`'s system registers
+through that form's own decode (`decode_forms::decode`), the two routed writes told apart by the stops, each read the
+`mrs` of its write's register, checked presented and routed; found once a process with x0 and the register set per call
+(crates/wcontainers-arm64/src/encode.rs, `moves_of_x0`, this track's code). The routines answer now costs about 16
+million cycles (most of it reading the forms table, which the first translation needs anyway); the index of forms is
+built at the first translation instead, about 78 million cycles. That index is the shared decoder's
+(crates/wcontainers-arm64/src/forms.rs, `candidates`, the translator track's): built form by form, each form pushed into
+the buckets its fixed key bits allow, it is the same index (checked bucket by bucket against the filter, all 2048, on
+the rented ARM64 machine) for about 0.1 million cycles; the native start then measured 45 million cycles. Not committed:
+it is not this track's file (For the orchestrator).
+
+Results (Mac, Hypervisor.framework):
+- Alternating pairs against run 17's build (n4r18/ab/likely, 10 pairs, load 7.1 to 9.3, pairs-moves.log): compute part
+  +18.68% to +12.51%. This build against that one, cycles: matrix 0.867, calls 0.870, search 0.904, interpret 0.949,
+  sieve 0.956, sort 0.964, fib 0.976, hash 0.976, walk 0.994.
+- Speed bar, the test's own command (15 pairs, look-ahead 256, seed 1, 2000 resamples, speed.log and speed.jsonl, load
+  5.9 to 8.6, every run 99 to 100% on performance cores): compute part +11.08% [+10.42 .. +11.52], PASSES against
+  +21.2%. Native against plain, cycles (instructions): fib +20.3 (+60.2), sieve +12.7 (+20.7), hash +0.8 (+13.8), sort
+  +18.5 (+115.4), interpret -4.7 (+67.0), matrix +12.6 (+12.3), walk +16.7 (+60.0), search +14.2 (+13.5); calls +30.4
+  (+65.3). System-call part: 175.4 ns a call, the kernel's share 99.0, the back end's 76.4 ns [74.7 .. 79.1], PASSES
+  against 100 ns.
+- Headroom, plainly: by the bar's command 10.1 points (its interval's top 9.7 under the line); by alternating pairs 8.7
+  points. The spread over seeded layouts measured in runs 15 to 17 was 1.3 to 3.4 points.
+- The same build over four new seeded layouts, by pairs (scripts/layouts.sh, run 16's scratch patch to the inside's
+  `place` with seeds 9 to 12, restored after; each against the unpadded build, 6 pairs a program, layouts.log and
+  layouts.jsonl, 04:20 to 04:27, load 3.2 to 5.3): compute part +11.73%, +11.78%, +13.05%, +12.41%; the unpadded build
+  in the same runs +12.04%, +12.45%, +12.27%, +12.45%. Every figure of this build by pairs is under +21.2%, the worst
+  (seed 11) by 8.15 points; the spread over these layouts is 1.3 points. So the bar passes well outside the layout
+  luck measured so far, by either method.
+- Suites (Mac, scripts/mac.sh, suite/*.log, 04:10 to 04:19, load 3 to 10): forced interrupts 12257 stops over 14
+  functions at 3 look-aheads, 0 failed (seed 0x14057b7ef767814f); the differential test with new seeds, 0 failing each:
+  none 32,456 cases (seed 0x5e1d2a7c1), bounded 16 32,568 (0x5e1d2a7c16), bounded 256 32,490 (0x5e1d2a7c256); floor (21
+  cases and 1 measurement, 0 failed), probe (0 forms of 16 bytes or fewer differ, 44 larger as before), registers, exits
+  (4 programs, 0 failed), carry, kept, the monitor's lib tests (9), the inside's and the policy crate's tests, the
+  literal check's tests; the literal check exits 0. On the rented ARM64 machine: format, clippy with warnings denied
+  for wcontainers-arm64 (all targets), its tests and the monitor's routines tests (the moves' words as before).
+- Not run, Docker: from about 03:56 Docker Desktop on the Mac started no new container (`docker run` of alpine hung for
+  minutes, other tracks' too, while `docker version` answered, so the guard did not restart it). The kernel test (the
+  count at every counted event alike at none and 256, the reference), busybox and whole page were stopped by hand and
+  are to be run again when Docker starts containers; their result is below if it came back in this run.
+
+Measured on the way, nothing kept: host toys of matrix's inner loop (loop.c, align.c, align2.c, align3.c) show its speed
+depends on where the loop falls (an 8-instruction loop 10 to 15% faster starting at an odd word than an even one, and
+single placements 50 to 60% slower), but none of that explained matrix: the fixed cost did. One timing of the moves and
+the index (zz_moves.rs) ran on the Mac though the gate said to use the x86 machine, since it was the M5's figure that
+was wanted (forms table 2.8 ms, index about 14 ms, each old `with` about 8 ms).
 
 ## N4 run 17 (2026-11-20): an inner loop's turn held; parts counted ahead along their likely way
 
@@ -2786,10 +2852,11 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 - N4 run 13: the same last target for a call through a register (`blr xN`, xN neither x30 nor withheld), x30 built
   first so that a hit is one direct branch (sort -22.2% cycles, nothing slower beyond the noise). Plan 3.2 says so.
+  Confirmed by the orchestrator (brief, 2026-11-20).
 
 - N4 run 12: plan 3.2 makes every return the jump through its target's slot. As built, a return through a register
   that is not withheld first compares its target with its last target in line and goes there by a direct branch the
-  inside links (run 7's option (b), asked of the orchestrator since run 7 with no answer); the slot is the miss's way.
+  inside links (run 7's option (b); confirmed by the orchestrator in the brief of 2026-11-20); the slot is the miss's way.
   It trades nothing of run speed (fib -16.4%, sort -9.6%, calls.c -11.2% cycles, nothing slower beyond the noise) for
   a second path in every return and a patch at its first miss. Plan 3.2 says so.
 
@@ -2821,7 +2888,7 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   that part's add, and every exit taken while the count is ahead subtracts the lead first. The definition (E) and the
   count at every stop are unchanged (the position map gives each host instruction its lead, and the count is the guest's
   wherever a piece is entered or left); a loop of two parts adds once a turn instead of twice. Plan section 4 says so.
-  For the orchestrator to confirm.
+  Confirmed by the orchestrator (brief, 2026-11-20).
 
 - N4 run 8: native pieces at bounded and full look-ahead are found by the native emitter itself, not by the shared
   finder (T1, asked of the orchestrator since N4 run 1 with no answer). The shared finder's functions hold what a native
@@ -2981,6 +3048,19 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 18: (1) A native run spent about 164 million cycles (about 36 ms on the M5) before the program's first
+  instruction, in the monitor finding the float state moves; they are now found in one pass once a process. Nothing a
+  guest can see changes and nothing is traded. The bar's command gives +11.08% [+10.42 .. +11.52] against +21.2%, and
+  by alternating pairs +12.51% (run 17's build +18.68% in the same runs): headroom 8.7 points by pairs, more than twice
+  the largest layout spread measured (3.4). Please rule whether the bar passes. (2) For the translator track: the
+  decoder's index of forms (crates/wcontainers-arm64/src/forms.rs, `candidates`) costs about 78 million cycles at every
+  process's first decode, native and WebAssembly alike; building it form by form (each form pushed into the 2^k
+  buckets its free key bits allow, in form order) gives the same index, checked bucket by bucket, for about 0.1
+  million (patch in scratch native/n4r19/forms-index.patch). It would take a native run's start from about 123 to 45
+  million cycles. May this track commit it, or will that track? (3) Still open: the table's size (run 15; the sizings
+  each cost two instructions on the hit's way, and on the benchmark set and busybox only interpret's site exists, 1036
+  bytes) and loaded translations shared between processes (run 12).
 
 - N4 run 17: (1) The code after an inner loop's branch back is now held when it comes back into the piece, and each
   part is counted ahead along its likely way (the way that stays in its innermost loop), its other way inside the
