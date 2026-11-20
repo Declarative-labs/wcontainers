@@ -77,7 +77,16 @@ pub fn run_ours_injected(
     seed: u64,
     injections: driver::Injections,
 ) -> driver::Run {
-    run_ours_on(directory, path, arguments, seed, injections, None, &[])
+    run_ours_on(
+        directory,
+        path,
+        arguments,
+        seed,
+        injections,
+        None,
+        &[],
+        false,
+    )
 }
 
 /// As [`run_ours_saving`], with ports of this machine's loopback reaching the container's as
@@ -95,12 +104,16 @@ pub fn run_ours_published(
         ..Default::default()
     };
     run_ours_on(
-        directory, path, arguments, seed, injections, None, published,
+        directory, path, arguments, seed, injections, None, published, false,
     )
 }
 
 /// As [`run_ours_injected`], with the root file system on the backend (`Some("/")`) or in memory,
-/// and the ports published.
+/// the ports published, and the kernel on the machine's clock or a repeatable one.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each names how the container runs"
+)]
 fn run_ours_on(
     directory: &Path,
     path: &str,
@@ -109,6 +122,7 @@ fn run_ours_on(
     injections: driver::Injections,
     backend: Option<&str>,
     published: &[(u16, u16)],
+    wall_clock: bool,
 ) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, guest_directory_entry()));
@@ -124,7 +138,9 @@ fn run_ours_on(
         root_image: None,
         address_space: standin::SPACE_32_BIT,
     };
-    driver::run_injected(&container, seed, injections)
+    let mut prepared = driver::prepare(&container);
+    prepared.wall_clock = wall_clock;
+    driver::run_prepared(prepared, &container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
 }
 
@@ -134,6 +150,29 @@ fn run_ours_on(
 pub fn assert_same_output(out: &Path, name: &str, arguments: &[&str]) -> driver::Run {
     let program = guest::build(name, &[], out);
     let (ours, theirs) = run_both(&program, arguments);
+    assert_same(ours, &theirs)
+}
+
+/// As [`assert_same_output`], with our kernel on the machine's clock, as the Linux Test Project's
+/// tests run.
+pub fn assert_same_output_on_wall_clock(out: &Path, name: &str) -> driver::Run {
+    let program = guest::build(name, &[], out);
+    let path = reference::in_guest_directory(program.file_name().expect("program has a name"));
+    let ours = run_ours_on(
+        program.parent().expect("program has a directory"),
+        &path,
+        &[path.as_str()],
+        0,
+        driver::Injections::default(),
+        None,
+        &[],
+        true,
+    );
+    assert_same(ours, &reference::run(&program, &[]))
+}
+
+/// Checks that both runs printed the same lines and ended the same way; returns ours.
+fn assert_same(ours: driver::Run, theirs: &driver::Outcome) -> driver::Run {
     let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
     let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
     let differences: Vec<String> = ours_text
@@ -143,7 +182,7 @@ pub fn assert_same_output(out: &Path, name: &str, arguments: &[&str]) -> driver:
         .map(|(our, their)| format!("ours {our:?}\ntheirs {their:?}"))
         .collect();
     assert!(differences.is_empty(), "{}", differences.join("\n"));
-    assert_eq!(ours.outcome, theirs);
+    assert_eq!(&ours.outcome, theirs);
     ours
 }
 
@@ -219,7 +258,16 @@ fn same_output_seeded(
             saves,
             ..Default::default()
         };
-        let ours = run_ours_on(directory, &path, &all, seed, injections, backend, &[]);
+        let ours = run_ours_on(
+            directory,
+            &path,
+            &all,
+            seed,
+            injections,
+            backend,
+            &[],
+            false,
+        );
         let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
         let differences: Vec<String> = ours_text

@@ -17,3 +17,18 @@ fn cpu_limit_matches_reference() {
         ours.warnings
     );
 }
+
+/// The same on the machine's clock, as the Linux Test Project's setrlimit06 runs: the limits are
+/// looked at within each second of it however fast the CPU side runs, so SIGXCPU comes first.
+#[test]
+fn cpu_limit_on_the_wall_clock_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let ours = wcontainers_kernel_test::assert_same_output_on_wall_clock(&out, "cpulimit");
+    assert!(
+        ours.warnings
+            .iter()
+            .all(|warned| warned.reason == "core dump not written"),
+        "{:?}",
+        ours.warnings
+    );
+}

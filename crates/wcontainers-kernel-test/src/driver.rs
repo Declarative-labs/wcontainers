@@ -46,8 +46,13 @@ pub(crate) type Back = crate::standin::StandIn;
 pub(crate) type Back = wcontainers_wasmtime::CpuSide<wcontainers_arm64::Arm64>;
 
 #[cfg(not(feature = "runtime"))]
-fn back_end(_seed: u64, address_space: u64) -> Back {
-    crate::standin::StandIn::with_space(address_space)
+fn back_end(_seed: u64, address_space: u64, wall_clock: bool) -> Back {
+    let stand_in = crate::standin::StandIn::with_space(address_space);
+    if wall_clock {
+        stand_in.on_wall_clock()
+    } else {
+        stand_in
+    }
 }
 
 /// One compiler for the test process, so a second container finds the first one's translations, with
@@ -55,7 +60,7 @@ fn back_end(_seed: u64, address_space: u64) -> Back {
 /// The address space ends at the back end's own ceiling, from its output's widths, whatever the
 /// container asks.
 #[cfg(feature = "runtime")]
-pub(crate) fn back_end(seed: u64, _address_space: u64) -> Back {
+pub(crate) fn back_end(seed: u64, _address_space: u64, _wall_clock: bool) -> Back {
     use wcontainers_wasmtime::{Compiler, CpuSide, Optimise};
     static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
         std::sync::OnceLock::new();
@@ -770,6 +775,7 @@ where
         echo,
         client,
         ceiling,
+        wall_clock,
         ..
     } = prepared;
     #[cfg(feature = "runtime")]
@@ -784,7 +790,7 @@ where
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
-    let mut cpu = back_end(seed, container.address_space);
+    let mut cpu = back_end(seed, container.address_space, wall_clock);
     host.injecting = Some(Injecting::new(seed, injections));
     *host.streams() = Streams::new(client);
     host.streams().echo = echo;

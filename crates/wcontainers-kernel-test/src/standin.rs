@@ -52,6 +52,8 @@ struct Stopped {
     fault: Option<(u64, Access)>,
     /// Instructions of the blocks entered, for how long the turn took.
     instructions: u64,
+    /// When a turn on the machine's clock ends, whatever it has run.
+    deadline: Option<std::time::Instant>,
 }
 
 struct Memory {
@@ -98,6 +100,8 @@ pub struct StandIn {
     last_block: u32,
     /// How many instructions the last turn ran, about: whole blocks are counted.
     pub last_instructions: u64,
+    /// Whether the kernel's clock is the machine's, so a slice is also a span of it.
+    wall_clock: bool,
 }
 
 fn prot(permissions: Permissions) -> Prot {
@@ -146,7 +150,14 @@ impl Memory {
             .expect("adding the interrupt hook");
         unicorn
             .add_block_hook(1, 0, |unicorn, _, size| {
-                unicorn.get_data_mut().instructions += u64::from(size / 4);
+                let stopped = unicorn.get_data_mut();
+                stopped.instructions += u64::from(size / 4);
+                if stopped
+                    .deadline
+                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                {
+                    unicorn.emu_stop().expect("stopping unicorn");
+                }
             })
             .expect("adding the block hook");
         let invalid = HookType(
@@ -394,6 +405,16 @@ impl StandIn {
             last_thread: 0,
             last_block: 0,
             last_instructions: 0,
+            wall_clock: false,
+        }
+    }
+
+    /// The same CPU side for a kernel on the machine's clock: a turn also ends once its slice has
+    /// passed on that clock, since an instruction then takes what it takes.
+    pub fn on_wall_clock(self) -> Self {
+        Self {
+            wall_clock: true,
+            ..self
         }
     }
 
@@ -458,12 +479,13 @@ impl StandIn {
             last_thread: self.last_thread,
             last_block: self.last_block,
             last_instructions: 0,
+            wall_clock: self.wall_clock,
         }
     }
 
     /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
     /// slice, the stop flag is raised after that many instructions (one a nanosecond), so where a
-    /// turn ends repeats exactly.
+    /// turn ends repeats exactly; on the machine's clock, also once that many nanoseconds passed.
     pub fn run(
         &mut self,
         thread: ThreadId,
@@ -484,7 +506,14 @@ impl StandIn {
         memory
             .load_registers(&state.registers)
             .expect("loading registers into unicorn");
-        *memory.unicorn.get_data_mut() = Stopped::default();
+        *memory.unicorn.get_data_mut() = Stopped {
+            deadline: slice_nanoseconds
+                .filter(|_| self.wall_clock)
+                .map(|nanoseconds| {
+                    std::time::Instant::now() + std::time::Duration::from_nanos(nanoseconds)
+                }),
+            ..Stopped::default()
+        };
         // Zero means no limit.
         let count = slice_nanoseconds.map_or(0, |nanoseconds| nanoseconds.max(1) as usize);
         if count > 0 && !memory.counting {

@@ -26,7 +26,7 @@ fn layer1_cpu() -> Layer1Cpu {
     #[cfg(not(feature = "runtime"))]
     return crate::buffer::BufferCpu::new();
     #[cfg(feature = "runtime")]
-    return crate::driver::back_end(0, crate::standin::SPACE_32_BIT);
+    return crate::driver::back_end(0, crate::standin::SPACE_32_BIT, false);
 }
 use crate::driver::TestHost;
 use crate::image::{File, Kind};
