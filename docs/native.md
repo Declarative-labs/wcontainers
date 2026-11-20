@@ -156,12 +156,15 @@ rewritten) would change only that function (brief).
   pairs against run 8 (n4r10/ab-comesback.log, 6 pairs, load 4 to 5, counted ahead as section 4 says):
   search -34.7% cycles (its inner loop had been two pieces crossing by linked exits each turn), every other
   workload within 2.5% and its instructions unchanged; following every such next instruction instead gave
-  fib +38% again (n4r10/ab-outer.log). The instructions are
+  fib +38% again (n4r10/ab-outer.log). Since N4 run 17 the same holds for a branch back into the piece: the
+  code after an inner loop's branch back is held when it comes back into the piece (search's match, which
+  went back to its loop through two linked exits; a whole loop nest is one piece), and still starts its own
+  piece when it only leaves. The instructions are
   laid out in address order, each carried over by its route (section 3.4). A branch to an instruction the
   piece holds goes straight to it (the emitter links it as a loader links an exit, `Native::link`), any
   other target is an exit; a conditional branch's taken side is an exit placed out of line. Each
   straight-line part (entered only at its start, ended by a branch or where the next instruction is not the
-  next in the piece) has its own add, or is counted ahead by the one part it is entered from (section 4),
+  next in the piece) has its own add, or is counted ahead by the parts it is entered from (section 4),
   so the count is exact wherever the piece is entered or left.
   Why not the shared finder (T1): its functions hold what a native piece cannot enter (code after a call,
   which the return reaches through its slot; the targets of a jump table, reached through their slots) and
@@ -948,6 +951,14 @@ linking past it and never pointing the branch before it at another piece), so th
 wherever the piece is left and exact at every stop. The definition is E unchanged; only where the adds sit
 moves. Measured on search (alternating pairs, together with the walk change of section 3.2): -34.7% cycles,
 -13.8% instructions.
+Since N4 run 17 a part goes on most likely (`likely` in the emitter) to the way that stays in the innermost
+loop holding it (the smallest span from a branch back's target to the branch), else to a branch back, else
+by falling through; a part entered only from parts whose likely way is it, each going on only to it or with
+an add of its own to join, is counted by their adds. A part's other way inside the piece, taken with the
+count ahead, goes through the out-of-line code that subtracts the lead (the emitter links past the `sub`,
+as a loader does), and a part whose fall-through is not its likely way never has the count ahead at its
+end; a loop of parts that would all be counted ahead keeps its first part's add. So in a loop nest held
+whole (search's), the inner loop adds once a turn and its way out to the outer loop settles.
 
 **Why it keeps positions unique.** A position is reached at most once in a run only if no path of the
 guest's control flow comes back to the same pc without a counted event. Every path that comes back to a pc
