@@ -11,7 +11,7 @@ index 59d30c8..9c3c232 100644
  with_gallium_asahi = gallium_drivers.contains('asahi')
  with_gallium_rocket = gallium_drivers.contains('rocket')
 diff --git a/meson.options b/meson.options
-index beb2837..b4ed6c9 100644
+index beb2837..83d8d8c 100644
 --- a/meson.options
 +++ b/meson.options
 @@ -87,7 +87,8 @@ option(
@@ -29,11 +29,11 @@ index beb2837..b4ed6c9 100644
  )
  
 +option(
-+  'wcontainers-library',
-+  type : 'string',
-+  value : '',
-+  description : 'the static library of the wcontainers Gallium driver, built by cargo; ' +
-+                'the linker arguments of its native libraries in the same path plus .native-libs'
++  'wcontainers-link-args',
++  type : 'array',
++  value : [],
++  description : 'the linker arguments of the wcontainers Gallium driver: its static library, ' +
++                'built by cargo, and the native libraries rustc printed for it'
 +)
 +
  option(
@@ -41,21 +41,16 @@ index beb2837..b4ed6c9 100644
    type : 'string',
 diff --git a/src/gallium/drivers/wcontainers/meson.build b/src/gallium/drivers/wcontainers/meson.build
 new file mode 100644
-index 0000000..1e3c02f
+index 0000000..65ad0ec
 --- /dev/null
 +++ b/src/gallium/drivers/wcontainers/meson.build
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,7 @@
 +# SPDX-License-Identifier: MIT
 +# The wcontainers Gallium driver is a static library cargo builds (crates/wcontainers-opengl of
-+# wcontainers), linked here with the native libraries rustc printed for it.
-+fs = import('fs')
-+wcontainers_library = get_option('wcontainers-library')
-+if wcontainers_library == ''
-+  error('the wcontainers Gallium driver needs -Dwcontainers-library')
-+endif
++# wcontainers), linked with the native libraries rustc printed for it: both in -Dwcontainers-link-args.
 +driver_wcontainers = declare_dependency(
 +  compile_args : '-DGALLIUM_WCONTAINERS',
-+  link_args : [wcontainers_library] + fs.read(wcontainers_library + '.native-libs').strip().split(),
++  link_args : get_option('wcontainers-link-args'),
 +)
 diff --git a/src/gallium/drivers/wcontainers/wcontainers_public.h b/src/gallium/drivers/wcontainers/wcontainers_public.h
 new file mode 100644

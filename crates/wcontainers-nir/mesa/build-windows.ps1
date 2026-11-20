@@ -1,6 +1,7 @@
 # Fetches the build tools, then the pinned Mesa (pin.toml) with the patches of patches/ (applied in
 # name order), and builds it with the options of options-windows.ini on the Windows desktop: the WGL
-# frontend's opengl32.dll with llvmpipe, by the Visual C++ compiler. From a checkout on the Mac:
+# frontend's opengl32.dll with our driver (crates/wcontainers-opengl) and llvmpipe, by the Visual C++
+# compiler. From a checkout on the Mac:
 #
 #   tools/graphics-rig/remote powershell -ExecutionPolicy Bypass -File crates\wcontainers-nir\mesa\build-windows.ps1
 #
@@ -79,6 +80,28 @@ foreach ($line in Get-Content (Join-Path $build 'build.ninja')) {
 if ($flexOutputs) {
     & ninja -C $build -j 1 @($flexOutputs | ForEach-Object { $_ -replace '\$(.)', '$1' }); Run 'flex'
 }
+
+# Our driver, a static library built against this build's headers and compile flags for the static
+# Visual C++ runtime Mesa uses, then linked into libgallium_wgl.dll with the native libraries rustc
+# names for it (printed only when rustc runs, so kept between runs).
+$env:WCONTAINERS_MESA = $build
+$env:RUSTFLAGS = '-C target-feature=+crt-static'
+$driverTarget = Join-Path $Root 'opengl-target'
+$nativeLibs = Join-Path $build 'wcontainers-native-libs'
+# Windows PowerShell stops on a native command's standard error once it is redirected.
+$ErrorActionPreference = 'Continue'
+$printed = & cargo rustc --quiet -p wcontainers-opengl --release --lib --target-dir $driverTarget `
+    --manifest-path (Join-Path $Here '..\..\..\Cargo.toml') -- --print native-static-libs 2>&1
+$ErrorActionPreference = 'Stop'
+if ($LASTEXITCODE -ne 0) { $printed | ForEach-Object { "$_" }; throw "build-windows: cargo rustc wcontainers-opengl failed ($LASTEXITCODE)" }
+$found = $printed | ForEach-Object { "$_" } | Select-String -Pattern 'native-static-libs: (.*)$' | Select-Object -First 1
+if ($found) { Set-Content -NoNewline -Path $nativeLibs -Value $found.Matches[0].Groups[1].Value }
+if (-not (Test-Path $nativeLibs)) { throw 'build-windows: rustc printed no native libraries for the driver' }
+$driver = Join-Path $driverTarget 'release\wcontainers_opengl.lib'
+$linkArgs = @($driver) + ((Get-Content -Raw $nativeLibs).Trim() -split ' +')
+& meson configure $build "-Dwcontainers-link-args=$($linkArgs -join ',')"; Run 'meson configure'
+# Meson does not see the library change, so the DLL that links it is always linked again.
+Get-ChildItem -Path $build -Recurse -Filter 'libgallium_wgl.dll' | Remove-Item -Force
 & meson compile -C $build -j $Jobs; Run 'meson compile'
 & meson install -C $build --quiet; Run 'meson install'
 
