@@ -37,6 +37,10 @@ static DIRECTIVES: [u8; EXPORTS.len()] = {
     out
 };
 
+pub use wcontainers_direct3d_11::runtime::{
+    D3D10_1_LIBRARY, D3D10_LIBRARY, D3D10CORE_LIBRARY, D3D11_LIBRARY, DXGI_LIBRARY, entry,
+};
+
 /// The module holding `address`.
 fn module_of(address: *const c_void) -> Option<HMODULE> {
     let mut module = HMODULE::default();
@@ -158,7 +162,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<WithFlags>("dxgi.dll", c"CreateDXGIFactory2") } {
+        return match unsafe { system::<WithFlags>(DXGI_LIBRARY, entry::CREATE_DXGI_FACTORY2) } {
             Some(f) => unsafe { f(flags, riid, out) },
             None => E_NOINTERFACE,
         };
@@ -178,7 +182,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory1(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<Plain>("dxgi.dll", c"CreateDXGIFactory1") } {
+        return match unsafe { system::<Plain>(DXGI_LIBRARY, entry::CREATE_DXGI_FACTORY1) } {
             Some(f) => unsafe { f(riid, out) },
             None => E_NOINTERFACE,
         };
@@ -198,7 +202,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<Plain>("dxgi.dll", c"CreateDXGIFactory") } {
+        return match unsafe { system::<Plain>(DXGI_LIBRARY, entry::CREATE_DXGI_FACTORY) } {
             Some(f) => unsafe { f(riid, out) },
             None => E_NOINTERFACE,
         };

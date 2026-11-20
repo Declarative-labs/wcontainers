@@ -86,12 +86,13 @@ impl Factory_Impl {
         self.enum_adapters1(index)?.cast()
     }
 
+    /// A new object for the one adapter at each call, as DXGI's enumerations give.
     pub(super) fn enum_adapters1(&self, index: u32) -> Result<IDXGIAdapter1> {
-        if index == 0 {
-            Ok(self.adapter.clone())
-        } else {
-            Err(DXGI_ERROR_NOT_FOUND.into())
+        if index != 0 {
+            return Err(DXGI_ERROR_NOT_FOUND.into());
         }
+        let adapter = self.adapter.cast_object_ref::<Adapter>()?;
+        Ok(adapter.another(self.to_interface()).into())
     }
 
     /// The debug layer the flag asks for is not served, so no flag holds.
@@ -106,14 +107,16 @@ impl Factory_Impl {
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
-        if let Some(p) = unsafe { out.as_mut() } {
-            *p = std::ptr::null_mut();
-        }
+        let Some(p) = (unsafe { out.as_mut() }) else {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        };
+        *p = std::ptr::null_mut();
         let ours = unsafe { self.adapter.GetDesc1()? }.AdapterLuid;
         if (ours.LowPart, ours.HighPart) != (luid.LowPart, luid.HighPart) {
             return Err(DXGI_ERROR_NOT_FOUND.into());
         }
-        unsafe { self.adapter.query(riid, out).ok() }
+        let adapter = self.enum_adapters1(0)?;
+        unsafe { adapter.query(riid, out).ok() }
     }
 
     /// The one adapter, whatever the preference.
@@ -132,6 +135,8 @@ impl Factory_Impl {
     }
 
     /// Presenting without waiting for the display (tearing) is not offered: browsers pace frames.
+    /// Another feature or a size other than the answer's is `DXGI_ERROR_INVALID_CALL`, as DXGI
+    /// answers.
     pub(super) fn check_feature_support(
         &self,
         feature: DXGI_FEATURE,
@@ -142,7 +147,7 @@ impl Factory_Impl {
             || data.is_null()
             || size as usize != size_of::<BOOL>()
         {
-            return Err(E_INVALIDARG.into());
+            return Err(DXGI_ERROR_INVALID_CALL.into());
         }
         unsafe { *data.cast::<BOOL>() = false.into() };
         Ok(())
