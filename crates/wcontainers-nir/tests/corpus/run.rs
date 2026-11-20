@@ -577,9 +577,9 @@ fn direct_route(
             storage_formats: bound_views(&routed),
             ..VariantKey::default()
         };
-        let (module, reflection) =
+        let (module, rewritten) =
             wcontainers_nir::direct::rewrite(routed, reflection, &variant, &key)?;
-        Ok((module.module, reflection))
+        Ok((module.module, rewritten.bindings))
     });
     let convert_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     match converted {

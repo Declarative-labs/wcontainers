@@ -339,9 +339,17 @@ wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
 {
    clip_unpositioned(nir);
    nir_shader_instructions_pass(nir, round_array_layer, nir_metadata_control_flow, NULL);
-   /* The common form's texel loads take no offset: it is added to the coordinate. */
-   const nir_lower_tex_options load_offsets = {.lower_txf_offset = true};
-   NIR_PASS(_, nir, nir_lower_tex, &load_offsets);
+   /* The common form's texel loads take no offset (it is added to the coordinate), its samples no
+    * projector (the coordinate is divided first) and its gathers one offset; rectangles' coordinates
+    * are normalized. The GLSL front lowers the same before; st/mesa hands them over as written. */
+   const nir_lower_tex_options lowered = {
+      .lower_txf_offset = true,
+      .lower_txp = ~0u,
+      .lower_txp_array = true,
+      .lower_rect = true,
+      .lower_tg4_offsets = true,
+   };
+   NIR_PASS(_, nir, nir_lower_tex, &lowered);
    nir_shader_instructions_pass(nir, drop_multisampled_size_level, nir_metadata_control_flow, NULL);
    /* The common form's dispatches start at workgroup 0, and Vulkan has no global offset. */
    const nir_lower_compute_system_values_options from_zero = {0};

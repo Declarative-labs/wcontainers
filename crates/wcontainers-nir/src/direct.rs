@@ -3372,28 +3372,31 @@ const NO_MODULE: &str = "the shaders crate's rewrite gave no module";
 /// The shaders crate's rewrites of plan 15.4 on route B's module: arrays of textures, storage
 /// textures and samplers split into a binding an element, gathers at offsets known only at run
 /// time moved into their coordinates, and each storage texture whose slot `variant` names given
-/// the bound view's format. A slot declared without a format that `variant` does not name is
+/// the bound view's format; and vertex inputs fetched in the program (`VariantKey::pulled`), which
+/// find their inputs by location. A slot declared without a format that `variant` does not name is
 /// refused by name, as is a variant asking for more than these (its rewrites read the program's
 /// stage values, which the driver's reflection holds). `bindings` is what `Nir::to_common_form`
-/// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it.
+/// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it;
+/// the reflection holds the bindings and helper constants the rewrites added.
 pub fn rewrite(
     routed: Routed,
     bindings: Vec<ReflectedBinding>,
     variant: &VariantKey,
     route_key: &[u8; cache::KEY_BYTES],
-) -> Result<(ShaderModule, Vec<ReflectedBinding>), ConvertError> {
+) -> Result<(ShaderModule, Reflection), ConvertError> {
     let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
     if !routed.rewrites.formatless.iter().all(named) {
         return Err(unsupported(format_args!(
             "a storage image without a format the variant does not name"
         )));
     }
-    let only_15_4 = VariantKey {
+    let routed_rewrites = VariantKey {
         storage_formats: variant.storage_formats.clone(),
         texels_through_buffer: variant.texels_through_buffer,
+        pulled: variant.pulled.clone(),
         ..VariantKey::default()
     };
-    if *variant != only_15_4 {
+    if *variant != routed_rewrites {
         return Err(unsupported(format_args!(
             "a variant rewrite reading the program's stage values"
         )));
@@ -3420,5 +3423,5 @@ pub fn rewrite(
         .modules
         .pop()
         .ok_or_else(|| ConvertError::Rewrite(NO_MODULE.into()))?;
-    Ok((module, converted.reflection.bindings))
+    Ok((module, converted.reflection))
 }

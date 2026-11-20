@@ -402,8 +402,9 @@ fn rewritten_verdict(source: &str) -> (Verdict, Rewrites) {
             .collect(),
         ..VariantKey::default()
     };
-    let (module, bindings) =
+    let (module, reflection) =
         wcontainers_nir::direct::rewrite(routed, bindings, &variant, &key).unwrap();
+    let bindings = reflection.bindings;
     let verdict = on_each_seed(|options| {
         glsl::compare_compute(source, &stage.names, &module.module, &bindings, options)
     });
