@@ -178,6 +178,23 @@ rewritten) would change only that function (brief).
   mmap base, kernel/memory.rs:260 and :407). Rejected: one base word per loaded translation read
   pc-relatively (an execute-only page cannot be read, check-n0/xo.out case 2) or from a page the guest's
   level can read (one more page of ours the guest could read where Linux faults, section 7.2).
+  As built (N4 run 11, ARM64): every word that builds a guest address is an address place in the
+  translation (`AddressPlace`: its offset, register, which word of the sequence, the address, and whether the
+  register gets the address or its entry slot's address): a call's x30, `adr` and `adrp`, a literal load's
+  address and each exit's slot address. Such a sequence is three wide moves for every address under 2^48
+  (`movz`, or `movn` for a slot address, then two `movk`s; `encode::move_address`), so it is as long wherever
+  the code sits; a fix-up that finishes one is `Fixup::Address`. The code moves by its places alone between
+  any two pages of `Native::movable()`: from 2^32 (`adrp`'s reach, so no address it names wraps below zero)
+  up to 2^45 less a direct branch's reach and a page (so no direct target leaves the mirror's reach). There
+  `Translation::moved` writes each place again and shifts the position map's guest addresses, its address
+  fix-ups and the exits' targets, and gives what translating at the new page gives: a seeded test compares
+  the two over random code at random movable pages, every look-ahead, with and without the count
+  (crates/wcontainers-hypervisor/src/translate.rs, knobs `WCONTAINERS_MOVED_CASES` and
+  `WCONTAINERS_MOVED_SEED`). A piece the emitter links within itself drops the place of the word it links
+  over. The monitor keeps each piece it made (`Translator`, in memory) under the guest bytes it was made
+  from, their offset in the page, whether the count is written, and the page itself where the page is not
+  movable, and answers a request for the same bytes at another movable page from it, moved there. Files on
+  disk are not built yet (below, the cache).
 - **Exits linked to each other.** A direct branch to a piece of the same loaded translation is patched into a
   direct branch once the target is translated (one aligned 4-byte write on ARM64, a rel32 on x86-64, while no
   virtual CPU runs that code, then the architecture's instruction-cache maintenance). A branch to a guest
