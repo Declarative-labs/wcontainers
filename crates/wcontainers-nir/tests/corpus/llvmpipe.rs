@@ -88,11 +88,13 @@ pub struct Variable {
     pub top_level_stride: i32,
 }
 
-/// A uniform or storage block: its name and size.
+/// A uniform or storage block: its name and size; or an atomic counter buffer, at its binding
+/// point, which the comparison takes as a storage block after the program's own.
 #[derive(Clone, Debug)]
 pub struct Block {
     pub name: String,
     pub size: u32,
+    pub atomic_binding: Option<u32>,
 }
 
 /// A subroutine uniform of one stage: its location, elements and the indices of the subroutines
@@ -671,9 +673,39 @@ impl Llvmpipe {
                 Block {
                     name,
                     size: u32::try_from(size[0]).unwrap_or(0),
+                    atomic_binding: None,
                 }
             })
             .collect()
+    }
+
+    /// The program's storage blocks, then its atomic counter buffers.
+    fn storage_blocks(&self, program: glow::Program) -> Vec<Block> {
+        let mut blocks = self.blocks(program, glow::SHADER_STORAGE_BLOCK);
+        let mut count = 0;
+        // SAFETY: an OpenGL 4.3 query on a linked program, into a local.
+        unsafe {
+            (self.get_program_interface)(
+                program.0.get(),
+                glow::ATOMIC_COUNTER_BUFFER,
+                glow::ACTIVE_RESOURCES,
+                &mut count,
+            );
+        }
+        let properties = [glow::BUFFER_BINDING, glow::BUFFER_DATA_SIZE];
+        for index in 0..u32::try_from(count).unwrap_or(0) {
+            let [binding, size] =
+                self.resource(program, glow::ATOMIC_COUNTER_BUFFER, index, &properties)[..]
+            else {
+                unreachable!("one value a property")
+            };
+            blocks.push(Block {
+                name: format!("atomic counters at binding {binding}"),
+                size: u32::try_from(size).unwrap_or(0),
+                atomic_binding: u32::try_from(binding).ok(),
+            });
+        }
+        blocks
     }
 
     fn stage_values(&self, program: glow::Program, interface: u32) -> Vec<StageValue> {
@@ -747,7 +779,7 @@ impl Llvmpipe {
         Reflection {
             uniforms: self.variables(program, glow::UNIFORM),
             uniform_blocks: self.blocks(program, glow::UNIFORM_BLOCK),
-            storage_blocks: self.blocks(program, glow::SHADER_STORAGE_BLOCK),
+            storage_blocks: self.storage_blocks(program),
             buffer_variables: self.variables(program, glow::BUFFER_VARIABLE),
             inputs: self.stage_values(program, glow::PROGRAM_INPUT),
             outputs: self.stage_values(program, glow::PROGRAM_OUTPUT),
@@ -1018,11 +1050,15 @@ impl Llvmpipe {
                     .buffers
                     .push(self.buffer(glow::UNIFORM_BUFFER, i, bytes)?);
             }
-            for (i, bytes) in (0..).zip(storage_blocks) {
-                gl.shader_storage_block_binding(program, i, i);
-                bound
-                    .storage
-                    .push(self.buffer(glow::SHADER_STORAGE_BUFFER, i, bytes)?);
+            let blocks = self.storage_blocks(program);
+            for ((i, bytes), block) in (0..).zip(storage_blocks).zip(&blocks) {
+                let buffer = if let Some(binding) = block.atomic_binding {
+                    self.buffer(glow::ATOMIC_COUNTER_BUFFER, binding, bytes)?
+                } else {
+                    gl.shader_storage_block_binding(program, i, i);
+                    self.buffer(glow::SHADER_STORAGE_BUFFER, i, bytes)?
+                };
+                bound.storage.push(buffer);
             }
             for (unit, texture) in (0..).zip(sampled) {
                 let (texture, image) = self.sampled_texture(program, unit, texture)?;

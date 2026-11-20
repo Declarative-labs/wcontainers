@@ -97,6 +97,9 @@ enum wc_glsl_name_kind {
    WC_GLSL_STORAGE_BLOCK,
    WC_GLSL_SAMPLER,
    WC_GLSL_IMAGE,
+   /* An atomic counter buffer, which the driver gives the program as a storage block: `at` its
+    * program binding, `element` its OpenGL binding point. */
+   WC_GLSL_ATOMIC_COUNTER_BUFFER,
    /* A stage input or output: `at` its location in the common form, `count` its locations. */
    WC_GLSL_INPUT,
    WC_GLSL_OUTPUT,

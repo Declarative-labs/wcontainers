@@ -82,6 +82,34 @@ void main() {
 }
 ";
 
+/// Atomic counters, which the driver gives the program in storage buffers, and workgroup memory,
+/// which the linker makes byte offsets; each result independent of the invocations' order.
+const COUNTERS_AND_SHARED: &str = "#version 460
+layout(local_size_x = 8) in;
+layout(binding = 0) uniform atomic_uint seen[2];
+layout(binding = 2, offset = 4) uniform atomic_uint hits;
+layout(binding = 2, offset = 8) uniform atomic_uint highest;
+layout(std430) buffer Results { uint sums[16]; float halves[16]; };
+shared uint tally[8];
+shared float half_of[8];
+shared uint total;
+void main() {
+    uint i = gl_LocalInvocationID.x;
+    uint g = gl_GlobalInvocationID.x;
+    atomicCounterIncrement(seen[g % 2u]);
+    atomicCounterAdd(hits, g);
+    atomicCounterMax(highest, g * 3u);
+    if (i == 0u) total = 0u;
+    tally[i] = g * g;
+    half_of[i] = float(g) * 0.5;
+    barrier();
+    atomicAdd(total, tally[(i + 1u) % 8u]);
+    barrier();
+    sums[g] = total + tally[7u - i];
+    halves[g] = half_of[(i + 3u) % 8u];
+}
+";
+
 const SAMPLING: &str = "#version 430
 layout(local_size_x = 8) in;
 uniform sampler2D colours;
@@ -251,6 +279,11 @@ fn compute_verdict(source: &str) -> Verdict {
 #[test]
 fn a_glsl_compute_program_matches_llvmpipe_on_route_b() {
     assert_eq!(compute_verdict(PROGRAM), Verdict::Matched);
+}
+
+#[test]
+fn a_glsl_program_of_atomic_counters_and_workgroup_memory_matches_llvmpipe_on_route_b() {
+    assert_eq!(compute_verdict(COUNTERS_AND_SHARED), Verdict::Matched);
 }
 
 #[test]

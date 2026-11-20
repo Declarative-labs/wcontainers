@@ -560,9 +560,11 @@ buffer_access(const nir_intrinsic_instr *intr, int *block, int *offset, bool *un
    }
 }
 
-/* What the accesses show of the storage blocks: how many there are, and which are written. */
+/* What the accesses show of the storage blocks: how many indices there are, which are reached (an
+ * atomic counter buffer's index leaves a gap where no buffer is bound), and which are written. */
 struct storage_use {
    uint32_t blocks;
+   BITSET_DECLARE(reached, PIPE_MAX_SHADER_BUFFERS);
    BITSET_DECLARE(written, PIPE_MAX_SHADER_BUFFERS);
 };
 
@@ -577,6 +579,7 @@ note_storage(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       return false;
    uint32_t index = nir_src_as_uint(intr->src[block]);
    use->blocks = MAX2(use->blocks, index + 1);
+   BITSET_SET(use->reached, index);
    if (writes)
       BITSET_SET(use->written, index);
    return false;
@@ -594,6 +597,8 @@ access_words(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (index >= (uniform ? w->uniforms : w->storages))
       return false;
    nir_variable *var = uniform ? w->uniform[index] : w->storage[index];
+   if (!var)
+      return false;
    b->cursor = nir_before_instr(&intr->instr);
    if (offset < 0) {
       nir_deref_instr *words = nir_build_deref_struct(b, nir_build_deref_var(b, var), 0);
@@ -630,6 +635,73 @@ access_words(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/* A workgroup memory access as 32-bit derefs of `data`, the workgroup's words; one of another
+ * width is left as it is. */
+static bool
+shared_words(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   nir_variable *var = data;
+   unsigned offset;
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_shared:
+   case nir_intrinsic_shared_atomic:
+   case nir_intrinsic_shared_atomic_swap:
+      offset = 0;
+      break;
+   case nir_intrinsic_store_shared:
+      offset = 1;
+      break;
+   default:
+      return false;
+   }
+   bool stores = intr->intrinsic == nir_intrinsic_store_shared;
+   unsigned bits = stores ? nir_src_bit_size(intr->src[0]) : intr->def.bit_size;
+   if (bits != WC_WORD_BYTES * CHAR_BIT)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *bytes = nir_iadd_imm(b, intr->src[offset].ssa, nir_intrinsic_base(intr));
+   nir_def *first = nir_ushr_imm(b, bytes, util_logbase2(WC_WORD_BYTES));
+   nir_deref_instr *words = nir_build_deref_var(b, var);
+   if (stores) {
+      nir_def *value = intr->src[0].ssa;
+      u_foreach_bit(c, nir_intrinsic_write_mask(intr))
+         nir_store_deref(b, nir_build_deref_array(b, words, nir_iadd_imm(b, first, c)),
+                         nir_channel(b, value, c), 1);
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   nir_def *result;
+   if (intr->intrinsic == nir_intrinsic_shared_atomic) {
+      result = nir_deref_atomic(b, bits, &nir_build_deref_array(b, words, first)->def,
+                                intr->src[1].ssa, .atomic_op = nir_intrinsic_atomic_op(intr));
+   } else if (intr->intrinsic == nir_intrinsic_shared_atomic_swap) {
+      result = nir_deref_atomic_swap(b, bits, &nir_build_deref_array(b, words, first)->def,
+                                     intr->src[1].ssa, intr->src[2].ssa,
+                                     .atomic_op = nir_intrinsic_atomic_op(intr));
+   } else {
+      nir_def *loaded[NIR_MAX_VEC_COMPONENTS];
+      for (unsigned c = 0; c < intr->def.num_components; c++)
+         loaded[c] = nir_load_deref(b, nir_build_deref_array(b, words, nir_iadd_imm(b, first, c)));
+      result = nir_vec(b, loaded, intr->def.num_components);
+   }
+   nir_def_replace(&intr->def, result);
+   return true;
+}
+
+/* The workgroup's memory, which the linker lowered to byte offsets, as one variable of words. */
+static void
+workgroup_words(nir_shader *nir)
+{
+   if (!nir->info.shared_size)
+      return;
+   nir_foreach_variable_with_modes_safe(var, nir, nir_var_mem_shared)
+      exec_node_remove(&var->node);
+   const struct glsl_type *words = glsl_array_type(
+      glsl_uint_type(), DIV_ROUND_UP(nir->info.shared_size, WC_WORD_BYTES), WC_WORD_BYTES);
+   nir_variable *var = nir_variable_create(nir, nir_var_mem_shared, words, "workgroup");
+   nir_shader_intrinsics_pass(nir, shared_words, nir_metadata_control_flow, var);
+}
+
 void
 wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms)
 {
@@ -644,9 +716,11 @@ wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t
       exec_node_remove(&var->node);
    for (uint32_t i = 0; i < uniforms; i++)
       vars[i] = word_block(nir, nir_var_mem_ubo, i, uniform_bytes[i], false);
-   for (uint32_t j = 0; j < use.blocks; j++)
-      vars[uniforms + j] =
-         word_block(nir, nir_var_mem_ssbo, uniforms + j, 0, BITSET_TEST(use.written, j));
+   for (uint32_t j = 0; j < use.blocks; j++) {
+      if (BITSET_TEST(use.reached, j))
+         vars[uniforms + j] =
+            word_block(nir, nir_var_mem_ssbo, uniforms + j, 0, BITSET_TEST(use.written, j));
+   }
    const struct word_blocks blocks = {
       .uniform = vars,
       .uniforms = uniforms,
@@ -655,4 +729,5 @@ wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t
    };
    nir_shader_intrinsics_pass(nir, access_words, nir_metadata_control_flow, (void *)&blocks);
    free(vars);
+   workgroup_words(nir);
 }

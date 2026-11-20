@@ -127,6 +127,12 @@ fn block_bytes(
         }
     };
     let mut words: Vec<(usize, u32, Kind)> = Vec::new();
+    if block.atomic_binding.is_some() {
+        // Every word of an atomic counter buffer is a counter.
+        for at in (0..block.size as usize).step_by(BYTES_A_WORD) {
+            words.push((at, rng.random(), Kind::Uint));
+        }
+    }
     for v in members {
         let ty = typed(v)?;
         let apart = v.top_level_stride != 0 && INSIDE_ARRAY.iter().any(|p| v.name.contains(p));
@@ -286,7 +292,7 @@ fn gl_inputs<'a>(
     for v in gl
         .uniforms
         .iter()
-        .filter(|v| v.block < 0 && !opaque(v, stages))
+        .filter(|v| v.block < 0 && v.ty != glow::UNSIGNED_INT_ATOMIC_COUNTER && !opaque(v, stages))
     {
         let ty = typed(v)?;
         let count =
@@ -458,17 +464,33 @@ fn route_resources(
         let [Element::Buffer(bytes)] = r.elements.as_mut_slice() else {
             return Err("an array of blocks is not set up for GLSL here".into());
         };
-        let Some(name) = named(names, kind, binding) else {
-            if kind == GlslNameKind::UniformBlock {
-                *bytes = default_block(bytes.len(), stage, names, inputs)?;
-                continue;
-            }
-            return Err(format!(
-                "no block of the program at storage binding {binding}"
-            ));
-        };
-        let Some(index) = blocks.iter().position(|b| b.name == name.name) else {
-            return Err(format!("llvmpipe has no block {}", name.name));
+        let counters = (kind == GlslNameKind::StorageBlock)
+            .then(|| named(names, GlslNameKind::AtomicCounterBuffer, binding))
+            .flatten();
+        let index = if let Some(counters) = counters {
+            blocks
+                .iter()
+                .position(|b| b.atomic_binding == Some(counters.element))
+                .ok_or_else(|| {
+                    format!(
+                        "llvmpipe has no atomic counter buffer at binding {}",
+                        counters.element
+                    )
+                })?
+        } else {
+            let Some(name) = named(names, kind, binding) else {
+                if kind == GlslNameKind::UniformBlock {
+                    *bytes = default_block(bytes.len(), stage, names, inputs)?;
+                    continue;
+                }
+                return Err(format!(
+                    "no block of the program at storage binding {binding}"
+                ));
+            };
+            blocks
+                .iter()
+                .position(|b| b.name == name.name)
+                .ok_or_else(|| format!("llvmpipe has no block {}", name.name))?
         };
         let (gl_bytes, _) = &mut contents[index];
         let size = gl_bytes.len().max(bytes.len());

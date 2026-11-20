@@ -44,6 +44,8 @@
 #define WC_GL_WORKGROUP_DEPTH 64
 #define WC_GL_WORKGROUPS 65535
 #define WC_GL_WORKGROUP_BYTES 16384
+/* Atomic counters live in storage buffers (no hardware counters): st/mesa's count for that case. */
+#define WC_GL_ATOMIC_COUNTERS MAX_ATOMIC_COUNTERS
 /* One vertex stream (no geometry programs); OpenGL's minimum of transform feedback buffers. */
 #define WC_GL_VERTEX_STREAMS 1
 #define WC_GL_TRANSFORM_FEEDBACK_BUFFERS 4
@@ -95,6 +97,9 @@ report_capabilities(struct gl_context *ctx)
    ctx->Const.MaxUniformBufferBindings = WC_GL_BUFFER_BINDINGS;
    ctx->Const.MaxShaderStorageBufferBindings = WC_GL_BUFFER_BINDINGS;
    ctx->Const.MaxAtomicBufferBindings = WC_GL_BUFFER_BINDINGS;
+   ctx->Const.MaxAtomicBufferSize = ATOMIC_COUNTER_SIZE * WC_GL_ATOMIC_COUNTERS;
+   ctx->Const.MaxCombinedAtomicBuffers = WC_GL_BUFFER_BINDINGS;
+   ctx->Const.MaxCombinedAtomicCounters = WC_GL_ATOMIC_COUNTERS;
    ctx->Const.MaxCombinedShaderStorageBlocks = WC_GL_BUFFER_BINDINGS;
    ctx->Const.MaxCombinedUniformBlocks = WC_GL_BUFFER_BINDINGS;
    ctx->Const.MaxCombinedShaderOutputResources =
@@ -126,7 +131,7 @@ report_capabilities(struct gl_context *ctx)
       p->MaxUniformBlocks = WC_GL_BUFFER_BINDINGS;
       p->MaxShaderStorageBlocks = WC_GL_BUFFER_BINDINGS;
       p->MaxAtomicBuffers = WC_GL_BUFFER_BINDINGS;
-      p->MaxAtomicCounters = WC_GL_UNIFORM_COMPONENTS;
+      p->MaxAtomicCounters = WC_GL_ATOMIC_COUNTERS;
       p->MaxImageUniforms = WC_GL_IMAGE_UNITS;
       ctx->screen->nir_options[stages[s]] = wc_compiler_options();
    }
@@ -321,9 +326,11 @@ name_parameters(struct gl_program *prog, struct wc_glsl_names *names)
    return added;
 }
 
-/* Each block's, sampler's and image's program binding. */
+/* Each block's, sampler's, image's and atomic counter buffer's program binding; the atomic counter
+ * buffers' storage blocks start at `atomic_base`. */
 static bool
-name_bindings(struct gl_program *prog, nir_shader *nir, struct wc_glsl_names *names)
+name_bindings(struct gl_shader_program *whole, struct gl_program *prog, nir_shader *nir,
+              uint32_t atomic_base, struct wc_glsl_names *names)
 {
    bool added = true;
    uint32_t uniform_blocks = prog->info.num_ubos + nir->info.first_ubo_is_default_ubo;
@@ -333,6 +340,16 @@ name_bindings(struct gl_program *prog, nir_shader *nir, struct wc_glsl_names *na
    for (unsigned i = 0; i < prog->info.num_ssbos; i++)
       added &= add_name(names, WC_GLSL_STORAGE_BLOCK, prog->sh.ShaderStorageBlocks[i]->name.string,
                         NULL, WC_GLSL_INTERPOLATION_UNQUALIFIED, uniform_blocks + i, 1);
+   for (unsigned i = 0; i < whole->data->NumAtomicBuffers; i++) {
+      const struct gl_active_atomic_buffer *buffer = &whole->data->AtomicBuffers[i];
+      if (!buffer->StageReferences[nir->info.stage])
+         continue;
+      added &= add_name(names, WC_GLSL_ATOMIC_COUNTER_BUFFER, "", NULL,
+                        WC_GLSL_INTERPOLATION_UNQUALIFIED,
+                        uniform_blocks + atomic_base + buffer->Binding, 1);
+      if (added)
+         names->data[names->count - 1].element = buffer->Binding;
+   }
    nir_foreach_variable_with_modes(var, nir, nir_var_uniform | nir_var_image) {
       const struct glsl_type *bare = glsl_without_array(var->type);
       if (!glsl_type_is_sampler(bare) && !glsl_type_is_image(bare))
@@ -439,7 +456,8 @@ lower_fragcolor(nir_shader *nir)
  * images as derefs; then gl_FragColor written to every draw buffer, as the driver does. False for
  * a built-in uniform structure (the compatibility profile's lighting state), not taken yet. */
 static bool
-after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked, uint64_t *attributes)
+after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked, uint64_t *attributes,
+           uint32_t *atomic_base)
 {
    struct gl_program *prog = linked->Program;
    nir_shader *nir = prog->nir;
@@ -471,6 +489,7 @@ after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked, uin
    NIR_PASS(_, nir, gl_nir_lower_atomics, whole, true);
    NIR_PASS(_, nir, nir_lower_int64);
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
+   *atomic_base = nir->info.num_ssbos;
    NIR_PASS(_, nir, nir_lower_atomics_to_ssbo, 0);
    NIR_PASS(_, nir, nir_opt_intrinsics);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
@@ -562,7 +581,8 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
          break;
       }
       uint64_t attributes = 0;
-      if (!after_link(whole, shader, &attributes)) {
+      uint32_t atomic_base = 0;
+      if (!after_link(whole, shader, &attributes, &atomic_base)) {
          out->log = append_log(out->log, WC_GL_STATE_STRUCTURE);
          linked = false;
          break;
@@ -573,7 +593,7 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
       }
       nir_shader *nir = shader->Program->nir;
       if (!name_parameters(shader->Program, names) ||
-          !name_bindings(shader->Program, nir, names)) {
+          !name_bindings(whole, shader->Program, nir, atomic_base, names)) {
          linked = false;
          break;
       }

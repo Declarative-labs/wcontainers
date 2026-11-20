@@ -93,6 +93,9 @@ pub enum GlslNameKind {
     StorageBlock,
     Sampler,
     Image,
+    /// An atomic counter buffer, which the driver gives the program as a storage block: `at` its
+    /// program binding, `element` its OpenGL binding point.
+    AtomicCounterBuffer,
     /// `at` the location in the common form, `count` the locations.
     Input,
     Output,
