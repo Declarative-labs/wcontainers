@@ -1666,7 +1666,8 @@ What is stopped before what, where M is the memory changed:
       its lock and returns.
     - What it costs (expected, not measured): a waking call that crosses machines leaves
       `Execution::run` and comes back (300.8 ns measured for that alone, section 3), on top of the
-      round trip it waited for anyway; a wake with no remote waiter is answered in place as today.
+      round trip it waited for anyway; which wakes may still be answered in place is open
+      (above, "when a kernel may order a word alone").
   - **What any form of it must keep** (orchestrator/wake-result-use/REPORT.md, section 2, from Linux's
     source and manual; the conditions on a wake sent without waiting are expected there, not tested):
     one point for each lock word decides the order of the operations on it; a requeue moves and wakes
