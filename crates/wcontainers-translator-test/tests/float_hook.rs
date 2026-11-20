@@ -9,7 +9,7 @@ use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{
-    Blob, Library, build_with, native, translated_omitting,
+    Blob, Library, Position, build_with, native, translated_omitting,
 };
 
 fn knob(name: &str, default: u32) -> u32 {
@@ -18,7 +18,7 @@ fn knob(name: &str, default: u32) -> u32 {
 
 fn rounding<G: GuestTest>() -> Blob {
     let steps = format!("STEPS={}", knob("WC_FLOAT_STEPS", 200_000));
-    build_with::<G>("rounding", "-O2", Library::C, &[&steps])
+    build_with::<G>("rounding", "-O2", Library::C, &[&steps], Position::Fixed)
 }
 
 fn float_hook_time<G: GuestTest>() {

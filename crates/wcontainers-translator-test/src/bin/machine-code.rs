@@ -11,7 +11,7 @@ use std::process::Command;
 use wcontainers_arm64::Arm64;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
 use wcontainers_translator_test::guest::GuestTest;
-use wcontainers_translator_test::programs::{Library, build_with};
+use wcontainers_translator_test::programs::{Library, Position, build_with};
 use wcontainers_translator_test::runner::precompile;
 use wcontainers_x86::X86_64;
 
@@ -53,7 +53,7 @@ fn write<G: GuestTest>(
     defines: &[&str],
     omit: Omit,
 ) {
-    let blob = build_with::<G>(program, optimisation, library, defines);
+    let blob = build_with::<G>(program, optimisation, library, defines, Position::Fixed);
     let mut translation = translate_omitting::<G>(
         &blob.bytes,
         0..blob.code_bytes,

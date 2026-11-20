@@ -15,7 +15,7 @@ use wcontainers_arm64::Arm64;
 use wcontainers_translator::{BOUND, LookAhead, Optimise, Translation, translate};
 use wcontainers_translator_test::binaries::{Binary, sources};
 use wcontainers_translator_test::guest::GuestTest;
-use wcontainers_translator_test::programs::{Library, build_with};
+use wcontainers_translator_test::programs::{Library, Position, build_with};
 use wcontainers_translator_test::runner::probe;
 
 const LOOK_AHEADS: [(&str, LookAhead); 7] = [
@@ -66,7 +66,13 @@ fn lines(out: &mut String, name: &str, translation: &Translation) {
 /// address 0, and the thread module.
 fn bench<G: GuestTest>(out: &mut String) {
     line(out, "thread", &wcontainers_translator::thread_module::<G>());
-    let mut blobs = vec![build_with::<G>("bench", "-O2", Library::None, &["SCALE=1"])];
+    let mut blobs = vec![build_with::<G>(
+        "bench",
+        "-O2",
+        Library::None,
+        &["SCALE=1"],
+        Position::Fixed,
+    )];
     for k in 1..=8 {
         let workload = format!("WORKLOAD={k}");
         blobs.push(build_with::<G>(
@@ -74,6 +80,7 @@ fn bench<G: GuestTest>(out: &mut String) {
             "-O2",
             Library::None,
             &["SCALE=1", &workload],
+            Position::Fixed,
         ));
     }
     for blob in &blobs {

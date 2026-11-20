@@ -8,7 +8,7 @@ use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Library, Ran, boundaries, build, build_with, native, native_with_stop, ran,
+    Blob, Library, Position, Ran, boundaries, build, build_with, native, native_with_stop, ran,
     reachable_memory, ready_on, ready_with, translated, translated_for,
     translated_stopping_everywhere,
 };
@@ -16,6 +16,11 @@ use wcontainers_translator_test::runner::Machine;
 use wcontainers_x86::X86_64;
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
+
+/// Both ways a C program is built: x86's fixed-address code takes a function's address as an absolute
+/// immediate, which a translation of blob offsets cannot follow, so only its position independent build has
+/// every function in its full translation.
+const POSITIONS: [Position; 2] = [Position::Fixed, Position::Independent];
 
 /// The look-aheads every program runs at: none, full for speed and for size, and bounded with every piece but
 /// the first made at run time.
@@ -25,6 +30,13 @@ const EVERY_LOOK_AHEAD: [(LookAhead, Optimise); 4] = [
     (LookAhead::Full, Optimise::Size),
     (LookAhead::AT_RUN_TIME, Optimise::Speed),
 ];
+
+/// The optimisations the rare-path programs are built at, each in both positions.
+fn levels_and_positions() -> impl Iterator<Item = (&'static str, Position)> {
+    ["-O0", "-O2"]
+        .into_iter()
+        .flat_map(|level| POSITIONS.map(|position| (level, position)))
+}
 
 /// A blob in Chrome at every look-ahead gives Linux's run. Returns each run's report, with what it was.
 fn every_look_ahead_matches_in_chrome<G: GuestTest>(
@@ -73,7 +85,7 @@ fn deep_recursion_matches_linux<G: GuestTest>() {
         ("deep", "-O2", Library::C, &["DEPTH=150000"][..]),
         ("deep_small_frames", "-O0", Library::None, &[][..]),
     ] {
-        let mut blob = build_with::<G>(name, optimisation, library, defines);
+        let mut blob = build_with::<G>(name, optimisation, library, defines, Position::Fixed);
         blob.stack_bytes = 8 << 20;
         let theirs = native::<G>(&blob);
         every_look_ahead_matches::<G>(&blob, &theirs, |what, machine| {
@@ -84,15 +96,9 @@ fn deep_recursion_matches_linux<G: GuestTest>() {
                 assert!(left > 0 && continued > 0, "{what}");
             }
         });
-        for how in [
-            (LookAhead::None, Optimise::Speed),
-            (LookAhead::Full, Optimise::Speed),
-            (LookAhead::Full, Optimise::Size),
-        ] {
-            let ours = browser::translated_with::<G>(&blob, how, Default::default());
-            let what = format!("{} at {how:?} in Chrome", blob.name);
-            assert_eq!(ours.ran, theirs, "{what}");
-            assert!(ours.count("engine stack nearly full") > 0, "{what}");
+        let nearly_full = Reason::StackNearlyFull.name();
+        for (what, ours) in every_look_ahead_matches_in_chrome::<G>(&blob, &theirs) {
+            assert!(ours.count(nearly_full) > 0, "{what}");
         }
     }
 }
@@ -114,8 +120,13 @@ fn a_frame_past_the_budget_matches_linux<G: GuestTest>() {
 /// expects, at every look-ahead and with pieces mixed and events injected, as on Linux; and in Chrome.
 fn unwinding_matches_linux<G: GuestTest>() {
     for name in ["jumps", "exceptions", "panics"] {
-        for optimisation in ["-O0", "-O2"] {
-            let blob = build::<G>(name, optimisation, Library::C);
+        for (optimisation, position) in levels_and_positions() {
+            let blob = build_with::<G>(name, optimisation, Library::C, &[], position);
+            // rustc's aarch64 musl target makes a fixed-address program whatever it is asked.
+            if blob.load != position.load() {
+                eprintln!("{}: not made position independent, not run", blob.name);
+                continue;
+            }
             let theirs = native::<G>(&blob);
             assert_eq!(
                 theirs.status,
@@ -133,8 +144,8 @@ fn unwinding_matches_linux<G: GuestTest>() {
 /// coroutines switched by a hand-written context switch, as on Linux at every look-ahead and in Chrome.
 fn stacks_switched_by_the_program_match_linux<G: GuestTest>() {
     for name in ["fibers", "coroutines"] {
-        for optimisation in ["-O0", "-O2"] {
-            let blob = build::<G>(name, optimisation, Library::C);
+        for (optimisation, position) in levels_and_positions() {
+            let blob = build_with::<G>(name, optimisation, Library::C, &[], position);
             let theirs = native::<G>(&blob);
             assert_eq!(theirs.status, 0, "{}", blob.name);
             every_look_ahead_matches::<G>(&blob, &theirs, print_counters::<G>);
@@ -148,8 +159,8 @@ fn stacks_switched_by_the_program_match_linux<G: GuestTest>() {
 /// faults as on Linux. At every look-ahead and in Chrome.
 fn written_code_and_null_calls_match_linux<G: GuestTest>() {
     for (name, status) in [("written_code", 0), ("null_call", 139)] {
-        for optimisation in ["-O0", "-O2"] {
-            let blob = build::<G>(name, optimisation, Library::C);
+        for (optimisation, position) in levels_and_positions() {
+            let blob = build_with::<G>(name, optimisation, Library::C, &[], position);
             let theirs = native::<G>(&blob);
             assert_eq!(theirs.status, status, "{}", blob.name);
             every_look_ahead_matches::<G>(&blob, &theirs, |what, machine| {
@@ -157,18 +168,7 @@ fn written_code_and_null_calls_match_linux<G: GuestTest>() {
                     assert!(machine.count(Reason::MemoryFault) == 1, "{what}");
                 }
             });
-            for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
-                for optimise in [Optimise::Speed, Optimise::Size] {
-                    let ours = browser::translated_with::<G>(
-                        &blob,
-                        (look_ahead, optimise),
-                        Default::default(),
-                    );
-                    let what =
-                        format!("{} at {look_ahead:?} for {optimise:?} in Chrome", blob.name);
-                    assert_eq!(ours.ran, theirs, "{what}");
-                }
-            }
+            every_look_ahead_matches_in_chrome::<G>(&blob, &theirs);
         }
     }
 }
@@ -394,7 +394,7 @@ fn stops_at_every_check_change_nothing<G: GuestTest>(programs: &[(&str, &[&str])
     let shared: [(&str, &[&str]); 2] = [("bench", &["SCALE=0"]), ("integers", &[])];
     for &(name, defines) in shared.iter().chain(programs) {
         for optimisation in ["-O0", "-O2"] {
-            let blob = build_with::<G>(name, optimisation, Library::None, defines);
+            let blob = build_with::<G>(name, optimisation, Library::None, defines, Position::Fixed);
             let theirs = native::<G>(&blob);
             let what = format!("{name} at {optimisation}");
             let (none, mut none_machine, none_registers) = translated::<G>(&blob, LookAhead::None);
@@ -494,7 +494,13 @@ fn floats_speed<G: GuestTest>() {
     });
     for k in chosen {
         let workload = format!("WORKLOAD={k}");
-        let blob = build_with::<G>("floats", "-O2", Library::C, &["SCALE=1", &workload]);
+        let blob = build_with::<G>(
+            "floats",
+            "-O2",
+            Library::C,
+            &["SCALE=1", &workload],
+            Position::Fixed,
+        );
         time_against_native::<G>(&format!("floats {}", WORKLOADS[k - 1]), &blob);
     }
 }
@@ -506,7 +512,13 @@ fn floats_speed<G: GuestTest>() {
 fn switching_speed<G: GuestTest>() {
     const ROUND_TRIPS: f64 = 2_000_000.0;
     for name in ["fibers", "coroutines"] {
-        let blob = build_with::<G>(name, "-O2", Library::C, &["SWITCHES=2000000"]);
+        let blob = build_with::<G>(
+            name,
+            "-O2",
+            Library::C,
+            &["SWITCHES=2000000"],
+            Position::Fixed,
+        );
         let (native, wasmtime, chrome) = time_against_native::<G>(name, &blob);
         // Two switches a round trip, two coroutines in `coroutines`.
         let switches = if name == "fibers" { 2.0 } else { 4.0 } * ROUND_TRIPS;
@@ -798,8 +810,9 @@ fn self_written_code_matches_linux_x86_64() {
         format!("PASSES={SELF_WRITTEN_PASSES}"),
     ];
     let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
-    for optimisation in ["-O0", "-O2"] {
-        let blob = build_with::<X86_64>("self_written", optimisation, Library::C, &defines);
+    for (optimisation, position) in levels_and_positions() {
+        let blob =
+            build_with::<X86_64>("self_written", optimisation, Library::C, &defines, position);
         let theirs = native::<X86_64>(&blob);
         assert_eq!(theirs.status, 0, "{}", blob.name);
         every_look_ahead_matches::<X86_64>(&blob, &theirs, |what, machine| {
@@ -832,7 +845,13 @@ fn code_on_the_stack_matches_linux_x86_64() {
             format!("PAGE_SIZE={}", wcontainers_abi::PAGE_SIZE),
         ];
         let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
-        let blob = build_with::<X86_64>("stack_code", "-O0", Library::None, &defines);
+        let blob = build_with::<X86_64>(
+            "stack_code",
+            "-O0",
+            Library::None,
+            &defines,
+            Position::Fixed,
+        );
         let theirs = native::<X86_64>(&blob);
         let status = (STACK_CODE_FIRST << STACK_CODE_SHIFT) + STACK_CODE_SECOND;
         assert_eq!(theirs.status, status as i32, "{}", blob.name);
@@ -868,7 +887,8 @@ fn far_frames_match_linux_x86_64() {
             format!("SYS_exit={}", X86_64::STAND_IN.exit),
         ];
         let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
-        let mut blob = build_with::<X86_64>("far_frame", "-O0", Library::None, &defines);
+        let mut blob =
+            build_with::<X86_64>("far_frame", "-O0", Library::None, &defines, Position::Fixed);
         blob.stack_bytes = blob.stack_bytes.max(2 * within);
         let theirs = native::<X86_64>(&blob);
         if descent == within {
@@ -889,8 +909,9 @@ const STACK_CODE_SECOND: u32 = 9;
 const STACK_CODE_SHIFT: u32 = 4;
 
 /// The cases of `programs/x86_64/trap_flag.S`: `popf` setting TF before a `nop`, a `jmp`, a `call`, a `ret` and
-/// a `syscall`, a `popf` clearing it, a `rep movsb`, a load of ss, and `iretq` setting it.
-const TRAP_FLAG_CASES: u32 = 9;
+/// a `syscall`, a `popf` clearing it, a `rep movsb`, a load of ss, `iretq` setting it, and a store and a
+/// `rep stosb` into the page of translated code they run from.
+const TRAP_FLAG_CASES: u32 = 11;
 
 /// The trap flag set by the program: each case stops with SIGTRAP `TRAP_TRACE` where the reference stops, with
 /// its general registers and rip, at every look-ahead in wasmtime and in Chrome.
@@ -911,7 +932,8 @@ fn trap_flag_steps_match_linux_x86_64() {
             format!("SYS_exit={}", X86_64::STAND_IN.exit),
         ];
         let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
-        let blob = build_with::<X86_64>("trap_flag", "-O0", Library::None, &defines);
+        let blob =
+            build_with::<X86_64>("trap_flag", "-O0", Library::None, &defines, Position::Fixed);
         let (theirs, stop) = native_with_stop::<X86_64>(&blob);
         let (signal, code, registers) = stop.expect("the reference stops by a signal");
         assert_eq!((signal, code), (SIGTRAP, TRAP_TRACE), "case {case}");
@@ -960,8 +982,14 @@ fn code_written_by_another_thread_matches_linux_x86_64() {
         format!("NEW={SPIN_WRITTEN}"),
     ];
     let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
-    for optimisation in ["-O0", "-O2"] {
-        let blob = build_with::<X86_64>("written_by_another", optimisation, Library::C, &defines);
+    for (optimisation, position) in levels_and_positions() {
+        let blob = build_with::<X86_64>(
+            "written_by_another",
+            optimisation,
+            Library::C,
+            &defines,
+            position,
+        );
         let theirs = native::<X86_64>(&blob);
         assert_eq!(theirs.status, 0, "{}", blob.name);
         let mut runs = Vec::new();

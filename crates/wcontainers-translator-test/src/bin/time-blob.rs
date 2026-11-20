@@ -14,7 +14,8 @@ use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{
-    Blob, LOAD, Library, STACK_BYTES, build_with, load, native, native_seconds, translated_omitting,
+    Blob, LOAD, Library, Position, STACK_BYTES, build_with, load, native, native_seconds,
+    translated_omitting,
 };
 use wcontainers_x86::X86_64;
 
@@ -31,7 +32,13 @@ const EACH_ROUND: [&str; 3] = [NATIVE, WASMTIME, CHROME];
 const HOW: (LookAhead, Optimise) = (LookAhead::Full, Optimise::Speed);
 
 fn dump<G: GuestTest>(program: &str, optimisation: &str, out: &str, defines: &[&str]) {
-    let blob = build_with::<G>(program, optimisation, Library::None, defines);
+    let blob = build_with::<G>(
+        program,
+        optimisation,
+        Library::None,
+        defines,
+        Position::Fixed,
+    );
     let mut bytes = blob.code_bytes.to_le_bytes().to_vec();
     bytes.extend(&blob.bytes);
     std::fs::write(out, bytes).unwrap();

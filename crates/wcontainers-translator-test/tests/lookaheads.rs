@@ -10,7 +10,7 @@ use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{
-    Library, build_with, ran, reachable_memory, ready, translated,
+    Library, Position, build_with, ran, reachable_memory, ready, translated,
 };
 use wcontainers_x86::X86_64;
 
@@ -31,7 +31,7 @@ fn bounded_matches_none<G: GuestTest>() {
         ("tables", "-O0", &[][..]),
         ("walks", "-O2", &[][..]),
     ] {
-        let blob = build_with::<G>(name, optimisation, Library::None, defines);
+        let blob = build_with::<G>(name, optimisation, Library::None, defines, Position::Fixed);
         let (none, mut none_machine, none_registers) = translated::<G>(&blob, LookAhead::None);
         for case in 0..cases {
             let bound = match case {
@@ -69,7 +69,7 @@ fn measure_translating_at_run_time<G: GuestTest>() {
         ("bench", "-O2", Library::None, &["SCALE=0"][..]),
         ("hello", "-O2", Library::C, &[][..]),
     ] {
-        let blob = build_with::<G>(name, optimisation, library, defines);
+        let blob = build_with::<G>(name, optimisation, library, defines, Position::Fixed);
         for bound in [16, wcontainers_translator::BOUND] {
             let look_ahead = LookAhead::Bounded(bound);
             let mut machine = ready::<G>(&blob, look_ahead, Default::default());
@@ -119,7 +119,7 @@ fn measure_translating_at_run_time<G: GuestTest>() {
 fn measure_bound<G: GuestTest>() {
     use std::time::Instant;
     let runs = setting("WC_BENCH_RUNS", 3);
-    let blob = build_with::<G>("bench", "-O2", Library::None, &["SCALE=1"]);
+    let blob = build_with::<G>("bench", "-O2", Library::None, &["SCALE=1"], Position::Fixed);
     let (full, _, _) = translated::<G>(&blob, LookAhead::Full);
     for look_ahead in [16, 64, 256, 1024]
         .map(LookAhead::Bounded)

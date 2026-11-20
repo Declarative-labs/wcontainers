@@ -21,6 +21,61 @@ pub const STACK_TOP: u64 = 0x4810_0000;
 /// The stack a blob gets unless it asks for more.
 pub const STACK_BYTES: u64 = 1 << 20;
 
+/// How the code is generated: for the fixed address it is linked and loaded at, or position independent
+/// (`-fPIE`, a static position independent program that relocates itself at start), loaded away from where
+/// it is linked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Position {
+    Fixed,
+    Independent,
+}
+
+/// The C compiler's flags for code at a fixed address.
+const FIXED_C_FLAGS: [&str; 3] = ["-static", "-fno-pic", "-no-pie"];
+/// The C compiler's flags for position independent code.
+const INDEPENDENT_C_FLAGS: [&str; 3] = ["-static-pie", "-fPIE", "-Wl,-z,norelro"];
+/// rustc's flags for code at a fixed address.
+const FIXED_RUST_FLAGS: [&str; 2] = ["-C", "relocation-model=static"];
+/// rustc's flags for position independent code.
+const INDEPENDENT_RUST_FLAGS: [&str; 4] =
+    ["-C", "relocation-model=pie", "-C", "link-arg=-znorelro"];
+/// What the name of a blob of position independent code ends with.
+const INDEPENDENT_SUFFIX: &str = "-pic";
+
+impl Position {
+    /// The C compiler's flags for it.
+    pub fn flags(self) -> &'static [&'static str] {
+        match self {
+            Position::Fixed => &FIXED_C_FLAGS,
+            Position::Independent => &INDEPENDENT_C_FLAGS,
+        }
+    }
+
+    /// rustc's flags for it.
+    fn rust_flags(self) -> &'static [&'static str] {
+        match self {
+            Position::Fixed => &FIXED_RUST_FLAGS,
+            Position::Independent => &INDEPENDENT_RUST_FLAGS,
+        }
+    }
+
+    /// What a blob's name ends with.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Position::Fixed => "",
+            Position::Independent => INDEPENDENT_SUFFIX,
+        }
+    }
+
+    /// Where a blob of it is loaded.
+    pub fn load(self) -> u64 {
+        match self {
+            Position::Fixed => LOAD,
+            Position::Independent => MOVED,
+        }
+    }
+}
+
 /// A flat blob and how much of its start is code.
 pub struct Blob {
     /// The program and optimisation level, such as "hello-O2".
@@ -164,19 +219,20 @@ pub enum Library {
 /// Build a program (see [`source`]: C, C++ with its library, Rust with its standard library, or assembly) at
 /// an optimisation level, such as "-O2", into a flat blob. The guest's folder is on the include path.
 pub fn build<G: GuestTest>(name: &str, optimisation: &str, library: Library) -> Blob {
-    build_with::<G>(name, optimisation, library, &[])
+    build_with::<G>(name, optimisation, library, &[], Position::Fixed)
 }
 
-/// [`build`] with preprocessor definitions, such as "SCALE=1".
+/// [`build`] with preprocessor definitions, such as "SCALE=1", for the code's position.
 pub fn build_with<G: GuestTest>(
     name: &str,
     optimisation: &str,
     library: Library,
     defines: &[&str],
+    position: Position,
 ) -> Blob {
     let out = out_directory();
     std::fs::create_dir_all(&out).unwrap();
-    let mut stem = format!("{name}{optimisation}");
+    let mut stem = format!("{name}{optimisation}{}", position.suffix());
     for define in defines {
         stem.push('-');
         stem.push_str(&define.replace('=', ""));
@@ -189,7 +245,7 @@ pub fn build_with<G: GuestTest>(
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
     if source.extension().unwrap() == "rs" {
-        rust::<G>(&source, &elf, &script, optimisation);
+        rust::<G>(&source, &elf, &script, optimisation, position);
         return flatten(&elf, &own, stem);
     }
     let script = format!("-Wl,-T,{}", text(&script));
@@ -199,19 +255,14 @@ pub fn build_with<G: GuestTest>(
     } else {
         "cc"
     };
-    let mut arguments = vec![
-        driver,
-        "-target",
-        G::C_TARGET,
-        optimisation,
-        "-static",
-        "-fno-pic",
-        "-no-pie",
+    let mut arguments = vec![driver, "-target", G::C_TARGET, optimisation];
+    arguments.extend(position.flags());
+    arguments.extend([
         "-fno-sanitize=all",
         &script,
         &include,
         "-Wl,--build-id=none",
-    ];
+    ]);
     if library == Library::None {
         arguments.extend(["-ffreestanding", "-nostdlib"]);
         arguments.extend(G::GENERAL_ONLY);
@@ -225,12 +276,19 @@ pub fn build_with<G: GuestTest>(
 }
 
 /// Build a Rust program with its standard library, statically, linked with `script`.
-fn rust<G: GuestTest>(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
+fn rust<G: GuestTest>(
+    source: &Path,
+    elf: &Path,
+    script: &Path,
+    optimisation: &str,
+    position: Position,
+) {
     let level = optimisation.trim_start_matches("-O");
     let status = Command::new("rustc")
         .args(["--edition", "2024", "--target", G::REFERENCE.rust_target])
         .args(["-C", &format!("opt-level={level}")])
-        .args(["-C", "panic=unwind", "-C", "relocation-model=static"])
+        .args(["-C", "panic=unwind"])
+        .args(position.rust_flags())
         .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
         .args([
             "-C",
@@ -248,9 +306,10 @@ fn rust<G: GuestTest>(source: &Path, elf: &Path, script: &Path, optimisation: &s
     assert!(status.success(), "rustc {} failed", source.display());
 }
 
-/// The flat blob of a linked program, `own` being the unique name its build works under. The ELF file is
-/// kept, under the blob's name, for looking at.
+/// The flat blob of a linked program, `own` being the unique name its build works under, loaded at `MOVED`
+/// if the linker made it position independent. The ELF file is kept, under the blob's name, for looking at.
 pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
+    use object::read::elf::FileHeader;
     let out = out_directory();
     let text = |p: &Path| p.to_str().unwrap().to_string();
     let built = out.join(format!("{own}.bin"));
@@ -269,6 +328,11 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     let parsed =
         object::read::elf::ElfFile64::<object::Endianness>::parse(&*file).expect("an ELF file");
     let headers = parsed.elf_program_headers();
+    let position = if parsed.elf_header().e_type(parsed.endian()) == object::elf::ET_DYN {
+        Position::Independent
+    } else {
+        Position::Fixed
+    };
     let mut bytes = std::fs::read(&built).unwrap();
     bytes.resize(bytes.len().next_multiple_of(8), 0);
     let at = bytes.len() as u64;
@@ -276,7 +340,7 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     let blob = Blob {
         bytes,
         code_bytes: std::fs::metadata(&code).unwrap().len(),
-        load: LOAD,
+        load: position.load(),
         program_headers: Some((at, headers.len() as u64)),
         name,
         stack_bytes: STACK_BYTES,

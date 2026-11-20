@@ -18,14 +18,7 @@ pub enum Compiler {
     Gcc,
 }
 
-/// How the code is generated: for the fixed address it is linked and loaded at, or position independent
-/// (`-fPIE`, a static position independent program that relocates itself at start), loaded away from where
-/// it is linked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Position {
-    Fixed,
-    Independent,
-}
+pub use crate::programs::Position;
 
 pub const LEVELS: [&str; 6] = ["-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"];
 
@@ -139,11 +132,7 @@ pub fn build<G: GuestTest>(
     position: Position,
 ) -> Blob {
     let (elf, own, name) = compile::<G>(source, compiler, optimisation, position, true);
-    let mut blob = flatten(&elf, &own, name);
-    if position == Position::Independent {
-        blob.load = crate::programs::MOVED;
-    }
-    blob
+    flatten(&elf, &own, name)
 }
 
 /// Build a C file as an ordinary static Linux executable and run it on the reference, so a blob's fault can
@@ -176,20 +165,14 @@ fn compile<G: GuestTest>(
             Compiler::Clang => "clang",
             Compiler::Gcc => "gcc",
         },
-        match position {
-            Position::Fixed => "",
-            Position::Independent => "-pic",
-        }
+        position.suffix()
     );
     let out = out_directory();
     let own = unique(&name);
     let elf = out.join(format!("{own}.elf"));
     let script = source_directory().join("flat.ld");
     let include = csmith_include();
-    let code: &[&str] = match position {
-        Position::Fixed => &["-static", "-fno-pic", "-no-pie"],
-        Position::Independent => &["-static-pie", "-fPIE", "-Wl,-z,norelro"],
-    };
+    let code = position.flags();
     match compiler {
         Compiler::Clang => {
             let (script, include, elf, source) = (

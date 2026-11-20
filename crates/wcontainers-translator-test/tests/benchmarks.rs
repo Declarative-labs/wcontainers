@@ -14,7 +14,7 @@ use wcontainers_translator::{LookAhead, Omit, Optimise, translate};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{
-    Blob, Library, build_with, load, native, native_seconds, translated_omitting,
+    Blob, Library, Position, build_with, load, native, native_seconds, translated_omitting,
 };
 use wcontainers_translator_test::runner::compile_time;
 use wcontainers_x86::X86_64;
@@ -141,11 +141,18 @@ fn measure_benchmarks<G: GuestTest>() {
         "-O2",
         Library::None,
         &["SCALE=1"],
+        Position::Fixed,
     ));
     for k in chosen {
         let name = WORKLOADS[k - 1];
         let workload = format!("WORKLOAD={k}");
-        let blob = build_with::<G>("bench", "-O2", Library::None, &["SCALE=1", &workload]);
+        let blob = build_with::<G>(
+            "bench",
+            "-O2",
+            Library::None,
+            &["SCALE=1", &workload],
+            Position::Fixed,
+        );
         let expected = native::<G>(&blob);
         let native_time = native_seconds::<G>(&blob, runs);
         eprintln!("{name}: native {native_time:.3} s (load {})", load());
@@ -203,7 +210,7 @@ fn measure_calls_between_modules<G: GuestTest>() {
     let runs: u32 = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let calls: u64 = std::env::var("WC_CALLS").map_or(100_000_000, |v| v.parse().unwrap());
     let define = format!("CALLS={calls}");
-    let blob = build_with::<G>("calls", "-O2", Library::None, &[&define]);
+    let blob = build_with::<G>("calls", "-O2", Library::None, &[&define], Position::Fixed);
     let expected = native::<G>(&blob);
     let native_time = native_seconds::<G>(&blob, runs);
     eprintln!("calls: native {native_time:.3} s (load {})", load());
@@ -284,7 +291,7 @@ fn measure_long_division_x86_64() {
     const ROUNDS: f64 = 50e6;
     let mut times = Vec::new();
     for high in ["HIGH=1", "HIGH=0"] {
-        let blob = build_with::<X86_64>("divide", "-O2", Library::None, &[high]);
+        let blob = build_with::<X86_64>("divide", "-O2", Library::None, &[high], Position::Fixed);
         let expected = native::<X86_64>(&blob);
         let native_time = native_seconds::<X86_64>(&blob, runs);
         let mut best = f64::INFINITY;
