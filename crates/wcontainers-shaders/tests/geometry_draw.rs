@@ -43,7 +43,7 @@ struct Case {
     indexed: Option<i32>,
 }
 
-const CASES: [Case; 18] = [
+const CASES: [Case; 20] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_quads",
@@ -219,6 +219,26 @@ const CASES: [Case; 18] = [
         gs: "gs_line_adjacent",
         topology: InputTopology::LineStripAdjacency,
         count: 20,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(2),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_adjacent",
+        topology: InputTopology::TriangleStripAdjacency,
+        count: 17,
+        first: 1,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_adjacent",
+        topology: InputTopology::TriangleStripAdjacency,
+        count: 24,
         first: 0,
         instances: 1,
         first_instance: 0,
@@ -411,7 +431,10 @@ const RESTART_ONE_IN: u32 = 8;
 fn strip(t: InputTopology) -> bool {
     matches!(
         t,
-        InputTopology::LineStrip | InputTopology::TriangleStrip | InputTopology::LineStripAdjacency
+        InputTopology::LineStrip
+            | InputTopology::TriangleStrip
+            | InputTopology::LineStripAdjacency
+            | InputTopology::TriangleStripAdjacency
     )
 }
 
@@ -1111,7 +1134,7 @@ fn direct3d_streamed(
 
 /// Stream output cases: from geometry shaders (strips cut, points, lines, instances) and from the
 /// vertex shader alone (`gs` empty), some filling the first buffer.
-const STREAMED: [Case; 12] = [
+const STREAMED: [Case; 14] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_unplaced",
@@ -1231,6 +1254,26 @@ const STREAMED: [Case; 12] = [
         instances: 1,
         first_instance: 0,
         indexed: Some(0),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_adjacent",
+        topology: InputTopology::TriangleStripAdjacency,
+        count: 16,
+        first: 2,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_adjacent",
+        topology: InputTopology::TriangleStripAdjacency,
+        count: 22,
+        first: 0,
+        instances: 2,
+        first_instance: 0,
+        indexed: Some(1),
     },
 ];
 
