@@ -1,5 +1,6 @@
-// Socket ioctls' order of checks: SIOCATMARK on a datagram socket, and the requests that change
-// the network given a bad address (copied before the power is checked) or a good one.
+// Socket ioctls' order of checks: SIOCATMARK on a datagram socket (also given a bad address), and
+// the requests that change the network on an inet and a local socket, given a bad address (copied
+// before the power is checked) or a good one.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <net/if.h>
@@ -22,19 +23,23 @@ int main(void) {
     p("atmark unix datagram", ioctl(unix_dgram, SIOCATMARK, &at));
     p("atmark unix seqpacket", ioctl(unix_seqpacket, SIOCATMARK, &at));
     p("atmark unix stream", ioctl(unix_stream, SIOCATMARK, &at));
+    p("atmark udp bad address", ioctl(udp, SIOCATMARK, (void *)-4096L));
     struct ifreq ifr;
     memset(&ifr, 0, sizeof ifr);
     strcpy(ifr.ifr_name, "lo");
     unsigned long requests[] = {SIOCSIFFLAGS, SIOCSIFMTU, SIOCSIFADDR, SIOCADDRT, SIOCDELRT, SIOCSARP, SIOCDARP, SIOCADDMULTI};
     const char *names[] = {"siocsifflags", "siocsifmtu", "siocsifaddr", "siocaddrt", "siocdelrt", "siocsarp", "siocdarp", "siocaddmulti"};
-    for (int i = 0; i < 8; i++) {
-        char what[64];
-        snprintf(what, sizeof what, "%s bad address", names[i]);
-        p(what, ioctl(udp, requests[i], 0));
-        snprintf(what, sizeof what, "%s", names[i]);
-        static char room[256];
-        memcpy(room, &ifr, sizeof ifr);
-        p(what, ioctl(udp, requests[i], room));
-    }
+    int sockets[] = {udp, unix_stream};
+    const char *kinds[] = {"udp", "unix"};
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < 8; i++) {
+            char what[64];
+            snprintf(what, sizeof what, "%s %s bad address", kinds[k], names[i]);
+            p(what, ioctl(sockets[k], requests[i], 0));
+            snprintf(what, sizeof what, "%s %s", kinds[k], names[i]);
+            static char room[256];
+            memcpy(room, &ifr, sizeof ifr);
+            p(what, ioctl(sockets[k], requests[i], room));
+        }
     return 0;
 }
