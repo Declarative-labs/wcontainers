@@ -24,7 +24,7 @@ if (-not (Test-Path (Join-Path $FlexBison 'win_bison.exe'))) {
     Expand-Archive -Path $archive -DestinationPath $FlexBison -Force
 }
 
-# LLVM built for the Visual C++ runtime, its libraries and llvm-config: llvmpipe compiles with it.
+# LLVM's release for the Visual C++ runtime: its libclang for bindgen and its lldb.
 $Llvm = Join-Path $Tools $LlvmName
 if (-not (Test-Path (Join-Path $Llvm 'bin\llvm-config.exe'))) {
     $archive = Fetch $LlvmUrl "$LlvmName.tar.xz"
@@ -36,8 +36,34 @@ if (-not (Test-Path (Join-Path $Llvm 'bin\llvm-config.exe'))) {
     & icacls $Llvm /grant '*S-1-5-32-545:(OI)(CI)RX' /T /Q | Out-Null; Run 'icacls LLVM'
 }
 
-$env:PATH = "$FlexBison;$(Join-Path $Llvm 'bin');$env:PATH"
-# bindgen reads Mesa's headers for the driver with this LLVM's libclang.
+# llvmpipe's LLVM, built here from the same release's source: the release's own libraries carry
+# LLVM's integrated allocator (rpmalloc), which replaces malloc and free in the DLL they are linked
+# into while the C runtime's _aligned_realloc still grows blocks in the Windows heap, so Mesa's
+# aligned reallocations corrupted the heap. Only the X86 target, the static runtime Mesa uses,
+# and the libraries, headers and llvm-config that Meson reads.
+$LlvmSourceUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/llvm-project-$LlvmVersion.src.tar.xz"
+$LlvmBuilt = Join-Path $Tools "llvm-$LlvmVersion-mt"
+if (-not (Test-Path (Join-Path $LlvmBuilt 'bin\llvm-config.exe'))) {
+    $source = Join-Path $Tools "llvm-project-$LlvmVersion.src"
+    if (-not (Test-Path $source)) {
+        $archive = Fetch $LlvmSourceUrl "llvm-project-$LlvmVersion.src.tar.xz"
+        & $Python -c "import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2], filter='tar')" $archive $Tools
+        Run 'unpacking LLVM source'
+    }
+    $llvmBuild = Join-Path $Tools "llvm-$LlvmVersion-mt-build"
+    Enter-VisualCpp
+    & cmake -G Ninja -S (Join-Path $source 'llvm') -B $llvmBuild "-DCMAKE_INSTALL_PREFIX=$LlvmBuilt" `
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DLLVM_TARGETS_TO_BUILD=X86 `
+        -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF `
+        -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_DIA_SDK=OFF
+    Run 'cmake LLVM'
+    & ninja -C $llvmBuild -j $Jobs install-llvm-headers install-llvm-libraries install-cmake-exports install-llvm-config
+    Run 'ninja LLVM'
+    Remove-Item -Recurse -Force $llvmBuild, $source
+}
+
+$env:PATH = "$FlexBison;$(Join-Path $LlvmBuilt 'bin');$env:PATH"
+# bindgen reads Mesa's headers for the driver with the release's libclang.
 $env:LIBCLANG_PATH = Join-Path $Llvm 'bin'
 
 # The pinned Mesa, with the patches applied again from the pinned commit whenever they change.
@@ -63,7 +89,7 @@ $build = Join-Path $Mesa 'build'
 $install = Join-Path $Mesa 'install'
 $options = Join-Path $Here 'options-windows.ini'
 $configuredFrom = Join-Path $build 'wcontainers-configured-from'
-$want = "$commit`n$(Get-Content -Raw $options)"
+$want = "$commit`n$LlvmBuilt`n$(Get-Content -Raw $options)"
 $have = if (Test-Path $configuredFrom) { Get-Content -Raw $configuredFrom } else { $null }
 if ($want -ne $have) {
     foreach ($folder in $build, $install) { if (Test-Path $folder) { Remove-Item -Recurse -Force $folder } }
