@@ -350,6 +350,12 @@ pub fn process_code() -> El1Attributes {
     code() | El1Attributes::NON_GLOBAL
 }
 
+/// The entry mirror of the study's readable slots: run and read by the guest's level, written by no level (the inside
+/// writes it through the linear map).
+pub fn readable_process_code() -> El1Attributes {
+    process_code() | El1Attributes::USER | El1Attributes::READ_ONLY
+}
+
 /// Code the inside runs that it did not bring in its image: read and run by the inside only.
 pub fn inside_code() -> El1Attributes {
     normal() | El1Attributes::READ_ONLY | El1Attributes::UXN

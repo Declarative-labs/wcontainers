@@ -933,6 +933,8 @@ pub struct LinkWords {
     pub last_target_test: u32,
     /// A jump's direct branch to its last target's piece before it is linked.
     pub last_target_branch: u32,
+    /// A readable slot's load of its piece's address (the study's).
+    pub slot_load: u32,
 }
 
 /// The words a loader fills, from the encoder.
@@ -961,6 +963,7 @@ pub fn link_words() -> LinkWords {
         .expect("in reach"),
         last_target_branch: encode::branch(false, between(LAST_TARGET_BRANCH, LAST_TARGET_MISSED))
             .expect("in reach"),
+        slot_load: encode::load_literal(SCRATCH, mirror::SLOT_ADDRESS as i64).expect("in reach"),
     }
 }
 
@@ -1035,11 +1038,17 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     if withheld {
         out.code.slow(NativeReason::WithheldRegisterNamed);
         out.put(load_page(SCRATCH, withheld_slot(n)));
-    } else if op == BranchRegister::Ret {
+    } else if op == BranchRegister::Ret
+        || (op == BranchRegister::Br && std::env::var_os(LAST_TARGET_JUMPS).is_some())
+    {
         last_target(out, n);
     } else if linked_first {
         out.build_address(Reg::X(LINK), return_address, Resume::Through(held));
         last_target(out, n);
+    }
+    if read_slot(op, withheld, linked_first) {
+        jump_reading_slot(out, op, source, held);
+        return;
     }
     out.put(encode::ubfx(
         SCRATCH,
@@ -1190,6 +1199,56 @@ pub(crate) fn known_jump(before: &[(u64, I)], i: &I, code: &mut HostCode) -> boo
     true
 }
 
+/// The study's knob (phase-2-native-jump-study): set, a jump reads its piece's address from the target's slot and
+/// goes there itself, instead of jumping to the slot.
+pub const READ_SLOTS: &str = "WCONTAINERS_STUDY_READ_SLOTS";
+
+/// Whether a jump reads its target's slot: under the knob, for every jump whose target register is intact at its
+/// commit point (a `blr` through x30 or a withheld register builds x30 over it, and keeps the slot's jump).
+fn read_slot(op: BranchRegister, withheld: bool, linked_first: bool) -> bool {
+    std::env::var_os(READ_SLOTS).is_some() && !withheld && (op != BranchRegister::Blr || linked_first)
+}
+
+/// A jump that reads its piece's address from its target's readable slot (the study's option c): the ceiling and
+/// the alignment in one test, the slot's address, its last doubleword, and a jump there. A target out of reach or
+/// misaligned goes the old way out of line, which faults where the guest's jump does. No host address is read from
+/// memory the guest's level can write: the slots are read-only at that level.
+fn jump_reading_slot(out: &mut Out, op: BranchRegister, source: Register, held: Held) {
+    out.put(encode::ubfx(SCRATCH, source, REACH_BITS, TAG_LOW - REACH_BITS));
+    out.put(encode::bfi(SCRATCH, source, TAG_LOW - REACH_BITS, ALIGNMENT_BITS));
+    let to_slot = [
+        encode::ubfiz(SCRATCH, source, SLOT_SHIFT, REACH_BITS),
+        encode::bfxil(SCRATCH, source, 0, ALIGNMENT_BITS),
+        encode::eor_immediate(SCRATCH, SCRATCH, MIRROR).expect("the mirror's base is a logical immediate"),
+        encode::branch_register(form::BR, SCRATCH),
+    ];
+    out.tail(
+        encode::compare_branch(true, SCRATCH, 0).expect("fits"),
+        |t| {
+            t.resume = Some(Resume::Through(held));
+            t.words.push(encode::ubfx(SCRATCH, source, REACH_BITS, TAG_LOW - REACH_BITS));
+            let past = (to_slot.len() as i64 + 1) * INSTRUCTION as i64;
+            t.words.push(encode::compare_branch(true, SCRATCH, past).expect("fits"));
+            t.words.extend(to_slot);
+            t.call = Some(InsideCall::Unreachable);
+        },
+    );
+    out.put(encode::ubfiz(SCRATCH, source, SLOT_SHIFT, REACH_BITS));
+    out.put(
+        encode::eor_immediate(SCRATCH, SCRATCH, MIRROR)
+            .expect("the mirror's base is a logical immediate"),
+    );
+    out.put(
+        encode::load_store(form::LDR, SCRATCH, SCRATCH, mirror::SLOT_ADDRESS, size_of::<u64>() as u64)
+            .expect("in reach"),
+    );
+    let jump = encode::branch_register(form::BR, SCRATCH);
+    match op {
+        BranchRegister::Blr => out.put(jump),
+        BranchRegister::Br | BranchRegister::Ret => out.commit(jump, Resume::Through(held)),
+    }
+}
+
 /// The bytes from word `from` of a return's start to word `to`.
 fn between(from: usize, to: usize) -> i64 {
     ((to - from) as u64 * INSTRUCTION) as i64
@@ -1215,21 +1274,39 @@ fn last_target_moves() -> [u32; SLOT_MOVES] {
 /// inside links to that target's piece, otherwise on to the jump through the target's slot, by way of a call that has
 /// the inside make this target the last one while there is none.
 fn last_target(out: &mut Out, n: Register) {
-    out.put_all(&last_target_moves());
-    out.put(encode::logical_register(
-        form::EOR_SHIFTED,
-        SCRATCH,
-        SCRATCH,
-        n,
-    ));
-    out.put(
-        encode::compare_branch(true, SCRATCH, between(LAST_TARGET_TEST, LAST_TARGET_CALL))
-            .expect("in reach"),
-    );
-    out.put(
-        encode::branch(false, between(LAST_TARGET_BRANCH, LAST_TARGET_MISSED)).expect("in reach"),
-    );
+    // The study's knob: that many last targets, each compared in turn, the inside making them in order.
+    let targets = last_targets();
+    for block in 0..targets {
+        // From this block's direct branch, past the blocks after it, to the jump through the slot.
+        let after = ((targets - 1 - block) * LAST_TARGET_CALL) as i64 * INSTRUCTION as i64;
+        out.put_all(&last_target_moves());
+        out.put(encode::logical_register(
+            form::EOR_SHIFTED,
+            SCRATCH,
+            SCRATCH,
+            n,
+        ));
+        out.put(
+            encode::compare_branch(true, SCRATCH, between(LAST_TARGET_TEST, LAST_TARGET_CALL))
+                .expect("in reach"),
+        );
+        out.put(
+            encode::branch(false, after + between(LAST_TARGET_BRANCH, LAST_TARGET_MISSED))
+                .expect("in reach"),
+        );
+    }
     out.call(InsideCall::LastTarget);
+}
+
+/// The study's knob (phase-2-native-jump-study): how many last targets a return or call through a register
+/// compares, one by default.
+pub const LAST_TARGETS: &str = "WCONTAINERS_STUDY_LAST_TARGETS";
+
+/// The study's knob: set, a jump (`br`) compares its last targets too.
+pub const LAST_TARGET_JUMPS: &str = "WCONTAINERS_STUDY_LAST_TARGET_JUMPS";
+
+fn last_targets() -> usize {
+    std::env::var(LAST_TARGETS).ok().and_then(|v| v.parse().ok()).unwrap_or(1)
 }
 
 /// A read or write of the float status or mode between two calls into the inside.

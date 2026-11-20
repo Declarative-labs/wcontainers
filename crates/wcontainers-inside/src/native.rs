@@ -23,7 +23,7 @@ use wcontainers_abi::{
 use wcontainers_arm64::CACHE_TYPE;
 use wcontainers_arm64::mirror::{
     self, LAST_TARGET_BRANCH, LAST_TARGET_CALL, LAST_TARGET_TEST, MIRROR, REACH_BITS,
-    SLOT_MOVE_BITS, SLOT_MOVES,
+    SLOT_BYTES, SLOT_MOVE_BITS, SLOT_MOVES,
 };
 use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage};
 use wcontainers_guest_cpu::position::{NativeReason, Span};
@@ -32,7 +32,7 @@ use wcontainers_runtime::{Answer, Carry, Execution, Turn};
 use crate::floor::{
     self, AddressSpace, FIRST_PROCESS_IDENTIFIER, Frames, Full, IDLE_IDENTIFIER, Table, Taken,
     UserRegisters, code, enter_user, guest_no_access, guest_read_only, guest_read_write,
-    inside_code, make_code_visible, process_code, with_frames,
+    inside_code, make_code_visible, readable_process_code, with_frames,
 };
 use crate::layout::{BLOCK_SIZE, Region, linear};
 use crate::link::LINK_BYTES;
@@ -949,7 +949,7 @@ impl NativeCpu {
 
     /// Writes host code into the code area and makes it visible, giving its address.
     fn place(&mut self, code_bytes: &[u8]) -> Result<u64, Full> {
-        let start = self.code_next;
+        let start = study_layout(self.code_next);
         let end = start + code_bytes.len() as u64;
         let global = self.global;
         while self.code_mapped < end {
@@ -1122,10 +1122,40 @@ impl NativeCpu {
         if target >> REACH_BITS != 0 || !target.is_multiple_of(size_of::<u32>() as u64) {
             return;
         }
-        let word = |index: usize| call - ((LAST_TARGET_CALL - index) * size_of::<u32>()) as u64;
+        let instruction = size_of::<u32>() as u64;
+        let read = |at: u64| {
+            // SAFETY: the code area is mapped readable at this level.
+            unsafe { ptr::read_volatile(at as *const u32) }
+        };
+        // The study's several last targets: the blocks before the call, each one the single last target's words, found
+        // by walking back while a block's first move and its test (still going on to the next block) are there.
+        let block = LAST_TARGET_CALL as u64 * instruction;
+        let unmade_test = read(call - (LAST_TARGET_CALL - LAST_TARGET_TEST) as u64 * instruction);
+        let first = self.words.last_target_first;
+        let is_block = |start: u64| {
+            read(start) & !first.mask == first.clear
+                && read(start + LAST_TARGET_TEST as u64 * instruction) == unmade_test
+        };
+        let blocks = (1..)
+            .take_while(|&j| is_block(call - j * block))
+            .count() as u64;
+        let made = |start: u64| {
+            (0..SLOT_MOVES as u64).any(|k| {
+                let field = if k == 0 { first } else { self.words.moves[k as usize] };
+                read(start + k * instruction) & field.mask != 0
+            })
+        };
+        let Some(chosen) = (0..blocks)
+            .map(|j| call - (blocks - j) * block)
+            .find(|&start| !made(start))
+        else {
+            return;
+        };
+        let last = chosen == call - block;
+        let word = |index: usize| chosen + index as u64 * instruction;
         let site = Site {
             at: word(LAST_TARGET_BRANCH),
-            word: self.words.last_target_branch,
+            word: read(word(LAST_TARGET_BRANCH)),
             retarget: None,
         };
         let m = &self.memories[&memory];
@@ -1145,7 +1175,9 @@ impl NativeCpu {
             *move_word = field.with(target >> (k as u32 * SLOT_MOVE_BITS));
         }
         write_code(word(0), &moves);
-        write_code(word(LAST_TARGET_TEST), &[self.words.last_target_test]);
+        if last {
+            write_code(word(LAST_TARGET_TEST), &[self.words.last_target_test]);
+        }
         if let Some(linked) = link {
             write_code(site.at, &[linked]);
         }
@@ -1163,24 +1195,36 @@ impl NativeCpu {
     fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) -> Result<(), Full> {
         let at = mirror::slot(guest);
         let page = page_of(at);
-        let m = self.memories.get_mut(&memory).expect("the memory is there");
-        if !m.slots.contains_key(&page) {
-            let inside = m.space.inside;
-            let frame = with_frames(|frames| {
-                let frame = frames.take()?;
-                inside.map(frames, page, frame, process_code())?;
-                Ok(frame)
-            })?;
-            m.slots.insert(page, frame);
-        }
-        let mut words = [self.words.jump; SLOT_MOVES + 1];
-        for (k, (word, field)) in words.iter_mut().zip(&self.words.moves).enumerate() {
-            *word = field.with(base >> (k as u32 * SLOT_MOVE_BITS));
-        }
+        self.slot_page(memory, page)?;
+        let m = &self.memories[&memory];
         // Written where the guest runs it, in its process's address space, which dropping another process's
         // pieces may have switched away from.
         m.space.switch();
-        write_code(at, &words);
+        write_slot(m, at, &slot_words(self.words.slot_load, self.words.jump, at, Some(base)));
+        Ok(())
+    }
+
+    /// Maps the mirror's page `page` of `memory` at its first use, read-only and run by the guest's level, every
+    /// slot on it empty (the study's readable slots); leaves `memory`'s address space switched to.
+    fn slot_page(&mut self, memory: MemoryId, page: u64) -> Result<(), Full> {
+        let m = self.memories.get_mut(&memory).expect("the memory is there");
+        if m.slots.contains_key(&page) {
+            return Ok(());
+        }
+        let inside = m.space.inside;
+        let frame = with_frames(|frames| {
+            let frame = frames.take()?;
+            inside.map(frames, page, frame, readable_process_code())?;
+            Ok(frame)
+        })?;
+        m.slots.insert(page, frame);
+        m.space.switch();
+        let empty = self.words.empty;
+        let words: Vec<u32> = (page..page + PAGE_SIZE)
+            .step_by(SLOT_BYTES as usize)
+            .flat_map(|slot| slot_words(empty, empty, slot, None))
+            .collect();
+        write_slot(m, page, &words);
         Ok(())
     }
 
@@ -1413,6 +1457,14 @@ impl NativeCpu {
                                 t.page = then_page;
                                 break Ended::CodeChanged(address);
                             }
+                            Ok(Resolved::SlotPage {
+                                slot,
+                                then,
+                                page: then_page,
+                            }) => {
+                                carried = Some((then, then_page));
+                                break Ended::SlotPage(slot);
+                            }
                             Ok(Resolved::LastTarget {
                                 call,
                                 target,
@@ -1459,6 +1511,13 @@ impl NativeCpu {
                     self.make_last_target(memory, call, target);
                     continue;
                 }
+                Ended::SlotPage(slot) => {
+                    if let Err(Full) = self.slot_page(memory, page_of(slot)) {
+                        // No frame for a page of the mirror: the process can only be killed.
+                        return Exit::MemoryFaultWithoutRegisters;
+                    }
+                    continue;
+                }
                 Ended::Stopped(stop) => stop,
             };
             match stop {
@@ -1496,6 +1555,44 @@ impl NativeCpu {
     }
 }
 
+/// The study's layout knob (phase-2-native-jump-study), fixed when the inside is built: `pad:<seed>` puts a seeded
+/// number of words, under a line, before each piece; `align:<seed>` starts each piece on a line, then a seeded number
+/// of lines further. Unset, pieces follow each other.
+const STUDY_LAYOUT: Option<&str> = option_env!("WCONTAINERS_STUDY_LAYOUT");
+
+/// The bytes of the line the study's layouts pad within or align to.
+const STUDY_LINE: u64 = 64;
+
+/// The lines `align:` may skip, at most.
+const STUDY_LINES: u64 = 4;
+
+/// splitmix64's constants (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", 2014).
+const SPLITMIX_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+const SPLITMIX_MIX: [(u32, u64); 2] = [(30, 0xbf58_476d_1ce4_e5b9), (27, 0x94d0_49bb_1331_11eb)];
+const SPLITMIX_LAST: u32 = 31;
+
+/// Where the next piece starts under the study's layout knob, from where the last one ended.
+fn study_layout(next: u64) -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0);
+    let Some(knob) = STUDY_LAYOUT else {
+        return next;
+    };
+    let (mode, seed) = knob.split_once(':').expect("mode:seed");
+    let seed: u64 = seed.parse().expect("a seed");
+    let mut x = STATE.fetch_add(1, Ordering::Relaxed).wrapping_add(seed).wrapping_mul(SPLITMIX_GAMMA);
+    for (shift, multiplier) in SPLITMIX_MIX {
+        x = (x ^ (x >> shift)).wrapping_mul(multiplier);
+    }
+    x ^= x >> SPLITMIX_LAST;
+    let word = size_of::<u32>() as u64;
+    match mode {
+        "pad" => next + x % (STUDY_LINE / word) * word,
+        "align" => next.next_multiple_of(STUDY_LINE) + x % STUDY_LINES * STUDY_LINE,
+        _ => panic!("pad or align"),
+    }
+}
+
 /// How a run of translated code came back to the inside.
 enum Ended {
     /// An interrupt, or a step that reached the turn's count: the turn ends here.
@@ -1507,7 +1604,30 @@ enum Ended {
         call: u64,
         target: u64,
     },
+    /// A jump read a slot on a page of the mirror not mapped yet.
+    SlotPage(u64),
     Stopped(Stop),
+}
+
+/// A readable slot's words (the study's): with a piece, the load of its address and the jump, then the address; empty,
+/// two words that raise an exception, then the slot's own address, so a jump that reads it lands on them.
+fn slot_words(load: u32, jump: u32, slot: u64, piece: Option<u64>) -> [u32; SLOT_WORDS] {
+    let address = piece.unwrap_or(slot);
+    [load, jump, address as u32, (address >> u32::BITS) as u32]
+}
+
+/// The words of one slot.
+const SLOT_WORDS: usize = (SLOT_BYTES / size_of::<u32>() as u64) as usize;
+
+/// Writes words at the mirror's address `at` of `m` through the linear map of their page's frame (the page is
+/// read-only at every level), then makes them visible where they run; `m`'s address space is the one in use.
+fn write_slot(m: &Memory, at: u64, words: &[u32]) {
+    let frame = m.slots[&page_of(at)];
+    let into = linear(frame + at % PAGE_SIZE);
+    // SAFETY: the frame is the slot page's, mapped writable at this level through the linear map, and no virtual CPU
+    // runs these words while they change.
+    unsafe { ptr::copy_nonoverlapping(words.as_ptr(), into as *mut u32, words.len()) };
+    make_code_visible(at, size_of_val(words) as u64);
 }
 
 /// Drops the piece at guest `at` of `m`: its entry slot emptied (its first word made `empty`), the exits linked to it unlinked, its own exits
@@ -1522,7 +1642,7 @@ fn drop_piece(m: &mut Memory, at: u64, empty: u32) {
         // The slot is written where the guest runs it, in its process's address space; every run switches to
         // its own.
         m.space.switch();
-        write_code(slot, &[empty]);
+        write_slot(m, slot, &slot_words(empty, empty, slot, None));
     }
     for site in m.exits_to.get(&at).into_iter().flatten() {
         write_code(site.at, &[site.word]);

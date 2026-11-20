@@ -142,6 +142,13 @@ pub enum Resolved {
         then: Interrupted,
         page: RegisterPage,
     },
+    /// A jump read its target's slot on a page of the mirror not mapped yet (the study's readable slots): the
+    /// guest's level goes on from `then`, where it read, once the page holding `slot` is mapped.
+    SlotPage {
+        slot: u64,
+        then: Interrupted,
+        page: RegisterPage,
+    },
     /// The guest announced that the code at `address` changed: the guest's level goes on from `then` once the
     /// translations of that line are dropped, or stops at `at` when it may not read there.
     CodeChanged {
@@ -475,6 +482,13 @@ pub fn resolve(
             }
         };
         return Ok(Resolved::Stop(stop, state));
+    }
+    if class == ESR_EL1::EC::Value::DataAbortLowerEL as u64 && exception.fault >= MIRROR {
+        return Ok(Resolved::SlotPage {
+            slot: exception.fault,
+            then: h.clone(),
+            page: page.clone(),
+        });
     }
     float.enter(h.fpsr);
     let state = guest_state(span, h, page);

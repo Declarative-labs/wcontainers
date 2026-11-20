@@ -58,6 +58,8 @@ pub struct LinkWords {
     pub last_target_test: u32,
     /// A jump's direct branch to its last target's piece before it is linked.
     pub last_target_branch: u32,
+    /// A readable slot's load of its piece's address (the study's).
+    pub slot_load: u32,
 }
 
 /// The answer to [`Translate`].
