@@ -3,7 +3,7 @@
 <title>WebGPU back end scenes</title>
 <script type="module">
 // The scenes example built for WebAssembly, as wasm-bindgen writes it into ./pkg.
-import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, vertex_formats, texture_renames, query_sets, depth_group_copies, pulled_costs, program_features, copy_gaps, adapter } from './pkg/scenes.js';
+import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, vertex_formats, texture_renames, srgb_views, float_clears, query_sets, depth_group_copies, pulled_costs, program_features, copy_gaps, adapter } from './pkg/scenes.js';
 const ready = init();
 
 const dataUrl = (png) => new Promise((resolve, reject) => {
@@ -41,6 +41,18 @@ window.converted = async (seed, cases) => {
 window.textureRenames = async () => {
   await ready;
   return await texture_renames();
+};
+
+// sRGB views of a texture that also allows storage, read as an sRGB texture is: one line, or an error.
+window.srgbViews = async () => {
+  await ready;
+  return await srgb_views();
+};
+
+// Clears of 32-bit float formats keeping every bit: one line, or an error.
+window.floatClears = async () => {
+  await ready;
+  return await float_clears();
 };
 
 // Query sets past 4096 queries and query results from one ring: one line each, or an error.

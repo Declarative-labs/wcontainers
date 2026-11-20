@@ -210,7 +210,8 @@ impl ViewObj {
         if let (Some(t), Some(desc)) = (&self.texture, &self.desc)
             && t.0.generation.get() != self.made_for.get()
         {
-            let views = raw_views(&t.0, desc).expect("made once from the same description");
+            let views = raw_views(&t.0, desc, self.format_usages)
+                .expect("made once from the same description");
             self.views.replace(views);
             self.made_for.set(t.0.generation.get());
         }
@@ -241,6 +242,8 @@ struct ViewObj {
     desc: Option<TextureViewDesc>,
     /// The texture's generation `views` were made from.
     made_for: Cell<u64>,
+    /// The usages the view's format allows on the device.
+    format_usages: wgpu::TextureUsages,
     width: u32,
     height: u32,
     samples: u32,
@@ -694,10 +697,12 @@ impl WebGpu {
 }
 
 /// The view a pass draws into (every aspect) and the view a binding reads (the aspect `stencil`
-/// names, in that aspect's own format); one view where the two are the same.
+/// names, in that aspect's own format); one view where the two are the same. `format_usages` are
+/// the usages the view's format allows on the device.
 fn raw_views(
     texture: &TextureObj,
     desc: &TextureViewDesc,
+    format_usages: wgpu::TextureUsages,
 ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
     let seen = match texture.blocks {
         Some(_) => blocks::decoded(desc.format)?,
@@ -705,21 +710,20 @@ fn raw_views(
     };
     let format = convert::texture_format(seen)?;
     let aspect = convert::aspect(desc.stencil, desc.format);
+    let raw = texture.raw.borrow().clone();
+    let usage = convert::view_usage(&raw, format, format_usages);
     let view = |aspect, format| {
-        texture
-            .raw
-            .borrow()
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: None,
-                format: Some(format),
-                dimension: Some(convert::view_dimension(desc.dimension)),
-                usage: None,
-                aspect,
-                base_mip_level: desc.base_mip,
-                mip_level_count: Some(desc.mip_count),
-                base_array_layer: desc.base_layer,
-                array_layer_count: Some(desc.layer_count),
-            })
+        raw.create_view(&wgpu::TextureViewDescriptor {
+            label: None,
+            format: Some(format),
+            dimension: Some(convert::view_dimension(desc.dimension)),
+            usage,
+            aspect,
+            base_mip_level: desc.base_mip,
+            mip_level_count: Some(desc.mip_count),
+            base_array_layer: desc.base_layer,
+            array_layer_count: Some(desc.layer_count),
+        })
     };
     let whole = view(wgpu::TextureAspect::All, format);
     if aspect == wgpu::TextureAspect::All {
@@ -1245,7 +1249,8 @@ impl Backend for WebGpu {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
-        let views = raw_views(&texture.0, desc).ok_or(GpuError::Invalid(
+        let format_usages = self.usages[desc.format.index()];
+        let views = raw_views(&texture.0, desc, format_usages).ok_or(GpuError::Invalid(
             "view format or aspect this back end does not hold",
         ))?;
         let t = &texture.0.desc;
@@ -1257,6 +1262,7 @@ impl Backend for WebGpu {
             views: RefCell::new(views),
             desc: Some(*desc),
             made_for: Cell::new(texture.0.generation.get()),
+            format_usages,
             width: size(t.width),
             height: size(t.height),
             samples: t.samples,
@@ -1964,6 +1970,7 @@ impl Backend for WebGpu {
             views: RefCell::new((texture.clone(), texture)),
             desc: None,
             made_for: Cell::new(0),
+            format_usages: self.usages[surface.0.format.get().index()],
             width,
             height,
             samples: 1,
