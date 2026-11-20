@@ -15,7 +15,7 @@ pub trait Process {
 
     fn id(&self) -> TaskId;
     fn info(&self) -> impl ProcessInfo;
-    fn execution_config(&self) -> ExecutionConfig<Self::Executor>;
+    fn execution_config(&self) -> &ExecutionConfig<Self::Executor>;
     fn state(&mut self) -> &mut Self::State;
     fn memory_id(&self) -> MemoryId;
 
