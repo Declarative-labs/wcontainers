@@ -1532,7 +1532,8 @@ fn connected_peer(socket: &SocketRef) -> Result<SocketRef, Errno> {
     Ok(peer)
 }
 
-/// Waits for room or a peer: EAGAIN when nonblocking, else parked on the socket.
+/// Waits for room or a peer: EAGAIN when nonblocking, else parked on the socket; `timeout` is
+/// the socket's (0 for none).
 fn wait_room(
     kernel: &mut Kernel,
     tid: Tid,
@@ -1546,8 +1547,13 @@ fn wait_room(
     if timed_out(kernel, tid, timeout) {
         return Errno::EAGAIN;
     }
+    // `sock_intr_errno`: a wait with a timeout is not restarted.
     if kernel.signal_pending(tid) {
-        return Errno::ERESTARTSYS;
+        return if timeout == 0 {
+            Errno::ERESTARTSYS
+        } else {
+            Errno::EINTR
+        };
     }
     kernel.park(tid, channel(socket));
     Errno::PARKED

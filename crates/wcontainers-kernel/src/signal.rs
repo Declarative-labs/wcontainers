@@ -205,10 +205,14 @@ impl Kernel {
         info: InformationBytes,
     ) {
         let signal = signal_of(&info);
-        let ours = self
-            .threads
-            .get(&tid)
-            .is_some_and(|thread| thread.process == pid);
+        // A task of the process taken off the kernel is still one of its tasks.
+        let ours = match self.threads.get(&tid) {
+            Some(thread) => thread.process == pid,
+            None => self
+                .processes
+                .get(&pid)
+                .is_some_and(|process| process.away.contains_key(&tid)),
+        };
         if !ours
             || !(1..=_NSIG).contains(&signal)
             || self.queue_to_thread(cx, tid, signal, info).is_err()
