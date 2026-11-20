@@ -275,7 +275,7 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
             timeout: None,
         })
         .expect("the queue ends");
-    let mapped = read.slice(..).get_mapped_range();
+    let mapped = read.slice(..).get_mapped_range().expect("the read buffer maps");
     mapped
         .chunks_exact(size_of::<u32>())
         .map(|w| u32::from_le_bytes(w.try_into().expect("a word")))
