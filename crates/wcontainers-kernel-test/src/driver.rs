@@ -55,34 +55,49 @@ pub(crate) fn back_end(seed: u64, _address_space: u64) -> Back {
     static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
         std::sync::OnceLock::new();
     let compiler = COMPILER
-        .get_or_init(|| Compiler::new(Some(crate::backend::out().join("translations"))))
+        .get_or_init(|| Compiler::new(Some(crate::backend::out().join(TRANSLATIONS))))
         .clone();
     CpuSide::new(compiler, look_ahead(seed), Optimise::Speed, ())
 }
+
+/// The folder of the translation cache, in the tests' output folder.
+#[cfg(feature = "runtime")]
+const TRANSLATIONS: &str = "translations";
 
 /// Mixed into the run's seed for the look-ahead's draw, so that it is not the schedule's first draw.
 #[cfg(feature = "runtime")]
 const LOOK_AHEAD_STREAM: u64 = 0x1007_a4ead;
 
-/// The look-ahead `LOOK_AHEAD` names: `full` (also when unset), `none`, or `bounded`, whose N is drawn
-/// from 1 to the translator's default bound from the run's seed and `LOOK_AHEAD_SEED` (0 if unset),
-/// and printed.
+/// The variable naming the look-ahead: `full` (also when unset), `none`, or `bounded`.
+#[cfg(feature = "runtime")]
+const LOOK_AHEAD_VARIABLE: &str = "LOOK_AHEAD";
+
+/// The variable mixed into the run's seed for a bounded look-ahead's N (0 if unset).
+#[cfg(feature = "runtime")]
+const LOOK_AHEAD_SEED_VARIABLE: &str = "LOOK_AHEAD_SEED";
+
+/// The look-ahead [`LOOK_AHEAD_VARIABLE`] names; at `bounded` its N is drawn from 1 to the
+/// translator's default bound from the run's seed and [`LOOK_AHEAD_SEED_VARIABLE`], and printed.
 #[cfg(feature = "runtime")]
 fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
     use wcontainers_wasmtime::LookAhead;
-    match std::env::var("LOOK_AHEAD").as_deref() {
+    match std::env::var(LOOK_AHEAD_VARIABLE).as_deref() {
         Err(_) | Ok("full") => LookAhead::Full,
         Ok("none") => LookAhead::None,
         Ok("bounded") => {
-            let knob = std::env::var("LOOK_AHEAD_SEED").map_or(0, |seed| {
-                seed.parse().expect("LOOK_AHEAD_SEED is an unsigned number")
+            let knob = std::env::var(LOOK_AHEAD_SEED_VARIABLE).map_or(0, |seed| {
+                seed.parse().unwrap_or_else(|_| {
+                    panic!("{LOOK_AHEAD_SEED_VARIABLE} is an unsigned number, not {seed}")
+                })
             });
             let n = StdRng::seed_from_u64(seed ^ knob ^ LOOK_AHEAD_STREAM)
                 .random_range(1..=wcontainers_wasmtime::BOUND);
-            eprintln!("look-ahead bounded {n} (run seed {seed}, LOOK_AHEAD_SEED {knob})");
+            eprintln!(
+                "look-ahead bounded {n} (run seed {seed}, {LOOK_AHEAD_SEED_VARIABLE} {knob})"
+            );
             LookAhead::Bounded(n)
         }
-        Ok(other) => panic!("LOOK_AHEAD is full, none or bounded, not {other}"),
+        Ok(other) => panic!("{LOOK_AHEAD_VARIABLE} is full, none or bounded, not {other}"),
     }
 }
 
@@ -296,7 +311,7 @@ impl TestHost {
 fn wall_clock() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("the clock is after 1970")
+        .expect("the clock is after the epoch")
         .as_nanos() as u64
 }
 
@@ -528,7 +543,7 @@ impl Default for Injections {
     fn default() -> Self {
         Self {
             saves: 0,
-            save_gap: 100,
+            save_gap: MOMENTS_APART,
             wall_step: 0,
             signal: None,
             notices: 0,
@@ -537,9 +552,13 @@ impl Default for Injections {
     }
 }
 
-/// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
+/// The most turns between two injected moments, unless a run asks for another spacing.
+const MOMENTS_APART: u64 = 100;
+
+/// Turn counts at which something is injected: `count` of them, each 1 to [`MOMENTS_APART`] turns
+/// after the last.
 fn moments(seed: u64, count: usize) -> Vec<u64> {
-    moments_apart(seed, count, 100)
+    moments_apart(seed, count, MOMENTS_APART)
 }
 
 /// Turn counts at which something is injected: `count` of them, each 1 to `apart` turns after the
@@ -1068,31 +1087,50 @@ const ANSWER_ARRIVES_WITHIN: u64 = 50_000;
 /// The request numbers of RETRIEVE notices this host sends: above any the kernel numbers.
 const RETRIEVED: u64 = 1 << 62;
 
-/// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node (one of the first
-/// few the backend numbers, some never looked up) drawn from `random`, sometimes cut short. The kernel's NOTIFY_REPLY to
-/// a RETRIEVE comes back to this host, which sent it, not to the server ([`RETRIEVED`]).
+/// The kinds of notice a backend sends unasked, but RESEND, which only answers the kernel's requests.
+const NOTICE_KINDS: &[fuse_abi::linux::fuse_notify_code] = {
+    use fuse_abi::linux::fuse_notify_code::*;
+    &[
+        FUSE_NOTIFY_POLL,
+        FUSE_NOTIFY_INVAL_INODE,
+        FUSE_NOTIFY_INVAL_ENTRY,
+        FUSE_NOTIFY_DELETE,
+        FUSE_NOTIFY_RETRIEVE,
+        FUSE_NOTIFY_STORE,
+    ]
+};
+
+/// The nodes notices are about: the first few the backend numbers, some never looked up.
+const NOTICE_NODES: std::ops::Range<u64> = 1..12;
+
+/// The name INVAL_ENTRY and DELETE notices carry, and the bytes STORE notices write.
+const NOTICE_NAME: &std::ffi::CStr = c"backend-file";
+
+/// One notice in this many is cut short, which Linux refuses.
+const CUT_SHORT_ONE_IN: u32 = 8;
+
+/// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node drawn from `random`,
+/// sometimes cut short. The kernel's NOTIFY_REPLY to a RETRIEVE comes back to this host, which sent
+/// it, not to the server ([`RETRIEVED`]).
 fn notice(random: &mut StdRng) -> Vec<u8> {
     use fuse_abi::linux::*;
+    use rand::seq::IndexedRandom;
     use zerocopy::IntoBytes;
-    let node: u64 = random.random_range(1..12);
-    let name = b"backend-file\0";
-    let namelen = (name.len() - 1) as u32;
-    let (code, mut body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
-        0 => (
-            fuse_notify_code::FUSE_NOTIFY_POLL,
-            fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec(),
-        ),
-        1 => (
-            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
-            fuse_notify_inval_inode_out {
-                ino: node,
-                off: 0,
-                len: -1,
-            }
-            .as_bytes()
-            .to_vec(),
-        ),
-        2 => {
+    let node = random.random_range(NOTICE_NODES);
+    let namelen = NOTICE_NAME.count_bytes() as u32;
+    let code = *NOTICE_KINDS.choose(random).expect("a kind of notice");
+    let mut body = match code {
+        fuse_notify_code::FUSE_NOTIFY_POLL => {
+            fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec()
+        }
+        fuse_notify_code::FUSE_NOTIFY_INVAL_INODE => fuse_notify_inval_inode_out {
+            ino: node,
+            off: 0,
+            len: -1,
+        }
+        .as_bytes()
+        .to_vec(),
+        fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY => {
             let mut body = fuse_notify_inval_entry_out {
                 parent: node,
                 namelen,
@@ -1100,48 +1138,45 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
             }
             .as_bytes()
             .to_vec();
-            body.extend_from_slice(name);
-            (fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY, body)
+            body.extend_from_slice(NOTICE_NAME.to_bytes_with_nul());
+            body
         }
-        3 => {
+        fuse_notify_code::FUSE_NOTIFY_DELETE => {
             let mut body = fuse_notify_delete_out {
-                parent: 1,
+                parent: FUSE_ROOT_ID,
                 child: node,
                 namelen,
                 padding: 0,
             }
             .as_bytes()
             .to_vec();
-            body.extend_from_slice(name);
-            (fuse_notify_code::FUSE_NOTIFY_DELETE, body)
+            body.extend_from_slice(NOTICE_NAME.to_bytes_with_nul());
+            body
         }
-        4 => (
-            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
-            fuse_notify_retrieve_out {
-                notify_unique: RETRIEVED | node,
-                nodeid: node,
-                offset: 0,
-                size: PAGE_SIZE as u32,
-                padding: 0,
-            }
-            .as_bytes()
-            .to_vec(),
-        ),
-        _ => {
+        fuse_notify_code::FUSE_NOTIFY_RETRIEVE => fuse_notify_retrieve_out {
+            notify_unique: RETRIEVED | node,
+            nodeid: node,
+            offset: 0,
+            size: PAGE_SIZE as u32,
+            padding: 0,
+        }
+        .as_bytes()
+        .to_vec(),
+        fuse_notify_code::FUSE_NOTIFY_STORE => {
             let mut body = fuse_notify_store_out {
                 nodeid: node,
                 offset: 0,
-                size: 4,
+                size: NOTICE_NAME.count_bytes() as u32,
                 padding: 0,
             }
             .as_bytes()
             .to_vec();
-            body.extend_from_slice(b"data");
-            (fuse_notify_code::FUSE_NOTIFY_STORE, body)
+            body.extend_from_slice(NOTICE_NAME.to_bytes());
+            body
         }
+        other => unreachable!("{other:?} is not one of NOTICE_KINDS"),
     };
-    // One in eight is cut short, which Linux refuses.
-    if random.random_ratio(1, 8) {
+    if random.random_ratio(1, CUT_SHORT_ONE_IN) {
         body.truncate(random.random_range(0..body.len()));
     }
     let header = fuse_out_header {
@@ -1219,22 +1254,16 @@ fn panic_in_copy(why: &str) -> ! {
 
 /// The run of a copy made at a save, read from its pipe once it has ended.
 fn copied_run(copy: libc::pid_t, fd: i32) -> Run {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
     let mut bytes = Vec::new();
-    let mut buffer = [0u8; 65536];
-    // SAFETY: reads the copy's pipe until it closes, then reaps the copy.
-    let status = unsafe {
-        loop {
-            let count = libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len());
-            if count <= 0 {
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..count as usize]);
-        }
-        libc::close(fd);
-        let mut status = 0;
-        libc::waitpid(copy, &mut status, 0);
-        status
-    };
+    // SAFETY: the read end of the copy's pipe, which only this function uses and closes.
+    std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) })
+        .read_to_end(&mut bytes)
+        .expect("the copy's pipe reads to its end");
+    let mut status = 0;
+    // SAFETY: reaps the copy, a child of this process.
+    unsafe { libc::waitpid(copy, &mut status, 0) };
     assert!(
         !bytes.is_empty() && status == 0,
         "the copy made at a save ended without a run (wait status {status}); why is above"
@@ -1298,9 +1327,9 @@ fn decode(input: &[u8]) -> Run {
     struct Reader<'a>(&'a [u8]);
     impl Reader<'_> {
         fn number(&mut self) -> u64 {
-            let (value, rest) = self.0.split_at(8);
+            let (value, rest) = self.0.split_first_chunk().expect("a whole number");
             self.0 = rest;
-            u64::from_le_bytes(value.try_into().expect("eight bytes"))
+            u64::from_le_bytes(*value)
         }
         fn bytes(&mut self) -> Vec<u8> {
             let length = self.number() as usize;

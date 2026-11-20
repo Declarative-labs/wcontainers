@@ -1602,32 +1602,16 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"/{target
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"/{}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"{major},{minor}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_kernel	"{major},{minor}"
-code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"backend-file\0"
-code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"data"
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<Injections as Default>::default	100
-code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
-code	crates/wcontainers-kernel-test/src/driver.rs	int	decode::Reader<'_>::number	8
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0x7f
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0xff
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	128
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	8
-code	crates/wcontainers-kernel-test/src/driver.rs	int	moments	100
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	12
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	3
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	6
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	8
-code	crates/wcontainers-kernel-test/src/driver.rs	str	back_end	"translations"
-code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"LOOK_AHEAD"
-code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"LOOK_AHEAD_SEED"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"bounded"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"full"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	look_ahead	"none"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	prepare	"/"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	report	", "
 code	crates/wcontainers-kernel-test/src/driver.rs	str	run_prepared	"/"
-code	crates/wcontainers-kernel-test/src/driver.rs	str	wall_clock	"the clock is after 1970"
 code	crates/wcontainers-kernel-test/src/generate.rs	char	convert	'\n'
 code	crates/wcontainers-kernel-test/src/generate.rs	str	add_byte_derives	r"#\[derive\(Debug, Copy, Clone\)\]\npub struct ([A-Za-z0-9_]+) \{"
 code	crates/wcontainers-kernel-test/src/generate.rs	str	convert	"${1}u64,"
