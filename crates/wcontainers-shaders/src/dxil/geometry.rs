@@ -45,6 +45,7 @@ const LOCAL_SIZE: [u32; 3] = [1, 1, 1];
 /// Why a DXIL geometry shader is malformed.
 const NO_MAIN: &str = "a geometry shader without its function";
 const NO_VALUE: &str = "a geometry shader's stage value the reader dropped";
+const STREAM_NOT_CONSTANT: &str = "a geometry stream that is no constant";
 
 /// A stage variable of the SPIR-V.
 struct Interface {
@@ -216,9 +217,8 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertE
             Op::from_u32(opcode(i)),
             Some(Op::EmitStreamVertex | Op::EndStreamPrimitive)
         ) {
-            let stream = constant(i[STREAM_OPERAND]).ok_or_else(|| {
-                ConvertError::Malformed("a geometry stream that is no constant".into())
-            })?;
+            let stream = constant(i[STREAM_OPERAND])
+                .ok_or_else(|| ConvertError::Malformed(STREAM_NOT_CONSTANT.into()))?;
             declared.stream_mask |= 1 << stream;
         }
         at += i.len();

@@ -182,7 +182,16 @@ struct Counters {
 /// The emit function's name; a later stream's ends with its number.
 pub(crate) const EMIT: &str = "gs_emit";
 /// The cut function's name.
-pub(crate) const CUT: &str = "gs_cut";
+pub(crate) const CUT: &str = "gs_cut_strip";
+/// Why a geometry shader is malformed: it declares no vertex count.
+const NO_VERTEX_COUNT: &str = "a geometry shader without its vertex count";
+/// The compute form's bound list of primitives and its output.
+const LIST_VARIABLE: &str = "stage_list";
+const OUT_VARIABLE: &str = "stage_geometry";
+/// The invocation's number, and each stream's counters in `Counters`' order (a later stream's
+/// names end with its number).
+const INVOCATION_VARIABLE: &str = "gs_invocation";
+const COUNTER_VARIABLES: [&str; 3] = ["gs_emitted", "gs_written", "gs_strip"];
 /// The record slot holding the position.
 const POSITION_SLOT: u32 = 0;
 /// The replay form's outputs.
@@ -415,9 +424,7 @@ impl GeometryPass<'_> {
     pub(crate) fn functions(&mut self) -> Result<()> {
         let g = &*self.geometry;
         if g.max_vertices == 0 {
-            return Err(malformed(
-                "a geometry shader without its vertex count".into(),
-            ));
+            return Err(malformed(NO_VERTEX_COUNT.into()));
         }
         input_vertices(g.input)?;
         let (max, streams, gsi) = (g.max_vertices, g.streams.max(1), g.instances.max(1));
@@ -509,7 +516,7 @@ impl GeometryPass<'_> {
             let word_array = build::runtime_array(m, u32_ty, build::WORD);
             let list = build::global(
                 m,
-                "stage_list",
+                LIST_VARIABLE,
                 AddressSpace::Storage {
                     access: StorageAccess::LOAD,
                 },
@@ -518,7 +525,7 @@ impl GeometryPass<'_> {
             );
             let out = build::global(
                 m,
-                "stage_geometry",
+                OUT_VARIABLE,
                 AddressSpace::Storage {
                     access: StorageAccess::LOAD | StorageAccess::STORE,
                 },
@@ -527,17 +534,16 @@ impl GeometryPass<'_> {
             );
             Form::Compute { list, out }
         };
-        let invocation = private(m, "gs_invocation", u32_ty);
+        let invocation = private(m, INVOCATION_VARIABLE, u32_ty);
         let counters: Vec<Counters> = (0..streams)
             .map(|s| {
-                let [emitted, written, strip] =
-                    ["gs_emitted", "gs_written", "gs_strip"].map(|name| {
-                        let name = match s {
-                            0 => name.into(),
-                            s => format!("{name}{s}"),
-                        };
-                        build::global(m, &name, AddressSpace::Private, None, u32_ty)
-                    });
+                let [emitted, written, strip] = COUNTER_VARIABLES.map(|name| {
+                    let name = match s {
+                        0 => name.into(),
+                        s => format!("{name}{s}"),
+                    };
+                    build::global(m, &name, AddressSpace::Private, None, u32_ty)
+                });
                 Counters {
                     emitted,
                     written,
@@ -793,7 +799,7 @@ impl GeometryPass<'_> {
         let s = Lowering::scalar(first.scalar)?;
         let s = if s == Scalar::BOOL { Scalar::U32 } else { s };
         let mut comps = Vec::new();
-        for c in 0..4u32 {
+        for c in 0..build::VEC4 {
             let found = decls.iter().find(|&&i| {
                 let values = self.values;
                 let io = &values[i];
