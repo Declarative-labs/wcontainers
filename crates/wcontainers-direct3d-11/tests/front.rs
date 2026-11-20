@@ -3486,7 +3486,7 @@ fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
 fn clear_values_of_integer_twins_are_encoded_as_direct3d_converts_them() {
     use wcontainers_direct3d_11::format::encode_norm;
     use wcontainers_gpu::Format;
-    assert_eq!(encode_norm(Format::R16Unorm, 0.5), 32768);
+    assert_eq!(encode_norm(Format::R16Unorm, 0.5), u32::from(u16::MAX / 2 + 1));
     assert_eq!(encode_norm(Format::Rg16Unorm, 2.0), u32::from(u16::MAX));
     assert_eq!(encode_norm(Format::R16Unorm, f32::NAN), 0);
     assert_eq!(
