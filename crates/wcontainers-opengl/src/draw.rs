@@ -6,10 +6,11 @@ use std::collections::hash_map::Entry;
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange, DrawCall,
-    DrawRange, FanOrLoop, Features, FormatKind, FormatUse, IndexBinding, IndexFormat, IndexSource,
-    MAX_BINDING_SETS, Object, Program, ReflectedBinding, RingKind, ScissorRect, ShaderModule,
-    ShaderStage, SlotKind, SlowPath, StageSet, Topology, VertexBinding, Viewport, cut_scissors,
+    Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor, BufferRange, CullMode,
+    DrawCall, DrawRange, FanOrLoop, Features, FormatKind, FormatUse, IndexBinding, IndexFormat,
+    IndexSource, MAX_BINDING_SETS, Object, PassTracker, Program, ProvokingVertex, ReadSource,
+    ReflectedBinding, RingKind, STORAGE_WORD, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    SlowPath, StageSet, Topology, VertexBinding, Viewport, cut_scissors,
 };
 use wcontainers_nir::mesa::{PositionTransform, TextureSwizzle};
 
@@ -28,6 +29,8 @@ struct Built<B: Backend> {
     uniform_sizes: HashMap<u32, u64>,
     /// The program reads values interpolated flat, taken from the provoking vertex.
     flat_inputs: bool,
+    /// How a fragment program interpolates each input, by location.
+    inputs: Vec<Interpolated>,
 }
 
 /// A shader state as a map key: the address Mesa holds it at.
@@ -39,6 +42,27 @@ type ShaderId = usize;
 struct Variant {
     transform: PositionTransform,
     swizzles: Vec<TextureSwizzle>,
+    /// How the fragment program it meets interpolates each input (vertex programs).
+    interpolation: Vec<Interpolated>,
+}
+
+/// A value passed between stages at one location, and how it is interpolated.
+type Interpolated = (u32, Option<naga::Interpolation>, Option<naga::Sampling>);
+
+impl<B: Backend> Programs<B> {
+    /// `shader` converted for `variant`, converted now if it was not before.
+    fn built_for(
+        &mut self,
+        backend: &mut B,
+        shader: &Shader,
+        variant: &Variant,
+    ) -> Result<&Built<B>, String> {
+        let key = (std::ptr::from_ref(shader) as ShaderId, variant.clone());
+        Ok(match self.built.entry(key) {
+            Entry::Occupied(built) => built.into_mut(),
+            Entry::Vacant(slot) => slot.insert(convert(backend, shader, variant)?),
+        })
+    }
 }
 
 /// The programs and blocks made so far, by what they were made from.
@@ -133,6 +157,71 @@ fn flat_inputs(module: &naga::Module) -> bool {
     })
 }
 
+/// How an entry point interpolates each input it reads at a location.
+fn input_interpolation(module: &naga::Module) -> Vec<Interpolated> {
+    let mut found = Vec::new();
+    let mut note = |binding: &Option<naga::Binding>| {
+        if let Some(naga::Binding::Location {
+            location,
+            interpolation,
+            sampling,
+            ..
+        }) = binding
+        {
+            found.push((*location, *interpolation, *sampling));
+        }
+    };
+    for entry in &module.entry_points {
+        for argument in &entry.function.arguments {
+            note(&argument.binding);
+            if let naga::TypeInner::Struct { members, .. } = &module.types[argument.ty].inner {
+                members.iter().for_each(|m| note(&m.binding));
+            }
+        }
+    }
+    found.sort_unstable_by_key(|&(location, ..)| location);
+    found
+}
+
+/// A vertex program's outputs interpolated as the fragment program's inputs at the same
+/// locations: the host requires the two to agree, where OpenGL's fragment stage alone decides.
+fn meet_inputs(module: &mut naga::Module, inputs: &[Interpolated]) {
+    let meet = |binding: &mut Option<naga::Binding>| {
+        if let Some(naga::Binding::Location {
+            location,
+            interpolation,
+            sampling,
+            ..
+        }) = binding
+            && let Some(&(_, i, s)) = inputs.iter().find(|&&(at, ..)| at == *location)
+        {
+            (*interpolation, *sampling) = (i, s);
+        }
+    };
+    let types = &mut module.types;
+    for entry in &mut module.entry_points {
+        let Some(result) = &mut entry.function.result else {
+            continue;
+        };
+        meet(&mut result.binding);
+        let old = &types[result.ty];
+        if let naga::TypeInner::Struct { members, span } = &old.inner {
+            let mut members = members.clone();
+            members.iter_mut().for_each(|m| meet(&mut m.binding));
+            let new = naga::Type {
+                name: old.name.clone(),
+                inner: naga::TypeInner::Struct {
+                    members,
+                    span: *span,
+                },
+            };
+            if types.get(&new).is_none() {
+                types.replace(result.ty, new);
+            }
+        }
+    }
+}
+
 /// One stage's program through the NIR route, for `variant`.
 fn convert<B: Backend>(
     backend: &mut B,
@@ -149,7 +238,10 @@ fn convert<B: Backend>(
     let key = nir.key().map_err(|e| e.to_string())?;
     let stage = shader.stage.nir();
     let bindings = nir.to_common_form(stage).map_err(|e| e.to_string())?;
-    let module = wcontainers_nir::direct::module(&mut nir).map_err(|e| e.to_string())?;
+    let mut module = wcontainers_nir::direct::module(&mut nir).map_err(|e| e.to_string())?;
+    if !variant.interpolation.is_empty() {
+        meet_inputs(&mut module, &variant.interpolation);
+    }
     let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
     let entry_point = module
         .entry_points
@@ -158,6 +250,7 @@ fn convert<B: Backend>(
         .ok_or("no entry point")?;
     let uniform_sizes = uniform_sizes(&module);
     let flat_inputs = flat_inputs(&module);
+    let inputs = input_interpolation(&module);
     let module = ShaderModule {
         module,
         info,
@@ -173,6 +266,7 @@ fn convert<B: Backend>(
         bindings,
         uniform_sizes,
         flat_inputs,
+        inputs,
     })
 }
 
@@ -198,11 +292,11 @@ fn index_format(size: u16) -> IndexFormat {
     }
 }
 
-/// The interface's viewport of Gallium's, and how the vertex program meets it: Gallium's y scale
-/// is positive where OpenGL draws upwards in the texture's rows, the host's viewport always maps
-/// up to the first row, so a positive scale flips y in the program; depth from OpenGL's -1..1
-/// moves to the host's 0..1 in the program, and a range whose near value is the larger is drawn
-/// reversed.
+/// The interface's viewport of Gallium's, and how the vertex program meets it: the NIR route
+/// takes a program's clip space as Vulkan's, whose viewport maps y downwards in the rows, as a
+/// Gallium viewport with a positive y scale does, so a negative scale negates y in the program
+/// first; depth from OpenGL's -1..1 moves to the host's 0..1 in the program, and a range whose
+/// near value is the larger is drawn reversed.
 fn viewport(v: &pipe_viewport_state, minus_one: bool) -> (Viewport, PositionTransform) {
     let [sx, sy, sz] = v.scale;
     let [tx, ty, tz] = v.translate;
@@ -223,7 +317,7 @@ fn viewport(v: &pipe_viewport_state, minus_one: bool) -> (Viewport, PositionTran
             max_depth: max.to_bits(),
         },
         PositionTransform {
-            flip_y: sy > 0.0,
+            flip_y: sy < 0.0,
             half_z: minus_one,
             reverse_z,
             fixed_point_size: false,
@@ -516,27 +610,27 @@ fn draw<B: Backend>(
     if transform.reverse_z {
         backend.slow_paths().hit(SlowPath::ViewportDepthFlip);
     }
-    let variants = [
-        Variant {
-            transform,
-            swizzles: swizzles(context.stages.get(Stage::Vertex)),
-        },
-        Variant {
-            transform: PositionTransform::default(),
-            swizzles: swizzles(context.stages.get(Stage::Fragment)),
-        },
-    ];
-    if variants.iter().any(|v| !v.swizzles.is_empty()) {
+    let fragment = Variant {
+        swizzles: swizzles(context.stages.get(Stage::Fragment)),
+        ..Variant::default()
+    };
+    let programs = &mut context.programs;
+    // The fragment program first: the vertex program's outputs are interpolated as its inputs.
+    // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
+    let inputs = programs
+        .built_for(backend, unsafe { &*fs }, &fragment)?
+        .inputs
+        .clone();
+    let vertex = Variant {
+        transform,
+        swizzles: swizzles(context.stages.get(Stage::Vertex)),
+        interpolation: inputs,
+    };
+    // SAFETY: as above.
+    programs.built_for(backend, unsafe { &*vs }, &vertex)?;
+    if !vertex.swizzles.is_empty() || !fragment.swizzles.is_empty() {
         backend.slow_paths().hit(SlowPath::SwizzleInShader);
     }
-    let programs = &mut context.programs;
-    for (shader, variant) in [vs, fs].into_iter().zip(&variants) {
-        if let Entry::Vacant(slot) = programs.built.entry((shader as ShaderId, variant.clone())) {
-            // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
-            slot.insert(convert(backend, unsafe { &*shader }, variant)?);
-        }
-    }
-    let [vertex, fragment] = variants;
     let built = [
         &programs.built[&(vs as ShaderId, vertex.clone())],
         &programs.built[&(fs as ShaderId, fragment.clone())],
@@ -584,6 +678,14 @@ fn draw<B: Backend>(
             })
         }));
     }
+    let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
+    // A fan or loop drawn from an index buffer: its indices read back now (`ReadBackWait`),
+    // then converted as the program's own.
+    let read = if fan && info.index_size > 0 && !info.has_user_indices() {
+        Some(read_indices(&mut context.tracker, backend, info, draws)?)
+    } else {
+        None
+    };
     let mut scissors = Vec::new();
     let area = context
         .tracker
@@ -603,12 +705,12 @@ fn draw<B: Backend>(
         (false, None) => {}
     }
     let index_size = info.index_size;
-    let user_indices = info.has_user_indices();
     let format = index_format(index_size);
     let restart = info.primitive_restart();
     if restart && index_size > 0 && info.restart_index != format.restart_value() {
         return Err("primitive restart at an index that is not the largest".into());
     }
+    let passes = face_passes(backend, depth_stencil, raster, triangles, bound.stencil_ref)?;
     let base = DrawCall {
         program: &program,
         blend: &blend,
@@ -637,7 +739,138 @@ fn draw<B: Backend>(
             instances: 0,
         },
     };
-    let fan = matches!(topology, Topology::TriangleFan | Topology::LineLoop);
+    for (depth_stencil, block, stencil_reference) in passes {
+        let pass = DrawCall {
+            depth_stencil,
+            raster: block,
+            stencil_reference,
+            index: None,
+            range: DrawRange::Vertices {
+                first: 0,
+                count: 0,
+                first_instance: 0,
+                instances: 0,
+            },
+            ..base
+        };
+        draw_ranges(
+            backend,
+            &pass,
+            info,
+            draws,
+            read.as_ref(),
+            raster.host_provoking,
+            fan,
+        )?;
+    }
+    for set in sets.into_iter().flatten() {
+        backend.destroy(Object::BindingSet(set));
+    }
+    Ok(())
+}
+
+/// One depth, stencil and rasterizer block and stencil reference a draw is made with.
+type FacePass<'a, B> = (
+    &'a <B as Backend>::DepthStencil,
+    &'a <B as Backend>::Raster,
+    [u8; 2],
+);
+
+/// The blocks a draw is made with: its own, or, where the stencil test's faces differ in masks or
+/// reference and the back end has one of each per draw, each face alone with its own
+/// (`StencilFacesSplit`). Points and lines are front faces, as OpenGL draws them.
+fn face_passes<'a, B: Backend>(
+    backend: &mut B,
+    depth_stencil: &'a state::DepthStencil<B>,
+    raster: &'a state::Raster<B>,
+    triangles: bool,
+    reference: [u8; 2],
+) -> Result<Vec<FacePass<'a, B>>, String> {
+    let split = depth_stencil.stencil
+        && (depth_stencil.faces.is_some() || reference[0] != reference[1])
+        && !backend.caps().has(Features::STENCIL_PER_FACE);
+    if !split {
+        return Ok(vec![(&depth_stencil.block, &raster.block, reference)]);
+    }
+    let face = |i: usize, block: &'a B::Raster| {
+        let blocks = depth_stencil.faces.as_ref();
+        (
+            blocks.map_or(&depth_stencil.block, |f| &f[i]),
+            block,
+            [reference[i]; 2],
+        )
+    };
+    const FRONT: usize = 0;
+    const BACK: usize = 1;
+    Ok(match (triangles, raster.cull) {
+        (false, _) | (true, CullMode::Back) => vec![face(FRONT, &raster.block)],
+        (true, CullMode::Front) => vec![face(BACK, &raster.block)],
+        (true, CullMode::None) => {
+            let [front, back] = raster
+                .faces
+                .as_ref()
+                .ok_or("a rasterizer state without its blocks a face")?;
+            backend.slow_paths().hit(SlowPath::StencilFacesSplit);
+            vec![face(FRONT, front), face(BACK, back)]
+        }
+    })
+}
+
+/// The indices of every range of a draw from an index buffer, read back, and the first one's
+/// position in the buffer.
+fn read_indices<B: Backend>(
+    tracker: &mut PassTracker<B>,
+    backend: &mut B,
+    info: &pipe_draw_info,
+    draws: &[pipe_draw_start_count_bias],
+) -> Result<(Vec<u8>, u32), String> {
+    let bytes = u64::from(info.index_size);
+    let first = draws.iter().map(|d| d.start).min().unwrap_or(0);
+    let end = draws
+        .iter()
+        .map(|d| u64::from(d.start) + u64::from(d.count))
+        .max()
+        .unwrap_or(0);
+    // SAFETY: an index buffer of this driver, held by st/mesa for the draw.
+    let resource = unsafe { Resource::<B>::of(info.index.resource) };
+    let buffer = resource.buffer().ok_or("indices in a texture")?;
+    tracker.close(backend).map_err(|e| format!("{e:?}"))?;
+    // Read backs move whole words: the words around the indices, then the indices from them.
+    let (start, stop) = (u64::from(first) * bytes, end * bytes);
+    let from = start - start % STORAGE_WORD;
+    let to = stop.next_multiple_of(STORAGE_WORD);
+    let mut words = vec![0; (to - from) as usize];
+    backend
+        .read_back_now(
+            &ReadSource::Buffer {
+                buffer,
+                offset: from,
+                size: to - from,
+            },
+            &mut words,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    words.truncate((stop - from) as usize);
+    words.drain(..(start - from) as usize);
+    Ok((words, first))
+}
+
+/// Each range of one draw call made with `base`'s blocks; `read` holds indices read back from
+/// the index buffer, and the first one's position in it.
+fn draw_ranges<B: Backend>(
+    backend: &mut B,
+    base: &DrawCall<'_, B>,
+    info: &pipe_draw_info,
+    draws: &[pipe_draw_start_count_bias],
+    read: Option<&(Vec<u8>, u32)>,
+    host_provoking: ProvokingVertex,
+    fan: bool,
+) -> Result<(), String> {
+    let topology = base.topology;
+    let restart = base.restart;
+    let index_size = info.index_size;
+    let user_indices = info.has_user_indices();
+    let format = index_format(index_size);
     for d in draws {
         if d.count == 0 {
             continue;
@@ -651,7 +884,7 @@ fn draw<B: Backend>(
                     first_instance: info.start_instance,
                     instances: info.instance_count,
                 },
-                ..base
+                ..*base
             };
             if fan {
                 let source = IndexSource::Sequential {
@@ -663,7 +896,7 @@ fn draw<B: Backend>(
                         &vertices,
                         fan_or_loop(topology),
                         source,
-                        raster.host_provoking,
+                        host_provoking,
                         info.start_instance,
                         info.instance_count,
                     )
@@ -681,17 +914,17 @@ fn draw<B: Backend>(
             first_instance: info.start_instance,
             instances: info.instance_count,
         };
-        if user_indices {
+        let at = |first: u32| (u64::from(d.start - first) * bytes) as usize;
+        let length = (u64::from(d.count) * bytes) as usize;
+        let host = match read {
+            Some((indices, first)) => Some(&indices[at(*first)..at(*first) + length]),
             // SAFETY: Mesa's indices cover the draw's range.
-            let indices = unsafe {
-                std::slice::from_raw_parts(
-                    info.index
-                        .user
-                        .cast::<u8>()
-                        .add((u64::from(d.start) * bytes) as usize),
-                    (u64::from(d.count) * bytes) as usize,
-                )
-            };
+            None if user_indices => Some(unsafe {
+                std::slice::from_raw_parts(info.index.user.cast::<u8>().add(at(0)), length)
+            }),
+            None => None,
+        };
+        if let Some(indices) = host {
             if fan {
                 let source = IndexSource::Guest {
                     indices,
@@ -700,10 +933,10 @@ fn draw<B: Backend>(
                 };
                 backend
                     .draw_fan_or_loop(
-                        &base,
+                        base,
                         fan_or_loop(topology),
                         source,
-                        raster.host_provoking,
+                        host_provoking,
                         info.start_instance,
                         info.instance_count,
                     )
@@ -729,12 +962,9 @@ fn draw<B: Backend>(
                     format,
                 }),
                 range: range(),
-                ..base
+                ..*base
             });
             continue;
-        }
-        if fan {
-            return Err("a fan or loop drawn from an index buffer".into());
         }
         if needs_widening(backend, format) {
             return Err("8-bit indices in a buffer on a back end without them".into());
@@ -749,11 +979,8 @@ fn draw<B: Backend>(
                 format,
             }),
             range: range(),
-            ..base
+            ..*base
         });
-    }
-    for set in sets.into_iter().flatten() {
-        backend.destroy(Object::BindingSet(set));
     }
     Ok(())
 }

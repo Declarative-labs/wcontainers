@@ -145,10 +145,18 @@ pub struct Blend {
 
 pub struct DepthStencil<B: Backend> {
     pub block: B::DepthStencil,
+    pub stencil: bool,
+    /// One block a face, each with that face's masks on both, where the faces' masks differ and
+    /// the back end has one of each per draw: the draw is then split by face.
+    pub faces: Option<[B::DepthStencil; 2]>,
 }
 
 pub struct Raster<B: Backend> {
     pub block: B::Raster,
+    pub cull: CullMode,
+    /// Where nothing is culled and the back end has one stencil reference and mask per draw: the
+    /// block drawing front faces only, then back faces only, for a draw split by face.
+    pub faces: Option<[B::Raster; 2]>,
     /// Both faces culled: triangles draw nothing.
     pub cull_both: bool,
     /// The vertex program's depth goes from OpenGL's clip space to the host's.
@@ -355,6 +363,7 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
     let [front, back] = &state.stencil;
     let back_on = back.enabled() != 0;
     let back = if back_on { back } else { front };
+    let stencil = front.enabled() != 0;
     let desc = DepthStencilDesc {
         depth_compare: depth.then(|| compare(state.depth_func() as pipe_compare_func)),
         depth_write: depth && state.depth_writemask() != 0,
@@ -368,10 +377,33 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
             ]
         }),
     };
-    match context.screen().backend().create_depth_stencil(&desc) {
-        Ok(block) => object(DepthStencil::<B> { block }),
+    let mut backend = context.screen().backend();
+    let [read, write] = [desc.stencil_read_mask, desc.stencil_write_mask];
+    let split = stencil
+        && (read[0] != read[1] || write[0] != write[1])
+        && !backend.caps().has(Features::STENCIL_PER_FACE);
+    let mut create = |desc: &DepthStencilDesc| match backend.create_depth_stencil(desc) {
+        Ok(block) => block,
         Err(error) => refuse(&format!("a depth and stencil state: {error:?}")),
-    }
+    };
+    let faces = split.then(|| {
+        [0, 1].map(|face| {
+            create(&DepthStencilDesc {
+                stencil_read_mask: [read[face]; 2],
+                stencil_write_mask: [write[face]; 2],
+                ..desc
+            })
+        })
+    });
+    let block = match &faces {
+        Some([front, _]) => front.clone(),
+        None => create(&desc),
+    };
+    object(DepthStencil::<B> {
+        block,
+        stencil,
+        faces,
+    })
 }
 
 unsafe extern "C" fn bind_depth_stencil_alpha_state<B: Backend>(
@@ -393,7 +425,13 @@ unsafe extern "C" fn delete_depth_stencil_alpha_state<B: Backend>(
             drop_object::<DepthStencil<B>>(state),
         )
     };
-    context.screen().retire(Object::DepthStencil(state.block));
+    let screen = context.screen();
+    match state.faces {
+        Some(faces) => faces
+            .into_iter()
+            .for_each(|f| screen.retire(Object::DepthStencil(f))),
+        None => screen.retire(Object::DepthStencil(state.block)),
+    }
 }
 
 fn fill_mode(mode: c_uint) -> FillMode {
@@ -471,17 +509,25 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
         depth_minus_one: false,
         sample_mask: u32::MAX,
     };
-    match context.screen().backend().create_raster(&desc) {
-        Ok(block) => object(Raster::<B> {
-            block,
-            cull_both: cull_face == PIPE_FACE_FRONT_AND_BACK,
-            minus_one: state.clip_halfz() == 0,
-            scissor: desc.scissor,
-            provoking,
-            host_provoking,
-        }),
+    let mut backend = context.screen().backend();
+    let mut create = |desc: &RasterDesc| match backend.create_raster(desc) {
+        Ok(block) => block,
         Err(error) => refuse(&format!("a rasterizer state: {error:?}")),
-    }
+    };
+    let block = create(&desc);
+    let faces = (desc.cull == CullMode::None && !caps.has(Features::STENCIL_PER_FACE)).then(|| {
+        [CullMode::Back, CullMode::Front].map(|cull| create(&RasterDesc { cull, ..desc }))
+    });
+    object(Raster::<B> {
+        block,
+        cull: desc.cull,
+        faces,
+        cull_both: cull_face == PIPE_FACE_FRONT_AND_BACK,
+        minus_one: state.clip_halfz() == 0,
+        scissor: desc.scissor,
+        provoking,
+        host_provoking,
+    })
 }
 
 unsafe extern "C" fn bind_rasterizer_state<B: Backend>(
@@ -498,7 +544,11 @@ unsafe extern "C" fn delete_rasterizer_state<B: Backend>(
 ) {
     // SAFETY: made by create_rasterizer_state, deleted once, on this driver's context.
     let (context, state) = unsafe { (Context::<B>::of(pipe), drop_object::<Raster<B>>(state)) };
-    context.screen().retire(Object::Raster(state.block));
+    let screen = context.screen();
+    screen.retire(Object::Raster(state.block));
+    for face in state.faces.into_iter().flatten() {
+        screen.retire(Object::Raster(face));
+    }
 }
 
 fn address(wrap: pipe_tex_wrap) -> AddressMode {
@@ -666,6 +716,8 @@ fn create_shader(state: *const pipe_shader_state, stage: Stage) -> *mut c_void {
     }
     // SAFETY: as above.
     let mut nir = unsafe { Nir::from_raw(state.ir.nir.cast()) };
+    nir.uniform_blocks_as_words();
+    nir.split_resource_arrays();
     match stage {
         Stage::Vertex => {
             nir.number_vertex_elements();
