@@ -8,3 +8,4 @@
 #include "util/u_framebuffer.h"
 #include "util/u_screen.h"
 #include "util/u_upload_mgr.h"
+#include "fields.h"

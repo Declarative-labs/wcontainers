@@ -8,20 +8,26 @@ use std::path::PathBuf;
 mod meson_build;
 use meson_build::{
     CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, mesa_defines,
-    source_folder,
+    mesa_flags, source_folder,
 };
 
 /// The Gallium headers the driver is written against, and the bindings made of them in `OUT_DIR`
 /// (`src/gallium.rs` includes them).
 const GALLIUM_HEADER: &str = "bridge/gallium.h";
+/// The bit fields bindgen cannot lay out as Visual C++ does, read in C (`bridge/fields.h`).
+const FIELDS: &str = "bridge/fields.c";
+const FIELDS_HEADER: &str = "bridge/fields.h";
+const FIELDS_LIBRARY: &str = "wcontainers_opengl_fields";
 const BINDINGS: &str = "gallium.rs";
 /// What the bindings hold: Gallium's types and constants, and the functions of Mesa's that the
 /// driver calls.
 const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context";
 const ALLOWED_FUNCTIONS: &str = "u_init_pipe_screen_caps|u_upload_create_default|u_upload_destroy|\
-     util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported)";
+     util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported)|\
+     wc_sampler_view_.*";
 const ALLOWED_CONSTANTS: &str = "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*";
-/// The Gallium file whose defines the bindings take from Mesa's compile commands.
+/// The Gallium file whose defines (and, for `FIELDS`, C standard) the bindings take from Mesa's
+/// compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
 const CLANG_INCLUDE: &str = "-I";
 /// Mesa's atomics for the Visual C++ compiler call intrinsics libclang does not declare there; they
@@ -43,13 +49,26 @@ fn main() {
     let Some(build) = env::var_os(MESA_VARIABLE).map(PathBuf::from) else {
         return;
     };
-    println!("{RERUN_IF_CHANGED}{GALLIUM_HEADER}");
+    for file in [GALLIUM_HEADER, FIELDS, FIELDS_HEADER] {
+        println!("{RERUN_IF_CHANGED}{file}");
+    }
     let roots = [source_folder(&build), build.clone()];
-    let includes = INCLUDES
+    let folders: Vec<PathBuf> = INCLUDES
         .iter()
         .flat_map(|folder| roots.iter().map(move |root| root.join(folder)))
+        .collect();
+    let includes = folders
+        .iter()
         .map(|folder| format!("{CLANG_INCLUDE}{}", folder.display()));
     let defines = mesa_defines(&build, FLAGS_FROM);
+    let mut fields = cc::Build::new();
+    // Mesa's headers are not written for the compiler's extra warnings.
+    fields.file(FIELDS).includes(&folders).warnings(false);
+    // Mesa's defines and C standard, as it compiles the same file.
+    for flag in mesa_flags(&build, FLAGS_FROM) {
+        fields.flag(&flag);
+    }
+    fields.compile(FIELDS_LIBRARY);
     let bindings = bindgen::Builder::default()
         .header(GALLIUM_HEADER)
         .clang_args(includes.chain(defines))

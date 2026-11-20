@@ -116,7 +116,8 @@ fn texture_view<B: Backend>(
     let range = unsafe { view.u.tex };
     let (first_layer, last_layer) = (range.first_layer(), range.last_layer());
     let (first_level, last_level) = (range.first_level(), range.last_level());
-    let dimension = match view.target() {
+    // SAFETY: a live view.
+    let dimension = match unsafe { wc_sampler_view_target(view) } {
         PIPE_TEXTURE_3D => ViewDimension::D3,
         PIPE_TEXTURE_CUBE => ViewDimension::Cube,
         PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
@@ -167,13 +168,10 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: as above; the view takes its own reference.
     unsafe { resource::reference(&mut base.texture, texture) };
     let view = texture_view::<B>(&mut *context.screen().backend(), resource, &base);
-    let swizzle = [
-        base.swizzle_r(),
-        base.swizzle_g(),
-        base.swizzle_b(),
-        base.swizzle_a(),
-    ]
-    .map(|s| swizzle(s as pipe_swizzle));
+    let mut swizzles = [0; naga::VectorSize::MAX];
+    // SAFETY: a live view, and a place for one swizzle a component.
+    unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
+    let swizzle = swizzles.map(|s| swizzle(s as pipe_swizzle));
     Box::into_raw(Box::new(View::<B> {
         base,
         view,
