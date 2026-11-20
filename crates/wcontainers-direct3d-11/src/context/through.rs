@@ -62,7 +62,7 @@ impl<B: Backend> Device<B> {
             .filter(|t| {
                 matches!(
                     self.ctx.uavs[stage].get(t.register as usize).and_then(Option::as_deref),
-                    Some(ShaderView::Texture(v)) if self.stored_through(v.format)
+                    Some(ShaderView::Texture(v)) if self.stored_through(v.format) || v.decoded.is_some()
                 )
             })
             .fold(0, |m, t| m | 1 << t.register)

@@ -1027,13 +1027,15 @@ fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuE
     use Format::*;
     Ok(match (values, stored) {
         _ if values.linear() == stored.linear() => None,
-        (R16Unorm, R16Uint) | (Rg16Unorm, Rg16Uint) | (Rgba16Unorm, Rgba16Uint) => {
-            Some((65535, false))
+        (R16Unorm | Rg16Unorm | Rgba16Unorm, _) if values.integer_twin() == Some(stored) => {
+            Some((u16::MAX.into(), false))
         }
-        (R16Snorm, R16Sint) | (Rg16Snorm, Rg16Sint) | (Rgba16Snorm, Rgba16Sint) => {
-            Some((32767, true))
+        (R16Snorm | Rg16Snorm | Rgba16Snorm, _) if values.integer_twin() == Some(stored) => {
+            Some((i16::MAX as u32, true))
         }
-        (R8Snorm, R8Sint) | (Rg8Snorm, Rg8Sint) | (Rgba8Snorm, Rgba8Sint) => Some((127, true)),
+        (R8Snorm | Rg8Snorm | Rgba8Snorm, _) if values.integer_twin() == Some(stored) => {
+            Some((i8::MAX as u32, true))
+        }
         _ => {
             return Err(GpuError::Invalid(
                 "generate_mips: values are neither the stored format, its srgb twin nor its integer twin",

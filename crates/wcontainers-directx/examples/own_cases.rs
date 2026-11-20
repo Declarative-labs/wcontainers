@@ -14,8 +14,9 @@
 //! `biased_lines` (a constant depth bias on a line and points), `staged_bias` (the same bias on
 //! what geometry and tessellation stages rasterise), `unshaded` (depth-only draws without a
 //! pixel shader, depth clamped and clipped), `aa_lines` (alpha-antialiased lines
-//! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip) and
-//! `format_support` (both words of every format's support). Shaders are compiled by
+//! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip),
+//! `format_support` (both words of every format's support) and `bgrx` (what a vertex shader reads
+//! from a `B8G8R8X8_UNORM` element). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -279,7 +280,7 @@ fn main() -> windows::core::Result<()> {
 
     match case.as_str() {
         "format_support" => {
-            for format in 0..=DXGI_FORMAT_B4G4R4A4_UNORM.0 {
+            for format in 0..=DXGI_FORMAT_V408.0 {
                 let mut support2 = D3D11_FEATURE_DATA_FORMAT_SUPPORT2 {
                     InFormat: DXGI_FORMAT(format),
                     OutFormatSupport2: 0,
@@ -299,6 +300,67 @@ fn main() -> windows::core::Result<()> {
                     support2.OutFormatSupport2
                 );
             }
+        }
+        "bgrx" => {
+            // One point whose B8G8R8X8_UNORM element (its X byte not 255) the vertex shader
+            // passes on whole; the target holds the four components it read.
+            let bytecode = compile(
+                "struct V { float4 p : SV_Position; float4 c : COLOR; };
+                V main(float4 c : COLOR) { V v; v.p = float4(0, 0, 0, 1); v.c = c; return v; }",
+                s!("vs_5_0"),
+            );
+            let pixel = ps(
+                "float4 main(float4 p : SV_Position, float4 c : COLOR) : SV_Target {
+                    return c;
+                }",
+            );
+            let element = D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: s!("COLOR"),
+                Format: DXGI_FORMAT_B8G8R8X8_UNORM,
+                InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                ..Default::default()
+            };
+            let mut layout = None;
+            let r = unsafe { device.CreateInputLayout(&[element], &bytecode, Some(&mut layout)) };
+            println!("CreateInputLayout {:#010x}", code(r));
+            let Some(layout) = layout else { return Ok(()) };
+            let vertex: [u8; 4] = [0x40, 0x80, 0xc0, 0x20];
+            let desc = D3D11_BUFFER_DESC {
+                ByteWidth: size_of_val(&vertex) as u32,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_VERTEX_BUFFER.0 as u32,
+                ..Default::default()
+            };
+            let data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: vertex.as_ptr().cast(),
+                ..Default::default()
+            };
+            let mut buffer = None;
+            unsafe { device.CreateBuffer(&desc, Some(&data), Some(&mut buffer))? };
+            let target = make(
+                &Tex {
+                    w: 1,
+                    h: 1,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let mut shader = None;
+            unsafe {
+                device.CreateVertexShader(&bytecode, None, Some(&mut shader))?;
+                context.IASetInputLayout(&layout);
+                let stride = size_of_val(&vertex) as u32;
+                context.IASetVertexBuffers(0, 1, Some(&buffer), Some(&stride), Some(&0));
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+                context.VSSetShader(shader.as_ref(), None);
+                context.PSSetShader(pixel.as_ref(), None);
+                context.OMSetRenderTargets(Some(&[rtv(&target)]), None);
+            }
+            viewport(1, 1);
+            unsafe { context.Draw(1, 0) };
+            print("B8G8R8X8_UNORM element", &target, 16);
         }
         "atomics" => {
             // Each texel gets four threads' operations, which commute, so the result is fixed.
