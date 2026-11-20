@@ -249,3 +249,22 @@ pub fn native_in_time(blob: &Blob) -> Option<Ran> {
     // The reference's own limit: SIGALRM, as Docker reports it.
     (ran.status != SIGNALLED + SIGALRM as i32).then_some(ran)
 }
+
+/// What layer 3 multiplies its seed by to get the number of its first Csmith case.
+pub const LAYER3_CASE_STRIDE: u64 = 1_000_003;
+
+/// The source, compiler, level and position of Csmith case `number`.
+pub fn csmith_case(number: u64) -> (std::path::PathBuf, Compiler, &'static str, Position) {
+    let compiler = if number.is_multiple_of(2) {
+        Compiler::Clang
+    } else {
+        Compiler::Gcc
+    };
+    let level = LEVELS[(number / 2 % LEVELS.len() as u64) as usize];
+    let position = if (number / 12).is_multiple_of(2) {
+        Position::Fixed
+    } else {
+        Position::Independent
+    };
+    (csmith(number), compiler, level, position)
+}

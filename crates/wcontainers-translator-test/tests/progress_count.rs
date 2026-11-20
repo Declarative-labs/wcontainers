@@ -1,17 +1,24 @@
 //! The progress count is the same at every look-ahead, for speed and for size, and on every run; a stop
 //! logged at one look-ahead is reached again exactly from each. Knobs: `WC_PROGRESS_SEED` (default 1) seeds
 //! the bounded look-ahead's N and the limits; `WC_PROGRESS_STOPS` is how many limits a program and look-ahead
-//! get (default 1).
+//! get (default 1). `WC_PROGRESS_CSMITH` Csmith programs of layer 3 (default 4), case `i` being layer 3's
+//! case `i` of seed `WC_PROGRESS_CSMITH_SEED` (default 1), `WC_PROGRESS_JOBS` at once (default 1).
 
 use proptest::prelude::RngExt;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_translator::{BOUND, LookAhead, Optimise};
-use wcontainers_translator_test::jobs::load;
-use wcontainers_translator_test::programs::{Blob, Library, build_with, ready_for};
+use wcontainers_translator_test::jobs::{at_once, load};
+use wcontainers_translator_test::layer3::{LAYER3_CASE_STRIDE, build, csmith_case};
+use wcontainers_translator_test::programs::{Blob, Library, build_with, ready_for, translated_for};
 use wcontainers_translator_test::progress::{
     Counted, counting, every_check, finish, first_stop, reach, run_counting,
 };
-use wcontainers_translator_test::runner::Machine;
+use wcontainers_translator_test::runner::{Machine, Pause, Stopped};
 use wcontainers_translator_test::seeded::generator;
+
+/// A Csmith program whose count reaches this at full look-ahead is taken not to end, and left out.
+const ENDLESS: u64 = 1 << 32;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))
@@ -154,6 +161,63 @@ fn stops_are_reached_again_from_every_look_ahead() {
     }
 }
 
+/// Layer 3's Csmith programs: the count at every system call and at the end is the same at every look-ahead
+/// and on a second run, and the program's results are those of a run without the count.
+#[test]
+fn csmith_programs_count_the_same_everywhere() {
+    let cases = setting("WC_PROGRESS_CSMITH", 4);
+    let seed = setting("WC_PROGRESS_CSMITH_SEED", 1);
+    let jobs = setting("WC_PROGRESS_JOBS", 1);
+    let (compared, endless) = (AtomicU64::new(0), AtomicU64::new(0));
+    let failures = Mutex::new(Vec::new());
+    at_once(jobs, cases, |i| {
+        let number = seed.wrapping_mul(LAYER3_CASE_STRIDE).wrapping_add(i);
+        let (source, compiler, level, position) = csmith_case(number);
+        let blob = build(&source, compiler, level, position);
+        let full = (LookAhead::Full, Optimise::Speed);
+        let mut machine = counting(&blob, full);
+        machine.set_progress_limit(ENDLESS);
+        machine.on_pause(|pause, paused| {
+            if pause == Pause::Stop {
+                paused.end_run();
+            }
+        });
+        if machine.run().0 == Stopped::Ended {
+            endless.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let (plain_ran, _, _) = translated_for(&blob, full);
+        let first = run_counting(&blob, full);
+        let mut report = Vec::new();
+        if first.ran != plain_ran {
+            report.push("the count changed the program's results".to_string());
+        }
+        for how in every_how(&blob.name).into_iter().chain([full]) {
+            let counted = run_counting(&blob, how);
+            if counted != first {
+                report.push(format!(
+                    "at {how:?}: end {} against {}, system calls {:?} against {:?}",
+                    counted.end, first.end, counted.syscalls, first.syscalls
+                ));
+            }
+        }
+        if report.is_empty() {
+            compared.fetch_add(1, Ordering::Relaxed);
+        } else {
+            eprintln!("csmith {number} (case {i}, {}): {report:?}", blob.name);
+            failures.lock().unwrap().push(number);
+        }
+    });
+    let failures = failures.into_inner().unwrap();
+    eprintln!(
+        "progress count: {cases} Csmith programs, seed {seed}: {} compared, {} reached {ENDLESS} events at full, {} failing: {failures:?}",
+        compared.into_inner(),
+        endless.into_inner(),
+        failures.len()
+    );
+    assert!(failures.is_empty());
+}
+
 /// Not a check: the time of the benchmark set and the leaf call programs at full look-ahead for speed in
 /// wasmtime, with the progress count kept against without it, alternating, best of `WC_BENCH_RUNS` (default
 /// 3) each; `WC_BENCH_WORKLOADS` picks programs by number from 1 (default all). Run with `--ignored
@@ -189,6 +253,7 @@ fn measure_progress_count() {
         );
         let mut best = [f64::MAX; 2];
         let mut ends = [0; 2];
+        let mut first = None;
         for round in 0..runs {
             // The order flips each round.
             for side in [round % 2, 1 - round % 2] {
@@ -200,7 +265,10 @@ fn measure_progress_count() {
                 let started = std::time::Instant::now();
                 let (ran, end) = finish(&blob, &mut machine);
                 best[side as usize] = best[side as usize].min(started.elapsed().as_secs_f64());
-                assert_eq!(ran.status, 0, "{name} {workload}");
+                match &first {
+                    None => first = Some(ran),
+                    Some(first) => assert_eq!(&ran, first, "{name} {workload}"),
+                }
                 ends[side as usize] = end;
             }
         }

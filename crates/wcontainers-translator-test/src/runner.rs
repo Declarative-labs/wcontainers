@@ -49,6 +49,8 @@ pub enum Stopped {
     Finished(i32),
     /// A fault the abi's exits do not name yet (x86-64's, added to the abi with its kernel side).
     Fault(Fault),
+    /// A pause function ended the run at a stop.
+    Ended,
 }
 
 /// A fault of a guest CPU other than those the abi's exits name.
@@ -120,6 +122,11 @@ impl Paused<'_, '_> {
         host.picks.clear();
         host.run_time = Box::new(|| LookAhead::None);
         host.lose_stack = true;
+    }
+
+    /// At a stop: the thread leaves, and `run` gives [`Stopped::Ended`].
+    pub fn end_run(&mut self) {
+        stop(self.caller, Stopped::Ended);
     }
 
     /// At a stop: the WebAssembly stack is lost here. The thread leaves, and carries on from its registers in
@@ -969,7 +976,8 @@ fn hooks(linker: &mut Linker<Host>) {
                 raise_stop_flag(&caller);
             }
             pause(&mut caller, Pause::Stop);
-            i32::from(caller.data().lose_stack)
+            let host = caller.data();
+            i32::from(host.lose_stack || host.stopped.is_some())
         })
         .unwrap();
     linker

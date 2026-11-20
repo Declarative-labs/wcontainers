@@ -20,7 +20,7 @@ use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer3::{
-    Compiler, LEVELS, Position, build, csmith, native_in_time, ordinary,
+    Compiler, LAYER3_CASE_STRIDE, LEVELS, Position, build, csmith_case, native_in_time, ordinary,
 };
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
@@ -167,22 +167,6 @@ fn compare_in_chrome(blob: &Blob, theirs: &Ran) -> Result<(), String> {
     Ok(())
 }
 
-/// The source, compiler, level and position of Csmith case `number`.
-fn csmith_case(number: u64) -> (std::path::PathBuf, Compiler, &'static str, Position) {
-    let compiler = if number.is_multiple_of(2) {
-        Compiler::Clang
-    } else {
-        Compiler::Gcc
-    };
-    let level = LEVELS[(number / 2 % LEVELS.len() as u64) as usize];
-    let position = if (number / 12).is_multiple_of(2) {
-        Position::Fixed
-    } else {
-        Position::Independent
-    };
-    (csmith(number), compiler, level, position)
-}
-
 #[test]
 fn csmith_programs_match_linux() {
     let cases = setting("WC_LAYER3_CASES", 4);
@@ -197,7 +181,7 @@ fn csmith_programs_match_linux() {
     let exact = AtomicU64::new(0);
     let failures = Mutex::new(Vec::new());
     at_once(jobs, cases, |i| {
-        let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
+        let number = seed.wrapping_mul(LAYER3_CASE_STRIDE).wrapping_add(from + i);
         let (source, compiler, level, position) = csmith_case(number);
         let blob = build(&source, compiler, level, position);
         if blob.reads_float_status() {
