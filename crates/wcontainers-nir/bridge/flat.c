@@ -733,6 +733,9 @@ wc_nir_flatten(struct nir_shader *nir, struct wc_flat *out)
 {
    memset(out, 0, sizeof(*out));
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   /* Blocks of stage values (gl_PerVertex) as one variable a member, the unused ones dropped. */
+   NIR_PASS(_, nir, nir_split_per_member_structs);
+   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
    nir_rematerialize_derefs_in_use_blocks_impl(impl);
