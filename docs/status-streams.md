@@ -16,10 +16,10 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   eleventh run (see "S2 eighth check findings").
 - S2 passed its ninth check and is merged (origin/phase-1 at cefb66ab); its four carried findings
   are settled in S3's first run (see "S3").
-- S3 (the orchestrator's 2026-11-20 section of the brief): parts 1 (signals as an input) and 2
-  (shared memory announced per process, and the memory id) are built and tested; part 3
-  (suspend and resume by task, with a process context) is NOT started. See "S3" for exactly
-  what comes next.
+- S3 (the orchestrator's 2026-11-20 section of the brief): all three parts are built and tested
+  (signals as an input, shared memory announced per process with the memory id, and suspend and
+  resume by task with a process context, the last in run 2). What is left: the independent
+  check. See "S3".
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -64,26 +64,44 @@ Run 1 (this run) did:
   the piece arithmetic.
 - Every hook test's recorder also runs every handle operation inside `on_signal_delivering`.
 
-What comes next (part 3, not started; read the brief's S3 section and the last ruled section
-of next-embedder-interface.md first):
-- `Kernel::suspend_tasks(&mut self, cpu, &[TaskId]) -> impl Iterator<Item = (TaskId,
-  SuspendedTask)>`, `suspend_process`, `copy_process_context`, `resume_process(context,
-  ExecutionConfig) -> Option<ProcessContext>`, `resume_tasks(iter) -> impl Iterator<Item =
-  SuspendedTask>`, and the handle's `suspend_tasks`, `suspend_process(self)`,
-  `copy_process_context`. The kernel calls need the `Cpu` (registers, threads), as
-  `Kernel::process` takes it.
-- A planned shape, from reading the code: `SuspendedTask` holds the `Thread` record (its
-  `signal_taken`, `call`, `futex` wait and restart record included), its `RegisterBlock` read
-  from the executor (then `thread_drop`), and the channel and deadline it was parked on (taken
-  out of `Kernel::parked`, the run queue, `woken` and `signalled`); a futex waiter is taken off
-  its futex's list. `ProcessContext` holds the `process::Process` record (memory id and address
-  map, handlers, limits, credentials of the first thread are per thread) plus the threads'
-  shared tables reached by `Rc` (files, fs). `resume_tasks` makes a new executor thread in the
-  process's memory, sets the registers and parks the task on its channel again, so a wait goes
-  on as it was. Open points to settle and write down: a task suspended inside a hook while it
-  is the thread in the kernel (the hook's own thread) needs a defined stop point; a wake that
-  arrives while a waiter is suspended is lost today (locks across machines are not in S3: say
-  so); resuming on a second kernel value needs the same executor for the memory id.
+Run 2 did part 3, suspend and resume by task with a process context (suspend.rs):
+- On `Kernel`: `suspend_tasks(cpu, &[TaskId])`, `suspend_process(cpu, TaskId)`,
+  `copy_process_context(TaskId)`, `resume_process(ProcessContext, ExecutionConfig)`,
+  `resume_tasks(cpu, tasks)`; on the hook's `Process` handle: `suspend_tasks`,
+  `suspend_process(self)`, `copy_process_context`. `SuspendedTask` (the `Thread` record, its
+  registers, where it was in line) and `ProcessContext` (the `process::Process` record and what
+  the embedder was told it maps of shared memory) are the kernel's own types. Firing points,
+  guarantees and what the batch means while one thread runs at a time: docs/embedder-interface.md
+  "Suspending and resuming tasks".
+- A parked call keeps its call slot and runs again when put back; a call waiting in a futex's,
+  semaphore set's or message queue's line leaves it and is made again (restart_syscall for a
+  timed futex wait), so a wake while away is not lost. Inside a hook, the thread the kernel is in
+  the middle of a step for, a task being started by an exec, and the tasks of a process being
+  ended are not taken (counted, `task in the middle of a kernel step not suspended`), except the
+  thread at `intercept_system_call_request`, which is taken before its call and makes it again.
+- New kernel fields: `stepping`, `call_not_begun`, `starting_task`, `ending_process`. `wake_thread`
+  and the sharing announcements now pass over a task or process that is not on the kernel; a
+  thread ending while its siblings are away hands its children to none.
+- Test: `tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs` (embedder.c
+  `suspend`: a reader of an empty pipe, a waiter on a mutex the main thread holds, a timed futex
+  waiter; the main thread sleeps twice, then writes the pipe, wakes the futex and lets the mutex
+  go, joins, prints). Two plans, each in all 6 orders of putting tasks back: from hooks (the
+  three waiting threads at the second sleep's request, kept away while the main thread wakes
+  them; the main thread itself at its write's request, before the call; asking for it again at
+  the write's response is refused and counted once), and between steps (one thread at a time and
+  a task not on the kernel; every thread; the whole process, its tasks first without the context
+  (all handed back), the context, a copy of it again (handed back), then the tasks; the whole
+  process moved to a second `Kernel` value, checked there by memory id and size, and brought
+  back). The output equals the reference's in every case. With the futex line leaving disabled,
+  the hooks plan hangs (the mutex waiter's wake is lost): checked once on the ARM machine.
+- Not covered by a test: a semaphore or message queue waiter taken (the same code path as the
+  futex's); running a moved process on the second kernel (only its state is checked there).
+
+Open points for the check and the owner (also in "Departures"):
+- A thread that exits while its siblings are away is, to the kernel, the last thread of its
+  process and ends it (the kernel counts only the threads on it). Not fixed in this milestone.
+- A process resumed on a kernel without its parent has no reaper there: its end on that kernel
+  is not built (the test does not let it end there).
 
 How S3's tests were run: see "Measurements" (S3 run 1).
 
@@ -826,6 +844,23 @@ fnv and rayon (all MIT OR Apache-2.0), a test-time tool of the workspace, not a 
 anything shipped.
 
 ## Departures from the plan
+
+- S3, suspend and resume (choices where the ruling is silent, for the owner): the kernel's calls
+  take the executor (`cpu`) as `Kernel::process` does, and return the concrete `vec::IntoIter`
+  (an iterator that borrows nothing of the kernel). A call waiting in a line the kernel keeps
+  outside the task (futex, System V semaphore, POSIX message queue) is taken out of the line and
+  made again when the task is resumed, as Linux restarts a call a stop interrupted; every other
+  waiting call keeps its place in the call and resumes waiting, as ruled. The reason: a task
+  away cannot be told of a wake, and a futex wait that kept its place would lose it (the test
+  shows the hang). Inside a hook, a task the kernel is in the middle of a step for cannot be
+  taken; it is left out and counted, except at `intercept_system_call_request` (taken before its
+  call). `suspend_process(self)` on the handle, when such a task is its own, leaves the process
+  and answers a copy of the context with the tasks taken. `copy_process_context` shares the
+  records reached by reference (address map, handler table) with the original. `resume_process`
+  also hands back a context whose configuration the kernel cannot run.
+- S3, known gaps left open: a thread exiting while its siblings are away ends the process (the
+  kernel counts only the threads on it); a process on a kernel without its parent has no reaper
+  there. Neither has a test that lets it happen.
 
 - S3, signals (choices where the ruling is silent, for the owner): `on_signal_delivering` fires
   where ptrace's signal-delivery-stop is, for every signal a thread takes off its pending sets to
