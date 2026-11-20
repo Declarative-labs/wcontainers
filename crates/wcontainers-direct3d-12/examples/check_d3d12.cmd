@@ -25,7 +25,7 @@ for %%w in (real ours) do (
 echo draw:
 %C%\real\check_d3d12 compare %C%\real\draw.rgba %C%\ours\draw.rgba 1
 echo features:
-%C%\real\check_d3d12 compare-features %C%\real\features.txt %C%\ours\features.txt
+%C%\real\check_d3d12 compare-features %C%\real\features.txt %C%\ours\features.txt some crates\wcontainers-direct3d-12\examples\check\features-differing.txt
 echo outputs:
 %C%\real\check_d3d12 compare-features %C%\real\outputs.txt %C%\ours\outputs.txt all
 echo answers:
