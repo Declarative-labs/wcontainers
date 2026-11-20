@@ -145,8 +145,8 @@ What comes next, in this order:
   makes it 0; `mov ds` with 0x78 loads.
 - The never-claimed list in layer 1 at 100 a form (needs case drawing for VEX, EVEX, XOP and 3DNow operand
   kinds: ymm, zmm, k and mm registers, the vvvv and is4 operands, VSIB) with `REFERENCE_HAS`.
-- The fix-up path for hosts whose probe answers 0, run on an x86 host by forcing the answer in the test
-  harness, and what the probe answers in wasmtime and Chrome on x86 and ARM hosts.
+- What the probe answers in wasmtime and Chrome on x86 and ARM hosts (the fix-up path itself now passes
+  layer 1 with the answer forced to 0).
 - Layer 3 Csmith for x86 at 1,000 programs; the passed-register lists; the Chrome sample, the no-form and
   refusal tests against the laptop; 100,000 random instructions of a new seed; then the bar as a whole.
 
@@ -159,6 +159,20 @@ tests that need an ARM64 reference fail there, as before. On the rented ARM64 ma
 probe setting below) every ARM64 test passes but the two layer 1 tests its manual keeps on the Mac
 (`suite-arm.log`), which were not run on the Mac; nothing ARM64 changed. The laptop's verdict on all default
 forms is below.
+
+Every default form on the i7-8750H (`l1-all-laptop.log`, at 63fa3b23): 1,025 forms, 1,000 a form, seed 9105, 4
+at once, 2,954 s (load about 4 during): 2 failing, `dpps` and `dppd`, both with an unmasked exception, where
+MXCSR's flags differed (one case missing precision, one missing overflow). The exact path filtered operand
+exceptions over the whole instruction; the CPU runs a dot product as micro-operations (the multiplications,
+then each round of additions), keeps the flags of each, and stops after the first that raises an unmasked
+exception (a per-step filter alone then raised flags the CPU did not, at seeds 9106 and 9107). Fixed in
+c470ea8d: with it, both forms at 3,000 a form at seeds 9105, 9106, 9107 and 9108: 0 failing (`dp2`). The
+other 1,023 forms passed at seed 9105; the whole list was not run again after the fix (only the two forms
+changed).
+
+The fix-up path for hosts whose probe answers 0, forced on the i7-8750H with `WC_PROBE_ANSWER=0`: the 76 float
+forms, 1,000 a form, seed 9109: 0 failing (`nan0`). What the probe answers in wasmtime and Chrome on x86 and
+ARM hosts is still not measured.
 
 Also: `WC_PROBE_ANSWER` (the test runner's `PROBE_ANSWER_SETTING`) makes the harness translate for a host whose
 probe gives that answer, for the fix-up path of hosts answering 0 (see "How to run").
@@ -2571,7 +2585,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
-- X5 run 4: layer 1 on the i7-8750H at 1,000 a form: 6 forms at seed 9101, 3 at seed 9102 (twice, before and
+- X5 run 4: every default form on the i7-8750H at 1,000 a form, seed 9105 (1,025,000 cases); `dpps` and
+  `dppd` at 3,000 a form at seeds 9105 to 9108 twice (before and after the last fix); the 76 float forms at
+  1,000 a form, seed 9109, with the probe answer forced to 0; layer 1 on the i7-8750H at 1,000 a form: 6 forms at seed 9101, 3 at seed 9102 (twice, before and
   after the `maskmovdqu` fix), 21 at 300 a form at seed 9103 (twice), 30 at seed 9104; quick runs of the same
   forms on the rented machine.
 
