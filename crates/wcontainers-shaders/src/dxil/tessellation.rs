@@ -168,13 +168,8 @@ fn builtin_of(b: u32, side: Side, stage: SourceStage) -> Result<u64, ConvertErro
     }))
 }
 
-/// The stage values as the passes take them. `SV_Position` as control point data, which dxil-spirv
-/// places at its register, is the position built-in, as the DXBC route has it.
-fn values(
-    module: &Module,
-    declared: &Declared,
-    control_points: &[Element],
-) -> Result<Vec<TessellationValue>, ConvertError> {
+/// The stage values as the passes take them.
+fn values(module: &Module, declared: &Declared) -> Result<Vec<TessellationValue>, ConvertError> {
     let shape = match declared.stage {
         SourceStage::Hull => crate::refusal::HULL_INPUT_SHAPE,
         _ => crate::refusal::DOMAIN_INPUT_SHAPE,
@@ -185,22 +180,11 @@ fn values(
         .enumerate()
     {
         let var = staged::value_variable(module, VALUE_NAME, k)?;
-        let mut builtin = v
+        let builtin = v
             .builtin
             .map(|b| builtin_of(b, v.side, declared.stage))
             .transpose()?;
-        let mut location = v.location.map(staged::location);
-        let point_data = match declared.stage {
-            SourceStage::Hull => Side::Output,
-            _ => Side::Input,
-        };
-        if let Some((register, component)) = location
-            && !v.patch
-            && v.side == point_data
-            && staged::is_position(control_points, register, component)
-        {
-            (location, builtin) = (None, Some(builtin::POSITION));
-        }
+        let location = v.location.map(staged::location);
         values.push(TessellationValue {
             var,
             side: v.side,
@@ -224,7 +208,7 @@ pub(crate) fn finish(
 ) -> Result<(SourceStage, StageExtras, Vec<StageValue>), ConvertError> {
     let tessellation = declared.tessellation;
     if declared.stage == SourceStage::Hull {
-        let values = values(module, declared, signatures[1])?;
+        let values = values(module, declared)?;
         let main = staged::function(module, CONTROL_POINT_FUNCTION)?;
         let constants = staged::function(module, PATCH_CONSTANT_FUNCTION)?;
         module.entry_points.clear();
@@ -238,7 +222,7 @@ pub(crate) fn finish(
         let [inputs, _] = staged::place(pass.reflected, |_| 0, signatures);
         return Ok((SourceStage::Hull, extras, inputs));
     }
-    let values = values(module, declared, signatures[0])?;
+    let values = values(module, declared)?;
     let (function, extras) = DomainPass {
         module,
         tessellation,
