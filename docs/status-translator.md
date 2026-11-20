@@ -4,10 +4,15 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
-- T3 (this milestone) is under way; see "T3" below for what is done and what is left. Not met yet: the speed
-  bar in Chrome (fib, sort and walk 0.5 to 1 percent slower, from runner.js, not from the translator, whose
-  output is byte for byte the same). Met: layers 1, 2 and 3 reran on the merged code with no mismatch; the
-  awk count; the literal check passing with a smaller baseline.
+- T3 (this milestone): every bar is met (see "T3", third run): layers 1, 2 and 3 reran on the merged code
+  with no mismatch; the awk count; the literal check passing with a smaller baseline (7,944 lines at the
+  milestone's start, 7,660 now); the benchmark set's speed unchanged in wasmtime and Chrome (alternating pairs,
+  every workload within 0.1 percent, walk in Chrome 2.6 percent faster). Left for the independent check: the
+  reruns with a new seed, the awk counts and the pairs (commands under "T3, what is left").
+- The Chrome runner (runner.js, test tooling only) changes V8's speed on the translated code by up to 5 percent
+  depending on how its `run` function takes its arguments (an extra destructured parameter, or a wrapper that
+  reads a property inline, slows interpret by 4.6 percent; a module variable does not). Measured, not
+  understood; recorded so nobody reads such a difference as the translator's.
 - FPSR (the P2 check's first finding): a program whose code reads FPSR now has its flags kept exact from its
   start, decided by `wcontainers_arm64::reads_float_status(code)` and applied by whoever starts the thread
   (`FLOAT_TRACKING` set to 1 before it runs). This track's runners do it; the runtime's CPU side
@@ -32,11 +37,11 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
-T3 is under way: main merged (the translator on the shared guest interface), the literal check adopted, the
-P2 check's findings answered, the register jump slow path fixed (busybox awk: millions to single figures),
-FPSR read first fixed; layers 1 and 2 rerun in full on the merged code with no mismatch, layer 3 to 5,287
-compared with none; interpret in Chrome back to its speed, but fib, sort and walk in Chrome 0.5 to 1 percent
-slower from the same test runner function's shape. See "T3" and "T3, what is left".
+T3 is done (pending its independent check): main merged (the translator on the shared guest interface), the
+literal check adopted and the baseline down to 7,660 lines, the P2 check's findings answered, the register
+jump slow path fixed (busybox awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in
+full on the merged code with no mismatch, layer 3 to 5,287 compared with none; the benchmark set's speed
+unchanged. See "T3" and "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
 
@@ -158,16 +163,46 @@ Second run of T3 (2026-11-19 19:36 to 20:30 local):
   and both `MSR_SR_systemmove` (the Graviton's FPSR keeps bits 28 and 29: the known reference difference;
   layer 1's verdict is the Mac's, above: 7 passed). So every test passes where its verdict counts.
 
+Third run of T3 (2026-11-19 20:30 to 22:00 local):
+- Chrome's speed: runner.js again takes the setup exactly as at 97fff482 (with `sp`), and the starting float
+  flag comes through a module variable set from the message (5c08f25b). Variants with one test binary, 3
+  alternating rounds, rented ARM64 machine, load 9 to 14 (`t3/js-variants-4.log`, `t3/js-variants-5.log`):
+  interpret in Chrome 2.353 to 2.356 s for 97fff482's runner.js, the module variable and a wrapper with a
+  destructuring `const`, but 2.462 to 2.465 s for a wrapper reading `setup.keepFloatFlags` inline; fib, sort
+  and walk the same in all.
+- Speed pairs, 5c08f25b's test binary against 97fff482's, alternating, 4 rounds, rented ARM64 machine, load 6
+  to 18 (`t3/pairs-6.log`): new over old in Chrome 0.999 to 1.001 on every workload but walk, 0.974 (faster);
+  in wasmtime 0.998 to 1.001 on every workload but fib, 1.006, from one round (4.907 s against 4.802 s; the
+  other three within 3 ms). Fib alone again, 6 rounds, load 5 to 9 (`t3/pairs-7-fib.log`): wasmtime 1.000
+  (new faster in 4 of 6), Chrome 0.999. Translator output for the benchmark set and busybox byte for byte the
+  same as at 91616539 (`tests/output.rs` on the rented x86 machine, lists in `t3/out`), which was the same as
+  97fff482's.
+- Literals, fix list steps 6, 13, 16, 21 and 22 in the arm64 crate, each output-neutral: c3cf197e (float byte
+  sizes from `size_of`, the formats' fraction and exponent widths from rustc_apfloat, the float hook's operand
+  count named once and its parameter list built from it), c94a9289 (the float hook's operation code as a
+  struct of named bytes, `u32::from_le_bytes`, its kinds a `strum::FromRepr` enum, its flag bits from the
+  rounding table's length; new test `every_operation_code_decodes_to_its_operation`), d1f3a5fb (the scalar
+  reciprocal estimates' widths and biases derived from the formats, Arm's estimate width and the square root
+  estimate's three biases named; new against old on 50,000,000 random singles and doubles, equal), 38c86b88
+  (AdvSIMD register and element sizes), 2bbbf961 (the vector estimate tables from the same names, and one
+  `width` instead of two). Baseline 7,906 to 7,660 lines (arm64 1,129). New dependency: strum 0.27.2 (MIT),
+  in wcontainers-arm64's `translate` feature; it was already in Cargo.lock through another crate.
+- Layer 1 on the Mac (load 5 to 7): the 12 estimate forms (FRECPE, FRSQRTE, FRECPX, URECPE, URSQRTE, all
+  shapes) at 20,000 cases each, seed 301, 20 each in Chrome: passed (`t3/layer1-estimates.log`, 206 s);
+  layer 1's seven tests on 5c08f25b: 7 passed (223 s, `t3/suite/mac-layer1-5c08f25b.log`).
+- The whole suite of the four crates on 5c08f25b, debug, as in the second run, rented ARM64 machine (05:25 to
+  05:49 UTC, load 5 to 41, `t3/suite/arm-suite-5c08f25b.log`): 98 passed, 10 ignored, 2 failed, both layer 1's
+  `MSR_SR_systemmove` (the Graviton's FPSR difference); layer 1's verdict is the Mac's, above: 7 passed.
+
 T3, what is left:
-- Chrome's 0.5 to 1 percent on fib, sort and walk (above): try the wrapper and pair all workloads again
-  (`t3/pairs.sh`, run from the copy named translator-dev after building its benchmarks test; the old side is
-  `t3/old-97fff482` synced as translator-old and built there).
-- The literal fix list goes on from step 6 (core type sizes), with the open homes named under "Departures":
-  ARM64 system call and auxiliary vector numbers, the stack alignment, runner.js's look-ahead codes.
 - For the independent check: layers 1 and 2 and layer 3 with a new seed (layer 1 on the Mac: `WC_LAYER1_CASES
   WC_LAYER1_CHROME WC_LAYER1_SEED`; layers 2 and 3 on the ARM64 machine, as in "How to run"), the awk counts
   (`t3/awk.sh` on the x86 machine after building `wcon`; exact counts need the counting patch
-  `t3/detail/apply.py`), and the pairs (`t3/pairs.sh`).
+  `t3/detail/apply.py`), and the pairs (`t3/pairs.sh`, run from the copy named translator-dev after building
+  its benchmarks test; the old side is `t3/old-97fff482` synced as translator-old and built there).
+- Beyond the milestone's bar, the literal fix list goes on (arm64's decoders, fix list steps 17 to 20, need the
+  arm-forms generator to emit Arm's field and name constants), with the open homes named under "Departures":
+  ARM64 system call and auxiliary vector numbers, the stack alignment, runner.js's look-ahead codes.
 
 The P2 check's other findings, answered here: the Graviton's DC ZVA fault address (finding 2) is under "Known
 gaps"; the square root forms at 7,000 cases on the final code (finding 3) are covered by this milestone's
@@ -2742,6 +2777,9 @@ contract's bits, in both runners).
   2000 random programs seed 13 and the C programs with 3 seeds each (36 runs): 0 mismatches; 88,517
   changes made, 5418 faults handled and compared in the random programs (66 s, load 16 to 21).
   Every test of the three crates passes (debug build, Chrome test included; load 3 to 10).
+- T3, third run: layer 1, the 12 estimate forms at 20,000 cases each (240,000), 20 each in Chrome, seed 301,
+  the Mac; the scalar estimate functions new against old on 50,000,000 random inputs (rented x86 machine);
+  the speed pairs 4 rounds of all eight workloads and 6 of fib.
 
 ## Measurements
 
@@ -2836,9 +2874,10 @@ contract's bits, in both runners).
 
 ## Next
 
-1. Finish T3 (see "T3, what is left").
+1. T3's independent check (see "T3, what is left").
 2. The progress count (definition E, the brief) as its own milestone.
-3. The literal fix list from step 5 on (orchestrator's `magic-literals/fix-translator.md`).
+3. The literal fix list: arm64's decoders and forms (steps 17 to 20) and the test crate's remaining lines
+   (orchestrator's `magic-literals/fix-translator.md`).
 4. Refinements of M5 under "M5, fourth run, what comes next".
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
