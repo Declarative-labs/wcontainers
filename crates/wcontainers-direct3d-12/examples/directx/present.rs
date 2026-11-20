@@ -2,7 +2,6 @@
 //! queue over the infrastructure crate's, run on the device thread.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use wcontainers_direct3d_12::device::ChainId;
@@ -10,7 +9,7 @@ use wcontainers_directx_graphics_infrastructure::{
     COLOR_SPACE_SRGB, DisplayMode, Model, OutputDesc, SwapChainDesc, SwapChainError, presents_in,
     sdr,
 };
-use wcontainers_gpu::TextureUsage;
+use wcontainers_gpu::{Backend, SlowPath, TextureUsage};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -428,7 +427,6 @@ pub fn create(
         hwnd,
         queue,
         waitable,
-        stretched: AtomicBool::new(false),
         state: Mutex::new(ChainState {
             desc: d,
             buffers: Vec::new(),
@@ -465,8 +463,6 @@ pub struct SwapChain {
     queue: ID3D12CommandQueue,
     /// The frame latency waitable object's semaphore, for swap chains made with it.
     waitable: Option<usize>,
-    /// Whether a frame was shown stretched to a window of another size against the scaling asked.
-    stretched: AtomicBool,
     state: Mutex<ChainState>,
 }
 
@@ -478,19 +474,11 @@ const PRESENT_DO_NOT_WAIT: u32 = 0x8;
 const PRESENT_ALLOW_TEARING: u32 = 0x200;
 
 impl SwapChain {
-    /// The host shows a frame stretched to its window: a window of another size than the buffers
-    /// shows it so whatever scaling the program asked (warned once per swap chain).
-    fn check_scaling(&self) {
+    /// Whether the next frame is shown stretched against the swap chain's scaling: the host shows
+    /// a frame stretched to its window whatever scaling the program asked.
+    fn stretched(&self) -> bool {
         let desc = self.state.lock().unwrap().desc;
-        if desc.Scaling == DXGI_SCALING_STRETCH || self.stretched.load(Ordering::Relaxed) {
-            return;
-        }
-        if client_size(self.hwnd) != (desc.Width, desc.Height) {
-            self.stretched.store(true, Ordering::Relaxed);
-            eprintln!(
-                "wcontainers: warning: a frame stretched to its window against the swap chain's scaling"
-            );
-        }
+        desc.Scaling != DXGI_SCALING_STRETCH && client_size(self.hwnd) != (desc.Width, desc.Height)
     }
 
     pub fn Present(&self, sync_interval: u32, flags: DXGI_PRESENT) -> HRESULT {
@@ -504,10 +492,13 @@ impl SwapChain {
         if flags & PRESENT_TEST != 0 {
             return S_OK;
         }
-        self.check_scaling();
+        let stretched = self.stretched();
         let id = self.id;
         let result = gpu::call_windowed(move |s| {
             let d = &mut s.front;
+            if stretched {
+                d.backend().slow_paths().hit(SlowPath::FrameStretched);
+            }
             if flags & PRESENT_DO_NOT_WAIT != 0 && d.would_wait(id) {
                 return Err(None);
             }
