@@ -2028,6 +2028,7 @@ dependencies = [
 name = "wcontainers-system-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-kernel",
  "wcontainers-system",
 ]
 

@@ -9,3 +9,4 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-system = { path = ".." }
+wcontainers-kernel = { path = "../../wcontainers-kernel" }
