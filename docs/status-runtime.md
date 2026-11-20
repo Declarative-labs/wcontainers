@@ -33,9 +33,19 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - J5 run 9: nothing new on origin/phase-1 or origin/phase-1-literals again; the test driver's own literals named
   (driver baseline 31 to 15); this track's 270 GB of stale build output on the ARM machine deleted; J5's bar
   again from a clean build of the tip (section "J5 run 9").
+- J5 run 10: nothing new on origin/phase-1 (eb515b7a), origin/phase-1-literals (7668c010) or in the literal list's
+  rulings; the kernel branch (7058ed46) still has the assertion (task.rs:224). Nothing was built or run but the
+  literal check (exit 0; baselines runtime 265, wasmtime 74, driver 15; marks none).
 - Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
+
+- J5 run 10: this track has nothing left to build or run for J5, and every remaining item waits on another
+  track or on a ruling. J5 closes when either (a) the kernel's fix of task.rs's assertion and its mapping floor
+  (7579e667's one-line change to `AddressMap::find_free`) reach origin/phase-1, after which this track reruns the
+  outside tests and pth_str01 and 03, or (b) you rule that the tests listed by name as waiting (address ceiling,
+  progress count, the kernel's assertion) meet the bar as the plan's J5 exceptions do. The remaining literal
+  lines wait on hard cases 1, 2, 4 and 6 and on the kernel's, abi's and translator's constants.
 
 - J5 run 9: the ARM machine's disk was at 96% (27 GB free of 581 GB; /work is on the root disk there, not a
   larger stripe). This track's build folders held about 270 GB of it (runtime 207 GB, of which 123 GB were the
