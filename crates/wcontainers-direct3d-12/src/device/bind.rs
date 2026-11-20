@@ -1273,9 +1273,13 @@ impl<B: Backend> Device<B> {
         }
         let dimension = declared_dimension(dimension, layer_count, b);
         // Direct3D leaves a view of another dimension than the declaration undefined, and the
-        // back end refuses the binding; a multisampled array is read as a texture per layer.
+        // back end refuses the binding, also of a single-sampled view where the program declares a
+        // multisampled texture or the reverse; a multisampled array is read as a texture per layer.
+        let multisampled = v.dimension == SRV_DIMENSION_TEXTURE2DMS;
         if v.dimension != SRV_DIMENSION_TEXTURE2DMSARRAY
-            && let Some(shape) = b.shape.filter(|s| s.dimension != dimension)
+            && let Some(shape) = b
+                .shape
+                .filter(|s| s.dimension != dimension || (s.samples > 1) != multisampled)
         {
             self.messages.push(format!(
                 "a shader resource view of D3D12_SRV_DIMENSION {} bound at slot {:?} of a \
