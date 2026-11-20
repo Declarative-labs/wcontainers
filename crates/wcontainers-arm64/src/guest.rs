@@ -22,6 +22,13 @@ use wcontainers_guest_cpu::{
 };
 
 /// The float hook's bytes of the thread state: FPSR and FPCR in the block, through FPSR tracking after it.
+/// The float hook's operation code and its operands.
+const FLOAT_PARAMS: [ValType; 1 + crate::exact::OPERANDS] = {
+    let mut params = [ValType::I64; 1 + crate::exact::OPERANDS];
+    params[0] = ValType::I32;
+    params
+};
+
 const FLOAT_STATE: StateBytes = {
     let at = offset_of!(B, fpsr);
     assert!(offset_of!(B, fpcr) > at && FLOAT_TRACKING > at);
@@ -432,7 +439,7 @@ impl Guest for Arm64 {
     const HOOKS: &'static [HookType] = &[
         HookType {
             name: "float",
-            params: &[ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+            params: &FLOAT_PARAMS,
             results: &[ValType::I64],
             registers: Registers::NONE,
             state: FLOAT_STATE,

@@ -191,6 +191,14 @@ const AHP: u32 = 1 << 26;
 const DN: u32 = 1 << 25;
 const FZ: u32 = 1 << 24;
 
+/// Byte sizes of the float formats, as instructions and operation codes give them.
+pub(crate) const HALF: u8 = size_of::<u16>() as u8;
+pub(crate) const SINGLE: u8 = size_of::<f32>() as u8;
+pub(crate) const DOUBLE: u8 = size_of::<f64>() as u8;
+
+/// How many operands an operation takes at most, as the float hook passes them.
+pub(crate) const OPERANDS: usize = 3;
+
 /// Run one operation under `fpcr`, adding the exceptions it raises to `fpsr`.
 pub fn run(code: i32, a: u64, b: u64, c: u64, fpcr: u32, fpsr: &mut u32) -> u64 {
     let (op, size) = Operation::decode(code);
@@ -199,8 +207,8 @@ pub fn run(code: i32, a: u64, b: u64, c: u64, fpcr: u32, fpsr: &mut u32) -> u64 
     }
     let mut x = Context { fpcr, flags: 0 };
     let result = match size {
-        2 => x.run::<Half>(op, a, b, c),
-        4 => x.run::<Single>(op, a, b, c),
+        HALF => x.run::<Half>(op, a, b, c),
+        SINGLE => x.run::<Single>(op, a, b, c),
         _ => x.run::<Double>(op, a, b, c),
     };
     *fpsr |= x.flags;
@@ -224,7 +232,7 @@ trait Bits: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Dou
         (1 << (Self::PRECISION - 1)) - 1
     }
     fn mask() -> u128 {
-        if Self::BITS == 128 {
+        if Self::BITS == u128::BITS as usize {
             u128::MAX
         } else {
             (1 << Self::BITS) - 1
@@ -280,7 +288,7 @@ impl Context {
 
     /// Flush to zero applies to single and double precision only.
     fn flushes<F: Bits>(&self) -> bool {
-        self.fpcr & FZ != 0 && F::BITS > 16
+        self.fpcr & FZ != 0 && F::BITS > Half::BITS
     }
 
     /// An operand, flushed to zero (raising input denormal) when FZ asks.
@@ -636,22 +644,22 @@ impl Context {
 
     fn convert<F: Bits>(&mut self, a: u64, to: u8, odd: bool) -> u64 {
         match to {
-            2 => self.convert_to::<F, Half>(a, odd),
-            4 => self.convert_to::<F, Single>(a, odd),
+            HALF => self.convert_to::<F, Half>(a, odd),
+            SINGLE => self.convert_to::<F, Single>(a, odd),
             _ => self.convert_to::<F, Double>(a, odd),
         }
     }
 
     fn convert_to<F: Bits + FloatConvert<T>, T: Bits>(&mut self, a: u64, odd: bool) -> u64 {
-        let alternative_in = F::BITS == 16 && self.fpcr & AHP != 0;
+        let alternative_in = F::BITS == Half::BITS && self.fpcr & AHP != 0;
         if alternative_in && (a >> 10) & 0x1f == 0x1f {
             // The alternative half precision has no infinity or not-a-number: the top exponent is a number.
             // Every such number is exact in single precision.
             let single = ((a & 0x8000) << 16) | ((0x1f + 112) << 23) | ((a & 0x3ff) << 13);
-            return self.convert::<Single>(single, (T::BITS / 8) as u8, odd);
+            return self.convert::<Single>(single, (T::BITS / u8::BITS as usize) as u8, odd);
         }
         let x = self.unpack::<F>(a);
-        let alternative = T::BITS == 16 && self.fpcr & AHP != 0;
+        let alternative = T::BITS == Half::BITS && self.fpcr & AHP != 0;
         if x.is_nan() {
             if alternative {
                 // No not-a-number in the alternative format: zero with the sign, and invalid.
@@ -759,7 +767,7 @@ impl Context {
             self.flags |= DZC;
             return if negative { -F::INFINITY } else { F::INFINITY };
         }
-        let (tiny, huge) = if F::BITS == 32 {
+        let (tiny, huge) = if F::BITS == Single::BITS {
             (
                 F::from_u128(1).value.scalbn(-128),
                 F::from_u128(1).value.scalbn(126),
