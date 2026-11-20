@@ -32,13 +32,6 @@ use windows::core::s;
 /// Vertices per seed, each of `COLOURED_VERTEX_BYTES`.
 const VERTICES: usize = 64;
 
-/// The container a case's geometry shader is read from: fxc's DXBC or dxc's DXIL.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Route {
-    Dxbc,
-    Dxil,
-}
-
 #[derive(Clone, Copy)]
 struct Case {
     vs: &'static str,
