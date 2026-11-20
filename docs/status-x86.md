@@ -95,7 +95,116 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   stale in the thread block was counted clean at a join) and took those lists, marked four more instructions
   as varying between CPUs, ran the ARM64 layer 1 tests on the Mac, ran 100,000 random instructions in no form
   (which found `movbe` with 66 and REX.W, fixed), and ran the bar again with the new lists: every part of X5's
-  bar holds (see "X5, run 6").
+  bar holds (see "X5, run 6"). Run 7 (2026-11-20) fixed what the independent check of X5 found: BMI1's five
+  VEX instructions had no meaning though claimed, layer 1's default list skipped VEX forms and forms without
+  a meaning, 66-prefixed near branches and `lss` with REX.W were not marked, layer 2 had no rep strings, and
+  nothing tested the time stamp's designed answer; it also gave x86 its smoke programs and the CPUID
+  feature test, and stated plan 5.10's topology rule (see "X5, run 7").
+
+## X5, run 7 (2026-11-20)
+
+Machines: the rented x86-64 machine for lint, the crates' tests, the list tests, layer 2 and 3 and the suite;
+the rented ARM64 machine for the ARM64 tests; the i7-8750H for layer 1's verdicts (`x5/run7/laptop-bg.sh`, 4
+at once) and the BMI1 flag probe; the Mac for git, formatting and the literal check. Logs in scratch
+`x5/run7/`.
+
+The independent check's findings, all fixed:
+- BMI1 was claimed but five of its instructions had no meaning. `andn`, `bextr`, `blsi`, `blsmsk` and `blsr`
+  now have one (e08fde19). Their flags were probed on the i7-8750H and the rented Sapphire Rapids machine
+  (scratch `x5/run7/bmi1flags.c`, 200,000 draws each, both machines the same): OF, AF and PF clear, SF from
+  the result (clear for `bextr`), ZF from the result, CF clear for `andn` and `bextr`, source zero for `blsr`
+  and `blsmsk`, source not zero for `blsi`. All five are marked as varying (AF and PF, and `bextr`'s SF, are
+  undefined in Intel's manual).
+- Layer 1's default list kept only legacy forms with a written meaning. It now takes every default code of
+  every encoding but MVEX, as plan 7.4 says, and drops none for want of a meaning (c06fa782). A new test,
+  `every_default_code_is_drawn_and_written_x86_64`, lists each default code with no form and why, and fails
+  on a code that cannot be drawn or a form with no meaning. With BMI1 unwritten it would have failed. Left
+  out today: 267 x87, MMX-register and `fxsave` codes (and `wait`), which are X7's; 55 codes the translator
+  decodes as another code (among them the 16-bit branch codes, which Intel decodes as the 64-bit ones); and
+  6 answered by design (`cpuid`, `rdtsc`, `rdtscp`, `sgdt`, `sidt`, `sysenter`). The VMX codes are in the
+  unoffered list. The case drawer now also handles VEX general registers and three-operand forms with
+  memory in either place, the reasons' fallback draws 16-bit branch operands, and a debug-build overflow for
+  `push fs` is gone.
+- Two kinds of instruction that differ between x86-64 CPUs were not marked (e08fde19): near branches,
+  calls and returns with a 66 prefix (AMD takes them as 16-bit), and `lss` with REX.W (AMD reads m16:32).
+  `ud0` is now marked too, since AMD reads no ModRM after it. The decoder records whether a 66 prefix is
+  present. A new test, `what_amd_reads_otherwise_is_marked`, sweeps every opcode of the four legacy maps
+  behind eight prefix sets, with ModRMs of every mode and register field (786,432 encodings). It decodes each
+  with iced's Intel and AMD options and requires the mark wherever the two differ. Plan 5.2 lists the marks.
+- Layer 2's emitter had no rep string instructions (72475bc7). The walk's string step now picks its form by
+  the walk's `rt`, which no string instruction names, so the shared model and ARM64's programs stay the
+  same. The forms are: one element as before; `rep lods`/`rep stos`; `repne scas`, or `rep movs` onto the
+  next element (overlapping, one element at a time); and `repe cmps`, or `rep movs` from the next element
+  (the bulk pass going up). Each repeated form handles as many elements as fit in the step, and a step down
+  sets DF. Counted over 1,000 programs at seed 1 (scratch `x5/run7/scratch_rep.rs`): 58 hold a repeated string
+  instruction, 75 instructions in all, across all ten repeated kinds. Layer 2 runs them at full (both
+  settings, plain and stopping at every check), bounded and mixed, against none and the CPU.
+- There was no designed-answers test for `rdtsc` and `rdtscp`. `the_time_stamp_is_the_clock_x86_64` now
+  starts the clock past 2^32 ns (a new `Machine::set_clock` and `layer1::translated_with`). It checks that
+  edx:eax is the clock's nanoseconds, the upper halves are clear, rdtscp's ecx is 0 and rdtsc's rcx is
+  untouched.
+- x86's `told()` panicked. It now reads the feature bits CPUID sets by default (leaves 1, 7 and 0x8000_0001)
+  as iced's features, and fails on any set bit it cannot name.
+  `offered_features_are_the_ones_programs_are_told_x86_64` runs and passes.
+- Topology: plan 5.10 now states the rule (CPUID states no count, so every processor the kernel reports
+  looks like a package of its own) and its consequence: software that enumerates processors by APIC
+  identifier sees identifier 0 on all of them (expected, not measured). It also records the alternative and
+  why it is not built. The table is unchanged.
+
+Found by the bar and fixed: a far `call` through memory, where the return address's slot is not writable but
+cs's is, leaves cs written on the reference CPU (rsp unchanged); we wrote neither (`Call_m1632` and
+`Call_m1664` failed at seed 9382, rsp just above DATA's start). The meaning now checks and writes cs's slot
+before it checks the return address's (2ac35d7b), as `enter` already does for its pushes.
+
+Also done: x86's smoke programs (8980d34d). `smoke()` still panicked as "X5's". The smoke tests' page now has
+a writable stack page below it, and sp starts at its top for both guests (ARM64's programs do not use sp).
+All six tests pass for x86 and ARM64. The system call they use is one constant, `UNKNOWN_SYSTEM_CALL`.
+
+Measured:
+- Layer 1 on the i7-8750H (`l1-bmi1.log`, load 2 to 4): the ten BMI1 forms at 1,000 a form, seed 9380: 0
+  failing; the hand-made cases (98): pass.
+- Layer 2 for x86 with rep strings on the rented x86-64 machine (`l2-a.log`, load 1 to 32): 3,000 programs,
+  seed 9381, all on the CPU, 1 in Chrome: 0 failing (53 s; 1,027 faulted, 371 left to an address at full).
+- The list tests, the time stamp test, the crates' tests and clippy with warnings denied (rented x86-64
+  machine): pass. The smoke tests (12): pass. The literal check (the Mac): exits 0.
+- Every default form on the i7-8750H (`l1-run7-first-laptop.log`, load 2 to 7): 1,073 forms (the 1,063 of
+  run 6 and the ten BMI1 ones), 1,000 a form, seed 9382, 4 at once: 2 failing, `Call_m1632` and
+  `Call_m1664` (the far call above), 2,956 s. After the fix (`l1-run7b-laptop.log`, load 0 to 3): the six far
+  call and jmp forms at 1,000 a form, seed 9382: 0 failing; the three far call forms at 5,000 a form, seed
+  9387: 0 failing. The other 1,071 forms' meanings did not change after that run.
+- On the i7-8750H too: the independent check's 100,000 random instructions in no form, seed 9383: 0 failing
+  (291 s); the Chrome sample, 3 a form, 3,219 cases, seed 9384: 0 failing; the hand-made cases (98) and
+  `the_x86_64_reference_refuses_what_linux_refuses`: pass.
+- On the rented x86-64 machine (`batch-x86m.log`, load 3 to 33, the suite running beside it): `--test checks
+  x86_64` 2 passed; `--test programs x86_64` 14 passed (1,453 s); layer 2 for x86 at 10,000 programs, seed
+  9385, all on the CPU, 1 in Chrome: 0 failing (137 s; 3,441 faulted, 1,232 left to an address at full);
+  layer 3 Csmith for x86 at 1,000 programs, seed 9386: 867 compared (1 also in Chrome), 133 did not end in
+  time, 0 failing (2,231 s).
+- The suite at 8980d34d (before the far call fix, which only `wcontainers-x86` and the layer 1 runs above
+  cover). Rented x86-64 machine (`suite-x86m.log`, load 8 to 14 at the ends): clippy with warnings denied
+  passes for the five crates; 106 passed, 13 ignored, 30 failed. Expected there: the 25 ARM64 tests, three
+  that 5-level paging changes (every form, the Chrome sample, the refusal test), and
+  `unoffered_forms_are_illegal_x86_64` (that machine has the features). The 30th is
+  `hand_cases_do_what_they_must_x86_64`: Sapphire Rapids runs `movbe` with 66 and REX.W as the 64-bit load
+  (a memory fault at 0), where the i7-8750H gives illegal instruction. So that case's verdict is the
+  laptop's (it passes there), and the mark is right: we treat the encoding as invalid, which is marked as
+  varying. Rented ARM64 machine (`suite-arm.log`, 1,247 s, load 11 to 18): 50 passed, 2 failed, the two
+  layer 1 tests its manual keeps on the Mac. On the Mac (`arm64-l1-mac.log`, Docker Desktop, load 2 to 4):
+  `every_form_matches_the_cpu_arm64` 1,215 forms, 64 a form, seed 1, and the Chrome sample, 1,215 cases: 0
+  failing (197 s).
+
+Literals: the check exits 0. Three lines left the baseline (`64` of the old form filter, and the stale `told`
+and `smoke` messages); nothing was added. The baseline has 336 lines (339 before) for the x86 crate, the
+guest crate and x86's test files.
+
+So X5's pass bar holds: layer 1 every default form at 1,000 a form (seed 9382, with the far call forms run
+again after their fix), the unoffered forms at 100 a form (run 6, seed 9361; nothing they draw changed),
+layer 3 Csmith at 1,000 (seed 9386), 0 failing; the reciprocal formula over all 2^32 inputs (run 3); the
+passed-register lists measured and chosen (runs 5 and 6). The independent check's 100,000 random
+instructions (seed 9383) give 0 failing, and every instruction whose result may depend on the CPU is marked
+(plan 5.2), with a test that sweeps what AMD decodes otherwise.
+
+What comes next: X5's independent check, then X6.
 
 ## X5, run 6 (2026-11-20)
 
@@ -631,6 +740,11 @@ Baseline lines: wcontainers-translator-test 2111 (3 fewer), wcontainers-translat
 wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the milestone is not complete.
 
 ## For the orchestrator
+
+- X5 run 7: another difference between the two x86-64 machines. Sapphire Rapids runs `movbe` with both 66
+  and REX.W (`66 48 0F 38 F0/F1`) as the 64-bit form; the i7-8750H gives illegal instruction. We follow the
+  i7-8750H and mark the encoding as varying, so `hand_cases_do_what_they_must_x86_64` fails on the rented
+  machine and its verdict is the laptop's, like the four 5-level paging tests.
 
 The brief's question of 2026-11-19 08:20 (which rule defines a guest's behaviour above bit 47, and whether
 the rented x86-64 machine should be booted with 5-level paging off). My answer:
@@ -2599,6 +2713,13 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X5 run 7's checks that need no reference: `cargo test -p wcontainers-translator-test --test layer1 --
+  every_default_code_is_drawn_and_written_x86_64 offered_features_are_the_ones_programs_are_told
+  the_time_stamp_is_the_clock_x86_64 every_unoffered_code_is_drawn_x86_64` (the first prints every default
+  code left out and why), `--test smoke`, and `cargo test -p wcontainers-x86 --test facts` (the sweep of what
+  AMD decodes otherwise). The BMI1 flag probe: `gcc -O1 -mbmi -o bmi1flags <scratch>/x5/run7/bmi1flags.c &&
+  ./bmi1flags <draws>` on an x86-64 machine. How many layer 2 programs hold rep strings: copy scratch
+  `x5/run7/scratch_rep.rs` into the test crate's `tests/` and run it with `WC_LAYER2_SEED`, `WC_LAYER2_CASES`.
 - Layer 1's verdicts on the i7-8750H (X5): `<scratch>/x5/run4/laptop-bg.sh <name> '<command>'` copies the
   working tree there and starts the command detached (4 build jobs, under `choom`, off cores 2 and 8), log in
   `~/wcontainers-x86/logs/<name>.log` there; e.g. `WC_LAYER1_FORMS=<codes> WC_LAYER1_CASES=1000
@@ -2812,6 +2933,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X5 run 7: layer 1 on the i7-8750H: 1,073 default forms at 1,000 a form, seed 9382 (1,073,000 cases); the ten
+  BMI1 forms at 1,000, seed 9380; six far forms at 1,000, seed 9382, and three at 5,000, seed 9387; 100,000
+  in no form, seed 9383; the Chrome sample, 3,219 cases, seed 9384; the hand-made cases twice. Layer 2 x86:
+  3,000 programs at seed 9381 and 10,000 at seed 9385, all on the CPU (rented x86-64 machine). Layer 3
+  Csmith x86: 1,000 at seed 9386. The BMI1 flag probe: 200,000 draws an instruction on each of the two
+  machines. The rep-string count: 1,000 programs at seed 1. The suite once on each rented machine, and the
+  ARM64 layer 1 tests on the Mac (64 a form, seed 1).
+
 - X5 run 4: every default form on the i7-8750H at 1,000 a form, seed 9105 (1,025,000 cases); `dpps` and
   `dppd` at 3,000 a form at seeds 9105 to 9108 twice (before and after the last fix); the 76 float forms at
   1,000 a form, seed 9109, with the probe answer forced to 0; layer 1 on the i7-8750H at 1,000 a form: 6 forms at seed 9101, 3 at seed 9102 (twice, before and
@@ -2991,6 +3120,15 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
+- X5 run 7: a far `call` writes its cs slot before it checks the return address's slot, so the brief's "one
+  permission check before anything changes" does not hold for it: the reference CPU leaves cs written when
+  only the second push faults, and matching the CPU is what makes the state exact.
+- X5 run 7: the smoke tests give both guests a writable stack page below the code page and start sp at its
+  top, as x86's `call` needs a stack; ARM64's smoke programs do not use sp.
+- X5 run 7: layer 1's default list leaves out the x87, MMX-register and `fxsave` codes (and `wait`) whose
+  meaning is not written, with that reason, since they are milestone X7's; every other default code is in
+  the list whether its meaning is written or not.
+
 X5 run 4:
 - `wait` (`fwait`) is left to X7 with x87: its whole meaning is the check for a pending unmasked x87
   exception, which only x87 instructions raise and which needs X7's x87 state and fault path.
@@ -3037,9 +3175,10 @@ X4 (each also written into the plan's text where the plan is wrong):
   read. Plan 5.1's `Bits` shape is not used for bt and its kin, clc, stc and cmc, nor for rotates: they change
   only CF (and OF), so they hand the six flags over each in a local (`Flags::Each`), which needs no shape and
   no flags-word function. `Bits` comes with bsf, bsr, popcnt, lzcnt and tzcnt at X5 (plan 5.1 says so now).
-- Run 4: plan 7.4 says x86's layer 2 emitter adds string instructions with and without rep; it has them
-  without rep only (lods and stos, both directions). Rep strings are X5's instructions (plan 9), so their
-  layer 2 form comes with them at X5.
+- Run 4: plan 7.4 says x86's layer 2 emitter adds string instructions with and without rep; it had them
+  without rep only (lods and stos, both directions), the rep forms left to X5. X5 run 7 added them (a walk's
+  string step picks one element or a repeated form by the walk's `rt`, which no string instruction names, so
+  the shared model and ARM64's programs do not change).
 - Run 4: the `measure` test (programs.rs) measures at full from the entry besides none from every
   instruction, and runs for x86 too (`measure_x86_64`), so that output size and compile time at full are
   measured for each guest (plan 9's preface).
