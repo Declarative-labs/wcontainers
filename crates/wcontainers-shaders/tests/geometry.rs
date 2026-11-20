@@ -92,6 +92,78 @@ fn geometry_shaders_declare_what_they_are() {
     }
 }
 
+/// The replay form (`GEOMETRY_REPLAY`, for back ends without compute) is a vertex program writing a
+/// record a slot per location, the same records the compute form writes, which the same pass-through
+/// draws; WebGL 2's back end writes it and the vertex program it captures.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn geometry_shaders_have_a_replay_form() {
+    let replay = VariantKey {
+        flags: VariantFlags::GEOMETRY_REPLAY,
+        ..Default::default()
+    };
+    let drawn = convert(
+        Source::Dxbc(&own("vs_geometry.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let names = [
+        "gs_quads",
+        "gs_cut",
+        "gs_instances",
+        "gs_lines",
+        "gs_points",
+        "gs_adjacent",
+        "gs_line_adjacent",
+        "gs_clip",
+        "gs_layers",
+        "gs_streams",
+    ];
+    for name in names {
+        let bytes = own(&format!("{name}.dxbc"));
+        let compute = convert(Source::Dxbc(&bytes), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let c =
+            convert(Source::Dxbc(&bytes), &replay, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(c.reflection, compute.reflection, "{name}");
+        assert_eq!(c.modules.len(), 2, "{name}");
+        assert_eq!(
+            c.modules[0].stage,
+            wcontainers_gpu::ShaderStage::Vertex,
+            "{name}"
+        );
+        assert_eq!(wgsl(&c.modules[1]), wgsl(&compute.modules[1]), "{name}");
+        // A slot per record slot the pass-through reads, then the position.
+        let passthrough_slots = c.modules[1].module.entry_points[0].function.arguments.len();
+        let result = c.modules[0].module.entry_points[0]
+            .function
+            .result
+            .as_ref()
+            .unwrap();
+        let naga::TypeInner::Struct { members, .. } = &c.modules[0].module.types[result.ty].inner
+        else {
+            panic!("{name}: the replay form's outputs");
+        };
+        assert_eq!(members.len(), passthrough_slots + 1, "{name}");
+        let settings = wcontainers_gpu_webgl::glsl::GlslSettings {
+            flip_y: false,
+            noperspective: true,
+        };
+        wcontainers_gpu_webgl::glsl::write(&c.modules[0], settings)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let captured = stage::capture_program(&drawn, &c).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(captured.stage, wcontainers_gpu::ShaderStage::Vertex);
+        wcontainers_gpu_webgl::glsl::write(&captured, settings)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    }
+    // Only a geometry shader has a replay form.
+    assert!(matches!(
+        convert(Source::Dxbc(&own("vs_geometry.dxbc")), &replay, None),
+        Err(ConvertError::Malformed(_))
+    ));
+}
+
 /// A DXIL vertex program's outputs keep their own widths (`vs_transform`: a float2 and a uint): its
 /// compute form fills each record slot's first components and zeroes the rest.
 #[test]
