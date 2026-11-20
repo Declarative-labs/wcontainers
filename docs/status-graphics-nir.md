@@ -4,14 +4,16 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 8 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's
-GLSL and bgfx's GLSL; candidate B leads on every count (The choice, below). Run 8: route B's
-invalid modules on piglit went from 126 to 25 (the 25 left are binding arrays the common form does
-not allow and vertex programs without a position, both honest); textures and OpenGL's own vertex
-arrays on the GLSL side of the comparison (piglit: 1310 match on route B, up from 1152, no new
-difference; 1313 with storage images); bgfx's desktop GLSL shaders in the corpus (301 match on
-route B, 3 differ, explained below). dEQP's GLES programs, Godot, Dolphin, the rest of the SPIR-V corpus, the 15.4 rewrites
-and robustBufferAccess remain (Next).
+G8 run 9 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's
+and bgfx's GLSL and, since run 9, dEQP's GLES shader library (13,630 programs); candidate B leads
+on every count (The choice, below). Run 9: dEQP's GLES cases in the corpus (route B 8574 match,
+126 differ, all from undefined behaviour on the seeded inputs); route B takes bitfield extract and
+insert, integer sign, frexp, the sample mask input and an exclusive or of booleans; a vertex
+attribute read in part (some columns of a matrix) keeps its columns' places; ES programs are held
+to llvmpipe at full precision. Piglit 1338 match (up from 1313), bgfx 307 (up from 301). Still to
+do (Next): the 15.4 rewrites and robustBufferAccess (both blocked on other tracks), the
+alpha_to_one programs in the corpus (the build that dumps them was started in run 9), Godot,
+Dolphin and Godot Forward+.
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -216,6 +218,43 @@ Done:
   hands them to the driver (`#version 430` before a source without one); its `bgfx_ndc` uniform is
   left a uniform (bgfx makes it a constant from its capabilities; seeded here like any other).
   A file of another format version is refused by name.
+- Route B fixes from run 9: `ubitfield_extract`, `ibitfield_extract` and `bitfield_insert` (one
+  `extractBits` or `insertBits` a component, as the common form's offset and count are scalars),
+  `isign`, `frexp_exp` and `frexp_sig` (naga's `frexp` and its result's members), the sample mask
+  input, and `ixor` of booleans (made `!=`; naga has no exclusive or of booleans). Held by
+  `tests/glsl_reference.rs` (a compute program of bitfields, signs and exponents: matched; with the
+  extract's offset and count swapped and the sign made an absolute value, temporarily on the x86
+  machine's copy, 198 values differed).
+- A vertex attribute read in part (run 9): st/mesa gives the driver a vertex element a slot read,
+  so a matrix of which some columns are read has elements only for those. The bridge now names
+  each run of read slots of an attribute (`GlslName::element`, the run's first slot in the value;
+  `at`, its first element; `count`, its slots), and the comparison feeds each column of an
+  attribute at the route's place for it, or to llvmpipe alone. Before, the unread columns moved the
+  next attributes, among them the point's position. Held by `tests/route.rs` (a `mat4` read in
+  columns 1 and 3: two names).
+- dEQP's GLES shader library in the corpus (run 9; `tests/corpus/deqp.rs`): every case of VK-GL-CTS
+  `data/gles2/shaders`, `gles3/shaders` and `gles31/shaders` (`*.test`, Apache-2.0, pinned in
+  `corpus/sources`) read from dEQP's format (`gluShaderLibrary.cpp`'s grammar) and specialized as
+  `glsShaderLibraryCase.cpp` does (its `${DECLARATIONS}`, `${SETUP}`, `${OUTPUT}` and the program
+  cases' `${VERTEX_*}` and `${FRAGMENT_*}` values, `:single-line`, the extensions a case requires
+  after the version line, a source without a version taken at the case's): a `both` case is two
+  items, `<case>_vertex` (with a fragment program written here that writes what it passes on to the
+  colour targets) and `<case>_fragment` (the corpus's feeder gives its inputs); a case of its own
+  vertex and fragment sources is one. Where dEQP compares the outputs with its expected values in
+  the shader, here every output is written to a colour target (floats four a target, from
+  `dEQP_FragColor`; integers and booleans as `uint` in `uvec4` targets after them; in GLSL ES 1.00
+  all as floats in `gl_FragColor`), so llvmpipe and the route are compared on the values. Refused by
+  name: cases dEQP expects to fail (compile, link or validation), pipelines of separable programs,
+  geometry and tessellation, outputs past the colour targets. An item is `<file>#<case>`. Held by
+  `tests/glsl_reference.rs` (a library file of a `both` case, a failing case and a program case:
+  each item's sources, and each compiles).
+- ES programs at full precision (run 9, `glsl::at_full_precision`, every GLSL program of the
+  corpus): `#define lowp highp`, `#define mediump highp` and `highp` defaults after the version and
+  extension lines. llvmpipe computes `mediump` in 16 bits (its `fp16` and `int16` capabilities make
+  Mesa's GLSL compiler lower precision), while the bridge lowers none, as our driver will compute;
+  GLSL ES allows both. Without it 883 of dEQP's programs differed by half-precision rounding or
+  16-bit integers. `#version 100` is now taken as ES (GLSL ES 1.00 has no profile word), so its
+  feeders are ES too.
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -337,8 +376,31 @@ Run 8, with bgfx's 325 desktop GLSL shaders beside piglit and the SPIR-V corpus 
   size), which `fract` makes an absolute difference past the tolerance; GLSL allows division 2.5
   units in the last place. That the division is the source is expected, not yet confirmed.
 
-The choice, on this corpus (not final: dEQP, Godot and Dolphin are still to come; the GLSL gives
-the same order: B matches 1310 piglit and 281 bgfx programs, A 3 and 9):
+Run 9, with dEQP's GLES cases beside piglit, bgfx and the SPIR-V corpus (17,501 items;
+`results/run9/nir-results-r9a.jsonl`; x86-64 machine, 192 children, load 12.2 at the start and 11.4
+at the end, 248 s):
+- SPIR-V corpus: unchanged, A 728 match, B 773 match, 0 differ.
+- piglit: route B 1338 match (up from 1313), the same 17 differences.
+- bgfx: route B 307 match (up from 301), the same 3 differences, 6 not compared (`rgba16f` storage
+  images), 5 fail by name (a storage image of another format).
+- dEQP (13,630 items): 4,923 reach no route (expected failures 4,396: compile 3,983, link 189,
+  compile or link 144, validation 80; tessellation 280 and geometry 179;
+  50 with outputs past the colour targets; 13 need `GL_ANDROID_extension_pack_es31a`; a few that
+  Mesa's compiler refuses). Of the other 8,707: route B 8,574 match, 126 differ, 2 not compared, 5
+  fail by name or validation; route A converts 129 and matches none (Zink's compiler takes only its
+  own lowered IO, as with piglit).
+- dEQP's 126 differences are all undefined behaviour on the seeded inputs: integer division by
+  zero (`swizzle_math_operations.test` `vector_divide` of `ivec` and `uvec`, 68; the `div` cases of
+  `implicit_conversions.test`, 42, where a float divides by a zero made from an integer and the
+  sign of that zero differs: NIR's `i2f(f2i(x))` to `ftrunc(x)` keeps a negative zero), and an
+  array indexed past its end with a seeded index (`large_constant_arrays.test`, 16). Left as
+  differences with this reason, as piglit's are.
+- dEQP's 5 route failures: a texel buffer, an image atomic, a storage image of another format (all
+  named), and one cube map array program naga refuses ("Index 2 is out of bounds", to look at); 2
+  not compared: a uniform llvmpipe gives no value for (`linkage.test#varying_7`).
+
+The choice, on this corpus (not final: Godot and Dolphin are still to come; the GLSL gives
+the same order: B matches 1338 piglit, 307 bgfx and 8574 dEQP programs, A 3, 9 and 0):
 `corpus/choose`, both routes optimised (`--release`), one shader and route at a time in a child of
 its own, on ten cores (`taskset -c 0-9`), x86-64 machine, load 5.5 at the start and 3.2 at the end
 (another track's tests ran beside it), before the Zink patch: A 726 match, B 773 match; on the 725
@@ -347,19 +409,18 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. dEQP's GLES programs (VK-GL-CTS `data/gles2/shaders`, `gles3/shaders`, `gles31/shaders`:
-   about 7,700 cases in dEQP's shader library format, Apache-2.0). Looked at in run 8 (commit
-   5bb4c7e8 fetched sparsely on the x86 machine and deleted): most cases are `both` sources
-   with `${DECLARATIONS}`, `${OUTPUT}` and `${SETUP}` that dEQP's C++ expands from the case's
-   `values` block, so the corpus needs our own expansion (inputs as attributes or varyings,
-   outputs as fragment outputs or caught varyings); cases expecting a compile or link failure are
-   refused, as piglit's are. Pin it in `corpus/sources` with sparse paths (`fetch` takes them).
-   Then Godot's Compatibility renderer (its `.glsl` files with Godot's section and variant
-   markers) and Dolphin (it makes its shaders at run time, and is GPL: test data only).
-2. Subroutine uniforms (9: `glUniformSubroutinesuiv` with a compatible index, the route's word
-   from the bridge's names); `rgba16f` storage images in the harness (3 bgfx); route B's named
-   gaps that real programs hit (`ubitfield_extract`, `ibitfield_extract`, `bitfield_insert`,
-   `isign`, `frexp_exp`, `pack_*_split`: plain ALU operations naga has).
+1. The alpha_to_one programs (item 4 below): `corpus/cts-programs` (new in run 9, its first run
+   started at the end of run 9; check its log in scratch `logs/r9-cts.log`) builds VK-GL-CTS's
+   `vk-build-programs` at the corpus's pinned commit and writes the programs of
+   `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one` into
+   `nir-corpus/vk-gl-cts-programs/alpha_to_one`; the corpus run (`run.rs`, already in) puts each
+   fragment program there through `Nir::alpha_to_one` before the routes and records it "held by
+   G10's CTS cases". Then add `dEQP-VK.robustness.buffer_access` to its groups when
+   robustBufferAccess can be done.
+2. Godot's Compatibility renderer (its `.glsl` files with Godot's section and variant markers) and
+   Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
+   `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names);
+   `rgba16f` storage images in the harness (6 bgfx); `pack_*_split` (64-bit, so refused) stays.
 3. The rest of the SPIR-V corpus (Godot Forward+; the shaders of
    `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and `dEQP-VK.robustness.buffer_access.*`),
    each pinned in `corpus/sources`. Then `corpus/choose` again over all of it for the final choice.
@@ -417,6 +478,13 @@ Next, in this order:
 - Test with Mesa (on the x86 machine, after the build):
   `export WCONTAINERS_MESA=$CARGO_TARGET_DIR/mesa/build; cargo test -p wcontainers-nir` and
   `cargo clippy -p wcontainers-nir --all-targets -- -D warnings`; and both again without the variable.
+- dEQP's cases come with the same `corpus/fetch` (VK-GL-CTS's shader library data, sparse) and run
+  in the same corpus run: 13,630 items take about 35 s alone (`WC_NIR_CORPUS` at
+  `nir-corpus/vk-gl-cts`). `scripts/deqp_differences.py <results>` (scratch) groups route B's
+  differences by file and message.
+- The Vulkan CTS's programs: `crates/wcontainers-nir/corpus/cts-programs [flake]` (from the Mac:
+  `x86-run <checkout> --name graphics-nir --jobs 96 -- 'crates/wcontainers-nir/corpus/cts-programs
+  path:/work/flake/graphics-nir'`); the corpus run takes them from `nir-corpus` like the rest.
 - The literal check needs the git history, which the rented machine's copy lacks. Run 6 ran it on
   the x86 machine from a git bundle of the branch (`git bundle create <scratch>/nir.bundle
   phase-2-graphics-nir`, sent with `x86-run --ssh 'cat > /work/probes/graphics-nir.bundle'`,
@@ -514,6 +582,12 @@ Next, in this order:
   dependency. `rand` 0.9 and `rand_chacha` 0.9 (MIT OR Apache-2.0, already in the workspace),
   dev-dependencies.
 - Corpus, test data only, fetched into the build folder and never in the repository or shipped:
+  VK-GL-CTS at 5bb4c7e8 (since run 9; Apache-2.0, its `LICENSE`; only `data/gles2/shaders`,
+  `data/gles3/shaders`, `data/gles31/shaders` and the licence are fetched by `corpus/fetch`;
+  `corpus/cts-programs` fetches the whole tree and the dependencies its `fetch_sources.py` pins:
+  glslang (BSD-3-Clause and others), SPIRV-Tools and SPIRV-Headers (Apache-2.0 and MIT), Amber
+  (Apache-2.0), jsoncpp (MIT), Vulkan-Docs and the video parser (Apache-2.0 and MIT), built only to
+  dump test programs, never linked into anything of ours);
   bgfx at e76ecedf (since run 8; BSD-2-Clause, its `LICENSE`; only `examples/runtime/shaders/glsl`
   and the licence are fetched);
   Sascha Willems' Vulkan samples at d2d49bf7 (MIT, `LICENSE.md`); piglit at 92510281 (since run 7;
@@ -604,6 +678,15 @@ Next, in this order:
   sparsely (its shaders and licence only), as dEQP's data files will be.
 - bgfx's 3 differences (infinities from seeded RGBE texels, and one unit in the last place made
   large by `fract`) are left as differences with their reasons, as piglit's 17 are.
+- dEQP's cases are run on the corpus's seeded inputs, not on the values in each case's `values`
+  block: the corpus holds the route to llvmpipe, not to dEQP's expected results, and seeded inputs
+  reach more of each program. Where dEQP compares the outputs in the shader, the corpus writes them
+  to colour targets (Done). Of a requirement's alternative extensions the first is taken (dEQP
+  takes the first the context reports); a case whose first alternative Mesa's compiler refuses is
+  counted as reaching no route with Mesa's log.
+- ES programs are compared at full precision on both sides (`#define mediump highp` and the rest):
+  llvmpipe lowers `mediump` to 16 bits, our driver does not; both are allowed by GLSL ES, and the
+  reference must compute what the route is to compute.
 - The 17 differences from undefined behaviour on seeded inputs are left as differences with their
   reason, not hidden: the seed gives indices out of range and negative square roots, which the
   programs' own tests never give.
