@@ -430,6 +430,8 @@ after_link(struct gl_shader_program *whole, struct gl_linked_shader *linked, uin
 
    nir_lower_tex_options tex = {};
    tex.lower_rect = true;
+   tex.lower_txp = ~0u;
+   tex.lower_txp_array = true;
    tex.lower_tg4_offsets = true;
    NIR_PASS(_, nir, nir_lower_tex, &tex);
    assign_uniform_locations(prog, nir);

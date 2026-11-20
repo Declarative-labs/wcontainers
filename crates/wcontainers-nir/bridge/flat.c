@@ -75,6 +75,8 @@ dim_of(enum glsl_sampler_dim dim)
    case GLSL_SAMPLER_DIM_1D:
       return WC_DIM_1D;
    case GLSL_SAMPLER_DIM_2D:
+   /* Rectangles' coordinates are normalized before (nir_lower_tex's lower_rect). */
+   case GLSL_SAMPLER_DIM_RECT:
       return WC_DIM_2D;
    case GLSL_SAMPLER_DIM_3D:
       return WC_DIM_3D;

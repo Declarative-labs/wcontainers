@@ -738,6 +738,11 @@ impl Builder<'_> {
             },
             TypeKind::Array => {
                 let element = self.types[t.element as usize];
+                if element.kind == TypeKind::Array && self.is_resource(t.element) {
+                    return Err(unsupported(format_args!(
+                        "an array of arrays of textures, samplers or images"
+                    )));
+                }
                 if matches!(
                     element.kind,
                     TypeKind::Sampler | TypeKind::Texture | TypeKind::Image
@@ -764,6 +769,11 @@ impl Builder<'_> {
                 let mut end = 0;
                 for i in 0..t.length {
                     let field = self.fields[(t.element + i) as usize];
+                    if self.is_resource(field.ty) {
+                        return Err(unsupported(format_args!(
+                            "a structure holding textures, samplers or images"
+                        )));
+                    }
                     let ty = if self.atomic_fields.contains(&(index, i)) {
                         self.atomic_ty(field.ty)?
                     } else {
@@ -883,6 +893,18 @@ impl Builder<'_> {
                 }
             }
         }
+    }
+
+    /// Whether a flat type is a texture, sampler or image, or arrays of them.
+    fn is_resource(&self, index: u32) -> bool {
+        let mut t = self.types[index as usize];
+        while t.kind == TypeKind::Array {
+            t = self.types[t.element as usize];
+        }
+        matches!(
+            t.kind,
+            TypeKind::Sampler | TypeKind::Texture | TypeKind::Image
+        )
     }
 
     /// The scalar kind of a flat type's components.
@@ -1015,6 +1037,11 @@ impl Builder<'_> {
             }
             FlatBuiltIn::Position => Binding::BuiltIn(BuiltIn::Position { invariant: false }),
             FlatBuiltIn::PointSize => Binding::BuiltIn(BuiltIn::PointSize),
+            FlatBuiltIn::ClipDistance if self.stage == ShaderStage::Fragment => {
+                return Err(unsupported(format_args!(
+                    "clip distances read by a fragment program"
+                )));
+            }
             FlatBuiltIn::ClipDistance => Binding::BuiltIn(BuiltIn::ClipDistances),
             FlatBuiltIn::FragDepth => Binding::BuiltIn(BuiltIn::FragDepth),
             FlatBuiltIn::SampleMask => Binding::BuiltIn(BuiltIn::SampleMask),
@@ -1183,6 +1210,21 @@ impl Builder<'_> {
         }
     }
 
+    /// One constant component; an infinite or NaN float is its bits made a float, as the common
+    /// form's literals are finite.
+    fn scalar_constant(&mut self, kind: ScalarKind, bits: u32) -> Handle<Expression> {
+        if kind == ScalarKind::Float && !f32::from_bits(bits).is_finite() {
+            let word = self.add(Expression::Literal(Literal::U32(bits)));
+            self.add(Expression::As {
+                expr: word,
+                kind,
+                convert: None,
+            })
+        } else {
+            self.add(Expression::Literal(Self::literal(kind, bits)))
+        }
+    }
+
     /// The whole value of `def`, its bits in `kind`.
     fn whole(
         &mut self,
@@ -1196,7 +1238,7 @@ impl Builder<'_> {
                 let kind = if is_bool { ScalarKind::Bool } else { kind };
                 let parts: Vec<_> = values[..n as usize]
                     .iter()
-                    .map(|&v| self.add(Expression::Literal(Self::literal(kind, v))))
+                    .map(|&v| self.scalar_constant(kind, v))
                     .collect();
                 if n == 1 {
                     parts[0]
@@ -2723,7 +2765,17 @@ impl Builder<'_> {
                     .ok_or_else(|| unsupported(format_args!("a sampling without a sampler")))?;
                 let (sampler, _) = self.pointer(sampler)?;
                 let (coordinate, array_index) = coordinate(self, Float)?;
+                if result_kind != Float && op != TexOp::Gather {
+                    return Err(unsupported(format_args!(
+                        "sampling an integer texture (the common form only loads and gathers them)"
+                    )));
+                }
                 let depth_ref = scalar_src(self, TexSrc::Comparator, Float)?;
+                if depth_ref.is_some() && matches!(op, TexOp::Bias | TexOp::Gradient) {
+                    return Err(unsupported(format_args!(
+                        "a comparison with a bias or gradients"
+                    )));
+                }
                 let level = match op {
                     TexOp::Gather => SampleLevel::Zero,
                     TexOp::Sample => SampleLevel::Auto,
@@ -2812,8 +2864,18 @@ impl Builder<'_> {
             TexOp::Size | TexOp::Levels => Uint,
             _ => result_kind,
         };
-        let shadow = i.shadow != 0 && op != TexOp::Gather;
-        let e = if !shadow && i.components == 1 && !matches!(op, TexOp::Size | TexOp::Levels) {
+        let shadow = i.shadow != 0
+            && matches!(
+                op,
+                TexOp::Sample | TexOp::Bias | TexOp::Level | TexOp::Gradient
+            );
+        let e = if shadow && i.components > 1 {
+            // A comparison gives one value; NIR's legacy shadow lookups have it in every component.
+            self.add(Expression::Splat {
+                size: vector_size(i.components)?,
+                value: e,
+            })
+        } else if !shadow && i.components == 1 && !matches!(op, TexOp::Size | TexOp::Levels) {
             self.add(Expression::AccessIndex { base: e, index: 0 })
         } else {
             e
