@@ -152,19 +152,31 @@ Done:
   888 s, `c1/mac-layer1.log`): 1,215 forms, 0 failing; 12,150 cases in Chrome, 0 failing; 1,000 words in no
   form illegal as on the CPU; 7 passed.
 
+- The long checks on 7d66c447 (E-param), rented ARM64 machine, 12 jobs, load 20 to 29, 19:34 to 19:59 UTC
+  (`c1/checks.sh`, results in `c1/checks-2/c1`):
+  - Csmith, layer 3's cases 0 to 999 of seed 1 (`WC_PROGRESS_CSMITH=1000`): 852 compared (the count at every
+    system call and at the end the same at none, bounded 256 and a drawn N, full, speed and size, and full
+    twice; results the same as without the count), 148 reached 2^28 events at full and were left out, 0
+    failing (1,018 s).
+  - Layer 2, 10,000 programs, seed 1100, every one on the real CPU: 0 failing (3,466 faulted, 748 left to an
+    address at full; 244 s).
+  - `progress_count`: 5 passed, 1 ignored (the measurement) (249 s).
+  - The first try (E-local, limit 2^32) was stopped after an hour: some Csmith programs at none ran very
+    long below that limit.
+
 Next (in order):
-1. The long checks on E-param, running on the rented ARM64 machine (job of 2026-11-20 ~19:40 UTC, scratch
-   `c1/checks.sh`, log `c1/checks-arm-2.log`; results in the copy's `target/c1`, fetch with
-   `arm-run --fetch translator target/c1 <dir>`): Csmith 1,000 counted (seed 1; programs past 2^28 events
-   at full left out and counted), layer 2 10,000 at seed 1100, the progress tests. Layer 1 on the Mac (seed
-   1200, 1,000 a form, 10 in Chrome; log `c1/mac-layer1.log`), started 11:35 local. Record their results.
-   The first try of the long checks (on E-local, limit 2^32) was stopped after an hour: a few Csmith
-   programs at none ran for very long.
-2. The hash spill on the Graviton: try keeping the count in a fresh local copied from the parameter, or
+1. The whole suite of the four crates on this run's last code (started at the end of the run; log
+   `c1/suite.log`).
+2. More layer 3 programs, so that 1,000 are compared rather than 852 of 1,000 run (`WC_PROGRESS_CSMITH=1200`).
+3. The hash spill on the Graviton: try keeping the count in a fresh local copied from the parameter, or
    adding the event where the check is, and measure; keep whichever is cheapest on all three hosts.
-3. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
+4. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
    hand-count `progress_events.S` or a program of its own; `measure_progress_count` on each host.
-4. The native track's index of forms (brief, 08:40), then the literal fix list.
+5. The native track's index of forms (brief, 08:40), then the literal fix list.
+
+How to run C1's checks: `cargo test --release -p wcontainers-translator-test --test progress_count`
+(knobs at the top of the file); the cost: `WC_BENCH_RUNS=5 cargo test --release -p
+wcontainers-translator-test --test progress_count measure_progress_count -- --ignored --nocapture`.
 
 ## Done
 
