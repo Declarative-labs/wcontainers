@@ -4,16 +4,15 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 9 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's
-and bgfx's GLSL and, since run 9, dEQP's GLES shader library (13,630 programs); candidate B leads
-on every count (The choice, below). Run 9: dEQP's GLES cases in the corpus (route B 8574 match,
-126 differ, all from undefined behaviour on the seeded inputs); route B takes bitfield extract and
-insert, integer sign, frexp, the sample mask input and an exclusive or of booleans; a vertex
-attribute read in part (some columns of a matrix) keeps its columns' places; ES programs are held
-to llvmpipe at full precision. Piglit 1338 match (up from 1313), bgfx 307 (up from 301). The
-alpha_to_one programs of the Vulkan CTS are in the corpus (converted and validated after the two
-steps, held by G10's CTS cases). Still to do (Next): the 15.4 rewrites and robustBufferAccess
-(both blocked on other tracks), Godot, Dolphin and Godot Forward+.
+G8 run 10 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's,
+bgfx's and dEQP's GLSL and, since run 10, Godot's Compatibility renderer (241 variants); candidate
+B leads on every count (The choice, below). Run 10: Godot's Compatibility shaders in the corpus
+(route B 231 match, 2 differ and 1 not compared, all from undefined behaviour on the seeded
+inputs; route A none); a vertex program that writes no position gets one outside every clip
+volume, as the shaders crate gives a Direct3D one (SPIR-V route B 776 match, up from 773; route A
+731, up from 728; piglit 1341, up from 1338). Still to do (Next): the 15.4 rewrites and
+robustBufferAccess (both blocked on other tracks: checked again at the shaders tip 49f22b30 and the
+shared line 3195d728), Godot Forward+ (studied, Next 2), Dolphin.
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -264,6 +263,28 @@ Done:
   instead of comparing it (below). Run 9 (`results/run9/nir-results-r9-a2o.jsonl`): route B
   converts and validates the fragment program after the two steps; the vertex program matches
   lavapipe on both routes; route A fails the fragment program (Zink's compiler and lowered IO).
+- Godot's Compatibility renderer in the corpus (run 10; `tests/corpus/godot.rs`, Godot pinned in
+  `corpus/sources`, only `drivers/gles3/shaders` and its licence fetched): each `.glsl` file with a
+  stage section read as Godot's build reads it (`gles3_builders.py`: `#[modes]` lines `name =
+  defines` with `\n` escapes, `#[specializations]` `NAME = true|false`, `#[vertex]`,
+  `#[fragment]`, `#include` resolved beside the including file once a stage), and each variant
+  made as `ShaderGLES3::_build_variant_code` makes it for desktop OpenGL (`#version 330`,
+  `USE_GLES_OVER_GL`, `USE_HALF2FLOAT`, the set specializations, the general defines, the mode's,
+  external textures as `sampler2D`, multiview emulated, highp defaults; the material's
+  `#GLOBALS`, `#MATERIAL_UNIFORMS` and `#CODE` lines empty, as for Godot's default version). The
+  general defines are those `ShaderGLES3::initialize` gets at Godot's default project settings,
+  in `corpus/godot-defines` with where each value comes from. Items: each mode at the default
+  specializations and each mode with one specialization flipped (`<file>#<MODE>` and
+  `<file>#<MODE>:<SPECIALIZATION>`), 241 in all. Held by `tests/glsl_reference.rs` (a file of two
+  modes, two specializations, an include and material lines: its six items, two programs' text,
+  both compile).
+- A vertex program that writes no position (run 10; `clip_unpositioned` in `bridge.c`, part of
+  `to_common_form`, so both routes): it gets the position (0, 0, 0, -1), outside every clip
+  volume, as the shaders crate's `stage::clip_unpositioned` gives a Direct3D one (WGSL's vertex
+  stage must write a position; OpenGL and Vulkan leave it undefined). On variables or lowered IO,
+  whichever the NIR has. The comparison captures the outputs the program writes, so the added
+  position is not compared. Held by `tests/route.rs` (a GLSL program writing only a varying: its
+  module has a position and validates).
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -408,8 +429,31 @@ at the end, 248 s):
   named), and one cube map array program naga refuses ("Index 2 is out of bounds", to look at); 2
   not compared: a uniform llvmpipe gives no value for (`linkage.test#varying_7`).
 
-The choice, on this corpus (not final: Godot and Dolphin are still to come; the GLSL gives
-the same order: B matches 1338 piglit, 307 bgfx and 8574 dEQP programs, A 3, 9 and 0):
+Run 10, with Godot's Compatibility shaders beside the rest (17,650 items;
+`results/run10/nir-results-r10a.jsonl`; x86-64 machine, 192 children, load 8.4 at the start and
+10.8 at the end, 248 s):
+- SPIR-V corpus: route B 776 match (up from 773), route A 731 (up from 728), 0 differ. The 3 new
+  on each are the vertex programs without a position (HLSL's and Slang's `geometryshader/base.vert`,
+  HLSL's `displacement/base.vert`).
+- piglit: route B 1341 match (up from 1338: `glsl-no-glposition`, `sample-qualifier-vs-fs`,
+  `pervertex-pointsize-vs-out-fs-140`, all without a position), the same 17 differences.
+- bgfx and dEQP: as run 9 (307 and 8,574 match; 3 and 126 differ, same reasons).
+- Godot (241 items): 7 reach no route, refused by Mesa's compiler with its log: 4 with
+  `RENDER_MOTION_VECTORS` set put an attribute at location 16, past the 16 attributes our OpenGL
+  reports (Godot asks for motion vectors only where the driver has more); 3 are combinations Godot
+  never builds (`canvas` `USE_INSTANCING` alone, `scene` depth modes with `USE_ADDITIVE_LIGHTING`).
+  Of the other 234: route B 231 match, 2 differ, 1 not compared; route A converts none (Zink's
+  compiler and GLSL's lowered IO, as with piglit).
+- Godot's 2 differences: `effects/cubemap_filter.glsl` (both modes) indexes a `mat3[6]` with the
+  seeded `face_id`, negative on the seed: undefined. Confirmed: with the index clamped to 0..5 (a
+  probe copy, not kept) both match (`results/run10/nir-results-r10-probe.jsonl`). Left as
+  differences with this reason, as piglit's are. Not compared: `canvas_sdf.glsl#MODE_LOAD_SHRINK`
+  loops `1 << shift` squared times with the seeded `shift` negative (undefined; the reference does
+  not end), the class of `irradiancecube.frag`.
+
+The choice, on this corpus (not final: Godot Forward+ and Dolphin are still to come; the GLSL
+gives the same order: B matches 1341 piglit, 307 bgfx, 8574 dEQP and 231 Godot programs, A 3, 15,
+0 and 0):
 `corpus/choose`, both routes optimised (`--release`), one shader and route at a time in a child of
 its own, on ten cores (`taskset -c 0-9`), x86-64 machine, load 5.5 at the start and 3.2 at the end
 (another track's tests ran beside it), before the Zink patch: A 726 match, B 773 match; on the 725
@@ -420,24 +464,25 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 Next, in this order:
 1. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
    `corpus/cts-programs`' groups, and lower those programs before both runs.
-2. Godot's Compatibility renderer, studied in run 9 (godot master 73ca6be2, sparse): the files
-   are `drivers/gles3/shaders/**/*.glsl` (MIT) with `#[modes]` (one item a mode: `name = #define
-   ...`, `\n` between defines), `#[specializations]` (`NAME = true|false`, a define when set),
-   `#[vertex]` and `#[fragment]` sections, `#include "x"` resolved beside the file at Godot's build
-   (`gles3_builders.py`), and `#GLOBALS`, `#MATERIAL_UNIFORMS`, `#CODE : <stage>` where a
-   material's code goes (empty for the base shaders). `ShaderGLES3::_build_variant_code`
-   (`drivers/gles3/shader_gles3.cpp`) puts before each stage: `#version 330` and `#define
-   USE_GLES_OVER_GL` on desktop OpenGL, the set specializations, the shader's general defines,
-   the mode's defines, `#define samplerExternalOES sampler2D`, the multiview block
-   (`ViewIndex uint(0)`, `MAX_VIEWS 1`) and `precision highp float/int`. The general defines
-   come from the renderer's C++ with project-setting values (`rasterizer_scene_gles3.cpp` 4741-4752:
-   `MAX_LIGHT_DATA_STRUCTS`, `MAX_FORWARD_LIGHTS`, `MAX_DECALS`, ...; canvas 2827-2828; sky, particles,
-   tex_blit): the reader needs Godot's default settings for those. Then
-   Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
+2. Godot Forward+ as SPIR-V, studied in run 10 (same pinned commit; a sparse clone for reading is
+   kept in scratch `downloads/godot`): `servers/rendering/renderer_rd/shaders/**/*.glsl` (105
+   files, about half compute) in the RD format (`glsl_builders.py`'s `include_file_in_rd_header`:
+   `#[compute]`, `#[vertex]`, `#[fragment]` sections, each starting `#version 450`, `#include`
+   as in the GLES3 format, and a `#VERSION_DEFINES` line). `ShaderRD::_build_variant_code`
+   (`shader_rd.cpp`) puts there: a newline, the general defines, the variant's defines, then
+   `#define RENDER_DRIVER_VULKAN`, `#define samplerExternalOES sampler2D`, `#define
+   textureExternalOES texture2D`; material lines as in GLES3. Unlike GLES3, the variants are not in
+   the file: each C++ user passes them to `ShaderRD::initialize(variant_defines, general_defines)`
+   (e.g. `effects/copy_effects.cpp` 89-: `copy_modes.push_back("\n#define MODE_GAUSSIAN_BLUR\n")`
+   and so on; `forward_clustered/scene_shader_forward_clustered.cpp` 695). Godot compiles each
+   stage with glslang to SPIR-V. So: a data file like `godot-defines` listing each RD shader's
+   variants and general defines from its C++ user (one command adding nothing to the repository's
+   build: glslang from nixpkgs, writing `.spv` files into `nir-corpus/godot-forward-plus`, which the
+   corpus run already takes); compile failures from a missing define found that way. Then
+   `corpus/choose` again over everything for the final choice.
+3. Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
    `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names);
    `rgba16f` storage images in the harness (6 bgfx); `pack_*_split` (64-bit, so refused) stays.
-3. The rest of the SPIR-V corpus (Godot Forward+, pinned in `corpus/sources`). Then
-   `corpus/choose` again over all of it for the final choice (dEQP's GLSL is in since run 9).
 4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
    shaders crate (Requests; still not there at the shaders branch's tip 2ddd69b3, run 9: only
@@ -511,6 +556,12 @@ Next, in this order:
   `WC_NIR_DUMP` set; `nix shell nixpkgs#spirv-tools -c spirv-dis` reads the dumps.
 - Run 8 fetched VK-GL-CTS's shader library data (sparse, at 5bb4c7e8) and a sparse bgfx on the
   x86 machine under `/work/probes` to read their formats; both deleted at the end of the run.
+- Kept between runs: a sparse clone of Godot at 73ca6be2 for reading its shader formats and their
+  C++ users (`pyro-parked/wcontainers-scratch/graphics-nir/downloads/godot`, 12 MB, blobs fetched
+  on demand: never `git grep` its history there, which fetches every blob; add paths with `git
+  sparse-checkout add /<path>`).
+- Godot's shaders come with the same `corpus/fetch` and run in the same corpus run (any `.glsl`
+  under `drivers/gles3/shaders`); alone: `WC_NIR_CORPUS=$CARGO_TARGET_DIR/nir-corpus/godot`.
 - Kept between runs: a sparse clone of VK-GL-CTS at 5bb4c7e8 for reading dEQP's formats
   (`pyro-parked/wcontainers-scratch/graphics-nir/downloads/vkglcts`, no build output); on the x86
   machine, the CTS source and build under `/work/target/graphics-nir/vk-gl-cts` (with Mesa and the
@@ -523,6 +574,12 @@ Next, in this order:
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- The whole corpus run (run 10, 17,650 items, 192 children, x86-64 machine, load 8.4 at the start
+  and 10.8 at the end): 248 s. Time per shader to the validated common form at 192 at once on the
+  748 shaders both routes match: A median 421 us, mean 607 us; B median 346 us, mean 406 us (busy
+  machine; the choice's times are the ten-core ones). Godot's 241 items alone: 128 to 134 s (most
+  of it the one program whose reference does not end, held to the 120 s limit).
 
 - `corpus/cts-programs` from nothing (VK-GL-CTS clone, its `fetch_sources.py`, CMake and Ninja
   for `vk-build-programs`, the alpha_to_one programs), x86-64 machine, `-j 96`, load 5.2 at the
@@ -611,6 +668,9 @@ Next, in this order:
   dump test programs, never linked into anything of ours);
   bgfx at e76ecedf (since run 8; BSD-2-Clause, its `LICENSE`; only `examples/runtime/shaders/glsl`
   and the licence are fetched);
+  Godot at 73ca6be2 (since run 10; MIT, its `LICENSE.txt`; only `drivers/gles3/shaders`,
+  `LICENSE.txt` and `COPYRIGHT.txt` are fetched; `COPYRIGHT.txt` names no other licence for those
+  files, and `tonemap_inc.glsl` notes an ACES fit adapted from MJP's BakingLab, MIT);
   Sascha Willems' Vulkan samples at d2d49bf7 (MIT, `LICENSE.md`); piglit at 92510281 (since run 7;
   its `COPYING`: MIT for most of it, with some test shaders under their projects' own licences,
   e.g. GStreamer's in `glslparsertest`; piglit is for testing only, as the routed decision says,
@@ -712,6 +772,16 @@ Next, in this order:
   reason, not hidden: the seed gives indices out of range and negative square roots, which the
   programs' own tests never give.
 
+- Godot's Compatibility shaders are made for desktop OpenGL (`#version 330`, what Godot gives a
+  desktop driver; our OpenGL reports 4.6 compatibility), at Godot's default project settings, with
+  each mode at the default specializations and with each one specialization flipped, not every
+  combination (scene alone has 33 specializations: 2^33 programs, most never built by Godot).
+  Combinations Godot never builds that Mesa refuses are counted as reaching no route with Mesa's
+  log.
+- A vertex program without a position gets (0, 0, 0, -1) in the bridge (NIR), not through the
+  shaders crate's `stage::clip_unpositioned` (crate-private, and on naga); the same rule, the same
+  value. It moves to the shaders crate's entry point when there is one (Requests).
+
 ## Interface changes
 
 None.
@@ -731,6 +801,9 @@ None.
   `helper_binding` (vertex and compute 0, fragment 1, plan 6.4). The shaders crate writes the rule as
   a literal in `lower.rs`; the NIR route defines `wcontainers_nir::bind::stage_set` until the
   interface has it, and will import it then.
+- Shaders track: `stage::clip_unpositioned` as part of that entry point, so the NIR route gives a
+  vertex program without a position the same position from one place (the bridge does it in NIR
+  until then).
 - Shaders track: the draw's bases rewrite (`HelperValue::DrawBase`) as part of the public entry point
   below, for Vulkan programs reading `BaseVertex` or `BaseInstance`.
 - Shaders track: `wcontainers_shaders::capabilities` to add `Capabilities::IMMEDIATES` for a module
@@ -747,6 +820,9 @@ None.
 
 ## Literal check
 
+Run 10: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0). A
+first try found the new reader's comment marker defined beside dEQP's (`COMMENT`, '#'): Godot's
+reader now imports dEQP's. wcontainers-nir still has no baseline lines.
 Run 9: exit 0 with the run's code (x86-64 machine, from a git bundle; marks 0). A first try
 found `"in"`, `"out"` and a decimal point in `tests/corpus/deqp.rs` restating constants of the
 WebGL back end and the check (private there): GLSL's qualifiers are now written through one
