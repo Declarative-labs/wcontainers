@@ -202,10 +202,12 @@ Measured:
   in time on Linux, 0 failing (338 s).
 - The laptop-verdict tests on the i7-8750H (`x6f-l1` there, load 1.1 before it started):
   `hand_cases_do_what_they_must_x86_64`, `bytes_in_no_form_stop_as_on_the_cpu_x86_64` and
-  `sample_matches_the_cpu_in_chrome_x86_64` at seed 9703 pass (25 s for the three); `the_x86_64_reference_refuses_what_linux_refuses` passes. Layer 1
-  translates one instruction at none with no link address, so its translations are those of before;
-  `every_form_matches_the_cpu_x86_64` and `unoffered_forms_are_illegal_x86_64` (an hour each there) were not
-  run again; I expect their X6 verdicts to hold, not measured.
+  `sample_matches_the_cpu_in_chrome_x86_64` at seed 9703 pass (25 s for the three), and
+  `the_x86_64_reference_refuses_what_linux_refuses` passes. Then (`x6f-l1b` there, load 34 to 45 with another
+  track's job beside it) `every_form_matches_the_cpu_x86_64` at 100 a form, seed 9705, 4 at once: pass (778
+  s), and `unoffered_forms_are_illegal_x86_64` at 20 a form, seed 9706: pass (307 s). Fewer cases a form than
+  X6's 1,000 and 100: layer 1 translates one instruction at none with no link address, so its translations are
+  those of before.
 - The suite in pieces at eb5680da, rented x86-64 machine (`suite-x86m/`, one log a piece, load 2 to 13): 124
   passed, 23 ignored, 30 failed, the same 30 as X6 run 3 and for the same reasons: 25 ARM64 tests (no ARM64
   reference there) and the five x86 tests whose verdict is the laptop's. The lint piece's "exit 1" is its
@@ -3431,8 +3433,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 ## Cases actually run
 
 - X6f run 1: layer 2 x86 at 10,000 programs, seed 9701; layer 3 Csmith x86 at 1,000, seed 9702 (rented x86-64
-  machine); layer 1's hand cases, no-form bytes and Chrome sample at seed 9703 (i7-8750H); the benchmark set
-  in 5 pairs; the suite's default counts elsewhere.
+  machine); layer 1's hand cases, no-form bytes and Chrome sample at seed 9703, every form at 100 a form, seed
+  9705, the unoffered forms at 20 a form, seed 9706 (i7-8750H); ARM64's every form at 64 a form, seed 9704,
+  and its Chrome sample (the Mac); the benchmark set in 5 pairs; the suite's default counts elsewhere.
 - X6 run 3: the trap flag's 11 cases at the 4 look-aheads in wasmtime and Chrome; the rare-path C programs at
   -O0 and -O2 in both positions at the 4 look-aheads and 3 mixed seeds in wasmtime and 4 in Chrome (rented
   x86-64 machine); layer 1's hand cases, no-form bytes and Chrome sample at seed 9621 (i7-8750H); ARM64's
