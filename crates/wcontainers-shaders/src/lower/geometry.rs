@@ -105,6 +105,8 @@ const EMIT: &str = "gs_emit";
 const POSITION_SLOT: u32 = 0;
 /// The replay form's outputs.
 const REPLAY_OUTPUTS_TYPE: &str = "ReplayOutputs";
+/// The replay form's output saying whether its slot's primitive is whole (1) or cut (0).
+const REPLAY_WHOLE_MEMBER: &str = "primitive_whole";
 /// The replay form's private variables, in `Replay`'s order.
 const REPLAY_VARIABLES: [&str; 7] = [
     "gs_kept",
@@ -781,7 +783,7 @@ impl Lowering<'_> {
     /// primitive's vertices and `u` the slots of an invocation (`max - c + 1`), in the API instance
     /// its instance numbers. It writes the record slots of the vertex it keeps as flat values from
     /// location 0, with the position outside every clip volume where the slot's primitive is not
-    /// whole. Primitive `p`'s input vertices are records `(instance * primitives + p) * n + k`: the
+    /// whole, then whether it is whole as one flat word (for stream output). Primitive `p`'s input vertices are records `(instance * primitives + p) * n + k`: the
     /// vertex stage is captured in list order.
     fn geometry_replay_entry(
         &mut self,
@@ -798,7 +800,7 @@ impl Lowering<'_> {
             in_slots,
         } = shape;
         let c = self.output_vertices();
-        let units = (max + 1).saturating_sub(c).max(1);
+        let units = stage::replay_slots(max, c);
         let u32_ty = build::scalar(&mut self.module, Scalar::U32);
         let uvec4 = build::vec4(&mut self.module, Scalar::U32);
         let vec4 = build::vec4(&mut self.module, Scalar::F32);
@@ -914,10 +916,24 @@ impl Lowering<'_> {
             components.push(b.field(kept, i));
         }
         members.push(naga::StructMember {
+            name: Some(REPLAY_WHOLE_MEMBER.into()),
+            ty: u32_ty,
+            binding: Some(Binding::Location {
+                location: slots,
+                interpolation: Some(naga::Interpolation::Flat),
+                sampling: None,
+                blend_src: None,
+                per_primitive: false,
+            }),
+            offset: stage::SLOT_BYTES * slots,
+        });
+        let one = b.u32(1);
+        components.push(b.select(whole, one, zero));
+        members.push(naga::StructMember {
             name: Some(stage::POSITION_MEMBER.into()),
             ty: vec4,
             binding: Some(Binding::BuiltIn(BuiltIn::Position { invariant: false })),
-            offset: stage::SLOT_BYTES * slots,
+            offset: stage::SLOT_BYTES * (slots + 1),
         });
         let position = b.field(kept, POSITION_SLOT);
         components.push(b.bitcast(position, ScalarKind::Float));
@@ -926,7 +942,7 @@ impl Lowering<'_> {
                 name: Some(REPLAY_OUTPUTS_TYPE.into()),
                 inner: naga::TypeInner::Struct {
                     members,
-                    span: stage::SLOT_BYTES * (slots + 1),
+                    span: stage::SLOT_BYTES * (slots + 2),
                 },
             },
             Span::UNDEFINED,

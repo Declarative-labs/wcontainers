@@ -27,12 +27,14 @@ use wcontainers_gpu::{
 };
 
 mod helper;
+mod replay;
 mod tessellate;
 pub use helper::{
     DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw,
     StageError, StageIndex, Stages, StreamOutput, StreamOutputEntry, StreamTargets,
     TessellatedDraw,
 };
+pub use replay::{GeometryReplay, ReplayDraw};
 pub use tessellate::{Tessellation, Tessellator};
 
 type Result<T> = core::result::Result<T, ConvertError>;
@@ -105,6 +107,12 @@ pub(crate) fn binding(binding: u32) -> ResourceBinding {
         group: STAGE_SET,
         binding,
     }
+}
+
+/// Output primitive slots of one geometry invocation in the replay form: one from each emitted vertex
+/// that can begin a primitive of `corners` vertices among `max` emitted.
+pub(crate) fn replay_slots(max: u32, corners: u32) -> u32 {
+    (max + 1).saturating_sub(corners).max(1)
 }
 
 /// Words per record of a stage holding `locations` user locations.

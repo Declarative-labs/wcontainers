@@ -91,13 +91,15 @@ pub struct StreamOutput {
     pub strides: [u32; STREAM_BUFFERS],
 }
 
-/// Where one draw's stream output goes.
+/// Where one draw's stream output goes. Its buffers are made with [`BufferUsage::STORAGE`] for
+/// [`Stages`], and with [`BufferUsage::COPY_SRC`] and [`BufferUsage::COPY_DST`] for
+/// [`super::GeometryReplay`].
 #[derive(Debug)]
 pub struct StreamTargets<'a, B: Backend> {
-    /// The bound buffers (made with [`BufferUsage::STORAGE`]), each written from its range's offset
-    /// (aligned as storage bindings are) plus its filled size.
+    /// The bound buffers, each written from its range's offset (aligned as storage bindings are)
+    /// plus its filled size.
     pub buffers: [Option<BufferRange<&'a B::Buffer>>; STREAM_BUFFERS],
-    /// [`STREAM_FILLED_WORDS`] u32 (storage, writable, made with [`BufferUsage::STORAGE`]): the
+    /// [`STREAM_FILLED_WORDS`] u32: the
     /// bytes each buffer is filled to, where the draw appends and which it advances (the front writes
     /// them for Direct3D's explicit offsets and keeps them for `DrawAuto`), then for each stream the
     /// primitives the draw wrote and those it made (Direct3D's stream output statistics); the words
@@ -284,7 +286,7 @@ const LINE_CORNERS_BINDING: u32 = 2;
 const LINE_CORNERS: u32 = 4;
 const LINE_INDICES: u32 = 2 * TRIANGLE_VERTICES;
 /// The vertices of a line.
-const LINE_VERTICES: u32 = 2;
+pub(super) const LINE_VERTICES: u32 = 2;
 /// A draw on the line route of another topology than lines.
 const LINE_TOPOLOGY: &str = "AntialiasedLinesTopology";
 /// The line route run without the viewport's size, or another route with it.
@@ -351,15 +353,16 @@ const CULL_DATA_BINDING: u32 = 1;
 /// Refusals by name, and what is malformed in a call.
 const WITHOUT_WORK: &str = "the stage helper without work";
 const STAGE_INDEX_U8: &str = "StageIndexU8";
-const STAGE_INDIRECT: &str = "StageIndirect";
+pub(super) const STAGE_INDIRECT: &str = "StageIndirect";
 const DOMAIN_SETS: &str = "the sets of the stages after a domain stage";
 const GEOMETRY_PRIMITIVE_ID_AFTER_DOMAIN: &str = "GeometryPrimitiveIdAfterDomain";
 const NOT_A_DOMAIN_SHADER: &str = "not a domain shader";
 const NOT_A_HULL_SHADER: &str = "not a hull shader";
-const NOT_A_GEOMETRY_SHADER: &str = "not a geometry shader";
+pub(super) const NOT_A_GEOMETRY_SHADER: &str = "not a geometry shader";
 const STREAM_OUTPUT_ENTRIES: &str = "StreamOutputEntries";
 /// A filled sizes block without the words of every stream the shader writes.
-const STREAM_FILLED_SIZE: &str = "the filled sizes block shorter than the shader's streams";
+pub(super) const STREAM_FILLED_SIZE: &str =
+    "the filled sizes block shorter than the shader's streams";
 const STREAM_OUTPUT_SYSTEM_VALUE: &str = "StreamOutputSystemValue";
 /// Stream output of a vertex stage drawn with adjacency.
 const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
@@ -373,11 +376,44 @@ const CULL_DISTANCE_STREAM_LOCATIONS: &str = "CullDistanceStreamLocations";
 /// The stream output program and its declaration's elements.
 struct Stream<B: Backend> {
     program: B::Program,
-    /// Each element's stream, and its first words in the program's table ([`StreamEntry`]).
     entries: Vec<(u8, [u32; ENTRY_WORDS])>,
     strides: [u32; STREAM_BUFFERS],
-    /// The stream each buffer takes (stream 0 for a buffer no element names).
     buffer_streams: [u8; STREAM_BUFFERS],
+}
+
+/// A stream output declaration's elements located in the records of the stage whose outputs are
+/// streamed.
+pub(super) struct StreamDeclaration {
+    /// Each element's stream, and its first words in the program's table ([`StreamEntry`]).
+    pub(super) entries: Vec<(u8, [u32; ENTRY_WORDS])>,
+    /// Each buffer's bytes per vertex.
+    pub(super) strides: [u32; STREAM_BUFFERS],
+    /// The stream each buffer takes (stream 0 for a buffer no element names).
+    pub(super) buffer_streams: [u8; STREAM_BUFFERS],
+}
+
+/// An element of a [`StreamDeclaration`]: its buffer, first record word, word count and byte
+/// offset in the buffer's vertex.
+pub(super) struct StreamElement {
+    pub(super) buffer: usize,
+    pub(super) word: u32,
+    pub(super) count: u32,
+    pub(super) offset: u32,
+}
+
+impl StreamDeclaration {
+    /// The elements of stream `stream`.
+    pub(super) fn elements(&self, stream: u8) -> impl Iterator<Item = StreamElement> + '_ {
+        let field = |packed: u32, shift: u32| (packed >> shift) & u32::from(u8::MAX);
+        self.entries.iter().filter(move |(s, _)| *s == stream).map(
+            move |(_, [packed, offset, slot])| StreamElement {
+                buffer: field(*packed, 0) as usize,
+                word: slot * crate::build::VEC4 + field(*packed, PACKED_FIRST_SHIFT),
+                count: field(*packed, PACKED_COUNT_SHIFT),
+                offset: *offset,
+            },
+        )
+    }
 }
 
 /// The stream output program's values (`stream_out.wgsl`'s `Values`), read through its layout.
@@ -900,23 +936,7 @@ impl<B: Backend> Stages<B> {
             (None, None, None, Some(n)) => (extended, n.drawn_slots),
             (None, None, None, None) => return None,
         };
-        let mut desc = VertexLayoutDesc {
-            streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
-            attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
-        };
-        desc.streams[0] = Some(VertexStream {
-            stride: words * WORD,
-            step: StepMode::Vertex,
-        });
-        for slot in 0..=slots {
-            desc.attributes[slot as usize] = Some(VertexAttribute {
-                location: slot,
-                stream: 0,
-                offset: super::SLOT_BYTES * slot,
-                format: VertexFormat::Uint32x4,
-            });
-        }
-        Some(desc)
+        Some(record_layout(words, slots))
     }
 
     /// Records the stages' dispatches for one API draw (outside a pass), and returns what the front
@@ -1827,6 +1847,23 @@ fn stream_parts<B: Backend>(
     outputs: &[StageValue],
     streams: u32,
 ) -> Result<Stream<B>, StageError> {
+    let declared = stream_declaration(so, outputs, streams)?;
+    let shader = backend.create_shader(&super::stream_program()?)?;
+    Ok(Stream {
+        program: backend.create_program(&Program::Compute(&shader))?,
+        entries: declared.entries,
+        strides: declared.strides,
+        buffer_streams: declared.buffer_streams,
+    })
+}
+
+/// `so`'s elements located in the records of the stage whose `outputs` are streamed, `streams` the
+/// streams it writes.
+pub(super) fn stream_declaration(
+    so: &StreamOutput,
+    outputs: &[StageValue],
+    streams: u32,
+) -> Result<StreamDeclaration, StageError> {
     let locations = super::locations(outputs);
     let mut ends = [0u32; STREAM_BUFFERS];
     let mut entries = Vec::new();
@@ -1882,9 +1919,7 @@ fn stream_parts<B: Backend>(
             return Err(StageError::Declaration);
         }
     }
-    let shader = backend.create_shader(&super::stream_program()?)?;
-    Ok(Stream {
-        program: backend.create_program(&Program::Compute(&shader))?,
+    Ok(StreamDeclaration {
         entries,
         strides,
         buffer_streams: buffer_streams.map(|s| s.unwrap_or(0)),
@@ -1914,7 +1949,29 @@ fn index_words<'a, B: Backend>(
     Ok((bytes, (index.offset - start) as u32, range))
 }
 
-fn list_topology(n: u32) -> Topology {
+/// The pass-through's vertex layout: records of `words` words in stream 0, read as `slots + 1`
+/// four-word slots from location 0.
+pub(super) fn record_layout(words: u32, slots: u32) -> VertexLayoutDesc {
+    let mut desc = VertexLayoutDesc {
+        streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+        attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: words * WORD,
+        step: StepMode::Vertex,
+    });
+    for slot in 0..=slots {
+        desc.attributes[slot as usize] = Some(VertexAttribute {
+            location: slot,
+            stream: 0,
+            offset: super::SLOT_BYTES * slot,
+            format: VertexFormat::Uint32x4,
+        });
+    }
+    desc
+}
+
+pub(super) fn list_topology(n: u32) -> Topology {
     match n {
         1 => Topology::PointList,
         LINE_VERTICES => Topology::LineList,
@@ -1922,7 +1979,7 @@ fn list_topology(n: u32) -> Topology {
     }
 }
 
-fn words_as_bytes(words: &[u32]) -> Vec<u8> {
+pub(super) fn words_as_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
