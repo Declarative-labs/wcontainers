@@ -200,6 +200,19 @@ Measured:
   blobs now carry their link address.
 - Layer 3 Csmith x86, seed 9702, 1,000 programs, 48 at once: 881 compared (1 also in Chrome), 119 did not end
   in time on Linux, 0 failing (338 s).
+- The laptop-verdict tests on the i7-8750H (`x6f-l1` there, load 1.1 before it started):
+  `hand_cases_do_what_they_must_x86_64`, `bytes_in_no_form_stop_as_on_the_cpu_x86_64` and
+  `sample_matches_the_cpu_in_chrome_x86_64` at seed 9703 pass (25 s for the three); `the_x86_64_reference_refuses_what_linux_refuses` passes. Layer 1
+  translates one instruction at none with no link address, so its translations are those of before;
+  `every_form_matches_the_cpu_x86_64` and `unoffered_forms_are_illegal_x86_64` (an hour each there) were not
+  run again; I expect their X6 verdicts to hold, not measured.
+- The suite in pieces at eb5680da, rented x86-64 machine (`suite-x86m/`, one log a piece, load 2 to 13): 124
+  passed, 23 ignored, 30 failed, the same 30 as X6 run 3 and for the same reasons: 25 ARM64 tests (no ARM64
+  reference there) and the five x86 tests whose verdict is the laptop's. The lint piece's "exit 1" is its
+  output filter finding no line (fmt and clippy pass in `lint2.log`).
+- ARM64's tests, rented ARM64 machine (`suite-arm.log`, 1,616 s, load 20 to 35): all pass but the two layer 1
+  tests its manual keeps on the Mac; those two on the Mac (`arm64-l1-mac.log`, Docker Desktop, load 2 to 8):
+  every form at 64 a form, seed 9704, and the Chrome sample: pass (233 s).
 - Lint with warnings denied for the four owned crates, the ARM64 crate, `wcontainers-wasmtime` and the browser
   crate for both guests, and `cargo fmt --check`: pass (`lint2.log`).
 - The literal check (the Mac): exits 0; 28 baseline lines went, none added. Baseline lines of this track's
