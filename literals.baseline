@@ -13231,7 +13231,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instru
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::math	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	10
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	3
