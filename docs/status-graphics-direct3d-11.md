@@ -53,6 +53,9 @@ Round 3, run 1 (2026-11-20, about 03:55 to 06:10 Pacific):
   (logs/q1m-*, q1n-*). The WebGL 2
   build's 10_0 cases (logs/q1n-webgllib.log, 06:03): the four `own_level10` cases and the NV12
   case pass; the Direct3D 10 device case fails there as in round 2 run 12 (Known failures).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (19.9 GB, the WebGL 2
+  build inside it) and the x86 machine's /work/target/g-d3d11 were deleted. Nothing was built on
+  the Mac (formatting only); nothing was installed.
 
 ## Wine's Direct3D 11 tests through ours
 
