@@ -111,6 +111,41 @@ K6a (first run): every finding of K5's check is fixed (below), and the Linux Tes
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
 
+## K6c, thirteenth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge. Heavy runs were on the ARM64
+machine; the Mac ran only its own list (below).
+
+Read from the twelfth run:
+- Java start-up and Python's system modules with the 2^39 threshold (ARM machine, job
+  kernel-b/20261119-231023-2692658, 23:10 to 00:36 UTC, load 26 to 33; k6c12/runtimes-attach.log):
+  java 2 passed, layout 1 passed, python 3 passed (4673 s). Clippy clean.
+
+Built:
+- remap_file_pages on a System V segment, as `shm_mmap` behind it: the window's old mappings
+  close first, so a removed segment nothing else shows is destroyed, and the open then fails
+  with EINVAL and leaves the window unmapped. shmctl05 (both groups) looped for ever on ours:
+  its remap never failed once the other thread removed the segment. Now it passes in 41 s
+  (reference 44 s; ARM machine, 00:40 UTC, load 20 to 27), and remap_file_pages01 and 02 pass.
+  guest/remapfile.c remaps a segment while it lives, after its removal while another attach
+  shows it, and when only the window shows it: equal to the reference (sharedmap, ARM machine);
+  sysvshm passes on the Mac. A probe of a remap beside a piece of the same attach showed one
+  more difference, written under Known issues.
+
+Found:
+- aiodio_sparse and dio_sparse (ADSP037, 038, 073, 074: 512 and 1000 readers spinning while one
+  process writes the file with direct I/O) take time in proportion to the readers on the
+  machine's clock and not on the repeatable one. Measured with dio_sparse's ADSP073 arguments and
+  fewer readers (ARM machine, 00:26 to 00:41 UTC, load 20 to 34, 4 side by side): on the
+  machine's clock 16 readers 117 s, 32 200 s, 64 393 s, 128 899 s; on the repeatable clock
+  (a probe build not kept) 16 readers 36 s, 64 41 s. Why, from the code (not measured further):
+  the fair scheduler charges a thread the clock's time its calls take in the kernel; on the
+  machine's clock that is the stand-in's real time (the writer's 100 MB of dirtied pages and
+  127 MiB direct write), on the repeatable one about a microsecond per entry. The writer then
+  waits for every reader to run as long before its next turn, so each reader adds 5 to 8 s
+  (the slopes measured): about an hour for 512 readers and two for 1000. Slow on the test
+  machine, not a different verdict.
+
 ## K6c, twelfth run
 
 origin/phase-1 and origin/phase-1-literals had nothing new to merge. Heavy runs were on the ARM64
@@ -2163,9 +2198,10 @@ Everything a reviewer should know about what is not compared, in one place.
   run -q -p wcontainers-literals -- check` (exit 0); its baseline had 8592 lines at its start
   (708289f3) and may only shrink (8511 at e1d37089, under the seventh rules; 8491 at a67cd731).
   From the twelfth run our side of LTP runs on the machine's clock (the reference's runs on its
-  own) with `LTP_TIMEOUT_MUL` set so the suite's own limits reach the harness's `LTP_LIMIT`
-  (src/ltp.rs `environment_on_ours`): a test slow on the stand-in is then the harness's timeout,
-  not the suite's TBROK. The reference's environment is unchanged. Run it on the ARM64 machine
+  own) with `LTP_TIMEOUT_MUL` set so the suite's own limits end one default limit (30 s) before
+  the harness's `LTP_LIMIT` (src/ltp.rs `environment_on_ours`): a test slow on the stand-in is
+  then the harness's timeout, and one that hangs ends by the suite's own limit as the
+  reference's does. The reference's environment is unchanged. Run it on the ARM64 machine
   only (For the orchestrator). The kernel test crate's tests that differ on the ARM64 machine
   (its manual's list, plus procstatus `limits_match_reference`, sysfs
   `cgroup_matches_reference` and busybox `system`) are settled on the Mac.
@@ -4168,6 +4204,14 @@ gaps (and Departures) so that K6c's gap list could be final. An answer that diff
 Earlier: none open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K6c, thirteenth run: a System V segment's mappings never merge here (memory.rs
+  `merge_around`). Linux keeps them apart too, except that a new mapping beside a piece of the
+  same attach at the following offset extends that piece (`vma_merge_new_range`, the same
+  `vm_file`) without a new `shm_open`: remapping one page of a two-page attach back to its own
+  offset leaves Linux's `shm_nattch` one lower than ours. Each attach would need its own
+  identity (Linux's per-attach file) to model it; seen only by a probe written for it, which
+  guest/remapfile.c does not keep.
 
 - K6c, eighth run: wcontainers-wasmtime tests/surface.rs `the_guest_sees_the_honoured_values`
   (the runtime track's) fails here: the kernel's own Docker masks show six mounts the test does
