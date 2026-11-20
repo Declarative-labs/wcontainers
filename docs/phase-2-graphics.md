@@ -881,7 +881,10 @@ answer from), `Features` (bits), `Limits` (numbers) and `FormatCaps` (per format
 blend, resolve, storage read and write, storage atomics, vertex, depth-stencil, copy out, present, and
 the set of sample counts a texture of that format may have, so a native back end can say a format takes
 4 samples but not 8 where others take 8, as Direct3D's `CheckMultisampleQualityLevels` and Vulkan's
-sample count flags ask per format and count). A format a back end does not hold has no bits, and the front takes the route 4.12 names for
+sample count flags ask per format and count). A format with any use is served in every texture
+dimension it can have (1D where its blocks are one texel high, 3D but for depth and stencil), held
+decoded or converted where the back end's API lacks that dimension for it, as Direct3D's format tables
+require. A format a back end does not hold has no bits, and the front takes the route 4.12 names for
 it. The bits are in the
 crate; the values each back end declares (expected, to be confirmed by each back end's milestone against
 the adapter):
