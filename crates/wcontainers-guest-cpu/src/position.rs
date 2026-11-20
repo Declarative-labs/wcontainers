@@ -25,7 +25,7 @@ pub enum InsideCall {
     Misaligned,
     /// A jump through a register to an address no piece can be at: the guest lands there and faults.
     Unreachable,
-    /// A return's first miss: the inside makes the target its last target, then the return goes on.
+    /// A jump's first miss: the inside makes the target its last target, then the jump goes on.
     LastTarget,
 }
 
