@@ -6,8 +6,18 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use build_rs::{input, output};
 use cargo_lock::Lockfile;
 use cargo_metadata::{DependencyKind, MetadataCommand, Package};
+
+/// The variable the build identity is handed to the library in.
+const TRANSLATOR_BUILD_VARIABLE: &str = "WCONTAINERS_TRANSLATOR_BUILD";
+
+/// The translator's package.
+const TRANSLATOR: &str = "wcontainers-translator";
+
+/// The guest interface's package, which every guest is built on.
+const GUEST_INTERFACE: &str = "wcontainers-guest-cpu";
 
 /// A package's directories that hold only targets never built into a dependent, and build output.
 const NOT_BUILT_INTO_DEPENDENTS: [&str; 4] = ["tests", "benches", "examples", "target"];
@@ -35,16 +45,15 @@ fn builds_on(package: &Package, name: &str) -> bool {
 }
 
 fn main() {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"));
     let metadata = MetadataCommand::new()
-        .manifest_path(manifest.join("Cargo.toml"))
+        .manifest_path(input::cargo_manifest_path())
         .no_deps()
         .exec()
         .expect("cargo metadata");
     let root = metadata.workspace_root.as_std_path();
     let lock_path = root.join("Cargo.lock");
     // A crate added to the workspace or removed from it changes the lock.
-    println!("cargo:rerun-if-changed={}", lock_path.display());
+    output::rerun_if_changed(&lock_path);
     let lock = Lockfile::load(&lock_path).expect("the lock file");
     let members: HashMap<&str, &Package> = metadata
         .workspace_packages()
@@ -52,7 +61,7 @@ fn main() {
         .map(|p| (p.name.as_str(), p))
         .collect();
     for member in members.values() {
-        println!("cargo:rerun-if-changed={}", member.manifest_path);
+        output::rerun_if_changed(&member.manifest_path);
     }
     let local = |name: &str| {
         lock.packages
@@ -65,9 +74,8 @@ fn main() {
     let mut work: Vec<usize> = members
         .values()
         .filter(|p| {
-            p.name.as_str() == "wcontainers-translator"
-                || (builds_on(p, "wcontainers-guest-cpu")
-                    && !builds_on(p, "wcontainers-translator"))
+            p.name.as_str() == TRANSLATOR
+                || (builds_on(p, GUEST_INTERFACE) && !builds_on(p, TRANSLATOR))
         })
         .map(|p| local(p.name.as_str()))
         .collect();
@@ -126,7 +134,7 @@ fn main() {
             if NOT_BUILT_INTO_DEPENDENTS.contains(&entry.file_name().to_string_lossy().as_ref()) {
                 continue;
             }
-            println!("cargo:rerun-if-changed={}", path.display());
+            output::rerun_if_changed(&path);
             if path.is_dir() {
                 files(&path, &mut paths);
             } else {
@@ -140,8 +148,8 @@ fn main() {
             hasher.update(&std::fs::read(&path).expect("a package's file"));
         }
     }
-    println!(
-        "cargo:rustc-env=WCONTAINERS_TRANSLATOR_BUILD={}",
-        hasher.finalize().to_hex()
+    output::rustc_env(
+        TRANSLATOR_BUILD_VARIABLE,
+        hasher.finalize().to_hex().as_str(),
     );
 }

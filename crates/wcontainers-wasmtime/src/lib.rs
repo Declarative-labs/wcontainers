@@ -7,11 +7,12 @@ pub mod starts;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
+use std::io::Write;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -118,9 +119,6 @@ fn output_form() -> String {
         u32::BITS
     )
 }
-
-/// The middle of a cache file's name while it is being written.
-const PARTIAL: &str = "partial";
 
 /// The first bytes of a cache file.
 const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
@@ -269,17 +267,12 @@ impl<G: Guest> Compiler<G> {
             bytes.extend((serialised.len() as u64).to_le_bytes());
             bytes.extend(serialised);
         }
-        // A name no other writer uses, in this process or another sharing the directory.
-        static WRITES: AtomicU64 = AtomicU64::new(0);
-        let write = WRITES.fetch_add(1, Ordering::Relaxed);
-        let partial = file.with_extension(format!("{PARTIAL}-{}-{write}", std::process::id()));
-        let written = std::fs::create_dir_all(file.parent().expect("a directory"))
-            .and_then(|()| std::fs::write(&partial, &bytes))
-            .and_then(|()| std::fs::rename(&partial, file));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&partial);
-        }
-        written
+        let directory = file.parent().expect("a directory");
+        std::fs::create_dir_all(directory)?;
+        let mut partial = tempfile::NamedTempFile::new_in(directory)?;
+        partial.write_all(&bytes)?;
+        partial.persist(file)?;
+        Ok(())
     }
 
     /// The compiled translation of a blob from its starts, from the cache or made now, where it came

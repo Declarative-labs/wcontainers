@@ -7451,16 +7451,7 @@ code	crates/wcontainers-translator/src/thread.rs	int	thread_module	3
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
 code	crates/wcontainers-translator/src/thread.rs	int	thread_module	4
-code	crates/wcontainers-wasmtime/build.rs	str	main	"CARGO_MANIFEST_DIR"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"Cargo.lock"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"Cargo.toml"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"cargo:rerun-if-changed={}"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"cargo:rerun-if-changed={}"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"cargo:rerun-if-changed={}"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"cargo:rustc-env=WCONTAINERS_TRANSLATOR_BUILD={}"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-guest-cpu"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
-code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	63
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	64
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	3
@@ -7468,7 +7459,6 @@ code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	4
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	5
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	6
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	7
-code	crates/wcontainers-wasmtime/src/lib.rs	str	Compiler<G>::store	"{PARTIAL}-{}-{write}"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	<HostMemory as LinearMemory>::grow_to	"a memory grows only inside its reservation"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"mach_vm_copy"
 policy	generated	crates/wcontainers-kernel/src/linux/auxvec.rs

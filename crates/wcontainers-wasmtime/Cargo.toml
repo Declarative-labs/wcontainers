@@ -24,6 +24,8 @@ zerocopy.workspace = true
 # The demonstration program's guest and its arguments.
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
 pico-args = "0.5.0"
+# Writes a cache file whole under a name of its own, then puts it in place.
+tempfile = "3.27.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The fork copy: the system's own exact copy of a range of pages.
@@ -31,6 +33,8 @@ mach2 = "0.6.0"
 
 [build-dependencies]
 blake3 = "1"
+# Cargo's own reading of a build script's input and writing of its instructions.
+build-rs = "0.3.6"
 # The workspace's crates and the lock file, to find the guests and what they are built from.
 cargo_metadata = "0.23.1"
 cargo-lock = "11.1.0"

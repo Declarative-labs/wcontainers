@@ -2008,6 +2008,11 @@ array of slots in microseconds.
 
 ## Dependencies
 
+Added in J5 run 8 to wcontainers-wasmtime (licences read from the registry's manifests on 2026-11-20):
+build-rs 0.3.6 (MIT OR Apache-2.0; the cargo team's), a build dependency only, for reading the build script's
+input and writing its instructions (it brings unicode-ident, already in the lock); tempfile 3.27.0 (MIT OR
+Apache-2.0, already in the lock with fastrand, once_cell, rustix and getrandom) for writing a cache file whole.
+
 J5 run 3 added none.
 
 Added in J5 run 1 to wcontainers-runtime (licences read from the registry's manifests on 2026-11-18), for the

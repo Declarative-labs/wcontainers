@@ -171,6 +171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-rs"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f33498dde6d47bf09454b1c7221c888ddb2a59000b3b45fa155627d98fcb646e"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2464,6 +2473,7 @@ name = "wcontainers-wasmtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "build-rs",
  "cargo-lock",
  "cargo_metadata",
  "gimli 0.34.0",
@@ -2475,6 +2485,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "tar",
+ "tempfile",
  "wasm-encoder 0.263.0",
  "wasmtime",
  "wcontainers-abi",
