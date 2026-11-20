@@ -2,7 +2,7 @@
 //! shader through the routes.
 
 use crate::bgfx;
-use crate::compare::{self, CompareOptions, DEFAULT_SEED, SEED, Verdict};
+use crate::compare::{self, CompareOptions, DEFAULT_SEED, INPUT_SETS, SEED, Verdict};
 use crate::deqp;
 use crate::entry;
 use crate::glsl;
@@ -28,11 +28,14 @@ const SPIRV_EXTENSION: &str = "spv";
 /// How long one shader's child may run before it is stopped and counted as hung.
 const CHILD_TIME_LIMIT: Duration = Duration::from_secs(120);
 const CHILD_POLL: Duration = Duration::from_millis(20);
-/// The input seeds a route is tried on while the reference does not end on them (a loop bound or
-/// step from the seeded inputs that never ends the loop): the run's seed, then the next ones.
+/// The input seeds a route is tried on while the reference gives no result on them (a loop bound
+/// or step from the seeded inputs that never ends the loop, or an access the inputs send out of
+/// range that crashes the driver): the run's seed, then the next ones.
 const REFERENCE_SEEDS: u64 = 4;
 /// Why a child stopped in the comparison gave no verdict: the reference had not ended.
 const REFERENCE_DID_NOT_END: &str = "the reference did not end";
+/// Why a child that died in the comparison gave no verdict: the reference crashed.
+const REFERENCE_CRASHED: &str = "the reference crashed";
 /// How many of a crashed child's last lines of errors its reason keeps.
 const CRASH_LINES: usize = 3;
 
@@ -52,7 +55,6 @@ const CORPUS: &str = "WC_NIR_CORPUS";
 const RESULTS: &str = "WC_NIR_RESULTS";
 const SHADERS: &str = "WC_NIR_SHADERS";
 const JOBS: &str = "WC_NIR_JOBS";
-const INPUT_SETS: &str = "WC_NIR_INPUT_SETS";
 /// The input sets of each run when `WC_NIR_INPUT_SETS` is unset.
 const DEFAULT_INPUT_SETS: u32 = 64;
 /// A folder for each route's intermediate form, for diagnosis.
@@ -198,7 +200,7 @@ pub fn parent(options: &RunOptions) {
                     for route in ROUTES {
                         let mut one = run_child(&exe, file, route, options.seed);
                         for retry in 1..REFERENCE_SEEDS {
-                            if !reference_did_not_end(&one) {
+                            if !reference_gave_no_result(&one) {
                                 break;
                             }
                             let seed = options.seed.wrapping_add(retry);
@@ -237,10 +239,10 @@ pub fn parent(options: &RunOptions) {
     summary(&results);
 }
 
-fn reference_did_not_end(result: &ShaderResult) -> bool {
+fn reference_gave_no_result(result: &ShaderResult) -> bool {
     result.routes.iter().any(|r| {
         matches!(&r.outcome, Outcome::Compared(Verdict::NotRun(why))
-            if why.contains(REFERENCE_DID_NOT_END))
+            if why.contains(REFERENCE_DID_NOT_END) || why.contains(REFERENCE_CRASHED))
     })
 }
 
@@ -313,17 +315,23 @@ fn run_child(exe: &Path, file: &Path, route: &str, seed: u64) -> ShaderResult {
             lines[lines.len().saturating_sub(CRASH_LINES)..].join(" | ")
         )
     };
+    // Killed by a signal, not ended by a panic of the harness.
+    let signalled = !hung && status.code().is_none();
     match last {
         Some(mut provisional) => {
             for r in &mut provisional.routes {
                 if r.outcome == Outcome::Failed(IN_ROUTE.into()) {
                     r.outcome = Outcome::Failed(why.clone());
                 } else if r.outcome == Outcome::Compared(Verdict::NotRun(IN_COMPARISON.into())) {
-                    let why = format!("{IN_COMPARISON}: {why}");
-                    r.outcome = Outcome::Compared(if hung && reference_ended {
-                        Verdict::Differs(why)
+                    r.outcome = Outcome::Compared(if reference_ended && (hung || signalled) {
+                        // The route's module hung or crashed the driver the reference ran on.
+                        Verdict::Differs(format!("{IN_COMPARISON}: {why}"))
+                    } else if signalled {
+                        Verdict::NotRun(format!(
+                            "{IN_COMPARISON}: {REFERENCE_CRASHED} on seed {seed}: {why}"
+                        ))
                     } else {
-                        Verdict::NotRun(why)
+                        Verdict::NotRun(format!("{IN_COMPARISON}: {why}"))
                     });
                 }
             }

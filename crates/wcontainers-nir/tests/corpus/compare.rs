@@ -19,6 +19,8 @@ use wcontainers_nir::CUBE_FACES;
 /// unset.
 pub const SEED: &str = "WC_NIR_SEED";
 pub const DEFAULT_SEED: u64 = 0x5eed;
+/// The knob of how many input sets each comparison runs.
+pub const INPUT_SETS: &str = "WC_NIR_INPUT_SETS";
 /// The entry point of the vertex program made to feed a fragment program.
 pub const FEEDER_ENTRY: &str = "feed";
 /// Floats filled in are in [-FLOAT_RANGE, FLOAT_RANGE); integers in [-INTEGER_RANGE,
@@ -949,8 +951,13 @@ pub fn compare(
                 Err(v) => return v,
             };
             let (ra, rb) = (record(&reference_vars), record(&route_vars));
-            for &(slot, at, ty) in &ra {
+            for (&(slot, at, ty), var) in ra.iter().zip(&reference_vars) {
                 let Some(&(_, bt, _)) = rb.iter().find(|r| r.0 == slot) else {
+                    if interface::reaches(original, var) {
+                        found.push(format!(
+                            "{slot:?}: an output the program writes, missing from the route's module"
+                        ));
+                    }
                     continue;
                 };
                 for vertex in 0..sets {

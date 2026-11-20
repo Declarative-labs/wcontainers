@@ -318,6 +318,28 @@ pub fn captured(outputs: &[Var]) -> Vec<&Var> {
         .collect()
 }
 
+/// Whether the program can write `var`: it stores to it, copies into it, names it at the base of
+/// an access chain (for a block member, a chain whose first index is that member) or passes it to
+/// a function. An output it never reaches holds no defined value.
+pub fn reaches(words: &[u32], var: &Var) -> bool {
+    let d = declarations(words);
+    let names_member = |index: Option<&u32>| match var.member {
+        None => true,
+        Some((_, member)) => index.and_then(|i| d.constants.get(i)) == Some(&member),
+    };
+    instructions(words).any(|(opcode, inst)| match (Op::from_u32(opcode), inst) {
+        (Some(Op::Store | Op::CopyMemory), &[_, target, ..]) => {
+            target == var.id && var.member.is_none()
+        }
+        (
+            Some(Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain),
+            &[_, _, _, base, ref indexes @ ..],
+        ) => base == var.id && names_member(indexes.first()),
+        (Some(Op::FunctionCall), [_, _, _, _, arguments @ ..]) => arguments.contains(&var.id),
+        _ => false,
+    })
+}
+
 fn instruction(op: Op, operands: &[u32]) -> Vec<u32> {
     let count = u32::try_from(operands.len() + 1).expect("a short instruction");
     let mut inst = vec![(count << WORD_COUNT_SHIFT) | op as u32];
