@@ -91,6 +91,7 @@ pub struct Omit {
     pub depth: bool,
 }
 
+#[cfg(feature = "measure")]
 impl Omit {
     /// The checks left out as one bit each, in the order of the fields from the lowest bit, as a caller
     /// outside Rust passes them.

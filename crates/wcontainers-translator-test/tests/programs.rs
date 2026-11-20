@@ -612,25 +612,40 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
 }
 
 /// A jump through a register to outside its function (past the next certain start of a function: one given or
-/// a direct call's target), or to its own start, is a tail call, no slow path; one to inside its function that no table explains, in its own part or in another of a function cut in parts,
-/// is, counted each time it runs; a switch whose table's address its function keeps in its frame is a table
-/// explained. The program makes `ROUNDS` of each, for speed and for size.
+/// a direct call's target), or to its own start, is a tail call, no slow path; one to inside its function that
+/// no table explains, in its own part or in another of a function cut in parts, is, counted each time it runs;
+/// a switch whose table's address its function keeps in its frame is a table explained. The program makes
+/// `ROUNDS` of each, for speed and for size.
 #[test]
 fn only_jumps_inside_their_function_are_unrecognised() {
+    register_jumps_counted(&[]);
+}
+
+/// [`only_jumps_inside_their_function_are_unrecognised`] with the tail call's target right after its caller,
+/// named only by data.
+#[test]
+#[ignore = "known failure: a tail call to a function only data names, before the next certain start, is counted as a jump inside its caller"]
+fn a_tail_call_to_a_function_only_data_names_is_not_unrecognised() {
+    register_jumps_counted(&["STEP_AFTER_CALLER"]);
+}
+
+/// Runs `register_jumps` with `layout` among its defines and checks only its jumps inside are counted.
+fn register_jumps_counted(layout: &[&str]) {
     const ROUNDS: u64 = 1200;
     const JUMPS_INSIDE: u64 = 2;
     // The part jumped into is the last of a function cut in two.
     let far_after = FUNCTION_BLOCKS / 8;
-    let blob = build_with(
-        "register_jumps",
-        "-O0",
-        Library::None,
-        &[
-            &format!("ROUNDS={ROUNDS}"),
-            &format!("FAR_BEFORE={FUNCTION_BLOCKS}"),
-            &format!("FAR_AFTER={far_after}"),
-        ],
-    );
+    let sizes = [
+        format!("ROUNDS={ROUNDS}"),
+        format!("FAR_BEFORE={FUNCTION_BLOCKS}"),
+        format!("FAR_AFTER={far_after}"),
+    ];
+    let defines: Vec<&str> = sizes
+        .iter()
+        .map(String::as_str)
+        .chain(layout.iter().copied())
+        .collect();
+    let blob = build_with("register_jumps", "-O0", Library::None, &defines);
     let theirs = native(&blob);
     for optimise in [Optimise::Speed, Optimise::Size] {
         let (ours, machine, _) = translated_for(&blob, (LookAhead::Full, optimise));
