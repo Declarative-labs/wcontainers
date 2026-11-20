@@ -11,6 +11,7 @@ const COMPILE_COMMANDS: &str = "compile_commands.json";
 /// How GCC and Clang, and the Visual C++ compiler, spell a define and the language standard.
 const DEFINE_FLAGS: &[&str] = &["-D", "/D"];
 const STANDARD_FLAGS: &[&str] = &["-std=", "/std:"];
+const QUOTE: char = '"';
 
 /// The source folder Meson made the build from.
 pub fn source_folder(build: &Path) -> PathBuf {
@@ -46,6 +47,8 @@ pub fn mesa_flags(build: &Path, file: &str) -> Vec<String> {
     command
         .command
         .split_whitespace()
+        // Meson quotes every argument of a Visual C++ command.
+        .map(|a| a.trim_matches(QUOTE))
         .filter(|a| {
             DEFINE_FLAGS
                 .iter()

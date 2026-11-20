@@ -81,6 +81,9 @@ if ($flexOutputs) {
     & ninja -C $build -j 1 @($flexOutputs | ForEach-Object { $_ -replace '\$(.)', '$1' }); Run 'flex'
 }
 
+# Gallium's library first, for the headers Mesa generates that the driver's bridge includes.
+& meson compile -C $build -j $Jobs gallium; Run 'meson compile gallium'
+
 # Our driver, a static library built against this build's headers and compile flags for the static
 # Visual C++ runtime Mesa uses, then linked into libgallium_wgl.dll with the native libraries rustc
 # names for it (printed only when rustc runs, so kept between runs).
