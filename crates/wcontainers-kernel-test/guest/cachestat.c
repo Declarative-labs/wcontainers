@@ -1,4 +1,4 @@
-// cachestat on tmpfs files, memory files, devices, /proc and directories. With the argument "mapped",
+// cachestat on tmpfs files, memory files, huge page memory files, devices, /proc and directories. With the argument "mapped",
 // a file read through a private mapping, whose faults bring in pages.
 
 #define _GNU_SOURCE
@@ -70,6 +70,11 @@ int main(int argc, char **argv) {
     int memory = memfd_create("m", 0);
     write(memory, bytes, 5000);
     show("memory file", memory, 0, 0);
+    int huge = memfd_create("h", MFD_HUGETLB);
+    printf("huge page memory file %d\n", huge >= 0);
+    show("huge page memory file", huge, 0, 0);
+    printf("huge, bad out: %ld errno %d\n",
+           syscall(SYS_cachestat, huge, &(struct range){0, 0}, (void *)8, 0), errno);
     show("pipe", 1, 0, 0);
     struct range range = {0, 0};
     struct counts counts;

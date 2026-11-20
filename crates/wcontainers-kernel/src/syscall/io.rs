@@ -3600,8 +3600,12 @@ pub(super) fn cachestat(
     }
     let range: cachestat_range = guest(kernel, cx, tid).read_value(range)?;
     let (offset, length) = (range.off, range.len);
-    // Linux's `can_do_cachestat`: opened for writing, the owner, or allowed to write.
     let node = file.borrow().node.clone();
+    // Huge page files are not answered (`is_file_hugepages`).
+    if matches!(node.borrow().fs.kind, crate::fs::Kind::Hugetlbfs { .. }) {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    // Linux's `can_do_cachestat`: opened for writing, the owner, or allowed to write.
     let allowed = file.borrow().writable() || {
         let credentials = kernel.credentials(tid);
         let inode = node.borrow();
