@@ -735,6 +735,17 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 2, tests: the suspend test passed on the ARM machine (3 seeds, then 6; with four
+  threads and 24 orders, 3 seeds, 48 runs, at cab6b0bf). Clippy with warnings denied over the
+  three crates and fmt passed on the x86 machine; the literal check passes on this Mac (exit 0,
+  scratch streams/literals-s3r2.log). Whole suite on the ARM machine at 4d2fb664's tree (the
+  suspend test then with three threads; the command in "How to run" with `-j $ARM_JOBS` and 12
+  test threads; s3b/suite-arm.log, s3b/fetched/s3b-suite.log, 09:00 to 09:36 UTC, load 10 to
+  16): 584 passed, 27 failed, 6 ignored; the 27 are by name run 1's 28 less
+  `splice_holds_the_pipe`, which passed there this time (s3b/failed-arm.txt against
+  s3a/failed-arm.txt). The 20 binaries kept on the Mac (s3b/mac-only.log, this Mac, 01:00 to
+  01:02 Pacific, load 5 to 10): 94 passed, none failed. Combined: 617 tests, 611 passed, 6
+  ignored, none failed.
 - S3 run 2, speed with no hook implemented (ARM machine, scratch streams/s3b/speed.log, load 9.5
   to 12.7, about 08:54 to 09:00 UTC): the memory test binary of cefb66ab (S2 as merged, an
   archive of it at scratch streams/base-s2) and of this run's tree (8a745148 with its docs),
