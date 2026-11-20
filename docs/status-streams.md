@@ -968,6 +968,27 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 10, speed with no hook implemented, against S2 as merged (ARM machine; scratch
+  streams/run10/speed.sh, speed.log, then speed2.sh, speed2.log on the same binaries): the memory
+  test binary of cefb66ab and of 6e50fe49, each built alone under its own name with a 2 MB guest
+  folder, 3 test threads, run alternately; two batches of 21 rounds, round 0 of each a warm-up,
+  20:03 to 20:25 UTC, load 5.7 to 26.9. User CPU, batch 1: base 12.061 11.809 11.793 11.832 11.846
+  11.904 11.772 11.923 11.899 11.830 11.928 11.816 11.937 11.840 11.881 11.822 11.938 11.804
+  11.842 11.799 (mean 11.864, median 11.841); head 12.814 11.799 11.915 11.795 11.806 11.795
+  11.926 11.913 11.794 12.810 11.777 11.797 11.925 11.791 11.808 11.933 11.943 13.096 11.798
+  11.789 (mean 12.001, median 11.807), faster in 13 of 20. Batch 2: base 11.853 11.794 11.795
+  11.830 11.844 11.792 11.809 11.938 11.791 11.790 11.875 11.794 11.865 11.869 11.946 11.864
+  11.808 11.847 11.816 11.800 (mean 11.836, median 11.823); head 11.786 11.766 13.100 11.770
+  11.783 11.922 11.798 13.084 11.893 11.811 11.796 11.925 11.865 11.785 11.777 11.899 11.784
+  11.860 11.883 13.095 (mean 12.019, median 11.835), faster in 9 of 20. Medians -0.3 % and +0.1 %:
+  the typical round is unchanged. But the head binary ran in a slow mode (about 1.0 to 1.3 s more)
+  in 6 of 40 rounds and the base in none (its highest 12.061), which puts the means +1.2 % and
+  +1.6 %. Not explained. The slow rounds came at loads 13.8 to 23.6, not the highest of the batch.
+  The code this test runs changed only in `guest` (one map lookup fewer) and in futex keys
+  (`key_in`); the kernel crate's size changed, which moves everything linked after it. Earlier
+  comparisons had such rounds on both sides (the fourth check's 12.267 and 12.245 on the base,
+  run 6's 12.794 before and 13.027 after). Not shown to be caused by this run's code, and not
+  ruled out: a question for the next check.
 - S3 run 10, tests. ARM machine (scratch streams/run10): fmt and clippy with warnings denied over
   the three crates passed; the six new tests pass at 3 seeds and all six fail with the kernel
   changes stashed (negative.log); away (12, the known failure ignored), edges (4), embedder (35),
