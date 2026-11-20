@@ -252,7 +252,7 @@ rewritten) would change only that function (brief).
   was taken out again. A call builds x30 in place and leaves through its target's exit, and a return is the
   jump ending in `br t`, not `ret t` (a `ret` with no stub is foreseen from a return-address stack holding none
   of the guest's: fib went from +544% to +102% cycles and calls.c from +481% to +68% when it became a `br`).
-- **A return's or call's last target, ARM64** (N4 run 12, a departure: run 7's option (b)). A `ret` through a register
+- **A return's or call's last target, ARM64** (N4 runs 12 and 13; built, and confirmed by the orchestrator on 2026-11-20). A `ret` through a register
   that is not withheld starts with its last target compared in line: three moves of a guest address into t
   (`movz`, then a slot's two `movk`s), `eor t, t, xN`, `cbnz t` to a call into the inside, and a direct `b`,
   which is the hit's way; the jump through the slot above follows the call and is the miss's way
@@ -276,6 +276,32 @@ rewritten) would change only that function (brief).
   after it changed. Measured in alternating pairs against the build with returns only, 6 pairs, load 15 to 20
   (n4r14/ab-blr.log): cycles sort -22.2% (its comparison callback), fib, calls.c, interpret and hash within
   2.3%, instructions sort -7.0%, the others within 0.1%.
+- **A jump table's known targets, ARM64** (N4 run 15, the jump study's option (b), ruled by the orchestrator on
+  2026-11-20). A `br xN` whose straight-line part shows xN = xB + xE (shifted left, or extended), with xB a
+  constant guest address (`adr`, or `adrp` and `add`) and xE last written by a one-byte load into xE itself
+  (not a base the load writes back), nothing after the add writing xE, and xN, xE not withheld and not the same
+  register, can only go to the base plus one of 256 values whatever memory holds. It becomes `adr t, table;
+  add t, t, xE, lsl #2; br t`, the `br` its commit point (after it the guest is at the address xN holds), then a
+  table of 256 direct branches, one for each value of the byte, then the jump through the slot above. Entry k
+  is an exit to the base plus k (sign-extended from the byte for `sxtb`) shifted as the add shifts; the inside
+  links it while a piece is loaded there and unlinks it when that piece is dropped, as every direct exit, and
+  leaves an entry whose target is at or above the ceiling or not aligned on its branch to the jump through the
+  slot, which faults as the jump would. Nothing is read from memory, only branches the translator wrote are
+  taken, and what the guest's table holds cannot matter: nothing the guest can observe changes, and the count
+  is the same (the jump is one event wherever it goes). The table is the translation's `BranchTable` record,
+  carried through the link and moved with load-time addresses. Size: 259 words more than the jump alone
+  (1036 bytes) per site. Static count over the files' text, every `br` with the straight-line part before it
+  (n4r16/sites.log): bench.c 1 of 1 (interpret's dispatch), calls.c none, busybox 0 of 438 (379 are PLT stubs;
+  its switches are GCC's two-byte `ldrh` and `sxth` form, 35, and the byte form whose add writes the index
+  register, 16), musl's loader 0 of 42. Not sized by the guest's bound check: that check bounds which entry
+  of the guest's table is loaded, not the byte loaded, so a table of fewer entries indexed by the byte would let
+  a table holding a larger byte branch past ours; a table indexed by the bounded case number would need each
+  entry to compare the loaded byte (two more instructions on the hit's way), which trades speed for size and
+  is the orchestrator's to rule on. Why: on this M5 a jump through a register costs about twice as much when it
+  lands in a different 8 GiB region (aligned to 2^33) from where it was made, and the jump through a slot does
+  that twice, from the code area to the mirror and back (the jump study, reproduced by its re-measurement:
+  interpret 2.006 to 1.059 times plain with the code placed near the slots, a placement that is unsound;
+  logs in scratch native/jump-study and jump-study-check). The table's branches stay in the code area.
 - **The mirror's reach.** The mirror covers guest addresses below 2^45 (32 TiB), so the native ARM64 back
   end's address ceiling (`Cpu::address_space`, abi/cpu.rs:34-35) is 2^45, under the container's width of 2^48,
   as the brief's ruling on ceilings allows (section 6.2, K2; decision 9).
@@ -907,7 +933,7 @@ rule per placement, not from the native emitter's own output: no whole program r
 N3, which measures it again. What is left is mostly two workloads (pooled, start of the run: search +58%, interpret +25%) whose short
 loops carry two counted events per pass, so two adds on the count register's chain of dependent adds bound
 the loop.
-Counted ahead across parts (N4 run 9, a departure: the brief's freedom is within one straight-line run).
+Counted ahead across parts (N4 run 9; built, and confirmed by the orchestrator on 2026-11-20).
 Inside a piece, a part entered only from one part that goes on only to it has its events counted by that
 part's add (`counted_ahead` in the native emitter), so a loop of parts adds once a turn; the position map
 gives every host instruction its lead as before, a part is entered with the lead its one predecessor leaves,

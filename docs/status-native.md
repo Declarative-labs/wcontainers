@@ -69,7 +69,9 @@ the same last target (sort -22% cycles): the compute part is +27.94% [+27.41 .. 
 the system-call part passes at 89.5 ns (below, "N4 run 13"). Run 14 itemized interpret's extra instructions per
 bytecode operation and measured decision 14's page test again (left out, interpret 18% slower, matrix 10% faster): no
 known change, nor any ruling asked for so far, brings interpret under the +29.5% that would let the compute part pass
-(below, "N4 run 14").
+(below, "N4 run 14"). Run 15 built the ruled option (b), a jump table's known targets, fixed the older forced-interrupt
+fault, and the bar's command passes: +18.85% [+18.23 .. +19.21] against +21.2%, the system-call part 80.0 ns; by
+alternating pairs the compute part is +20.53%, inside the layout luck (below, "N4 run 15").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -96,6 +98,84 @@ known change, nor any ruling asked for so far, brings interpret under the +29.5%
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 15 (2026-11-20): a jump table's known targets; the older interrupt fault; the bar
+
+Start: origin/main and origin/phase-1-literals had nothing new. The brief's ruling of 2026-11-20 (after the jump study
+and its re-measurement) is what this run built. Files in scratch native/n4r16 (logs, scripts, the A/B builds).
+
+Built (plan 3.2, "A jump table's known targets", the study's option (b), with its faults fixed; no knob):
+- `br xN` where xN was last written by `add xN, xB, xE` (lsl or an extension), xB a constant guest address (`adr`, or
+  `adrp` and `add`), xE last written by a one-byte load INTO xE itself (rt is xE; a load writing back xE as its base is
+  refused; this is the re-measurement's `ldrb w9, [x3], #1` case), nothing after the add writing xE, xN and xE not
+  withheld and not the same register. It becomes `adr t, table; add t, t, xE, lsl #2; br t` and a table of 256 direct
+  branches, entry k an exit to base + (k, sign-extended for `sxtb`) shifted as the add shifts; unlinked entries go on to
+  the jump through the slot after the table. The `Native` trait's `carry` now takes the instructions of the straight-line
+  part before the one it carries (the emitter tracks the part); arm64 `carry::known_jump`, `encode::adr`; the
+  translation's `BranchTable` record goes through the link (postcard) and is moved with load-time addresses; the inside
+  makes each entry with a target under the ceiling and aligned a direct exit of its piece, linked and unlinked as any.
+- Not sized by the guest's bound check (a departure from the ruling's condition 2, below): the check bounds which entry
+  of the guest's table is read, not the byte read. Size per site: 259 words (1036 bytes) more than the jump alone. Sites,
+  counted statically over each file's text with the straight-line part before every `br` (scratch tool zz_sites.rs,
+  sites.log, on the rented ARM64 machine): bench.c 1 of 1 `br` (interpret), calls.c 0 of 0, 1036 bytes in all; busybox
+  (alpine 3.22) 0 of 438 (379 PLT stubs; 35 GCC switches of two-byte entries, `ldrh` and `sxth`; 16 of bytes whose add
+  writes the index register, `add x0, x1, w0, sxtb #2`), 0 bytes; musl's loader 0 of 42.
+- The older forced-interrupt fault ("no interrupt reached boundary 10", with or without the study's knob): a direct
+  `b` that is not the first instruction of its piece had no host instruction before its commit point (the exit's words
+  were all after it), so no stop could land at the branch itself. Its exit's first word (the linked branch, or the
+  count's settle) is now its commit point (`exit(.., commit)`, `HostCode::lead_after_commit`), so a stop before it is at
+  the `b`. No new words.
+
+Tests added: the forced-interrupt test's functions "jump table" (a dispatch loop that rewrites its own table, with a
+stream that halts and one that reaches an entry of 255 with no code), "signed jump table" (`sxtb`, -1, -8 and -128, the
+last going below the code) and "written-back index" (the re-measurement's writeback case); the kernel test's program
+tests/guest/jumptables.c (the re-measurement's zzjt.c made a kept test: the self-rewriting dispatch loop, a target
+rewritten and announced, a target on a page never executable, made executable and linked, made not executable, made
+executable again, unmapped, a zero target, byte offsets with a misaligned target, signed bytes reaching back onto a
+zeroed page, the writeback case), run natively at none and 256, on the WebAssembly side and in the reference, and again
+natively with a stop after every counted event (the policy's new `turn_events`, given through `PolicySeeds`) at none and
+256, whose stops and position hash must agree.
+
+Results (Mac, -j 4, load 3 to 6): forced interrupts 6449 over 12 functions at 3 look-aheads, 0 failed (seed
+0x14057b7ef767814f; before the fix the jump-table function failed at bounded 3 and full); the kernel test passes, the
+jump-table program alike on every side and with the reference, and with a stop at every counted event 5484 stops,
+hash 17339527552300285948, alike at none and 256. On the study's code the writeback program panicked the inside; here
+the writeback `br` is not matched (it keeps the jump through the slot).
+
+Speed bar (the test's own command, 15 pairs, look-ahead 256, seed 1, 2000 resamples, speed.log and speed.jsonl,
+load 4 to 10, every run near 100% on performance cores): compute part +18.85% [+18.23 .. +19.21], PASSES against
++21.2% (run 13: +27.94%). Native against plain, cycles (instructions): fib +26.0 (+65.6), sieve +18.8 (+31.9), hash +3.1
+(+27.2), sort +22.9 (+129.6), interpret +1.8 (+76.0), matrix +38.6 (+66.2), walk +18.0 (+81.3), search +26.1 (+26.6);
+calls +47.9 (+91.9). Untranslated against plain, cycles: fib -2.9, sieve +8.1, hash -2.6, sort -4.0, interpret -5.2,
+matrix -13.3, walk +17.4, search -9.9, calls -19.5. System-call part: 176.4 ns a call, the kernel's share 96.4, the
+back end's 80.0 ns [75.6 .. 84.1], PASSES against 100 ns.
+
+The same comparison as alternating pairs (scripts/pairs.py, the re-measurement's: A the head before this run, 91416ef1,
+its build from jump-study-check/ab/head, B this run's 38dcfccb, ab/known; 10 pairs a program with a plain run beside
+each, every run its own process, pairs.log and pairs.jsonl, load 8.8 to 12.9): compute part A +31.43%, B +20.53%.
+B against A, cycles: interpret 0.502 (instructions 0.854; native/plain 2.039 to 1.022), every other program within 1.3%
+(search 0.988, matrix 0.994, fib 1.009). Headroom, plainly: by the bar's command 2.35 points (its interval's top 2.0
+points under); by pairs 0.67 points. The study measured about 2 points of layout luck between builds of the same code
+(nine seeded layouts, +29.13 to +33.23%), and the two methods differ on the same build by 1.7 points (matrix 1.386 by
+the command, 1.462 by pairs). So by pairs the bar passes only inside that luck; by the bar's command it passes outside
+its own interval but not by more than the luck. This is one build's layout; I did not measure the spread of this build
+over seeded layouts.
+
+A sound layout with the code within the slots' 8 GiB region (described, not built; asked in the brief): interleave the
+mirror and the code area by region. A guest address g's slot becomes MIRROR + ((g >> 30) << 33) + ((g mod 2^30) << 2):
+each 8 GiB region holds the slots of one GiB of guest addresses in its low 4 GiB and, in its high 4 GiB, the pieces
+translated from that GiB. A guest jump's slot address always has bit 32 clear, so no guest address can reach the code
+half: sound by construction. The mirror doubles to 2^48 bytes for the 2^45 ceiling (all of the upper half of a 48-bit
+space, MIRROR = u64::MAX << 48), so the ceiling need not move. Costs: three more instructions in every jump through a
+slot (`ubfx`, `lsl`, `bfi`, `lsl` in place of one `ubfiz`, before `bfxil` and `eor`); one code area per region, a
+piece that does not fit its region's half placed far (a counted slow path); a jump to another GiB of guest code is
+still far. Expected (not measured): returns, calls through a register and jumps the table does not cover lose their
+far jumps, as the near-placement build showed for interpret (2.006 to 1.059), less the three instructions.
+
+What N4 still needs, in order:
+1. The suites of this run on the Mac (below, when they end) and the push.
+2. The orchestrator's word on the table's size (Departures, For the orchestrator) and on the headroom.
+3. Loaded translations shared between processes: a question for the orchestrator (Departures, run 12).
 
 ## N4 run 14 (2026-11-19): interpret's instructions itemized; the page test measured again
 
@@ -2135,7 +2215,8 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
 - N3's kernel and loop inside the machine against the same kernel, loop and policy on the WebAssembly CPU side, hello,
-  the getppid exit count, the fork, exec and signal program, the code, blocks and mappings programs: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knobs
+  the getppid exit count, the fork, exec and signal program, the code, blocks, mappings and jump-table programs
+  (the last also with a stop after every counted event, its stops and position hash alike at none and the bound): `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knobs
   `WCONTAINERS_KERNEL_SEED`, seeds the policy and the random bytes, and `WCONTAINERS_KERNEL_SEEDS`, how many seeds from it;
   about a minute once built);
 - N3's bar, the busybox `text` and `files` commands in the kernel inside against the reference (needs Docker and alpine:3.22):
@@ -2149,6 +2230,11 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
   `WCONTAINERS_SPEED_PROGRAMS` a comma-separated subset, which gives figures but no verdict on the compute part, `syscalls`
   naming the system-call part; `WCONTAINERS_NATIVE_BOUND` the look-ahead; about 20 minutes at 15 pairs; it fails while
   either part fails);
+- the bar's comparison as alternating pairs of two builds (N4 run 15): after a speed run, scratch
+  native/n4r16/scripts/snapshot.sh <name> <label> copies the signed test binary, the inside and the programs into
+  n4r16/ab/<name>; then `RAW=<file> python3 -I scripts/pairs.py <dir A> - <dir B> - <pairs> fib sieve hash sort
+  interpret matrix walk search calls` (the re-measurement's script: a plain run beside each pair, the compute part of
+  each side by the geometric mean of the medians);
 - the dynamic register count (plan 3.3; no machine needed, but it builds the programs with zig):
   `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test registers` (knobs `WCONTAINERS_REGISTERS_SCALE`, bench.c's
   size, default 0, and `WCONTAINERS_REGISTERS_CALLS`, default 10^6; about 10 s);
@@ -2502,6 +2588,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 15: the brief's ruling of 2026-11-20 asks for the known jump's table to be sized by the guest's own bound check
+  where there is one. Not done: the bound check (`cmp` and `b.hi` before the guest's table load) bounds which entry of
+  the guest's table is read, not the byte read, and the table is indexed by that byte, so a table of the bound's size
+  would let a guest table holding a larger byte branch past ours (the same kind of fault as the writeback case). Every
+  site's table has the 256 entries a byte can take. The two sound ways to size it are put to the orchestrator.
+
 - N4 run 13: the same last target for a call through a register (`blr xN`, xN neither x30 nor withheld), x30 built
   first so that a hit is one direct branch (sort -22.2% cycles, nothing slower beyond the noise). Plan 3.2 says so.
 
@@ -2699,6 +2791,22 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 15: (1) Option (b) is built with the re-measurement's faults fixed and its programs made tests; the older
+  forced-interrupt fault is fixed (a direct branch's stop before its exit). The bar passes by its own command, +18.85%
+  [+18.23 .. +19.21], and by alternating pairs is +20.53%, 0.67 points under +21.2%, inside the 2 points of layout luck
+  the study measured: please rule whether that is a pass. (2) The table is not sized by the bound check (Departures).
+  Sizing soundly needs one of: a table indexed by the bounded case number whose every entry compares the loaded byte
+  with the one it was made for, filled at its first use (N + 1 entries of four words, two more instructions on the
+  hit's way: speed for size); or a range check on the byte before the table, its size taken from the guest's table
+  read at translation (two more instructions, and only where the table's address is a constant of the part, which
+  clang's loop form, interpret's, does not give). At 1036 bytes a site, bench.c has one site and busybox none; which,
+  if either? (3) Not covered, ideas only: GCC's forms (busybox's 51 switches): the byte form whose add writes the
+  index register could recover the byte from xN's low ten bits but needs a second register (a guest register spilled
+  to the register page and reloaded in each entry, about eight words on the hit's way); two-byte entries would need a
+  size bound to be sound at all. (4) A sound layout with the code within the slots' 8 GiB region is described in "N4
+  run 15" (the mirror and code area interleaved by region, the ceiling unchanged, three more instructions a jump through
+  a slot); not built without a ruling.
 
 - N4 run 14: interpret's native code runs 2.15 times the plain host instructions per bytecode operation; the extra is
   the jump through a register (46%), the page test (22%), the count's adds (16%, three pieces an operation), the jump
