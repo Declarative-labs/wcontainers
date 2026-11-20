@@ -48,7 +48,8 @@ fn footprints_follow_the_pitch_and_placement_rules() {
 
 #[test]
 fn every_texture_shape_check_feature_support_answers_is_made() {
-    use wcontainers_directx_graphics_infrastructure::{format_support, support1};
+    use wcontainers_direct3d_12::features::format_support;
+    use wcontainers_directx_graphics_infrastructure::support1;
     let mut device = Device::new(Recorder::new());
     let caps = device.backend().caps().clone();
     let shapes = [
@@ -94,6 +95,89 @@ fn every_texture_shape_check_feature_support_answers_is_made() {
         }
     }
     assert!(made > 0);
+}
+
+/// The layouts real Direct3D 12 gives on the RTX 3080 (case `video-formats`).
+#[test]
+fn video_formats_are_laid_out_as_planes_and_pixel_pairs() {
+    let desc = |format, width, height, mip_levels| ResourceDesc {
+        dimension: DIMENSION_TEXTURE2D,
+        width,
+        height,
+        depth_or_array_size: 1,
+        mip_levels,
+        format,
+        sample_count: 1,
+        ..Default::default()
+    };
+    let pitch = PITCH_ALIGNMENT as u32;
+    let planar_pitch = 2 * pitch;
+    let nv12 = desc(dxgi::NV12, 64, 32, 1);
+    let (f, total) = nv12.footprints(0, 2, 0).unwrap();
+    let shape = |i: usize| {
+        let p = f[i].footprint;
+        (
+            p.format,
+            p.offset,
+            p.width,
+            p.height,
+            p.row_pitch,
+            f[i].rows,
+            f[i].row_size,
+        )
+    };
+    assert_eq!(
+        shape(0),
+        (dxgi::R8_TYPELESS, 0, 64, 32, planar_pitch, 32, 64)
+    );
+    assert_eq!(
+        shape(1),
+        (
+            dxgi::R8G8_TYPELESS,
+            u64::from(planar_pitch) * 32,
+            32,
+            16,
+            planar_pitch,
+            16,
+            64
+        )
+    );
+    assert_eq!(total, 24128);
+    let (f, total) = desc(dxgi::OPAQUE_420, 64, 32, 1)
+        .footprints(0, 1, 0)
+        .unwrap();
+    assert_eq!(
+        (f[0].footprint.format, f[0].footprint.row_pitch),
+        (dxgi::R8_TYPELESS, planar_pitch)
+    );
+    assert_eq!(total, 15936);
+    let yuy2 = desc(dxgi::YUY2, 64, 32, 1);
+    let (f, total) = yuy2.footprints(0, 1, 0).unwrap();
+    assert_eq!(
+        (
+            f[0].footprint.width,
+            f[0].row_size,
+            f[0].footprint.row_pitch
+        ),
+        (64, 128, pitch)
+    );
+    assert_eq!(total, 8064);
+    for refused in [
+        desc(dxgi::NV12, 64, 32, 2),
+        desc(dxgi::NV12, 63, 32, 1),
+        desc(dxgi::NV12, 64, 31, 1),
+        desc(dxgi::YUY2, 63, 32, 1),
+    ] {
+        assert!(matches!(
+            check_creation(HeapType::Default, &refused, 0, false),
+            Err(Error::Invalid(_))
+        ));
+    }
+    let mut device = Device::new(Recorder::new());
+    for made in [nv12, yuy2, desc(dxgi::YUY2, 64, 31, 1)] {
+        check_creation(HeapType::Default, &made, 0, false).unwrap();
+        device.create_committed(HeapType::Default, &made).unwrap();
+    }
 }
 
 #[test]

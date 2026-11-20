@@ -4,11 +4,37 @@ use wcontainers_directx_graphics_infrastructure::d3d::{
     DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT, DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
     SMALL_RESOURCE_PLACEMENT_ALIGNMENT,
 };
-use wcontainers_directx_graphics_infrastructure::dxgi::{R8_TYPELESS, R32_TYPELESS};
+use wcontainers_directx_graphics_infrastructure::dxgi::{
+    NV12, OPAQUE_420, R8_TYPELESS, R8G8_TYPELESS, R32_TYPELESS, YUY2,
+};
 use wcontainers_directx_graphics_infrastructure::dxgi_format;
 use wcontainers_gpu::Format;
 
 use crate::Error;
+
+/// Whether DXGI format `format` is held as a luma texture and a chroma texture of half the width
+/// and height (plan 4.12): `NV12`, and `420_OPAQUE`, which is stored as `NV12`.
+pub fn has_chroma_plane(format: u32) -> bool {
+    matches!(format, NV12 | OPAQUE_420)
+}
+
+/// The pixels one stored texel of DXGI format `format` holds: two for `YUY2`, whose pixel pairs
+/// are stored as `rgba8unorm` texels (plan 4.12), one otherwise.
+pub fn pixels_per_texel(format: u32) -> u32 {
+    if format == YUY2 { 2 } else { 1 }
+}
+
+/// One subresource's shape: its block (width, height, bytes), the DXGI format its footprint
+/// names, the alignment of its rows in a buffer, and its size in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubresourceShape {
+    pub block: (u32, u32, u32),
+    pub format: u32,
+    pub pitch_alignment: u64,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+}
 
 /// `D3D12_RESOURCE_DIMENSION`.
 pub const DIMENSION_BUFFER: u32 = 1;
@@ -243,6 +269,21 @@ pub fn check_creation(
         return Err(Error::Invalid("a target state without the target flag"));
     }
     let (format, _) = desc.texture_format()?;
+    // The video formats are 2D textures of one level and sample, of whole pixel pairs (plan 4.12).
+    if has_chroma_plane(desc.format) || desc.format == YUY2 {
+        let pairs =
+            desc.width.is_multiple_of(2) && (desc.format == YUY2 || desc.height.is_multiple_of(2));
+        if desc.dimension != DIMENSION_TEXTURE2D
+            || desc.mips() != 1
+            || desc.sample_count != 1
+            || !pairs
+        {
+            return Err(Error::Invalid(
+                "a video format's texture of more than one level or sample, of another dimension \
+                 than 2D, or of part of a pixel pair",
+            ));
+        }
+    }
     // Blocks of one texel's height (the two-pixel formats) also make 1D textures.
     let (bw, bh, _) = format.block();
     if bw > 1
@@ -323,12 +364,71 @@ impl ResourceDesc {
         64 - largest.leading_zeros()
     }
 
-    /// Planes: two for formats with depth and stencil, whose subresources are each plane's in turn.
+    /// Planes: two for formats with depth and stencil and for `NV12`, whose subresources are each
+    /// plane's in turn (`420_OPAQUE` is one plane to the program).
     pub fn planes(&self) -> Result<u32, Error> {
         let (format, _) = self.texture_format()?;
         Ok(match format.kind() {
             wcontainers_gpu::FormatKind::DepthStencil => 2,
+            _ if self.format == NV12 => 2,
             _ => 1,
+        })
+    }
+
+    /// The description of the texture holding the chroma plane of a format with one
+    /// (`has_chroma_plane`): `R8G8` at half the width and height.
+    pub fn chroma(&self) -> Option<ResourceDesc> {
+        has_chroma_plane(self.format).then_some(ResourceDesc {
+            format: R8G8_TYPELESS,
+            width: self.width / 2,
+            height: self.height / 2,
+            ..*self
+        })
+    }
+
+    /// The texels the stored texture is wide: the width in pixels over `pixels_per_texel`.
+    pub fn stored_width(&self) -> u64 {
+        self.width / u64::from(pixels_per_texel(self.format))
+    }
+
+    /// The shape of subresource `index`. Planar formats' rows are aligned twice as far, as
+    /// Direct3D 12 lays them out on the desktop: depth-stencil formats are copied as a 32-bit depth
+    /// plane and an 8-bit stencil plane, `NV12` as an 8-bit luma plane and a 16-bit chroma plane of
+    /// half the width and height, `420_OPAQUE` as its luma plane alone; `YUY2` in blocks of two
+    /// pixels.
+    pub fn subresource_shape(&self, index: u32) -> Result<SubresourceShape, Error> {
+        let (format, _) = self.texture_format()?;
+        let (mips, layers) = (self.mips(), self.layers());
+        let planar = self.planes()? == 2;
+        let plane = index / (mips * layers);
+        let chroma = has_chroma_plane(self.format);
+        let (block, plane_format, pitch_alignment) = match (planar, plane) {
+            _ if chroma && plane == 0 => {
+                (Format::R8Unorm.block(), R8_TYPELESS, 2 * PITCH_ALIGNMENT)
+            }
+            _ if chroma => (Format::Rg8Unorm.block(), R8G8_TYPELESS, 2 * PITCH_ALIGNMENT),
+            (false, _) if self.format == YUY2 => {
+                let (_, bh, bytes) = format.block();
+                ((2, bh, bytes), self.format, PITCH_ALIGNMENT)
+            }
+            (false, _) => (format.block(), self.format, PITCH_ALIGNMENT),
+            (true, 0) => (Format::R32Float.block(), R32_TYPELESS, 2 * PITCH_ALIGNMENT),
+            (true, _) => (Format::R8Uint.block(), R8_TYPELESS, 2 * PITCH_ALIGNMENT),
+        };
+        let subsampled = u32::from(chroma && plane == 1);
+        let mip = index % mips;
+        let size = |n: u64| ((n >> subsampled) >> mip).max(1) as u32;
+        Ok(SubresourceShape {
+            block,
+            format: plane_format,
+            pitch_alignment,
+            width: size(self.width),
+            height: size(u64::from(self.height)),
+            depth: if self.dimension == DIMENSION_TEXTURE3D {
+                (u32::from(self.depth_or_array_size) >> mip).max(1)
+            } else {
+                1
+            },
         })
     }
 
@@ -348,6 +448,12 @@ impl ResourceDesc {
     /// texture allowing depth-stencil views whose family has a depth format is stored in it (as
     /// `R24G8` and `R32G8X24` are), and views of the family's colour formats read its depth.
     pub fn texture_format(&self) -> Result<(Format, bool), Error> {
+        // The video formats' stored textures (plan 4.12); their views name a plane's format.
+        match self.format {
+            NV12 | OPAQUE_420 => return Ok((Format::R8Unorm, true)),
+            YUY2 => return Ok((Format::Rgba8Unorm, true)),
+            _ => {}
+        }
         let (format, typeless) =
             dxgi_format(self.format).ok_or(Error::Invalid("a format the front cannot store"))?;
         if typeless && self.flags & FLAG_DEPTH_STENCIL != 0 {
@@ -458,19 +564,16 @@ impl ResourceDesc {
             };
             return Ok((vec![info; count as usize], self.width * u64::from(count)));
         }
-        let (format, _) = self.texture_format()?;
         if self.dimension == DIMENSION_TEXTURE1D && self.height != 1 {
             return Err(Error::Invalid("a one-dimensional texture is one row"));
         }
         // Block-compressed textures are whole blocks at level 0 (unaligned blocks are not reported).
-        let (bw, bh, _) = format.block();
+        let (bw, bh, _) = self.subresource_shape(0)?.block;
         if !self.width.is_multiple_of(u64::from(bw)) || !self.height.is_multiple_of(bh) {
             return Err(Error::Invalid(
                 "a block-compressed texture of part of a block",
             ));
         }
-        let planar = self.planes()? == 2;
-        let mips = self.mips();
         if first
             .checked_add(count)
             .is_none_or(|end| end > self.subresources().unwrap_or(0))
@@ -482,26 +585,14 @@ impl ResourceDesc {
         let mut out = Vec::with_capacity(count as usize);
         let mut total = 0;
         for index in first..first + count {
-            let mip = index % mips;
-            // Planar depth-stencil formats are copied as a 32-bit depth plane and an 8-bit stencil
-            // plane, with rows aligned twice as far, as Direct3D 12 lays them out on the desktop.
-            let (bw, bh, bytes, plane_format, pitch_alignment) =
-                match (planar, index / (mips * self.layers())) {
-                    (false, _) => {
-                        let (bw, bh, bytes) = format.block();
-                        (bw, bh, bytes, self.format, PITCH_ALIGNMENT)
-                    }
-                    (true, 0) => (1, 1, 4, R32_TYPELESS, 2 * PITCH_ALIGNMENT),
-                    (true, _) => (1, 1, 1, R8_TYPELESS, 2 * PITCH_ALIGNMENT),
-                };
-            let size = |n: u64| (n >> mip).max(1);
-            let width = size(self.width) as u32;
-            let height = size(u64::from(self.height)) as u32;
-            let depth = if self.dimension == DIMENSION_TEXTURE3D {
-                size(u64::from(self.depth_or_array_size)) as u32
-            } else {
-                1
-            };
+            let SubresourceShape {
+                block: (bw, bh, bytes),
+                format: plane_format,
+                pitch_alignment,
+                width,
+                height,
+                depth,
+            } = self.subresource_shape(index)?;
             let rows = height.div_ceil(bh);
             let row_size = u64::from(width.div_ceil(bw)) * u64::from(bytes);
             let row_pitch = row_size.next_multiple_of(pitch_alignment);

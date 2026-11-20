@@ -2152,7 +2152,6 @@ code	crates/wcontainers-direct3d-12/src/list.rs	int	SamplerView	3
 code	crates/wcontainers-direct3d-12/src/list.rs	int	SamplerView	4
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	3
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	4
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	4
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::full_chain	64
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	rts0_part	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	serialize	b"DXBC"
