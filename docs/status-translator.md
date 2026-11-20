@@ -148,6 +148,9 @@ Done:
     (4.4, every leaf call on Apple's core), and the means differ by under 3 percent elsewhere. The owner may
     want to rule.
 - Tests on E-param (rented ARM64 machine, release, 4 threads): all five of `progress_count` passed (268 s).
+- Layer 1 on the Mac on 7d66c447 (seed 1200, 1,000 cases a form, 10 a form in Chrome, 4 jobs, load 6 to 10,
+  888 s, `c1/mac-layer1.log`): 1,215 forms, 0 failing; 12,150 cases in Chrome, 0 failing; 1,000 words in no
+  form illegal as on the CPU; 7 passed.
 
 Next (in order):
 1. The long checks on E-param, running on the rented ARM64 machine (job of 2026-11-20 ~19:40 UTC, scratch
