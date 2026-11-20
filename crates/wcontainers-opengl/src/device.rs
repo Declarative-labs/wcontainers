@@ -34,7 +34,8 @@ impl Device {
         let descriptor = WebGpu::device_descriptor(&adapter);
         let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
         let backend = WebGpu::new(&adapter, device, queue);
-        let name = CString::new(backend.caps().adapter.name.replace('\0', "")).ok()?;
+        let name = backend.caps().adapter.name.bytes().filter(|&b| b != 0);
+        let name = CString::new(name.collect::<Vec<u8>>()).ok()?;
         Some(Device { backend, name })
     }
 

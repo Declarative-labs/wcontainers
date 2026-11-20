@@ -4,6 +4,14 @@
 use std::path::{Path, PathBuf};
 
 pub const RERUN_IF_CHANGED: &str = "cargo::rerun-if-changed=";
+pub const RERUN_IF_ENV_CHANGED: &str = "cargo::rerun-if-env-changed=";
+pub const RUSTC_ENV: &str = "cargo::rustc-env=";
+/// Between a variable and its value in `RUSTC_ENV`.
+pub const ASSIGN: &str = "=";
+/// The variable naming the Mesa build folder, and the cfg set when it does.
+pub const MESA_VARIABLE: &str = "WCONTAINERS_MESA";
+pub const CHECK_CFG: &str = "cargo::rustc-check-cfg=cfg(mesa)";
+pub const CFG: &str = "cargo::rustc-cfg=mesa";
 /// Meson's record of the build, which names the source folder it was made from.
 const MESON_INFO: &str = "meson-info/meson-info.json";
 /// Mesa's own compile commands.
@@ -11,6 +19,8 @@ const COMPILE_COMMANDS: &str = "compile_commands.json";
 /// How GCC and Clang, and the Visual C++ compiler, spell a define and the language standard.
 const DEFINE_FLAGS: &[&str] = &["-D", "/D"];
 const STANDARD_FLAGS: &[&str] = &["-std=", "/std:"];
+/// How Clang spells a define, for bindgen.
+const CLANG_DEFINE: &str = "-D";
 const QUOTE: char = '"';
 const QUOTE_TEXT: &str = "\"";
 const ESCAPED_QUOTE: &str = "\\\"";
@@ -69,4 +79,18 @@ fn unquoted(argument: &str) -> String {
         Some(inner) => inner.replace(ESCAPED_QUOTE, QUOTE_TEXT),
         None => argument.to_string(),
     }
+}
+
+/// The defines Mesa compiles `file` with, spelled as Clang takes them (for bindgen).
+#[allow(dead_code, reason = "only the build scripts that run bindgen call it")]
+pub fn mesa_defines(build: &Path, file: &str) -> Vec<String> {
+    mesa_flags(build, file)
+        .into_iter()
+        .filter_map(|flag| {
+            DEFINE_FLAGS
+                .iter()
+                .find_map(|prefix| flag.strip_prefix(prefix))
+                .map(|define| format!("{CLANG_DEFINE}{define}"))
+        })
+        .collect()
 }

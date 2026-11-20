@@ -8,12 +8,11 @@ use std::path::{Path, PathBuf};
 
 #[path = "mesa/meson_build.rs"]
 mod meson_build;
-use meson_build::{RERUN_IF_CHANGED, mesa_flags, source_folder};
+use meson_build::{
+    ASSIGN, CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, RUSTC_ENV,
+    mesa_flags, source_folder,
+};
 
-const MESA_VARIABLE: &str = "WCONTAINERS_MESA";
-const CHECK_CFG: &str = "cargo::rustc-check-cfg=cfg(mesa)";
-const CFG: &str = "cargo::rustc-cfg=mesa";
-const RERUN_IF_ENV_CHANGED: &str = "cargo::rerun-if-env-changed=";
 const LINK_SEARCH: &str = "cargo::rustc-link-search=native=";
 const LINK_STATIC: &str = "cargo::rustc-link-lib=static=";
 const LINK_DYNAMIC: &str = "cargo::rustc-link-lib=dylib=";
@@ -84,7 +83,6 @@ const LINK_ARG: &str = "cargo::rustc-link-arg=";
 /// that hands it to the crate, part of the converter's version.
 const MADE_FROM: &str = "wcontainers-made-from";
 const MESA_BUILD_VARIABLE: &str = "WCONTAINERS_MESA_MADE_FROM";
-const RUSTC_ENV: &str = "cargo::rustc-env=";
 /// Lavapipe, the corpus run's Vulkan reference, by its Meson target, and the variable naming its file.
 const LAVAPIPE_TARGET: &str = "vulkan_lvp";
 const LAVAPIPE_VARIABLE: &str = "WCONTAINERS_LAVAPIPE";
@@ -92,8 +90,7 @@ const LAVAPIPE_VARIABLE: &str = "WCONTAINERS_LAVAPIPE";
 const EGL_TARGET: &str = "EGL";
 const EGL_VARIABLE: &str = "WCONTAINERS_EGL";
 const INTROSPECTED_TARGETS: &str = "meson-info/intro-targets.json";
-/// Between a variable and its value in `RUSTC_ENV`, and between the parts of the version.
-const ASSIGN: &str = "=";
+/// Between the parts of the version.
 const VERSION_PARTS: &str = "+";
 /// The converter's own sources (this crate's Rust and bridge, and the naga whose module it makes),
 /// hashed into the converter's version, and the variable that hands the hash to the crate.
