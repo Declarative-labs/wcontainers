@@ -26,6 +26,11 @@ const SPIRV_EXTENSION: &str = "spv";
 /// How long one shader's child may run before it is stopped and counted as hung.
 const CHILD_TIME_LIMIT: Duration = Duration::from_secs(120);
 const CHILD_POLL: Duration = Duration::from_millis(20);
+/// The input seeds a route is tried on while the reference does not end on them (a loop bound or
+/// step from the seeded inputs that never ends the loop): the run's seed, then the next ones.
+const REFERENCE_SEEDS: u64 = 4;
+/// Why a child stopped in the comparison gave no verdict: the reference had not ended.
+const REFERENCE_DID_NOT_END: &str = "the reference did not end";
 /// How many of a crashed child's last lines of errors its reason keeps.
 const CRASH_LINES: usize = 3;
 
@@ -122,6 +127,9 @@ pub struct RouteResult {
     pub outcome: Outcome,
     /// Nanoseconds from the NIR to the validated module, failed or not.
     pub convert_ns: u64,
+    /// The seed of the inputs it was held to, where the reference did not end on the run's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs_seed: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -186,7 +194,17 @@ pub fn parent(options: &RunOptions) {
                         routes: Vec::new(),
                     };
                     for route in ROUTES {
-                        let one = run_child(&exe, file, route);
+                        let mut one = run_child(&exe, file, route, options.seed);
+                        for retry in 1..REFERENCE_SEEDS {
+                            if !reference_did_not_end(&one) {
+                                break;
+                            }
+                            let seed = options.seed.wrapping_add(retry);
+                            one = run_child(&exe, file, route, seed);
+                            for r in &mut one.routes {
+                                r.inputs_seed = Some(seed);
+                            }
+                        }
                         result.stage = result.stage.or(one.stage);
                         result.refused = result.refused.or(one.refused);
                         result.unreported = result.unreported.or(one.unreported);
@@ -217,8 +235,16 @@ pub fn parent(options: &RunOptions) {
     summary(&results);
 }
 
-/// Runs one shader through one route in a child, or names why the child gave no result.
-fn run_child(exe: &Path, file: &Path, route: &str) -> ShaderResult {
+fn reference_did_not_end(result: &ShaderResult) -> bool {
+    result.routes.iter().any(|r| {
+        matches!(&r.outcome, Outcome::Compared(Verdict::NotRun(why))
+            if why.contains(REFERENCE_DID_NOT_END))
+    })
+}
+
+/// Runs one shader through one route in a child, its inputs from `seed`, or names why the child
+/// gave no result.
+fn run_child(exe: &Path, file: &Path, route: &str, seed: u64) -> ShaderResult {
     let failed = |why: String| ShaderResult {
         shader: String::new(),
         stage: None,
@@ -231,6 +257,7 @@ fn run_child(exe: &Path, file: &Path, route: &str) -> ShaderResult {
         .arg(file)
         .arg(route)
         .env(DRIVER_THREADS_VARIABLE, NO_DRIVER_THREADS)
+        .env(SEED, seed.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -273,8 +300,11 @@ fn run_child(exe: &Path, file: &Path, route: &str) -> ShaderResult {
         return result;
     }
     let lines: Vec<&str> = stderr.lines().collect();
-    let why = if hung {
-        format!("hung: no result in {CHILD_TIME_LIMIT:?}")
+    let reference_ended = lines.contains(&compare::REFERENCE_ENDED);
+    let why = if hung && !reference_ended {
+        format!("hung: no result in {CHILD_TIME_LIMIT:?}: {REFERENCE_DID_NOT_END} on seed {seed}")
+    } else if hung {
+        format!("hung: no result in {CHILD_TIME_LIMIT:?}: the route's module did not end")
     } else {
         format!(
             "crashed: {status}: {}",
@@ -287,8 +317,12 @@ fn run_child(exe: &Path, file: &Path, route: &str) -> ShaderResult {
                 if r.outcome == Outcome::Failed(IN_ROUTE.into()) {
                     r.outcome = Outcome::Failed(why.clone());
                 } else if r.outcome == Outcome::Compared(Verdict::NotRun(IN_COMPARISON.into())) {
-                    r.outcome =
-                        Outcome::Compared(Verdict::NotRun(format!("{IN_COMPARISON}: {why}")));
+                    let why = format!("{IN_COMPARISON}: {why}");
+                    r.outcome = Outcome::Compared(if hung && reference_ended {
+                        Verdict::Differs(why)
+                    } else {
+                        Verdict::NotRun(why)
+                    });
                 }
             }
             provisional
@@ -458,6 +492,7 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
             route: route.into(),
             outcome: Outcome::Failed(IN_ROUTE.into()),
             convert_ns: 0,
+            inputs_seed: None,
         },
     );
     match route {
@@ -476,6 +511,7 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
                         outcome: Outcome::Compared(Verdict::NotRun(IN_COMPARISON.into())),
                         route: route.route.clone(),
                         convert_ns: route.convert_ns,
+                        inputs_seed: None,
                     },
                 );
                 let options = CompareOptions {
@@ -521,6 +557,7 @@ fn direct_route(
                 route: ROUTE_DIRECT.into(),
                 outcome: Outcome::Failed(IN_ROUTE.into()),
                 convert_ns,
+                inputs_seed: None,
             },
             Some(c),
         ),
@@ -529,6 +566,7 @@ fn direct_route(
                 route: ROUTE_DIRECT.into(),
                 outcome: Outcome::Failed(e.to_string()),
                 convert_ns,
+                inputs_seed: None,
             },
             None,
         ),
@@ -565,6 +603,7 @@ fn zink_route(
         route: ROUTE_ZINK.into(),
         outcome: Outcome::Failed(IN_ROUTE.into()),
         convert_ns,
+        inputs_seed: None,
     };
     match (converted, reflection) {
         (Ok((module, _)), Ok(reflection)) => (result, Some((module, reflection))),
@@ -623,12 +662,14 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
             route: route.into(),
             outcome: Outcome::Failed(IN_ROUTE.into()),
             convert_ns: 0,
+            inputs_seed: None,
         },
     );
     let mut taken = RouteResult {
         route: route.into(),
         outcome: Outcome::Failed(IN_ROUTE.into()),
         convert_ns: 0,
+        inputs_seed: None,
     };
     let mut converted = Vec::new();
     for stage in stages {
@@ -653,6 +694,7 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
             outcome: Outcome::Compared(Verdict::NotRun(IN_COMPARISON.into())),
             route: route.into(),
             convert_ns: taken.convert_ns,
+            inputs_seed: None,
         },
     );
     let options = CompareOptions {

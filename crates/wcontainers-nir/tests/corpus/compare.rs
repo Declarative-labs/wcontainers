@@ -791,6 +791,14 @@ fn record(vars: &[&interface::Var]) -> Vec<(Slot, u32, Ty)> {
 
 /// Holds the route's module to the program it came from, on lavapipe.
 #[allow(clippy::too_many_lines, reason = "one comparison, stage by stage")]
+/// The line a child writes to its errors once the reference has run, so that a child stopped after
+/// it is the route's run that did not end, and one stopped before it the reference's.
+pub const REFERENCE_ENDED: &str = "corpus: the reference ended";
+
+pub fn reference_ended() {
+    eprintln!("{REFERENCE_ENDED}");
+}
+
 pub fn compare(
     original: &[u32],
     entry: &str,
@@ -853,6 +861,7 @@ pub fn compare(
                 "the reference's outputs differ between two runs".into(),
             ));
         }
+        reference_ended();
         let route = lavapipe
             .run(route)
             .map_err(|e| Verdict::Differs(format!("the route's module did not run: {e}")))?;

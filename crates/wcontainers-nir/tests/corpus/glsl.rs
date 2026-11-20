@@ -597,6 +597,7 @@ pub fn compare_compute(
             "the reference's outputs differ between two runs (storage block and word {at:?})"
         ));
     }
+    compare::reference_ended();
     let (_, route_descriptors) = compare::descriptors(&resources);
     let lavapipe = match Lavapipe::open() {
         Ok(l) => l,
@@ -1145,6 +1146,7 @@ pub fn compare_draw(
     if first != again {
         return not_run("the reference's outputs differ between two runs".into());
     }
+    compare::reference_ended();
     let (_, route_descriptors) = compare::descriptors(&resources);
     let lavapipe = match Lavapipe::open() {
         Ok(l) => l,
