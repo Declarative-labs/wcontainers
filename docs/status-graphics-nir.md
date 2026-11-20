@@ -21,7 +21,12 @@ crashed llvmpipe and our driver alike, and fixed the largest groups of our drive
   (which take over every allocation): softpipe without LLVM and llvmpipe with it both pass the
   case. Our driver uses no LLVM but crashed the same way because it shares the DLL. Fixed by
   building LLVM 21.1.8 from its source on the desktop without the integrated allocator
-  (`build-windows.ps1`); llvmpipe links that (being built at the end of this run; result below if it finished).
+  (`build-windows.ps1`); llvmpipe links that. With it, 1% shards on llvmpipe (desktop, GPU queue, 12:50 to
+  12:53, other tracks' jobs queued beside): dEQP-GLES2 172 of 172 (Pass 171, Warn 1), dEQP-GLES3
+  447 of 447 run (Pass 444, Warn 3, Skip 1), KHR-GLES2 5 of 5, KHR-GL33 99 of 99: every case run
+  passes (run 2: 64.53%, 57.05%, 100%, 75.76%). The case alone passes on llvmpipe and reaches
+  our driver's next refusal (below). LLVM's build: about 22 minutes at 8 jobs (2,271 steps,
+  12:20 to 12:42, desktop shared with other tracks), 0.5 GB installed.
 - `set_polygon_stipple` (every KHR-GLES2 case and most dEQP-GLES2 crashes in run 4: st/mesa sets
   the pattern at every context's start) keeps nothing; a rasterizer state that stipples is
   refused by name.
@@ -45,6 +50,35 @@ crashed llvmpipe and our driver alike, and fixed the largest groups of our drive
   2D view of a 3D texture 10. Every Fail seen follows a pipeline wgpu found invalid (the
   PointSize refusal), whose submit then failed and left the read back unfinished ("finish_read
   of a read back that is not ready or failed").
+- Textures and samplers stay variables in every program (`nir_samplers_as_deref`, as Zink): the
+  programs Mesa makes from TGSI (the blitter's) had lost them, and route B refused "a texture
+  instruction without a texture deref".
+- Constant alpha blending on a back end without `BLEND_CONSTANT_ALPHA`: a block that uses no
+  constant colour takes the constant factors and the draw's blend constant is the alpha in all
+  four channels (exact, as the interface says); a block with both is refused by name (blending
+  in the program is not built). Mesa's own rasterizer states (clears and blits, width zero) and
+  every other state take the one line width the back end draws.
+- 1% shards on our driver at the end of the run (desktop, GPU queue, 12:57 to 12:58): dEQP-GLES2
+  172 cases, Pass 41, Fail 62, Crash 68, Skip 1: 41 of 171 run, 23.98% (run 4: 12.28%).
+  KHR-GLES2 5 cases, all Fail (3D textures). The crashes by reason (logs, retries included):
+  `load_ubo` not taken by route B 82 of 94 logs (every program with uniforms: st/mesa hands
+  default uniforms over as `load_ubo` of block 0, which the GLSL corpus never had: its programs
+  keep uniform derefs); both the blend constant's colour and alpha 4; a cube view of 6 layers
+  wgpu refused 2; "bindings: more resources of a kind than its range holds" 2. The 62 Fails (45
+  shaders, 10 fragment_ops, 5 clipping, 2 buffer) have no reason recorded yet: their pictures
+  are to be read next run. KHR-GLES3, dEQP-GLES3, dEQP-GLES31, KHR-GLES31, KHR-GLES32, KHR-GL33
+  and KHR-GL46 cannot start on our driver: it reports OpenGL ES 2.0 and GLSL 1.20 only, so glcts
+  makes no context ("Failed to create WGL context") and deqp-runner stops.
+- Next, in order: (1) `load_ubo` in route B (a uniform block as an array of 16-byte words in the
+  common form, each component loaded at its byte offset and bitcast; dynamic offsets as
+  expressions), with a corpus test of a program st/mesa lowered; (2) the reasons of the 62
+  Fails (read their pictures in the `.qpa` logs; compare with the RTX 3080's OpenGL); (3) the 2D
+  view of a 3D texture and the cube view of 6 layers; (4) OpenGL ES 3.0: queries (through the
+  pass tracker's occlusion segments, as the Direct3D 11 front does), transform feedback
+  (`capture_vertices` is absent on WebGPU: the shaders crate's stage helper,
+  `StreamOutAsCompute`), instanced arrays, primitive restart, then the GLSL and ESSL caps; (5)
+  the whole lists in shards and the table; (6) 4.6; bgfx's and Godot's OpenGL renderers on the
+  rig.
 - Found, not yet traced: KHR-GLES2 `texture_3d` cases end on a 2D view of a 3D texture made in
   wgpu (Requests, below), then route B's refusal of "a texture instruction without a texture
   deref" (a program Mesa builds itself, likely the blitter's).
@@ -1485,6 +1519,12 @@ Next (after G8's check):
 
 ## Departures from the plan
 
+- G9 run 5: llvmpipe's LLVM on Windows is built from LLVM's source on the desktop rather than
+  taken from LLVM's release (the plan names no source for it; the release's integrated allocator
+  corrupted Mesa's heap, Where it stands). The Windows Mesa build keeps debug information
+  (`debugoptimized`, assertions still off as in a release build), for the stacks of crashes; its
+  speed is not what G9 measures.
+
 - G9 run 1: the Windows build of Mesa is a script beside the Linux one
   (`crates/wcontainers-nir/mesa/build-windows.ps1`), sharing its pin and patches, not a step of
   the rig's setup (the rig's scripts are another track's). It fetches its own tools into
@@ -1708,6 +1748,13 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 5: run at 3a34e4c8 less the last two commits (x86-64 machine, from a git bundle; marks 0; the clone and
+its build deleted after). Findings shown: `CUBE_FACES` twice (Waiting on others) and
+`COMPONENTS` in `wcontainers-nir/src/mesa.rs` ("a second name for MAX"), now gone: the swizzle's
+length is `naga::VectorSize::MAX` itself (d287ead9). Only the summary's last lines were kept, so
+whether the two `OUT_DIR` findings of run 3 are still reported was not seen; the next run runs
+it again whole. wcontainers-nir and wcontainers-opengl have no baseline lines.
 
 G9 run 3: exit 1 at d6bd4c8a (x86-64 machine, from a git bundle; marks 0; the clone and its
 build deleted after). The first try found 11; fixed this run: the cargo words and the Mesa
