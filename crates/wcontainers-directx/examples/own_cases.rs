@@ -1,7 +1,7 @@
 //! Small Direct3D 11 programs for single cases, one per argument: `atomics` (texture atomics
 //! from a compute shader), `raw_signed_atomics` (signed and unsigned minimums and maximums of
-//! raw words from every pixel and thread), `clear_view` (`ClearView` of a target's rectangles and
-//! of a whole storage view), `cs_min_lod` (a compute shader sampling, loading and
+//! raw words from every pixel and thread), `clear_view` (`ClearView` of targets' and storage
+//! views' rectangles and of whole views of buffers and of 1D, 2D and 3D textures), `cs_min_lod` (a compute shader sampling, loading and
 //! gathering under `SetResourceMinLOD` clamps), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
 //! views), `split` (a pixel shader's storage view read by the next draw on the same targets),
 //! `depth_filter` (an `R32_FLOAT` depth and a colour texture sampled through one linear
@@ -662,7 +662,7 @@ fn main() -> windows::core::Result<()> {
                 )
             };
             println!(
-                "options {:#010x} ClearView {}",
+                "options {:#010x} rectangle clears {}",
                 code(r),
                 options.ClearView.as_bool()
             );
@@ -670,7 +670,7 @@ fn main() -> windows::core::Result<()> {
             // Rectangles of storage views: floats, integers (above their range, fractions,
             // NaN), and targets of an integer format, below their range too. Negative values
             // into integer storage views are left out: the RTX 3080 does not clamp them.
-            let odd = [300.0, -5.0, 2.7, f32::NAN];
+            let odd = [260.0, -5.0, 2.7, f32::NAN];
             for (name, format, bind, value, texel) in [
                 (
                     "storage rects float",
@@ -697,7 +697,7 @@ fn main() -> windows::core::Result<()> {
                     "storage rects uint",
                     DXGI_FORMAT_R8G8B8A8_UINT,
                     D3D11_BIND_UNORDERED_ACCESS,
-                    [300.0, 2.7, f32::NAN, 0.0],
+                    [260.0, 2.7, f32::NAN, 0.0],
                     4,
                 ),
                 (

@@ -3170,7 +3170,7 @@ impl<B: Backend> Device<B> {
     fn store_clear(
         &mut self,
         v: &View<B>,
-        values: [u32; 4],
+        values: [u32; COLOR_COMPONENTS],
         float: bool,
         rects: &[ScissorRect],
     ) -> Result<()> {
@@ -6063,7 +6063,7 @@ fn color_value<B: Backend>(view: &View<B>, color: Color) -> ClearValue {
 
 /// The integers a clear of an integer format writes for `color`, as Direct3D converts them:
 /// fractions dropped, NaN as zero, values past a channel's range clamped to it.
-fn integer_clear(format: Format, color: Color) -> [u32; 4] {
+fn integer_clear(format: Format, color: Color) -> [u32; COLOR_COMPONENTS] {
     // Every integer format stores its channels in RGBA order.
     let bits = channel_bits(format).unwrap_or_else(|| vec![u32::BITS; COLOR_COMPONENTS]);
     let signed = format.kind() == FormatKind::Sint;
