@@ -336,8 +336,10 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
         .get_mapped_range()
         .expect("the read buffer maps");
     mapped
-        .chunks_exact(size_of::<u32>())
-        .map(|w| u32::from_le_bytes(w.try_into().expect("a word")))
+        .as_chunks::<{ size_of::<u32>() }>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
         .collect()
 }
 
