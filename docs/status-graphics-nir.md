@@ -4,15 +4,15 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 11 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's,
-bgfx's and dEQP's GLSL, Godot's Compatibility renderer and, since run 11, Godot's RenderingDevice
-shaders (Forward+, Mobile and their effects: 572 SPIR-V programs); candidate B leads on every count
-(The choice, below). Run 11: Godot's RenderingDevice shaders in the corpus by one command
-(`corpus/godot-forward-plus`; route B 387 match, A 237); route B takes every storage image format
-naga has and NIR's `imod`; the comparison makes those formats on both sides (bgfx route B 316
-match, up from 307). Still to do (Next): the 15.4 rewrites and robustBufferAccess (both blocked on
-other tracks: checked again at the shaders tip 74932c84 and the shared line 3195d728), Dolphin, and
-reading the timed choice started at the end of run 11.
+G8 run 12 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus, piglit's,
+bgfx's and dEQP's GLSL, Godot's Compatibility renderer and Godot's RenderingDevice shaders;
+candidate B leads on every count (The choice, below). Run 12: every difference left unexplained in
+run 11 is explained. bgfx's two were a route fault, now fixed (a texel load's offset was dropped:
+`texelFetchOffset` read the texel at the coordinate alone); Godot's five are undefined behaviour on
+the seeded inputs, each confirmed by a probe. Subroutine uniforms are now compared (all 9 piglit
+programs match). Still to do (Next): the 15.4 rewrites and robustBufferAccess (both blocked on
+other tracks: checked again at the shaders tip f97bec1b and the shared line 3195d728), Dolphin, and
+reading the timed choice run 11 started (still running at the end of run 12).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -40,8 +40,10 @@ Done:
   `ReflectedBinding`, program set in `space`, program binding in `register`; unsized arrays of
   resources and overfull ranges refused by name).
 - The cache key (15.3): `Nir::key`, BLAKE3 of `nir_serialize`'s bytes and `CONVERTER_VERSION` (this
-  crate's version, the Mesa commit and a hash of `mesa/build`'s record of commit and options). Taken
-  from the NIR as the driver hands it over. Held by `tests/route.rs`.
+  crate's version; since run 12 a BLAKE3 of the crate's `src` and `bridge` and of the carried naga,
+  made by `build.rs`, so a change of the route's output changes the key, as the shaders crate's
+  `CONVERTER_VERSION` does; the Mesa commit and a hash of `mesa/build`'s record of commit and
+  options). Taken from the NIR as the driver hands it over. Held by `tests/route.rs`.
 - Candidate A (`zink-spirv-naga`): Zink's `ntv_shader_prepare` and `nir_to_spirv` (native Vulkan,
   SPIR-V 1.3), cleaned of Zink's `Index 0` decorations and its unneeded `DrawParameters`, read by
   naga's SPIR-V reader and validated with what the common form allows.
@@ -170,9 +172,9 @@ Done:
   take), twice (they must agree), and lavapipe runs the route's two modules. Attributes at
   llvmpipe's locations and at the bridge's; an attribute the route does not read is fed to llvmpipe
   alone. State values filled as st/mesa does for a framebuffer object. Colour targets (each
-  output's components), depth and storage blocks compared. Not set up yet, by name: storage images
-  on the GLSL side, `gl_SecondaryColor` (its array has three components), subroutine uniforms,
-  structure and block stage values, an ES vertex program alone.
+  output's components), depth and storage blocks compared. Not set up yet, by name:
+  `gl_SecondaryColor` (its array has three components), structure and block stage values, an ES
+  vertex program alone.
 - Faults in the GLSL bridge the reference found (run 7), each fixed: blocks without a layout were
   std140 where st/mesa makes them std430 for a driver that loads its constants from a buffer
   (`UseSTD430AsDefaultPacking`; the one compute program that differed); a source without `#version`
@@ -208,7 +210,7 @@ Done:
   (`gl_MultiTexCoord0..7`, `gl_Color`, `gl_Normal`, `gl_FogCoord`) are fed through OpenGL's own
   arrays (`AttributeSlot`; `glTexCoordPointer` and its kin). Held by `tests/glsl_reference.rs`
   (a compute program reading a 2D, a 3D unsigned, a cube, a 2D shadow and a 2D array signed
-  texture through `textureLod`, `texelFetch` and a comparison, and loading and storing an `r32ui`
+  texture through `textureLod`, `texelFetch`, `texelFetchOffset` and a comparison, and loading and storing an `r32ui`
   and an `rgba32f` image: matched). Checked to see differences (temporary changes on the x86
   machine's copy): with OpenGL's texels shifted by one texel, 236 values differed; with the
   images not read back, 80.
@@ -309,6 +311,24 @@ Done:
   (the remainder, plus the divisor where the signs differ and the remainder is not zero). The
   comparison makes those formats on both sides (lavapipe and llvmpipe); 32-bit float texels are
   compared as floats, every narrower format by its bits.
+- A texel load's offset (run 12; `to_common_form`, both routes): Mesa's `nir_lower_tex` with
+  `lower_txf_offset` adds it to the coordinate, as the common form's load takes none. Route B
+  refuses a load still carrying an offset by name ("a texel load with an offset"); before, it
+  dropped the offset silently, which made bgfx's two `cs_assao_prepare_depths_and_normals`
+  programs differ. `nir_lower_tex` also gives every size query a level 0, which the bridge takes
+  off a multisampled texture's again (the common form's size query of one takes no level). Held by
+  `tests/glsl_reference.rs` (the sampling program now reads through `texelFetchOffset` too:
+  matched; with the lowering taken out, temporarily on the x86 machine's copy, the route refuses
+  it by name).
+- Subroutine uniforms (run 12): the bridge names each as `GlslNameKind::SubroutineUniform` by its
+  API name (Mesa's `__subu_<stage>_` prefix taken off), its words one an element, each the index of
+  the subroutine chosen (what st/mesa writes from `glUniformSubroutinesuiv`). The comparison reads
+  each stage's subroutine uniforms from llvmpipe (`GL_*_SUBROUTINE_UNIFORM`: location, elements,
+  compatible subroutines), chooses one compatible subroutine an element from the seed, sets them
+  with `glUniformSubroutinesuiv` after `glUseProgram`, and writes the same indices at the route's
+  words. Held by `tests/route.rs` (an array of two: one name, two words) and the corpus (the 9
+  piglit programs match; with every index's low bit flipped on the route's side, temporarily, 7
+  of 9 differed).
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -498,6 +518,31 @@ run of ours had just ended), 250 s):
   Differences: `sdfgi_debug_probes` vertex programs (4; route A differs on the same ones, so the
   harness or undefined behaviour is suspected, not yet confirmed) and `fsr2_tcr_autogen` (1).
 
+Run 12, the same 18,222 items after run 12's fixes (`results/run12/nir-results-r12b.jsonl`;
+x86-64 machine, 172 children on cores 10-95 and 106-191 (cores 0-9 and their siblings left to the
+timed choice), load 6.0 at the start and 13.3 at the end, 251 s):
+- In all: route B converts 11,811 and matches 11,637 (up from 11,626), 153 differ, 21 not
+  compared; route A unchanged (993 match, 7 differ, 154 not compared).
+- bgfx: route B 318 match (up from 316), 3 differ (run 8's three, same reasons). The two
+  `cs_assao_prepare_depths_and_normals` programs were a route fault: route B dropped the offset of
+  `texelFetchOffset`, so every target read the texel at the bare coordinate (the route's four
+  targets held the same value). Fixed (Done); they match.
+- piglit: route B 1350 match (up from 1341: the 9 subroutine programs), the same 17 differences, 4
+  not compared.
+- Godot's RenderingDevice programs: the 5 differences are undefined behaviour on the seeded
+  inputs, each confirmed by a probe copy of the program (not kept; `probe-sdfgi`, `probe-fsr2`
+  under the x86 machine's build folder): `sdfgi_debug_probes` computes `probe_index %
+  params.probe_axis_size` and `occluder_index % diameter` with the seeded size 0 (an integer
+  remainder by zero; naga's SPIR-V makes it defined, lavapipe does not): with the size kept at
+  least 2 and `probe_voxels` at least 1 all four match on both routes.
+  `fsr2_tcr_autogen` divides by the seeded `iRenderSize`, 0, and turns the infinite coordinate
+  into an integer (undefined): with the render size kept at least 1 it matches. Left as
+  differences with these reasons, as piglit's are.
+- Godot's Compatibility shaders, dEQP and the SPIR-V samples: as run 11 (the one multisampled
+  program, `deferredmultisampling/deferred.frag`, briefly failed validation after the offset
+  lowering, fixed before this run: it is again not compared, as the harness does not fill
+  multisampled textures).
+
 The choice, on this corpus (not final until Dolphin is in; the GLSL gives the same order: B
 matches 1341 piglit, 316 bgfx, 8574 dEQP and 231 Godot programs, A 3, 21, 0 and 0; Godot's
 RenderingDevice SPIR-V B 387, A 237). Run 11 started `corpus/choose` over all 18,222 items,
@@ -513,27 +558,33 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. Read the timed choice run 11 started (above): each route's counts and times on the programs both
-   match; the choice follows from the counts (B far ahead), the times only on equal counts.
-2. The two new bgfx differences (`cs_assao_prepare_depths_and_normals`, `_half`: `r16f` and `rg16f`
-   storage images): find whether the route, the harness's new formats or the program's inputs
-   cause them. Godot's `sdfgi_debug_probes` (4, both routes) and `fsr2_tcr_autogen` likewise.
-3. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
+1. Read the timed choice run 11 started (above; still running at the end of run 12, started
+   06:43 UTC): each route's counts and times on the programs both match; the choice follows from
+   the counts (B far ahead), the times only on equal counts. It runs run 11's code (before run
+   12's fixes, which only add route B matches). Do not rebuild `--release` in
+   `/work/target/graphics-nir` while it runs: its children are the release binary.
+2. When robustBufferAccess can be done: add `dEQP-VK.robustness.buffer_access` to
    `corpus/cts-programs`' groups, and lower those programs before both runs.
-4. Dolphin (it makes its shaders at run time, and is GPL: test data only). Subroutine uniforms (9:
-   `glUniformSubroutinesuiv` with a compatible index, the route's word from the bridge's names);
-   `pack_*_split` (64-bit, so refused) stays.
-5. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
+3. Dolphin (GPL: test data only). Its shaders are made at run time by its C++ generators, and the
+   GLSL header each backend puts before them is in its OpenGL and Vulkan backends, so they cannot
+   be written here without paraphrasing GPL code. The route that keeps to the rules: run Dolphin
+   itself on llvmpipe (headless, `MESA_SHADER_DUMP_PATH` set: Mesa writes every source the program
+   hands it) with its ubershaders compiled at start; what it boots is still to find (a FIFO log or
+   homebrew under a permissive licence, never a commercial game or Nintendo's IPL). Then the final
+   choice over everything.
+4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
-   shaders crate (Requests; still not there at the shaders branch's tip 74932c84, run 11: only
+   shaders crate (Requests; still not there at the shaders branch's tip f97bec1b, run 12: only
    `convert` for DXBC and DXIL, `variant` private); robustBufferAccess's three steps (needs
-   `HelperValue::BufferRange`, not in the interface at 3195d728, run 11). Godot's RenderingDevice
-   programs then give corpus programs for arrays of textures (21) and formatless storage (2).
-6. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
-   end on the seeded inputs; the cube map array program naga refuses (dEQP
+   `HelperValue::BufferRange`, not in the interface at 3195d728 nor on any graphics branch, run
+   12). Godot's RenderingDevice programs then give corpus programs for arrays of textures (21) and
+   formatless storage (2).
+5. The harness's own limits: multisampled textures (5 programs: filling one on lavapipe needs a
+   draw or a storage write, as Vulkan copies no buffer into one), block inputs, programs whose
+   reference does not end on the seeded inputs; the cube map array program naga refuses (dEQP
    `android_extension_pack.test#extension_directive.ext_texture_cube_map_array`, "Index 2 is out of
    bounds").
-7. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
+6. Candidate A is not developed further (B is chosen); its failures stay listed as they are.
 
 ## How to run
 
@@ -597,6 +648,16 @@ Next, in this order:
   `WC_NIR_DUMP` set; `nix shell nixpkgs#spirv-tools -c spirv-dis` reads the dumps.
 - Run 8 fetched VK-GL-CTS's shader library data (sparse, at 5bb4c7e8) and a sparse bgfx on the
   x86 machine under `/work/probes` to read their formats; both deleted at the end of the run.
+- Runs beside the timed choice: pin to `taskset -c 10-95,106-191` (cores 0-9 and their hyperthread
+  siblings 96-105 are the choice's), and never build `--release` in `/work/target/graphics-nir`
+  while it runs. Probe programs (a changed copy of one corpus program, compiled with Nixpkgs'
+  glslang as `corpus/godot-forward-plus` does) go in a folder of their own under the build folder,
+  pointed at by `WC_NIR_CORPUS`. `scripts/outcome_changes.py <old> <new> <route>` (scratch) lists
+  the programs whose outcome changed between two results files.
+- Kept between runs: a sparse clone of Dolphin's `Source/Core/VideoCommon` at 32a2b828 for reading
+  how it makes its shaders (`pyro-parked/wcontainers-scratch/graphics-nir/downloads/dolphin`,
+  GPL-2.0-or-later: read only, nothing of it copied or paraphrased here), and bgfx's two ASSAO
+  sources and their `uniforms.sh` (`downloads/bgfx-src`, BSD-2-Clause).
 - Kept between runs: a sparse clone of Godot at 73ca6be2 for reading its shader formats and their
   C++ users (`pyro-parked/wcontainers-scratch/graphics-nir/downloads/godot`, 12 MB, blobs fetched
   on demand: never `git grep` its history there, which fetches every blob; add paths with `git
@@ -623,6 +684,14 @@ Next, in this order:
 
 ## Measurements
 
+- The whole corpus run (run 12, 18,222 items, 172 children on cores 10-95 and 106-191, x86-64
+  machine, load 6.0 at the start and 13.3 at the end, the timed choice running on cores 0-9 and
+  other tracks' jobs beside): 251 s. Time per shader to the validated common form at 172 at once
+  on the 991 shaders both routes match: A median 454 us, mean 714 us; B median 358 us, mean
+  440 us. The same run before the subroutine change (load 87 at the start, 27 at the end): 253 s.
+- The whole suite of wcontainers-nir (run 12, x86-64 machine, load about 6): without Mesa every
+  test target builds and passes (no tests run without it); with Mesa `glsl_buffers` 1, `glsl_reference` 7,
+  `narrow` 1, `route` 11 passed.
 - The whole corpus run (run 11, 18,222 items, 192 children, x86-64 machine, load 10.0 at the
   start and 26.7 at the end, another run of ours just before): 250 s. Time per shader to the
   validated common form at 192 at once on the 991 shaders both routes match: A median 488 us, mean
@@ -895,6 +964,8 @@ None.
 
 ## Literal check
 
+Run 12: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0).
+wcontainers-nir still has no baseline lines.
 Run 11: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0). A first
 try found the Godot reader's `LINE_COMMENT` ("//") named like the check's own (Rust's comment, private
 there): renamed for what it is, GLSL's (Departures). wcontainers-nir still has no baseline lines.
