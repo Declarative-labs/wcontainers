@@ -6,10 +6,14 @@
 #   tools/graphics-rig/remote powershell -ExecutionPolicy Bypass -File crates\wcontainers-nir\mesa\build-windows.ps1
 #
 # Everything is kept between runs under $Root: tools\ (Python with Meson and Ninja, flex and bison,
-# LLVM), mesa\src, mesa\build and mesa\install. Prints the SHA-256 of every download.
+# LLVM, the DirectX Shader Compiler), mesa\src, mesa\build and mesa\install. Prints the SHA-256 of
+# every download.
 . (Join-Path $PSScriptRoot 'windows-tools.ps1')
 
 $FlexBisonVersion = '2.5.25'
+$DxcTag = 'v1.9.2609'
+$DxcName = 'dxc_2026_09_29'
+$DxcUrl = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/$DxcTag/$DxcName.zip"
 $FlexBisonUrl = "https://github.com/lexxmark/winflexbison/releases/download/v$FlexBisonVersion/win_flex_bison-$FlexBisonVersion.zip"
 $LlvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmName.tar.xz"
 
@@ -22,6 +26,15 @@ $FlexBison = Join-Path $Tools "win_flex_bison-$FlexBisonVersion"
 if (-not (Test-Path (Join-Path $FlexBison 'win_bison.exe'))) {
     $archive = Fetch $FlexBisonUrl "win_flex_bison-$FlexBisonVersion.zip"
     Expand-Archive -Path $archive -DestinationPath $FlexBison -Force
+}
+
+# The DirectX Shader Compiler: wgpu's Direct3D 12 back end compiles with it where the program's
+# folder holds it, as Chrome ships it, and with the older FXC otherwise.
+$Dxc = Join-Path $Tools $DxcName
+$DxcLibraries = Join-Path $Dxc 'bin\x64'
+if (-not (Test-Path (Join-Path $DxcLibraries 'dxcompiler.dll'))) {
+    $archive = Fetch $DxcUrl "$DxcName.zip"
+    Expand-Archive -Path $archive -DestinationPath $Dxc -Force
 }
 
 # LLVM's release for the Visual C++ runtime: its libclang for bindgen and its lldb.
@@ -152,5 +165,8 @@ Get-ChildItem -Path $build -Recurse -Filter 'libgallium_wgl.dll' | Remove-Item -
 
 foreach ($library in 'opengl32.dll', 'libgallium_wgl.dll') {
     if (-not (Test-Path (Join-Path $install "bin\$library"))) { throw "build-windows: $library was not built" }
+}
+foreach ($library in 'dxcompiler.dll', 'dxil.dll') {
+    Copy-Item -Force (Join-Path $DxcLibraries $library) (Join-Path $install 'bin')
 }
 Write-Output "build-windows: done, $install"

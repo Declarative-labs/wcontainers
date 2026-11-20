@@ -133,7 +133,9 @@ fn texture_view<B: Backend>(
                 base_mip: first_level,
                 mip_count: last_level - first_level + 1,
                 base_layer: if three_d { 0 } else { first_layer },
-                layer_count: if three_d {
+                // A view of one layer reads only its first layer, whatever range Gallium gives
+                // it (st/mesa and the blitter give a cube's or an array's whole range).
+                layer_count: if three_d || dimension == ViewDimension::D2 {
                     1
                 } else {
                     last_layer - first_layer + 1
