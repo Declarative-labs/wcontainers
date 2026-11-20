@@ -4,11 +4,19 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
-- T3 (this milestone): every bar is met (see "T3", third run): layers 1, 2 and 3 reran on the merged code
-  with no mismatch; the awk count; the literal check passing with a smaller baseline (7,944 lines at the
-  milestone's start, 7,660 now); the benchmark set's speed unchanged in wasmtime and Chrome (alternating pairs,
-  every workload within 0.1 percent, walk in Chrome 2.6 percent faster). Left for the independent check: the
-  reruns with a new seed, the awk counts and the pairs (commands under "T3, what is left").
+- T3 (this milestone): every bar is met (see "T3"; the fourth run answered the independent check's
+  findings): layers 1, 2 and 3 reran on the merged code with no mismatch, and again on the final code (fourth
+  run); the awk count; the literal check passing with a smaller baseline (8,113 lines after the init at the
+  milestone's start, 8,159 at the merge before it; 7,660 now), now checked with the branch's real history; the
+  benchmark set's speed unchanged against 97fff482 (the merge) in wasmtime and Chrome. Against f6e760ae (the
+  proof's code, before the merge) the independent check measured fib in Chrome 1.6 percent slower in 4 of 4
+  rounds, with the translator's output for the benchmark set byte for byte the same at both: that comes from
+  main's refactor of the test harness (runner.js, the browser translator), not from the translator; see the
+  fourth run.
+- The P2 check's `wcontainers-abi` constants: this track added `PAGE_SHIFT` and `PAGE_MASK` to wcontainers-abi
+  (06187cfd), as fix-translator.md says, but magic-literals/README.md gives that stage to the runtime track.
+  They are defined exactly as the README's stage 1 writes them; when main's own arrive, keep main's lines in
+  the merge. Taking them out here would add their literals back to the baseline, which the check refuses.
 - The Chrome runner (runner.js, test tooling only) changes V8's speed on the translated code by up to 5 percent
   depending on how its `run` function takes its arguments (an extra destructured parameter, or a wrapper that
   reads a property inline, slows interpret by 4.6 percent; a module variable does not). Measured, not
@@ -40,8 +48,9 @@ M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 20
 T3 is done (pending its independent check): main merged (the translator on the shared guest interface), the
 literal check adopted and the baseline down to 7,660 lines, the P2 check's findings answered, the register
 jump slow path fixed (busybox awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in
-full on the merged code with no mismatch, layer 3 to 5,287 compared with none; the benchmark set's speed
-unchanged. See "T3" and "T3, what is left".
+full on the merged code with no mismatch, layer 3 to 5,287 compared with none, and all three again on the
+final code with a new seed; the benchmark set's speed unchanged against the merge. The fourth run answered
+the independent check's findings. See "T3" and "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
 
@@ -194,12 +203,68 @@ Third run of T3 (2026-11-19 20:30 to 22:00 local):
   05:49 UTC, load 5 to 41, `t3/suite/arm-suite-5c08f25b.log`): 98 passed, 10 ignored, 2 failed, both layer 1's
   `MSR_SR_systemmove` (the Graviton's FPSR difference); layer 1's verdict is the Mac's, above: 7 passed.
 
+Fourth run of T3 (2026-11-19 23:00 local to 2026-11-20), the independent check's findings:
+- The other hosts test (blocking): since 06187cfd differences.c reads FPSR, so on a host without fused
+  multiply-add and Arm's not-a-numbers it ran only the exact path. Building it without FPSR reads showed why
+  no C test program could avoid them: zig 0.16 links C library code nothing calls (`hypotl`, which calls
+  `fmal`, which calls musl's fenv functions), so every C program was taken as reading FPSR. 59cb1416 links C
+  test programs with `--gc-sections` (one named option in `programs.rs`; `flat.ld` keeps libc++'s override
+  section), gives differences.c a `WITHOUT_FENV` build, and the test runs both builds: the plain one on the
+  exact path as before, the other with "software fused multiply-add" counted and Linux's output, which
+  covers the fix-up on the fast path. (A first try asserted "left to an address" at full for both; the
+  software fused multiply-add is called in place, so that holds only on the exact path.)
+- A jump through a register to its own function's entry is a tail call to itself, no slow path (c2bafa58: the
+  range check also tests the target against the entry, in a function's own piece only, not a loop piece).
+  `register_jumps.S` gained three such calls a round: the test fails without the change (4,800 counted
+  against the 1,200 expected) and passes with it. The check's program `check_calls.c` (tail calls through a
+  table of three functions, -O2, full): 0 counted (11,752 at 48c65565, as the check measured). busybox awk,
+  `wcon` on the rented x86 machine, load 26 to 28 (`t3/awk-r4.log`): outputs as before; wcon's summary 3,
+  none and 2 for the three commands (4, none and 3 before).
+- Switch cases in another part of a cut function (b4384452's third part) now have a test (486ee285,
+  `programs/cut_switch.c`: 48 cases of 64 branches each, every case twice, -O0 and -O2, full for speed and
+  size): no slow path, Linux's output. The check's `check_big.c` gives 0 counted and still 1,622 translations
+  at run time: see "Known gaps".
+- The plan now has "Two workarounds for what WebAssembly lacks" (4117dcd3), as the brief asks.
+- The literal check now runs with the branch's real history (`t3/lint.sh` sends the branch as a git bundle to
+  the rented x86 machine and the copy's HEAD is put at the branch's tip): "15 changes on this branch's
+  first-parent history; growth is checked", status 0, on this run's commits. The baseline is 7,660 lines; it
+  was 8,159 at the merge (fc5f55ca) and 8,113 after the init (65ba8f8a), not 7,944 as the third run wrote
+  (that was the second run's start).
+- The translator's output (tests/output.rs on the rented x86 machine, `t3/r4/out`) against the third run's:
+  busybox the same; the benchmark set differs in one module (full, for speed, 295,230 to 295,240 bytes, and
+  full for size), from the new entry test at a jump through a register.
+- Which commit each rerun proves. Merged code: layer 2, 100,000 programs, and layer 3, 5,287 compared, at
+  97fff482; layer 1, 10,000 cases a form, at 65ba8f8a (see above). Final code, this run, at 4117dcd3 (the
+  translator as at c2bafa58), new seed 400:
+  - Layer 1 on the Mac, 1,000 cases a form (1,215 forms) and 10 a form in Chrome, 4 jobs, load 6 to 10, 866 s:
+    0 failing; the words in no form, 1,000: passed (`t3/r4/layer1-mac.log`).
+  - Layer 2 on the rented ARM64 machine, 25,000 programs, every one on the real CPU, 5 in Chrome, 12 jobs, load
+    10 to 17, 606 s: 0 failing (8,329 faulted, 1,781 left to an address at full) (`t3/r4/rerun.log`).
+  - Layer 3 on the same machine, 1,000 programs from case 0, 100 in Chrome, 12 jobs, load 14 to 19, 838 s: 866
+    compared (82 also in Chrome), 134 did not end in time on Linux, 0 failing.
+- Layer 3, 4,500 more programs from case 1,000: running at the time of writing (arm-run job translator-rerun/20261120-074459-325067).
+- The whole suite of the four crates at 4117dcd3, debug, rented ARM64 machine, 07:18 to 07:43 UTC, load 7 to
+  20 (`t3/r4/suite.log`): 99 passed, 10 ignored, 2 failed, both layer 1's `MSR_SR_systemmove` (the Graviton's
+  FPSR difference); layer 1's verdict is the Mac's, above.
+- Speed pairs over the whole milestone: the proof's code (f6e760ae, the check's tree with only its
+  `/proc/loadavg` reading added, built as translator-pre) against 4117dcd3, 4 rounds, order rotated, rented
+  ARM64 machine, load 10 to 46 (`t3/r4/pairs.log`, script `t3/r4/pairs.sh`). Head over pre: wasmtime 0.993
+  to 1.002 on every workload; Chrome 0.999 to 1.002 on sieve, hash, sort, interpret, walk and search, but fib
+  1.017 (4.861 s against 4.781 s, slower in 4 of 4) and matrix 1.010 (0.296 s against 0.293 s, slower in 4 of
+  4). The fib step is the merge's: the check measured the merge (97fff482) at the same 1.6 percent over
+  f6e760ae with the translator's output for the benchmark set byte for byte the same at both, so it comes
+  from main's test harness in Chrome (runner.js and the browser translator page), not from translated code;
+  against the merge, earlier runs measured every workload within 0.2 percent. Not found what in the harness
+  V8 is sensitive to.
+- Not changed, recorded: the test harness takes the guest's Linux numbers from linux-raw-sys of the host (see
+  "Departures"), against the README's hard case 2, until a crate with the guest's own Linux numbers exists.
+
 T3, what is left:
 - For the independent check: layers 1 and 2 and layer 3 with a new seed (layer 1 on the Mac: `WC_LAYER1_CASES
   WC_LAYER1_CHROME WC_LAYER1_SEED`; layers 2 and 3 on the ARM64 machine, as in "How to run"), the awk counts
   (`t3/awk.sh` on the x86 machine after building `wcon`; exact counts need the counting patch
-  `t3/detail/apply.py`), and the pairs (`t3/pairs.sh`, run from the copy named translator-dev after building
-  its benchmarks test; the old side is `t3/old-97fff482` synced as translator-old and built there).
+  `t3/detail/apply.py`), and the pairs (`t3/r4/pairs.sh 4 <label>:<source>:<target> ...`, uploaded to the
+  ARM64 machine, run from a copy whose benchmarks test is built, each side's tree and build directory named).
 - Beyond the milestone's bar, the literal fix list goes on (arm64's decoders, fix list steps 17 to 20, need the
   arm-forms generator to emit Arm's field and name constants), with the open homes named under "Departures":
   ARM64 system call and auxiliary vector numbers, the stack alignment, runner.js's look-ahead codes.
@@ -2646,6 +2711,11 @@ contract's bits, in both runners).
 
 ## Cases actually run
 
+- T3, fourth run (final code, 4117dcd3, seed 400): layer 1 on the Mac, 1,215 forms x 1,000 cases, 10 a form
+  in Chrome, 1,000 words in no form; layer 2, 25,000 programs, all on the CPU, 5 in Chrome; layer 3, 1,000
+  programs (866 compared) and then 4,500 more from case 1,000 (see "T3", fourth run); the whole suite of the
+  four crates (debug, defaults); the changed program tests; busybox awk's three commands; 4 rounds of speed
+  pairs. Earlier T3 runs' cases are in the "T3" section.
 - P1, release unless said: after the merge, every test of the three crates (debug, 69 passed, 7 ignored).
   After the changes: layer 2, 64 cases seed 1 (8 on the CPU); 64 cases seed 1 with 4 jobs and 1 in Chrome;
   600 cases seed 1 with 6 jobs, 2 on the CPU, 1 in Chrome (19 s, load 20 to 22); layer 1, 1215 forms x 16
@@ -2882,6 +2952,10 @@ contract's bits, in both runners).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
+- T3: a switch case in another part of a cut function is reached through the lookup, and since it is no
+  part's entry its piece is made at run time (bounded look-ahead, counted "translated at run time"). The
+  check's `check_big.c` (48 cases of 64 branches, 600 calls, -O2, full) makes 1,622 translations at run time (this
+  run's count; the check measured 9.3 s for them, the same since f6e760ae). Making such cases entries of their part would remove it; not done.
 - M5: pieces made at run time from the middle of a function (after a lost stack, a go to address or a
   forgotten piece) do not recognise switch tables or prove loops the way the function's full piece does: much
   slower on unwinder-heavy code (figures under "M5, first run"), counted and warned.
@@ -2941,11 +3015,17 @@ contract's bits, in both runners).
 - T3: layer 2's rerun on the merged code is 100,000 programs (10 percent of the bar), every one compared with
   the real CPU, rather than the million: that is 100 times the CPU comparisons of P2's whole layer 2, and the
   milestone asks for reruns, not the bar. Layer 1's rerun is the full bar (10,000 cases a form) on the Mac.
-- T3: `differences_match_linux_on_other_hosts` expected "software fused multiply-add" counted. The program
-  reads FPSR, so its flags are now kept from its start and the same software operations are counted as
-  "exact floating point requested", which the hook has always done for a thread whose flags are kept. The
-  test now asserts that exact expectation (no "software fused multiply-add", some "exact floating point
-  requested", and that the program reads FPSR), not a looser one.
+- T3: `differences_match_linux_on_other_hosts` runs differences.c twice: as it is, which reads FPSR, so its
+  flags are kept from its start and its software operations are counted as "exact floating point requested"
+  (asserted: none counted as "software fused multiply-add"); and built with `WITHOUT_FENV` (no rounding modes,
+  no flags), which never reads FPSR, so the software fused multiply-add and the fast path's not-a-number fix-up
+  run and must give Linux's output, with "software fused multiply-add" counted (fourth run; between 06187cfd
+  and 59cb1416 only the first ran, and the fix-up was compared with Linux nowhere).
+- T3: C test programs (`programs::build_with`, `Library::C`) are linked with `--gc-sections`: zig 0.16 keeps C
+  library code nothing calls (`fmal`, `hypotl`, ...), and `fmal` calls musl's fenv functions, which read FPSR,
+  so every C program was taken as reading FPSR and ran all its floating point on the exact path (from 06187cfd
+  to 59cb1416). Layer 3's Csmith builds (`layer3.rs`, their own command) are left as they are: they still
+  link that code, so their floating point (Csmith's programs have little) takes the exact path.
 - T3: busybox awk's counts were measured with `wcon` (the runtime track's command line program) on the rented
   x86 machine: the translator's output does not depend on the host, and that program is what runs a real
   container; this track's own binaries test only translates and loads.
