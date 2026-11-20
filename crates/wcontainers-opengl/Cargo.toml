@@ -16,6 +16,9 @@ wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "vulkan"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+
 [build-dependencies]
 cc = "1"
 serde = { version = "1", features = ["derive"] }

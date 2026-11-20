@@ -3840,6 +3840,7 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -15,54 +15,26 @@ param(
     [int]$FractionStart = 1,
     [int]$RunnerJobs = 0
 )
-. (Join-Path $PSScriptRoot '..\..\wcontainers-nir\mesa\windows-tools.ps1')
+. (Join-Path $PSScriptRoot 'cts-windows.ps1')
 if ($RunnerJobs -le 0) { $RunnerJobs = $Jobs }
-
-$Cts = Join-Path $Root 'cts'
-$mustpass = Join-Path $Cts 'src\external\openglcts\data\gl_cts\data\mustpass'
-$glctsDir = Join-Path $Cts 'build\external\openglcts\modules'
-$glcts = Join-Path $glctsDir 'glcts.exe'
-$runner = Join-Path $Tools 'deqp-runner\bin\deqp-runner.exe'
-$mesaBin = Join-Path $Root 'mesa\install\bin'
-foreach ($needed in $glcts, $runner) {
-    if (-not (Test-Path $needed)) { throw "cts run-windows: $needed is missing; run cts\build-windows.ps1" }
-}
-# Windows loads opengl32.dll from the program's own folder first, so each driver runs a hard link
-# of glcts in a folder of its own: Mesa's DLLs beside it, or none for the system's OpenGL (the
-# GPU vendor's), with the suite's data read from the build folder.
-$System = 'system'
-$runFolder = Join-Path $Cts "run\$Driver"
-if (Test-Path $runFolder) { Remove-Item -Recurse -Force $runFolder }
-New-Item -ItemType Directory -Force -Path $runFolder | Out-Null
-$program = Join-Path $runFolder (Split-Path -Leaf $glcts)
-New-Item -ItemType HardLink -Path $program -Value $glcts | Out-Null
-if ($Driver -ne $System) {
-    foreach ($library in Get-ChildItem (Join-Path $mesaBin '*.dll')) {
-        Copy-Item -Force $library.FullName $runFolder
-    }
-    $env:GALLIUM_DRIVER = $Driver
-}
+if (-not (Test-Path $Runner)) { throw "cts run-windows: $Runner is missing; run cts\build-windows.ps1" }
+$program = New-DriverFolder $Driver
 
 # `powershell -File` hands a comma list over as one string.
 $Lists = $Lists | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
-$all = Get-Content (Join-Path $PSScriptRoot 'lists.txt') | Where-Object { $_ -and -not $_.StartsWith('#') }
+$all = Get-Lists
 $chosen = if ($Lists) { $all | Where-Object { $Lists -contains [IO.Path]::GetFileNameWithoutExtension($_) } } else { $all }
 if (-not $chosen) { throw "cts run-windows: none of $Lists is in lists.txt" }
 
 $failed = $false
 foreach ($list in $chosen) {
-    $caselist = Join-Path $mustpass $list
+    $caselist = Join-Path $Mustpass $list
     $name = [IO.Path]::GetFileNameWithoutExtension($list)
-    # The list's first configuration in its folder's mustpass.xml.
-    [xml]$described = Get-Content (Join-Path (Split-Path $caselist) 'mustpass.xml')
-    $configuration = $described.SelectNodes('//Configuration') |
-        Where-Object { $_.caseListFile -eq (Split-Path -Leaf $list) } | Select-Object -First 1
-    if (-not $configuration) { throw "cts run-windows: mustpass.xml has no configuration for $list" }
     $output = Join-Path $Cts "results\$Driver\$name"
     if (Test-Path $output) { Remove-Item -Recurse -Force $output }
-    $deqpArguments = @($configuration.commandLine -split ' ' | Where-Object { $_ }) + "--deqp-archive-dir=$glctsDir"
-    Write-Output "cts: $name on $Driver, every ${Fraction}th case from $FractionStart, $RunnerJobs at once: $($configuration.commandLine)"
-    & $runner run --deqp $program --caselist $caselist --output $output --fraction $Fraction `
+    $deqpArguments = Get-ListArguments $list
+    Write-Output "cts: $name on $Driver, every ${Fraction}th case from $FractionStart, $RunnerJobs at once: $deqpArguments"
+    & $Runner run --deqp $program --caselist $caselist --output $output --fraction $Fraction `
         --fraction-start $FractionStart --jobs $RunnerJobs -- @deqpArguments | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { $failed = $true }
 
