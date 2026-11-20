@@ -1,4 +1,3 @@
-code	crates/wcontainers-abi/src/exit.rs	int	Syscall	6
 code	crates/wcontainers-abi/src/registers.rs	int	RegisterBlock	31
 code	crates/wcontainers-abi/src/registers.rs	int	RegisterBlock	32
 code	crates/wcontainers-arm64/src/decode.rs	int	address	12
@@ -3651,7 +3650,6 @@ code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	4
 code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	4
 code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	5
 code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	5
-code	crates/wcontainers-kernel-test/src/standin.rs	int	StandIn::run	8
 code	crates/wcontainers-kernel-test/src/standin.rs	int	x_register	29
 code	crates/wcontainers-kernel-test/src/standin.rs	int	x_register	30
 code	crates/wcontainers-kernel-test/src/standin.rs	str	Memory::save_registers	"16 bytes"
@@ -4161,7 +4159,6 @@ code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::charge_signal	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::charge_signal	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::deliver	4
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::deliver	4
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::deliver	8
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::force_signal	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::queue_to_process	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::queue_to_thread	128
@@ -5522,10 +5519,6 @@ code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	0xff
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	10_000_000
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	128
 code	crates/wcontainers-kernel/src/task.rs	int	Kernel::child_info	8
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	3
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	4
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	5
-code	crates/wcontainers-kernel/src/task.rs	int	Kernel::settle	8
 code	crates/wcontainers-kernel/src/tty.rs	byte	Discipline::finish_erasing	b'/'
 code	crates/wcontainers-kernel/src/tty.rs	byte	Pty::echo_char	b'\t'
 code	crates/wcontainers-kernel/src/tty.rs	byte	Pty::echo_op	b'\x08'
