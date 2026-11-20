@@ -595,19 +595,31 @@ start and 3.7 at the end, 732 s, most of it the references that do not end, held
   `irradiancecube.frag` on seed 0x5eed + 1 or + 3, `canvas_sdf.glsl#MODE_LOAD_SHRINK` on + 3. No
   outcome changed in any other way (`scripts/outcome_changes.py`).
 
-The choice, on this corpus (not final until Dolphin is in; the GLSL gives the same order: B
-matches 1341 piglit, 316 bgfx, 8574 dEQP and 231 Godot programs, A 3, 21, 0 and 0; Godot's
-RenderingDevice SPIR-V B 387, A 237). Run 11 started `corpus/choose` over all 18,222 items,
-detached on the x86-64 machine (job `graphics-nir-choice/20261120-064354-2508593`, results in
-`/work/target/graphics-nir/nir-choice-r11.jsonl`, its last twelve lines the job's output, which
-`x86-run --attach graphics-nir-choice` shows); at about a second a program for both routes it is
-expected to take hours (expected, not measured: run 4 took 1781 s for 1005 programs). Run 4's timed choice, on the SPIR-V corpus:
-`corpus/choose`, both routes optimised (`--release`), one shader and route at a time in a child of
-its own, on ten cores (`taskset -c 0-9`), x86-64 machine, load 5.5 at the start and 3.2 at the end
-(another track's tests ran beside it), before the Zink patch: A 726 match, B 773 match; on the 725
-shaders both match, time per shader (to the common form, validated) A median 219 us, mean 261 us; B
-median 107 us, mean 125 us. B has more matching shaders and less time per shader: the route is B
-(`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
+The choice (final; 15.3): the route is B (`nir-naga`, `src/direct.rs`). It follows from the
+counts, which are far apart on every source; the times agree with them.
+- Over the whole corpus (run 13's corpus run, 18,222 items, both routes, the comparison):
+  B matches 11,651 programs, A 1,000. By source: SPIR-V samples B 783 and A 738; the Vulkan CTS's alpha_to_one vertex program 1 each; Godot's
+  RenderingDevice SPIR-V B 391 and A 237; piglit B 1,350 and A 3; bgfx B 318 and A 21; dEQP
+  B 8,576 and A 0; Godot's Compatibility shaders B 232 and A 0 (A takes almost no GLSL: Zink's
+  compiler needs Zink's own lowered IO). On the 998 programs both match, at 172 at once on a busy
+  machine: A median 542 us, B median 429 us.
+- Timed alone (`corpus/choose`'s way: optimised, one program and route at a time, ten cores), on
+  a seeded sample of 2,000 items with run 13's code (`WC_NIR_SHADERS=2000`, seed 0x5eed;
+  `results/run13/nir-choice-r13.jsonl`; x86-64 machine, cores 10-19 (0-9 held run 11's choice),
+  load 3.8 at the start and 2.6 at the end, 1691 s): B matches 1,285 and A 119 (of 1,346 that
+  reach a route); on the 118 both match, A median 237 us, mean 325 us; B median 174 us, mean
+  213 us.
+- Timed alone over the whole corpus (run 11's `corpus/choose`, run 11's code, all 18,222 items,
+  one program and route at a time on cores 0-9; job `graphics-nir-choice/20261120-064354-2508593`;
+  `results/run13/nir-choice-r11.jsonl`; x86-64 machine, load 23.7 at the start (other runs of
+  ours) and 0.6 at the end, other tracks' and this track's runs beside it on other cores, 16,673 s
+  wall): B converts 11,811 of 12,234 and matches 11,626; A converts 1,154 and matches 993. On the
+  991 programs both match: A median 252 us, mean 404 us; B median 193 us, mean 250 us. B is ahead
+  on the count by 10,633 programs and 24 % faster at the median. Its counts are run 11's corpus
+  run's exactly (run 12's and 13's fixes came after).
+- Run 4's timed choice, on the SPIR-V corpus (ten cores, load 5.5 to 3.2, before the Zink patch):
+  A 726, B 773 match; on the 725 both match, A median 219 us, B median 107 us.
+- Dolphin is not in the corpus (Next 4); the choice does not wait on it: B leads on every source.
 
 Harness limits left, each with why it is not closed (run 13; programs route B converts but the
 comparison does not hold, of 18,222 items):
@@ -664,8 +676,13 @@ Next (after G8's check):
   (fetches the corpus, builds optimised, runs one shader and route at a time on ten cores; its last
   lines give each route's counts and its median and mean time on the shaders every route matches).
   From the Mac: `x86-run <checkout> --name graphics-nir -- 'WC_NIR_TIMING_CORES=0-9
-  crates/wcontainers-nir/corpus/choose $CARGO_TARGET_DIR/nir-choice.jsonl'` (about 30 minutes for 1005 shaders, most of it the six hanging
-  `irradiancecube.frag` runs). `WC_NIR_SHADERS=<n>` takes a seeded sample (for the independent check).
+  crates/wcontainers-nir/corpus/choose $CARGO_TARGET_DIR/nir-choice.jsonl'` (the whole corpus of 18,222 items took 4 h 38 min in run 11; most of it is Zink's compiler
+  aborting on GLSL in route A, each abort a core dump the machine's `apport` writes).
+  `WC_NIR_SHADERS=<n>` takes a seeded sample: for the independent check,
+  `WC_NIR_TIMING_CORES=0-9 WC_NIR_SHADERS=2000 crates/wcontainers-nir/corpus/choose
+  $CARGO_TARGET_DIR/nir-choice-check.jsonl` (run 13: 1691 s; B 1,285 match, A 119). A reference
+  that does not end on the seeded inputs is held on up to four seeds, two minutes each, so a
+  sample with such programs takes longer.
 - The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
   the Mesa build; the route test linked with a map, each kept object traced to its source).
 
