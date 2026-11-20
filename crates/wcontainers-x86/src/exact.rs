@@ -166,7 +166,8 @@ pub fn run(code: i32, a: u128, b: u128, mxcsr: &mut u32) -> (u128, u32) {
     };
     let masks = *mxcsr >> MXCSR_MASK_SHIFT;
     let mut flags = x.flags;
-    if flags & BEFORE & !masks != 0 {
+    // A dot product's steps each filtered their own (`Context::step`).
+    if operation != Operation::DotProduct && flags & BEFORE & !masks != 0 {
         flags &= BEFORE;
     }
     *mxcsr |= flags;
@@ -334,6 +335,21 @@ impl Context {
         } else {
             r.value
         }
+    }
+
+    /// One micro-operation of a dot product (its multiplications, then each round of additions), whether the
+    /// next runs: the CPU stops after the first that raises an unmasked exception, and one whose operand
+    /// exception is unmasked raises nothing of its computation, as a one-step instruction does.
+    fn stage(&mut self, run: impl FnOnce(&mut Self)) -> bool {
+        let earlier = core::mem::take(&mut self.flags);
+        run(self);
+        let masks = self.mxcsr >> MXCSR_MASK_SHIFT;
+        if self.flags & BEFORE & !masks != 0 {
+            self.flags &= BEFORE;
+        }
+        let unmasked = self.flags & !masks & MXCSR_FLAGS != 0;
+        self.flags |= earlier;
+        !unmasked
     }
 
     fn arithmetic<F: Bits>(&mut self, op: Operation, a: F, b: F) -> F
@@ -595,30 +611,31 @@ impl Context {
                 // The selected products, +0 for the rest, summed in pairs and then the pairs' sums.
                 let products = u32::from(immediate) >> DOT_PRODUCT_SHIFT;
                 let count = u128::BITS as usize / F::BITS;
-                let mut terms: Vec<F> = (0..count)
-                    .map(|n| {
+                let mut terms = vec![F::ZERO; count];
+                let mut more = self.stage(|x| {
+                    for (n, term) in terms.iter_mut().enumerate() {
                         if products >> n & 1 != 0 {
-                            self.arithmetic(Mul, f(a, n), f(b, n))
-                        } else {
-                            F::ZERO
+                            *term = x.arithmetic(Mul, f(a, n), f(b, n));
                         }
-                    })
-                    .collect();
+                    }
+                });
                 // Each lane adds its neighbour, then the other pair's sum, in the CPU's order: the
                 // neighbour first in single precision's first step (seen on the reference).
                 let mut distance = 1;
-                while distance < count {
+                while more && distance < count {
                     let swapped = distance == 1 && F::BITS == u32::BITS as usize;
-                    terms = (0..count)
-                        .map(|n| {
-                            let (x, y) = (terms[n], terms[n ^ distance]);
-                            if swapped {
-                                self.arithmetic(Add, y, x)
-                            } else {
-                                self.arithmetic(Add, x, y)
-                            }
-                        })
-                        .collect();
+                    more = self.stage(|x| {
+                        terms = (0..count)
+                            .map(|n| {
+                                let (p, q) = (terms[n], terms[n ^ distance]);
+                                if swapped {
+                                    x.arithmetic(Add, q, p)
+                                } else {
+                                    x.arithmetic(Add, p, q)
+                                }
+                            })
+                            .collect();
+                    });
                     distance *= 2;
                 }
                 out = 0;
