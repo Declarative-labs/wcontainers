@@ -75,7 +75,61 @@ independent check's findings and what was done) are in this file's history:
 
 ## C1: the progress count in the WebAssembly output
 
-(This run; see below.)
+First run (2026-11-20, from 10:40 local). Partly done.
+
+Done:
+- The fourth T3 check's findings: `Omit::bits`/`from_bits` exist only with the `measure` feature (clippy on
+  the translator alone now passes, and the lint script checks it alone too); the register jump test's first
+  layout is back as a known failure (`a_tail_call_to_a_function_only_data_names_is_not_unrecognised`,
+  ignored with its reason, 3,600 against 2,400 on the rented ARM64 machine); the speed ruling, the awk
+  figures, look-ahead none and Docker corrected above; this file cut from 3,630 lines to about 1,050 (the
+  per-run history is in git, see "Where things stand").
+- The count, definition E (`code::progress_event`, from `Guest::flow`: a direct jump with target at or
+  below itself, taken or not, every call, return and jump through a register or memory), counted once per
+  instruction at its first way out (`jump`, `jump_if`, `call`, `ret`), after its memory checks. Asked for by
+  `translate(.., ProgressCount::Kept, ..)` (a new parameter after `Optimise`; the description section ends
+  with it, version 4). Limit at 800, count at 808 (`contract::progress_limit_offset`/`progress_count_offset`,
+  from `Guest::STOP_FLAG_OFFSET`). Stop check: `push_stop_wanted` (flag, or count >= limit); raising the stop
+  writes limit 0. Form "E-local": at full and bounded a piece keeps the count in a local (loaded at entry,
+  written back with the registers, loaded again after a call); at none every event adds to the block.
+- Runner: `Machine::keep_progress_count`, `set_progress_limit`, `progress_count`; `Paused::progress_count`,
+  `set_progress_limit`, `carry_on_at_none` (leave and carry on with pieces made at none only), `end_run`.
+  `progress::reach` reaches a position (see the plan, "The progress count").
+- Tests (`tests/progress_count.rs`, rented ARM64 machine, release, 4 test threads, load 12 to 30): hand count
+  of `progress_events.S` (5 rounds: 4 x 5 + 1 = 21) at none, bounded 256 and a drawn N, full, speed and size:
+  passed. The count at every system call and at the end is the same at those eight and twice each, for 8
+  programs (progress_events, leafcalls -O0/-O2, bench SCALE=0 -O0/-O2, jumps, tables, exceptions): passed.
+  Every stop of bounded and full stopping at every check is a position of none's run, in order (3
+  programs): passed. One stop a program and look-ahead (seed 1), logged at each of the eight, reached from
+  each of the eight: passed (469 s with two stops each). Csmith (layer 3's cases, seed 1, 12 programs): 11
+  compared, 1 reached 2^32 events at full and was left out, 0 failing.
+- The benchmark set's counts are the prototype's exactly (fib 1,300,483,329, sieve 879,049,018, hash
+  409,802,086, sort 477,041,232, interpret 758,494,538, matrix 268,224,251, search 901,000,429): an
+  independent cross-check of definition E.
+- Cost of E-local, `measure_progress_count` (full, speed, wasmtime, best of 5, alternating; with over
+  without), commit fae9323c:
+  - ARM64, rented Graviton4, load 12 to 29: fib 1.154, sieve 1.152, hash 1.000, sort 1.019, interpret
+    1.076, matrix 0.988, walk 0.997, search 1.471; leaf calls below 1.074, above 1.083.
+  - x86-64, rented machine, load 6 to 50: fib 1.052, sieve 0.979, hash 0.999, sort 1.035, interpret 0.988,
+    matrix 0.948, walk 0.997, search 1.118; leaf calls 1.066 and 1.072.
+  - ARM64, this Mac (Apple M5 Max), load 3 to 7, run here because the stall is a property of Apple's core
+    and no rented machine has one: fib 1.071, sieve 1.053, hash 0.994, sort 1.022, interpret 1.078, matrix
+    1.040, walk 1.019, search 0.968; leaf calls 4.447 and 3.732 times: the leaf-call stall, reproduced.
+    Not seen on the Graviton. A leaf call there stores the count before the call, the leaf loads it, adds
+    and stores it, and the caller loads it again: two store-to-load round trips through memory a call.
+
+Next (in order):
+1. Form "E-param": the count as the pieces' last parameter and last result when kept (thread module, piece
+   and dispatcher types, `arguments`, `call`, `push_results`, the bottom loop, `save_passed` for leaving),
+   so no memory round trip is made at a call. Measure it on the M5, the Graviton and the x86 machine against
+   E-local, keep the cheaper (one form only), and record it.
+2. The long checks started on the rented ARM64 machine (scratch `c1/checks.sh`, log `c1/checks-arm.log`;
+   results in the copy's `target/c1`, fetch with `arm-run --fetch translator target/c1 <dir>`): Csmith 1,000
+   (seed 1), layer 2 10,000 at seed 1100, the progress tests. Then layer 1 on the Mac. Rerun all on the
+   chosen form.
+3. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
+   hand-count `progress_events.S` or a program of its own.
+4. Search on the Graviton (+47%) is the largest cost: look at wasmtime's code for its loop.
 
 ## Done
 
