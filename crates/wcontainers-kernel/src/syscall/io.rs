@@ -1764,10 +1764,10 @@ fn write_bytes_after(
             // page stays, holding zeros, and the write ends there, EFAULT if nothing was written.
             let next = offset + written;
             if written < wanted && written as usize == bytes.len() {
-                let chunk = ((next / 4096 + 1) * 4096 - next).min(wanted - written);
+                let chunk = ((next / PAGE_SIZE + 1) * PAGE_SIZE - next).min(wanted - written);
                 let page = regular.writable(next, chunk);
                 if page.is_ok() {
-                    regular.hold_page(next / 4096);
+                    regular.hold_page(next / PAGE_SIZE);
                 }
                 if written == 0 {
                     allowed = page.and(Err(Errno::EFAULT));

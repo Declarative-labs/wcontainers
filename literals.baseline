@@ -4798,9 +4798,6 @@ code	crates/wcontainers-kernel/src/syscall/io.rs	int	store_entries	8
 code	crates/wcontainers-kernel/src/syscall/io.rs	int	store_entries	8
 code	crates/wcontainers-kernel/src/syscall/io.rs	int	store_entries	8
 code	crates/wcontainers-kernel/src/syscall/io.rs	int	vectored2	3
-code	crates/wcontainers-kernel/src/syscall/io.rs	int	write_bytes	4096
-code	crates/wcontainers-kernel/src/syscall/io.rs	int	write_bytes	4096
-code	crates/wcontainers-kernel/src/syscall/io.rs	int	write_bytes	4096
 code	crates/wcontainers-kernel/src/syscall/io.rs	int	write_proc	0x1ff
 code	crates/wcontainers-kernel/src/syscall/io.rs	int	write_proc	12
 code	crates/wcontainers-kernel/src/syscall/io.rs	int	write_proc	15
