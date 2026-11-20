@@ -148,7 +148,8 @@ pub trait Guest: Personality {
     const STEPS: bool = false;
     /// What the stop hook does about single stepping, worked out on the thread's state (`BLOCK_SIZE +
     /// PRIVATE_BYTES` bytes from the block). The runner asks it first at every stop hook call, with
-    /// `StepAt::Stop(pc)`, and with `StepAt::Kernel` whenever the kernel has had the thread.
+    /// `StepAt::Stop(pc)`, with `StepAt::Kernel` whenever the kernel has had the thread, and with
+    /// `StepAt::Retry(pc)` when the memory fault hook settled an access and runs its instruction again.
     fn step(state: &mut [u8], at: StepAt) -> Step {
         let _ = (state, at);
         Step::Off
@@ -592,11 +593,13 @@ pub enum CodeChanges {
     Detected,
 }
 
-/// When `Guest::step` is asked: at a stop hook call with pc, or after the kernel has had the thread.
+/// When `Guest::step` is asked: at a stop hook call with pc, after the kernel has had the thread, or when
+/// the instruction at pc runs again from its start because the memory fault hook settled its access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepAt {
     Stop(u64),
     Kernel,
+    Retry(u64),
 }
 
 /// What the runner then does. `Off`: carry on, the stop flag lowered unless another reason holds it. `Run`:

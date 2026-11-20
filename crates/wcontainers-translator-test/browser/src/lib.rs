@@ -235,14 +235,11 @@ pub extern "C" fn cpu_memory_fault(address: i64, length: u32) -> i32 {
 }
 
 /// What single stepping does now (`Guest::step`), on the thread's state copied to [`cpu_state`], which the
-/// runner copies back: at a stop hook call with `pc` (`kind` 0) or after the kernel had the thread (1).
-/// Returns the place of the answer in the contract's `steps`.
+/// runner copies back, with `kind` the place in `STEP_ATS` of when it is asked. Returns the place of the
+/// answer in the contract's `steps`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cpu_step(kind: u32, pc: i64) -> i32 {
-    let at = match kind {
-        0 => StepAt::Stop(pc as u64),
-        _ => StepAt::Kernel,
-    };
+    let at = STEP_ATS[kind as usize].1(pc as u64);
     let length = contract::thread_state_size::<G>();
     let step = STATE.with_borrow_mut(|state| G::step(&mut state[..length], at));
     STEPS.iter().position(|s| *s == step).unwrap() as i32
@@ -252,7 +249,16 @@ pub extern "C" fn cpu_step(kind: u32, pc: i64) -> i32 {
 const STEPS: [Step; 4] = [Step::Off, Step::Run, Step::Exact, Step::Trap];
 /// The names runner.js gives the answers of `Guest::step`.
 const STEP_NAMES: [&str; 4] = ["off", "run", "exact", "trap"];
+/// A `StepAt` made from the pc it is asked at.
+type StepAtPc = fn(u64) -> StepAt;
+/// When `Guest::step` is asked, by the name runner.js uses; `cpu_step`'s `kind` is the place here.
+const STEP_ATS: [(&str, StepAtPc); 3] = [
+    ("stop", StepAt::Stop),
+    ("kernel", |_| StepAt::Kernel),
+    ("retry", StepAt::Retry),
+];
 /// Keys of the contract that runner.js reads.
+const STEP_AT_KEY: &str = "stepAt";
 const UNWIND_GO_TO_EXACT_KEY: &str = "unwindGoToExact";
 const STEPS_KEY: &str = "steps";
 const CPU_STEPS_KEY: &str = "cpuSteps";
@@ -400,6 +406,16 @@ pub extern "C" fn contract() -> i32 {
             serde_json::json!(UNWIND_GO_TO_EXACT),
         ),
         (STEPS_KEY, serde_json::json!(STEP_NAMES)),
+        (
+            STEP_AT_KEY,
+            serde_json::Value::Object(
+                STEP_ATS
+                    .iter()
+                    .enumerate()
+                    .map(|(kind, (name, _))| (name.to_string(), kind.into()))
+                    .collect(),
+            ),
+        ),
         (CPU_STEPS_KEY, serde_json::json!(G::STEPS)),
         (CODE_CHANGES_DETECTED_KEY, serde_json::json!(detected)),
         (

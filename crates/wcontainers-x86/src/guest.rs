@@ -534,6 +534,9 @@ impl Guest for X86_64 {
                 }
                 _ => (STEP_IDLE, Step::Off),
             },
+            // The stepped instruction has not finished: it runs alone again from its start.
+            StepAt::Retry(pc) if machine == STEP_RUNNING && pc == at_pc => (STEP_ALONE, Step::Run),
+            StepAt::Retry(_) => (machine, Step::Off),
         };
         state[STEP..][..size_of::<u32>()].copy_from_slice(&next.to_le_bytes());
         answer

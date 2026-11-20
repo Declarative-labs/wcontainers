@@ -1226,6 +1226,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                     code_written(host, page);
                     let pc = pc_of::<G>(&snapshot(&mut caller));
                     caller.data_mut().exact_mark = Some(pc);
+                    step::<G>(&caller, StepAt::Retry(pc));
                     return UNWIND_GO_TO_EXACT;
                 }
                 slow_path(

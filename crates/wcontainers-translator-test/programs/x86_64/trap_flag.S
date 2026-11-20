@@ -58,6 +58,10 @@ landed:
   lea SCRATCH/2(%rsp), %rsi
 #elif CASE == 7
   mov %ss, %eax
+#elif CASE == 10
+  mov $3, %ecx
+  lea written(%rip), %rdi
+  mov $0x90, %al
 #endif
   pushf
   orq $TF, (%rsp)
@@ -89,6 +93,12 @@ landed:
   // A load of ss holds the trap back one instruction.
   mov %eax, %ss
   inc %r13
+#elif CASE == 9
+  // A store into this page of translated code: it is done, then the stop.
+  movb $0x90, written(%rip)
+#elif CASE == 10
+  // A rep pass whose element writes this page of translated code: one element, rip on the instruction.
+  rep stosb
 #endif
 #endif
   inc %r14
@@ -97,3 +107,8 @@ landed:
   mov $SYS_exit, %eax
   xor %edi, %edi
   syscall
+  // Code bytes cases 9 and 10 write.
+written:
+  nop
+  nop
+  nop

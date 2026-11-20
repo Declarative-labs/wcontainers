@@ -334,7 +334,7 @@ function run({
         return 0n;
       }
       const result = standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v)));
-      if (!stopped && step(1, 0n) === "run") raiseStopFlag();
+      if (!stopped && step(contract.stepAt.kernel, 0n) === "run") raiseStopFlag();
       return result;
     },
     [contract.hookStop]: () => {
@@ -342,7 +342,7 @@ function run({
       Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 0);
       // The runner raised the flag itself to make the thread leave.
       if (stopped) return contract.unwindLeave;
-      switch (step(0, registers().pc)) {
+      switch (step(contract.stepAt.stop, registers().pc)) {
         case "trap":
           stop({ kind: runner.singleStep });
           return contract.unwindLeave;
@@ -364,6 +364,7 @@ function run({
       if (access !== 0 && page < permissionPages && locks[page] & LOCK_CODE && pagePermissions[page] & contract.write) {
         codeWritten(page);
         exactMark = registers().pc;
+        step(contract.stepAt.retry, exactMark);
         return contract.unwindGoToExact;
       }
       slowPath(reason.memoryFault, address, 0);
@@ -451,8 +452,8 @@ function run({
     new Uint8Array(translator.memory.buffer, cpuState + size, code.length).set(code);
     return contract.memoryFaults[translator.cpu_memory_fault(address, code.length)];
   }
-  // What single stepping does now (`cpu_step`, `kind` 0 at a stop with pc, 1 after the kernel), on a copy of
-  // the thread's state that is copied back.
+  // What single stepping does now (`cpu_step`, `kind` one of `contract.stepAt`), on a copy of the thread's
+  // state that is copied back.
   function step(kind, pc) {
     if (!contract.cpuSteps) return "off";
     const size = contract.threadStateSize;
