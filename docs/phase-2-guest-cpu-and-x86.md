@@ -1703,7 +1703,11 @@ Tests (section 7 gives the detail):
   (section 5.1).
 - What may vary between x86-64 CPUs (`may_vary` true; the list reviewed at X5):
   instructions that leave flags undefined (mul, imul, div, idiv, shifts and rotates, and, or, xor, test,
-  the bit tests, bsf, bsr, tzcnt, lzcnt, shld, shrd) and `bswap` of 16 bits; answers by design (`rdtsc`,
+  the bit tests, bsf, bsr, tzcnt, lzcnt, shld, shrd, and BMI1's `andn`, `bextr`, `blsi`, `blsmsk` and
+  `blsr`) and `bswap` of 16 bits; what AMD CPUs decode otherwise (iced's `DecoderOptions::AMD`: a near
+  branch, call or return with a 66 prefix, which AMD runs with 16-bit operands, `lss` with REX.W, which AMD
+  reads as m16:32, and `ud0`, whose ModRM AMD does not read; a test sweeps every legacy opcode behind the
+  prefixes that matter and requires the mark wherever iced's two decoders differ); answers by design (`rdtsc`,
   `rdtscp`, `cpuid`, `popf`, the descriptor table reads `lsl`, `sldt`, `str`, `smsw`, `sgdt`, `sidt`, the
   segment loads and far transfers); the estimates `rcpps`,
   `rcpss`, `rsqrtps`, `rsqrtss`; `dpps` and `dppd` (the flags of one stopped part way by an unmasked
@@ -2209,6 +2213,19 @@ slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a
   design, leaf 0xD sizes for the XSAVE area when XSAVE is claimed, and leaf 0x15 stating a 1 GHz time stamp
   counter. Leaves above the maximum answer as Intel CPUs do (the highest basic leaf's values). The table is
   checked by a designed-answers test, not against the reference.
+- **How the topology leaves agree with the kernel's CPU count**: the count a program should use is the one
+  the kernel reports (`sysconf`, `sched_getaffinity`, `/proc/cpuinfo`, sysfs), which may differ between
+  machines. CPUID states no count: leaf 1 says each package holds one logical processor with initial APIC
+  identifier 0, leaf 4 that each cache is one processor's, and leaf 0xB's SMT and core levels one processor
+  each with no identifier bits. So every processor the kernel reports looks like a package of its own, which
+  holds for any count, and the answer is the same on every machine and every processor, as the table has no
+  hook and nothing per processor is fixed into translated code. The consequence (expected, not measured):
+  software that enumerates processors by APIC identifier, binding a thread to each CPU and reading leaf 1 or
+  0xB, sees identifier 0 on all of them, so it finds one distinct identifier where the kernel reports more;
+  Linux's own interfaces, which programs and libraries such as glibc's `sysconf` and hwloc on Linux use, give
+  the kernel's count. An identifier per processor would need `cpuid` to ask the kernel which processor runs
+  the thread, a hook on every `cpuid`, with an answer that is stale as soon as the thread moves; it is not
+  built, and X10 revisits it if the kernel presents a topology in sysfs.
 - **Default claims**: only features every instruction of which maps onto WebAssembly without a software
   slow path, plus the x87 unit the architecture requires: FPU (software, counted, section 5.8), TSC, CX8,
   CMOV, MMX, FXSR, SSE, SSE2, SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CX16, LAHF-SAHF in 64-bit mode, LZCNT,
@@ -2875,7 +2892,10 @@ PCLMULQDQ, RDRAND, RDSEED, CLFLUSHOPT, XSAVEOPT, XSAVEC, INVPCID and XSAVES, the
 and the AVX setting's list while the setting is off), the translated side must stop with illegal instruction
 and the reference's run is recorded, not compared. These forms are `GuestTest::unoffered_forms`, run by
 `unoffered_forms_are_illegal` with its own knob, `WC_LAYER1_UNOFFERED_CASES`; a check fails if any code of
-the list has no case that can be drawn. A form's
+the list has no case that can be drawn. Likewise every default code has a form but those left out by design, those the translator decodes as another
+code, and, until milestone X7 writes them, the x87, MMX-register and `fxsave` codes without a meaning;
+`every_default_code_is_drawn_and_written` lists them with the reason and fails on a code that cannot be
+drawn or a form whose meaning is not written (no form is dropped for want of a meaning). A form's
 name (the `Code` name) is the seed key; its group is its mnemonic and encoding. A case is a random
 `Instruction` for the `Code`, with operands from `op_kind(i)` (registers, immediates weighted toward edges,
 memory operands whose base and index point into DATA), encoded by iced's `Encoder`, which gives the bytes and
@@ -2917,7 +2937,9 @@ forms are excluded.
 recursion, tail calls, calls and jumps through registers, jump tables in both x86 compiler styles, frames,
 groups of accesses through one base, walks, lookups, system calls, a final dump of every register and
 the flags) with an x86 emitter written with iced's `CodeAssembler` (test only) that adds what x86 has:
-read-change-write memory operands, string instructions without rep (with rep at X5, which builds them), push and pop, calls through
+read-change-write memory operands, string instructions with and without rep (the walk's string step picks
+one element, `rep lods` or `rep stos`, `repne scas` or `rep movs` onto the next element, `repe cmps` or `rep
+movs` from it, so both the bulk pass and the one-element twin run at every look-ahead), push and pop, calls through
 memory, partial flag writes (inc and dec before a jcc on CF), red-zone use in leaf functions, and `pushfq`
 for the dump. ARM64 keeps its dynasm emitter behind the same model, and its programs for a given seed stay
 byte for byte what they are today.
