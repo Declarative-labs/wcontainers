@@ -74,8 +74,17 @@ fn typed_views(code: &[u8]) -> Vec<TypedView> {
 /// The key fields a shader's typed views are first converted with: their formats by slot,
 /// `route` where it declares typed buffers, and its multisampled arrays' layer counts. Default
 /// for shaders declaring none.
-pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
+pub(super) fn typed_key(
+    code: &[u8],
+    route: TexelBufferRoute,
+    root: &RootSignatureDesc,
+    visibility: u32,
+) -> VariantKey {
     let mut key = VariantKey::default();
+    // Arrays declared without a length take the rest of the root signature's range.
+    if crate::dxbc::declares_unbounded_array(code) {
+        key.register_ranges = root.register_ranges(visibility);
+    }
     for v in typed_views(code) {
         let format = match v.kind {
             Kind::Float => Format::R32Float,

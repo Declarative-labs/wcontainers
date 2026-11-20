@@ -1665,13 +1665,10 @@ impl Device {
                 *pdesc.as_ref().ok_or(E_INVALIDARG)?,
             )
         };
-        let unordered = desc
-            .Flags
-            .contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, Some(unordered))
-            .map_err(hr)?;
         let kind = heap_kind(&heap)?;
         let front = resource_desc(&desc);
+        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, kind, Some(&front))
+            .map_err(hr)?;
         check_creation(kind, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_committed(kind, &front)?;

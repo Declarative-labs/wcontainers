@@ -8,11 +8,12 @@ mod record;
 mod triangle;
 
 use record::Recorder;
-use triangle::{RGBA8, VS};
+use triangle::{PS, RGBA8, VS, element};
 use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
+use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error};
-use wcontainers_gpu::Backend;
+use wcontainers_gpu::{Backend, Features};
 
 #[test]
 fn footprints_follow_the_pitch_and_placement_rules() {
@@ -115,6 +116,136 @@ fn the_triangle_scene_replays() {
             .count(wcontainers_gpu::SlowPath::MappedUploadWhole),
         1
     );
+}
+
+/// The scene's inputs, rasterised with depth clipping `depth_clip` and fill mode `fill`.
+fn scene_raster(depth_clip: bool, fill: u32) -> (Vec<InputElement>, Raster) {
+    let inputs = vec![element("POSITION", 16, 0), element("COLOR", 6, 8)];
+    let raster = Raster {
+        fill,
+        cull: 1,
+        depth_clip,
+        ..Default::default()
+    };
+    (inputs, raster)
+}
+
+/// `DXGI_FORMAT_D32_FLOAT`.
+const D32_FLOAT: u32 = 40;
+
+#[test]
+fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
+    let mut device = Device::new(Recorder::with_caps(|c| {
+        c.features.remove(Features::DEPTH_CLAMP)
+    }));
+    let (inputs, raster) = scene_raster(false, FILL_MODE_SOLID);
+    let start = device.backend().calls.len();
+    triangle::pipeline_with(
+        &mut device,
+        VS,
+        PS,
+        inputs.clone(),
+        raster,
+        TOPOLOGY_TYPE_TRIANGLE,
+        0,
+    )
+    .unwrap();
+    // The back end clips; the programs keep depth inside the clip volume and clamp it.
+    assert!(
+        device.backend().calls[start..]
+            .iter()
+            .any(|c| c.starts_with("create")
+                && c.contains("\"raster\"")
+                && c.contains("depth_clip: true"))
+    );
+    // Without a depth target the vertex program's clamp is all; with one, the pixel program
+    // writes the depth, and with no pixel shader to write it the pipeline is refused by name.
+    let depth_only = |device: &mut Device<Recorder>, dsv| {
+        triangle::pipeline_with(
+            device,
+            VS,
+            &[],
+            inputs.clone(),
+            raster,
+            TOPOLOGY_TYPE_TRIANGLE,
+            dsv,
+        )
+    };
+    assert!(depth_only(&mut device, 0).is_ok());
+    let refused = depth_only(&mut device, D32_FLOAT);
+    assert!(
+        matches!(refused, Err(Error::NotImplemented(_))),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn wireframe_without_polygon_mode_is_refused_by_name() {
+    let mut device = Device::new(Recorder::with_caps(|c| {
+        c.features.remove(Features::POLYGON_MODE)
+    }));
+    let (inputs, raster) = scene_raster(true, FILL_MODE_WIREFRAME);
+    let refused = triangle::pipeline_with(
+        &mut device,
+        VS,
+        PS,
+        inputs,
+        raster,
+        TOPOLOGY_TYPE_TRIANGLE,
+        0,
+    );
+    assert!(
+        matches!(refused, Err(Error::NotImplemented(_))),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_pipeline_with_no_topology_type_is_invalid() {
+    let mut device = Device::new(Recorder::new());
+    for bias in [0, 1] {
+        let (inputs, mut raster) = scene_raster(true, FILL_MODE_SOLID);
+        raster.depth_bias = bias;
+        let refused = triangle::pipeline_with(
+            &mut device,
+            VS,
+            PS,
+            inputs,
+            raster,
+            TOPOLOGY_TYPE_UNDEFINED,
+            0,
+        );
+        assert!(matches!(refused, Err(Error::Invalid(_))), "{refused:?}");
+    }
+}
+
+#[test]
+fn heap_flags_direct3d_12_refuses_are_invalid() {
+    let buffer = triangle::buffer(1);
+    let texture = ResourceDesc {
+        dimension: DIMENSION_TEXTURE2D,
+        ..buffer
+    };
+    let check = |flags, heap, desc: Option<&ResourceDesc>| check_heap_flags(flags, heap, desc);
+    // Measured by `check_d3d12 answers` on committed default-heap buffers.
+    for flags in [0x8, 0x20, 0x100, 0x200, 0x2000] {
+        let answer = check(flags, HeapType::Default, Some(&buffer));
+        assert!(matches!(answer, Err(Error::Invalid(_))), "{flags:#x}");
+    }
+    // Abilities the front lacks where Direct3D 12 may give them.
+    for (flags, heap, desc) in [
+        (0x1, HeapType::Default, Some(&buffer)),
+        (0x21, HeapType::Default, Some(&buffer)),
+        (0x8, HeapType::Default, Some(&texture)),
+        (0x200, HeapType::Upload, Some(&buffer)),
+    ] {
+        let answer = check(flags, heap, desc);
+        assert!(
+            matches!(answer, Err(Error::NotImplemented(_))),
+            "{flags:#x}"
+        );
+    }
+    assert_eq!(check(0, HeapType::Default, Some(&buffer)), Ok(()));
 }
 
 #[test]

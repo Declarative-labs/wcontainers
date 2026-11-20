@@ -204,16 +204,9 @@ fn root_signatures_binding_a_register_twice_for_a_stage_are_refused() {
     assert!(!check(tables(61).chain([constants(0, 0)]).collect()));
 }
 
-/// Chrome's WebGPU with polygon modes, which browsers do not offer yet.
-fn webgpu_with_polygon_mode() -> wcontainers_gpu::Caps {
-    let mut caps = record::webgpu_like_caps();
-    caps.features |= Features::POLYGON_MODE;
-    caps
-}
-
 #[test]
 fn webgpu_reports_11_0_and_tier_1() {
-    let caps = webgpu_with_polygon_mode();
+    let caps = record::webgpu_like_caps();
     assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
     let o = options(&caps);
     assert_eq!(o.resource_binding_tier, 1);
@@ -261,7 +254,7 @@ fn webgpu_reports_11_0_and_tier_1() {
 
 #[test]
 fn resource_tables_give_tier_3_but_not_11_1() {
-    let mut caps = webgpu_with_polygon_mode();
+    let mut caps = record::webgpu_like_caps();
     caps.features |= Features::RESOURCE_TABLES | Features::SUBGROUPS | Features::LOGIC_OP;
     assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
     assert_eq!(options(&caps).resource_binding_tier, 3);
@@ -270,25 +263,34 @@ fn resource_tables_give_tier_3_but_not_11_1() {
 
 #[test]
 fn no_device_without_the_raster_and_blend_abilities_of_11_0() {
-    // Wireframe, depth clamping, a depth bias clamp, independent blending and a partial sample
-    // mask are each 11_0's, and served only by the back end.
+    // A depth bias clamp, independent blending and a partial sample mask are each 11_0's, and
+    // served only by the back end.
     for ability in LEVEL_11_0_FIXED_FUNCTION.iter() {
-        let mut caps = webgpu_with_polygon_mode();
+        let mut caps = record::webgpu_like_caps();
         caps.features.remove(ability);
         assert_eq!(feature_level(&caps), None, "{ability:?}");
     }
-    assert_eq!(feature_level(&record::webgpu_like_caps()), None);
+}
+
+#[test]
+fn browsers_without_polygon_mode_or_depth_clamping_get_11_0() {
+    // Section 9: WebGPU's 11_0 sizes and depth32float-stencil8 give 11_0; depth clamping is done in
+    // the programs, and wireframe is refused by name until the stage helper draws it.
+    let mut caps = record::webgpu_like_caps();
+    caps.features
+        .remove(Features::POLYGON_MODE | Features::DEPTH_CLAMP);
+    assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
 }
 
 #[test]
 fn no_device_without_compute_11_0_sizes_or_d32_s8_targets() {
-    let mut caps = webgpu_with_polygon_mode();
+    let mut caps = record::webgpu_like_caps();
     caps.features.remove(Features::COMPUTE);
     assert_eq!(feature_level(&caps), None);
-    let mut caps = webgpu_with_polygon_mode();
+    let mut caps = record::webgpu_like_caps();
     caps.limits.max_texture_layers = 256;
     assert_eq!(feature_level(&caps), None);
-    let mut caps = webgpu_with_polygon_mode();
+    let mut caps = record::webgpu_like_caps();
     caps.formats.uses[Format::Depth32FloatStencil8.index()] = FormatUse::empty();
     assert_eq!(feature_level(&caps), None);
 }

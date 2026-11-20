@@ -69,29 +69,63 @@ const HEAP_FLAGS_DENY: u32 = 0x4 | 0x40 | 0x80;
 /// need nothing of the memory.
 const HEAP_FLAG_SHADER_ATOMICS: u32 = 0x400;
 
+/// `SHARED`, `ALLOW_DISPLAY`, `SHARED_CROSS_ADAPTER`, `HARDWARE_PROTECTED`, `ALLOW_WRITE_WATCH` and
+/// `TOOLS_USE_MANUAL_WRITE_TRACKING`.
+const HEAP_FLAG_SHARED: u32 = 0x1;
+const HEAP_FLAG_ALLOW_DISPLAY: u32 = 0x8;
+const HEAP_FLAG_SHARED_CROSS_ADAPTER: u32 = 0x20;
+const HEAP_FLAG_HARDWARE_PROTECTED: u32 = 0x100;
+const HEAP_FLAG_ALLOW_WRITE_WATCH: u32 = 0x200;
+const HEAP_FLAG_MANUAL_WRITE_TRACKING: u32 = 0x2000;
+
 /// The heap flags asking for an ability the front lacks, each with its reason. The others are
 /// honoured as they are: resources are always resident and memory is zeroed anyway.
 const HEAP_FLAGS_REFUSED: [(u32, &str); 6] = [
-    (0x1, "shared heaps"),
-    (0x8, "heaps allowing display"),
-    (0x20, "heaps shared across adapters"),
-    (0x100, "hardware-protected heaps"),
-    (0x200, "heaps allowing write watching"),
-    (0x2000, "heaps with manual write tracking"),
+    (HEAP_FLAG_SHARED, "shared heaps"),
+    (HEAP_FLAG_ALLOW_DISPLAY, "heaps allowing display"),
+    (
+        HEAP_FLAG_SHARED_CROSS_ADAPTER,
+        "heaps shared across adapters",
+    ),
+    (HEAP_FLAG_HARDWARE_PROTECTED, "hardware-protected heaps"),
+    (HEAP_FLAG_ALLOW_WRITE_WATCH, "heaps allowing write watching"),
+    (
+        HEAP_FLAG_MANUAL_WRITE_TRACKING,
+        "heaps with manual write tracking",
+    ),
 ];
 
-/// Checks heap flags: refuses undefined bits and, for committed resources (`committed`, whether
-/// the resource allows unordered access), the deny flags, as Direct3D 12 does; reports as not
-/// done those asking for an ability the front lacks.
-pub fn check_heap_flags(flags: u32, committed: Option<bool>) -> Result<(), Error> {
+/// Checks heap flags for a heap of type `heap`: refuses undefined bits and, for a committed
+/// resource described by `committed`, the deny flags, as Direct3D 12 does; refuses as invalid the
+/// flags Direct3D 12 refuses where they are (`check_d3d12 answers`): cross-adapter sharing without
+/// sharing, hardware protection without a protected session (the front offers none), write
+/// tracking on a default heap and display on a buffer; reports as not done those asking for an
+/// ability the front lacks.
+pub fn check_heap_flags(
+    flags: u32,
+    heap: HeapType,
+    committed: Option<&ResourceDesc>,
+) -> Result<(), Error> {
     let defined = match committed {
-        Some(true) => HEAP_FLAGS_DEFINED | HEAP_FLAG_SHADER_ATOMICS,
+        Some(d) if d.flags & FLAG_UNORDERED_ACCESS != 0 => {
+            HEAP_FLAGS_DEFINED | HEAP_FLAG_SHADER_ATOMICS
+        }
         _ => HEAP_FLAGS_DEFINED,
     };
     if flags & !defined != 0 || (committed.is_some() && flags & HEAP_FLAGS_DENY != 0) {
         return Err(Error::Invalid("heap flags"));
     }
-    match HEAP_FLAGS_REFUSED.iter().find(|(bit, _)| flags & bit != 0) {
+    let has = |bit: u32| flags & bit != 0;
+    let tracked = HEAP_FLAG_ALLOW_WRITE_WATCH | HEAP_FLAG_MANUAL_WRITE_TRACKING;
+    if has(HEAP_FLAG_SHARED_CROSS_ADAPTER) && !has(HEAP_FLAG_SHARED)
+        || has(HEAP_FLAG_HARDWARE_PROTECTED)
+        || has(tracked) && heap == HeapType::Default
+        || has(HEAP_FLAG_ALLOW_DISPLAY)
+            && committed.is_some_and(|d| d.dimension == DIMENSION_BUFFER)
+    {
+        return Err(Error::Invalid("heap flags Direct3D 12 refuses here"));
+    }
+    match HEAP_FLAGS_REFUSED.iter().find(|(bit, _)| has(*bit)) {
         Some(&(_, reason)) => Err(Error::NotImplemented(reason)),
         None => Ok(()),
     }
@@ -99,7 +133,7 @@ pub fn check_heap_flags(flags: u32, committed: Option<bool>) -> Result<(), Error
 
 /// `CreateHeap`'s checks of what the description asks beyond its type: an alignment of 0, 64 KiB
 /// or 4 MiB, and no display flag (only committed resources are displayed).
-pub fn check_heap(alignment: u64, flags: u32) -> Result<(), Error> {
+pub fn check_heap(alignment: u64, heap: HeapType, flags: u32) -> Result<(), Error> {
     if ![
         0,
         DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
@@ -109,10 +143,10 @@ pub fn check_heap(alignment: u64, flags: u32) -> Result<(), Error> {
     {
         return Err(Error::Invalid("a heap's alignment"));
     }
-    if flags & 0x8 != 0 {
+    if flags & HEAP_FLAG_ALLOW_DISPLAY != 0 {
         return Err(Error::Invalid("a heap allowing display"));
     }
-    check_heap_flags(flags, None)
+    check_heap_flags(flags, heap, None)
 }
 
 /// `D3D12_CPU_PAGE_PROPERTY` values.

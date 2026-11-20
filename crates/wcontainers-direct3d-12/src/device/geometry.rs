@@ -178,6 +178,7 @@ impl<B: Backend> Device<B> {
         so: Option<&(StreamOutput, u32)>,
         pixel_inputs: Option<&[StageValue]>,
         lines: Option<&VariantKey>,
+        root: &RootSignatureDesc,
     ) -> Result<Made<B>, Error> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented(
@@ -207,7 +208,7 @@ impl<B: Backend> Device<B> {
                     true => interpolation.to_vec(),
                     false => Vec::new(),
                 },
-                ..formats::typed_key(vs, self.texel_route())
+                ..formats::typed_key(vs, self.texel_route(), root, bind::VERTEX)
             },
         )?;
         let interpolated = VariantKey {
@@ -230,16 +231,16 @@ impl<B: Backend> Device<B> {
                 let hull = self.convert_staged(
                     hs,
                     SourceStage::Hull,
-                    formats::typed_key(hs, self.texel_route()),
+                    formats::typed_key(hs, self.texel_route(), root, bind::HULL),
                 )?;
                 // A domain stage the rasteriser follows writes its outputs as the pixel stage
                 // interpolates them.
                 let domain_key = match gs.is_empty() {
                     true => VariantKey {
                         output_interpolation: interpolation.to_vec(),
-                        ..formats::typed_key(ds, self.texel_route())
+                        ..formats::typed_key(ds, self.texel_route(), root, bind::DOMAIN)
                     },
-                    false => formats::typed_key(ds, self.texel_route()),
+                    false => formats::typed_key(ds, self.texel_route(), root, bind::DOMAIN),
                 };
                 let domain = match gs.is_empty() {
                     true => {

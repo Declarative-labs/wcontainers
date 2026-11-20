@@ -291,7 +291,9 @@ impl Raster {
             _ => return Err(Error::Invalid("unknown fill mode")),
         };
         if fill == FillMode::Line && !caps.has(Features::POLYGON_MODE) {
-            return Err(Error::NotImplemented("wireframe without POLYGON_MODE"));
+            return Err(Error::NotImplemented(
+                "wireframe without the back end's polygon mode (FillModeConverted, which needs the stage helper's route)",
+            ));
         }
         let cull = match self.cull {
             1 => CullMode::None,
@@ -312,9 +314,6 @@ impl Raster {
         };
         if biased && self.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
             return Err(Error::NotImplemented("a depth bias clamp"));
-        }
-        if !self.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
-            return Err(Error::NotImplemented("depth clamping"));
         }
         if self.forced_sample_count != 0 || self.conservative != 0 {
             return Err(Error::NotImplemented(
@@ -350,7 +349,8 @@ impl Raster {
             } else {
                 0
             },
-            depth_clip: self.depth_clip,
+            // Where the back end only clips, the programs clamp (`DepthClampInShader`).
+            depth_clip: self.depth_clip || !caps.has(Features::DEPTH_CLAMP),
             scissor: true,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::First,

@@ -147,6 +147,36 @@ pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
         .collect()
 }
 
+/// `D3D10_SB_OPCODE_DCL_CONSTANT_BUFFER` and `D3D10_SB_OPCODE_DCL_SAMPLER`.
+const DCL_CONSTANT_BUFFER: u32 = 89;
+const DCL_SAMPLER: u32 = 90;
+/// A shader model 5.1 range's upper bound when it has none.
+const UNBOUNDED_UPPER: u32 = u32::MAX;
+
+/// Whether `code` declares an array of views, samplers or constant buffers without a length
+/// (a shader model 5.1 range with no upper bound), which the root signature's range sizes.
+pub fn declares_unbounded_array(code: &[u8]) -> bool {
+    let mut found = false;
+    let _ = declarations(code, |opcode, instruction| {
+        let declares = matches!(
+            opcode & OPCODE_TYPE_MASK,
+            DCL_RESOURCE
+                | DCL_RESOURCE_RAW
+                | DCL_RESOURCE_STRUCTURED
+                | DCL_UAV_TYPED
+                | DCL_UAV_RAW
+                | DCL_UAV_STRUCTURED
+                | DCL_CONSTANT_BUFFER
+                | DCL_SAMPLER
+        );
+        if declares && let Some((at, RANGE_INDICES)) = operand_indices(instruction) {
+            found |= instruction.get(at + 2) == Some(&UNBOUNDED_UPPER);
+        }
+        Some(())
+    });
+    found
+}
+
 /// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares;
 /// `None` where it holds no DXBC program chunk or its tokens are malformed.
 pub fn multisampled_arrays(code: &[u8]) -> Option<Vec<u32>> {
@@ -189,21 +219,7 @@ fn declarations(code: &[u8], mut f: impl FnMut(u32, &[u32]) -> Option<()>) -> Op
 /// (space, register) place, whether the operand names a range (5.1), and the return type's x
 /// component where the declaration is typed and names one.
 fn view(instruction: &[u32]) -> Option<((u32, u32), bool, Option<Kind>)> {
-    let mut at = 1;
-    let mut extended = instruction[0] >> EXTENDED_SHIFT != 0;
-    while extended {
-        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
-        at += 1;
-    }
-    let operand = *instruction.get(at)?;
-    at += 1;
-    let mut extended = operand >> EXTENDED_SHIFT != 0;
-    while extended {
-        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
-        at += 1;
-    }
-    // Every index is an immediate word.
-    let indices = (operand >> INDEX_DIMENSION_SHIFT) & INDEX_DIMENSION_MASK;
+    let (mut at, indices) = operand_indices(instruction)?;
     let (register, ranged) = match indices {
         ONE_INDEX => (*instruction.get(at)?, false),
         RANGE_INDICES => (*instruction.get(at + 1)?, true),
@@ -223,6 +239,28 @@ fn view(instruction: &[u32]) -> Option<((u32, u32), bool, Option<Kind>)> {
             _ => None,
         });
     Some(((space, register), ranged, kind))
+}
+
+/// Where a declaration's first operand's indices start, and how many there are (every index an
+/// immediate word): past the opcode, its extended tokens, the operand and its extended tokens.
+fn operand_indices(instruction: &[u32]) -> Option<(usize, u32)> {
+    let mut at = 1;
+    let mut extended = instruction[0] >> EXTENDED_SHIFT != 0;
+    while extended {
+        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
+        at += 1;
+    }
+    let operand = *instruction.get(at)?;
+    at += 1;
+    let mut extended = operand >> EXTENDED_SHIFT != 0;
+    while extended {
+        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
+        at += 1;
+    }
+    Some((
+        at,
+        (operand >> INDEX_DIMENSION_SHIFT) & INDEX_DIMENSION_MASK,
+    ))
 }
 
 /// The bytes of a container's first chunk named `fourcc`.
