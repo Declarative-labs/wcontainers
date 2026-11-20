@@ -290,8 +290,9 @@ The K6c check's findings:
 
 The brief's asks:
 - The two bugs: done in K6c (O_EXCL and O_TRUNC on a backend CREATE, 17703df3, test backend
-  `races_match_reference` via guest backendrace.c; mapped backend pages dropped when attributes
-  show a change, d52191ba, guest backendchanged.c).
+  `arguments_taken_once_match_reference` with guest backendrace.c; mapped backend pages dropped when attributes
+  show a change, d52191ba, test backend `cached_files_changed_outside_match_reference` with guest
+  backendchanged.c).
 - Host addresses: /proc/net's socket numbers and open files were numbered in K6c (322cfeef).
   Now every wait channel, epoll's queues and shared futex keys use a kernel number
   (`Kernel::next_object`, kept in the epoll instance, inotify instance, event counter, terminal
