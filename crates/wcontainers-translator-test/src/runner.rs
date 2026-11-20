@@ -677,6 +677,22 @@ impl<G: GuestTest> Machine<G> {
             .map_or(0, |c| c.0)
     }
 
+    /// How often the slow path of this name, the translator's or the guest's own, was taken.
+    pub fn count_named(&self, name: &str) -> u64 {
+        assert!(
+            Reason::ALL.into_iter().any(|r| r.name() == name)
+                || G::REASONS.iter().any(|r| r.1 == name),
+            "no slow path is named {name:?}"
+        );
+        self.store
+            .data()
+            .counters
+            .iter()
+            .filter(|&(&number, _)| Reason::name_of::<G>(number) == Some(name))
+            .map(|(_, c)| c.0)
+            .sum()
+    }
+
     /// The warnings raised so far.
     pub fn warnings(&self) -> &[Warning<'static>] {
         &self.store.data().warnings

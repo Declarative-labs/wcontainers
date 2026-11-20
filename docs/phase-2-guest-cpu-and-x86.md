@@ -1713,7 +1713,11 @@ Tests (section 7 gives the detail):
   `rcpss`, `rsqrtps`, `rsqrtss`; `dpps` and `dppd` (the flags of one stopped part way by an unmasked
   exception follow the reference's micro-operations); `maskmovdqu` (faults under an all-zero mask are
   implementation dependent); `ldmxcsr` (AMD's misaligned SSE mode takes MXCSR bit 17, which Intel refuses);
-  Linux's 32-bit system call gates; kernel-only instructions a kernel may open to user code (`rdpmc`, port
+  what stores MXCSR's exception flags (`stmxcsr`, `vstmxcsr`, `fxsave`, `xsave`, `xsavec`, `xsaveopt`):
+  while the flags are not kept (section 5.8) they store them as last written, where the CPU stores what its
+  float instructions raised, so the mark goes on the readers of the flags, not on every float instruction
+  that may raise one, since only a reader makes the difference seen (a signal frame's MXCSR, written by
+  the kernel, is section 12's known gap); Linux's 32-bit system call gates; kernel-only instructions a kernel may open to user code (`rdpmc`, port
   I/O, `cli`, `sti`); and everything that stops as illegal instruction here (invalid encodings, anything
   outside the default claims). Not per instruction, and so not in the mark: the address width of the CPU
   presented (a CPU with 5-level paging takes addresses up to bit 56 as canonical, where the i7-8750H stops at
@@ -1917,7 +1921,8 @@ otherwise; `mov` to cs is illegal. All of this was decided by layer 1 against th
   the result (a forward copy onto a destination that starts inside the source), the meaning checks the
   whole source range for reading and the whole destination for writing with `check_range`, and then does
   WebAssembly's `memory.copy` (for movs) or `memory.fill` (for stos with one repeated byte, which includes
-  zero; other values store 8 or 16 bytes at a time in a loop over the checked range). At most 1 MiB moves
+  zero; other values are repeated across a 16-byte vector stored 16 bytes at a time over the checked
+  range, and the last elements, under 16 bytes, are stored one at a time). At most 1 MiB moves
   per pass; rcx, rsi and rdi are then updated as the CPU would after that many elements, and the
   instruction jumps to itself, which is a backward jump, so the stop check runs between passes.
 - **Otherwise, one element per pass**: the meaning moves one element, updates rcx, rsi and rdi with a
@@ -2588,7 +2593,9 @@ As built at X2 (`src/guest/mod.rs`), where building it showed a signature must c
   (`G::Offer::default()`, the interface's `Offer: Default`) until the AVX setting (X8) needs a second one.
 - `no_form(seed)` gives whole cases (the bytes and a plain starting state), since the harness cannot make a
   state; `hand_cases()` stands for `designed(offer)` and also holds the hand-made cases that are compared
-  with the reference (`Designed { name, case, stop, fields, compared }`).
+  with the reference (`Designed { name, case, stop, fields, compared, tracking, counted }`: `tracking`
+  is whether the float flags must be kept after, read back by `GuestTest::tracked`, and `counted` the slow
+  paths it must have counted, by name; x86's MXCSR rules are cases of it).
 - `may_differ` is `reconcile(case, &mut expected, &actual)`: the CPU makes the reference's outcome what the
   translated one must equal. A mask could not say "equal to the case's starting value" (ARM64's FPSR rule)
   or "the reference's stored bytes do not count" (a store that faults).

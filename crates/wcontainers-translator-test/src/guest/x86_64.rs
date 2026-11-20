@@ -319,6 +319,11 @@ impl GuestTest for X86_64 {
         thread[at..at + size_of::<u32>()].copy_from_slice(&1u32.to_le_bytes());
     }
 
+    fn tracked(thread: &[u8]) -> bool {
+        let at = wcontainers_x86::MXCSR_TRACKING;
+        u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
+    }
+
     fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
         // RF is in the frame of every fault, and the runner's own trap flag in r11 after `syscall`.
         expected.state.0[RFLAGS] &= !RF;
@@ -2146,6 +2151,8 @@ fn hand_cases() -> Vec<Designed> {
         stop: Some(stop),
         fields: vec![(RIP, CODE.into())],
         compared,
+        tracking: None,
+        counted: vec![],
     };
     vec![
         designed("int 0x80", &[0xcd, 0x80], Stop::GeneralProtection, false),
@@ -2178,6 +2185,8 @@ fn hand_cases() -> Vec<Designed> {
             stop: Some(Stop::GeneralProtection),
             fields: vec![(RIP, (CODE + 2).into())],
             compared: true,
+            tracking: None,
+            counted: vec![],
         },
         // The destination's address adds the moved stack pointer before the address-size prefix wraps it.
         designed(
@@ -2192,6 +2201,8 @@ fn hand_cases() -> Vec<Designed> {
             stop: Some(Stop::Landed(CODE + 4)),
             fields: vec![],
             compared: true,
+            tracking: None,
+            counted: vec![],
         },
         Designed {
             name: "int3",
@@ -2199,23 +2210,183 @@ fn hand_cases() -> Vec<Designed> {
             stop: Some(Stop::Breakpoint(SI_KERNEL)),
             fields: vec![(RIP, (CODE + 1).into())],
             compared: true,
+            tracking: None,
+            counted: vec![],
         },
     ]
     .into_iter()
     .chain(cpuid_cases())
     .chain(table_cases())
+    .chain(mxcsr_cases())
+    .chain(store_string_cases())
     .chain(segments::far_to_32_bit_cases())
     .collect()
+}
+
+/// A case of one instruction from the state a thread starts in.
+fn encoded(instruction: Instruction) -> Case {
+    let mut encoder = Encoder::new(wcontainers_x86::MODE_BITS);
+    encoder.encode(&instruction, CODE).expect("an encoding");
+    plain(&encoder.take_buffer())
+}
+
+/// MXCSR's rules (plan 5.8): `ldmxcsr` turns tracking on; a float instruction takes the exact path, which
+/// keeps the flags, when tracking is on or the mode is not the default, and the fast path, which leaves them,
+/// otherwise; `stmxcsr` counts while the flags are not kept; an unmasked exception stops with its flag set.
+fn mxcsr_cases() -> Vec<Designed> {
+    use wcontainers_x86::{
+        MXCSR_AT_START, MXCSR_MASK_SHIFT, MXCSR_PRECISION, MXCSR_ROUNDING_SHIFT, Reason,
+    };
+    let not_kept = X86_64::REASONS
+        .iter()
+        .find(|r| r.0 == Reason::MxcsrFlagsReadNotKept)
+        .expect("a reason")
+        .1;
+    let exact = wcontainers_guest_cpu::Reason::ExactFloatingPointRequested.name();
+    let at_stack = MemoryOperand::with_base(Register::RSP);
+    let ldmxcsr = Instruction::with1(Code::Ldmxcsr_m32, at_stack).expect("ldmxcsr");
+    let stmxcsr = Instruction::with1(Code::Stmxcsr_m32, at_stack).expect("stmxcsr");
+    let divss =
+        Instruction::with2(Code::Divss_xmm_xmmm32, Register::XMM0, Register::XMM1).expect("divss");
+    // An inexact quotient.
+    const DIVIDED: [f32; 2] = [1.0, 3.0];
+    const NAMES: [&str; 7] = [
+        "ldmxcsr turns tracking on",
+        "divss in the default mode, flags not kept",
+        "divss with tracking on keeps its flag",
+        "divss rounding down keeps its flag",
+        "divss with precision unmasked stops",
+        "stmxcsr while the flags are not kept",
+        "stmxcsr while the flags are kept",
+    ];
+    let inexact = |mxcsr: u32, tracking: bool| {
+        let mut case = encoded(divss);
+        for (n, value) in DIVIDED.into_iter().enumerate() {
+            case.state.0[XMM + n] = value.to_bits().into();
+        }
+        case.state.0[MXCSR] = mxcsr.into();
+        case.tracking = tracking;
+        case
+    };
+    let landed = |case: &Case| Some(Stop::Landed(CODE + u64::from(case.code.length)));
+    let designed =
+        |name, (case, stop, mxcsr, tracking, counted): (Case, Option<Stop>, u32, _, _)| Designed {
+            name,
+            stop: stop.or_else(|| landed(&case)),
+            fields: vec![(MXCSR, mxcsr.into())],
+            case,
+            compared: true,
+            tracking: Some(tracking),
+            counted,
+        };
+    let mut load = encoded(ldmxcsr);
+    load.placed = (PAGE_SIZE as u32, MXCSR_AT_START.to_le_bytes().to_vec());
+    let store = |mxcsr: u32, tracking| {
+        let mut case = encoded(stmxcsr);
+        case.state.0[MXCSR] = mxcsr.into();
+        case.tracking = tracking;
+        case
+    };
+    let kept = MXCSR_AT_START | MXCSR_PRECISION;
+    let round_down = MXCSR_AT_START | 1 << MXCSR_ROUNDING_SHIFT;
+    let unmasked = MXCSR_AT_START & !(MXCSR_PRECISION << MXCSR_MASK_SHIFT);
+    let cases = [
+        (
+            load,
+            None,
+            MXCSR_AT_START,
+            true,
+            vec![(exact, 0), (not_kept, 0)],
+        ),
+        (
+            inexact(MXCSR_AT_START, false),
+            None,
+            MXCSR_AT_START,
+            false,
+            vec![(exact, 0)],
+        ),
+        (
+            inexact(MXCSR_AT_START, true),
+            None,
+            kept,
+            true,
+            vec![(exact, 1)],
+        ),
+        (
+            inexact(round_down, false),
+            None,
+            round_down | MXCSR_PRECISION,
+            false,
+            vec![(exact, 1)],
+        ),
+        (
+            inexact(unmasked, false),
+            Some(Stop::FloatException(MXCSR_PRECISION)),
+            unmasked | MXCSR_PRECISION,
+            false,
+            vec![(exact, 1)],
+        ),
+        (
+            store(MXCSR_AT_START, false),
+            None,
+            MXCSR_AT_START,
+            false,
+            vec![(not_kept, 1)],
+        ),
+        (store(kept, true), None, kept, true, vec![(not_kept, 0)]),
+    ];
+    NAMES
+        .into_iter()
+        .zip(cases)
+        .map(|(name, case)| designed(name, case))
+        .collect()
+}
+
+/// `rep stos` of words, doublewords and quadwords whose value is not one byte repeated, from an unaligned
+/// start, over whole vectors and a shorter tail (plan 5.6's bulk pass).
+fn store_string_cases() -> Vec<Designed> {
+    use wcontainers_x86::{RAX, RCX, RDI};
+    const VALUE: u64 = 0xfedc_ba98_7654_3210;
+    // Past the vectors, a tail of one element.
+    const ELEMENTS_BYTES: u64 = 2000;
+    const NAMES: [&str; 3] = [
+        "rep stosw of a word not one byte repeated",
+        "rep stosd of a doubleword not one byte repeated",
+        "rep stosq of a quadword not one byte repeated",
+    ];
+    let stos = Code::Stosd_m32_EAX.op_code().op_code() as u8;
+    let [rax, rcx, rdi] = [RAX, RCX, RDI].map(usize::from);
+    NAMES
+        .into_iter()
+        .zip([
+            (vec![OPERAND_SIZE, REP, stos], size_of::<u16>()),
+            (vec![REP, stos], size_of::<u32>()),
+            (vec![REP, REX | REX_W, stos], size_of::<u64>()),
+        ])
+        .map(|(name, (code, bytes))| {
+            let bytes = bytes as u64;
+            let mut case = plain(&code);
+            let elements = ELEMENTS_BYTES / bytes + 1;
+            let start = DATA + 1;
+            case.state.0[rax] = VALUE.into();
+            case.state.0[rcx] = elements.into();
+            case.state.0[rdi] = start.into();
+            Designed {
+                name,
+                stop: Some(Stop::Landed(CODE + code.len() as u64)),
+                fields: vec![(rcx, 0), (rdi, (start + elements * bytes).into())],
+                case,
+                compared: true,
+                tracking: None,
+                counted: vec![],
+            }
+        })
+        .collect()
 }
 
 /// The answers given by design where the reference's depend on the processor (plan 5.10): `lsl` of the
 /// per-CPU segment gives processor 0 on node 0, and `sgdt` and `sidt` land with their store made.
 fn table_cases() -> Vec<Designed> {
-    let encoded = |instruction: Instruction| {
-        let mut encoder = Encoder::new(wcontainers_x86::MODE_BITS);
-        encoder.encode(&instruction, CODE).expect("an encoding");
-        plain(&encoder.take_buffer())
-    };
     let name = |code: Code| -> &'static str { Box::leak(format!("{code:?}").into_boxed_str()) };
     let landed = |case: &Case| Some(Stop::Landed(CODE + u64::from(case.code.length)));
     let lsl = Code::Lsl_r32_r32m16;
@@ -2229,6 +2400,8 @@ fn table_cases() -> Vec<Designed> {
         fields: vec![(rax, 0)],
         case,
         compared: false,
+        tracking: None,
+        counted: vec![],
     }];
     for code in [Code::Sgdt_m1664, Code::Sidt_m1664] {
         let case = encoded(
@@ -2241,6 +2414,8 @@ fn table_cases() -> Vec<Designed> {
             fields: vec![],
             case,
             compared: false,
+            tracking: None,
+            counted: vec![],
         });
     }
     cases
@@ -2287,6 +2462,8 @@ fn cpuid_cases() -> Vec<Designed> {
                 stop: Some(Stop::Landed(CODE + CPUID.len() as u64)),
                 fields,
                 compared: false,
+                tracking: None,
+                counted: vec![],
             }
         })
         .collect()

@@ -15,7 +15,8 @@ use wcontainers_arm64::Arm64;
 use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
-    compare, compare_outcome, on_reference, translated, translated_in_chrome, translated_with,
+    compare, compare_outcome, on_reference, translated, translated_in_chrome, translated_on,
+    translated_with,
 };
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_x86::X86_64;
@@ -205,7 +206,17 @@ fn hand_cases_do_what_they_must<G: GuestTest>() {
             compare::<G>(&mut reference, &designed.case)
                 .unwrap_or_else(|report| panic!("{name}: {report}"));
         }
-        let outcome = translated::<G>(&designed.case);
+        let (outcome, machine) = translated_on::<G>(&designed.case, |_| {});
+        if let Some(tracking) = designed.tracking {
+            assert_eq!(
+                G::tracked(machine.stopped_state()),
+                tracking,
+                "{name}: whether the float flags are kept"
+            );
+        }
+        for &(reason, count) in &designed.counted {
+            assert_eq!(machine.count_named(reason), count, "{name}: {reason}");
+        }
         if let Some(stop) = designed.stop {
             assert_eq!(outcome.stop, stop, "{name}");
         }

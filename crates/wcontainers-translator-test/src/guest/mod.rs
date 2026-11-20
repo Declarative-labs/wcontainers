@@ -79,6 +79,8 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     fn from_state(state: &State, thread: &mut [u8]);
     /// Keep the float exception flags exact from now on, as after a program wrote them.
     fn track(thread: &mut [u8]);
+    /// Whether the float exception flags are kept in this thread state.
+    fn tracked(thread: &[u8]) -> bool;
     /// Make the reference's outcome what the translated one must equal: take over what the architecture
     /// leaves open (registers and memory after a faulting access), and the float flags not kept.
     fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome);
@@ -195,7 +197,8 @@ pub struct Outcome {
     pub changed: Vec<(u32, u8)>,
 }
 
-/// A hand-made case and what it must do: its stop when given, and these fields' values after.
+/// A hand-made case and what it must do: its stop when given, these fields' values, and its float flags' keeping
+/// and slow paths after.
 pub struct Designed {
     pub name: &'static str,
     pub case: Case,
@@ -203,6 +206,10 @@ pub struct Designed {
     pub fields: Vec<(usize, u128)>,
     /// Compared with the reference too; false for what is answered by design.
     pub compared: bool,
+    /// Whether the float exception flags must be kept after it, when given.
+    pub tracking: Option<bool>,
+    /// The slow paths it must have counted, by name, and how often.
+    pub counted: Vec<(&'static str, u64)>,
 }
 
 /// The system call `Smoke::unknown_call` makes, which the stand-in does not have.

@@ -92,6 +92,14 @@ pub fn translated_with<G: GuestTest>(
     case: &Case,
     prepare: impl FnOnce(&mut Machine<G>),
 ) -> Outcome {
+    translated_on(case, prepare).0
+}
+
+/// Run a case through the translator, on a machine `prepare` has changed, and keep the machine.
+pub fn translated_on<G: GuestTest>(
+    case: &Case,
+    prepare: impl FnOnce(&mut Machine<G>),
+) -> (Outcome, Machine<G>) {
     // The table covers the case's one instruction only, so control that lands anywhere else stops there.
     let mut machine = Machine::<G>::new(memory::<G>(), CODE, 1, Syscalls::Stop);
     prepare(&mut machine);
@@ -115,11 +123,12 @@ pub fn translated_with<G: GuestTest>(
     let state = G::to_state(machine.stopped_state());
     let mut now = vec![0u8; DATA_BYTES as usize];
     machine.read(DATA, &mut now);
-    Outcome {
+    let outcome = Outcome {
         stop,
         state,
         changed: changed(case, &now),
-    }
+    };
+    (outcome, machine)
 }
 
 /// Cases one Chrome page runs; a page given several thousand ran out of memory.

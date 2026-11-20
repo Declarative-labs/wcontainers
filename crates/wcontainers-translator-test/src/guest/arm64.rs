@@ -245,6 +245,11 @@ impl GuestTest for Arm64 {
         thread[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
     }
 
+    fn tracked(thread: &[u8]) -> bool {
+        let at = wcontainers_arm64::FLOAT_TRACKING;
+        u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
+    }
+
     fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
         unknown_after_fault(case, expected, actual);
         // Without the flags kept and with FPCR zero, the cumulative exception flags are not kept: FPSR keeps
@@ -825,6 +830,8 @@ fn hand_cases() -> Vec<Designed> {
             stop,
             fields,
             compared,
+            tracking: None,
+            counted: vec![],
         })
     };
     // Alignment faults, so the cases reach them.

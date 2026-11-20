@@ -301,6 +301,8 @@ pub fn far_to_32_bit_cases() -> Vec<Designed> {
             stop: Some(Stop::GeneralProtection),
             fields: vec![(RIP, CODE.into())],
             compared: false,
+            tracking: None,
+            counted: vec![],
         }
     };
     let mut pointer = slot(landing, eight);
