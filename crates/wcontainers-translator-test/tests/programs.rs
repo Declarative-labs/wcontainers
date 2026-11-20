@@ -1,7 +1,7 @@
 //! C programs give the same output and exit status through the translator as on real ARM64 Linux.
 
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator::{LookAhead, Optimise};
+use wcontainers_translator::{FUNCTION_BLOCKS, LookAhead, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
@@ -612,16 +612,24 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
 }
 
 /// A jump through a register to outside its function, or to its own start, is a tail call, no slow path; one
-/// to inside its function that no table explains is, counted each time it runs; a switch whose table's address
-/// its function keeps in its frame is a table explained. The program makes `ROUNDS` of each, for speed and for size.
+/// to inside its function that no table explains, in its own part or in another of a function cut in parts,
+/// is, counted each time it runs; a switch whose table's address its function keeps in its frame is a table
+/// explained. The program makes `ROUNDS` of each, for speed and for size.
 #[test]
 fn only_jumps_inside_their_function_are_unrecognised() {
     const ROUNDS: u64 = 1200;
+    const JUMPS_INSIDE: u64 = 2;
+    // The part jumped into is the last of a function cut in two.
+    let far_after = FUNCTION_BLOCKS / 8;
     let blob = build_with(
         "register_jumps",
         "-O0",
         Library::None,
-        &[&format!("ROUNDS={ROUNDS}")],
+        &[
+            &format!("ROUNDS={ROUNDS}"),
+            &format!("FAR_BEFORE={FUNCTION_BLOCKS}"),
+            &format!("FAR_AFTER={far_after}"),
+        ],
     );
     let theirs = native(&blob);
     for optimise in [Optimise::Speed, Optimise::Size] {
@@ -629,7 +637,7 @@ fn only_jumps_inside_their_function_are_unrecognised() {
         assert_eq!(ours, theirs, "for {optimise:?}");
         assert_eq!(
             machine.count(Reason::JumpThroughRegisterNotRecognised),
-            ROUNDS,
+            JUMPS_INSIDE * ROUNDS,
             "for {optimise:?}"
         );
     }

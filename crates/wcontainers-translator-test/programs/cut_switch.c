@@ -14,7 +14,8 @@ static volatile unsigned long hits;
 #define CASES(k) CASE(k) CASE((k) + 1) CASE((k) + 2) CASE((k) + 3) CASE((k) + 4) CASE((k) + 5) CASE((k) + 6) CASE((k) + 7)
 #define CASE_COUNT 48
 
-__attribute__((noinline)) static unsigned long cut(unsigned long x, unsigned k) {
+// Not static, so the compiler cannot know the cases cover every k and checks k before the table.
+__attribute__((noinline)) unsigned long cut(unsigned long x, unsigned k) {
     unsigned long y = 1;
     switch (k) {
         CASES(0) CASES(8) CASES(16) CASES(24) CASES(32) CASES(40)

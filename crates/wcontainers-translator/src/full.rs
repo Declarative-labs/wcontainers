@@ -52,6 +52,7 @@ pub(crate) fn plan<'a, G: Guest>(
         code,
         decoded: Decodes::default(),
         means: FxHashMap::default(),
+        wholes: FxHashMap::default(),
     };
     let functions = match bound {
         None => finder.functions(starts),
@@ -162,9 +163,14 @@ impl<G: Guest> Planned<'_, G> {
             .zip(&loop_index)
             .map(|(i, loops)| {
                 let function = &self.functions[i];
+                let whole = match self.finder.wholes.get(&function.entry) {
+                    Some(whole) => whole.clone(),
+                    None => Whole::of(function),
+                };
                 let emit = |function, plan, own| {
                     let how = (self.omit, self.optimise, code);
-                    FullEmitter::piece(function, plan, decoded, &index, loops, own, how)
+                    let pieces = (&index, loops, own);
+                    FullEmitter::piece(function, &whole, plan, decoded, pieces, how)
                 };
                 let (piece, mut locals, mut sites) =
                     emit(function, &self.plans[i], index[&function.entry]);
@@ -225,11 +231,33 @@ impl Function {
     }
 }
 
+/// The function a piece's code belongs to, as found before it was cut in parts.
+#[derive(Clone)]
+struct Whole {
+    entry: u64,
+    /// From its lowest instruction's offset to its highest's.
+    span: std::ops::RangeInclusive<u64>,
+}
+
+impl Whole {
+    fn of(function: &Function) -> Whole {
+        let offsets = || function.offsets.iter().copied();
+        let low = offsets().min().expect("a function has an instruction");
+        let high = offsets().max().expect("a function has an instruction");
+        Whole {
+            entry: function.entry,
+            span: low..=high,
+        }
+    }
+}
+
 struct Finder<'a, G: Guest> {
     code: &'a Code<'a, G>,
     decoded: Decodes<G>,
     /// What made each function's entry one, where it is not a start given.
     means: FxHashMap<u64, Means>,
+    /// The function each part of a function cut in parts comes from, by the part's entry.
+    wholes: FxHashMap<u64, Whole>,
 }
 
 /// Entries a function shows, with what shows each.
@@ -378,10 +406,18 @@ impl<G: Guest> Finder<'_, G> {
                 })
                 .collect();
             let mut more = false;
-            for (offset, means) in more_entries.into_iter().flatten() {
-                if entries.insert(offset) {
-                    self.means.insert(offset, means);
-                    more = true;
+            for (function, found) in functions.iter().zip(more_entries) {
+                for (offset, means) in found {
+                    if entries.insert(offset) {
+                        self.means.insert(offset, means);
+                        let whole = self
+                            .wholes
+                            .entry(function.entry)
+                            .or_insert_with(|| Whole::of(function))
+                            .clone();
+                        self.wholes.insert(offset, whole);
+                        more = true;
+                    }
                 }
             }
             if !more {
@@ -1524,6 +1560,7 @@ enum Pc {
 
 struct FullEmitter<'a, G: Guest> {
     function: &'a Function,
+    whole: &'a Whole,
     plan: &'a Plan<G>,
     decoded: &'a Decodes<G>,
     index: &'a BTreeMap<u64, u32>,
@@ -1569,19 +1606,18 @@ struct FullEmitter<'a, G: Guest> {
 }
 
 impl<'a, G: Guest> FullEmitter<'a, G> {
-    #[allow(clippy::too_many_arguments)]
     fn piece(
         function: &'a Function,
+        whole: &'a Whole,
         plan: &'a Plan<G>,
         decoded: &'a Decodes<G>,
-        index: &'a BTreeMap<u64, u32>,
-        loops: &'a FxHashMap<u64, u32>,
-        own: u32,
+        (index, loops, own): (&'a BTreeMap<u64, u32>, &'a FxHashMap<u64, u32>, u32),
         (omit, optimise, code): (Omit, Optimise, &'a Code<'a, G>),
     ) -> (wasm_encoder::Function, usize, Sites) {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
             function,
+            whole,
             plan,
             decoded,
             index,
@@ -2435,25 +2471,17 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
     }
 
-    /// Leave the piece through the lookup. A jump to outside its function, or to its own function's entry, is a
-    /// tail call, which costs what a call through a register costs; one to inside it is a table left
-    /// unrecognised, the slow path, counted.
+    /// Leave the piece through the lookup. A jump to outside its function, or to its function's entry, is a
+    /// tail call, which costs what a call through a register costs; one to inside it, in this part or in
+    /// another of a function cut in parts, is a table left unrecognised, the slow path, counted.
     fn unrecognised_jump(&mut self, target: u32) {
         self.sites[Reason::JumpThroughRegisterNotRecognised as usize] += 1;
         self.write_back();
-        let entry = self.function.entry;
-        let own_function = self.index.get(&entry) == Some(&self.own);
-        let offsets = &self.function.offsets;
-        let first = offsets
-            .iter()
-            .copied()
-            .min()
-            .expect("a function has an instruction");
-        let last = offsets
-            .iter()
-            .copied()
-            .max()
-            .expect("a function has an instruction");
+        let (entry, first, last) = (
+            self.whole.entry,
+            *self.whole.span.start(),
+            *self.whole.span.end(),
+        );
         let load = self.fixed(G_LOAD_ADDRESS);
         let mut s = self.sink();
         s.local_get(target);
@@ -2463,11 +2491,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .i64_sub()
             .i64_const((last - first) as i64)
             .i64_le_u();
-        if own_function {
-            s.local_get(target);
-            load.push(&mut s);
-            s.i64_sub().i64_const(entry as i64).i64_ne().i32_and();
-        }
+        s.local_get(target);
+        load.push(&mut s);
+        s.i64_sub().i64_const(entry as i64).i64_ne().i32_and();
         s.if_(BlockType::Empty)
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)

@@ -183,7 +183,7 @@ const MODULE_FUNCTIONS: usize = ENGINE_FUNCTIONS - 1000;
 const FUNCTION_ENTRY_BYTES: usize = 8;
 /// Tuning number: the blocks a function may have before it is cut in parts. It bounds how deep translating
 /// one function nests, and so the translator's own stack.
-pub(crate) const FUNCTION_BLOCKS: usize = 2048;
+pub const FUNCTION_BLOCKS: usize = 2048;
 
 /// A count for each [`Reason`], by its number.
 /// By reason number, the translator's and then the guest's own from `GUEST_REASONS`, how many places in

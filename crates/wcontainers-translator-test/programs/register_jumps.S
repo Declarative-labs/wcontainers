@@ -1,7 +1,8 @@
 // Jumps through a register, ROUNDS of each: a tail call to another function whose address is read from data,
 // a jump into its own function to an address no table explains (its start plus an offset worked out from
-// data), a switch whose table's address the function keeps in its frame, and three tail calls of a function
-// to its own start. Exits with the low bits of what the calls gave back.
+// data), a switch whose table's address the function keeps in its frame, three tail calls of a function
+// to its own start, and a jump into another part of a function cut in parts. Exits with the low bits of what
+// the calls gave back.
 .text
 .globl _start
 _start:
@@ -20,6 +21,9 @@ _start:
   add x20, x20, x0
   mov x0, #3
   bl again
+  add x20, x20, x0
+  mov x1, #1
+  bl far
   add x20, x20, x0
   subs x19, x19, #1
   b.ne 1b
@@ -87,6 +91,29 @@ choose:
   add sp, sp, #32
   ret
 
+// FAR_BEFORE and then FAR_AFTER blocks counting in x0, more than one part holds. With x1 set, jumps into the
+// last FAR_AFTER, at an address no table explains, and gives back FAR_AFTER.
+far:
+  mov x0, #0
+  cbz x1, 5f
+  adr x9, far
+  adr x10, into_far
+  ldr x10, [x10]
+  add x9, x9, x10
+  br x9
+5:
+  .rept FAR_BEFORE
+  add x0, x0, #1
+  cbz x0, 6f
+  .endr
+far_inside:
+  .rept FAR_AFTER
+  add x0, x0, #1
+  cbz x0, 6f
+  .endr
+6:
+  ret
+
 .data
 cases:
   .byte 0, 2, 4, 6
@@ -97,3 +124,5 @@ inside:
   .quad 4
 itself:
   .quad again
+into_far:
+  .quad far_inside - far
