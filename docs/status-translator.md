@@ -13,8 +13,15 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
   and the count into a `TranslationOptions` would be the owner's call.
 - C1 measured the leaf-call stall on this Mac (one test binary, 4 jobs, about two minutes a run, load 3 to
   7): it is a property of Apple's core, which no rented machine has.
-- C1's choice of emission (see "C1") trades a 4.4-fold slowdown of leaf calls on Apple's core for a
-  1.7-fold one of one program (a spill) on the Graviton; please rule if you see it otherwise.
+- C1's choice of emission (see "C1"): the count as the pieces' last parameter (E-param), passed through the
+  thread block only on tail calls off the hot path. E-local cost leaf calls 4.4 times on Apple's core; plain
+  E-param cost hash 1.67 times on the Graviton (a spill), which the block on rare tail calls removes (1.00).
+  The price: about 1 percent on the M5 and x86 means, and search on the Graviton 1.18 to 1.40, from where
+  its unchanged loop lands, not from its code. Please rule if you see it otherwise.
+- Wasmtime's ARM64 code is sensitive to where a hot loop lands: search's inner loop is the same 28
+  instructions at two commits, and costs 1.18 or 1.40 times its count-free form on the Graviton, 0.99 or
+  1.06 on the M5, with the loop at 0x1c30 or 0x1c1c. Any change to code before a loop can move it so;
+  the translator does not choose loop placement today.
 
 - Please rule how T3's speed bar ("the benchmark set's speed is unchanged or better") is read. Against the
   merge (97fff482) it holds: every workload in both engines within 0.994 to 1.004. Against f6e760ae (the
@@ -58,8 +65,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M0 to M5, S1, P1, P2 and T3 are done. C1 (the progress count in the WebAssembly output) is under way: see
-"C1". The run-by-run records of every milestone up to T3 (each measurement with its machine and load, each
+M0 to M5, S1, P1, P2 and T3 are done. C1 (the progress count in the WebAssembly output) is done and waits
+for its independent check: see "C1". The run-by-run records of every milestone up to T3 (each measurement with its machine and load, each
 independent check's findings and what was done) are in this file's history:
 `git show 26e3d848:docs/status-translator.md`. What is done is listed under "Done".
 
@@ -87,7 +94,7 @@ independent check's findings and what was done) are in this file's history:
 
 ## C1: the progress count in the WebAssembly output
 
-First run (2026-11-20, from 10:40 local). Partly done.
+First run (2026-11-20, from 10:40 local), then the second (from 12:20 local, below).
 
 Done:
 - The fourth T3 check's findings: `Omit::bits`/`from_bits` exist only with the `measure` feature (clippy on
@@ -140,13 +147,11 @@ Done:
   - The leaf-call stall (E-local on the M5): a leaf call stored the count, the leaf loaded it, added and stored
     it, and the caller loaded it again, two store-to-load round trips a call, which Apple's core pays for
     heavily and the Graviton hardly. E-param removes it (4.4 to 1.11 times).
-  - Hash on the Graviton under E-param: wasmtime's register allocator spills the hash value in the inner loop
-    (`ldur x4, [sp]` ... `stur x4, [sp]` each turn, `c1/mc/mc/kept.all` against `absent.all`, from the
-    `machine-code` tool with `WC_PROGRESS_COUNT=kept`), a store-to-load chain the M5 does not feel. Not yet
-    avoided.
-  - Chosen: E-param, as its worst case (1.675, one program on one host, a spill) is far below E-local's
-    (4.4, every leaf call on Apple's core), and the means differ by under 3 percent elsewhere. The owner may
-    want to rule.
+  - Hash on the Graviton under E-param: wasmtime's register allocator spilled the hash value in the inner
+    loop (`ldur x4, [sp]` ... `stur x4, [sp]` each turn), a store-to-load chain the M5 does not feel. Removed
+    in the second run (below).
+  - E-param was chosen over E-local: its worst case (1.675, one program on one host) is far below E-local's
+    (4.4, every leaf call on Apple's core).
 - Tests on E-param (rented ARM64 machine, release, 4 threads): all five of `progress_count` passed (268 s).
 - Layer 1 on the Mac on 7d66c447 (seed 1200, 1,000 cases a form, 10 a form in Chrome, 4 jobs, load 6 to 10,
   888 s, `c1/mac-layer1.log`): 1,215 forms, 0 failing; 12,150 cases in Chrome, 0 failing; 1,000 words in no
@@ -172,13 +177,70 @@ Done:
   programs 22 passed (3 ignored, one being the register jump known failure), layer 3 3, layer 2 1, changes
   9, checks 12, browser 1, binaries 2, smoke 6, test_guest 16, valid 7, decoding 6.
 
+Second run (2026-11-20, from 12:20 local, machines' clocks in UTC):
+- Csmith on the first run's code (3848a3f3), layer 3's cases 0 to 1,199 of seed 1 (`WC_PROGRESS_CSMITH=1200`,
+  rented ARM64 machine, 24 jobs, load 5 to 32, 646 s, `c1/checks-3/c1`): 1,023 compared, 177 reached 2^28
+  events at full and were left out, 0 failing.
+- The hash spill, found with the machine code tool (`c1/mc3`, `c1/mc3.sh`) by editing the hash piece's
+  WebAssembly by hand and compiling it with the runner's engine: the spill goes when the count is not passed
+  to the piece's tail calls that hand the loop on (to its checked copy, to a stop), and stays when the count
+  is moved to a register parameter or reloaded after a stop. So the emitted form now passes the count
+  through the thread block on tail calls off the hot path (`FullEmitter::rare_arguments`: to a stop, to a
+  loop's checked copy when its proof fails, to exact code), and code that carries on after a stop or a
+  system call loads it from the block (`reload`). Hot paths (calls, returns, gotos, lookups) are unchanged.
+  Hash's inner loop then has no stack access (ef3c2b22).
+- Its cost against today's output, paired runs of the same tool (best of 5, alternating), first the first
+  run's E-param, then this form, each measured twice on each host (the second, paired run shown; on the
+  Graviton the two agreed within 0.02 for every program, on the M5 within 0.03, on the busy x86 machine up
+  to 0.06, in sort and hash; logs `c1/measure-*`):
+  - Graviton4, 12 jobs, load 7 to 14: fib 1.046 / 1.048, sieve 1.163 / 1.137, hash 1.674 / 0.999, sort 0.982
+    / 0.982, interpret 1.068 / 1.070, matrix 0.988 / 0.989, walk 0.983 / 0.987, search 1.182 / 1.404, leaf
+    calls 1.179 / 1.193 and 1.124 / 1.124. Geometric mean 1.125 / 1.087.
+  - M5 (this Mac, 4 jobs, load 5 to 7): fib 1.055 / 1.042, sieve 1.014 / 1.044, hash 1.012 / 1.008, sort
+    1.028 / 1.028, interpret 1.064 / 1.071, matrix 1.050 / 1.071, walk 1.017 / 1.006, search 0.986 / 1.060,
+    leaf calls 1.093 / 1.091 and 1.100 / 1.105. Geometric mean 1.041 / 1.052.
+  - x86-64 rented machine, load 20 to 59 (busy): fib 1.026 / 1.039, sieve 0.956 / 0.970, hash 1.048 / 1.004,
+    sort 0.969 / 1.075 (first pair 1.030 / 1.032), interpret 0.970 / 1.004, matrix 0.990 / 1.007, walk 1.026
+    / 1.035, search 1.115 / 1.155, leaf calls 1.042 / 1.032 and 1.102 / 1.084. Geometric mean 1.023 / 1.039.
+  - Search: its inner loop is the same 28 instructions in both forms (`c1/mc4h` against `c1/mc4`), at 0x1c30
+    before and 0x1c1c now; its count-free time is the same in both. So its 1.18 to 1.40 on the Graviton (and
+    0.99 to 1.06 on the M5) is where the loop lands, which this change moves but does not choose. Measured
+    alone, not proven by moving the loop by hand.
+  - Kept: this form, for removing a spill from a hot loop by construction; the owner may rule otherwise.
+- The machine code tool names each piece by its real function index (it printed 8 + i, now
+  `contract::first_piece_function`, 27 for hash where it said 10), reads the program's symbols with the
+  `object` crate instead of `nm`, names its strings once, and compiles a module given as `<x.wasm>
+  <out.cwasm>`, for trying another emission by hand (c5267646).
+- The plan's "The progress count" now says how the count travels (it still described E-local).
+- The native track's index of forms (brief, 08:40): applied as its own commit (71e9be93). Each form goes
+  into every bucket whose key agrees with its fixed key bits, walking the subsets of its free bits, in the
+  same order as before, so the buckets are the same lists; checked by layer 1 on the Mac and the decoding
+  tests (below).
+- Closing checks on 71e9be93 (this form and the forms index):
+  - Rented ARM64 machine, 12 jobs, 20:56 to 21:28 UTC, load 3 to 18 (`c1/checks4.sh`, results
+    `c1/checks-4`): `progress_count` 5 passed, 1 ignored (the measurement), 245 s: the hand count, the count
+    the same at none, bounded 256 and a drawn N and full, speed and size, twice, for its 8 programs, the stops
+    of bounded and full on none's run, and every logged stop reached from all eight. Decoding 6 passed.
+    Layer 2, 10,000 programs at a new seed 1300, every one on the CPU: 0 failing (3,468 faulted, 740 left to
+    an address at full). Csmith, layer 3's cases 0 to 1,199 of seed 1: 1,023 compared, 177 left out at 2^28
+    events, 0 failing (1,427 s).
+  - Layer 1 on the Mac (seed 1300, 1,000 cases a form, 10 a form in Chrome, 4 jobs, 3 test threads, load 3
+    to 9, 828 s, `c1/mac-layer1-2.log`): 1,215 forms, 0 failing; 12,150 cases in Chrome, 0 failing; 1,000
+    words in no form illegal as on the CPU; 7 passed.
+  - The whole suite of the four crates (release, `--no-fail-fast`, rented ARM64 machine, 12 jobs, 12 test
+    threads, 20:56 to 21:24 UTC, load 5 to 21, `c1/suite-2.log`, whole output in `c1/suite-2`): every test
+    binary passed but layer 1's, whose two random tests fail on `MSR_SR_systemmove` alone (64 cases a form
+    and 1 a form in Chrome, seed 1), the Graviton's FPSR difference; layer 1's verdict is the Mac's, above.
+    progress_count 5, programs 22 (3 ignored), layer 3 3, layer 2 1, changes 9, checks 12, browser 1,
+    binaries 2, smoke 6, test_guest 16, valid 7, decoding 6, exact 4, guest_free 4, lookaheads 1, no_std 1,
+    omit 1, seeded 1.
+- C1's bar is met by these runs; what is left is its independent check and the owner's rulings.
+
 Next (in order):
-1. More layer 3 programs, so that 1,000 are compared rather than 852 of 1,000 run (`WC_PROGRESS_CSMITH=1200`).
-2. The hash spill on the Graviton: try keeping the count in a fresh local copied from the parameter, or
-   adding the event where the check is, and measure; keep whichever is cheapest on all three hosts.
-3. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
+1. The owner's ruling on the emission and the names (see "For the orchestrator").
+2. For the independent check: other programs and a new seed (`WC_PROGRESS_SEED`, `WC_PROGRESS_CSMITH_SEED`);
    hand-count `progress_events.S` or a program of its own; `measure_progress_count` on each host.
-4. The native track's index of forms (brief, 08:40), then the literal fix list.
+3. The literal fix list.
 
 How to run C1's checks: `cargo test --release -p wcontainers-translator-test --test progress_count`
 (knobs at the top of the file); the cost: `WC_BENCH_RUNS=5 cargo test --release -p
@@ -710,11 +772,9 @@ contract's bits, in both runners).
 ## Next
 
 1. C1, the progress count (see "C1").
-2. The native track's faster index of forms (brief, 2026-11-20 08:40): check it with layer 1 and the routing
-   test and apply it in its own commit, or say why not.
-3. The literal fix list: arm64's decoders and forms (steps 17 to 20) and the test crate's remaining lines
+2. The literal fix list: arm64's decoders and forms (steps 17 to 20) and the test crate's remaining lines
    (orchestrator's `magic-literals/fix-translator.md`).
-4. Refinements of M5 ("M5, fourth run, what comes next", in the file's history).
+3. Refinements of M5 ("M5, fourth run, what comes next", in the file's history).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
