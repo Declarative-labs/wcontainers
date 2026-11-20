@@ -127,12 +127,14 @@ pub fn far_call_push(i: &Instruction) -> u32 {
 /// Whether a real CPU may answer otherwise: a null selector with a privilege level reads back 0 once an
 /// interrupt or signal has returned to user mode; an AMD CPU keeps fs' or gs' base on a null selector where
 /// Intel clears it; a selector of 32-bit code switches a real CPU to 32-bit mode, which this phase does not
-/// have; and Intel leaves the upper half of a 32-bit far call's pushed cs either zero or unwritten.
+/// have; Intel leaves the upper half of a 32-bit far call's pushed cs either zero or unwritten; and AMD reads
+/// `lss`'s operand with REX.W as m16:32 where Intel reads m16:64.
 pub fn may_vary(i: &Instruction) -> bool {
     use Mnemonic::*;
     match i.iced.mnemonic() {
         Mov | Pop => segment_register_of(i, 0).is_some_and(|r| kept(r).is_some()),
         Lfs | Lgs | Retf | Iret | Iretd | Iretq => true,
+        Lss => i.iced.code() == Code::Lss_r64_m1664,
         Call | Jmp => is_far(i),
         _ => false,
     }

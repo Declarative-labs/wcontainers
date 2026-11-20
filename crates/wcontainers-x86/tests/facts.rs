@@ -85,6 +85,32 @@ fn what_may_vary_between_cpus() {
         (&[0xec], true),
         (&[0x6e], true),
         (&[0xfa], true),
+        // BMI1: andn, bextr, blsi, blsmsk and blsr leave AF and PF (bextr SF too) undefined.
+        (&[0xc4, 0xe2, 0x78, 0xf2, 0xc1], true),
+        (&[0xc4, 0xe2, 0x68, 0xf7, 0xc1], true),
+        (&[0xc4, 0xe2, 0xf8, 0xf3, 0xd9], true),
+        (&[0xc4, 0xe2, 0xf8, 0xf3, 0xd1], true),
+        (&[0xc4, 0xe2, 0xf8, 0xf3, 0xc9], true),
+        // Near branches with 66, which AMD takes as 16 bits; the same without it are fully defined.
+        (&[0x66, 0x74, 0x10], true),
+        (&[0x66, 0x0f, 0x84, 0x10, 0, 0, 0], true),
+        (&[0x66, 0xe8, 0x10, 0, 0, 0], true),
+        (&[0x66, 0xe9, 0x10, 0, 0, 0], true),
+        (&[0x66, 0xc3], true),
+        (&[0x66, 0xc2, 0x08, 0x00], true),
+        (&[0x66, 0xff, 0xe0], true),
+        (&[0x66, 0xff, 0xd0], true),
+        (&[0x66, 0xe2, 0x10], true),
+        (&[0x66, 0xe3, 0x10], true),
+        (&[0xe8, 0x10, 0, 0, 0], false),
+        (&[0xc3], false),
+        (&[0xff, 0xe0], false),
+        (&[0xe2, 0x10], false),
+        // lss with REX.W, which AMD reads as m16:32; without it, fully defined.
+        (&[0x48, 0x0f, 0xb2, 0x07], true),
+        (&[0x0f, 0xb2, 0x07], false),
+        // ud0, whose ModRM AMD does not read.
+        (&[0x0f, 0xff, 0xc0], true),
         // Fully defined: add, mov, push, a jump, int3, a kernel-only instruction, int 0x81.
         (&[0x48, 0x01, 0xc8], false),
         (&[0x48, 0x89, 0xc8], false),
@@ -97,6 +123,58 @@ fn what_may_vary_between_cpus() {
     for &(bytes, vary) in cases {
         assert_eq!(X86_64::may_vary(&instruction(bytes)), vary, "{bytes:02x?}");
     }
+}
+
+/// Every encoding iced reads otherwise as an AMD CPU (16-bit near branches, REX.W far pointers, `ud0`'s
+/// ModRM) is marked: over every opcode of the legacy maps, behind each of these prefixes, with ModRMs of
+/// every mode and register field.
+#[test]
+fn what_amd_reads_otherwise_is_marked() {
+    use iced_x86::{Decoder, DecoderOptions};
+    const PREFIXES: &[&[u8]] = &[
+        &[],
+        &[0x66],
+        &[0x48],
+        &[0x66, 0x48],
+        &[0xf0],
+        &[0xf2],
+        &[0xf3],
+        &[0x67],
+    ];
+    const MAPS: &[&[u8]] = &[&[], &[0x0f], &[0x0f, 0x38], &[0x0f, 0x3a]];
+    // A memory operand through a register, through a SIB byte, and rip-relative.
+    const RM: [u8; 3] = [0, 4, 5];
+    const MOD_SHIFT: u32 = 6;
+    const REG_SHIFT: u32 = 3;
+    const MODS: u8 = 4;
+    const REGS: u8 = 8;
+    let decode_as = |bytes: &[u8], options: u32| {
+        let mut d = Decoder::with_ip(wcontainers_x86::MODE_BITS, bytes, 0, options);
+        let i = d.decode();
+        (i.code(), i.len())
+    };
+    let intel = DecoderOptions::FORCE_RESERVED_NOP;
+    let amd = intel | DecoderOptions::AMD;
+    let mut differing = 0;
+    for prefixes in PREFIXES {
+        for map in MAPS {
+            for opcode in 0..=u8::MAX {
+                for modrm in (0..MODS).flat_map(|m| {
+                    (0..REGS).flat_map(move |r| RM.map(|rm| m << MOD_SHIFT | r << REG_SHIFT | rm))
+                }) {
+                    let mut bytes = [prefixes, map, &[opcode, modrm][..]].concat();
+                    bytes.resize(bytes.len() + X86_64::MAX_LENGTH as usize, 0);
+                    if decode_as(&bytes, intel) == decode_as(&bytes, amd) {
+                        continue;
+                    }
+                    differing += 1;
+                    let (i, _) = decode(&bytes).expect("an instruction");
+                    assert!(X86_64::may_vary(&i), "{:02x?}", &bytes[..i.iced.len()]);
+                }
+            }
+        }
+    }
+    assert!(differing > 0);
 }
 
 /// `add` or `sub` of rsp by memory moves it by an amount unknown when translating.

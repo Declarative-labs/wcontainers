@@ -936,13 +936,18 @@ impl Guest for X86_64 {
                     | Adox
                     | Lahf
                     | Sahf
+                    | Andn
+                    | Bextr
+                    | Blsi
+                    | Blsmsk
+                    | Blsr
             ) || setcc(ins.mnemonic()).is_some()
                 || cmovcc(ins.mnemonic()).is_some()
                 || (ins.mnemonic() == Imul && ins.op_count() > 1))
     }
 
     /// Where the meaning fixes flags Intel leaves undefined to the reference CPU's (the multiplications, the
-    /// divisions, the shifts and rotates, the logic instructions' AF, the bit tests' OF, SF, AF and PF), answers
+    /// divisions, the shifts and rotates, the logic instructions' AF, the bit tests' OF, SF, AF and PF, BMI1's AF and PF), answers
     /// by design (`int 0x80` and `sysenter`, which Linux runs as 32-bit system calls, give general protection),
     /// or stops where a CPU with more features runs on: an encoding iced calls invalid, every instruction
     /// outside the default claims, and one of them whose meaning is not written yet. Kernel-only instructions
@@ -983,6 +988,15 @@ impl Guest for X86_64 {
             // manual: implementation dependent); ldmxcsr refuses MXCSR's bit 17, which AMD's misaligned
             // SSE mode takes.
             Dpps | Dppd | Maskmovdqu | Ldmxcsr => true,
+            // Intel ignores an operand-size prefix on a near branch; AMD takes it as 16 bits, with another
+            // length, a truncated target and a 2-byte return address.
+            Jmp | Call | Ret | Jrcxz | Jecxz | Loop | Loope | Loopne if i.operand_size_prefix => {
+                true
+            }
+            m if jcc(m).is_some() => i.operand_size_prefix,
+            // AMD reads no ModRM after `0F FF`, so the length, and a fault past a page or past 15 bytes,
+            // differ.
+            Ud0 => true,
             m if crate::descriptors::may_vary(m) => true,
             _ if crate::segments::may_vary(i) => true,
             // Intel leaves the result of 16 bits undefined.
@@ -1014,6 +1028,11 @@ impl Guest for X86_64 {
                     | Lzcnt
                     | Shld
                     | Shrd
+                    | Andn
+                    | Bextr
+                    | Blsi
+                    | Blsmsk
+                    | Blsr
                     | Sysenter
             ),
         }

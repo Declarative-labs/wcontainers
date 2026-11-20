@@ -21,6 +21,8 @@ pub struct Instruction {
     pub iced: iced_x86::Instruction,
     /// An address-size prefix (0x67) makes its addresses 32 bits.
     pub address32: bool,
+    /// An operand-size prefix (0x66) is among its prefixes.
+    pub operand_size_prefix: bool,
     /// Longer than the CPU's 15-byte limit: general protection.
     pub too_long: bool,
 }
@@ -42,15 +44,14 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     let cut = decoder.last_error() == DecoderError::NoMoreBytes;
     let prefixes = prefix_run(code);
     let address32 = code[..prefixes].contains(&ADDRESS_SIZE);
+    let operand_size_prefix = code[..prefixes].contains(&OPERAND_SIZE);
     let mut too_long = false;
     // `wbnoinvd` is `wbinvd` with an F3 prefix, which a CPU without it (the one presented) ignores.
     if iced.code() == Code::Wbnoinvd {
         iced.set_code(Code::Wbinvd);
     }
     // `movbe` with both 66 and REX.W is illegal on the CPU presented, where iced takes the 64-bit form.
-    if matches!(iced.code(), Code::Movbe_r64_m64 | Code::Movbe_m64_r64)
-        && code[..prefixes].contains(&OPERAND_SIZE)
-    {
+    if matches!(iced.code(), Code::Movbe_r64_m64 | Code::Movbe_m64_r64) && operand_size_prefix {
         iced.set_code(Code::INVALID);
     }
     // iced stops reading at 15 bytes and at what makes an encoding invalid; the CPU counts the whole
@@ -67,6 +68,7 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
         Instruction {
             iced,
             address32,
+            operand_size_prefix,
             too_long,
         },
         length,

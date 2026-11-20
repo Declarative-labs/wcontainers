@@ -105,7 +105,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Shld | Shrd | Adcx | Adox | Loop | Loope | Loopne | Lahf | Sahf | Clflush
                     | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase | Popf | Popfq | Rdtsc
                     | Rdtscp | Cpuid | Xlatb | Movnti | Lfence | Mfence | Sfence | Crc32
-                    | Enter
+                    | Enter | Andn | Bextr | Blsi | Blsmsk | Blsr
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
@@ -279,6 +279,7 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         Bt | Bts | Btr | Btc => bit_test(e, i, m),
         Bsf | Bsr | Tzcnt | Lzcnt | Popcnt => bit_count(e, i, m),
         Bswap | Movbe => byte_reverse(e, i, m),
+        Andn | Bextr | Blsi | Blsmsk | Blsr => bit_manipulation(e, i, m),
         Xadd => exchange_add(e, i),
         Cmpxchg => compare_exchange(e, i),
         Cmpxchg8b | Cmpxchg16b => compare_exchange_pair(e, i),
@@ -2567,6 +2568,138 @@ fn bit_count<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemoni
             s.i32_or();
         }
         _ => at(&mut s, Flag::Z),
+    }
+    s.local_set(word);
+    e.set_flags(Flags::Packed(word));
+}
+
+/// BMI1's `andn`, `bextr`, `blsi`, `blsmsk` and `blsr`. Flags as the reference CPU leaves them: SF from the
+/// result (clear for `bextr`), ZF from the result (clear for `blsmsk`, whose result is never zero), CF from
+/// whether the source is zero for the three `bls`, and OF, AF and PF clear.
+fn bit_manipulation<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    use Mnemonic::*;
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let result = e.local(ValType::I64);
+    let source = match m {
+        Andn => {
+            let inverted = read(e, i, 1, mem);
+            let source = read(e, i, 2, mem);
+            e.sink()
+                .local_get(inverted)
+                .i64_const(mask(w))
+                .i64_xor()
+                .local_get(source)
+                .i64_and()
+                .local_set(result);
+            source
+        }
+        // The start is the control's low byte and the length the next; bits from past the operand are zero.
+        Bextr => {
+            let source = read(e, i, 1, mem);
+            let control = read(e, i, 2, None);
+            let (start, length) = (e.local(ValType::I64), e.local(ValType::I64));
+            let field = i64::from(u8::MAX);
+            let wide = i64::from(W64);
+            let mut s = e.sink();
+            s.local_get(control)
+                .i64_const(field)
+                .i64_and()
+                .local_set(start)
+                .local_get(control)
+                .i64_const(u8::BITS.into())
+                .i64_shr_u()
+                .i64_const(field)
+                .i64_and()
+                .local_set(length);
+            s.local_get(source)
+                .local_get(start)
+                .i64_shr_u()
+                .i64_const(0)
+                .local_get(start)
+                .i64_const(wide)
+                .i64_lt_u()
+                .select()
+                .i64_const(1)
+                .local_get(length)
+                .i64_shl()
+                .i64_const(1)
+                .i64_sub()
+                .i64_const(-1)
+                .local_get(length)
+                .i64_const(wide)
+                .i64_lt_u()
+                .select()
+                .i64_and()
+                .local_set(result);
+            source
+        }
+        _ => {
+            let source = read(e, i, 1, mem);
+            let mut s = e.sink();
+            match m {
+                Blsi => s
+                    .i64_const(0)
+                    .local_get(source)
+                    .i64_sub()
+                    .local_get(source)
+                    .i64_and(),
+                Blsmsk => s
+                    .local_get(source)
+                    .i64_const(1)
+                    .i64_sub()
+                    .local_get(source)
+                    .i64_xor(),
+                _ => s
+                    .local_get(source)
+                    .i64_const(1)
+                    .i64_sub()
+                    .local_get(source)
+                    .i64_and(),
+            };
+            s.local_set(result);
+            source
+        }
+    };
+    truncate(e, result, w);
+    write(e, i, 0, None, result);
+    if !e.flags_live() {
+        return;
+    }
+    let word = e.local(ValType::I32);
+    let mut s = e.sink();
+    let at = |s: &mut wasm_encoder::InstructionSink<'_>, flag: Flag| {
+        s.i32_const(flag.bit() as i32).i32_shl();
+    };
+    match m {
+        Blsmsk => {
+            s.i32_const(0);
+        }
+        _ => {
+            s.local_get(result).i64_eqz();
+            at(&mut s, Flag::Z);
+        }
+    }
+    if m != Bextr {
+        s.local_get(result)
+            .i64_const(i64::from(w - 1))
+            .i64_shr_u()
+            .i32_wrap_i64();
+        at(&mut s, Flag::S);
+        s.i32_or();
+    }
+    match m {
+        Blsi => {
+            s.local_get(source).i64_eqz().i32_eqz();
+            at(&mut s, Flag::C);
+            s.i32_or();
+        }
+        Blsmsk | Blsr => {
+            s.local_get(source).i64_eqz();
+            at(&mut s, Flag::C);
+            s.i32_or();
+        }
+        _ => {}
     }
     s.local_set(word);
     e.set_flags(Flags::Packed(word));
