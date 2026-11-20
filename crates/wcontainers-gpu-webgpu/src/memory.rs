@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -1297,7 +1298,12 @@ impl WebGpu {
         let format = region_format(t, region);
         let (mip, layer, origin, stencil) =
             (region.mip, region.layer, region.origin, region.stencil);
-        let copy = |w: &mut WebGpu, staged: &wgpu::Buffer, offset: u64, pitch: u64, rows: u64| {
+        let copy_layers = |w: &mut WebGpu,
+                           staged: &wgpu::Buffer,
+                           offset: u64,
+                           pitch: u64,
+                           rows: u64,
+                           layers: Range<u32>| {
             let info = wgpu::TexelCopyBufferInfo {
                 buffer: staged,
                 layout: wgpu::TexelCopyBufferLayout {
@@ -1307,14 +1313,32 @@ impl WebGpu {
                 },
             };
             let tex_raw = tex.0.raw();
-            let to = texel_copy(&tex_raw, &tex.0, mip, layer, origin, stencil);
+            let shifted = Origin {
+                z: origin.z + layers.start,
+                ..origin
+            };
+            let to = texel_copy(
+                &tex_raw,
+                &tex.0,
+                mip,
+                layer + layers.start,
+                shifted,
+                stencil,
+            );
+            let part = Extent {
+                depth_or_layers: layers.len() as u32,
+                ..extent
+            };
             if to_texture {
                 w.encoder()
-                    .copy_buffer_to_texture(info, to, extent3d(extent, format));
+                    .copy_buffer_to_texture(info, to, extent3d(part, format));
             } else {
                 w.encoder()
-                    .copy_texture_to_buffer(to, info, extent3d(extent, format));
+                    .copy_texture_to_buffer(to, info, extent3d(part, format));
             }
+        };
+        let copy = |w: &mut WebGpu, staged: &wgpu::Buffer, offset: u64, pitch: u64, rows: u64| {
+            copy_layers(w, staged, offset, pitch, rows, 0..extent.depth_or_layers);
         };
         let pitch = u64::from(buffer.row_pitch);
         let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
@@ -1328,7 +1352,17 @@ impl WebGpu {
             && offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
             && gaps_kept
         {
-            copy(self, &raw, offset, pitch, u64::from(buffer.rows_per_layer));
+            let rows_per_layer = u64::from(buffer.rows_per_layer);
+            // wgpu's Direct3D 12 reads the layers of one copy from the buffer at the extent's
+            // height, so layers further apart are written one copy each.
+            if to_texture && extent.depth_or_layers > 1 && rows_per_layer > rows {
+                for l in 0..extent.depth_or_layers {
+                    let at = offset + u64::from(l) * rows_per_layer * pitch;
+                    copy_layers(self, &raw, at, pitch, rows, l..l + 1);
+                }
+            } else {
+                copy(self, &raw, offset, pitch, rows_per_layer);
+            }
             return;
         }
         // The rows go through a buffer at a pitch and place WebGPU takes, one buffer copy per row.
@@ -1840,5 +1874,18 @@ impl WebGpu {
         }
         buffer.unmap();
         buffer.destroy();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+
+    #[test]
+    fn placement_alignment_is_direct3d_12s() {
+        assert_eq!(
+            super::DX12_PLACEMENT_ALIGNMENT,
+            u64::from(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT)
+        );
     }
 }

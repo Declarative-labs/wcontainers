@@ -32,11 +32,16 @@ mod converted;
 #[path = "../examples/scenes/vertices.rs"]
 mod vertices;
 
+#[allow(dead_code)]
+#[path = "../examples/scenes/renames.rs"]
+mod renames;
+
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, ColorAttachment, DeviceStatus, DrawCall, DrawRange,
-    Extent, Features, Format, FormatUse, LoadOp, Origin, PassDesc, ReadSource, SlowPath, StageSet,
-    StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VertexBinding, VertexFormat, ViewDimension, WriteMode,
+    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment,
+    DeviceStatus, DrawCall, DrawRange, Extent, Features, Format, FormatUse, LoadOp, Origin,
+    PassDesc, ReadSource, SlowPath, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexFormat,
+    ViewDimension, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 use wcontainers_graphics_test::Driver;
@@ -1441,4 +1446,192 @@ fn bgra_vertices_read_as_direct3d_reads_bgra_and_bgrx() {
     println!(
         "seed {seed}, {n} vertices: equal to Direct3D 11's B8G8R8A8_UNORM, and B8G8R8X8_UNORM but for its fourth component, which Direct3D 11 reads as {fourths:?}"
     );
+}
+
+/// Pairs divided by one draw, one a pixel.
+const PAIRS: u32 = 64;
+
+/// atg-simplecomputepc's division: its dividend, and the whole quotient Direct3D gives.
+const SAMPLE_DIVIDEND: f32 = 1200.0;
+const SAMPLE_QUOTIENT: f32 = 4.0;
+/// The sample's divisor, which both programs also divide by as a literal.
+const DIVISOR: f32 = SAMPLE_DIVIDEND / SAMPLE_QUOTIENT;
+const SAMPLE_PAIR: [f32; 2] = [SAMPLE_DIVIDEND, DIVISOR];
+
+/// Each pixel divides its pair: by the pair's run-time divisor and by [`DIVISOR`] written in the
+/// program, each quotient with its fraction, as bits.
+fn division_hlsl() -> String {
+    format!(
+        "cbuffer C : register(b0) {{ float4 v[{PAIRS}]; }};
+float4 vs(uint i : SV_VertexID) : SV_Position {{
+    float2 p = float2((i << 1) & 2, i & 2);
+    return float4(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+uint4 ps(float4 p : SV_Position) : SV_Target {{
+    float4 a = v[(uint)p.x];
+    float q = a.x / a.y;
+    float k = a.x / {DIVISOR:?};
+    return asuint(float4(q, frac(q), k, frac(k)));
+}}"
+    )
+}
+
+fn division_wgsl() -> String {
+    format!(
+        "struct C {{ v: array<vec4f, {PAIRS}> }}
+@group(1) @binding(0) var<uniform> c: C;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+@fragment fn ps(@builtin(position) p: vec4f) -> @location(0) vec4u {{
+    let a = c.v[u32(p.x)];
+    let q = a.x / a.y;
+    let k = a.x / {DIVISOR:?};
+    return bitcast<vec4u>(vec4f(q, fract(q), k, fract(k)));
+}}"
+    )
+}
+
+/// Seeded pairs, the first atg-simplecomputepc's: whole quotients of seeded integers and
+/// seeded floats in a range.
+fn division_pairs(seed: u64) -> Vec<[f32; 4]> {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut pairs = vec![[SAMPLE_PAIR[0], SAMPLE_PAIR[1], 0.0, 0.0]];
+    while pairs.len() < PAIRS as usize {
+        let d = rng.u16(1..) as f32;
+        let n = if rng.bool() {
+            d * rng.u16(..) as f32
+        } else {
+            rng.f32() * f32::from(u16::MAX)
+        };
+        pairs.push([n, d, 0.0, 0.0]);
+    }
+    pairs
+}
+
+fn d3d_divided(gpu: &Gpu, pairs: &[[f32; 4]]) -> Vec<u32> {
+    let source = division_hlsl();
+    let vs = hlsl_of(
+        &source,
+        windows::core::s!("vs"),
+        windows::core::s!("vs_5_0"),
+    );
+    let ps = hlsl_of(
+        &source,
+        windows::core::s!("ps"),
+        windows::core::s!("ps_5_0"),
+    );
+    let bytes: &[u8] = bytemuck::cast_slice(pairs);
+    let constants = gpu
+        .buffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: bytes.len() as u32,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                ..Default::default()
+            },
+            Some(bytes),
+        )
+        .unwrap();
+    let (target, rtv) = gpu.target(PAIRS, 1, DXGI_FORMAT_R32G32B32A32_UINT).unwrap();
+    gpu.begin(&rtv, None, PAIRS, 1);
+    gpu.program(&vs, &ps, &[]).unwrap();
+    unsafe {
+        gpu.context.RSSetState(&gpu.rasterizer(&solid()).unwrap());
+        gpu.context.IASetPrimitiveTopology(
+            windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        );
+        gpu.context
+            .PSSetConstantBuffers(0, Some(&[Some(constants)]));
+        gpu.context.Draw(3, 0);
+    }
+    bytemuck::pod_collect_to_vec(&d3d_read(gpu, &target, 0, size_of::<[u32; 4]>()))
+}
+
+fn our_divided(b: &mut B, pairs: &[[f32; 4]]) -> Vec<u32> {
+    let (target, view) = draw::texture_2d(
+        b,
+        Format::Rgba32Uint,
+        PAIRS,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    )
+    .unwrap();
+    let k = renames::Kit {
+        program: draw::program(b, &division_wgsl()).unwrap(),
+        target,
+        view,
+        ..renames::kit(b, Format::Rgba32Uint, PAIRS, &draw::opaque())
+    };
+    let bytes: &[u8] = bytemuck::cast_slice(pairs);
+    let constants = draw::buffer(b, bytes, BufferUsage::UNIFORM).unwrap();
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &constants,
+                offset: 0,
+                size: bytes.len() as u64,
+            }),
+        }])
+        .unwrap();
+    renames::begin(b, &k, [0.0; 4]);
+    renames::draw_at(b, &k, &set, None);
+    bytemuck::pod_collect_to_vec(&renames::finish(b, &k, size_of::<[u32; 4]>() as u32))
+}
+
+/// Divisions in a converted program against Direct3D 11's on the same GPU: seeded pairs (the first
+/// atg-simplecomputepc's 1200 by 300), each divided by its run-time divisor and by one written in
+/// the program, with fractions. Prints every pair whose bits differ; `WEBGPU_SEED` and
+/// `WEBGPU_CASES` (draws of 64 pairs, default 4) pick the pairs.
+#[test]
+fn divisions_match_direct3d() {
+    let mut b = device_without(wgpu::Features::empty());
+    let gpu = direct3d();
+    let seed: u64 = std::env::var("WEBGPU_SEED").map_or(1, |s| s.parse().expect("a seed"));
+    let cases: u64 = std::env::var("WEBGPU_CASES").map_or(4, |s| s.parse().expect("a count"));
+    eprintln!("seed {seed}, {cases} draws of {PAIRS} pairs");
+    let mut differ = Vec::new();
+    for c in 0..cases {
+        let pairs = division_pairs(seed + c);
+        let theirs = d3d_divided(&gpu, &pairs);
+        let ours = our_divided(&mut b, &pairs);
+        for (i, (t, o)) in theirs.chunks(4).zip(ours.chunks(4)).enumerate() {
+            if t != o {
+                let f = |w: &[u32]| w.iter().map(|&x| f32::from_bits(x)).collect::<Vec<_>>();
+                differ.push(format!(
+                    "{} / {}: Direct3D {:?}, ours {:?}",
+                    pairs[i][0],
+                    pairs[i][1],
+                    f(t),
+                    f(o)
+                ));
+            }
+        }
+        if c == 0 {
+            let f = |w: &[u32]| {
+                w[..4]
+                    .iter()
+                    .map(|&x| f32::from_bits(x))
+                    .collect::<Vec<_>>()
+            };
+            eprintln!(
+                "1200 / 300 (quotient, fraction, by the literal, fraction): Direct3D {:?}, ours {:?}",
+                f(&theirs),
+                f(&ours)
+            );
+        }
+    }
+    eprintln!(
+        "{} of {} pairs differ",
+        differ.len(),
+        cases * u64::from(PAIRS)
+    );
+    for d in &differ {
+        eprintln!("  {d}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert!(differ.is_empty(), "{} pairs differ", differ.len());
 }

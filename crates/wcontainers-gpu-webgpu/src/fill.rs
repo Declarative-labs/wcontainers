@@ -25,8 +25,11 @@ const STENCIL_BITS: usize = u8::BITS as usize;
 /// The name of the empty fragment stage.
 pub(crate) const NO_FRAGMENT: &str = "none";
 
+/// The output type and value of a clear drawing a float format's bits, in WGSL.
+const FLOAT_CLEAR_OUTPUT: (&str, &str) = ("vec4<f32>", "bitcast<vec4<f32>>(value)");
+
 /// A uniform of four words, as the programs' `vec4`.
-type Words = [u32; 4];
+pub(crate) type Words = [u32; 4];
 
 /// A triangle covering the viewport.
 const COVER_WGSL: &str = "
@@ -614,9 +617,9 @@ impl WebGpu {
         DepthProgram { pipeline, layout }
     }
 
-    /// Clears colour target `index` of the open pass, of an integer format, to `bits` by a draw
-    /// covering it. The pass has just begun: its viewport and scissor cover the targets, and no
-    /// query runs.
+    /// Clears colour target `index` of the open pass to `bits` (an integer format's value, or a
+    /// float format's bits) by a draw covering it. The pass has just begun: its viewport and
+    /// scissor cover the targets, and no query runs.
     pub(crate) fn clear_by_draw(
         &mut self,
         rp: &mut wgpu::RenderPass<'static>,
@@ -624,7 +627,12 @@ impl WebGpu {
         index: usize,
         bits: Words,
     ) {
-        self.slow.hit(SlowPath::IntegerClearByDraw);
+        let float = targets.colors[index].is_some_and(|f| f.kind() == FormatKind::Float);
+        self.slow.hit(if float {
+            SlowPath::FloatBitsClearByDraw
+        } else {
+            SlowPath::IntegerClearByDraw
+        });
         let pipeline = match self.fills.clears.get(&(*targets, index)) {
             Some(p) => p.clone(),
             None => {
@@ -670,6 +678,7 @@ impl WebGpu {
         let format = targets.colors[index].expect("the cleared target");
         let (ty, value) = match format.kind() {
             FormatKind::Sint => ("vec4<i32>", "bitcast<vec4<i32>>(value)"),
+            FormatKind::Float => FLOAT_CLEAR_OUTPUT,
             _ => ("vec4<u32>", "value"),
         };
         let source = format!(
