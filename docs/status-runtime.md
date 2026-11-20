@@ -36,6 +36,10 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - J5 run 10: nothing new on origin/phase-1 (eb515b7a), origin/phase-1-literals (7668c010) or in the literal list's
   rulings; the kernel branch (7058ed46) still has the assertion (task.rs:224). Nothing was built or run but the
   literal check (exit 0; baselines runtime 265, wasmtime 74, driver 15; marks none).
+- J5 run 11: the same again (origin/phase-1 eb515b7a, origin/phase-1-literals 7668c010, kernel branch 7058ed46
+  with task.rs:224, no rulings on hard cases 1, 2, 4, 6; brief unchanged since 13:47 on 2026-11-19). The literal
+  check ran on the Mac (exit 0, marks 0, the same baselines; j5run11/literals-mac.out); it cannot run on the x86
+  machine, whose copy is not a git checkout (j5run11/literals-x86.out). Nothing else was built or run.
 - Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
