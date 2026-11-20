@@ -29,7 +29,10 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   code: Docker Desktop on the Mac started containers again at 08:08 Pacific, and the 20 binaries
   holding the manual's 25 Mac-only tests passed there (94 tests, `splice_holds_the_pipe` among
   them), so with the ARM machine's verdicts no test fails by our side (see "Measurements", S3
-  run 8). Next: S3's next independent check.
+  run 8). The third check found two blocking and six minor problems; run 9 settled them (see
+  "S3 third check findings"), with a new test program (guest/edges.c, tests/edges.rs), the whole
+  suite and the Mac-only binaries (no test fails by our side) and the speed with no hook
+  implemented (see "Measurements", S3 run 9). Next: S3's next independent check.
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -238,12 +241,64 @@ the program in place of the reference's: SIGSEGV, "the kernel is idle with nothi
 the panic at system.rs:341, "read 1" and "recv -1 Resource temporarily unavailable"; scratch
 streams/negative.sh and negative.log).
 
+## S3 third check findings, settled in run 9
+
+The check (scratch streams/s3check3, its own program chk3.c and test chk3.rs) found:
+- Blocking, a signal sent while a thread waited on a watch outside a call (its own load or store
+  met a watch) was acted on only at its next system call; a thread alone that made none never
+  acted on it. Now `wake_thread` puts such a thread, when the watches change and a signal is
+  pending for it, among those that act on their signals, so it does before it runs the
+  instruction again or makes any call, as the document says. Test
+  `a_thread_alone_acts_on_a_signal_sent_during_its_watch_wait_once_the_watches_change`
+  (tests/edges.rs, guest/edges.c `alone`: the hook log must read watched, accessed, sent,
+  unwatched, then at once the delivery, and the output equals the reference's, where the main
+  thread sends the signal itself).
+- Blocking, an end could cover two announced starts. What the kernel counts as told now stays
+  the starts it announced less the ends (the merged picture of what is mapped is no longer put in
+  its place), so an end is always the whole or a part of one start: two mappings side by side, a
+  mapping and what `mremap` grew it by, end as two hooks. The document says so and no longer
+  says "exactly a range". Test
+  `every_end_of_shared_memory_lies_in_one_start_and_each_step_matches_proc_maps` (edges.c `ends`:
+  side by side, grown, covered in the middle by shared anonymous memory, a hole; for a file and a
+  memory file; each end must lie inside one start, and each step's pages equal the reference's
+  /proc/self/maps).
+- Minor, a read-only mapper was not announced while the only writer's context was away. Now
+  `shared_mapped` also counts writable mappings in the maps of contexts off the kernel that still
+  live (`live_maps_away`). Test `a_read_only_mapper_is_announced_while_the_only_writer_is_away`
+  (edges.c `writer`: the parent is taken off between steps while its child maps the file
+  read-only, and put back after the child ends).
+- Minor, our /proc/<pid>/maps joins two shared mappings of consecutive pages of a /tmp file made
+  side by side; the reference shows two lines. Not changed (the kernel track's map merging, not
+  the interface): the reference keeps them apart because /tmp there is on overlayfs, whose mmap
+  puts the real file in the mapping after the merge check; for a memory file the reference joins
+  them too (edges.c `ends`, steps file-adjacent and memfd-adjacent). The new test compares each
+  step page by page and the other lines exactly. Listed for the kernel track below.
+- Minor, nanosleep interrupted at once answers the whole request left. Not changed: the time left
+  is computed from the embedder's clock (`Host::monotonic_nanoseconds`), read when the call
+  checks; the test host's clock is virtual and moves only with instructions run, so no time
+  passes between the call's start and its check. An embedder on a real clock answers less, as
+  Linux does. Adding time the clock did not show would be faking it.
+- Minor, the memory id test could not fail for a forked child given its parent's id, and did not
+  cover `CLONE_VM`. New test `a_child_shares_its_parents_memory_id_only_while_it_shares_the_memory`
+  (edges.c `memory`: a fork child must differ from its parent, a vfork child and a `CLONE_VM`
+  child must equal it, the vfork child's program must be new). The old test stays.
+- Minor, no task runs on a second kernel: the document now says what is tested (a second kernel
+  value accepts a context and tasks, its state is checked there, they come back) and that no test
+  runs a task there; the ruling is one kernel. No test added.
+- Minor, the speed comparison's pitfall: recorded under "Measurements" (S3 run 9), and this run's
+  comparison builds both binaries alone.
+Each of the three new tests of the fixed findings fails without its fix (ARM machine, the kernel
+crate's changes stashed, scratch streams/run9/negative1.log): "end 0x0 36000000..36002000 lies in
+no one start", "step reader ... left: {} right: {905986048: 0}", and "worker handled 0 capped
+1" with the delivery after the worker's next call.
+
 ## How to run
 
 - The embedder's tests: `RUST_TEST_THREADS=3 nix develop -c cargo test -j 4 -p
   wcontainers-kernel-test --test embedder` (Docker must be running for the lazy memory test).
   Our side runs under `SCHEDULE_SEEDS` seeds (3 if unset) from `SCHEDULE_SEED` (1 if unset).
-- The stream tests: the same with `--test streams`.
+- The stream tests: the same with `--test streams`; S3's tests: `--test embedder --test away
+  --test edges`.
 - The literal check: `RAYON_NUM_THREADS=3 nix develop -c cargo run -q -p wcontainers-literals --
   check` (exit 0).
 - Everything: `RUST_TEST_THREADS=3 nix develop -c cargo test --no-fail-fast -j 4 -p wcontainers-abi
@@ -865,6 +920,36 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 9, tests (tree a98582a9). ARM machine: fmt and clippy with warnings denied over the
+  three crates passed; embedder (35), away (12, the known failure ignored), edges (4) and the
+  kernel's unit tests (5) passed at 3 seeds (scratch streams/run9/affected.log, 17:23 UTC, load
+  26 to 36). The literal check exits 0 with no marks (x86 machine, with a `git init` of the copy
+  for its file list; run9/literals.log). Whole suite, in four pieces each its own job and log
+  (run9/suite.sh, suite-1.log to suite-4.log, 17:25 to about 17:55 UTC, load about 25 to 40):
+  603 passed, 26 failed, 7 ignored (636 tests: run 6's 632 and the 4 new). The 26 by name
+  (run9/failed-arm.txt) are run 6's, less `the_workspace_keeps_to_its_baseline` (it passes now that
+  the copy has a git index) and with `fdinfo_matches_reference` (its program does not build on the
+  ARM machine's zig, as its manual says; it passed there in run 6). Every one is on the manual's
+  list kept on the Mac. The 20 binaries holding them on this Mac (run9/mac-only.log, about 09:27
+  to 09:30 Pacific, load 3 to 9): 93 passed, 1 failed: `splice_holds_the_pipe`, whose reference
+  echoed twice ("abc\r\nabc\r\n" against ours "abc\r\n"), the reference-side flake seen in runs 3
+  and 4; run again three times it passed each time (run9/splice-again.log). So no test fails by
+  our side.
+- S3 run 9, speed with no hook implemented (ARM machine, about 18:05 to 18:15 UTC, load 18 to
+  34; run9/speed.sh, speed.log): the memory test binary of 01290816 (the run's base) and of this
+  run's tree, each built ALONE under its own name (`--test memory --no-run`), guest folders
+  emptied before the build so each holds only that binary's programs (2 MB), run alternately,
+  13 rounds, round 0 a warm-up. User CPU, rounds 1 to 12: base 11.799 11.902 12.066 11.912 11.823
+  11.928 11.874 12.057 11.821 11.884 11.782 11.826 (mean 11.890, median 11.879); this tree
+  11.895 11.938 11.921 11.957 11.932 11.777 11.971 11.928 11.887 11.861 11.943 11.906 (mean
+  11.910, median 11.925), faster in 4 of 12. +0.2 % mean, +0.4 % median, inside each side's
+  own spread (11.78 to 12.07); no slowdown shown beyond noise. The changed code runs only when a
+  thread waiting on a watch outside a call is woken and when shared mappings change.
+- Pitfall found by S3's third check: a test binary built inside the whole-suite build (four
+  packages at once) ran bimodally (about 1 s more user CPU in 9 of 16 rounds) against the same
+  tree built alone. Compare binaries built the same way, alone, as above; it sits beside S2's
+  fourth run's pitfall of unequal guest folders. Run 6's comparison was against run 4's tree,
+  not S2's; the check's own comparison against S2 (cefb66ab), both built alone, gave -0.1 %.
 - S3 run 8, the Mac-only verdicts (this Mac, tree 24f2b127, code as in run 6): Docker Desktop
   started no container at 07:59, 08:02 and 08:05 Pacific and started one at 08:08 (scratch
   streams/s3g/docker-probe.log). The 20 binaries of s3c/mac-tests.txt (built in run 7, nothing
@@ -1274,6 +1359,10 @@ anything shipped.
   rules.
 - For the runtime track: the abi's `Host` methods now take `&self` and `System` requires `Sync`.
 
+- For the kernel track (found by S3's third check): /proc/<pid>/maps shows two `MAP_SHARED`
+  mappings of consecutive pages of one file, made side by side, as one line; the reference shows
+  two for a file under /tmp (overlayfs there keeps them apart) and one for a memory file. Seen
+  in tests/edges.rs `ends`, which compares those steps page by page.
 - For the kernel track (found by S2's third check): in a forked child `getrusage(RUSAGE_SELF)`
   reports `ru_maxrss` above 0; the reference reports 0.
 - For the owner: a watch resolved between steps through `Kernel::process` wakes its thread only
