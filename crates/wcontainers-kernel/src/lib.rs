@@ -174,6 +174,9 @@ pub struct Kernel {
     /// Signals the embedder sent to a thread of a process, with their information, sent when the
     /// kernel settles.
     signals_sent: VecDeque<(Pid, Tid, [u8; core::mem::size_of::<SignalInformation>()])>,
+    /// Signals the kernel sent a process while its context was away, sent to it when the kernel
+    /// settles after it is back.
+    signals_to_returning: VecDeque<(Pid, u32, [u8; core::mem::size_of::<SignalInformation>()])>,
     /// Processes sent a fatal signal while their memory is watched, with the signal: their
     /// threads end of it on their way back to the program, once the kernel's stores at the end
     /// have met the watches (`SIGNAL_GROUP_EXIT`).
@@ -213,8 +216,19 @@ pub struct Kernel {
     map_notes: Rc<memory::MapNotes>,
     /// What the embedder has been told each process maps of shared memory.
     shared_announced: sharing::Announced,
+    /// Counts the kernel's rounds of shared memory announcements, so a round sees one begun
+    /// inside its hooks.
+    sharing_round: u32,
     /// Processes whose context was taken off this kernel and not put back on it.
     processes_away: BTreeMap<Pid, suspend::ProcessAway>,
+    /// The address maps of contexts taken or copied off this kernel, with their memory: what
+    /// they map stays in use while they live, until one is put back here.
+    maps_away: core::cell::RefCell<
+        Vec<(
+            wcontainers_abi::MemoryId,
+            alloc::rc::Weak<core::cell::RefCell<memory::AddressMap>>,
+        )>,
+    >,
     /// Processes on their way out whose shared memory has been announced ended.
     sharing_left: alloc::collections::BTreeSet<Pid>,
     /// The container's first process; when it ends the container ends.
@@ -305,10 +319,13 @@ impl Kernel {
             watches_raised: 0,
             unsettled: false,
             signals_sent: VecDeque::new(),
+            signals_to_returning: VecDeque::new(),
             ids_let_go: Vec::new(),
             map_notes: Rc::default(),
             shared_announced: sharing::Announced::new(),
+            sharing_round: 0,
             processes_away: BTreeMap::new(),
+            maps_away: core::cell::RefCell::default(),
             sharing_left: alloc::collections::BTreeSet::new(),
             init: None,
             finished: None,

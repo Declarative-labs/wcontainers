@@ -4,11 +4,11 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use wcontainers_abi::{Cpu, RegisterBlock, Resume};
+use wcontainers_abi::{Cpu, MemoryId, RegisterBlock, Resume};
 
 use crate::counters::reason;
-use crate::linux::general::SIGRTMIN;
-use crate::process::{Away, Call, Channel, Leader, Pending, Pid, Thread, Tid};
+use crate::linux::general::{SIGCHLD, SIGRTMIN};
+use crate::process::{Away, Call, Channel, Leader, Map, Pending, Pid, Thread, Tid};
 use crate::system::{ExecutionConfig, Process, TaskId};
 use crate::{Kernel, sharing, syscall};
 
@@ -78,7 +78,12 @@ pub(crate) struct ProcessAway {
     pub parent_thread: Tid,
     pub group: Pid,
     pub exit_signal: u32,
+    /// Signals the kernel sent the process while it was away (a child's end), sent again when
+    /// it is back.
+    pub signals: Vec<(u32, [u8; SIGNAL_INFORMATION_SIZE])>,
 }
+
+const SIGNAL_INFORMATION_SIZE: usize = size_of::<crate::system::SignalInformation>();
 
 impl Kernel {
     /// Takes the tasks named, as of one moment; a task not on this kernel is absent from the
@@ -144,13 +149,42 @@ impl Kernel {
             process.parent = away.parent;
             process.parent_thread = away.parent_thread;
             process.exit_signal = away.exit_signal;
+            let pid = process.pid;
+            self.signals_to_returning.extend(
+                away.signals
+                    .into_iter()
+                    .map(|(signal, info)| (pid, signal, info)),
+            );
+            self.unsettled = true;
         }
         process
             .map
             .borrow_mut()
             .note_to(alloc::rc::Rc::clone(&self.map_notes));
+        self.maps_away
+            .borrow_mut()
+            .retain(|(_, map)| map.strong_count() > 0 && map.as_ptr() != Rc::as_ptr(&process.map));
+        // What it maps of shared memory is compared with what it was told when the kernel next
+        // announces.
+        self.map_notes.sharing_changed.set(true);
         self.shared_announced.extend(announced);
-        self.processes.insert(process.pid, process);
+        let pid = process.pid;
+        let unwanted = Kernel::children_unwanted(&process);
+        self.processes.insert(pid, process);
+        // Children that ended while it was away and that it does not want are reaped now.
+        if unwanted {
+            let zombies: Vec<Pid> = self
+                .processes
+                .values()
+                .filter(|child| {
+                    child.parent == pid && child.ended.is_some() && child.exit_signal == SIGCHLD
+                })
+                .map(|child| child.pid)
+                .collect();
+            for zombie in zombies {
+                self.reap(zombie);
+            }
+        }
         self.update_watching();
         None
     }
@@ -256,6 +290,7 @@ impl Kernel {
         if !shared {
             process.map.borrow_mut().stop_noting_to(&self.map_notes);
         }
+        self.hold_map(&process);
         self.processes_away.insert(
             pid,
             ProcessAway {
@@ -263,6 +298,7 @@ impl Kernel {
                 parent_thread: process.parent_thread,
                 group: process.group,
                 exit_signal: process.exit_signal,
+                signals: Vec::new(),
             },
         );
         self.update_watching();
@@ -284,6 +320,7 @@ impl Kernel {
         process.map = Rc::new(RefCell::new(map));
         let actions = *process.actions.borrow();
         process.actions = Rc::new(RefCell::new(actions));
+        self.hold_map(&process);
         process.pending = Pending::default();
         for away in process.away.values_mut() {
             away.pending = Pending::default();
@@ -312,6 +349,22 @@ impl Kernel {
             announced,
             origin: ContextOrigin::Copied,
         }
+    }
+
+    /// Keeps what a context's map shows in use while the context is off this kernel.
+    fn hold_map(&self, process: &crate::process::Process) {
+        let mut held = self.maps_away.borrow_mut();
+        held.retain(|(_, map)| map.strong_count() > 0);
+        held.push((process.memory, Rc::downgrade(&process.map)));
+    }
+
+    /// The maps of contexts off this kernel that still live, with their memory.
+    pub(crate) fn live_maps_away(&self) -> Vec<(MemoryId, Map)> {
+        self.maps_away
+            .borrow()
+            .iter()
+            .filter_map(|(memory, map)| Some((*memory, map.upgrade()?)))
+            .collect()
     }
 
     /// What the embedder was told process `pid` maps, taken out to go with its context.

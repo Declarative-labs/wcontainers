@@ -579,6 +579,12 @@ impl Kernel {
                 self.send_from_embedder(cx, pid, tid, info);
                 continue;
             }
+            if let Some((pid, signal, info)) = self.signals_to_returning.pop_front() {
+                if self.processes.contains_key(&pid) {
+                    self.send_to_process(cx, pid, signal, info);
+                }
+                continue;
+            }
             if let Some(tid) = self.signalled.pop_front() {
                 let Some(thread) = self.threads.get(&tid) else {
                     continue;
@@ -892,6 +898,11 @@ impl Kernel {
                 process.parent_thread = pid;
             }
         }
+        for away in self.processes_away.values_mut() {
+            if away.parent_thread == tid {
+                away.parent_thread = pid;
+            }
+        }
         self.processes
             .get_mut(&pid)
             .expect("process exists")
@@ -1047,7 +1058,8 @@ impl Kernel {
         i128::from(tasks + more) > i128::from(limit.min(i64::MAX as u64))
     }
 
-    /// Whether another live process shows the same memory (made with CLONE_VM).
+    /// Whether another live process shows the same memory (made with CLONE_VM), or a context
+    /// off this kernel does.
     pub(crate) fn memory_in_use_elsewhere(
         &self,
         pid: Pid,
@@ -1056,6 +1068,11 @@ impl Kernel {
         self.processes
             .values()
             .any(|other| other.pid != pid && other.ended.is_none() && other.memory == memory)
+            || self
+                .maps_away
+                .borrow()
+                .iter()
+                .any(|(away, map)| *away == memory && map.strong_count() > 0)
     }
 
     /// A `vfork` child thread starts a program or ends (`mm_release`): the parent thread's wait
@@ -1201,24 +1218,36 @@ impl Kernel {
         let parent = process.parent;
         let exit_signal = process.exit_signal;
         let status = process.ended.expect("the process has ended");
-        let Some(parent_process) = self.processes.get(&parent) else {
+        // A parent whose context is away reaps it when it is back, and is told then.
+        let away = self.processes_away.contains_key(&parent);
+        if !away && !self.processes.contains_key(&parent) {
             if let Some(process) = self.processes.remove(&pid) {
                 self.let_go_of_ids(&process);
             }
             return;
-        };
-        let action = parent_process.actions.borrow()[SIGCHLD as usize - 1];
-        let unwanted = exit_signal == SIGCHLD
-            && (action.sa_handler_kernel == crate::linux_extra::SIG_IGN
-                || action.sa_flags & u64::from(SA_NOCLDWAIT) != 0);
+        }
         if exit_signal != 0 {
             let info = self.child_info(pid, status);
-            self.send_to_process(cx, parent, exit_signal, info);
+            match self.processes_away.get_mut(&parent) {
+                Some(away) => away.signals.push((exit_signal, info)),
+                None => self.send_to_process(cx, parent, exit_signal, info),
+            }
         }
+        if away {
+            return;
+        }
+        let unwanted = exit_signal == SIGCHLD && Self::children_unwanted(&self.processes[&parent]);
         self.wake_waiters_of(parent);
         if unwanted {
             self.reap(pid);
         }
+    }
+
+    /// Whether a process takes no zombies of its children that end with SIGCHLD.
+    pub(crate) fn children_unwanted(process: &crate::process::Process) -> bool {
+        let action = process.actions.borrow()[SIGCHLD as usize - 1];
+        action.sa_handler_kernel == crate::linux_extra::SIG_IGN
+            || action.sa_flags & u64::from(SA_NOCLDWAIT) != 0
     }
 
     /// A zombie handed to a new parent: reaped at once if that parent does not want it, else the
