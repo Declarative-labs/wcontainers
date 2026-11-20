@@ -1,0 +1,3 @@
+{
+  "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"]
+}
