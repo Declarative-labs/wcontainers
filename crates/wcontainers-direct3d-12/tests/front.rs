@@ -259,7 +259,7 @@ fn shared_constants_are_the_sdks() {
     use wcontainers_directx_graphics_infrastructure::d3d;
     use windows::Win32::Graphics::Direct3D12 as sdk;
     assert_eq!(
-        wcontainers_direct3d_12::resource::PLACEMENT_ALIGNMENT,
+        d3d::TEXTURE_DATA_PLACEMENT_ALIGNMENT,
         u64::from(sdk::D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT)
     );
     assert_eq!(
