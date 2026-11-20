@@ -8,29 +8,32 @@ commit cf55bbe8 (`git show cf55bbe8:docs/status-graphics-direct3d-12.md`).
 
 ## Where things stand
 
-G5 is declared complete for the independent check (run 48, 2026-11-19). The check of run 47 found
-seven items; run 48 did each:
-- Format shapes (blocking): `format_support` gives every texture shape Direct3D's 11_0 tables
-  require: 3D for the BC formats, 1D and 3D for `R8G8_B8G8` and `G8R8_G8B8`. The rule is now
-  derived from the format's block (1D only where blocks are one texel high, no 3D for depth), and
-  the interface says every back end serves those shapes (interface change below). The 23 lines of
-  examples/check/features-differing.txt that allowed the old answers are deleted.
-- Depth clamping and other refusals missing from the gap list (blocking): the gap list now names
-  every refusal in the front, generated from the code and sorted by cause ("Gap list"), the three
-  depth clamping refusals and the three UAV refusals the check named among them.
-- The pixel half of `DepthClampInShader` is tested: `depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clamp`
-  (tests/gpu.rs: D32 target, w from 1 to 4, z/w 1.5 and -0.4, two viewport depth ranges, against
-  the back end's own clamp), the check's own test made the crate's.
-- COM out pointers: every interface out pointer (one beside an interface id) is set to null
-  before the call, in the generated COM layer (com.py) and in `D3D12CreateDevice`, so a failed
-  `Create*` leaves NULL as COM asks; `Map`'s pointer is left as the caller passed it, as real
-  Direct3D 12 does (vkd3d's test_map_resource checks it). vkd3d's test_create_graphics_pipeline_state no longer aborts in our library; it fails
-  on logic operations alone (run48/logs-full2: only "logic operations without LOGIC_OP", then the test's own null release, 0xc0000005).
-- Magic numbers in the tests: the cull modes, comparisons, primitive topologies, root signature
-  versions and flag and the buffer layout are named once in the front (`state`, `root`,
-  `resource`) and used there and in the tests; the tests import the DXGI formats and the entry
-  point name.
-- This file: rewritten to the current state.
+G5 is not complete (run 49, 2026-11-19). The check of run 48 found two blocking items and seven
+minor ones; run 49 did:
+- 1D textures of the two-pixel formats (blocking): `resource::check_creation` refused every
+  texture of a format with blocks wider than one texel unless 2D or 3D, while CheckFeatureSupport
+  answered `TEXTURE1D` for `R8G8_B8G8` and `G8R8_G8B8`. It now refuses 1D only for blocks more
+  than one texel high (the BC formats). New test
+  `every_texture_shape_check_feature_support_answers_is_made` (tests/device.rs) makes, for every
+  format, a texture in every shape `format_support` answers, through `check_creation` and
+  `create_committed`.
+- Video formats and 16-bit packed targets (blocking): not fixed. `NV12`, `YUY2` and
+  `420_OPAQUE` have plan 4.12's route (ordinary textures), not built in this front: the next
+  run's first item ("Next" 1). The other video formats and drawing into `B5G6R5`, `B5G5R5A1`
+  and `B4G4R4A4` have no route in the plan though Microsoft's 11_0 table requires some of them
+  (Departures). Each is now on the gap list by name and grouped by cause in
+  features-differing.txt, no longer under one blanket line.
+- Logic operations (minor): recorded in the gap list; what real Direct3D 12 answers on hardware
+  without `OutputMergerLogicOp` cannot be checked on the RTX 3080.
+- The Windows library's COM methods answering E_NOTIMPL (minor): all 87 on the gap list by
+  cause (the check's search found 25).
+- Cases list (minor): all 33 names under "Cases".
+- Stretched frames (minor): counted and warned as `SlowPath::FrameStretched` (interface change).
+- Feature level literals in main.rs (minor): the windows crate's `D3D_FEATURE_LEVEL_*`.
+- Merges (minor): origin/phase-2-graphics-shaders and origin/phase-2-graphics-direct3d-11
+  merged; every file rerun (results below).
+- No seeded random test (minor, not on the bar): none added; nothing in these crates takes
+  random input today.
 
 The pass bar, item by item:
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080:
@@ -121,7 +124,11 @@ Failing test files:
   get_resource_tiling.
 - Absent, logic operations (`OutputMergerLogicOp` false): output_merger_logic_op;
   create_graphics_pipeline_state, which makes a pipeline with a logic operation without asking
-  (refused, E_NOTIMPL) and then releases the pipeline it did not get, a null pointer, and crashes in its own code (0xc0000005; no panic in our library since run 48).
+  (d3d12.c:3487, refused, E_NOTIMPL) and then releases the pipeline it did not get, a null
+  pointer, and crashes in its own code (0xc0000005; no panic in our library). Its 34 checks
+  after that line (among them independent blending with a logic operation, d3d12.c:3491 on) are
+  therefore never compared with real. What real Direct3D 12 answers on hardware without the
+  ability (E_NOTIMPL here) is not known: every adapter at hand has it.
 - Absent, float64 in shaders (`DoublePrecisionFloatShaderOps` false): shader_instructions.
 - Absent, resource binding tier 2 (tier 1 answered where the back end lacks big tables):
   unbounded_resource_arrays, unbounded_samplers.
@@ -130,6 +137,25 @@ Failing test files:
   4.12): ps_layer, whose context makes such a pipeline before asking (`RenderTargetArrayIndex`).
 - Not to be matched: copy_block_compressed_texture (real Direct3D 12 crashes in it: its texture
   of part of a block is refused on both, and the test then uses the null texture).
+
+Formats CheckFeatureSupport answers below real, against section 9 (features-differing.txt names
+each line under its cause):
+- `NV12` (103), `420_OPAQUE` (106), `YUY2` (107): the front's own open part. Plan 4.12's route
+  (`NV12` as an `r8unorm` and a half-size `rg8unorm` texture, one per plane; `YUY2` as
+  `rgba8unorm` of half the width; `420_OPAQUE` as `NV12`) is not built in this front, so the
+  format answers E_FAIL (no support) and `CreateCommittedResource` refuses them. Microsoft's 11_0
+  table requires NV12's Texture2D, load, sample, gather, RenderTarget and typed UAV and YUY2's
+  Texture2D, sample and typed UAV. Next 1.
+- The other video formats (`AYUV`, `Y410`, `Y416`, `P010`, `P016`, `Y210`, `Y216`, `NV11`,
+  `AI44`, `IA44`, `P8`, `A8P8`): answered absent; the 11_0 table requires abilities of most of
+  them, the plan names no route (Departures).
+- Drawing, blending, multisampling and storing into `B5G6R5` (85), `B5G5R5A1` (86) and
+  `B4G4R4A4` (115): answered absent; sampling them is served (`FormatConverted` to
+  `rgba8unorm`). WebGPU has no 16-bit packed format, and an `rgba8unorm` target keeps blended
+  values at 8 bits where Direct3D keeps 4, 5 or 6, so no exact route exists (Departures). The
+  11_0 table requires `B5G6R5`'s RenderTarget, blending and 4x and 8x multisampled targets.
+- The video abilities of every format (decoder output, video processor input and output),
+  section 9's named shortfall.
 
 Also absent, with no failing test file: conservative rasterisation, raster order views, ray
 tracing, mesh shaders, variable rate shading, sampler feedback, 64-bit integers, depth bounds,
@@ -174,7 +200,7 @@ the program declares" (one-layer 2D arrays bound to 2D declarations are bound as
 "a shared buffer read after an overlapping one was written in the same submission".
 
 The front's own open parts, each a route not built (no counted test file, case or real program
-meets one on the RTX 3080; "Next" 2). Those only met where the back end lacks a feature name it;
+meets one on the RTX 3080; "Next" 3). Those only met where the back end lacks a feature name it;
 browsers' WebGPU lacks `depth-clip-control`, `primitive-index`, polygon modes and texel buffers
 on some adapters, and WebGL 2 makes no Direct3D 12 device:
 - Depth clamping where the back end lacks `depth-clip-control` (`Features::DEPTH_CLAMP`;
@@ -260,6 +286,44 @@ on some adapters, and WebGL 2 makes no Direct3D 12 device:
 - "a feature the back end lacks": a back end's own `GpuError::Absent` passed on with the bit's
   name.
 
+The Windows library's COM methods answering E_NOTIMPL, each printing "wcontainers: X::Y is not
+implemented" (87 names, `unsupported` in examples/directx; list them with `grep -oh
+'unsupported("[A-Za-z0-9]*")' examples/directx/*.rs | sort -u`). By cause:
+- Abilities Direct3D 12's own queries answer absent (section 9): ray tracing
+  (`CreateStateObject`, `AddToStateObject`, `SetPipelineState1`, `DispatchRays`, the four
+  acceleration structure methods), mesh shaders (`DispatchMesh`), tiled resources
+  (`CreateReservedResource`, `CreateReservedResource1`, `GetResourceTiling`,
+  `UpdateTileMappings`, `CopyTileMappings`, `CopyTiles`), sampler feedback
+  (`CreateSamplerFeedbackUnorderedAccessView`), variable rate shading (`RSSetShadingRate`,
+  `RSSetShadingRateImage`), depth bounds (`OMSetDepthBounds`), view instancing
+  (`SetViewInstanceMask`), programmable sample positions (`SetSamplePositions`), shared
+  resources (`CreateSharedHandle`, `OpenSharedHandle`, `OpenSharedHandleByName`,
+  `GetSharedResourceAdapterLuid`, `OpenExistingHeapFromAddress`,
+  `OpenExistingHeapFromFileMapping`), protected sessions (`CreateProtectedResourceSession`,
+  `CreateProtectedResourceSession1`, `SetProtectedResourceSession`, `CreateLifetimeTracker`),
+  meta commands (`InitializeMetaCommand`, `ExecuteMetaCommand`: none enumerated), cached
+  pipeline blobs (`PipelineState::GetCachedBlob`: `SHADER_CACHE` answers no single-pipeline
+  cache; every bgfx run calls it and goes on without one).
+- No software adapter is offered: `EnumWarpAdapter`, `CreateSoftwareAdapter` (Wine's two dxgi
+  tests below).
+- Parts of a Windows display a browser's canvas has no counterpart of: full screen and outputs
+  (`GetFullscreenDesc`, `ResizeTarget`, `TakeOwnership`, `ReleaseOwnership`, `WaitForVBlank`,
+  `GetFrameStatistics`, `GetDisplaySurfaceData`, `GetDisplaySurfaceData1`,
+  `SetDisplaySurface`, the three gamma control methods, `DuplicateOutput`, `DuplicateOutput1`,
+  `CheckOverlaySupport`, `CheckOverlayColorSpaceSupport`, `GetRestrictToOutput`), composition
+  and CoreWindow swap chains (`CreateSwapChainForComposition`, `CreateSwapChainForCoreWindow`,
+  `GetCoreWindow`, `GetSourceSize`, `SetSourceSize`, `GetMatrixTransform`,
+  `SetMatrixTransform`, `GetRotation`, `SetRotation`, `GetBackgroundColor`,
+  `SetBackgroundColor`), status notifications (`Register` and `Unregister` of occlusion,
+  stereo, content protection teardown and video memory budget), memory budgets
+  (`QueryVideoMemoryInfo`, `SetVideoMemoryReservation`: no browser reports memory, Departures).
+- The front's own open part (no counted test file, case or real program calls one; bgfx calls
+  only `GetCachedBlob` and `QueryVideoMemoryInfo` of all 87): `IDXGIObject`'s
+  `GetPrivateData`, `SetPrivateData` and `SetPrivateDataInterface` on the factory, adapter,
+  output and swap chain and its `GetParent` on the factory; `CheckInterfaceSupport`;
+  `ResizeBuffers1`; `ClearState`; `AtomicCopyBufferUINT`, `AtomicCopyBufferUINT64`;
+  `ResolveSubresourceRegion`; `SetStablePowerState`.
+
 Other differences beyond the bar, each named: the shader runner's failing files ("Shader
 runner"), the scenes' failing outputs ("Scenes"), Wine's two dxgi tests that need a software
 adapter (none is offered; `EnumWarpAdapter` answers E_NOTIMPL), and Godot's 3D platformer's one
@@ -297,7 +361,8 @@ picture within 63 of 255 (Direct3D leaves the line filter to the implementation)
 - Indirect: indirect-draw, indirect-count, indirect-dispatch, indirect-short,
   indirect-vertex-buffer, indirect-vertex-id.
 - Others: depth-planes, vertex-past-end, vertex-pulled, restart, render-pass, ms-array, geometry,
-  layers, antialiased-lines, filter-depth, vertex-views, line-bias, markers, undefined-topology.
+  layers, antialiased-lines, filter-depth, vertex-views, line-bias, markers, undefined-topology,
+  no-scissors, early-per-primitive.
 
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
@@ -316,7 +381,7 @@ Run 48 (run48/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs
 hull shaders and one pixel shader the converter refuses, the shaders track's); topology (43
 pixels beyond 1, all in line cells: the aliased line listed loss), samplers-filters (anisotropy
 cells) and msaa-alpha_to_coverage, which draw with largest difference 0 on wgpu's Direct3D 12
-path (run 36): the NVIDIA driver's Vulkan path this library draws on ("Next" 3). Absent: `B5G6R5`
+path (run 36): the NVIDIA driver's Vulkan path this library draws on ("Next" 4). Absent: `B5G6R5`
 targets, minimum and maximum filtering.
 
 ## Real programs
@@ -367,22 +432,28 @@ and 120 compared with real Direct3D 12's at 8 of 255.
 
 ## Next, in this order
 
-1. At the start of each run merge the shared line and every graphics branch with something new,
+1. Build plan 4.12's route for `NV12`, `YUY2` and `420_OPAQUE` in this front, as the
+   Direct3D 11 front has (its format.rs `nv12_plane`, `Texture::chroma`): `NV12` as an
+   `r8unorm` texture and a half-size `rg8unorm` one (plane slices in subresource indices,
+   footprints of both planes, views and copies naming a plane), `YUY2` as `rgba8unorm` of half
+   the width, `420_OPAQUE` stored as `NV12`; answer their abilities; test them in a case against
+   real Direct3D 12; delete their lines in features-differing.txt.
+2. At the start of each run merge the shared line and every graphics branch with something new,
    and origin/phase-1-literals; keep the literal check passing (after a merge bringing new rules,
    run `init` once). Apply the rig patch uncommitted for test file runs (below).
-2. Fix only what the independent check finds. The front's own open parts, beyond the bar: the
+3. Fix only what the independent check finds. The front's own open parts, beyond the bar: the
    depth clamping refusals (with the shaders track's pixel program for a variant alone),
    wireframe without polygon modes (`FillModeConverted` through the stage helper's vertex
    capture), Godot's 3D platformer's one pixel (trace which draw writes it, on real and ours), the
    other refusals of the gap list, recording state combinations of other vertex strides in the
    cache file.
-3. Draw on wgpu's Direct3D 12 path as browsers do on Windows (run 36's experiment, scratch
+4. Draw on wgpu's Direct3D 12 path as browsers do on Windows (run 36's experiment, scratch
    run36/dx12-path.patch, measured equal in the three scenes above; it broke three things, each
    another track's: the culling stage's clip distances, the two wgpu-hal items above, and the
    rig's forwarder wrapping wgpu's own device).
-4. Plan 4.8's call buffer with plan section 10's one library (`crates/wcontainers-directx`): move
+5. Plan 4.8's call buffer with plan section 10's one library (`crates/wcontainers-directx`): move
    this track's COM objects there, which also lets Wine's other 18 dxgi tests be counted.
-5. The literal sweep, a part per run.
+6. The literal sweep, a part per run.
 
 ## How to run
 
@@ -446,6 +517,10 @@ merges.
 
 ## Interface changes
 
+- Run 49: `SlowPath::FrameStretched`, a frame shown stretched to a window of another size against
+  the swap chain's scaling (a listed loss, counted at each such present), with a sentence in
+  plan 4.9's surface formats paragraph (commit "interface: named a frame shown stretched ...").
+
 - Run 48: `FormatCaps` says every format with a use is served in every texture dimension it can
   have (1D where its blocks are one texel high, 3D but for depth and stencil), held decoded or
   converted where the back end's API lacks it; plan 4.11 says the same (commit "interface:
@@ -490,18 +565,18 @@ merges.
   of that layer.
 - The literal check was adopted by merging origin/phase-1-literals itself, not through main.
 - Every COM call crosses to the device thread as a boxed closure and waits for its answer; plan
-  4.8's call buffer is not used (Next 4).
+  4.8's call buffer is not used (Next 5).
 - Indirect draws without indices fetching past a vertex buffer's end: exact for direct draws and
   for arguments in an upload heap (`VertexFetchZeroed`), the listed loss otherwise.
 - The Windows library is built as cdylib examples of `wcontainers-direct3d-12`, not in
-  `wcontainers-directx` (Next 4); it is `wcontainers_d3d12.dll` with `d3d12.dll` and `dxgi.dll`
+  `wcontainers-directx` (Next 5); it is `wcontainers_d3d12.dll` with `d3d12.dll` and `dxgi.dll`
   forwarding to it.
 - The library draws on wgpu's Vulkan path: with our d3d12.dll loaded, wgpu's Direct3D 12 path
-  would load it as the system's (Next 3).
+  would load it as the system's (Next 4).
 - Presenting: `CheckColorSpaceSupport` answers as Windows does on this SDR desktop for the spaces
   we present; a 16-bit float back buffer is presented encoded into `rgb10a2unorm` (or
   `rgba8unorm`); sync intervals 2 to 4 show a frame for at least one refresh; `DXGI_SCALING_NONE`
-  frames are shown stretched; `SetHDRMetaData` is checked and changes nothing.
+  frames are shown stretched (`FrameStretched`, counted at each such frame); `SetHDRMetaData` is checked and changes nothing.
 - DXGI's memory sizes are zero and `QueryVideoMemoryInfo` and its relatives answer E_NOTIMPL (no
   browser reports memory). No software adapter is offered.
 - `GetResourceAllocationInfo` answers this front's layout (copyable footprints, 64 KiB pages, 4
@@ -520,6 +595,13 @@ merges.
 - Descriptors are 64 bytes (real NVIDIA's are 32); a view counter is kept in two of their words.
 - `MULTISAMPLE_RESOLVE` only for float and normalised formats rendering multisampled,
   `MULTISAMPLE_LOAD` only for target formats, whatever the back end's flags.
+- Plan 4.12 and section 9 say every format ability Microsoft's 11_0 table requires is served
+  but for multisample counts and video abilities. Not so in this front (gap list, formats):
+  `NV12`, `YUY2` and `420_OPAQUE` wait on their planned route (Next 1); the table also requires
+  abilities of `AYUV`, `Y410`, `Y416`, `P010`, `P016`, `Y210`, `Y216`, `NV11`, `AI44`, `IA44`,
+  `P8` and `A8P8`, for which the plan has no route, and `B5G6R5`'s targets, blending and 4x and
+  8x multisampled targets, which have no exact route on WebGPU (no 16-bit packed formats; an
+  `rgba8unorm` target blends at 8 bits). All are answered absent, never faked.
 - `ExecuteIndirect` leaves the state the last read-back command set (Direct3D leaves it
   undefined). `ResolveQueryData` resolves into a buffer of the front's and copies. A predicate
   covers the work up to the next `SetPredication` in the same list. An occlusion query across
