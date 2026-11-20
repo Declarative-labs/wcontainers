@@ -1363,7 +1363,7 @@ fn bulk_or_element<E: Emitter<X86_64> + ?Sized>(
 }
 
 /// `rep stos` over a checked range: one fill when the value is one byte repeated (every `stosb`, and zero),
-/// else a store of each element.
+/// else the value repeated across a vector stored 16 bytes at a time, and the last elements one at a time.
 fn bulk_store<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, at: u32, length: u32) {
     let bytes = element_bytes(i);
     let w = (bytes * u8::BITS) as u8;
@@ -1394,24 +1394,60 @@ fn bulk_store<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, at: u32, 
         .if_(BlockType::Empty);
     fill(e);
     e.sink().else_();
-    let end = e.local(ValType::I64);
-    e.sink()
-        .local_get(at)
-        .local_get(length)
-        .i64_add()
-        .local_set(end)
-        .loop_(BlockType::Empty);
-    store(e, at, bytes, value);
-    e.sink()
-        .local_get(at)
-        .i64_const(bytes.into())
-        .i64_add()
-        .local_tee(at)
-        .local_get(end)
-        .i64_lt_u()
-        .br_if(0)
-        .end()
-        .end();
+    let vector = crate::XMM_BYTES;
+    let pattern = e.local(ValType::V128);
+    let (vectors_end, end) = (e.local(ValType::I64), e.local(ValType::I64));
+    {
+        let mut s = e.sink();
+        s.local_get(value);
+        if w == W64 {
+            s.i64x2_splat();
+        } else {
+            s.i32_wrap_i64();
+            if w == W32 {
+                s.i32x4_splat();
+            } else {
+                s.i16x8_splat();
+            }
+        }
+        s.local_set(pattern)
+            .local_get(at)
+            .local_get(length)
+            .i64_add()
+            .local_tee(end)
+            .local_get(length)
+            .i64_const(i64::from(vector) - 1)
+            .i64_and()
+            .i64_sub()
+            .local_set(vectors_end);
+    }
+    // Each loop runs while `at` is below its end, storing `step` bytes a turn.
+    let stores = |e: &mut E, limit: u32, step: u32, each: &dyn Fn(&mut E)| {
+        e.sink()
+            .block(BlockType::Empty)
+            .loop_(BlockType::Empty)
+            .local_get(at)
+            .local_get(limit)
+            .i64_ge_u()
+            .br_if(1);
+        each(e);
+        e.sink()
+            .local_get(at)
+            .i64_const(step.into())
+            .i64_add()
+            .local_set(at)
+            .br(0)
+            .end()
+            .end();
+    };
+    stores(e, vectors_end, vector, &|e: &mut E| {
+        e.sink()
+            .local_get(at)
+            .local_get(pattern)
+            .v128_store(memory());
+    });
+    stores(e, end, bytes, &|e: &mut E| store(e, at, bytes, value));
+    e.sink().end();
 }
 
 /// The bits of a shift's count the CPU uses at width `w`: six at 64 bits, else five.
