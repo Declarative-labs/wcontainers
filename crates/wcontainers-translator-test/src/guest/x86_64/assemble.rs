@@ -1,9 +1,9 @@
 //! x86-64's layer 2 code: the model's programs assembled with iced's `CodeAssembler`. rbp holds the area,
 //! r15 counts loops, r14 recursion, r13 holds a moving base or a jump target, and r12 is each operation's
 //! scratch. Beside the model's operations it uses what x86 has: read-change-write memory operands, string
-//! instructions, push and pop of registers and memory, calls and jumps through memory, partial register and
-//! flag writes, red-zone saves in leaf functions, both compilers' position-independent switch tables, and
-//! `pushfq` for the dump.
+//! instructions with and without a repeat prefix, push and pop of registers and memory, calls and jumps
+//! through memory, partial register and flag writes, red-zone saves in leaf functions, both compilers'
+//! position-independent switch tables, and `pushfq` for the dump.
 
 use crate::guest::GuestTest;
 use crate::layer2::*;
@@ -22,6 +22,13 @@ const WRITE: u64 = <X86_64 as GuestTest>::STAND_IN.write;
 const EXIT_GROUP: u64 = <X86_64 as GuestTest>::STAND_IN.exit_group;
 /// The descriptor the model's system call writes to.
 const STANDARD_OUTPUT: u32 = 1;
+
+/// A walk's string forms by its `rt` (`string_step`): one element; then with a repeat prefix `lods` or
+/// `stos`; `scas`, or `movs` onto the next element; and `cmps` against it, or `movs` from it.
+const STRING_FORMS: u8 = 4;
+const ONE_ELEMENT: u8 = 0;
+const REPEATED: u8 = 1;
+const SCAN_OR_COPY_ONTO_NEXT: u8 = 2;
 
 /// Bytes of a general register, of an area slot and of a stack push.
 pub(super) const WORD: i32 = (u64::BITS / u8::BITS) as i32;
@@ -1169,33 +1176,90 @@ impl Emitter {
         Ok(())
     }
 
-    /// A walk that moves its base after each access, by a string instruction (lods or stos, with the
-    /// direction flag set for a step down) and a lea for the rest of the step. Loads go to rax, stores come
-    /// from it.
+    /// A walk that moves its base after each access, by a string instruction (with the direction flag set for
+    /// a step down) and a lea for the rest of the step. The walk's `rt`, which no string instruction names,
+    /// picks the form: one element (`lods` to rax, `stos` from it), keeping rsi and rdi; or with a repeat
+    /// prefix as many elements as the step holds, which leaves rcx, rsi and rdi as it ends: `rep lods`,
+    /// `repne scas` against rax and `repe cmps` against the next element for loads; `rep stos`, `rep movs`
+    /// from the next element (the bulk pass going up) and `rep movs` onto it (one element at a time) for
+    /// stores.
     fn string_step(&mut self, w: &Walk) -> Asm {
         let base = R13;
         let down = w.step < 0;
-        let pointer = if w.load { rsi } else { rdi };
-        self.a.xchg(q(base), pointer)?;
+        let form = w.rt % STRING_FORMS;
+        if form == ONE_ELEMENT {
+            let pointer = if w.load { rsi } else { rdi };
+            self.a.xchg(q(base), pointer)?;
+            if down {
+                self.a.std()?;
+            }
+            match (w.load, w.bytes) {
+                (true, 1) => self.a.lodsb()?,
+                (true, _) => self.a.lodsq()?,
+                (false, 1) => self.a.stosb()?,
+                (false, _) => self.a.stosq()?,
+            }
+            if down {
+                self.a.cld()?;
+            }
+            self.a.xchg(q(base), pointer)?;
+            let moved = if down {
+                -i32::from(w.bytes)
+            } else {
+                i32::from(w.bytes)
+            };
+            return self.a.lea(q(base), q(base) + (i32::from(w.step) - moved));
+        }
+        let bytes = i32::from(w.bytes);
+        let in_step = i32::from(w.step).unsigned_abs() / bytes.unsigned_abs();
+        // A form with the next element needs a step of two at least, and then reaches one element further.
+        let form = if form != REPEATED && in_step < 2 {
+            REPEATED
+        } else {
+            form
+        };
+        let elements = if form == REPEATED {
+            in_step.max(1)
+        } else {
+            in_step - 1
+        };
+        // The element after the base, the way the walk goes.
+        let next = q(base) + if down { -bytes } else { bytes };
+        let wide = w.bytes != 1;
+        match (w.load, form) {
+            (true, REPEATED) | (false, REPEATED) => {
+                self.a.mov(if w.load { rsi } else { rdi }, q(base))?
+            }
+            (true, SCAN_OR_COPY_ONTO_NEXT) => self.a.mov(rdi, q(base))?,
+            (true, _) | (false, SCAN_OR_COPY_ONTO_NEXT) => {
+                self.a.mov(rsi, q(base))?;
+                self.a.lea(rdi, next)?;
+            }
+            (false, _) => {
+                self.a.mov(rdi, q(base))?;
+                self.a.lea(rsi, next)?;
+            }
+        }
+        self.a.mov(ecx, elements)?;
         if down {
             self.a.std()?;
         }
-        match (w.load, w.bytes) {
-            (true, 1) => self.a.lodsb()?,
-            (true, _) => self.a.lodsq()?,
-            (false, 1) => self.a.stosb()?,
-            (false, _) => self.a.stosq()?,
+        match (w.load, form, wide) {
+            (true, REPEATED, false) => self.a.rep().lodsb()?,
+            (true, REPEATED, true) => self.a.rep().lodsq()?,
+            (true, SCAN_OR_COPY_ONTO_NEXT, false) => self.a.repne().scasb()?,
+            (true, SCAN_OR_COPY_ONTO_NEXT, true) => self.a.repne().scasq()?,
+            (true, _, false) => self.a.repe().cmpsb()?,
+            (true, _, true) => self.a.repe().cmpsq()?,
+            (false, REPEATED, false) => self.a.rep().stosb()?,
+            (false, REPEATED, true) => self.a.rep().stosq()?,
+            (false, _, false) => self.a.rep().movsb()?,
+            (false, _, true) => self.a.rep().movsq()?,
         }
         if down {
             self.a.cld()?;
         }
-        self.a.xchg(q(base), pointer)?;
-        let moved = if down {
-            -i32::from(w.bytes)
-        } else {
-            i32::from(w.bytes)
-        };
-        self.a.lea(q(base), q(base) + (i32::from(w.step) - moved))
+        self.a.lea(q(base), q(base) + i32::from(w.step))
     }
 
     fn lookup(&mut self, l: &Lookup) -> Asm {
