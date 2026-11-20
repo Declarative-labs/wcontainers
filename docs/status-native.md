@@ -145,6 +145,11 @@ Looked at, on the host (wall time only, alternating, load 8 to 14, a suite of th
   addresses read with one load (range and alignment tests, `ldr`, `br`) +5 to +14%; with the dispatch copied into every
   case, as native pieces have it, the slot +14 to +31%. So the slot's second indirect branch is a part of interpret's +100%, not
   most of it; what the rest is has not been found.
+- interpret's pieces (its guest code, objdump of the image): each case ends in a branch back to the dispatch, which is
+  before the case, so the case's piece leaves by a linked exit; the dispatch's own piece ends at its `b.hi` back to its
+  start, so the code after it (the table load and the `br`) is a third piece. Tried and not kept: following the next
+  instruction of a branch back into the walk's code too (n4r14/ab-follow.log, 6 pairs against this run's build, load 12
+  to 18): interpret +8.7% cycles for -2.4% instructions, search +47.2%, matrix -7.4%, the rest within 3%.
 
 What N4 still needs, in order:
 1. The compute part of the bar (+27.94% against +21.2%): interpret (+99.7%) is most of what is left; without it the
