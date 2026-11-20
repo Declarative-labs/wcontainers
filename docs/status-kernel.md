@@ -14,6 +14,7 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 - At the sixteenth run's start (12:40 UTC on the 20th) the rented ARM64 machine was unreachable
   (arm-run 125; taken at about 12:35) and Docker Desktop on the Mac started no container: every
   track's new containers stayed "Created" (45 at 12:54). No reference and no LTP could run.
+  Both were still so at 13:10 UTC, when the run stopped.
 
 - The literal check fails on this branch since the fifteenth run's merge of origin/phase-1, with
   one finding only: "literals.baseline was started more than once, by 68214b2eec10, da21d326f277".
