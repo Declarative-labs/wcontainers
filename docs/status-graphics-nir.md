@@ -753,7 +753,20 @@ tracks' jobs), 735 s):
   the comparison (SIGSEGV), neither looked at further (A is not chosen).
 
 The choice (final; 15.3): the route is B (`nir-naga`, `src/direct.rs`). It follows from the
-counts, which are far apart on every source; the times agree with them.
+counts, which are far apart on every source; the times agree with them. Since run 15 both routes
+are timed on the same work: the common form's step and the conversion to a validated module (B's
+time also holds the 15.4 rewrite where a module needs one, which A never reaches). Before run 15,
+B's time also held the cache key (`nir_serialize` and BLAKE3), which A's did not: every B time
+below from runs 4 to 14 counts that against B.
+- Timed alone on a seeded sample with run 15's code (`WC_NIR_SHADERS=2000`, seed 0x5eed, the
+  corpus of 18,738 items with the CTS programs; `results/run15/nir-choice-r15.jsonl`; x86-64
+  machine, cores 0-9, load 98.0 at the start and 54.2 at the end (the whole corpus run and other
+  tracks' jobs on the other cores), about 1,850 s): B matches 1,288 and A 119 (of 1,358 that reach
+  a route); on the 118 both match, A median 375 us, mean 507 us; B median 300 us, mean 355 us.
+  The machine was far busier than in run 13's sample (load 3.8), so both routes' times are higher;
+  B is 20 % faster at the median.
+- Run 15's corpus run: B matches 12,069 programs, A 1,075; on the 1,074 both match, at 172 at
+  once on a busy machine, A median 536 us, B median 428 us.
 - Run 14's corpus run (above): B matches 11,732 programs, A 1,013; on the 1,012 both match, at
   180 at once on a busy machine, A median 519 us, B median 448 us. The same order on every
   source as run 13's, below.
@@ -827,8 +840,8 @@ Next (after G8's check):
   aborting on GLSL in route A, each abort a core dump the machine's `apport` writes).
   `WC_NIR_SHADERS=<n>` takes a seeded sample: for the independent check,
   `WC_NIR_TIMING_CORES=0-9 WC_NIR_SHADERS=2000 crates/wcontainers-nir/corpus/choose
-  $CARGO_TARGET_DIR/nir-choice-check.jsonl` (run 13: 1691 s; B 1,285 match, A 119; run 14's code
-  adds B matches among the atomic counter and rewrite programs, and leaves A's as they were). A reference
+  $CARGO_TARGET_DIR/nir-choice-check.jsonl` (run 15: about 1,850 s at load 54 to 98; B 1,288 match,
+  A 119; run `corpus/cts-programs` first, or the sample is drawn from fewer items). A reference
   that does not end on the seeded inputs is held on up to four seeds, two minutes each, so a
   sample with such programs takes longer.
 - The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
@@ -909,6 +922,16 @@ Next (after G8's check):
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- The whole corpus run (run 15, 18,738 items, 172 children on cores 10-95 and 106-191, x86-64
+  machine, load 41.1 at the start and 100.4 at the end, other tracks' jobs and the timed sample
+  beside it): 735 s. Time per shader to the validated common form at 172 at once on the 1,074
+  shaders both routes match: A median 536 us, mean 863 us; B median 428 us, mean 556 us (B's time
+  no longer includes the cache key, which neither route's now does).
+- The whole suite of wcontainers-nir (run 15, x86-64 machine, load 84 to 115): fmt clean; clippy
+  with warnings denied clean with and without Mesa; without Mesa every test target builds and
+  passes (no tests run without it); with Mesa `glsl_buffers` 1, `glsl_reference` 10 and 1
+  ignored (the known failure, llvmpipe's), `narrow` 1, `route` 11 passed.
 
 - The whole corpus run (run 14, 18,222 items, 180 children, x86-64 machine, load 11.4 at the
   start and 3.3 at the end): 731 s. Time per shader to the validated common form at 180 at once
