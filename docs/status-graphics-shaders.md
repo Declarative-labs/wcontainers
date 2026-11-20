@@ -22,7 +22,9 @@ arrays of typed buffers on the DXIL route (`ResourceArray` there; see "Run 55");
 Direct3D 12 front's three asks: the pixel program of a pipeline without a pixel shader for its
 variant (`builtin::pixel_program_for_variant`), depth clamped through the geometry stage's
 pass-through, and textures read in their view's component kind (texture-load lines 235 to 267;
-see "Run 56"); run 57 the NIR track's entry point, `wcontainers_shaders::rewrite` (see "Run 57").
+see "Run 56"); run 57 the NIR track's entry point, `wcontainers_shaders::rewrite` (see "Run 57");
+run 58 the Direct3D 11 front's stream output from a vertex shader alone on WebGL 2
+(`GeometryReplay::streamed`, see "Run 58").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -122,7 +124,9 @@ The pass bar, item by item:
    `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`, on ANGLE: every case of the WebGPU
    test but the strips with adjacency, which the route refuses by name; indexed strips since run
    54), and
-   stream output after them since run 53 (`stream_output_after_replay_matches_direct3d`).
+   stream output after them since run 53 (`stream_output_after_replay_matches_direct3d`), and
+   since run 58 stream output from a vertex shader alone there, drawn from its capture (the same
+   test and `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`).
    Not met: the rest of WebGL 2 (tessellation, cull distances, lines: gap A5), DXIL
    (A6), some topologies and streams (A7), vertex shaders writing storage (A9), and single texels on
    the edges of clipped triangles (A10).
@@ -178,6 +182,9 @@ The gap list (every item of the pass bar not met):
   records wider than one capture target
   (`GeometryReplayComponents`, past `capture_components`, 16 slots on WebGL 2's minimum);
   layered geometry (`selects`, built on the same pass-through, not drawn on WebGL 2 yet); stream
+  output from a vertex shader alone runs since run 58 (`GeometryReplay::streamed`), refusing
+  adjacency (`StreamOutputAdjacency`, as the compute route) and cull distances
+  (`StreamOutCullDistance`); stream
   output from a geometry shader writing several streams (`GeometryReplayStreams`: the replay runs
   stream 0 only; stream output of stream 0 runs since run 53, `StreamOutAfterReplay`);
   alpha-antialiased lines, cull distances,
@@ -2293,6 +2300,38 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 58 (the gap list in the fronts' order: the Direct3D 11 front's ask, stream output without a
+geometry shader on a back end with transform feedback and no compute, which kept its WebGL 2 build
+at 9_3):
+- Merged origin/phase-2-graphics-direct3d-11 (7 commits) and -direct3d-12 (4), no conflicts; the
+  shared line, webgpu, webgl, rig and phase-1-literals had nothing new.
+- `GeometryReplay::streamed(backend, &vertex, &stream_output)`: the vertex shader (converted, its
+  inputs as drawn) captured by transform feedback as records of its position, every output
+  location and its clip distances' slots (`stage::streamed_programs`, from the module's own
+  outputs, so the key's rewrites reach the pixel program); `run` writes the declaration on the
+  host from a read back of the capture with the same writer as after a replay (now taking records
+  without the whole-primitive word) and returns a `FinalDraw` of the capture, which the front
+  draws through `passthrough()` with `vertex_layout()` as after a replay. Indexed strips are
+  listed on the host as on the replay route. Refused by name: adjacency (`StreamOutputAdjacency`),
+  cull distances (`StreamOutCullDistance`), records wider than a capture
+  (`GeometryReplayComponents`), outputs whose locations do not start with the reflected ones
+  (`StreamOutCaptureLocations`).
+- Interface: `SlowPath::StreamOutAfterReplay`'s doc and reason widened to the replay route's
+  stream output, the vertex shader alone included (Interface changes).
+- Tests (RTX 3080 through the queue, ANGLE on Direct3D 11, desktop shared with the other tracks):
+  `stream_output_after_replay_matches_direct3d` now also runs the six vertex-alone cases of
+  `STREAMED` (strips, lists, points, instances, indexed strips) against real Direct3D 11's stream
+  output, every word of both buffers and both counts; `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does`
+  also draws those six from the capture against Direct3D 11 drawing the vertex shader alone.
+  Seeds 1 to 4 (gpu1.log): 48 stream comparisons and 88 pictures, 0 failed. Seeds 58 to 73
+  (gpu2.log): 192 stream comparisons 0 failed; 352 pictures, the 96 vertex-alone ones all equal,
+  5 failed, all `gs_clip` (seeds 61, 65 and 73, largest 64 and 83 on a few edge texels): gap A10
+  on the replay route as on the compute route, not this run's change.
+- x86 machine (load 7 to 48 on 192 at the start): the crate's whole suite with every corpus
+  (suite.log, 224 s): every test passes but `runner_shaders_give_their_recorded_verdicts` (A1,
+  left failing as before). Clippy with warnings denied on Linux and on the desktop.
+- Literal check on the desktop (check.txt): passes; no line added.
+
 Run 57 (the NIR track's request of 2026-11-19: a public entry point for 15.4's rewrites):
 - Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the other branches
   had nothing new.
@@ -2909,13 +2948,24 @@ Next (in order). The gap list (top of this file) in the order the fronts need it
 Since run 56 the Direct3D 12 front's three asks are built (its texture-load lines, the pixel
 program for a variant alone, depth clamped behind a geometry stage); since run 55 its srv-buffers,
 tgsm, uav-rwbuffer, wave-ops-float and unbounded-array-5.1 (shader model 6.0) runner files should
-pass the converter after a merge. Since run 57 the NIR track's entry point is there (below). Left
-first, in order: arrays of constant and structured
-buffers on the DXIL route (each element its own buffer, the reader's one buffer split); the
-Direct3D 11 front's aliased lines into multisampled targets (a stage helper route drawing each
-line as the whole pixels the diamond rule picks, and the interface's word for it); DXIL
-geometry and hull shaders (A6: the Direct3D 12 front's raster, geometry, streamout and
-tessellation scenes fail on them); then items 2 and 4 below.
+pass the converter after a merge. Since run 57 the NIR track's entry point is there (below).
+Since run 58 the Direct3D 11 front's stream output from a vertex shader alone on WebGL 2. Left
+first, in order (run 58's count of what waits: A6 refuses 15 of the rig's 72 DXIL shaders, which
+fail four of the Direct3D 12 front's scenes, 38 runner and 10 own files):
+1. A6, DXIL geometry, hull and domain shaders. What it takes, as read in run 58: the geometry
+   lowering (`lower/geometry.rs`) builds its compute and replay forms from dxbc-spirv's IR, so the
+   DXIL route needs (a) the carried naga reader to read the Geometry execution model as a function
+   whose per-vertex inputs and outputs are private arrays and globals, with `OpEmitVertex` and
+   `OpEndPrimitive` as calls to stub functions per stream, and its declared input and output
+   primitive and largest vertex count kept; (b) a pass over that naga module making the same
+   records, emit and cut functions as the DXBC lowering (its record layout is `crate::stage`'s),
+   factored out of `lower/geometry.rs` so both routes share it; then hull and domain the same way
+   after `lower/hull.rs`. Several runs.
+2. Arrays of constant and structured buffers on the DXIL route (each element its own buffer, the
+   reader's one buffer split).
+3. The Direct3D 11 front's aliased lines into multisampled targets (a stage helper route drawing
+   each line as the whole pixels the diamond rule picks, and the interface's word for it).
+4. Items 2 and 4 below.
 
 For the NIR track (its request of 2026-11-19), provided in run 57: `wcontainers_shaders::rewrite`
 (what is new for the owner; contract under "Run 57"). Route B calls it on its module and
@@ -3169,6 +3219,16 @@ The older list, kept for its detail:
   back end's writing; multisampled reads are absent there.
 
 ## Asked of other tracks
+
+- The Direct3D 11 track (run 58): stream output from a vertex shader alone on WebGL 2 is
+  `GeometryReplay::streamed(backend, &vertex, &so)` (the vertex shader converted as for a replay,
+  its inputs as drawn); `run` with a `ReplayDraw` whose `geometry_sets` are all `None` writes the
+  stream output and returns the capture as a `FinalDraw`, drawn through `passthrough()` and
+  `vertex_layout()` as after a replayed geometry shader (or not drawn, for
+  `D3D11_SO_NO_RASTERIZED_STREAM`). Drawn equal to Direct3D 11 on ANGLE. Its refusals are
+  `StageError::Unsupported` with the name. Also: the pass-through's clip distances at the linked
+  location behind a geometry stage (your round 2 run 3 ask) were built here in run 38: convert the
+  geometry shader and the pixel shader with `VariantFlags::CLIP_DISTANCE` and `linked`.
 
 - The NIR track (run 57): the 15.4 rewrites are public as `wcontainers_shaders::rewrite` (under
   "Next", "For the NIR track"); merge this branch and call it on route B's module in place of a
@@ -4672,6 +4732,14 @@ were already there.
 
 ## Departures from the plan
 
+- Stream output from a vertex shader alone on WebGL 2 (run 58) is written on the host from a read
+  back of the vertex stage's capture, where the plan's section 7 says native transform feedback,
+  repacked by a second capture where the declaration needs it (`StreamOutRepacked`). Direct3D's
+  overflow (no primitive written unless every buffer holds it), filled sizes and counts need the
+  primitive count before writing, which transform feedback does not give; the host writer the
+  replay route already has is exact for all of it (drawn equal to Direct3D 11). One blocking read
+  a draw, counted as `StreamOutAfterReplay`.
+
 - Indexed strips through the replay route (run 54) are listed on the host from the indices read
   back (one blocking read a draw on WebGL 2), where the compute route lists them on the GPU: WebGL
   2 has no compute, and the listed count decides the capture's size. The host listing follows
@@ -4980,6 +5048,11 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 58, `SlowPath::StreamOutAfterReplay`'s doc and reason (commit "interface: stream output of a
+  vertex shader alone written on the host counts as the replay route's"; plan text in section 7's
+  WebGL 2 paragraph): the slow path names stream output written on the host on the replay route,
+  after a replayed geometry shader or from a vertex shader alone. Same variant and number.
 
 - Run 56, `VariantKey::texel_formats`'s doc (commit "interface: texel_formats also names the views
   of textures read in another component kind than declared"; plan text in 6.4's list): the bound
