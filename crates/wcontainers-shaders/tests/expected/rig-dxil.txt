@@ -28,12 +28,12 @@ geometry.gs_layers.dxil	unsupported DxilGeometryShader
 geometry.gs_points.dxil	unsupported DxilGeometryShader
 geometry.gs_strips.dxil	unsupported DxilGeometryShader
 geometry.ps.dxil	ok ; glsl compiles
-geometry.ps_id.dxil	ok ; glsl needs PRIMITIVE_INDEX compile
+geometry.ps_id.dxil	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 geometry.ps_primitive.dxil	ok ; glsl compiles
 geometry.vs.dxil	ok ; glsl compiles
-msaa.ps_coverage.dxil	ok ; glsl needs SAMPLE_SHADING compile
-msaa.ps_load.dxil	ok ; glsl needs MULTISAMPLE_READ compile
-msaa.ps_sample.dxil	ok ; glsl needs SAMPLE_SHADING compile
+msaa.ps_coverage.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : undeclared identifier
+msaa.ps_load.dxil	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+msaa.ps_sample.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 raster.gs.dxil	unsupported DxilGeometryShader
 raster.ps.dxil	spirv-reader unsupported builtin %10
 raster.vs.dxil	ok ; glsl compiles

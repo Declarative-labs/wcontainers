@@ -168,7 +168,7 @@
 5bae97ab1023a6f7.dxbc	ok ; glsl compiles
 5bb2d0cfb148a57f.dxbc	ok ; glsl compiles
 5be527de5bdf82de.dxbc	ok ; glsl compiles
-5c32b4c746957b52.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+5c32b4c746957b52.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 5cd39c5f32bea809.dxbc	ok ; glsl compiles
 5d0b8394f1f7c2ec.dxbc	ok ; glsl compiles
 5da1b5b1255b7abb.dxbc	ok views:R32Float ; glsl absent compute
@@ -204,7 +204,7 @@
 6a50b239e42dd956.dxbc	ok ; glsl compiles
 6a6f4acff544f3d1.dxbc	ok views:R32Float ; glsl absent compute
 6b1eb5701bb3193e.dxbc	ok ; glsl compiles
-6b422d4ad74f329a.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+6b422d4ad74f329a.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 6b7f5f1d8d56953d.dxbc	ok ; glsl compiles
 6b9b668c704a0374.dxbc	ok ; glsl compiles
 6bb37ba6e53bb0ed.dxbc	ok ; glsl compiles
@@ -253,7 +253,7 @@
 80d25721ef05dc05.dxbc	ok ; glsl compiles
 8160fe7aaf2498ce.dxbc	ok views:R32Float ; glsl absent compute
 81c9f54eb7634287.dxbc	ok ; glsl compiles
-824acbe53f3da598.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+824acbe53f3da598.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'usampler2DMS' : Reserved word.
 833f6e61c79fcadd.dxbc	ok ; glsl compiles
 83d814729fb9b2be.dxbc	ok ; glsl compiles
 84f06ca622671518.dxbc	ok views:R32Float ; glsl absent compute
@@ -265,7 +265,7 @@
 876a622c7f81b394.dxbc	ok views:R32Float ; glsl absent compute
 880497215bd15d2d.dxbc	ok ; glsl compiles
 88975bf56204ea76.dxbc	ok ; glsl compiles
-88a47056729cb2a2.dxbc	ok ; glsl needs SAMPLE_SHADING|MULTISAMPLE_READ compile
+88a47056729cb2a2.dxbc	ok ; glsl needs SAMPLE_SHADING|MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 89d0b4d20c56fb06.dxbc	ok ; glsl compiles
 8a2b4372c48454c1.dxbc	ok ; glsl compiles
 8acd4e1c373d79df.dxbc	ok ; glsl compiles
@@ -343,7 +343,7 @@ a87dcd6470610964.dxbc	ok ; glsl compiles
 a9b6b33b82ff7db2.dxbc	ok ; glsl compiles
 a9cc922ca947c5ee.dxbc	ok ; glsl compiles
 aa82b7f663c88946.dxbc	ok views:R32Float ; glsl absent compute
-ab94d4f3f1b4fc87.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+ab94d4f3f1b4fc87.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 abb33b57eba884ae.dxbc	ok ; glsl compiles
 acbf2ac87f6d02d1.dxbc	ok ; glsl compiles
 acf8a8a6f0f162b7.dxbc	ok views:R32Float ; glsl absent compute
@@ -373,7 +373,7 @@ b7d70a7068930c3e.dxbc	ok ; glsl compiles
 b87d0d0c7965ce4c.dxbc	ok ; glsl compiles
 b8a482f97e6c6f12.dxbc	ok ; glsl compiles
 b96507c03fea91e2.dxbc	ok ; glsl compiles
-ba10d92ed61e8d12.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+ba10d92ed61e8d12.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 ba27967aac306839.dxbc	ok ; glsl compiles
 ba6a1c3a4f241514.dxbc	ok ; glsl compiles
 bbd00d2a49fe703e.dxbc	ok ; glsl compiles

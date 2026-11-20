@@ -74,7 +74,7 @@ ps_dual.dxbc	ok ; glsl compiles
 ps_early.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 ps_eval_exact.dxbc	unsupported SampleCount
 ps_evaluate.dxbc	unsupported SampleCount
-ps_fill.dxbc	ok ; glsl needs SAMPLE_SHADING compile
+ps_fill.dxbc	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 ps_filter.dxbc	ok ; glsl compiles
 ps_flat.dxbc	ok ; glsl compiles
 ps_ftoi.dxbc	ok ; glsl compiles
@@ -94,14 +94,14 @@ ps_mingather.dxbc	ok ; glsl compiles
 ps_minlod.dxbc	ok ; glsl compiles
 ps_mirror.dxbc	ok ; glsl compiles
 ps_msarray.dxbc	unsupported MultisampledArrayTexture
-ps_msloop.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
-ps_msswap.dxbc	ok ; glsl needs MULTISAMPLE_READ compile
+ps_msloop.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
+ps_msswap.dxbc	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 ps_narrow.dxbc	ok ; glsl compiles
 ps_negate.dxbc	ok ; glsl compiles
 ps_offset.dxbc	ok ; glsl compiles
 ps_pack.dxbc	ok ; glsl compiles
-ps_primid.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile
-ps_primitive.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile
+ps_primid.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
+ps_primitive.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_pull.dxbc	ok ; glsl compiles
 ps_rows.dxbc	ok ; glsl compiles
 ps_rows_io.dxbc	ok ; glsl compiles
@@ -120,9 +120,9 @@ ps_two.dxbc	ok ; glsl compiles
 ps_twospaces.dxbc	ok ; glsl compiles
 ps_window.dxbc	ok ; glsl compiles
 vs_carry.dxbc	ok ; glsl compiles
-vs_clip.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-vs_clip_six.dxbc	ok ; glsl needs CLIP_DISTANCE compile
-vs_cull.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile
+vs_clip.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+vs_clip_six.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+vs_cull.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_deep.dxbc	ok ; glsl compiles
 vs_early.dxbc	ok ; glsl compiles
 vs_eval_exact.dxbc	ok ; glsl compiles

@@ -30,6 +30,21 @@ pub const TEXTURE_SIZE: u32 = 8;
 /// The 16-bit index that ends a strip.
 pub const RESTART: u16 = u16::MAX;
 
+/// Whether 16-bit `indices` hold, at the places in `drawn`, `vertices` indices in a row with no
+/// restart among them: a strip's first primitive, which a seeded scene must have for its comparison
+/// to show anything.
+pub fn whole_strip_primitive(indices: &[u8], drawn: std::ops::Range<u32>, vertices: u32) -> bool {
+    let mut run = 0;
+    drawn.into_iter().any(|i| {
+        let at = size_of::<u16>() * i as usize;
+        run = match u16::from_le_bytes([indices[at], indices[at + 1]]) {
+            RESTART => 0,
+            _ => run + 1,
+        };
+        run >= vertices
+    })
+}
+
 pub fn bytecode(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
