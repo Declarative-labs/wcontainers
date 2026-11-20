@@ -1927,6 +1927,9 @@ pub fn plain(code: &[u8]) -> Case {
     }
 }
 
+/// The hand-made case of F3 0F 09.
+const WBNOINVD_AS_WBINVD: &str = "wbnoinvd as wbinvd with an ignored prefix";
+
 /// The hand-made cases: the 32-bit system call gates, which this phase answers by design with general
 /// protection at the instruction (plan 5.2), and a few stops compared with the reference.
 fn hand_cases() -> Vec<Designed> {
@@ -1944,7 +1947,7 @@ fn hand_cases() -> Vec<Designed> {
         designed("int 0x81", &[0xcd, 0x81], Stop::GeneralProtection, true),
         // `wbinvd` with an ignored F3 on a CPU without `wbnoinvd`: kernel only.
         designed(
-            "wbnoinvd",
+            WBNOINVD_AS_WBINVD,
             &[REP, ESCAPE, Code::Wbinvd.op_code().op_code() as u8],
             Stop::GeneralProtection,
             true,

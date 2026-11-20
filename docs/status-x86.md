@@ -86,7 +86,89 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   (2026-11-20) wrote SSE4.2's string compares, `enter`, `maskmovdqu` and the descriptor table instructions
   (`lar`, `lsl`, `verr`, `verw`, `sldt`, `str`, `smsw`, `sgdt`, `sidt`), each checked at 1,000 a form against
   the i7-8750H (see "X5, run 4"): 976 of the 1,295 have layer 1 forms. Left: the segment register and
-  far-transfer group, and the rest of the bar.
+  far-transfer group, and the rest of the bar. Run 5 (2026-11-19, restarted once) wrote the segment register
+  and far-transfer group, ran layer 3 Csmith at 1,000, built and ran layer 1's list of unoffered forms (2,993
+  forms, every encoding), measured the not-a-number probe on x86 and ARM hosts and the passed-register lists,
+  and ran every default form on the i7-8750H (see "X5, run 5"). Left: see "X5, run 5", "What comes next".
+
+## X5, run 5 (2026-11-19)
+
+Machines: the i7-8750H for layer 1's verdicts (4 at once, `x5/run5/laptop-bg.sh`); the rented x86-64 machine
+(load 3 to 55, shared with another track's jobs) for builds, lint, layer 2, layer 3, the suite and the probe;
+the rented ARM64 machine for the ARM64 tests and the probe; the Mac for git, `cargo fmt`, the literal check
+and the probe in its Chrome. Logs in scratch `x5/run5/`. The session restarted once part way; its first part
+committed 9014abe3 and 066d7c8c without recording them here, so this section records both parts.
+
+Written:
+- The segment register and far-transfer group (9014abe3, `crates/wcontainers-x86/src/segments.rs`): the 38
+  forms of `mov` to and from segment registers, `push`/`pop` `fs`/`gs`, `lfs`/`lgs`/`lss`, far `call`/`jmp`,
+  `retf` and `iret` of every operand size, with ds, es, fs and gs selectors as thread state (the block's
+  `reserved1` became `selectors`, no offset moved), the reference runner loading and reading them, and the
+  read orders plan 5.3 now records (a return reads the selector's 16 bits alone of its cs and ss slots). A
+  far transfer to Linux's 32-bit code stops with general protection, counted and warned
+  (`FarTransferTo32Bit`): this phase has no 32-bit mode. Layer 1 on the i7-8750H, the 38 forms, 1,000 a form:
+  seed 9201 one failing (`Retfd_imm16`, the selector read, fixed before the commit), seeds 9202 and 9203 0
+  failing (`l1-seg2-laptop.log` to `l1-seg4-laptop.log`, 111 s each, load about 1).
+- Layer 3 runs Csmith and the hand-picked programs for x86 (066d7c8c).
+- Layer 1's unoffered forms (60fe1d5c, 6b54f80d): `GuestTest::unoffered_forms` and `reference_has`, the test
+  `unoffered_forms_are_illegal_x86_64` with its knob `WC_LAYER1_UNOFFERED_CASES`, and
+  `every_unoffered_code_is_drawn_x86_64`, which fails if a code of the list has no case. The list is every
+  `Code` valid in 64-bit mode, of every encoding but MVEX, in the AVX setting's claim group or the
+  never-claimed one: 2,993 forms. Left out, each with its reason printed: 13 VMX codes (plan 5.2) and 75 codes
+  the translator decodes as another code (48 Knights Corner VEX codes, and the prefetches, MPX, CET, `cldemote`
+  and the rest of the reserved-NOP space, which are in the default list as `Reservednop_*`). Cases draw every
+  operand kind from iced's tables (ymm, zmm, k and mm registers, vvvv, is4 and is5, VSIB with small index
+  elements so every element stays near its base, tiles, implicit rsi/rdi operands, a second immediate) and
+  EVEX's mask, zeroing, broadcast, rounding and suppressed exceptions where the form takes them. Our side must
+  stop with illegal instruction; where the reference has the feature (AES, PCLMULQDQ, RDRAND, RDSEED,
+  CLFLUSHOPT, XSAVEOPT, XSAVEC, INVPCID, XSAVES and the AVX setting's list) its stop is counted and printed,
+  not compared. The refactor moved `case`'s first draws into `start` without changing their order, so the
+  default forms draw the cases they drew before.
+- 4ad0ca98: layer 1 drew `call` and `jmp` through a 16:16 or 16:32 far pointer without the segment forms'
+  drawing (it tested a pointer size above 8 bytes, so only the 16:64 forms had it): no selectors placed, and
+  no leaving out of transfers to 32-bit code. It now tests iced's far-pointer memory sizes.
+
+Measured:
+- Every default form on the i7-8750H at 9014abe3 (`l1-all1-laptop.log`): 1,063 forms, 1,000 a form, seed 9204,
+  4 at once, 3,146 s, load 0.5 to 5: 1 failing, `Call_m1616`, a far call to selector 0x20 (Linux's 32-bit
+  code), where we give general protection by design and the reference ran it; the case should have been
+  left out, and was not because of the drawing fault fixed in 4ad0ca98. In the same job the hand-made cases
+  (95) and 64 no-form cases at seed 1 passed, and of `reference_x86_64` 5 tests passed and
+  `the_x86_64_reference_runs_programs` failed because the laptop has no zig (it builds its programs), as
+  before; its verdict comes from the x86 machine.
+- Layer 3 Csmith for x86 on the rented x86-64 machine at 9014abe3 (`l3-csmith-1000.log`): 1,000 programs, seed
+  5502, 96 at once, 864 s, load 7 to 10: 879 compared with Linux (10 also in Chrome), 121 did not end on Linux
+  in time, 0 failing. Also 300 at seed 9311 with other lists (below): 256 compared, 0 failing.
+- The not-a-number probe (the module x86's translator runs at start, the same bytes everywhere, SHA-256
+  dba04df9...): wasmtime in the runtime (embedded, release) answers 1 on the x86-64 machine and 0 on the ARM64
+  machine; the wasmtime 49.0.2 command answers 1 on x86-64 and 0 on the Mac (Apple M5 Max); Chrome 158 answers
+  1 on Linux x86-64 and 0 on Linux ARM64, Chrome 157 0 on macOS ARM64. So x86 hosts take the plain path and ARM
+  hosts the fix-ups, whose layer 1 run 4 checked with the answer forced to 0.
+- The passed-register lists (`passed.sh`, `passed.log`, rented x86-64 machine, load 3 to 10, `taskset -c 0-9`,
+  `perf stat` user-mode instructions, wasmtime, full look-ahead, 3 rounds, order turned each round): five pairs
+  of lists, the benchmark set's sum of best times: the plan's starting lists (in rsp, rdi, rsi; out rsp, rax)
+  20.9 s, the current (in rsp, rdi, rsi, rdx, rcx, r8, r9, rax; out rsp, rax, rdx) 21.6 s, in four 21.4 s, out
+  one 22.2 s, every callee-saved register too 23.2 s. The starting lists ran fewest instructions on six of eight
+  workloads (fib 103.0 G against 113.7 G). But with them layer 2 differs at bounded look-ahead: seed 9310, 3,000
+  programs, 367 failing (`passed-check.log`); 200 programs, 25 failing, against 0 with the current lists in the
+  same job. The starting lists are the first with a register passed out and not in (rax); replay
+  `WC_LAYER2_FROM=10 WC_LAYER2_CASES=1 WC_LAYER2_SEED=9310`, rax 1 at bounded 56 against 0. So the current
+  lists stay, chosen for now, and the plan (3.4) says why; switching is X6's, with that bug fixed.
+- Layer 1's unoffered forms on the rented x86-64 machine as a trial (seed 9320, 10 a form, 96 at once,
+  `unoffered-x86m.log`): our side stopped with illegal instruction in every case; 1,827 forms differ, every
+  one a feature that machine has and the i7-8750H lacks (AVX-512 and the other EVEX forms, SHA, GFNI, VAES,
+  AVX-VNNI, AMX, TSX, WAITPKG, PKU, MOVDIRI, ENQCMD, SERIALIZE and the rest of its manual's list), plus
+  `invpcid` and `xsaves`, kernel only there (general protection), now in `REFERENCE_HAS` (the laptop's
+  cpuinfo has both). The list's verdict is the laptop's: PENDING.
+
+PENDING-LAPTOP-BATCH
+
+Literals: the check exits 0 (the Mac). The test crate's baseline lost 12 lines (the starting state's numbers,
+now named, and the scales); no line was added. Baseline lines: x86 125, interface 28, translator 72, test crate
+2,094.
+
+What comes next, in this order:
+PENDING-NEXT
 
 ## X5, run 4 (2026-11-20)
 
@@ -442,6 +524,9 @@ the rented x86-64 machine should be booted with 5-level paging off). My answer:
   The features it has beyond the laptop (AVX-512, AMX, tpause and the rest in its manual) are not claimed by
   our cpuid either way. Until then the four tests the manual names keep taking their verdict from the laptop,
   as runs 1 to 8 did.
+- Added in X5 run 5: layer 1's unoffered forms take their verdict from the i7-8750H whatever its paging, since
+  the rented machine has AVX-512, SHA, GFNI, AMX, TSX and more that the i7-8750H lacks, and those forms must
+  give illegal instruction on the reference. The i9-9900K desktop (no AVX-512 either) could serve too.
 
 ## X4, run 8 (2026-11-19)
 
@@ -2392,7 +2477,18 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   WC_LAYER1_SEED=<n> WC_LAYER1_JOBS=4 cargo test --release -p wcontainers-translator-test --test layer1
   every_form_matches_the_cpu_x86_64 -- --nocapture`. `WC_PROBE_ANSWER=<answer>` makes the harness translate
   for a host whose probe gives that answer (one of `PROBE_ANSWERS`), so the not-a-number fix-ups that hosts
-  answering 0 need run on any host.
+  answering 0 need run on any host. The script is copied to `x5/run5/laptop-bg.sh`; it replaces the copy of
+  the tree there, so never start it while another of its jobs runs.
+- Layer 1's unoffered forms (X5): `WC_LAYER1_UNOFFERED_CASES=100 WC_LAYER1_SEED=<n> WC_LAYER1_JOBS=4 cargo
+  test --release -p wcontainers-translator-test --test layer1 unoffered_forms_are_illegal_x86_64 --
+  --nocapture` on the i7-8750H (the rented machine has most of these features); `WC_LAYER1_FORMS` limits it.
+  `every_unoffered_code_is_drawn_x86_64` lists the codes left out and why.
+- The not-a-number probe on a host: copy scratch `x5/run5/scratch_probe.rs` into the test crate's `tests/`,
+  `WC_PROBE_OUT=<file> cargo test --release -p wcontainers-translator-test --test scratch_probe --
+  --nocapture` (wasmtime's answer, and the module written to the file), then `node x5/run5/probe.mjs <file>`
+  for Chrome's (`WC_PLAYWRIGHT_CORE` from the Nix shell) and `wasmtime run --invoke probe <file>`.
+- The passed-register lists: `x5/run5/passed.sh <rounds>`, from an x86-run copy on the rented x86-64 machine
+  (it builds a copy of `time-blob` for each pair of lists).
 
 - Docker on the Mac without Docker Desktop (X4 run 6), for the ARM64 tests whose reference runs in Docker:
   `export LIMA_HOME=<scratch>/x86/lm` and Lima from `nix build nixpkgs#lima`; `limactl start x` (made with
@@ -3043,6 +3139,15 @@ X2 (each also written into the plan's text in the same commit):
   near branches, `retnw` and `ud0` without ModRM exist only in iced's AMD decoding (iced's documentation:
   Intel ignores 66 on those branches), so the gap list counts only forms with `intel_decoder64()`. Taken from
   iced, not checked separately on the reference.
+- The passed-register lists (X5 run 5): the plan's starting lists measured fastest, but break layer 2 at
+  bounded look-ahead (a register passed out and not in, which no earlier list had); x86 keeps the longer lists
+  until X6 fixes that, and plan 3.4 says so.
+- The never-claimed list (X5 run 5): plan 7.4's `GuestTest::REFERENCE_HAS` is the method `reference_has(form)`
+  on the trait, filled from x86's constant `REFERENCE_HAS` (feature names, as the claim lists are); the list
+  also holds the AVX setting's forms (setting off), and so is called the unoffered forms. `invpcid` and
+  `xsaves` were added to it: the reference has them and gives general protection (kernel only), where the
+  CPU presented lacks them. ARM64's `unoffered_forms` is empty: ARM64 draws no forms of features it does not
+  offer yet.
 
 ## Decisions taken in the plan that the owner may want to hear about
 
