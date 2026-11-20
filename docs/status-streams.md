@@ -34,7 +34,9 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   suite and the Mac-only binaries (no test fails by our side) and the speed with no hook
   implemented (see "Measurements", S3 run 9). The fourth check found two blocking and three
   minor problems; run 10 settled them (see "S3 fourth check findings"), with a new test program
-  (guest/taskend.c, tests/taskend.rs). Next: S3's next independent check.
+  (guest/taskend.c, tests/taskend.rs). The fifth check found one blocking and four minor
+  problems; run 11 settled them (see "S3 fifth check findings"). Next: S3's sixth independent
+  check.
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -339,6 +341,43 @@ file or directory" for exec-worker, "threads 1 task-dirs 1 worker: exe 0 cwd 0 s
 for proc, and the freed-number assertion for exit) and pass with them.
 Not done: a `pidfd` for a thread away is not woken when its process ends with it away; a task away
 dropped by the embedder instead of put back lets go of its descriptor table outside the kernel.
+
+## S3 fifth check findings, settled in run 11
+
+The check (scratch streams/s3check5, its own program chk5.c and test chk5.rs) found:
+- Blocking, a task taken while it waits outside any call (its own load or store met a watch, or
+  its signal's frame did, or pages of a backend file not here) was marked as taken in a call
+  (`suspended_in_call`), which only a call run again clears; so once put back its next unrelated
+  calls answered EINTR (`epoll_wait`, and `nanosleep` with no handler at all). Now `take_task`
+  marks only a task that is in a call (`filling` is false); one waiting outside a call touches the
+  memory again when put back (announced again while the watch stays) and goes on waiting, and a
+  signal it was acting on is acted on as before. Tests (edges.c `taken`, its region named in the
+  mark's arguments): `a_task_taken_while_its_store_waits_on_a_watch_is_not_interrupted_later`
+  (the checker's case) and its signal-frame twin
+  `a_task_taken_while_its_signal_frame_waits_on_a_watch_is_not_interrupted_later` (the frame on a
+  watched alternate stack). Both ask for the access again after the put back, and output equal
+  to the reference's. ARM machine, 8 seeds: both fail without the change ("epoll -1 Interrupted
+  system call", "sleep -1 Interrupted system call") and pass with it (scratch
+  streams/s3run11/taken.log).
+- Minor, signals that dump core (SIGQUIT, SIGSEGV, SIGABRT and the others, sent by `kill`) ended
+  the process from the sender's side, so `on_signal_delivering` never fired for them. Linux's
+  `complete_signal` takes that shortcut only for fatal signals that do not dump core. Now
+  `complete` does the same, and a thread takes the signal in `deliver`, where the hook fires
+  and the default action ends the process. Test
+  `a_signal_that_dumps_core_is_announced_and_one_that_only_ends_is_not` (edges.c `fatal`: five
+  children kill themselves with SIGQUIT, SIGSEGV, SIGTERM, SIGABRT and SIGUSR2; output equal to
+  the reference's, announced exactly 3, 11, 6). ARM machine, 8 seeds: without the change nothing
+  is announced; with it, it passes (s3run11/fatal.log). Document and "Departures" corrected.
+- Minor, no test showed run 10's "a copy's end makes no last stores for the tasks going on with
+  the original". Test `a_copys_end_makes_no_last_stores_for_the_tasks_going_on_with_the_original`
+  (taskend.c `robust-copy`): at the child's mark the test copies its context and takes the whole
+  process (the original, held as if it went on elsewhere), puts the copy on the kernel and only
+  the marking thread back; the child exits, and its worker's robust lock must stay held ("lock
+  held"; the reference, where the worker ends, says "lock owner died"). With `last_stores` kept
+  for a copy's tasks it fails with "lock owner died" (ARM machine, 8 seeds, s3run11/copyend.log).
+- Minor, the speed's slow mode: see "Measurements", S3 run 11.
+- Minor, `splice_holds_the_pipe` (S1) gives no stable verdict on the ARM machine: see
+  "Departures" (S1, the splice test's verdict) and "For the orchestrator".
 
 ## How to run
 
@@ -989,6 +1028,29 @@ Found on the way, fixed:
   comparisons had such rounds on both sides (the fourth check's 12.267 and 12.245 on the base,
   run 6's 12.794 before and 13.027 after). Not shown to be caused by this run's code, and not
   ruled out: a question for the next check.
+- S3 run 11, what the slow rounds are (ARM machine, 7.0.0-1018-aws, 96 cores; scratch
+  streams/s3run11/speed.sh, speed.log, speed-summary.txt; 21:35 to 21:48 UTC, load 3.6 to 19.5):
+  the memory test binary of cefb66ab (S2 as merged) and of 84cc7716 (this run's head), each built
+  alone under its own name, 3 test threads, run alternately under `perf stat` (task clock, cycles,
+  instructions, branch misses, page faults, context switches, migrations, cache misses), 24 rounds
+  after a warm-up. Task clock in ms, base: 12078 12093 12097 12065 12135 12094 12107 12107 12110
+  12126 12109 12062 12108 12162 12093 12159 12096 12114 12163 12103 12101 12051 12106 12115 (mean
+  12106, never slow). Head: 12107 13584 12071 12037 12074 12057 12123 12044 12163 13592 12118
+  12162 12075 12153 12119 12103 13591 12033 12037 12118 12065 13577 12123 12103 (mean 12343; the
+  20 fast rounds' mean 12094, 0.1 % under the base's; slow in 4 of 24: rounds 2, 10, 17, 22).
+  What the slow rounds are: the same work run slower by the memory system. A slow round runs the
+  same instructions as a fast one (head slow 6.2937e10, 6.2927e10, 6.2957e10, 6.2930e10 against
+  the head's mean 6.2919e10 and the base's 6.2915e10, within 0.1 %; branch misses, page faults
+  and context switches the same), but about 37.95e9 cycles against 33.7e9 (+12.6 %) and about
+  3.58e9 cache misses against 2.73e9 to 2.84e9 in fast rounds (+29 % on 2.78e9); every slow round costs the same 13.58 to
+  13.59 s, a second mode, not noise. So the slow mode is not a different code path (no extra
+  instruction runs in it) and not S3's code: the instruction counts of base and head differ by
+  0.007 %. With address randomization off (`setarch -R`, speed-norandom.sh, speed-norandom.log,
+  21:49 to 21:54 UTC, load 11.5 to 17.5) no round of either binary was slow in 10 (head 12140
+  to 12364, base 12141 to 12172), which points to where things are placed in memory (the head's
+  layout meets a cache conflict under some placements); 0 of 10 alone is weak (it would happen
+  16 % of the time if the slow rate stayed 1 in 6). Expected, not measured: a layout change in
+  any later commit can move this mode onto either binary.
 - S3 run 10, tests. ARM machine (scratch streams/run10): fmt and clippy with warnings denied over
   the three crates passed; the six new tests pass at 3 seeds and all six fail with the kernel
   changes stashed (negative.log); away (12, the known failure ignored), edges (4), embedder (35),
@@ -1266,6 +1328,8 @@ Found on the way, fixed:
   `FUTEX_WORD`, and the robust list's offsets are `offset_of!` on `robust_list_head`); the check
   exits 0 with no marks (x86 and ARM machines, scratch streams/run10/literals.log,
   affected-4.log), and its crate's tests pass there, the workspace test among them.
+- After S3's eleventh run: unchanged, 7570 lines (the new tests' region is named in the mark's
+  arguments, not as a number); the check exits 0 with no marks on this Mac.
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -1416,7 +1480,23 @@ anything shipped.
   reference cannot stop one thread alone) and its `fd` directory empty. A copy's end makes no last
   stores for the tasks still running on the original.
 
+- S1, the splice test's verdict (fifth S3 check, run 11): `terminal::splice_holds_the_pipe`
+  compares its first command, `cat /dev/tty | cat`, with a reference that answers two ways on one
+  kernel: "abc\r\n" (the reader at the pipe waits for the next line) or "abc\r\nabc\r\n" (it gets
+  the line). On the ARM machine in run 11 it passed 4 of 6 runs (s3run11/splice.log; the checker
+  1 of 4); on the Mac it failed once in run 9 and passed in runs 8 and 9's reruns. Ours always
+  answers the first way. My reading, not measured: the first `cat` splices in a loop and takes the
+  pipe's lock again as soon as it lets it go, and whether the waiting reader gets the lock first
+  is a race of Linux's lock hand-off. The test is kept as it is (deleting or loosening the case
+  would weaken it); its verdict counts only where it passes, and a failure whose theirs is
+  "abc\r\nabc\r\n" for that command is the reference's race, not ours. A stable form would need a
+  program whose reference takes one way only; not found in this run.
+
 ## For the orchestrator
+
+- Run 11: `terminal::splice_holds_the_pipe` gives no stable verdict on either machine (the
+  reference races; see "Departures", S1, the splice test's verdict). Please treat a failure of it
+  whose reference printed the line twice as the reference's, or list it with the Mac-only tests.
 
 - Run 6: Docker Desktop on this Mac still starts no container (created, never started, at 07:07
   and about 07:17 Pacific; the daemon answers and one container of another project runs). The ARM
