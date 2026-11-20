@@ -261,7 +261,9 @@ pub fn csmith_case(number: u64) -> (std::path::PathBuf, Compiler, &'static str, 
         Compiler::Gcc
     };
     let level = LEVELS[(number / 2 % LEVELS.len() as u64) as usize];
-    let position = if (number / 12).is_multiple_of(2) {
+    // Each compiler at each level, then the other position.
+    let compilers_and_levels = 2 * LEVELS.len() as u64;
+    let position = if (number / compilers_and_levels).is_multiple_of(2) {
         Position::Fixed
     } else {
         Position::Independent
