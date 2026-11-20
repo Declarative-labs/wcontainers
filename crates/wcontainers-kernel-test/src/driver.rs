@@ -190,7 +190,7 @@ pub struct Run {
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
-/// until a time, the host's clocks jump to it instead of waiting.
+/// until a time, the host's clocks jump to it instead of waiting, unless the host waits.
 pub struct TestHost {
     started: Instant,
     /// How far the clocks have jumped ahead.
@@ -219,6 +219,9 @@ pub struct TestHost {
     cpu_warnings: Vec<Warned>,
     /// What a driven run has done to it between turns; none outside one.
     injecting: Option<Injecting>,
+    /// Whether an idle kernel's waits take their time on the machine's clock, as the reference's
+    /// do, rather than being skipped.
+    waits: bool,
 }
 
 /// What a driven run has done to it at moments drawn from its seed, and where it is.
@@ -273,6 +276,7 @@ impl TestHost {
             network: Default::default(),
             cpu_warnings: Vec::new(),
             injecting: None,
+            waits: false,
         }
     }
 
@@ -320,6 +324,7 @@ impl TestHost {
             network: Mutex::new(held(&mut self.network).moved()),
             cpu_warnings: self.cpu_warnings.clone(),
             injecting: self.injecting.take(),
+            waits: self.waits,
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -593,8 +598,8 @@ pub struct Prepared {
     pub echo: bool,
     /// The outside of its standard streams.
     pub outside: streams::Outside,
-    /// Whether the guest's clocks are the machine's, so a test that runs for a span of time takes
-    /// that span, rather than moving only with the work run.
+    /// Whether the guest's clocks are the machine's and its waits take their time, so a test that
+    /// runs for a span of time takes that span, rather than moving only with the work run.
     pub wall_clock: bool,
 }
 
@@ -648,7 +653,10 @@ pub fn run_prepared(
     }
     let mut cpu = back_end(seed, container.address_space);
     let mut host = if wall_clock {
-        TestHost::new(seed)
+        TestHost {
+            waits: true,
+            ..TestHost::new(seed)
+        }
     } else {
         TestHost::repeatable(seed)
     };
@@ -906,8 +914,12 @@ impl Outside for TestHost {
                 String::from_utf8_lossy(&streams.stderr)
             );
         };
-        let now = self.monotonic_nanoseconds();
-        self.skipped += until.saturating_sub(now);
+        let left = until.saturating_sub(self.monotonic_nanoseconds());
+        if self.waits {
+            std::thread::sleep(Duration::from_nanos(left));
+        } else {
+            self.skipped += left;
+        }
         kernel.event(cpu, self, Event::Timer);
     }
 
