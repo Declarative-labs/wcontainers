@@ -345,6 +345,9 @@ fn value_line(out: &mut String, value: impl core::fmt::Display) {
 const RANDOMIZE_VA_SPACE: &str = "sys/kernel/randomize_va_space";
 const MMAP_RND_BITS: &str = "sys/vm/mmap_rnd_bits";
 
+/// What `msg_next_id`, `sem_next_id` and `shm_next_id` show while no id is asked for.
+const NEXT_ID_UNSET: i32 = -1;
+
 pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("cgroups", Global::File(0o444)),
     ("cmdline", Global::File(0o444)),
@@ -414,6 +417,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ),
     ("sys/kernel/keys/root_maxbytes", Global::File(0o644)),
     ("sys/kernel/keys/root_maxkeys", Global::File(0o644)),
+    ("sys/kernel/msg_next_id", Global::File(0o644)),
     ("sys/kernel/msgmax", Global::File(0o644)),
     ("sys/kernel/msgmnb", Global::File(0o644)),
     ("sys/kernel/msgmni", Global::File(0o644)),
@@ -432,6 +436,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     (RANDOMIZE_VA_SPACE, Global::File(0o644)),
     ("sys/kernel/sched_autogroup_enabled", Global::File(0o644)),
     ("sys/kernel/sem", Global::File(0o644)),
+    ("sys/kernel/sem_next_id", Global::File(0o644)),
+    ("sys/kernel/shm_next_id", Global::File(0o644)),
     ("sys/kernel/shmall", Global::File(0o644)),
     ("sys/kernel/shmmax", Global::File(0o644)),
     ("sys/kernel/shmmni", Global::File(0o644)),
@@ -1772,6 +1778,9 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/kernel/sched_autogroup_enabled" => out.push_str("1\n"),
                 "sys/kernel/msgmax" => {
                     let _ = writeln!(out, "{MSGMAX}");
+                }
+                "sys/kernel/msg_next_id" | "sys/kernel/sem_next_id" | "sys/kernel/shm_next_id" => {
+                    let _ = writeln!(out, "{NEXT_ID_UNSET}");
                 }
                 "sys/kernel/msgmnb" => {
                     let _ = writeln!(out, "{MSGMNB}");
