@@ -128,8 +128,8 @@ fn chunks<'a>(container: &'a [u8], tag: &'a [u8; 4]) -> impl Iterator<Item = &'a
 
 /// The program's shader model, from its `SHEX` or `SHDR` chunk's version token.
 pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
-    let code = chunks(container, b"SHEX")
-        .chain(chunks(container, b"SHDR"))
+    let code = chunks(container, &SHEX)
+        .chain(chunks(container, &SHDR))
         .next()?;
     let version = word(code, offset_of!(CodeHeader, version))?;
     Some((
@@ -142,10 +142,66 @@ pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
 /// `SHDR`): the token's high half.
 pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
     let code = chunks(container, b"DXIL")
-        .chain(chunks(container, b"SHEX"))
-        .chain(chunks(container, b"SHDR"))
+        .chain(chunks(container, &SHEX))
+        .chain(chunks(container, &SHDR))
         .next()?;
     Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
+}
+
+/// The fields of a DXBC instruction's first word (d3d11TokenizedProgramFormat.hpp): the opcode in its
+/// low bits, the instruction's length in words, and a control point count.
+pub mod token {
+    pub const OPCODE_BITS: u32 = 11;
+    pub const LENGTH_SHIFT: u32 = 24;
+    pub const LENGTH_BITS: u32 = 7;
+    pub const CONTROL_POINTS_SHIFT: u32 = 11;
+    pub const CONTROL_POINTS_BITS: u32 = 6;
+
+    fn field(word: u32, shift: u32, bits: u32) -> u32 {
+        word >> shift & ((1 << bits) - 1)
+    }
+
+    pub fn opcode(word: u32) -> u32 {
+        field(word, 0, OPCODE_BITS)
+    }
+
+    /// The instruction's length in words (but for custom data, whose length is the next word).
+    pub fn length(word: u32) -> u32 {
+        field(word, LENGTH_SHIFT, LENGTH_BITS)
+    }
+
+    pub fn control_points(word: u32) -> u32 {
+        field(word, CONTROL_POINTS_SHIFT, CONTROL_POINTS_BITS)
+    }
+}
+
+/// The tags of a DXBC program's code chunk (shader model 5 and 4).
+const SHEX: [u8; 4] = *b"SHEX";
+const SHDR: [u8; 4] = *b"SHDR";
+
+/// A DXBC program's declared input control points per patch (hull and domain shaders), from its code
+/// chunk.
+pub(crate) fn dxbc_input_control_points(container: &[u8]) -> Option<u32> {
+    use crate::ir::dxbc_op;
+    let code = chunks(container, &SHEX)
+        .chain(chunks(container, &SHDR))
+        .next()?;
+    let mut at = size_of::<CodeHeader>();
+    while let Some(word0) = word(code, at) {
+        let opcode = token::opcode(word0);
+        if opcode == dxbc_op::DCL_INPUT_CONTROL_POINT_COUNT {
+            return Some(token::control_points(word0));
+        }
+        let length = match opcode {
+            dxbc_op::CUSTOM_DATA => word(code, at + size_of::<u32>())?,
+            _ => token::length(word0),
+        };
+        if length == 0 {
+            return None;
+        }
+        at += length as usize * size_of::<u32>();
+    }
+    None
 }
 
 /// The start of a DXIL container's `PSV0` chunk (DirectXShaderCompiler's
@@ -160,6 +216,15 @@ struct PipelineStateGeometry {
     output_stream_mask: u32,
 }
 
+/// The start of a hull or domain shader's `PSV0` chunk: `HSInfo` and `DSInfo` both start with the
+/// input control point count.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct PipelineStateTessellation {
+    runtime_info_size: u32,
+    input_control_points: u32,
+}
+
 /// The tag of a DXIL container's pipeline state chunk.
 const PIPELINE_STATE_TAG: [u8; 4] = *b"PSV0";
 /// `D3D_PRIMITIVE_1_CONTROL_POINT_PATCH`, the first of the patch primitives.
@@ -169,6 +234,15 @@ pub(crate) const FIRST_PATCH_PRIMITIVE: u32 = 8;
 pub(crate) fn geometry_input_primitive(container: &[u8]) -> Option<u32> {
     let psv = chunks(container, &PIPELINE_STATE_TAG).next()?;
     word(psv, offset_of!(PipelineStateGeometry, input_primitive))
+}
+
+/// A DXIL hull or domain shader's input control points per patch, from its `PSV0` chunk.
+pub(crate) fn patch_input_points(container: &[u8]) -> Option<u32> {
+    let psv = chunks(container, &PIPELINE_STATE_TAG).next()?;
+    word(
+        psv,
+        offset_of!(PipelineStateTessellation, input_control_points),
+    )
 }
 
 /// An element of an input or output signature.

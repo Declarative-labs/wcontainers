@@ -78,7 +78,9 @@ for %%e in (ps_dual ps_levels ps_levels_past ps_samples ps_ids ps_minlod ps_ming
 "%FXC%" /nologo /T ps_5_0 /E ps_filter /Fo ps_filter.dxbc filter.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_filter -Gis -Fo ps_filter.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_geometry /Fo vs_geometry.dxbc geometry.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_geometry -Gis -Fo vs_geometry.dxil geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_geometry /Fo ps_geometry.dxbc geometry.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_geometry -Gis -Fo ps_geometry.dxil geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_cull /Fo vs_cull.dxbc geometry.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_cull -Gis -Fo vs_cull.dxil geometry.hlsl || exit /b 1
 for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent gs_clip gs_streams) do (
@@ -114,17 +116,22 @@ for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
 "%FXC%" /nologo /T ps_5_0 /E ps_contend /Fo ps_contend.dxbc early.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_contend -Gis -Fo ps_contend.dxil early.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_patch /Fo vs_patch.dxbc tessellation.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_patch -Gis -Fo vs_patch.dxil tessellation.hlsl || exit /b 1
 for %%d in (tri quad) do for %%m in (integer pow2 odd even) do for %%o in (point cw ccw) do (
   "%FXC%" /nologo /T hs_5_0 /E hs_%%d_%%m_%%o /Fo hs_%%d_%%m_%%o.dxbc tessellation.hlsl || exit /b 1
+  "%DXC%" -nologo -T hs_6_0 -E hs_%%d_%%m_%%o -Gis -Fo hs_%%d_%%m_%%o.dxil tessellation.hlsl || exit /b 1
 )
 for %%m in (integer pow2 odd even) do for %%o in (point line) do (
   "%FXC%" /nologo /T hs_5_0 /E hs_line_%%m_%%o /Fo hs_line_%%m_%%o.dxbc tessellation.hlsl || exit /b 1
+  "%DXC%" -nologo -T hs_6_0 -E hs_line_%%m_%%o -Gis -Fo hs_line_%%m_%%o.dxil tessellation.hlsl || exit /b 1
 )
 for %%e in (ds_tri ds_quad ds_line) do (
   "%FXC%" /nologo /T ds_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
+  "%DXC%" -nologo -T ds_6_0 -E %%e -Gis -Fo %%e.dxil tessellation.hlsl || exit /b 1
 )
 for %%e in (gs_tess_point gs_tess_line gs_tess_tri) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
+  "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil tessellation.hlsl || exit /b 1
 )
 "%FXC%" /nologo /T gs_5_0 /E gs_layers /Fo gs_layers.dxbc layers.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_layer /Fo ps_layer.dxbc layers.hlsl || exit /b 1

@@ -533,8 +533,19 @@ fn the_cull_program_validates() {
     assert!(wgsl(&program).contains("fn main"));
 }
 
+/// Each own hull and domain shader, as fxc and as dxc build it, declares its domain, partitioning,
+/// output and control points, and the two builds reflect the same inputs.
 #[test]
 fn hull_and_domain_shaders_declare_what_they_are() {
+    let converted = |name: &str, ext: &str| {
+        let file = format!("{name}.{ext}");
+        let bytes = own(&file);
+        let source = match ext {
+            "dxbc" => Source::Dxbc(&bytes),
+            _ => Source::Dxil(&bytes),
+        };
+        convert(source, &VariantKey::default(), None).unwrap_or_else(|e| panic!("{file}: {e:?}"))
+    };
     for (domain, name) in [(0u8, "tri"), (1, "quad"), (2, "line")] {
         let outputs: &[(u8, &str)] = match domain {
             2 => &[(0, "point"), (1, "line")],
@@ -542,43 +553,58 @@ fn hull_and_domain_shaders_declare_what_they_are() {
         };
         for (partitioning, mode) in ["integer", "pow2", "odd", "even"].iter().enumerate() {
             for &(output, out) in outputs {
-                let file = format!("hs_{name}_{mode}_{out}.dxbc");
-                let c = convert(Source::Dxbc(&own(&file)), &VariantKey::default(), None)
-                    .unwrap_or_else(|e| panic!("{file}: {e:?}"));
-                assert_eq!(c.modules.len(), 1);
-                assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Compute);
+                let hs = format!("hs_{name}_{mode}_{out}");
                 // Powers of two partition as integers, as Direct3D's tessellator has them.
                 let partitioning = if partitioning == 1 {
                     0
                 } else {
                     partitioning as u8
                 };
-                assert_eq!(
-                    c.reflection.extras,
-                    StageExtras::Hull {
-                        input_control_points: 1,
-                        output_control_points: 1,
-                        domain,
-                        partitioning,
-                        output_primitive: output,
-                        max_tess_factor: 64,
-                        point_locations: 1,
-                        constant_locations: 0,
-                    },
-                    "{file}"
-                );
-                wgsl(&c.modules[0]);
+                let mut inputs = Vec::new();
+                for ext in ["dxbc", "dxil"] {
+                    let c = converted(&hs, ext);
+                    assert_eq!(c.modules.len(), 1);
+                    assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Compute);
+                    assert_eq!(
+                        c.reflection.extras,
+                        StageExtras::Hull {
+                            input_control_points: 1,
+                            output_control_points: 1,
+                            domain,
+                            partitioning,
+                            output_primitive: output,
+                            max_tess_factor: 64,
+                            point_locations: 1,
+                            constant_locations: 0,
+                        },
+                        "{hs}.{ext}"
+                    );
+                    wgsl(&c.modules[0]);
+                    // A system value is linked by its kind; dxbc-spirv also names it.
+                    let mut values = c.reflection.inputs;
+                    for v in values.iter_mut().filter(|v| v.system.is_some()) {
+                        v.semantic.clear();
+                    }
+                    inputs.push(values);
+                }
+                assert_eq!(inputs[0], inputs[1], "{hs}: the builds' inputs");
             }
         }
-        let file = format!("ds_{name}.dxbc");
-        let c = convert(Source::Dxbc(&own(&file)), &VariantKey::default(), None)
-            .unwrap_or_else(|e| panic!("{file}: {e:?}"));
-        assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Vertex);
-        assert!(
-            matches!(c.reflection.extras, StageExtras::Domain { domain: d, .. } if d == domain),
-            "{file}"
-        );
-        wgsl(&c.modules[0]);
+        let ds = format!("ds_{name}");
+        for ext in ["dxbc", "dxil"] {
+            let c = converted(&ds, ext);
+            assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Vertex);
+            assert_eq!(
+                c.reflection.extras,
+                StageExtras::Domain {
+                    domain,
+                    input_control_points: 1,
+                },
+                "{ds}.{ext}"
+            );
+            assert!(c.reflection.inputs.is_empty(), "{ds}.{ext}");
+            wgsl(&c.modules[0]);
+        }
     }
 }
 

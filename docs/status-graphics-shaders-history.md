@@ -3475,3 +3475,66 @@ The check's findings, each against the tip:
 
 The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner), since run 57; that
 track calls it since its run 14.
+
+## G6b run 1 (run 65)
+
+Merged origin/phase-2-graphics-direct3d-11 (12 commits; no other branch had anything new). G6a
+run 6's section moved to the history file.
+
+The fourth check's findings, each settled at the tip:
+1. `rewrite` and arrays past their kind's slots (minor): fixed. `common::split_arrays` refuses an
+   array whose elements run past the slots of its kind (`BindingsBeyondLimit`, checked
+   arithmetic), as the DXBC route does. Test `an_array_longer_than_its_kind_binds_is_refused_by_name`
+   (tests/rewrite.rs: samplers, textures and storage textures, one past the kind's slots and
+   2^31 - 1 long). The same test on the code before the fix fails (x86 machine: "sampler x 17",
+   naga's unnamed `Invalid`), as the check's OWN1 did.
+2. The Direct3D 11 front's two asks (minor): halves toward zero are built (`variant::texel::encode`
+   rounds the magnitude less a half up, so 0.5 into 16 bits gives 0x7fff); no drawn test of this
+   crate writes an exact half, so it is gap A19. `ClearView`'s rectangles: `builtin::storage_clear`
+   already clears a box (`origin` to `end`, x, y and layer), so each rectangle is one dispatch of
+   it; the rest is the front's (under "Asked of other tracks").
+3. A10 at seed 31337 (information): the check's figures are added to A10.
+4. A11 at seed 86420 (information): the check's figures are added to A11.
+
+Built in this run (A6, the geometry part):
+- `lower/geometry.rs` is one pass (`GeometryPass`) over stage values either route describes
+  (`GeometryValue`: the private variable, side, register and component or built-in, stream, type),
+  with the emit and cut functions made empty by the caller and filled by the pass. The DXBC route
+  describes its declarations; every WGSL file of every corpus is byte for byte what it was before
+  (4,323 files compared, x86 machine against the laptop's files of G6a run 6), but for the cut
+  function's new name (`gs_cut_strip`, so tests' `gs_cut` file names do not restate it).
+- `dxil/geometry.rs`: dxil-spirv's Geometry model made a compute program in the SPIR-V words
+  before naga's reader takes it (stage variables private and renamed, decorations kept aside,
+  `OpEmitVertex`/`OpEmitStreamVertex`/`OpEndPrimitive`/`OpEndStreamPrimitive` calls of empty
+  functions), then the same pass builds the compute or replay form. The carried naga is not
+  changed. A patch as input is refused by name (`GeometryPatchInput`, from the container's
+  `PSV0` chunk) as on the DXBC route; a clip distance read, cull distances and a written
+  primitive number are refused with the DXBC route's names.
+- Corpus: of the 26 DXIL geometry shaders refused as `DxilGeometryShader`, 19 convert (own 10,
+  rig 6, runner 3) and 7 are refused with the DXBC route's names (`CullDistance` 4, `ClipDistance`
+  1, `PrimitiveId` 1, `GeometryPatchInput` 1). Records updated; `DxilGeometryShader` is gone.
+- Drawn: `geometry_draw`'s `geometry_shaders_draw_as_direct3d_does` and
+  `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` draw every geometry case again with
+  dxc's build of the geometry shader (vertex and pixel programs fxc's, as no DXIL build of them
+  exists), against real Direct3D 11 drawing fxc's build, seeds 1 to 4: 192 comparisons (80 DXIL)
+  and 152 (80 DXIL), 0 failed. Mutated copies fail: the instance number read as the primitive
+  number (gs_instances, 572 of 820 texels apart) and the locations moved by a register (the
+  linking assert).
+
+Runs at the tip (logs in scratch `graphics-shaders/g6b1`):
+- x86 machine (96 processors, load 19 to 33, others' work beside; -j 48): clippy with warnings
+  denied clean; the whole suite with every corpus (`--include-ignored --skip mutated`, no
+  glslang there): 24 test binaries, all pass (x86-suite2.log). The corpora were copied there from
+  the laptop (the machine was new).
+- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken): Windows clippy with
+  warnings denied clean; every test binary at default seeds (gpu-all.log, task 32): 155 passed,
+  0 failed, 6 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`,
+  `damaged_records_decode_without_a_panic`); `geometry_draw` alone before it: 8 passed
+  (gpu-geometry2.log).
+- Clean-up at the end: this branch's build folder on the desktop deleted, the x86 machine's
+  output folders of this run deleted (its build folder kept: the machine's own, refilled by any
+  run), the checkout's `target` on the Mac (748 MB, from one `cargo check -j 2`) deleted.
+- Literal check (desktop): passes; this crate's lines in `literals.baseline` 586 before the run,
+  575 after (11 deleted; the moved geometry code's strings named once).
+- Not run in this run: the laptop (glslang's GLSL outcomes: the new shaders all need compute, so
+  their records name no GLSL compile), WebAssembly, Chrome.

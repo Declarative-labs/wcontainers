@@ -122,6 +122,9 @@ struct LogScope {
   ~LogScope() { dxil_spv_set_thread_log_callback(nullptr, nullptr); }
 };
 
+// The first location of the patch constants.
+constexpr unsigned PATCH_LOCATION_OFFSET = 0;
+
 int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, size_t* out_words,
             uint32_t** table, size_t* table_words, char** error) {
   // dxbc-spirv's container reader reports into this, not to stderr.
@@ -143,6 +146,9 @@ int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, 
     return 2;
   }
   Resources resources;
+  // Patch constants keep their own registers as locations, apart from the control points' by their
+  // `Patch` decoration, as Direct3D numbers them.
+  dxil_spv_converter_set_patch_location_offset(b.converter, PATCH_LOCATION_OFFSET);
   dxil_spv_converter_set_srv_remapper(b.converter, Resources::srv, &resources);
   dxil_spv_converter_set_sampler_remapper(b.converter, Resources::sampler, &resources);
   dxil_spv_converter_set_uav_remapper(b.converter, Resources::uav, &resources);

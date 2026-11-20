@@ -32,13 +32,6 @@ use windows::core::s;
 /// Vertices per seed, each of `COLOURED_VERTEX_BYTES`.
 const VERTICES: usize = 64;
 
-/// The container a case's geometry shader is read from: fxc's DXBC or dxc's DXIL.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Route {
-    Dxbc,
-    Dxil,
-}
-
 #[derive(Clone, Copy)]
 struct Case {
     vs: &'static str,
@@ -676,8 +669,8 @@ fn gs_source<'a>(case: &Case, code: &'a [u8]) -> Source<'a> {
     }
 }
 
-/// The case's vertex, geometry and pixel programs, linked as a front links them: the vertex shader
-/// under `vs_key`, the geometry shader with `gs_flags` too.
+/// The case's vertex, geometry and pixel programs as its route's compiler builds them, linked as a
+/// front links them: the vertex shader under `vs_key`, the geometry shader with `gs_flags` too.
 fn linked(
     case: &Case,
     vs_key: VariantKey,
@@ -686,12 +679,9 @@ fn linked(
 ) -> (Converted, Option<Converted>, Converted) {
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them.
-    let ps = convert(
-        Source::Dxbc(&bytecode("ps_geometry.dxbc")),
-        &VariantKey::default(),
-        None,
-    )
-    .unwrap();
+    let ext = case.route.extension();
+    let ps_code = bytecode(&format!("ps_geometry.{ext}"));
+    let ps = convert(case.route.source(&ps_code), &VariantKey::default(), None).unwrap();
     let gs_key = VariantKey {
         output_interpolation: ps
             .reflection
@@ -706,8 +696,8 @@ fn linked(
     let gs_code = gs_bytecode(case);
     let gs =
         (!case.gs.is_empty()).then(|| convert(gs_source(case, &gs_code), &gs_key, None).unwrap());
-    let vs_code = bytecode(&format!("{}.dxbc", case.vs));
-    let vs = convert(Source::Dxbc(&vs_code), &vs_key, None).unwrap();
+    let vs_code = bytecode(&format!("{}.{ext}", case.vs));
+    let vs = convert(case.route.source(&vs_code), &vs_key, None).unwrap();
     // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
     // without them (wgpu's Direct3D 12 path), linked past every value either program passes;
     // counted from the reflection as a front counts them.
@@ -750,9 +740,8 @@ fn linked(
             samples,
             ..base.clone()
         };
-        let ps_code = bytecode("ps_geometry.dxbc");
         let ps = convert(
-            Source::Dxbc(&ps_code),
+            case.route.source(&ps_code),
             &key(&VariantKey::default(), 1),
             None,
         )
@@ -763,7 +752,7 @@ fn linked(
                 (vs, Some(gs), ps)
             }
             None => {
-                let vs = convert(Source::Dxbc(&vs_code), &key(&vs_key, 0), None).unwrap();
+                let vs = convert(case.route.source(&vs_code), &key(&vs_key, 0), None).unwrap();
                 (vs, None, ps)
             }
         }
@@ -2069,7 +2058,7 @@ fn geometry_shaders_draw_as_direct3d_does() {
     let mut dropped = [0u32; CULLED.len()];
     let mut failures = Vec::new();
     let mut compared = 0;
-    // Each geometry shader also as dxc builds it, its vertex and pixel programs fxc's.
+    // Each case also as dxc builds its vertex, geometry and pixel programs.
     let dxil = CASES.map(|c| Case {
         route: Route::Dxil,
         ..c
@@ -2407,10 +2396,13 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
 /// of four layers, layer n through viewport n % 2, with `ps_layer` reading both): real Direct3D 11
 /// draws it once; ours runs the stages once and draws the final draw once per layer and viewport, as
 /// a front splitting it does (`Stages::selects`), each run with its layer and viewport in the
-/// pass-through's and the pixel program's helper constants. Every texel of every layer equal.
+/// pass-through's and the pixel program's helper constants. Every texel of every layer equal, with
+/// `ps_layer` as fxc and as dxc build it.
 #[test]
 fn layered_geometry_draws_as_direct3d_11_does() {
-    layered_geometry(GS_LAYERS_NAMED);
+    for route in Route::BOTH {
+        layered_geometry(GS_LAYERS_NAMED, route);
+    }
 }
 
 /// As [`layered_geometry_draws_as_direct3d_11_does`] into views of half the layers `gs_layers` names:
@@ -2418,13 +2410,16 @@ fn layered_geometry_draws_as_direct3d_11_does() {
 /// shader reading the layer named; ours keeps them in layer 0's run (`LAYER_FROM_STAGE`).
 #[test]
 fn layers_past_the_views_draw_into_the_first_as_direct3d_11_does() {
-    layered_geometry(GS_LAYERS_NAMED / 2);
+    for route in Route::BOTH {
+        layered_geometry(GS_LAYERS_NAMED / 2, route);
+    }
 }
 
 /// The layers `gs_layers` names, one per instance.
 const GS_LAYERS_NAMED: u32 = 4;
 
-fn layered_geometry(layers: u32) {
+/// `route` names the build of `ps_layer` ours draws (Direct3D 11 draws fxc's).
+fn layered_geometry(layers: u32, route: Route) {
     use wcontainers_gpu::{
         DeviceStatus, LoadOp, TextureDesc, TextureDimension, TextureViewDesc, VariantFlags,
         ViewDimension,
@@ -2438,6 +2433,7 @@ fn layered_geometry(layers: u32) {
         bytecode("ps_layer.dxbc"),
         bytecode("gs_layers.dxbc"),
     );
+    let ours_ps_code = bytecode(&format!("ps_layer.{}", route.extension()));
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
         false,
@@ -2499,14 +2495,14 @@ fn layered_geometry(layers: u32) {
     let mut keyed = plain.clone();
     keyed.flags = VariantFlags::LAYER_FROM_STAGE;
     keyed.linked.location = listed(
-        &convert(Source::Dxbc(&ps_code), &plain, None).unwrap(),
+        &convert(route.source(&ours_ps_code), &plain, None).unwrap(),
         false,
     )
     .max(listed(
         &convert(Source::Dxbc(&gs_code), &plain, None).unwrap(),
         true,
     ));
-    let ps = convert(Source::Dxbc(&ps_code), &keyed, None).unwrap();
+    let ps = convert(route.source(&ours_ps_code), &keyed, None).unwrap();
     let gs = convert(Source::Dxbc(&gs_code), &keyed, None).unwrap();
     for c in [&vs, &gs] {
         assert!(
@@ -2746,7 +2742,7 @@ fn layered_geometry(layers: u32) {
             Format::Rgba8Unorm,
         );
         keep(
-            &format!("layered-{layers}-{layer}-ours"),
+            &format!("layered-{layers}-{layer}-ours-{}", route.extension()),
             &made,
             Format::Rgba8Unorm,
         );
@@ -2755,11 +2751,11 @@ fn layered_geometry(layers: u32) {
             .chunks(4)
             .filter(|t| *t != &reference[..4])
             .count();
-        eprintln!("layer {layer}: {drawn} texels drawn by direct3d, {apart} bytes apart");
+        eprintln!("{route:?} layer {layer}: {drawn} texels drawn by direct3d, {apart} bytes apart");
         if apart > 0 {
             failed.push(layer);
         }
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert!(failed.is_empty(), "layers {failed:?} differ");
+    assert!(failed.is_empty(), "{route:?}: layers {failed:?} differ");
 }

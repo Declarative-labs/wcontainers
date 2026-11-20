@@ -35,7 +35,7 @@ msaa.ps_coverage.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleMask' : u
 msaa.ps_load.dxil	ok ; glsl needs MULTISAMPLE_READ compile 'sampler2DMS' : Reserved word.
 msaa.ps_sample.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 raster.gs.dxil	ok ; glsl absent compute
-raster.ps.dxil	spirv-reader unsupported builtin %10
+raster.ps.dxil	ok ; glsl compiles
 raster.vs.dxil	ok ; glsl compiles
 samplers.ps_compare.dxil	ok ; glsl compiles
 samplers.ps_compare_zero.dxil	ok ; glsl compiles
@@ -44,15 +44,15 @@ samplers.ps_sample.dxil	ok ; glsl compiles
 streamout.gs.dxil	ok ; glsl absent compute
 streamout.vs_back.dxil	ok ; glsl compiles
 targets.ps.dxil	ok ; glsl compiles
-tessellation.ds_line.dxil	unsupported DxilDomainShader
-tessellation.ds_quad.dxil	unsupported DxilDomainShader
-tessellation.ds_tri.dxil	unsupported DxilDomainShader
-tessellation.hs_line.dxil	unsupported DxilHullShader
-tessellation.hs_quad_even.dxil	unsupported DxilHullShader
-tessellation.hs_quad_integer.dxil	unsupported DxilHullShader
-tessellation.hs_quad_odd.dxil	unsupported DxilHullShader
-tessellation.hs_quad_pow2.dxil	unsupported DxilHullShader
-tessellation.hs_tri.dxil	unsupported DxilHullShader
+tessellation.ds_line.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.ds_quad.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.ds_tri.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+tessellation.hs_line.dxil	ok ; glsl absent compute
+tessellation.hs_quad_even.dxil	ok ; glsl absent compute
+tessellation.hs_quad_integer.dxil	ok ; glsl absent compute
+tessellation.hs_quad_odd.dxil	ok ; glsl absent compute
+tessellation.hs_quad_pow2.dxil	ok ; glsl absent compute
+tessellation.hs_tri.dxil	ok ; glsl absent compute
 tessellation.ps.dxil	ok ; glsl compiles
 tessellation.vs.dxil	ok ; glsl compiles
 textures.ps_1d.dxil	ok ; glsl compiles

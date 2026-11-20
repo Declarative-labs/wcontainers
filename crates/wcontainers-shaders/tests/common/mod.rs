@@ -82,6 +82,32 @@ pub fn drawn_texels(picture: &[u8]) -> usize {
     picture.chunks(4).filter(|t| *t != &picture[..4]).count()
 }
 
+/// The container a program is read from: fxc's DXBC or dxc's DXIL.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Route {
+    Dxbc,
+    Dxil,
+}
+
+impl Route {
+    pub const BOTH: [Route; 2] = [Route::Dxbc, Route::Dxil];
+
+    /// The container's file extension, which is also the rig's folder of its builds.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Route::Dxbc => "dxbc",
+            Route::Dxil => "dxil",
+        }
+    }
+
+    pub fn source(self, code: &[u8]) -> Source<'_> {
+        match self {
+            Route::Dxbc => Source::Dxbc(code),
+            Route::Dxil => Source::Dxil(code),
+        }
+    }
+}
+
 pub fn bytecode(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))

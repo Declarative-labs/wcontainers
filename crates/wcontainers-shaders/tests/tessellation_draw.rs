@@ -4,7 +4,8 @@
 //! points and indices read back, word for word and in order; and the same streamed through the whole
 //! stage helper (the domain stage as compute, with and without a geometry shader after it).
 //! `WCONTAINERS_TESSELLATION_SEED` (default 1) and `WCONTAINERS_TESSELLATION_CASES` seeds from it
-//! (default 4); every topology runs per seed.
+//! (default 4); every topology runs per seed. The tests drawing converted programs draw each as fxc
+//! builds it and as dxc does.
 
 #![cfg(windows)]
 
@@ -459,15 +460,17 @@ fn sets<B: Backend>(
 
 /// The scene drawn through the stage helper: the vertex and hull stages as compute, the tessellator,
 /// then the domain program's indexed indirect draw of its points.
-fn scene_ours<B: Backend>(b: &mut B, all_solid: bool) -> Vec<u8> {
+fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route) -> Vec<u8> {
     use wcontainers_gpu::*;
+    use wcontainers_shaders::convert;
     use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
-    use wcontainers_shaders::{Source, convert};
+    let ext = route.extension();
     let rig = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../wcontainers-graphics-test/shaders/dxbc");
-    let read = |name: &str| std::fs::read(rig.join(format!("tessellation.{name}.dxbc"))).unwrap();
+        .join("../wcontainers-graphics-test/shaders")
+        .join(ext);
+    let read = |name: &str| std::fs::read(rig.join(format!("tessellation.{name}.{ext}"))).unwrap();
     let plain = VariantKey::default();
-    let ps = convert(Source::Dxbc(&read("ps")), &plain, None).unwrap();
+    let ps = convert(route.source(&read("ps")), &plain, None).unwrap();
     let ds_key = VariantKey {
         output_interpolation: ps
             .reflection
@@ -482,7 +485,7 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool) -> Vec<u8> {
         pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
         ..Default::default()
     };
-    let vs = convert(Source::Dxbc(&read("vs")), &vs_key, None).unwrap();
+    let vs = convert(route.source(&read("vs")), &vs_key, None).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
     let constants: Vec<u8> = SCENE_FACTORS.iter().flat_map(|f| f.to_le_bytes()).collect();
     let constant_buffer = buffer(b, &constants, BufferUsage::UNIFORM);
@@ -573,8 +576,8 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool) -> Vec<u8> {
         .unwrap();
 
     for (i, (hs, ds, points, solid_fill)) in scene_patches().into_iter().enumerate() {
-        let hs = convert(Source::Dxbc(&read(hs)), &plain, None).unwrap();
-        let ds = convert(Source::Dxbc(&read(ds)), &ds_key, None).unwrap();
+        let hs = convert(route.source(&read(hs)), &plain, None).unwrap();
+        let ds = convert(route.source(&read(ds)), &ds_key, None).unwrap();
         let mut stages = Stages::tessellated(b, &vs, &hs, &ds).unwrap();
         let flat: Vec<f32> = points.iter().flatten().copied().collect();
         let vertex_buffer = buffer(b, bytes_of(&flat), BufferUsage::STORAGE);
@@ -871,25 +874,29 @@ fn tessellated_patches_draw_as_direct3d_11_does() {
     )
     .unwrap();
     let reference = direct3d_solid_scene(&gpu);
-    let mut backend = webgpu();
-    let ours = scene_ours(&mut backend, true);
     keep(
         "tessellation-solid-direct3d",
         &reference,
         wcontainers_gpu::Format::Rgba8Unorm,
     );
-    keep(
-        "tessellation-solid-ours",
-        &ours,
-        wcontainers_gpu::Format::Rgba8Unorm,
-    );
-    let cells = by_cell(&reference, &ours);
-    eprintln!("tessellated patches, solid, per cell (differ, missed, only ours, apart): {cells:?}");
-    for (i, c) in cells.iter().enumerate() {
-        match i {
-            // The isoline patch: lines, drawn by each API's line rule.
-            5 => assert_eq!((c[1], c[3]), (0, 0), "cell {i}"),
-            _ => assert_eq!(c[0], 0, "cell {i}"),
+    let mut backend = webgpu();
+    for route in Route::BOTH {
+        let ours = scene_ours(&mut backend, true, route);
+        keep(
+            &format!("tessellation-solid-ours-{}", route.extension()),
+            &ours,
+            wcontainers_gpu::Format::Rgba8Unorm,
+        );
+        let cells = by_cell(&reference, &ours);
+        eprintln!(
+            "tessellated patches, solid, {route:?}, per cell (differ, missed, only ours, apart): {cells:?}"
+        );
+        for (i, c) in cells.iter().enumerate() {
+            match i {
+                // The isoline patch: lines, drawn by each API's line rule.
+                5 => assert_eq!((c[1], c[3]), (0, 0), "{route:?} cell {i}"),
+                _ => assert_eq!(c[0], 0, "{route:?} cell {i}"),
+            }
         }
     }
 }
@@ -912,25 +919,38 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
         panic!("the scene draws a picture");
     };
     let reference = picture.to_rgba8().into_raw();
-    let mut backend = webgpu();
-    let ours = scene_ours(&mut backend, false);
     keep(
         "tessellation-scene-direct3d",
         &reference,
         wcontainers_gpu::Format::Rgba8Unorm,
     );
-    keep(
-        "tessellation-scene-ours",
-        &ours,
-        wcontainers_gpu::Format::Rgba8Unorm,
-    );
-    let cells = by_cell(&reference, &ours);
-    eprintln!("tessellation scene, per cell (differ, missed, only ours, apart): {cells:?}");
-    for (i, c) in cells.iter().enumerate() {
-        assert_eq!(c[1], 0, "cell {i}");
+    let mut backend = webgpu();
+    for route in Route::BOTH {
+        let ours = scene_ours(&mut backend, false, route);
+        keep(
+            &format!("tessellation-scene-ours-{}", route.extension()),
+            &ours,
+            wcontainers_gpu::Format::Rgba8Unorm,
+        );
+        let cells = by_cell(&reference, &ours);
+        eprintln!(
+            "tessellation scene, {route:?}, per cell (differ, missed, only ours, apart): {cells:?}"
+        );
+        for (i, c) in cells.iter().enumerate() {
+            assert_eq!(c[1], 0, "{route:?} cell {i}");
+        }
+        // The last patch is drawn solid.
+        assert_eq!(cells[6][0], 0, "{route:?}");
     }
-    // The last patch is drawn solid.
-    assert_eq!(cells[6][0], 0);
+}
+
+/// A case's hull, domain and (if any) geometry shader, and the build they are read from.
+#[derive(Clone, Copy)]
+struct Staged<'a> {
+    hs: &'a str,
+    ds: &'a str,
+    gs: Option<&'a str>,
+    route: Route,
 }
 
 /// The same patches streamed through the whole stage helper: the vertex and hull stages, the
@@ -938,25 +958,24 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
 /// the location and the patch's number; the vertices written and the primitives the helper counted.
 fn ours_staged<B: Backend>(
     b: &mut B,
-    hs: &str,
-    ds: &str,
-    gs: Option<&str>,
+    programs: &Staged<'_>,
     points: u32,
     bound: usize,
     factors: &[[f32; 8]],
 ) -> (Vec<Vertex>, [u32; 2]) {
     use wcontainers_gpu::*;
+    use wcontainers_shaders::convert;
     use wcontainers_shaders::stage::{
         DomainSets, InputTopology, StageDraw, Stages, StreamOutput, StreamOutputEntry,
         StreamTargets,
     };
-    use wcontainers_shaders::{Source, convert};
+    let Staged { hs, ds, gs, route } = *programs;
     let plain = VariantKey::default();
-    let read = |name: &str| bytecode(&format!("{name}.dxbc"));
-    let vs = convert(Source::Dxbc(&read("vs_patch")), &plain, None).unwrap();
-    let hull = convert(Source::Dxbc(&read(hs)), &plain, None).unwrap();
-    let domain = convert(Source::Dxbc(&read(ds)), &plain, None).unwrap();
-    let geometry = gs.map(|gs| convert(Source::Dxbc(&read(gs)), &plain, None).unwrap());
+    let read = |name: &str| bytecode(&format!("{name}.{}", route.extension()));
+    let vs = convert(route.source(&read("vs_patch")), &plain, None).unwrap();
+    let hull = convert(route.source(&read(hs)), &plain, None).unwrap();
+    let domain = convert(route.source(&read(ds)), &plain, None).unwrap();
+    let geometry = gs.map(|gs| convert(route.source(&read(gs)), &plain, None).unwrap());
     let entry = |semantic: &str, count| StreamOutputEntry {
         stream: 0,
         semantic: Some(semantic.into()),
@@ -1150,45 +1169,57 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
             let bound = 2 * PATCHES * tess::patch_bounds(64.0).1 as usize;
             let (reference, written) = direct3d(&gpu, hs, ds, *gs, *points, bound, &factors);
             let reference = &reference[..written as usize * per];
-            let (streamed, counted) =
-                ours_staged(&mut backend, hs, ds, *gs, *points, bound, &factors);
-            compared += 1;
-            let name = format!(
-                "seed {seed} {hs} {} {points} points",
-                gs.unwrap_or("streamed")
-            );
-            let counts = if counted == [written as u32; 2] {
-                Ok(())
-            } else {
-                Err(format!(
-                    "primitives written and made {counted:?}, direct3d {written}"
-                ))
-            };
-            match (counts, compare(reference, &streamed, *per)) {
-                (Ok(()), Ok(note)) => eprintln!("{name}: {} vertices; {note}", reference.len()),
-                (counts, shape) => {
-                    let why = [counts.err(), shape.err()].into_iter().flatten();
-                    let why: Vec<String> = why.collect();
-                    eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
-                    // A subnormal factor moved through the hull shader: Direct3D keeps its bits, the
-                    // back end's compiled program flushes it to zero. Known when ours equals
-                    // Direct3D drawing the factors flushed.
-                    let flushed: Vec<[f32; 8]> = factors
-                        .iter()
-                        .map(|f| f.map(|v| if v.is_subnormal() { 0.0 } else { v }))
-                        .collect();
-                    let known = factors.iter().flatten().any(|v| v.is_subnormal()) && {
-                        let (r, w) = direct3d(&gpu, hs, ds, *gs, *points, bound, &flushed);
-                        counted == [w as u32; 2]
-                            && compare(&r[..w as usize * per], &streamed, *per).is_ok()
-                    };
-                    if known {
-                        eprintln!(
-                            "{name}: known, equal to direct3d with subnormal factors flushed"
-                        );
-                        known_cases.push(name);
-                    } else {
-                        failures.push(name);
+            for route in Route::BOTH {
+                let (streamed, counted) = ours_staged(
+                    &mut backend,
+                    &Staged {
+                        hs,
+                        ds,
+                        gs: *gs,
+                        route,
+                    },
+                    *points,
+                    bound,
+                    &factors,
+                );
+                compared += 1;
+                let name = format!(
+                    "seed {seed} {hs} {} {points} points {route:?}",
+                    gs.unwrap_or("streamed")
+                );
+                let counts = if counted == [written as u32; 2] {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "primitives written and made {counted:?}, direct3d {written}"
+                    ))
+                };
+                match (counts, compare(reference, &streamed, *per)) {
+                    (Ok(()), Ok(note)) => eprintln!("{name}: {} vertices; {note}", reference.len()),
+                    (counts, shape) => {
+                        let why = [counts.err(), shape.err()].into_iter().flatten();
+                        let why: Vec<String> = why.collect();
+                        eprintln!("{name}: {}; factors {factors:?}", why.join("; "));
+                        // A subnormal factor moved through the hull shader: Direct3D keeps its bits, the
+                        // back end's compiled program flushes it to zero. Known when ours equals
+                        // Direct3D drawing the factors flushed.
+                        let flushed: Vec<[f32; 8]> = factors
+                            .iter()
+                            .map(|f| f.map(|v| if v.is_subnormal() { 0.0 } else { v }))
+                            .collect();
+                        let known = factors.iter().flatten().any(|v| v.is_subnormal()) && {
+                            let (r, w) = direct3d(&gpu, hs, ds, *gs, *points, bound, &flushed);
+                            counted == [w as u32; 2]
+                                && compare(&r[..w as usize * per], &streamed, *per).is_ok()
+                        };
+                        if known {
+                            eprintln!(
+                                "{name}: known, equal to direct3d with subnormal factors flushed"
+                            );
+                            known_cases.push(name);
+                        } else {
+                            failures.push(name);
+                        }
                     }
                 }
             }

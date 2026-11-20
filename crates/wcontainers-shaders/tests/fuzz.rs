@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use wcontainers_gpu::VariantKey;
-use wcontainers_shaders::{ConvertError, Source, convert};
+use wcontainers_shaders::{ConvertError, Source, convert, token};
 
 /// The largest single allocation the test's Rust code may make: a larger one is refused, as on a host
 /// short of memory, so a size taken unchecked from the bytecode ends the test on every machine.
@@ -213,13 +213,9 @@ mod codes {
     include!(concat!(env!("OUT_DIR"), "/ir_codes.rs"));
 }
 
-/// Direct3D's opcode of a sampler declaration, an instruction's opcode (bits 0 to 10 of its first
-/// word) and length in words (bits 24 to 30), and the word of a declaration holding its last register
+/// Direct3D's opcode of a sampler declaration, and the word of a declaration holding its last register
 /// (after the opcode, operand, id and first register).
 const SAMPLER_DECLARATION: u32 = codes::dxbc_op::DCL_SAMPLER;
-const OPCODE_BITS: u32 = 0x7ff;
-const LENGTH_SHIFT: u32 = 24;
-const LENGTH_BITS: u32 = 0x7f;
 const LAST_REGISTER_WORD: usize = 4;
 /// The program chunk's words before its first instruction: tag, size, version, length.
 const PROGRAM_HEADER_WORDS: usize = 4;
@@ -245,8 +241,8 @@ fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
         .position(|&w| w == tag)
         .expect("the program chunk")
         + PROGRAM_HEADER_WORDS;
-    while words[at] & OPCODE_BITS != SAMPLER_DECLARATION {
-        at += ((words[at] >> LENGTH_SHIFT) & LENGTH_BITS) as usize;
+    while token::opcode(words[at]) != SAMPLER_DECLARATION {
+        at += token::length(words[at]) as usize;
     }
     let last = size_of::<u32>() * (at + LAST_REGISTER_WORD);
     b[last..last + size_of::<u32>()].copy_from_slice(&FAR_REGISTER.to_le_bytes());
@@ -286,8 +282,8 @@ fn a_globally_coherent_view_is_refused_by_name() {
         .position(|&w| w == tag)
         .expect("the program chunk")
         + PROGRAM_HEADER_WORDS;
-    while !VIEW_DECLARATIONS.contains(&(words[at] & OPCODE_BITS)) {
-        at += ((words[at] >> LENGTH_SHIFT) & LENGTH_BITS) as usize;
+    while !VIEW_DECLARATIONS.contains(&(token::opcode(words[at]))) {
+        at += token::length(words[at]) as usize;
     }
     let first = size_of::<u32>() * at;
     let marked = words[at] | GLOBALLY_COHERENT_BIT;

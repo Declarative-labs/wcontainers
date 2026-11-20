@@ -82,6 +82,7 @@ pub const ENTRY_POINT: &str = "main";
 
 /// The name of the draw arguments' offset in a program reading its draw bases from them.
 pub use build::ARGUMENTS_OFFSET;
+pub use container::token;
 
 /// The refusal of a view's component mapping that a depth texture's read cannot take exactly.
 pub const SWIZZLED_DEPTH: &str = "SwizzledDepth";
@@ -110,6 +111,15 @@ pub fn convert(
         let (mut module, mut reflection, stage) = match source {
             Source::Dxbc(bytes) => {
                 let (module, mut reflection, stage) = lower::lower(&dxbc::to_ir(bytes)?, variant)?;
+                // dxbc-spirv keeps a domain shader's control point count to itself.
+                if let StageExtras::Domain {
+                    input_control_points,
+                    ..
+                } = &mut reflection.extras
+                {
+                    *input_control_points =
+                        container::dxbc_input_control_points(bytes).unwrap_or(0) as u8;
+                }
                 let inputs = container::dxbc_signature(bytes, true);
                 container::place_system_values(&mut reflection.inputs, &inputs);
                 let outputs = container::dxbc_signature(bytes, false);
