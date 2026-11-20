@@ -40,7 +40,9 @@ the Gap list with its cause and owner.
   maximums of the same raw words, Wine's pattern) and library test
   `raw_signed_atomics_from_pixels_and_threads_as_direct3d_does`: equal to real Direct3D, the loop
   taken, run alone through the queue, no display reset. Then the rig's quarantine of Wine's
-  test_atomic_instructions was lifted (`resets lift`) and the test run alone (Wine's tests).
+  test_atomic_instructions was lifted (`resets lift`) and the test run alone: pass, 90 checks as
+  real Direct3D's 90, 2.58 s, no display reset (logs/r6f-atomic-wine.log, task 31 in the alone
+  group, 15:03 to 15:06 desktop time).
 - `aa_lines` now clears to transparent black, so the target's alpha holds each pixel's coverage,
   and draws through a viewport off the corner at perspective depths (the check's probe). New
   own case `aa_strip_indexed` and test
@@ -53,6 +55,15 @@ the Gap list with its cause and owner.
   device-dependent counters, where it printed a warning and left the program's structure as it
   was (generate.py's hand table).
 - Literals: 836 baseline lines to 833 (Literals); the check passes.
+- Results of the whole bar at cab5afb4 (logs/r6g-*.log, 15:07 to 16:09 Pacific, RTX 3080
+  through the queue, not alone, other tracks' jobs beside): literal check exit 0, lint clean,
+  front 54 + 1 + 5, library com 15 and programs 37 passing with 2 ignored (Known failures).
+  Wine's d3d11 file 144 of 166 (test_atomic_instructions now run and passing, 0.74 s; the same
+  22 failing as at run 5), d3d10core 109 of 111 (the same 2). Scenes 135 pass, 0 fail, 4
+  absent; WebGL 2 scenes 2, 0, 137. Programs as at run 5: the three of the pass bar and the
+  other 10 compared match; atg-simplecomputepc (154,515 pixels) and atg-simplemsaa_pc (8 pixels,
+  frame 10) differ as recorded in the Gap list. Release sizes and building ahead were not
+  measured again (no change this run touches them; run 5's numbers stand).
 
 G4 round 2, run 5 (2026-11-19, about 11:00 to 13:30 Pacific; an earlier attempt of this run made
 the alpha-antialiased line commits and was cut off before recording them). What was left on the
@@ -845,6 +856,10 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11, round 2 run 6 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
+  rigfix/wine.sh, code at cab5afb4): 144 pass of 166 (logs/r6g-wine.log, 158.3 s of tests), the
+  same 22 failing; test_atomic_instructions passes (90 checks) and is no longer quarantined.
+  d3d10core: 109 of 111 (logs/r6g-wine10.log, 102.2 s), the same 2.
 - d3d11, round 2 run 5 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
   rigfix/wine.sh, code at ce2670e8): 143 pass of 165 (logs/r5e-wine.log, 158.5 s of tests), the
   same 22 failing as at run 4, every one on the gap list. d3d10core: 109 of 111
@@ -980,8 +995,8 @@ of d3d11 test_create_device (its child process makes a swap chain with `Windowed
 would take the owner's screen; tools/graphics-rig/wine-excluded.txt) applies to real Direct3D's
 run too; it is not run.
 
-Wine's d3d11 file (22 failing of 165 at r5e, logs/r5e-wine.log, the same 22 as at r4d; the quarantined
-test_atomic_instructions is not run):
+Wine's d3d11 file (22 failing of 166 at r6g, logs/r6g-wine.log, the same 22 as at r5e and r4d;
+test_atomic_instructions runs again since run 6 and passes):
 - Absent, the 11_1 device (`D3D11CreateDevice` with 11_1 alone fails; logic operations have no
   route, plan section 9) and Wine's WARP fallback (this library offers no WARP adapter):
   test_state_refcounting, test_logic_op, test_create_shader.
@@ -1001,9 +1016,10 @@ test_atomic_instructions is not run):
 - Absent, a vertex shader's layer and viewport (`D3D11_OPTIONS3`
   `VPAndRTArrayIndexFromAnyShaderFeedingRasterizer` FALSE): test_layered_rendering, which skips
   that part (2 checks); its other 72 checks pass since this run.
-- Failing, the shaders track's: test_so_statistics_query (`GeometryStreams`, streams past 0),
-  the quarantined test_atomic_instructions (`AtomicExchangeLoop`; not run, as its loop reset the
-  display driver once).
+- Failing, the shaders track's: test_so_statistics_query (`GeometryStreams`, streams past 0).
+- Passing since run 6: test_atomic_instructions (90 checks as real Direct3D, alone and in the
+  whole file; its quarantine lifted after the shaders track's loop fixes and own_cases
+  `raw_signed_atomics`).
 - Failing, the interface track's: test_vertex_formats (`B8G8R8X8_UNORM` vertices with the fourth
   component 1.0; Asked).
 - Failing, the infrastructure crate's (the Direct3D 12 track's): test_swapchain_flip (every
@@ -1015,7 +1031,7 @@ test_atomic_instructions is not run):
 - Passing since this run: test_clip_distance (a geometry stage's clip distances through its
   pass-through; a domain shader's before a geometry stage as plain outputs).
 
-Wine's d3d10core file (2 failing of 111 at r5e, logs/r5e-wine10.log, as at r4d): test_swapchain_flip,
+Wine's d3d10core file (2 failing of 111 at r6g, logs/r6g-wine10.log, as at r5e and r4d): test_swapchain_flip,
 test_desktop_window (the infrastructure crate's, as above). test_layered_rendering and
 test_clip_distance pass since this run.
 
@@ -1514,6 +1530,13 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
 
 ## Departures from the plan
 
+- Round 2 run 6: the library reads `WEBGPU_OFF` (WebGPU features by their kebab-case names,
+  taken as missing), beside the existing `WEBGL_OFF`, so that the routes browsers without a
+  feature take are tested natively against real Direct3D (the listed case without
+  texture-formats-tier1). Natively wgpu has no texture-formats-tier1 feature of its own; taking
+  `wgpu-texture-adapter-specific-format-features` away is the nearest: it leaves WebGPU's
+  guaranteed format uses, under which `R11G11B10_FLOAT` cannot be stored, but `R16G16_UNORM`
+  still can (wgpu's 16-bit-norm feature guarantees it).
 - Round 2 run 4 (recorded now; true since round 2 run 2): plan section 9 fixes feature level
   10_0 on WebGL 2. The WebGL 2 build reports 9_3, because 10_0 requires geometry shaders and
   stream output, and the plan's route for geometry shaders there (`GeometryAsReplay`) is not
