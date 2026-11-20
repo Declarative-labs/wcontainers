@@ -469,6 +469,9 @@ enum Value {
     Register(Handle<LocalVariable>, bool),
     /// A buffer resource by its set and binding, with its index in an array of them.
     Resource(u32, u32, u32),
+    /// A column of a row-major matrix: the pointer to its rows, the column's index, and the flat
+    /// type of the matrix.
+    RowMajorColumn(Handle<Expression>, Handle<Expression>, u32),
 }
 
 /// An open `if` or loop.
@@ -643,7 +646,26 @@ impl Builder<'_> {
                 scalar: scalar_of(t.scalar)?,
             },
             TypeKind::Matrix if t.row_major != 0 => {
-                return Err(unsupported(format_args!("a row-major matrix")));
+                // naga has no row-major matrices: the rows, as an array of vectors in memory;
+                // loads gather the columns.
+                let row = self.add_type(TypeInner::Vector {
+                    size: vector_size(t.columns)?,
+                    scalar: scalar_of(t.scalar)?,
+                });
+                let stride = if t.stride == 0 {
+                    let l = self.layout(row)?;
+                    l.alignment.round_up(l.size)
+                } else {
+                    t.stride
+                };
+                TypeInner::Array {
+                    base: row,
+                    size: naga::ArraySize::Constant(
+                        std::num::NonZeroU32::new(t.components)
+                            .ok_or_else(|| unsupported(format_args!("a matrix without rows")))?,
+                    ),
+                    stride,
+                }
             }
             TypeKind::Matrix => TypeInner::Matrix {
                 columns: vector_size(t.columns)?,
@@ -1059,7 +1081,7 @@ impl Builder<'_> {
                 self.convert(e, k, kind)
             }
             Value::Pointer(e, _) => e,
-            Value::Resource(..) => {
+            Value::Resource(..) | Value::RowMajorColumn(..) => {
                 return Err(unsupported(format_args!(
                     "a resource index used as a value"
                 )));
@@ -1611,6 +1633,39 @@ impl Builder<'_> {
         }
     }
 
+    fn is_row_major(&self, ty: u32) -> bool {
+        let t = self.types[ty as usize];
+        t.kind == TypeKind::Matrix && t.row_major != 0
+    }
+
+    /// Column `column` of the row-major matrix of flat type `ty` whose rows `rows` points at.
+    fn row_major_column(
+        &mut self,
+        rows: Handle<Expression>,
+        column: Handle<Expression>,
+        ty: u32,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let t = self.types[ty as usize];
+        let parts = (0..t.components)
+            .map(|r| {
+                let row = self.add(Expression::AccessIndex {
+                    base: rows,
+                    index: r,
+                });
+                let pointer = self.add(Expression::Access {
+                    base: row,
+                    index: column,
+                });
+                self.add(Expression::Load { pointer })
+            })
+            .collect();
+        let ty = self.scalar_type(ScalarKind::Float, t.components)?;
+        Ok(self.add(Expression::Compose {
+            ty,
+            components: parts,
+        }))
+    }
+
     fn pointer(&self, def: u32) -> Result<(Handle<Expression>, u32), ConvertError> {
         match self.value(def)? {
             Value::Pointer(e, ty) => Ok((e, ty)),
@@ -1627,7 +1682,25 @@ impl Builder<'_> {
             Deref::Var => self.places[i.value[0] as usize]
                 .ok_or_else(|| unsupported(format_args!("a variable the module does not have")))?,
             Deref::Array => {
-                let (base, _) = self.pointer(i.src[0].def)?;
+                if let Value::RowMajorColumn(rows, column, _) = self.value(i.src[0].def)? {
+                    let row = self.src(i, 1, 1, ScalarKind::Uint)?;
+                    let row = self.add(Expression::Access {
+                        base: rows,
+                        index: row,
+                    });
+                    let e = self.add(Expression::Access {
+                        base: row,
+                        index: column,
+                    });
+                    self.set(i, Value::Pointer(e, i.ty));
+                    return Ok(());
+                }
+                let (base, ty) = self.pointer(i.src[0].def)?;
+                if self.is_row_major(ty) {
+                    let column = self.src(i, 1, 1, ScalarKind::Uint)?;
+                    self.set(i, Value::RowMajorColumn(base, column, ty));
+                    return Ok(());
+                }
                 match self.value(i.src[1].def)? {
                     Value::Const(v, _, _) => {
                         self.add(Expression::AccessIndex { base, index: v[0] })
@@ -1824,13 +1897,41 @@ impl Builder<'_> {
         use ScalarKind::{Bool, Float, Uint};
         match intrinsic_op(i.op) {
             Intrinsic::LoadDeref => {
+                if let Value::RowMajorColumn(rows, column, ty) = self.value(i.src[0].def)? {
+                    let e = self.row_major_column(rows, column, ty)?;
+                    self.set(i, Value::Expr(e, Float));
+                    return Ok(());
+                }
                 let (pointer, ty) = self.pointer(i.src[0].def)?;
+                if self.is_row_major(ty) {
+                    let t = self.types[ty as usize];
+                    let columns = (0..t.columns)
+                        .map(|c| {
+                            let c = self.add(Expression::Literal(Literal::U32(c)));
+                            self.row_major_column(pointer, c, ty)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let matrix = self.add_type(TypeInner::Matrix {
+                        columns: vector_size(t.columns)?,
+                        rows: vector_size(t.components)?,
+                        scalar: scalar_of(t.scalar)?,
+                    });
+                    let e = self.add(Expression::Compose {
+                        ty: matrix,
+                        components: columns,
+                    });
+                    self.set(i, Value::Expr(e, Float));
+                    return Ok(());
+                }
                 let kind = self.kind_of(ty);
                 let e = self.add(Expression::Load { pointer });
                 self.set(i, Value::Expr(e, kind));
             }
             Intrinsic::StoreDeref => {
                 let (pointer, ty) = self.pointer(i.src[0].def)?;
+                if self.is_row_major(ty) {
+                    return Err(unsupported(format_args!("a store into a row-major matrix")));
+                }
                 let kind = self.kind_of(ty);
                 let (value, components) = self.whole(i.src[1].def, kind)?;
                 self.store(pointer, value, components, i.value[2]);
