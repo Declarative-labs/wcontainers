@@ -12,7 +12,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
   proof's code, before the merge) the independent check measured fib in Chrome 1.6 percent slower in 4 of 4
   rounds, with the translator's output for the benchmark set byte for byte the same at both: that comes from
   main's refactor of the test harness (runner.js, the browser translator), not from the translator; see the
-  fourth run.
+  fourth run. So in Chrome the bar holds against the merge, not against f6e760ae. The fifth run answered the
+  second independent check: a jump through a register into another part of a cut function is now counted.
 - The P2 check's `wcontainers-abi` constants: this track added `PAGE_SHIFT` and `PAGE_MASK` to wcontainers-abi
   (06187cfd), as fix-translator.md says, but magic-literals/README.md gives that stage to the runtime track.
   They are defined exactly as the README's stage 1 writes them; when main's own arrive, keep main's lines in
@@ -49,8 +50,8 @@ T3 is done (pending its independent check): main merged (the translator on the s
 literal check adopted and the baseline down to 7,660 lines, the P2 check's findings answered, the register
 jump slow path fixed (busybox awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in
 full on the merged code with no mismatch, layer 3 to 5,287 compared with none, and all three again on the
-final code with a new seed; the benchmark set's speed unchanged against the merge. The fourth run answered
-the independent check's findings. See "T3" and "T3, what is left".
+final code with a new seed; the benchmark set's speed unchanged against the merge. The fourth and fifth runs
+answered the independent checks' findings. See "T3" and "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
 
@@ -267,12 +268,58 @@ Fourth run of T3 (2026-11-19 23:00 local to 2026-11-20), the independent check's
 - Not changed, recorded: the test harness takes the guest's Linux numbers from linux-raw-sys of the host (see
   "Departures"), against the README's hard case 2, until a crate with the guest's own Linux numbers exists.
 
+Fifth run of T3 (2026-11-20 02:00 to 04:00 local), the second independent check's findings:
+- A jump through a register into the middle of another part of a cut function (finding 3) was taken as a tail
+  call: the range check used the piece's own offsets. Now each part knows the function it was cut from
+  (`Whole`: its entry and span, recorded where the cut entries are made) and the range check and the entry
+  test use that function, in its parts and its loop pieces alike (e26b3c23). `register_jumps.S` gained `far`,
+  a function of `FUNCTION_BLOCKS` and then `FUNCTION_BLOCKS / 8` blocks (so cut in two) that jumps through a
+  register into its second part: the test expects 2 x 1,200 counted; without the change it fails (1,200),
+  with it it passes (rented ARM64 machine). `FUNCTION_BLOCKS` is now public so the test can import it.
+- Looking into the 1,622 translations at run time of the check's `check_big.c` showed that the cause is not
+  what the fourth run wrote: the switch has no bound check, so it is never recognised (see "Known gaps").
+  `cut_switch.c`'s `cut` was static and had the same shape at -O2, so at -O2 the test did not reach a cut
+  function at all (1,190 translations at run time, 0 counted). `cut` is no longer static; the compiler then
+  checks the bound, the function is cut and its cases in other parts are entries: 3 translations at run
+  time (the C library's), 0 counted, Linux's output, at -O0 and -O2, for speed and for size.
+- The record (findings 1 and 4) corrected in 12d1ecb7: the third run's pairs did not compare identical code
+  with 97fff482 (four modules differ, from b4384452); the fourth run's output change was in four modules, not
+  one; the awk remainder is a range.
+- The speed bar against f6e760ae (finding 2): the check measured, head over f6e760ae, fib in Chrome 1.017,
+  search in Chrome 1.004 (slower in 4 of 4, also 1.004 against the merge) and interpret in wasmtime 1.003
+  (slower in 4 of 4); every other workload 0.994 to 1.002. As the fourth run says, the fib step is the
+  merge's test harness, not the translated code; the bar holds against the merge, not against f6e760ae in
+  Chrome.
+- The translator's output (tests/output.rs, rented x86 machine, `t3/r5/out-r5`) against the fourth run's:
+  busybox the same; the benchmark set differs in two modules, full for speed (295,240 to 295,260 and 64,858 to
+  64,878 bytes: two loop pieces' unrecognised jump sites gain the entry test); full for size the same.
+- busybox awk on e26b3c23 (`wcon`, rented x86 machine, load 29 to 44, `t3/r5/awk-r5.log`): outputs as before;
+  wcon's summary 3, none and 3, within the range above.
+- Speed pairs, e26b3c23 against the code before it (the rented machine's copy of 4117dcd3, whose translator is
+  c2bafa58's, the same as e3254f67's), 4 rounds, order rotated, rented ARM64 machine, load 4 to 13,
+  `t3/r5/pairs-rerun.log`, script `t3/r5/pairs.sh` (it now builds each side's benchmarks binary and runs the
+  one cargo names, not the first in the folder). New over old: wasmtime 1.000 to 1.002 on every workload but
+  matrix, 1.005; Chrome 0.999 to 1.002 on every workload but matrix, 1.010. Matrix's means come from single
+  rounds (Chrome 0.305 against 0.293 s in round 1, the other three rounds equal to the millisecond; wasmtime
+  0.485 against 0.480 s in rounds 2 and 3, equal in 1 and 4). Matrix alone, 6 rounds, same sides,
+  load 6 to 13 (`t3/r5/matrix-suite.log`): wasmtime 1.000, Chrome 0.999, every round within 5 ms (wasmtime) and
+  1 ms (Chrome) of the other side. So unchanged on every workload in both engines.
+- Reruns on e26b3c23, new seed 500:
+  - Layer 1 on the Mac, 1,000 cases a form and 10 a form in Chrome, 4 jobs, load 2 to 9, 838 s: 7 passed
+    (`t3/r5/layer1-mac.log`).
+  - Layer 2 on the rented ARM64 machine, 25,000 programs, every one on the real CPU, 5 in Chrome, 12 jobs, load
+    13 to 19, 601 s: 0 failing (8,600 faulted, 1,921 left to an address at full) (`t3/r5/pairs-rerun.log`).
+  - Layer 3 on the same machine, 1,000 programs from case 0, 100 in Chrome, 12 jobs, load 8 to 19, 917 s: 868
+    compared (86 also in Chrome), 132 did not end in time on Linux, 0 failing (same log).
+
 T3, what is left:
-- For the independent check: layers 1 and 2 and layer 3 with a new seed (layer 1 on the Mac: `WC_LAYER1_CASES
-  WC_LAYER1_CHROME WC_LAYER1_SEED`; layers 2 and 3 on the ARM64 machine, as in "How to run"), the awk counts
-  (`t3/awk.sh` on the x86 machine after building `wcon`; exact counts need the counting patch
-  `t3/detail/apply.py`), and the pairs (`t3/r4/pairs.sh 4 <label>:<source>:<target> ...`, uploaded to the
-  ARM64 machine, run from a copy whose benchmarks test is built, each side's tree and build directory named).
+- For the independent check: layers 1 and 2 and layer 3 with a seed other than 300, 400 and 500 (layer 1 on
+  the Mac: `WC_LAYER1_CASES WC_LAYER1_CHROME WC_LAYER1_SEED`; layers 2 and 3 on the ARM64 machine, as in "How
+  to run"), the awk counts (`t3/awk.sh` on the x86 machine after building `wcon`; exact counts need the
+  counting patch `t3/detail/apply.py`), and the pairs (`t3/r5/pairs.sh 4 <label>:<source>:<target> ...`,
+  uploaded to the ARM64 machine, each side's tree and build directory named; it builds each side's binary).
+- Beyond the milestone's bar: recognise a switch with no bound check from the index's range in the code
+  before it (see "Known gaps"; the check's `check_big.c` is the measure, 1,622 translations at run time).
 - Beyond the milestone's bar, the literal fix list goes on (arm64's decoders, fix list steps 17 to 20, need the
   arm-forms generator to emit Arm's field and name constants), with the open homes named under "Departures":
   ARM64 system call and auxiliary vector numbers, the stack alignment, runner.js's look-ahead codes.
