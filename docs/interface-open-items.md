@@ -1,7 +1,9 @@
 # The embedder interface as files: what is open
 
 Branch phase-1-interfaces, from origin/phase-1-streams at ac676b6b. Four interface crates were added; nothing
-else in the repository was changed except the workspace Cargo.toml (members, and the reviewable prefix).
+else in the repository was changed except the workspace Cargo.toml (members, and the reviewable prefix),
+Cargo.lock (the eight new packages) and reviewable-answers.toml (new: the model's answers the linter
+records).
 "Today" means origin/phase-1-streams (S) unless marked R, which is origin/phase-1-runtime at ac0079e6, the
 only branch with wcontainers-runtime. Rulings are cited by their heading in next-embedder-interface.md.
 
