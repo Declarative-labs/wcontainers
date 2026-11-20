@@ -27,8 +27,8 @@
 1214a0e460a4d983.dxil	ok ; glsl compiles
 134937cfa72159ac.dxil	ok ; glsl compiles
 147fdd03ba57dbf2.dxil	ok ; glsl compiles
-1495dd46c01d5739.dxil	unsupported TypedBufferFormatKind (with views)
-14dd4b0c20eb7f6e.dxil	ok views:R32Uint ; glsl absent compute
+1495dd46c01d5739.dxil	ok views:R32Float ; glsl absent compute
+14dd4b0c20eb7f6e.dxil	ok views:R32Float ; glsl absent compute
 15f6a483af9cf0bc.dxil	ok ; glsl compiles
 164e085c567ecd86.dxil	ok ; glsl compiles
 1692a7991b2487af.dxil	ok ; glsl compiles
@@ -50,14 +50,14 @@
 21b8cccf7749e4c5.dxil	ok ; glsl compiles
 22a35c285201e27f.dxil	ok ; glsl compiles
 234f0aefb4ea6f0c.dxil	ok ; glsl compiles
-23cf517779ec6d47.dxil	unsupported TypedBufferFormatKind (with views)
+23cf517779ec6d47.dxil	ok views:R32Float ; glsl absent compute
 2401e74f68882663.dxil	ok ; glsl compiles
 25372e77403791c8.dxil	ok ; glsl compiles
 25aaf97559695a98.dxil	ok ; glsl compiles
 26218b2c83db3773.dxil	ok ; glsl compiles
 26480ad9d7d2ad54.dxil	ok ; glsl compiles
 269d549e10248fad.dxil	ok ; glsl compiles
-26ed1860124e3c43.dxil	unsupported StorageFormatKind (with views)
+26ed1860124e3c43.dxil	ok views:R32Float ; glsl absent compute
 277e12b2f0fb2fa7.dxil	ok views:R32Float ; glsl absent compute
 28df654177b8f65a.dxil	ok ; glsl compiles
 2af882d6fd50d4ff.dxil	ok ; glsl compiles
@@ -78,7 +78,7 @@
 3748612534df88b7.dxil	ok ; glsl compiles
 37cfadb387922bcb.dxil	ok ; glsl compiles
 39e2ad152cdcbb2f.dxil	ok ; glsl compiles
-3b4f6e40dc38c1f1.dxil	unsupported TypedBufferFormatKind (with views)
+3b4f6e40dc38c1f1.dxil	ok views:R32Float ; glsl absent compute
 3bb57e9c59b9576f.dxil	ok ; glsl compiles
 3db963b8d1bac126.dxil	ok ; glsl compiles
 3e7b5c64beadc19b.dxil	ok ; glsl compiles
@@ -86,7 +86,7 @@
 3f087f4f7a3165e2.dxil	ok ; glsl compiles
 3f1189fb7238b95e.dxil	ok ; glsl compiles
 3fb906256a621271.dxil	ok ; glsl compiles
-4007e43c86f4c7d1.dxil	ok views:R32Uint ; glsl absent compute
+4007e43c86f4c7d1.dxil	ok views:R32Float ; glsl absent compute
 408d1b1ca9f5ec85.dxil	ok ; glsl compiles
 4129c8d47cad7d26.dxil	ok ; glsl compiles
 4199b642070a8217.dxil	ok ; glsl compiles
@@ -100,7 +100,7 @@
 4633f955425fa0e6.dxil	ok ; glsl compiles
 464a81329e22ad59.dxil	ok ; glsl compiles
 46705dae4c3ecb65.dxil	ok ; glsl compiles
-46be5c555774d134.dxil	unsupported TypedBufferFormatKind (with views)
+46be5c555774d134.dxil	ok views:R32Float ; glsl absent compute
 46cbd7ce995909d1.dxil	ok ; glsl compiles
 46f1e6ee9d81688e.dxil	ok views:R32Float ; glsl absent compute
 471d776c732b966d.dxil	ok ; glsl compiles
@@ -108,7 +108,7 @@
 48bd9731e170c8cc.dxil	ok ; glsl compiles
 4a517b56b398603d.dxil	ok ; glsl compiles
 4aef0304a67ab324.dxil	ok ; glsl compiles
-4b180d5d8cb67ef5.dxil	unsupported TypedBufferFormatKind (with views)
+4b180d5d8cb67ef5.dxil	ok views:R32Float ; glsl absent compute
 4b1abb284ec95243.dxil	ok ; glsl compiles
 4c260f03e687cfeb.dxil	ok ; glsl compiles
 4cba441c3dcecc6d.dxil	ok views:R32Float ; glsl absent compute
@@ -154,7 +154,7 @@
 668cc56e38f7976a.dxil	unsupported MultisampledArrayTexture
 6701c373a2026488.dxil	ok ; glsl compiles
 685b1bd13a9db30c.dxil	ok ; glsl compiles
-693a4c4bfbecdba1.dxil	ok views:R32Uint ; glsl absent compute
+693a4c4bfbecdba1.dxil	ok views:R32Float ; glsl absent compute
 6a3674588b532a90.dxil	ok ; glsl compiles
 6af942d4b95ee588.dxil	ok ; glsl compiles
 6e36319055c7f9e4.dxil	ok ; glsl compiles
@@ -167,7 +167,7 @@
 7098aa95cb1484e3.dxil	ok ; glsl compiles
 70b5ec7767df3af8.dxil	ok ; glsl compiles
 71eceb911546c2f4.dxil	ok ; glsl compiles
-732b39dc64d16680.dxil	ok views:R32Uint ; glsl absent compute
+732b39dc64d16680.dxil	ok views:R32Float ; glsl absent compute
 7402d9d06822b2f8.dxil	ok ; glsl compiles
 74f0dd8b01fbc31b.dxil	ok ; glsl compiles
 752971380945dcbe.dxil	ok ; glsl compiles
@@ -186,7 +186,7 @@
 7db6ce348412e5b7.dxil	ok ; glsl compiles
 7e13c2d32fa803da.dxil	ok ; glsl compiles
 7f2a3e7fd1ae56c3.dxil	ok ; glsl compiles
-7f90d7ebb19b5d14.dxil	unsupported TypedBufferFormatKind (with views)
+7f90d7ebb19b5d14.dxil	ok views:R32Float ; glsl absent compute
 7fbd955e876d9f01.dxil	ok views:R32Float ; glsl absent compute
 802ec03830b6f5dc.dxil	ok ; glsl compiles
 80aa9bff211c2f81.dxil	ok ; glsl compiles
@@ -230,11 +230,11 @@ a124648111dd823d.dxil	ok views:R32Float ; glsl absent compute
 a126fe294e3d3c30.dxil	ok views:R32Float ; glsl absent compute
 a14f16819c16c5d7.dxil	ok views:R32Float ; glsl absent compute
 a1d124a355c95f30.dxil	ok ; glsl compiles
-a34ec25cad46672c.dxil	unsupported TypedBufferFormatKind (with views)
+a34ec25cad46672c.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 a48d8117d8e85146.dxil	ok ; glsl compiles
 a4d49b99cc6e646c.dxil	ok views:R32Float ; glsl absent compute
 a51181f3fb7dc157.dxil	ok ; glsl compiles
-a532a57865304d69.dxil	ok views:R32Uint ; glsl absent compute
+a532a57865304d69.dxil	ok views:R32Float ; glsl absent compute
 a5e56fe271bbd14c.dxil	ok ; glsl compiles
 a659ed43188247be.dxil	ok ; glsl compiles
 a67644984fe17110.dxil	ok ; glsl compiles
@@ -319,7 +319,7 @@ db41d3ea9ff948d7.dxil	ok ; glsl compiles
 dccaefc2642f1292.dxil	ok ; glsl compiles
 dd19a3564bd0f9f7.dxil	ok ; glsl compiles
 def951734e765edf.dxil	ok ; glsl compiles
-e0d44a0562e7a21e.dxil	ok views:R32Uint ; glsl absent compute
+e0d44a0562e7a21e.dxil	ok views:R32Float ; glsl absent compute
 e16ca8cd21219bcd.dxil	ok ; glsl compiles
 e3c4502376c1b620.dxil	ok ; glsl compiles
 e48a9984066db3e8.dxil	ok ; glsl compiles
@@ -351,7 +351,7 @@ fa14a6d3896620f8.dxil	ok ; glsl compiles
 fa2e40e8e48adb92.dxil	ok ; glsl compiles
 fae40619ed6c1900.dxil	ok ; glsl compiles
 fb80e27311846886.dxil	ok ; glsl compiles
-fbbd650751923af4.dxil	ok views:R32Uint ; glsl absent compute
+fbbd650751923af4.dxil	ok views:R32Float ; glsl absent compute
 fc4ae0cfd197f786.dxil	ok ; glsl compiles
 fc7a4deb0e5bc814.dxil	ok ; glsl compiles
 fe47733ce6ab6c52.dxil	ok ; glsl compiles
@@ -362,7 +362,7 @@ ffe757fc29d2bab9.dxil	ok ; glsl compiles
 godot-compute-0082c1c4c671cc8e.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-01816306e145ade4.dxil	ok ; glsl absent compute
 godot-compute-0518c1e84f3e0b23.dxil	ok views:R32Float ; glsl absent compute
-godot-compute-0df9b11db39267fd.dxil	unsupported StorageFormatKind (with views)
+godot-compute-0df9b11db39267fd.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-0eef579f44800343.dxil	ok ; glsl absent compute
 godot-compute-185fdb52c4bd7874.dxil	ok ; glsl absent compute
 godot-compute-1b99d1e8f71342c7.dxil	ok views:R32Float ; glsl absent compute
@@ -379,19 +379,19 @@ godot-compute-49451cfda1426c6d.dxil	ok ; glsl absent compute
 godot-compute-576b670822c0d48b.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-5a0d6b7563eea260.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-5e07824a4ca1f57e.dxil	ok ; glsl absent compute
-godot-compute-5e305787c38f97ab.dxil	unsupported StorageFormatKind (with views)
+godot-compute-5e305787c38f97ab.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-6205533d7c5b01ef.dxil	ok ; glsl absent compute
 godot-compute-64486778a66160db.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-69e6c6e5564b6bd2.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-6a87c9d74a12cf84.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-6b062b5823a3d10f.dxil	ok ; glsl absent compute
 godot-compute-6f4fd1eda50abd4b.dxil	ok views:R32Float ; glsl absent compute
-godot-compute-7002841a5274ea38.dxil	unsupported StorageFormatKind (with views)
+godot-compute-7002841a5274ea38.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-719f9c9048834d76.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-76b0d495b396c0bd.dxil	ok ; glsl absent compute
-godot-compute-776eac4e2eb4fb62.dxil	unsupported StorageFormatKind (with views)
+godot-compute-776eac4e2eb4fb62.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-84b318874709b503.dxil	ok ; glsl absent compute
-godot-compute-861134a4d98b0b1b.dxil	unsupported StorageFormatKind (with views)
+godot-compute-861134a4d98b0b1b.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-88a0ad427a621385.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-89080d2fc83c7f7c.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-8ea2febf526f8e07.dxil	ok ; glsl absent compute
@@ -407,7 +407,7 @@ godot-compute-ad59882c76132cf8.dxil	ok ; glsl absent compute
 godot-compute-b023856aa081c9ff.dxil	ok ; glsl absent compute
 godot-compute-b2a26b181a2a4582.dxil	ok ; glsl absent compute
 godot-compute-b999b50b1beeecf1.dxil	ok ; glsl absent compute
-godot-compute-b9b62fafebbbb078.dxil	unsupported StorageFormatKind (with views)
+godot-compute-b9b62fafebbbb078.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-bbe957ff5b788e38.dxil	ok ; glsl absent compute
 godot-compute-caccfcb1332efbab.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-cb3dc639abff6a77.dxil	ok ; glsl absent compute
@@ -423,8 +423,8 @@ godot-compute-e632254d7b6d7950.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-e9979b34ae5da997.dxil	ok ; glsl absent compute
 godot-compute-ef54067cd5606132.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-f1bbd623757d7a64.dxil	ok ; glsl absent compute
-godot-compute-f8ba5aa849fe70e5.dxil	unsupported StorageFormatKind (with views)
-godot-compute-fcdd20873fda5f78.dxil	ok views:R32Uint ; glsl absent compute
+godot-compute-f8ba5aa849fe70e5.dxil	ok views:R32Float ; glsl absent compute
+godot-compute-fcdd20873fda5f78.dxil	ok views:R32Float ; glsl absent compute
 godot-fragment-2893de73bed23900.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 godot-fragment-f0e16912c4aaaddb.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 godot-pixel-3ce334b77ff19481.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")

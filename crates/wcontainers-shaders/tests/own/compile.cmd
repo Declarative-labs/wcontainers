@@ -136,6 +136,8 @@ for %%e in (gs_tess_point gs_tess_line gs_tess_tri) do (
 "%FXC%" /nologo /T cs_5_1 /E cs_image_array /Fo cs_image_array.dxbc arrays.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_1 /E cs_buffer_array /enable_unbounded_descriptor_tables /Fo cs_buffer_array.dxbc arrays.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_buffer_array -Gis -Fo cs_buffer_array.dxil arrays.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_1 /E cs_typed_array /enable_unbounded_descriptor_tables /Fo cs_typed_array.dxbc arrays.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_typed_array -Gis -Fo cs_typed_array.dxil arrays.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_one_d /Fo cs_one_d.dxbc one_d.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_one_d -Gis -Fo cs_one_d.dxil one_d.hlsl || exit /b 1
 for %%e in (ps_fill ps_msarray) do (

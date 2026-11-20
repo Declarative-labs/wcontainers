@@ -154,19 +154,8 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
                         views = Some(format);
                         break;
                     }
-                    // A view of the other kind tells nothing of the shader: any other refusal is
-                    // the one reported.
                     Err(e) => {
-                        let kind = |e: &ConvertError| {
-                            matches!(
-                                e,
-                                ConvertError::Unsupported(
-                                    wcontainers_shaders::refusal::STORAGE_FORMAT_KIND
-                                        | wcontainers_shaders::refusal::TYPED_BUFFER_FORMAT_KIND
-                                )
-                            )
-                        };
-                        if !matches!(&last, Some(Err(l)) if !kind(l)) {
+                        if last.is_none() {
                             last = Some(Err(e));
                         }
                     }

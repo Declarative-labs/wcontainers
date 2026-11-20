@@ -142,7 +142,7 @@ fn typed_buffers_convert_for_every_format_through_storage() {
         }
         reads_back(&format!("cs_texels {f:?}"), &c.modules[0]);
     }
-    // Refused by name: no route, no format, a format of another kind, atomics on a format without them.
+    // Refused by name: no route, no format, atomics on a format without them.
     let refused = |key: &VariantKey| match convert(Source::Dxbc(&bytes), key, None) {
         Err(ConvertError::Unsupported(name)) => name,
         other => panic!("{:?}", other.map(|_| ())),
@@ -159,12 +159,6 @@ fn typed_buffers_convert_for_every_format_through_storage() {
         wcontainers_shaders::refusal::TYPED_BUFFER_FORMAT
     );
     let mut k = plain.clone();
-    k.texel_formats[1].1 = Format::Rgba16Float;
-    assert_eq!(
-        refused(&k),
-        wcontainers_shaders::refusal::TYPED_BUFFER_FORMAT_KIND
-    );
-    let mut k = plain.clone();
     k.storage_formats[1].1 = Format::Rg16Uint;
     assert_eq!(
         refused(&k),
@@ -176,6 +170,64 @@ fn typed_buffers_convert_for_every_format_through_storage() {
         refused(&k),
         wcontainers_shaders::refusal::TYPED_BUFFER_STORAGE_AS_TEXTURE
     );
+}
+
+#[test]
+fn views_of_another_kind_than_declared_convert_on_both_routes() {
+    // cs_texels' float, unsigned and signed typed buffers bound as views of the other kinds, and
+    // ps_texels' through textures; cs_images' storage textures likewise, natively and through
+    // buffers.
+    let texels = VariantKey {
+        texel_buffers: TexelBufferRoute::Storage,
+        texel_formats: vec![
+            (0, Format::Rgba8Uint),
+            (1, Format::Rgba16Float),
+            (2, Format::R32Uint),
+            (3, Format::Rg16Sint),
+        ],
+        storage_formats: vec![(0, Format::Rgba16Sint), (1, Format::R32Sint)],
+        ..Default::default()
+    };
+    let images = VariantKey {
+        storage_formats: vec![
+            (0, Format::Rgba32Uint),
+            (1, Format::R32Uint),
+            (2, Format::Rgba16Sint),
+            (3, Format::Rg32Uint),
+        ],
+        ..Default::default()
+    };
+    let cases = [
+        ("cs_texels", texels),
+        (
+            "ps_texels",
+            VariantKey {
+                texel_buffers: TexelBufferRoute::Texture,
+                texel_formats: vec![(0, Format::Rgba8Uint), (1, Format::Rg16Float)],
+                ..Default::default()
+            },
+        ),
+        ("cs_images", images.clone()),
+        (
+            "cs_images",
+            VariantKey {
+                texels_through_buffer: u64::MAX,
+                ..images
+            },
+        ),
+    ];
+    for (name, key) in cases {
+        for dxil in [false, true] {
+            let file = format!("{name}.{}", if dxil { "dxil" } else { "dxbc" });
+            let bytes = own(&file);
+            let source = match dxil {
+                true => Source::Dxil(&bytes),
+                false => Source::Dxbc(&bytes),
+            };
+            let c = convert(source, &key, None).unwrap_or_else(|e| panic!("{file} {key:?}: {e}"));
+            reads_back(&format!("{file} {key:?}"), &c.modules[0]);
+        }
+    }
 }
 
 #[test]

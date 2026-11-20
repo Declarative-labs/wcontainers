@@ -13151,7 +13151,6 @@ code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a binding past the resource list"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of another class"
-code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of no class"
 code	crates/wcontainers-shaders/src/dxil.rs	str	draw_bases	"shader"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftoi"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftou"
@@ -13263,7 +13262,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::image_
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::image_store	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::image_store	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::image_store	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::image_store	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::image_store	4u32
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
@@ -13306,7 +13304,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::struct_ty	4u32
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic on a vector"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic without its operation"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image	"not an image"
-code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image_store	"store to a texture that is not a storage view"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::instruction	"an emit outside a geometry shader"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::instruction	"call before callee"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::instruction	"composite index is not a constant"
@@ -13334,7 +13331,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"entry point 
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"no entry point"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"unknown stage"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"a resource declaration without its register"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::storage_image	"storage image type"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::texel_buffer	"typed buffer type"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::texel_image	"storage image type"
 code	crates/wcontainers-shaders/src/lower.rs	str	derivatives_anywhere	"subgroup_uniformity"
