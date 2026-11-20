@@ -4,6 +4,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## For the orchestrator
 
+- Twenty-first run (15:14 UTC on the 20th on): Docker Desktop on the Mac still starts no
+  container (a probe made at 15:14 UTC stayed "Created" and was removed; six of other tracks
+  stay so). The ARM64 machine is up and did all of this run's work. The Mac's part of the bar
+  (scratch kernel/k6c19/mac5.sh) waits for Docker Desktop.
+
 - Twentieth run (15:07 to about 15:20 UTC on the 20th): Docker Desktop on the Mac again starts
   no container. Every container made since 14:12 UTC stays "Created" (this track's probes of
   14:31 and 15:08 were removed; seven of other tracks are left). The ARM64 machine is up. So the
@@ -83,6 +88,12 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+K6c, twenty-first run: the whole LTP comparison at 000f95e8 showed two new differences, both
+fixed with a test that failed before: fs_di never ended (a copy_file_range of many backend
+messages asked forever, from f84695a7), and setrlimit06 got SIGKILL without SIGXCPU (a turn of
+the stand-in on the machine's clock ran past its slice). The bar's ARM64 part and a fresh whole
+comparison run at 18eda16f; the Mac's part waits for Docker Desktop. See "K6c, twenty-first run".
 
 K6c, nineteenth and twentieth runs: the orchestrator's three rulings are built or recorded (the
 literal check passes; the gap list past section 15 and ADSP038 are under "Waiting for the
@@ -229,6 +240,54 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, twenty-first run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge (15:14 UTC). Every heavy
+run was on the ARM64 machine (load 5 to 33 on 96 cores); the literal check on the Mac (load 2).
+
+Read from the nineteenth run's jobs:
+- The whole suite at e300fadf (job kernel/20261120-141523-126036, 14:15 to 15:47 UTC; scratch
+  k6c19/arm/suite-e300fadf.log): 274 passed, 36 failed, 6 ignored; the 36 are exactly the known
+  ARM list (k6c14/fail14.txt), none other.
+- The whole LTP comparison at 000f95e8 (job kernel-b/20261120-142514-619315, ended by 15:47
+  UTC; committed as ltp/ours-20260930-000f95e8.tsv): 4167 of 4226 match, 59 differ. Against
+  2c06b713 four more match (ADSP072, getrusage04, sched_football, uevent02) and two newly differ,
+  both fixed below: fs:fs_di (timeout at 900 s; 25 to 32 s before) and syscalls:setrlimit06
+  (fail; it had failed once before, at a67cd731).
+
+Fixed, each with a test that failed before:
+- fs_di: its cp is one copy_file_range of 30 MB on the backend, which reads every part and then
+  writes many. Since f84695a7 each part a write took dropped the call's earlier answers (to go on
+  after it in the next run), but copy_file_range asks its reads again in each run, so the call
+  went back to its first read forever (16384 "backend question asked again" warnings for READ in
+  ten minutes; scratch k6c21/fs_di-000f95e8.log). Now a write keeps its progress between runs
+  only for the call that goes on after it (write, pwrite, writev and asynchronous writes not
+  appending to a file without a mapped page cache); every other caller keeps all its answers, as
+  before f84695a7 (a3ea7a6f). backend `large_writes_match_reference` also copies the first part
+  with copy_file_range and sendfile and appends it: before the fix it did not end in 1200 s
+  (k6c21/before.log); after it passed with the backend test's other 18, the 2 failures being
+  the ARM list's (k6c21/after.log).
+- setrlimit06: on the machine's clock (the LTP's runs) the stand-in ended a turn after as many
+  instructions as the slice has nanoseconds, but an instruction there takes what it takes, so a
+  turn of a busy loop could carry CPU time from below the soft limit past the hard one, and the
+  process got SIGKILL without SIGXCPU. Now such a turn also ends once its slice has passed on the
+  machine's clock (ad654a17; the repeatable clock is unchanged). New cpulimit
+  `cpu_limit_on_the_wall_clock_matches_reference` runs the cpulimit guest on the machine's clock:
+  before, 5 of 5 failed ("handled: killed by 9" where Linux prints SIGXCPU first;
+  k6c21/cpulimit-before.log); after, 5 of 5 passed (k6c21/cpulimit-after.log). The
+  translator's back end (the `runtime` feature) still counts turns only; the LTP does not run
+  on it.
+
+Literal check at 18eda16f (Mac, load 2.3; scratch k6c21/lit4.txt): passes; the baseline went
+from 8448 to 8446 lines (the cpulimit tests import the core dump warning's name).
+
+Running at 18eda16f:
+- The bar's ARM64 part, scratch k6c18/arm-final.sh (terminal five times, then fmt, clippy and the
+  whole suite under the name kernel); logs k6c18/terminal-18eda16f.log and
+  k6c18/suite-18eda16f.log, run log k6c21/arm-final-run.log.
+- The whole LTP comparison, job kernel-b/20261120-160232-2771036 (`LTP_JOBS=8 LTP_LIMIT=900`,
+  image tar reused), results target/ltp-k6c21/whole.tsv in the kernel-b folder there.
 
 ## K6c, nineteenth and twentieth runs
 
@@ -4922,6 +4981,21 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the twenty-first run (A is the orchestrator's cloud/arm-run, S the scratch folder
+kernel; the code to judge is 18eda16f):
+1. The whole suite: S/k6c18/suite-18eda16f.log (or `A --fetch kernel /work/jobs/kernel/<id>/log`
+   for the newest kernel job). Every failure must be on S/k6c14/fail14.txt. If the run on the Mac
+   ended before the suite started (S/k6c18/terminal-18eda16f.log exists without a suite log),
+   run `bash S/k6c18/arm-final.sh` again.
+2. The LTP comparison: `A --fetch kernel-b target/ltp-k6c21/whole.tsv S/k6c21/` once job
+   kernel-b/20261120-160232-2771036 ends (`A --status kernel-b`). Compare with
+   ltp/reference-20260930.tsv and ltp/ours-20260930-000f95e8.tsv; commit it as
+   ltp/ours-20260930-18eda16f.tsv; write the table as the fourteenth run's, the 13 under
+   "Waiting for the owner" counted apart; rerun any new difference; then delete
+   /work/target/kernel-b and /work/target/kernel-d there.
+3. When Docker Desktop starts containers: `bash S/k6c19/mac5.sh > S/k6c19/mac5.log 2>&1`.
+4. If all three hold, say K6c's bar is met; the independent check follows "For the independent check".
 
 K6c, after the twentieth run (A is the orchestrator's cloud/arm-run, S the scratch folder kernel):
 1. Read the whole suite: `A --fetch kernel /work/jobs/kernel/20261120-141523-126036/log
