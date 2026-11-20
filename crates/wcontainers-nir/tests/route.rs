@@ -283,3 +283,25 @@ fn a_glsl_program_that_does_not_compile_is_refused_with_its_log() {
     };
     assert!(log.contains("undeclared"), "{log}");
 }
+
+const PARTLY_READ: &str = "#version 450
+layout(location = 0) in mat4 columns;
+layout(location = 4) in vec4 corner;
+void main() { gl_Position = corner + columns[1] + columns[3]; }
+";
+
+#[test]
+fn an_attribute_read_in_part_is_named_a_run_of_read_slots() {
+    let stages = Nir::from_glsl(&[(Stage::Vertex, PARTLY_READ)]).unwrap();
+    let placed = |name: &str| {
+        stages[0]
+            .names
+            .iter()
+            .filter(|n| n.kind == GlslNameKind::Input && n.name == name)
+            .map(|n| (n.element, n.at, n.count))
+            .collect::<Vec<_>>()
+    };
+    // Vertex elements are the slots read, in order: columns 1 and 3, then the corner.
+    assert_eq!(placed("columns"), [(1, 0, 1), (3, 1, 1)]);
+    assert_eq!(placed("corner"), [(0, 2, 1)]);
+}

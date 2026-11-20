@@ -231,7 +231,20 @@ add_name(struct wc_glsl_names *names, enum wc_glsl_name_kind kind, const char *n
    added->interpolation = interpolation;
    added->at = at;
    added->count = count;
+   added->element = 0;
    return added->name && (!type || added->type);
+}
+
+static void
+free_names(struct wc_glsl_names *names)
+{
+   for (size_t i = 0; i < names->count; i++) {
+      free(names->data[i].name);
+      free(names->data[i].type);
+   }
+   free(names->data);
+   names->data = NULL;
+   names->count = 0;
 }
 
 /* The program's own stage inputs and outputs, by their location in the common form; a vertex
@@ -332,25 +345,39 @@ number_vertex_elements(nir_shader *nir)
    return read;
 }
 
-/* Each attribute's name at its vertex element, from the attributes read before they were numbered;
- * an attribute not read has none and loses its name. */
-static void
+/* Each attribute's name at its vertex elements, from the slots read before they were numbered: a
+ * name a run of slots read (an attribute read in part has several); one not read has none. */
+static bool
 name_vertex_elements(struct wc_glsl_names *names, uint64_t read)
 {
-   size_t kept = 0;
+   struct wc_glsl_names placed = {NULL, 0};
+   bool added = true;
    for (size_t i = 0; i < names->count; i++) {
       struct wc_glsl_name name = names->data[i];
-      if (name.kind == WC_GLSL_INPUT) {
-         if (!(read & BITFIELD64_BIT(name.at))) {
-            free(name.name);
-            free(name.type);
+      if (name.kind != WC_GLSL_INPUT) {
+         added &= add_name(&placed, name.kind, name.name, name.type, name.interpolation, name.at,
+                           name.count);
+         continue;
+      }
+      for (uint32_t s = 0; s < name.count;) {
+         uint32_t slot = name.at + s;
+         if (!(read & BITFIELD64_BIT(slot))) {
+            s++;
             continue;
          }
-         name.at = util_bitcount64(read & BITFIELD64_MASK(name.at));
+         uint32_t run = 0;
+         while (s + run < name.count && (read & BITFIELD64_BIT(slot + run)))
+            run++;
+         added &= add_name(&placed, name.kind, name.name, name.type, name.interpolation,
+                           util_bitcount64(read & BITFIELD64_MASK(slot)), run);
+         if (added)
+            placed.data[placed.count - 1].element = s;
+         s += run;
       }
-      names->data[kept++] = name;
    }
-   names->count = kept;
+   free_names(names);
+   *names = placed;
+   return added;
 }
 
 static bool
@@ -518,8 +545,10 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
          linked = false;
          break;
       }
-      if (shader->Stage == MESA_SHADER_VERTEX)
-         name_vertex_elements(names, attributes);
+      if (shader->Stage == MESA_SHADER_VERTEX && !name_vertex_elements(names, attributes)) {
+         linked = false;
+         break;
+      }
       nir_shader *nir = shader->Program->nir;
       if (!name_parameters(shader->Program, names) ||
           !name_bindings(shader->Program, nir, names)) {
@@ -555,11 +584,7 @@ wc_glsl_program_free(struct wc_glsl_program *program)
 {
    for (int s = 0; s < WC_STAGES; s++) {
       ralloc_free(program->stages[s]);
-      for (size_t i = 0; i < program->names[s].count; i++) {
-         free(program->names[s].data[i].name);
-         free(program->names[s].data[i].type);
-      }
-      free(program->names[s].data);
+      free_names(&program->names[s]);
    }
    free(program->log);
    memset(program, 0, sizeof(*program));

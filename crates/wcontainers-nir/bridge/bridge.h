@@ -116,6 +116,9 @@ struct wc_glsl_name {
    enum wc_glsl_interpolation interpolation;
    uint32_t at;
    uint32_t count;
+   /* The first of the value's slots the name places: a vertex attribute read in part (some
+    * columns of a matrix) has a name a run of the slots read. */
+   uint32_t element;
 };
 
 struct wc_glsl_names {

@@ -117,6 +117,9 @@ pub struct GlslName {
     pub interpolation: Interpolation,
     pub at: u32,
     pub count: u32,
+    /// The first of the value's slots the name places: a vertex attribute read in part (some
+    /// columns of a matrix) has a name a run of the slots read.
+    pub element: u32,
 }
 
 /// One stage of a linked GLSL program.
@@ -134,6 +137,7 @@ struct RawGlslName {
     interpolation: Interpolation,
     at: u32,
     count: u32,
+    element: u32,
 }
 
 #[repr(C)]
@@ -273,6 +277,7 @@ impl Nir {
                             interpolation: n.interpolation,
                             at: n.at,
                             count: n.count,
+                            element: n.element,
                         })
                         .collect(),
                 }
