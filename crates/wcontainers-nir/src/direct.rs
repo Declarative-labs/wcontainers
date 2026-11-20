@@ -3146,17 +3146,23 @@ impl Builder<'_> {
                         "a comparison with a bias or gradients"
                     )));
                 }
+                // The base level: `Zero` is the common form's level of comparisons and gathers
+                // only (HLSL has no plain sample at level zero), a level of 0.0 otherwise.
+                let base_level = |b: &mut Self| match depth_ref {
+                    Some(_) => SampleLevel::Zero,
+                    None => SampleLevel::Exact(b.scalar_constant(Float, 0.0f32.to_bits())),
+                };
                 let level = match op {
                     TexOp::Gather => SampleLevel::Zero,
                     // Outside the fragment stage an implicit level is the base level.
-                    TexOp::Sample if self.stage != ShaderStage::Fragment => SampleLevel::Zero,
+                    TexOp::Sample if self.stage != ShaderStage::Fragment => base_level(self),
                     TexOp::Sample => SampleLevel::Auto,
                     TexOp::Bias => SampleLevel::Bias(
                         scalar_src(self, TexSrc::Bias, Float)?
                             .ok_or_else(|| unsupported(format_args!("a bias")))?,
                     ),
                     TexOp::Level => match self.tex_src(i, TexSrc::Lod).map(|d| self.value(d)) {
-                        Some(Ok(Value::Const(v, _, _))) if v[0] == 0 => SampleLevel::Zero,
+                        Some(Ok(Value::Const(v, _, _))) if v[0] == 0 => base_level(self),
                         _ if depth_ref.is_some() => {
                             return Err(unsupported(format_args!(
                                 "a comparison at a level other than 0"
