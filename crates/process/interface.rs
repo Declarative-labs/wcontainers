@@ -1,7 +1,12 @@
 //! The kernel's side of its interface to the embedder: one process, what it shows, and the data it hands out.
 
-use std::ops::Range;
-use std::time::Duration;
+#![no_std]
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::ops::Range;
+use core::time::Duration;
 
 use wcontainers_abi::{CpuError, MemoryId};
 use wcontainers_executor::{Executor, PerThreadWatch};

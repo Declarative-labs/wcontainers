@@ -1,8 +1,9 @@
 //! The embedder's side of its interface to the kernel: the task ids it hands out, the system call proxy and the hooks.
 
+#![no_std]
 #![allow(unused_variables)]
 
-use std::ops::{ControlFlow, Range};
+use core::ops::{ControlFlow, Range};
 
 use wcontainers_abi::SystemCallRequest;
 use wcontainers_kernel::TaskId;

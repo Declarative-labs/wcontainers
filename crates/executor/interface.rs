@@ -1,6 +1,8 @@
 //! What runs a container's guest threads, as the kernel's interface to its embedder names it.
 
-use std::ops::Range;
+#![no_std]
+
+use core::ops::Range;
 
 use wcontainers_abi::{CpuError, Permissions, ThreadId};
 
