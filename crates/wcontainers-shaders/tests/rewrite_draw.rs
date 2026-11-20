@@ -2,7 +2,8 @@
 //! program sampling, gathering and loading from arrays of textures and samplers picked at run time,
 //! its gather's offset given at run time, run once with wgpu's binding arrays and a constant offset,
 //! and once rewritten (an element per binding, the offset moved into the coordinate). Every value
-//! must be equal. Seeded: `WCONTAINERS_REWRITE_SEED` (default 1), `WCONTAINERS_REWRITE_CASES`
+//! must be equal. The inputs are a read-only storage buffer: wgpu takes no uniform buffer beside a
+//! binding array in one group. Seeded: `WCONTAINERS_REWRITE_SEED` (default 1), `WCONTAINERS_REWRITE_CASES`
 //! (default 16).
 #![cfg(windows)]
 
@@ -28,7 +29,7 @@ const OFFSETS: std::ops::RangeInclusive<i32> = -8..=7;
 const SOURCE: &str = "
 enable wgpu_binding_array;
 struct U { i: u32, pad: u32, o: vec2<i32>, uv: vec2<f32> }
-@group(0) @binding(UNIFORM) var<uniform> u: U;
+@group(0) @binding(UNIFORM) var<storage, read> u: U;
 @group(0) @binding(SAMPLER) var s: binding_array<sampler, ELEMENTS>;
 @group(0) @binding(TEXTURE) var t: binding_array<texture_2d<f32>, ELEMENTS>;
 @group(0) @binding(STORAGE) var<storage, read_write> out: array<vec4<f32>>;
@@ -206,7 +207,7 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
         entry(
             SlotKind::Uniform.first_binding(),
             wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
                 min_binding_size: None,
             },
@@ -270,7 +271,7 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
         })
     };
     use wgpu::BufferUsages as B;
-    let constants = buffer(uniform.len() as u64, B::UNIFORM | B::COPY_DST);
+    let constants = buffer(uniform.len() as u64, B::STORAGE | B::COPY_DST);
     g.queue.write_buffer(&constants, 0, uniform);
     let bytes = OUTPUTS as u64 * VEC4_BYTES;
     let out = buffer(bytes, B::STORAGE | B::COPY_SRC);
