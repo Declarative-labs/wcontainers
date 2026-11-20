@@ -28,7 +28,9 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   connection from the host and read and wrote files of a host directory at full, none and bound 7 (ARM machine).
 - J5 run 7: nothing new on origin/phase-1 or origin/phase-1-literals; the build script's facts and the cache's
   file writing taken from established crates (section "J5 run 7").
-- Next: see "Left" at the end of section "J5 run 7".
+- J5 run 8: nothing new on origin/phase-1 or origin/phase-1-literals again; wcon's options named once in the
+  library (section "J5 run 8").
+- Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
 
@@ -172,6 +174,29 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 8 (2026-11-20, the task's run 6; the rented ARM and x86 machines, and this Mac for git, edits and the literal check)
+
+- Merges: origin/phase-1 (eb515b7a) and origin/phase-1-literals (7668c010) had nothing new; no rulings on the
+  literal list's hard cases. The kernel track's branch (not merged here) still has the task.rs assertion (line
+  224); it now has "let new mappings go below the heap as linux's search does" (7579e667), which is what this
+  track asked for pth_str01 and 03, but it is not on origin/phase-1.
+- Literal fix (51e105de), fix list item 39: wcon's options are named once in the library's new `cli` module
+  (`wcontainers_wasmtime::cli`), which wcon and tests/surface.rs import. Baseline lines deleted: 10, all
+  `restated` in surface.rs (wcontainers-wasmtime 84 to 74; runtime 265 and the driver 31 unchanged). Docker's
+  own options in surface.rs (`--interactive`, `--tty`, `--volume`, `--publish` given to `docker run`) are
+  another fact with the same spelling and keep their lines. The check exits 0; marks: none. The check needs
+  .git, which the rented machines' copies leave out, so it runs on this Mac (the binary built from
+  wcontainers-literals at 7668c010, unchanged).
+- Lint (x86 machine, load 3; j5run9/lint-x86.out): fmt and clippy with warnings denied pass for the owned crates;
+  the cache's tests pass. ARM machine (copy `runtime-check`, 8 jobs, load 46 to 57; j5run9/owned-arm.out and
+  .log): clippy passes for the owned crates; the kernel test crate's warning at reference.rs:352 (the streams
+  track's) is still there.
+- The owned suite at 51e105de (ARM machine, same job): 135 passed, 1 ignored (`run_with_the_cache`, as before), 0
+  failed, 65 s.
+- The whole kernel test crate was not run again: since run 6's bar its inputs changed only in the build script's
+  and the cache's file writing (run 7) and in where wcon's option names are defined.
+- Left: unchanged from run 7 (below).
 
 ## J5 run 7 (2026-11-20, the task's run 5; the rented ARM and x86 machines, and this Mac for git, edits and the literal check)
 
