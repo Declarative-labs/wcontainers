@@ -112,9 +112,85 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   after the restart"). Run 2 (2026-11-20) fixed what the independent check of X6 found: a large move of the
   stack pointer down hung translation, the plan's "Frames" rule was not built, the trap flag cases and three
   other program sets ran in Chrome at full only and the trap flag ones were compared by status only, and four
-  smaller ones (see "X6, run 2").
+  smaller ones (see "X6, run 2"). Run 3 (2026-11-20) fixed what the second check of X6 found: `written_code`
+  and `null_call` did not run in Chrome at none, a store into a page of code under the trap flag was lost
+  and stopped at itself, the "Full" runs of x86 C programs never had `main` in the full translation (now
+  also built position independent), and two smaller ones (see "X6, run 3").
 
-## X6, run 2 (2026-11-20)
+## X6, run 3 (2026-11-20)
+
+Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws) for lint and the x86 tests; the rented
+ARM64 machine for ARM64's affected tests; the Mac for git, formatting and the literal check. Logs in scratch
+`x6r4/`.
+
+The second X6 check's findings:
+- `written_code` and `null_call` did not run in Chrome at none (blocking): the test had its own Chrome loop
+  over full and bounded. It now calls `every_look_ahead_matches_in_chrome` like the rest. The one other own
+  loop (deep recursion: none and full, no bounded, and the counter's name typed out) does too, and takes
+  the name from `Reason::StackNearlyFull`. Every Chrome comparison in `tests/programs.rs` now goes through that
+  helper (none, full for speed and size, bounded); the one other Chrome call there, `time_against_native`, times
+  the benchmark set at full and compares nothing.
+- A store into a page locked for code with TF set was lost and the trap came at the store (minor): the
+  memory fault hook's code-write step re-entered the instruction while `step` was already RUNNING, so the
+  exact piece's stop check trapped. `StepAt` has a third case, `Retry(pc)`: both runners call
+  `step(Retry(pc))` before running the instruction again, and x86 puts a stepped instruction that had not
+  finished back to running alone. `trap_flag.S` has two new cases: 9 (`movb` into its own code page) and 10
+  (`rep stosb` of 3 into it: one element, rip on the instruction). Both match the reference's stop, rip and
+  registers at every look-ahead in wasmtime and Chrome. With the `Retry` call taken out of the wasmtime
+  runner (a mutation, not kept), case 9 fails: "rip of case 9 at (None, Speed)".
+- The "Full" runs of x86 C programs never had `main` in the full translation (minor): code built for a fixed
+  address passes `main` as `mov edi, imm32` in musl's `_start_c`, and a translation of blob offsets cannot
+  follow an absolute address. Following such immediates needs the link address as an input of the
+  translation and of the cache key, a change to the translator's interface, so it is put to the owner (plan
+  3.4 "Known limit", and "For the orchestrator"). Until then the rare-path C programs (`written_code`,
+  `null_call`, `self_written`, `written_by_another`, `jumps`, `exceptions`, `panics`, `fibers`, `coroutines`) are
+  built both at the fixed address and position independent (`Position`, moved from layer 3 into
+  `programs.rs`; a blob is loaded at `MOVED` exactly when the linker made it position independent). In the
+  independent build of `written_code -O2`, `main` is reached by `lea 0x1e(%rip),%rdi` (objdump on the rented
+  machine), which `built_address` follows. rustc's aarch64 musl target makes a fixed program even when asked
+  for a position independent one (`panics-O0-pic.elf` is `EXEC`), so on ARM64 that build says so and is
+  not run; on x86 it is run.
+- How to run did not name `code_on_the_stack_matches_linux_x86_64` and `far_frames_match_linux_x86_64`: now
+  it does, with `deep_recursion_matches_linux_x86_64`.
+- `cpu_step`'s kinds were bare 0 and 1 in lib.rs and runner.js: the kinds are now `STEP_ATS`, each a name
+  and the `StepAt` it makes; the contract gives runner.js `stepAt`, each name's number, and runner.js calls
+  `step(contract.stepAt.kernel, ...)` and so on.
+
+Measured:
+- x86's `--test programs` (all 22 x86 tests: every program, trap flag, Chrome), rented x86-64 machine: on the
+  tree before the last refactor (`programs.log`, load 2 to 32 with my other jobs) 22 passed in 1,885 s; on
+  the committed tree (`programs2.log`, after `cargo fmt --check`, clippy with warnings denied for the five
+  crates and the browser crate for both guests, and a build of `wcontainers-wasmtime`) 22 passed in 1,885 s.
+- The mutation without `StepAt::Retry` in the wasmtime runner (`mutation.log`): the trap flag test fails at
+  case 9 at none.
+- ARM64's tests this run changes (deep recursion, unwinding, switched stacks, written code), rented ARM64
+  machine (`arm2.log`, load 20 to 29): 4 passed (306 s); the two `panics -pic` builds were not run, as above.
+- The laptop-verdict tests on the i7-8750H (`x6r4-l1` there, copied to scratch, load 0.1 before it started):
+  `hand_cases_do_what_they_must_x86_64`, `bytes_in_no_form_stop_as_on_the_cpu_x86_64` and
+  `sample_matches_the_cpu_in_chrome_x86_64` pass (seed 9621, 39 s for the three); in `--test reference_x86_64`
+  `the_x86_64_reference_refuses_what_linux_refuses` and four others pass, and
+  `the_x86_64_reference_runs_programs` fails only because the laptop has no zig to build its program (it passes
+  in the suite on the rented machine). `every_form_matches_the_cpu_x86_64` and `unoffered_forms_are_illegal_x86_64`
+  were not run again (an hour on the laptop): what changed on their path is the `Retry` call in the branch for a
+  write to a page locked for code, which changes the step state only while the trap flag steps; I expect
+  their X6 run 2 verdicts to hold, not measured.
+- ARM64's two layer 1 tests on the Mac (`arm64-l1-mac.log`, Docker Desktop, load about 6): every form at 64 a
+  form, seed 9622, and the Chrome sample: pass (88 s).
+- ARM64's suite, rented ARM64 machine (`suite-arm.log`, 1,649 s, load 11 to 30): 50 passed, 11 ignored, 2
+  failed: the two layer 1 tests its manual keeps on the Mac (passed there, above).
+- The literal check (the Mac): exits 0; 12 baseline lines went (the build flags are named constants of
+  `Position`), none added. Baseline lines of this track's crates: x86 125, guest-cpu 28, the test crate 2,076,
+  the translator 72.
+- The suite in pieces at the committed tree, rented x86-64 machine (`x6r4/suite-x86m/`, one log a piece, 3,024 s
+  in all, load 3 to 68 with my other jobs): 122 passed, 15 ignored, 30 failed, the same 30 as X6 run 1 and for
+  the same reasons: 25 ARM64 tests (no ARM64 reference there) and the five x86 tests whose verdict is the
+  laptop's (above). The lint piece's "exit 1" is its output filter finding no line; lint passed in
+  `programs2.log`.
+
+So every part of X6's bar holds: the bar's programs at every look-ahead in wasmtime and in Chrome against the
+reference, `written_code` and `null_call` now at none in Chrome too, the trap flag's eleven cases with the
+reference's stop and registers in both, and the rare-path C programs also in their position independent build,
+whose full translation has `main`. What comes next: X6's independent check.
 
 Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws) for lint and the x86 tests; the
 i7-8750H for layer 1's verdicts; the Mac for git, formatting and the literal check. Logs in scratch `x6r3-*`.
@@ -138,7 +214,8 @@ The X6 check's findings:
   each run counting the frames given up. With the rule turned off by hand (a mutation, not kept) the test
   fails.
 - Chrome ran the trap flag cases at full only, by status (blocking): every Chrome comparison in
-  `tests/programs.rs` now runs at every look-ahead (`every_look_ahead_matches_in_chrome`: none, full for speed
+  `tests/programs.rs` now runs at every look-ahead (wrong, as the next check found: `written_code` and
+  `null_call` kept their own Chrome loop without none, and deep recursion's had no bounded; see "X6, run 3") (`every_look_ahead_matches_in_chrome`: none, full for speed
   and size, bounded with pieces made at run time), which covers `self_written`, unwinding, the switched
   stacks and the cut functions. The page now answers the thread state at its stop; the trap flag test checks
   in Chrome that the stop is a single step (not a breakpoint), with the reference's rip and general
@@ -287,7 +364,8 @@ Built (X6):
   on the reference itself; it now aligns as malloc does, 16 (bad2735e).
 
 Measured (rented x86-64 machine unless said; load as given):
-- x86 programs, at every look-ahead and mixed, wasmtime and Chrome, against the reference: `written_code`
+- x86 programs, at every look-ahead and mixed, wasmtime and Chrome, against the reference (in Chrome not at
+  none for these two, as the second check of X6 found; see "X6, run 3"): `written_code`
   and `null_call` at -O0 and -O2, `self_written` (202 writes to code pages counted at every look-ahead and in
   every mixed run), the nine trap flag cases (every stop's rip and general registers equal the reference's,
   "trap flag set by the program" counted), `jumps`, `exceptions` and `panics`, `fibers` and `coroutines`: all
@@ -1009,6 +1087,13 @@ Baseline lines: wcontainers-translator-test 2111 (3 fewer), wcontainers-translat
 wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the milestone is not complete.
 
 ## For the orchestrator
+
+- X6 run 3, a question for the owner: x86 programs built for a fixed address (most static x86-64 binaries)
+  take a function's address as an absolute immediate, so at full look-ahead `main` and everything only
+  reached through such an address are translated when first reached, at bounded look-ahead. The fix is to
+  give the translator the address the blob is linked at (from the ELF) as an input, which also enters the
+  translation cache key; it changes the translator's interface and the runtime's call of it. Not built;
+  plan 3.4 "Known limit". ARM64 does not meet it.
 
 - X5 run 7: another difference between the two x86-64 machines. Sapphire Rapids runs `movbe` with both 66
   and REX.W (`66 48 0F 38 F0/F1`) as the 64-bit form; the i7-8750H gives illegal instruction. We follow the
@@ -2986,7 +3071,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   wcontainers-translator-test --test programs -- trap_flag_steps_match_linux_x86_64
   self_written_code_matches_linux_x86_64 written_code_and_null_calls_match_linux_x86_64
   code_written_by_another_thread_matches_linux_x86_64
-  unwinding_matches_linux_x86_64 stacks_switched_by_the_program_match_linux_x86_64` (Chrome included),
+  unwinding_matches_linux_x86_64 stacks_switched_by_the_program_match_linux_x86_64
+  code_on_the_stack_matches_linux_x86_64 far_frames_match_linux_x86_64
+  deep_recursion_matches_linux_x86_64` (Chrome included; the C programs in both positions),
   `--test valid -- x86_64` (`PROPTEST_CASES`, `PROPTEST_RNG_SEED`), `--test lookaheads -- x86_64`
   (`WC_LOOKAHEAD_CASES`, `WC_LOOKAHEAD_SEED`), and
   `--test changes -- x86_64` (knobs as for ARM64: `WC_CHANGES_CASES`, `WC_CHANGES_SEED`,
@@ -3216,6 +3303,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X6 run 3: the trap flag's 11 cases at the 4 look-aheads in wasmtime and Chrome; the rare-path C programs at
+  -O0 and -O2 in both positions at the 4 look-aheads and 3 mixed seeds in wasmtime and 4 in Chrome (rented
+  x86-64 machine); layer 1's hand cases, no-form bytes and Chrome sample at seed 9621 (i7-8750H); ARM64's
+  every form at 64 a form, seed 9622, and its Chrome sample (the Mac); the suite's default counts elsewhere.
 - X5 run 8: the hand-made cases twice on the i7-8750H (108); the four `stos` forms at 1,000 a form, seed 9390;
   100,000 in no form, seed 9392; five forms at 5,000 a form, seed 9393 (all on the i7-8750H);
   layer 2 x86 at 20,000 programs, seed 24621, all on the CPU (rented x86-64 machine); layer 2 ARM64 at 10,000,
@@ -3410,6 +3501,12 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   (MIT), era2m_softfloat 0.2.1 (BSD-3-Clause-Clear). Nothing copied.
 
 ## Departures from the plan
+
+- X6 run 3: the guest interface's `StepAt` has a third case, `Retry(pc)`, which the plan's section 5.1 did
+  not have: the memory fault hook's retry of a write to a page locked for code must not count as the stepped
+  instruction having finished. And the rare-path C programs are tested built both ways (fixed and position
+  independent), which the plan did not ask, because full look-ahead cannot reach `main` in x86's fixed build
+  (plan 3.4 "Known limit").
 
 - X6 run 1 (replaces X5 run 8's entry): layer 2's shared generator lets only a group's last access load
   into its base only for a guest whose calls write return addresses into memory (`ReturnAddress::Stack`,

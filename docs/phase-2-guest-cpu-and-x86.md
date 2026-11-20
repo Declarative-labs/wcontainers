@@ -1131,6 +1131,15 @@ on the walk's path: the two differ when the add is a jump target the walk first 
 walk records each offset once), and reading the slot is what today's translator does, so the X1 output
 stays the same. It finds x86 `lea r, [rip + d]` alone and RISC-V `auipc` plus `addi` (2 or 4
 bytes apart) through `before`.
+- Known limit (found by the independent check of X6): x86 code built for a fixed address takes a function's
+  address as an absolute immediate (`mov edi, imm32`, as musl's `_start_c` passes `main`), and a translation
+  of blob offsets does not know the address the blob is linked at, so such a function is not an entry of
+  the translation made ahead of time; it is translated when reached, at bounded look-ahead. Following those
+  immediates needs that address as an input of the translation and of its cache key, a change to the
+  translator's interface that the owner should rule on. Until then x86's rare-path C programs are tested
+  built both ways, and only the position independent build (`lea` for every address in code) has `main` and
+  what it calls in the full translation. ARM64 builds every address in code relative to pc and does not
+  meet this. (Addresses held only in data, such as a C++ vtable, are found by neither CPU's walk.)
 
 Switches (T9, T10). `jump_table` gets the jump's offset, the blob and `before`, a way to walk the function's
 own instructions back from the jump. ARM64 reads its window backwards from the blob exactly as today (so its
@@ -1210,8 +1219,8 @@ types, so an i32 result goes back as a number and two results (x86's X87 hook) a
 two `set`s between views of the hook's bytes made once per hook (the state memory is shared and never
 detaches; the view at `cpu_state` is made again only after the cdylib's memory has grown), so a call
 allocates nothing but the BigInts of its i32 arguments (and the array of a two-result hook). `Guest::step` reaches the browser the same
-way from X6: an export `cpu_step(kind, pc) -> i32` (kind 0 for `StepAt::Stop`, 1 for `StepAt::Kernel`; the
-answer is `Step`'s index) over the same buffer, which runner.js calls first in its stop hook and at its
+way from X6: an export `cpu_step(kind, pc) -> i32` (kind is the number the contract's `stepAt` gives each
+`StepAt` by name; the answer is `Step`'s index) over the same buffer, which runner.js calls first in its stop hook and at its
 returns from the kernel only while the guest's contract says the CPU steps (`steps: true` for x86), so an
 ARM64 page never copies anything for it. The kernel never runs a hook (the runner owns
 the instance whose imports they are), so hooks are part of a CPU crate's translation half, which may use the
@@ -1545,7 +1554,11 @@ Tests (section 7 gives the detail):
     anything else; while it answers `Run`, `Exact` or `Trap` the stop is the step's alone (no pause, no
     "stopped by the flag"). Both runners answer `StepAt::Kernel` after each system call the stand-in answers
     and before each entry into `run`; the browser through the export `cpu_step(kind, pc)` on the copy of the
-    thread's state at `cpu_state`.
+    thread's state at `cpu_state`. When the memory fault hook settles a write to a page locked for code and
+    runs the instruction again (section 5.7), both runners first answer `StepAt::Retry(pc)`: a stepped
+    instruction that had not finished goes back to running alone, so it runs and the trap comes after it, as
+    on the CPU (before this, found by the independent check of X6, the store was lost and the trap came at
+    the instruction).
   - What the stop hook returns: at X6 it returns the unwind payload, as the memory fault hook does
     (section 5.7): 0 to carry on, `UNWIND_LEAVE` to leave, `UNWIND_GO_TO_EXACT` to run the instruction at pc
     alone; its call sites unwind with what it returns. ARM64's runners return only 0 and `UNWIND_LEAVE`, so
