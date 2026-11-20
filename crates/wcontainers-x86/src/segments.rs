@@ -365,12 +365,13 @@ fn far_call<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, target: u32
     };
     let slots = frame_slots(i).expect("a frame");
     let [code_at, at] = [slots[0], slots[1]].map(|(by, _)| register_address(e, &stack, RSP, by));
-    // cs is written first, so a fault names its slot when both are not allowed.
+    // cs is pushed first: where only the return address's slot is not allowed, the reference CPU faults
+    // there with cs already written, rsp unchanged.
     e.check(code_at, size, Access::Write, 1);
-    e.check(at, size, Access::Write, 1);
     let back = e.local(ValType::I64);
     e.sink().i64_const(USER_CS.into()).local_set(back);
     store(e, code_at, size, back);
+    e.check(at, size, Access::Write, 1);
     e.this_address(i.iced.len() as i64);
     e.sink().local_set(back);
     store(e, at, size, back);
