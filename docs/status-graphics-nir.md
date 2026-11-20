@@ -107,26 +107,30 @@ once, load 0.3 at the start, 5.3 at the end; 124 s with the build): 1005 shaders
   glslang program never writes, so such modules ask a back end for clip distances they do not use
   (validated with `CLIP_DISTANCES` today).
 
-Candidate B on the whole corpus, held to lavapipe (same run, both routes; x86-64 machine, 192 at
-once, load 10.2 at the start and 17.8 at the end, shared with other tracks; 4 minutes): of the 839,
-471 convert and match, 0 differ, 6 not compared (the same hanging `irradiancecube.frag`), 362 fail
-to convert, all by name. Shader by shader: 457 match on both routes, 269 on A only, 14 on B only.
-Median conversion time of the 457 (192 at once, so not the choice's measurement): A 327 us, B 139
-us. B's failures, largest first: 140 a stage input or output that is an array or a block (clip and
-cull distances, arrays at locations, matrices); 117 a row-major matrix (HLSL's buffers; naga has no
-row-major: rows as an array of vectors with loads transposed is the way); 32 a resource index used
-as a value (an array of buffers indexed at run time, or a descriptor passed on); 23
-`load_first_vertex` and 6 `load_base_instance` (the draw's bases, as for A); 12 a texture of
-another dimension (texel buffers, subpass inputs); 6 `image_deref_load`, 3 `image_deref_store`, 1
-`image_deref_size` (storage images: not walked yet); 4 `load_point_coord`; 4 `fmod`, 2 `frem`; 3 a
-storage image without a format; 3 vertex programs without a position (as A); 3 arrays of textures
-and samplers needing `TEXTURE_AND_SAMPLER_BINDING_ARRAY`; 2 `deref_atomic`; 1 `load_view_index`.
+Candidate B on the whole corpus, held to lavapipe (run 3's last run, both routes; x86-64 machine,
+192 at once, load 4.0 at the start and 6.1 at the end, shared with other tracks; 4 minutes): of the
+839, 715 convert and match, 0 differ, 7 not compared (the six hanging `irradiancecube.frag` and the
+mesh shading sample's fragment program, as for A), 117 fail to convert, all by name. Shader by
+shader: 669 match on both routes, 57 on A only, 46 on B only (among them the 3 that differ on A).
+Median conversion time of the 669 (192 at once, so not the choice's measurement): A 345 us, B 152
+us. B's failures, largest first: 37 a resource index used as a value (an array of buffers indexed
+at run time, or a descriptor passed on); 23 `load_first_vertex` and 6 `load_base_instance` (the
+draw's bases, as for A); 12 a texture of another dimension (texel buffers, subpass inputs); 6
+`image_deref_load`, 3 `image_deref_store` (storage images: not walked yet); 4 `load_point_coord`; 4
+`fmod`; 3 `load_view_index` (multiview); 3 `deref_atomic`; 3 arrays of textures and samplers
+needing `TEXTURE_AND_SAMPLER_BINDING_ARRAY`; 3 vertex programs without a position (as A); and a few
+single ones (`frem`, `image_deref_size`, storage images without a format). The full list:
+`scripts/reasons.py` on `results/run3/nir-results-ab.jsonl`.
+- B's steps since its first run: blocks of stage values (glslang's `gl_PerVertex`) split one
+  variable a member with the unused ones dropped (`nir_split_per_member_structs`), which also drops
+  the unused clip and cull outputs A still declares; row-major matrices in buffers (HLSL's) read as
+  an array of rows with each column gathered on load (naga has no row-major matrices); stores into
+  them are refused by name.
 
 Next, in this order:
-1. Candidate B's gaps above, largest first, each held by the corpus: stage arrays and blocks (split
-   into one argument or member a location, clip and cull distances as naga's built-ins); row-major
-   matrices; storage images and atomics; `fmod`, `frem`, point coordinates. Then the choice can be
-   made on comparable routes.
+1. Candidate B's gaps above, largest first, each held by the corpus: arrays of buffers indexed at
+   run time (`Value::Resource` as an index into a binding array); storage images and atomics;
+   `fmod`, `frem`, point coordinates. Then the choice can be made on comparable routes.
 2. Candidate A's fixable defects, so that the choice compares each at its best: Zink's matrix
    decorations (a patch to the pinned Mesa: decorate arrays of matrices, take the explicit stride);
    push constants as spilled immediates; the unused clip and cull outputs.
