@@ -4,7 +4,7 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, Extent, Object, Origin, TextureDimension, TextureRegion, TextureViewDesc,
+    Backend, Extent, FormatKind, Object, Origin, TextureDimension, TextureRegion, TextureViewDesc,
     ViewDimension,
 };
 
@@ -23,6 +23,8 @@ pub struct View<B: Backend> {
     view: Result<B::TextureView, &'static str>,
     /// How the programs that sample it rearrange its results.
     pub swizzle: [Swizzle; VectorSize::MAX],
+    /// Its texels are integers, which programs sample as their nearest texel's load.
+    pub integer: bool,
 }
 
 /// The identity swizzle, which needs no change to a program.
@@ -172,10 +174,13 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
     // SAFETY: a live view, and a place for one swizzle a component.
     unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
     let swizzle = swizzles.map(|s| swizzle(s as pipe_swizzle));
+    let integer = crate::format::format(base.format())
+        .is_some_and(|f| matches!(f.kind(), FormatKind::Uint | FormatKind::Sint));
     Box::into_raw(Box::new(View::<B> {
         base,
         view,
         swizzle,
+        integer,
     }))
     .cast()
 }

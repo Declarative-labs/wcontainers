@@ -14,7 +14,7 @@ use wcontainers_gpu::{
     StageExtras, StageSet, StepMode, Topology, VariantKey, VertexBinding, VertexFormat, Viewport,
     cut_scissors, helper_binding,
 };
-use wcontainers_nir::mesa::{PositionTransform, TextureSwizzle};
+use wcontainers_nir::mesa::{NearestSampler, PositionTransform, TextureSwizzle};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
 
@@ -62,6 +62,8 @@ struct Variant {
     streamed: bool,
     /// The kinds of the framebuffer's targets (fragment programs).
     targets: outputs::Targets,
+    /// The samplers of the integer textures bound where it samples.
+    nearest: Vec<NearestSampler>,
 }
 
 /// A value passed between stages at one location, and how it is interpolated.
@@ -266,6 +268,9 @@ fn convert<B: Backend>(
     let mut nir = shader.nir.try_clone().ok_or("out of memory")?;
     if variant.transform != PositionTransform::default() {
         nir.transform_position(variant.transform);
+    }
+    if !variant.nearest.is_empty() {
+        nir.nearest_integer_textures(&variant.nearest);
     }
     if !variant.swizzles.is_empty() {
         nir.swizzle_textures(&variant.swizzles);
@@ -818,6 +823,7 @@ fn draw<B: Backend>(
     let fragment = Variant {
         swizzles: swizzles(context.stages.get(Stage::Fragment)),
         targets: target_kinds(&context.framebuffer.state),
+        nearest: nearest_samplers(context.stages.get(Stage::Fragment)),
         ..Variant::default()
     };
     let programs = &mut context.programs;
@@ -834,6 +840,7 @@ fn draw<B: Backend>(
     let vertex = Variant {
         transform,
         swizzles: swizzles(context.stages.get(Stage::Vertex)),
+        nearest: nearest_samplers(context.stages.get(Stage::Vertex)),
         interpolation: inputs,
         pulled: pulled
             .iter()
@@ -1533,6 +1540,27 @@ fn pulled_inputs<B: Backend>(
     }
     pulled.sort_unstable();
     (pulled, paths)
+}
+
+/// The samplers bound with a stage's integer textures, by unit.
+fn nearest_samplers<B: Backend>(stage: &state::StageState<B>) -> Vec<NearestSampler> {
+    stage
+        .views
+        .iter()
+        .zip(&stage.samplers)
+        .enumerate()
+        .filter(|(_, (v, s))| !v.is_null() && !s.is_null())
+        .filter_map(|(unit, (&v, &s))| {
+            // SAFETY: the slots hold a reference on a live view of this driver and a bound
+            // sampler, which lives until Mesa unbinds and deletes it.
+            let (view, sampler) = unsafe { (View::<B>::of(v), &*s) };
+            let nearest = sampler.nearest.filter(|_| view.integer)?;
+            Some(NearestSampler {
+                unit: unit as u32,
+                ..nearest
+            })
+        })
+        .collect()
 }
 
 /// The kind of each bound colour target, by location.

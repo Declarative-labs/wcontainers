@@ -11,7 +11,7 @@ use wcontainers_gpu::{
     RenderTargetBlend, SamplerDesc, SlowPath, StencilFace, StencilOp, StepMode, VertexAttribute,
     VertexFormat, VertexLayoutDesc, VertexStream,
 };
-use wcontainers_nir::mesa::Nir;
+use wcontainers_nir::mesa::{NearestSampler, Nir, Wrap};
 use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};
 
 use crate::context::{self, Context};
@@ -176,6 +176,9 @@ pub struct Raster<B: Backend> {
 
 pub struct Sampler<B: Backend> {
     pub sampler: B::Sampler,
+    /// How it samples an integer texture, by the nearest texel's load: none for wraps such loads
+    /// do not make (the border and the mirrored clamp).
+    pub nearest: Option<NearestSampler>,
 }
 
 pub struct Elements<B: Backend> {
@@ -654,6 +657,15 @@ fn address(wrap: pipe_tex_wrap) -> AddressMode {
     }
 }
 
+fn nearest_wrap(wrap: pipe_tex_wrap) -> Option<Wrap> {
+    Some(match wrap {
+        PIPE_TEX_WRAP_REPEAT => Wrap::Repeat,
+        PIPE_TEX_WRAP_CLAMP_TO_EDGE => Wrap::ClampToEdge,
+        PIPE_TEX_WRAP_MIRROR_REPEAT => Wrap::MirroredRepeat,
+        _ => return None,
+    })
+}
+
 fn filter(f: c_uint) -> Filter {
     if f == PIPE_TEX_FILTER_LINEAR as c_uint {
         Filter::Linear
@@ -706,8 +718,21 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
         // SAFETY: a float border colour, which is all the screen takes.
         border: border(unsafe { state.border_color.f }),
     };
+    let wraps = [state.wrap_s(), state.wrap_t(), state.wrap_r()];
+    let nearest = wraps
+        .iter()
+        .map(|&w| nearest_wrap(w as pipe_tex_wrap))
+        .collect::<Option<Vec<_>>>()
+        .and_then(|w| w.try_into().ok())
+        .map(|wrap| NearestSampler {
+            unit: 0,
+            wrap,
+            mipmapped: mip != PIPE_TEX_MIPFILTER_NONE as c_uint,
+            min_lod: state.min_lod.to_bits(),
+            max_lod: state.max_lod.to_bits(),
+        });
     match context.screen().backend().create_sampler(&desc) {
-        Ok(sampler) => object(Sampler::<B> { sampler }),
+        Ok(sampler) => object(Sampler::<B> { sampler, nearest }),
         Err(error) => refuse(&format!("a sampler: {error:?}")),
     }
 }

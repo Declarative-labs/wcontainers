@@ -619,6 +619,140 @@ wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle 
    nir_shader_instructions_pass(nir, swizzle_texture, nir_metadata_control_flow, &s);
 }
 
+/* OpenGL's rounding of a level of detail to the nearest level, and of a coordinate to the nearest
+ * layer: half of one. */
+#define WC_HALF 0.5f
+
+struct nearest_samplers {
+   const struct wc_nearest_sampler *data;
+   size_t count;
+};
+
+/* The texel `i` of a side of `size` texels lands on, wrapped. */
+static nir_def *
+wrap_texel(nir_builder *b, nir_def *i, nir_def *size, uint8_t wrap)
+{
+   switch (wrap) {
+   case WC_WRAP_REPEAT:
+      return nir_imod(b, i, size);
+   case WC_WRAP_MIRRORED_REPEAT: {
+      nir_def *period = nir_iadd(b, size, size);
+      nir_def *m = nir_imod(b, i, period);
+      return nir_bcsel(b, nir_ilt(b, m, size), m, nir_isub(b, nir_iadd_imm(b, period, -1), m));
+   }
+   default:
+      return nir_imin(b, nir_imax(b, i, nir_imm_int(b, 0)), nir_iadd_imm(b, size, -1));
+   }
+}
+
+/* The source of a texture instruction of one kind, or none. */
+static nir_def *
+tex_source(nir_tex_instr *tex, nir_tex_src_type type)
+{
+   int at = nir_tex_instr_src_index(tex, type);
+   return at < 0 ? NULL : tex->src[at].src.ssa;
+}
+
+/* The level OpenGL's nearest mipmap selection takes at level of detail `lod`, of the view's
+ * `levels`: none above one half, else the nearest. */
+static nir_def *
+nearest_level(nir_builder *b, nir_def *lod, nir_def *levels)
+{
+   nir_def *half = nir_imm_float(b, WC_HALF);
+   nir_def *level = nir_f2i32(b, nir_fadd_imm(b, nir_fceil(b, nir_fadd(b, lod, half)), -1.0f));
+   level = nir_bcsel(b, nir_flt(b, half, lod), level, nir_imm_int(b, 0));
+   return nir_imin(b, level, nir_iadd_imm(b, levels, -1));
+}
+
+static bool
+nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_tex)
+      return false;
+   nir_tex_instr *tex = nir_instr_as_tex(instr);
+   nir_alu_type base = nir_alu_type_get_base_type(tex->dest_type);
+   bool sampled = tex->op == nir_texop_tex || tex->op == nir_texop_txb ||
+                  tex->op == nir_texop_txl || tex->op == nir_texop_txd;
+   uint32_t unit;
+   if (!sampled || tex->is_shadow || (base != nir_type_int && base != nir_type_uint) ||
+       tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE || !texture_unit(tex, &unit))
+      return false;
+   const struct nearest_samplers *s = data;
+   const struct wc_nearest_sampler *sampler = NULL;
+   for (size_t i = 0; i < s->count; i++) {
+      if (s->data[i].unit == unit)
+         sampler = &s->data[i];
+   }
+   if (!sampler)
+      return false;
+   int deref_at = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
+   nir_deref_instr *texture = nir_src_as_deref(tex->src[deref_at].src);
+   unsigned axes = glsl_get_sampler_dim_coordinate_components(tex->sampler_dim);
+   b->cursor = nir_before_instr(&tex->instr);
+   nir_def *coord = tex_source(tex, nir_tex_src_coord);
+   nir_def *projector = tex_source(tex, nir_tex_src_projector);
+   nir_def *position = nir_trim_vector(b, coord, axes);
+   if (projector)
+      position = nir_fdiv(b, position, projector);
+   nir_def *level = nir_imm_int(b, 0);
+   if (sampler->mipmapped) {
+      nir_def *base_size = nir_i2f32(
+         b, nir_trim_vector(b, nir_txs(b, .texture_deref = texture, .lod = nir_imm_int(b, 0)),
+                            axes));
+      nir_def *lod = tex_source(tex, nir_tex_src_lod);
+      if (tex->op == nir_texop_txd || (!lod && b->shader->info.stage == MESA_SHADER_FRAGMENT)) {
+         nir_def *dx = tex->op == nir_texop_txd ? tex_source(tex, nir_tex_src_ddx)
+                                                : nir_ddx(b, position);
+         nir_def *dy = tex->op == nir_texop_txd ? tex_source(tex, nir_tex_src_ddy)
+                                                : nir_ddy(b, position);
+         nir_def *sx = nir_fmul(b, dx, base_size), *sy = nir_fmul(b, dy, base_size);
+         nir_def *rho = nir_fsqrt(b, nir_fmax(b, nir_fdot(b, sx, sx), nir_fdot(b, sy, sy)));
+         lod = nir_flog2(b, rho);
+      } else if (!lod) {
+         lod = nir_imm_float(b, 0.0f);
+      }
+      nir_def *bias = tex_source(tex, nir_tex_src_bias);
+      if (bias)
+         lod = nir_fadd(b, lod, bias);
+      lod = nir_fmin(b, nir_fmax(b, lod, nir_imm_float(b, sampler->min_lod)),
+                     nir_imm_float(b, sampler->max_lod));
+      nir_def *levels = nir_build_tex(b, nir_texop_query_levels, .texture_deref = texture);
+      level = nearest_level(b, lod, levels);
+   }
+   nir_def *size = nir_txs(b, .texture_deref = texture, .lod = level);
+   nir_def *texel = nir_f2i32(b, nir_ffloor(b, nir_fmul(b, position,
+                                                       nir_i2f32(b, nir_trim_vector(b, size, axes)))));
+   nir_def *offset = tex_source(tex, nir_tex_src_offset);
+   if (offset)
+      texel = nir_iadd(b, texel, nir_trim_vector(b, offset, axes));
+   nir_scalar parts[WC_COMPONENTS];
+   for (unsigned c = 0; c < axes; c++) {
+      parts[c] = nir_get_scalar(wrap_texel(b, nir_channel(b, texel, c), nir_channel(b, size, c),
+                                           sampler->wrap[c]),
+                                0);
+   }
+   unsigned components = axes;
+   if (tex->is_array) {
+      /* The layer nearest the coordinate's, within the array. */
+      nir_def *layer = nir_f2i32(b, nir_ffloor(b, nir_fadd_imm(b, nir_channel(b, coord, axes), WC_HALF)));
+      layer = nir_imin(b, nir_imax(b, layer, nir_imm_int(b, 0)),
+                       nir_iadd_imm(b, nir_channel(b, size, axes), -1));
+      parts[components++] = nir_get_scalar(layer, 0);
+   }
+   nir_def *loaded = nir_txf(b, nir_vec_scalars(b, parts, components), .texture_deref = texture,
+                             .lod = level);
+   nir_def_replace(&tex->def, nir_trim_vector(b, loaded, tex->def.num_components));
+   return true;
+}
+
+void
+wc_nir_nearest_integer_textures(struct nir_shader *nir, const struct wc_nearest_sampler *samplers,
+                                size_t count)
+{
+   struct nearest_samplers s = {samplers, count};
+   nir_shader_instructions_pass(nir, nearest_integer_texture, nir_metadata_control_flow, &s);
+}
+
 void
 wc_nir_free(struct nir_shader *nir)
 {

@@ -237,6 +237,30 @@ struct wc_texture_swizzle {
 void wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle *swizzles,
                              size_t count);
 
+/* How a texture coordinate outside the texture wraps, for a nearest texel. */
+enum wc_wrap {
+   WC_WRAP_REPEAT,
+   WC_WRAP_CLAMP_TO_EDGE,
+   WC_WRAP_MIRRORED_REPEAT,
+};
+
+/* The sampler at one texture unit whose texture holds integers: its wraps, whether it selects a
+ * level by the level of detail, and that level's bounds. */
+#define WC_TEXTURE_AXES 3
+
+struct wc_nearest_sampler {
+   uint32_t unit;
+   uint8_t wrap[WC_TEXTURE_AXES];
+   bool mipmapped;
+   float min_lod;
+   float max_lod;
+};
+
+/* Every sampling of an integer texture at the units listed made a load of its nearest texel, as
+ * OpenGL samples them (the host only loads and gathers them); cube maps are left as they are. */
+void wc_nir_nearest_integer_textures(struct nir_shader *nir,
+                                     const struct wc_nearest_sampler *samplers, size_t count);
+
 /* One output a vertex program streams: the buffer, its byte offset in each vertex there, where the
  * route places the output (a generic location, or the position), and its components. */
 struct wc_stream_output {

@@ -205,6 +205,11 @@ unsafe extern "C" {
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
+    fn wc_nir_nearest_integer_textures(
+        nir: *mut NirShader,
+        samplers: *const NearestSampler,
+        count: usize,
+    );
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -251,6 +256,29 @@ pub struct TextureSwizzle {
     pub unit: u32,
     /// One entry per component of a texture's result, a vector's most (`WC_COMPONENTS`).
     pub swizzle: [Swizzle; naga::VectorSize::MAX],
+}
+
+/// How a texture coordinate outside the texture wraps, for a nearest texel (`enum wc_wrap`).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Wrap {
+    Repeat,
+    ClampToEdge,
+    MirroredRepeat,
+}
+
+/// The sampler at one texture unit whose texture holds integers (`struct wc_nearest_sampler`):
+/// its wraps, whether it selects a level by the level of detail, and that level's bounds (as f32
+/// bits).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NearestSampler {
+    pub unit: u32,
+    /// One a texture coordinate, the most a texture has (`WC_TEXTURE_AXES`).
+    pub wrap: [Wrap; naga::VectorSize::Tri as usize],
+    pub mipmapped: bool,
+    pub min_lod: u32,
+    pub max_lod: u32,
 }
 
 /// How a vertex program's position (and point size) is changed to meet the host's clip space,
@@ -355,6 +383,13 @@ impl Nir {
     pub fn swizzle_textures(&mut self, swizzles: &[TextureSwizzle]) {
         // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
         unsafe { wc_nir_swizzle_textures(self.0, swizzles.as_ptr(), swizzles.len()) }
+    }
+
+    /// Every sampling of an integer texture at the units of `samplers` made a load of its
+    /// nearest texel, as OpenGL samples them; cube maps are left as they are.
+    pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) {
+        // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
+        unsafe { wc_nir_nearest_integer_textures(self.0, samplers.as_ptr(), samplers.len()) }
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the
