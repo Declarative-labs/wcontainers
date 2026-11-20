@@ -3834,6 +3834,7 @@ name = "wcontainers-opengl"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "cc",
  "naga",
  "pollster",
  "serde",
@@ -3841,6 +3842,7 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wcontainers-nir",
+ "wcontainers-shaders",
  "wgpu",
  "windows-sys 0.61.2",
 ]
