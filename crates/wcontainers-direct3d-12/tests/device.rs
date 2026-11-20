@@ -290,7 +290,7 @@ fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
                 && c.contains("depth_clip: true"))
     );
     // Without a depth target the vertex program's clamp is all; with one, the pixel program
-    // writes the depth, and with no pixel shader to write it the pipeline is refused by name.
+    // writes the depth, and with no pixel shader the pixel program for the variant writes it.
     let depth_only = |device: &mut Device<Recorder>, dsv| {
         triangle::pipeline_with(
             device,
@@ -303,10 +303,14 @@ fn depth_clamping_the_back_end_lacks_is_done_in_the_programs() {
         )
     };
     assert!(depth_only(&mut device, dxgi::UNKNOWN).is_ok());
-    let refused = depth_only(&mut device, D32_FLOAT);
+    let start = device.backend().calls.len();
+    let made = depth_only(&mut device, D32_FLOAT);
+    assert!(made.is_ok(), "{made:?}");
     assert!(
-        matches!(refused, Err(Error::NotImplemented(_))),
-        "{refused:?}"
+        device.backend().calls[start..]
+            .iter()
+            .any(|c| c.starts_with("create") && c.contains("Fragment")),
+        "a pixel program made for the variant"
     );
 }
 
