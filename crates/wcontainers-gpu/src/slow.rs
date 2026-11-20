@@ -295,11 +295,14 @@ pub enum SlowPath {
     /// what the replay captured: the replay captures every output slot, cut ones included, and only
     /// a count across invocations, which a vertex program cannot make, drops them.
     StreamOutAfterReplay,
+    /// A frame shown stretched to a window of another size than its buffers, where the swap chain
+    /// asked for no stretching (a listed loss: the host's window scales whatever it shows).
+    FrameStretched,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 109] = [
+    pub const ALL: [SlowPath; 110] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -409,6 +412,7 @@ impl SlowPath {
         SlowPath::StorageOffsetInShader,
         SlowPath::FloatBitsClearByDraw,
         SlowPath::StreamOutAfterReplay,
+        SlowPath::FrameStretched,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -543,6 +547,9 @@ impl SlowPath {
             SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
             SlowPath::FloatBitsClearByDraw => FLOAT_BITS_CLEAR_BY_DRAW,
             SlowPath::StreamOutAfterReplay => STREAM_OUT_AFTER_REPLAY,
+            SlowPath::FrameStretched => {
+                "frame stretched to its window against the swap chain's scaling"
+            }
         }
     }
 }
@@ -628,7 +635,7 @@ mod tests {
             PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
-            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay";
+            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {
