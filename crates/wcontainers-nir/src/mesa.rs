@@ -201,6 +201,8 @@ unsafe extern "C" {
     fn wc_nir_clone(nir: *const NirShader) -> *mut NirShader;
     fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
+    fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
+    fn wc_nir_split_resource_arrays(nir: *mut NirShader);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
 }
@@ -231,7 +233,8 @@ pub struct TextureSwizzle {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PositionTransform {
-    /// y negated, for a Gallium viewport whose y scale is positive.
+    /// y negated before the route's own negation, for a Gallium viewport whose y scale is
+    /// negative.
     pub flip_y: bool,
     /// Depth from OpenGL's -w..w to the host's 0..w.
     pub half_z: bool,
@@ -307,6 +310,20 @@ impl Nir {
     pub fn fragcolor_to_buffers(&mut self, buffers: u32) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_fragcolor_to_buffers(self.0, buffers) }
+    }
+
+    /// Arrays of textures and samplers read only at constant indices as one variable an
+    /// element, at the element's binding.
+    pub fn split_resource_arrays(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_split_resource_arrays(self.0) }
+    }
+
+    /// Every uniform block access st/mesa hands over (`load_ubo`, the default uniforms as block
+    /// 0) as derefs of one array of words a block, each sized by its block's declared type.
+    pub fn uniform_blocks_as_words(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_uniform_blocks_as_words(self.0) }
     }
 
     /// Every result read from the textures at the units listed rearranged by their swizzle.

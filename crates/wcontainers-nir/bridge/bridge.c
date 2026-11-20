@@ -18,7 +18,10 @@
 /* What the routes take: NIR with the operations the common form lacks lowered by NIR itself (the
  * drivers report the same, so the NIR they hand over has this shape). */
 static const struct nir_shader_compiler_options compiler_options = {
-   .io_options = nir_io_has_intrinsics | nir_io_mediump_is_32bit,
+   /* A convergent value stays interpolated: the host may lack flat values from OpenGL's last
+    * vertex, and interpolating one value gives that value. */
+   .io_options = nir_io_has_intrinsics | nir_io_mediump_is_32bit |
+                 nir_io_always_interpolate_convergent_fs_inputs,
    .lower_scmp = true,
    .lower_fdph = true,
    .lower_flrp32 = true,
@@ -883,4 +886,84 @@ wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t
    nir_shader_intrinsics_pass(nir, access_words, nir_metadata_control_flow, (void *)&blocks);
    free(vars);
    workgroup_words(nir);
+}
+
+/* An element of an array of textures or samplers, by the array and the element's index. */
+struct resource_elements {
+   struct hash_table *elements;
+   nir_shader *nir;
+};
+
+static nir_variable *
+resource_element(struct resource_elements *r, nir_variable *array, unsigned index)
+{
+   struct hash_entry *found = _mesa_hash_table_search(r->elements, array);
+   nir_variable **elements = found ? found->data : NULL;
+   if (!elements) {
+      elements = rzalloc_array(r->elements, nir_variable *, glsl_get_length(array->type));
+      _mesa_hash_table_insert(r->elements, array, elements);
+   }
+   if (!elements[index]) {
+      nir_variable *element = nir_variable_clone(array, r->nir);
+      element->type = glsl_get_array_element(array->type);
+      element->data.binding = array->data.binding + index;
+      nir_shader_add_variable(r->nir, element);
+      elements[index] = element;
+   }
+   return elements[index];
+}
+
+static bool
+constant_element(nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_deref)
+      return false;
+   nir_deref_instr *deref = nir_instr_as_deref(instr);
+   if (deref->deref_type != nir_deref_type_array || !nir_src_is_const(deref->arr.index))
+      return false;
+   nir_deref_instr *parent = nir_deref_instr_parent(deref);
+   if (parent->deref_type != nir_deref_type_var || parent->var->data.mode != nir_var_uniform)
+      return false;
+   nir_variable *array = parent->var;
+   const struct glsl_type *element = glsl_get_array_element(array->type);
+   if (!glsl_type_is_sampler(element) && !glsl_type_is_texture(element))
+      return false;
+   unsigned index = nir_src_as_uint(deref->arr.index);
+   if (index >= glsl_get_length(array->type))
+      return false;
+   b->cursor = nir_before_instr(instr);
+   nir_def_replace(&deref->def, &nir_build_deref_var(b, resource_element(data, array, index))->def);
+   return true;
+}
+
+void
+wc_nir_split_resource_arrays(nir_shader *nir)
+{
+   struct resource_elements r = {_mesa_pointer_hash_table_create(NULL), nir};
+   if (nir_shader_instructions_pass(nir, constant_element, nir_metadata_control_flow, &r)) {
+      NIR_PASS(_, nir, nir_opt_dce);
+      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
+   }
+   _mesa_hash_table_destroy(r.elements, NULL);
+}
+
+void
+wc_nir_uniform_blocks_as_words(nir_shader *nir)
+{
+   uint32_t bytes[PIPE_MAX_CONSTANT_BUFFERS] = {0};
+   uint32_t blocks = 0;
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
+      /* An array of blocks, or one block (the default uniforms' an array of vectors). */
+      const bool arrayed =
+         glsl_type_is_array(var->type) && glsl_without_array(var->type) == var->interface_type;
+      uint32_t count = arrayed ? glsl_get_aoa_size(var->type) : 1;
+      uint32_t size = glsl_get_explicit_size(arrayed ? var->interface_type : var->type, false);
+      for (uint32_t i = 0; i < count && var->data.binding + i < ARRAY_SIZE(bytes); i++) {
+         bytes[var->data.binding + i] = MAX2(bytes[var->data.binding + i], size);
+         blocks = MAX2(blocks, var->data.binding + i + 1);
+      }
+   }
+   wc_nir_buffers_as_words(nir, bytes, blocks);
+   /* The default uniforms' own variables, which st/mesa keeps after their loads became block 0's. */
+   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
 }
