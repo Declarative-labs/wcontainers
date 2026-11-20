@@ -3,59 +3,26 @@
 //! calls of empty functions. The geometry pass the DXBC route uses then fills those functions and
 //! builds the compute or replay form around the program's own function.
 
-use super::{registers, words};
-use crate::ConvertError;
+use super::staged::{self, Entry, Ids, Interface, Privatise};
 use crate::container::Element;
-use crate::ir::{Basic, Ty, builtin, primitive, sysval};
+use crate::ir::{builtin, primitive};
 use crate::lower::geometry::{CUT, EMIT, Geometry, GeometryPass, GeometryValue, Side};
-use crate::lower::{self, Placed};
+use crate::{ConvertError, stage};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use naga::{Handle, Module, Statement, TypeInner};
-use spirv::{BuiltIn, Decoration, ExecutionMode, ExecutionModel, Op, StorageClass};
+use naga::{Module, Statement};
+use spirv::{BuiltIn, ExecutionMode, ExecutionModel, Op, StorageClass};
 use wcontainers_gpu::{StageExtras, StageValue, VariantKey};
 
-/// The name given to stage value `k`'s variable, followed by `k`.
+/// The prefix of the names given to the stage values' variables.
 const VALUE_NAME: &str = "gs_value";
-
-/// `OpEntryPoint`'s words (3.32.5): the execution model, the function, then its name.
-const ENTRY_MODEL: usize = 1;
-const ENTRY_FUNCTION: usize = 2;
-const ENTRY_NAME: usize = 3;
-/// `OpExecutionMode`'s words: the entry point, the mode, then its literals.
-const MODE_ENTRY: usize = 1;
-const MODE: usize = 2;
-const MODE_LITERAL: usize = 3;
-/// `OpConstant`'s value, after its result type and result.
-const CONSTANT_VALUE: usize = 3;
 /// `OpEmitStreamVertex`'s and `OpEndStreamPrimitive`'s stream.
 const STREAM_OPERAND: usize = 1;
-/// `OpFunction`'s function type, after its result type, result and control.
-const FUNCTION_TYPE: usize = 4;
-/// `OpFunction`'s words.
-const FUNCTION_WORDS: usize = FUNCTION_TYPE + 1;
-/// `OpFunctionCall`'s words without arguments: the result type, the result and the function.
-const CALL_WORDS: usize = 4;
-/// `OpTypePointer`'s storage class.
-const POINTER_STORAGE_CLASS: usize = 2;
-/// The compute program's one invocation a group.
-const LOCAL_SIZE: [u32; 3] = [1, 1, 1];
 
 /// Why a DXIL geometry shader is malformed.
-const NO_MAIN: &str = "a geometry shader without its function";
-const NO_VALUE: &str = "a geometry shader's stage value the reader dropped";
 const STREAM_NOT_CONSTANT: &str = "a geometry stream that is no constant";
-
-/// A stage variable of the SPIR-V.
-struct Interface {
-    id: u32,
-    side: Side,
-    /// The location as `registers::encode` gave it.
-    location: Option<u32>,
-    builtin: Option<u32>,
-    stream: u32,
-}
+const LOCATION_BEFORE_STREAM: &str = "an output located before its stream's first row";
 
 /// What a geometry shader declares, read from its SPIR-V before the reader takes it.
 pub(crate) struct Declared {
@@ -64,41 +31,7 @@ pub(crate) struct Declared {
     max_vertices: u32,
     instances: u32,
     stream_mask: u64,
-    values: Vec<Interface>,
-}
-
-/// One instruction's words, from `at`.
-fn instruction(spirv: &[u32], at: usize) -> Option<&[u32]> {
-    let count = (*spirv.get(at)? >> words::COUNT_SHIFT) as usize;
-    (count != 0 && at + count <= spirv.len()).then(|| &spirv[at..at + count])
-}
-
-fn opcode(i: &[u32]) -> u32 {
-    i[0] & words::OPCODE_MASK
-}
-
-fn header(op: Op, count: usize) -> u32 {
-    ((count as u32) << words::COUNT_SHIFT) | op as u32
-}
-
-/// The words a literal string takes, its terminating zero included.
-fn string_words(w: &[u32]) -> usize {
-    w.iter()
-        .position(|word| word.to_le_bytes().contains(&0))
-        .map_or(w.len(), |p| p + 1)
-}
-
-/// A literal string's words.
-fn string(s: &str) -> Vec<u32> {
-    let mut bytes = Vec::from(s.as_bytes());
-    bytes.push(0);
-    bytes.resize(bytes.len().next_multiple_of(size_of::<u32>()), 0);
-    bytes
-        .as_chunks::<{ size_of::<u32>() }>()
-        .0
-        .iter()
-        .map(|&c| u32::from_le_bytes(c))
-        .collect()
+    entry: Entry,
 }
 
 /// The input primitive an execution mode names, as `ir::primitive` numbers it.
@@ -125,250 +58,86 @@ fn output_primitive(mode: ExecutionMode) -> Option<u64> {
 /// Makes a Geometry entry point's SPIR-V a compute program naga's reader takes, and returns what it
 /// declared; `None` for any other execution model.
 pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertError> {
-    let mut main = None;
+    let Some(entry) = staged::entry(spirv, ExecutionModel::Geometry) else {
+        return Ok(None);
+    };
     let mut declared = Declared {
         input: 0,
         output: 0,
-        max_vertices: 0,
-        instances: 1,
+        max_vertices: entry
+            .mode_literal(ExecutionMode::OutputVertices)
+            .unwrap_or(0),
+        instances: entry.mode_literal(ExecutionMode::Invocations).unwrap_or(1),
         stream_mask: 0,
-        values: Vec::new(),
+        entry,
     };
-    let mut constants = Vec::new();
-    let mut classes = Vec::new();
-    let mut decorations = Vec::new();
-    let mut interface = Vec::new();
-    let mut at = words::HEADER;
-    while let Some(i) = instruction(spirv, at) {
-        match Op::from_u32(opcode(i)) {
-            Some(Op::EntryPoint) => {
-                if i[ENTRY_MODEL] != ExecutionModel::Geometry as u32 {
-                    return Ok(None);
-                }
-                main = Some(i[ENTRY_FUNCTION]);
-                let names = string_words(&i[ENTRY_NAME..]);
-                interface.extend_from_slice(&i[ENTRY_NAME + names..]);
-            }
-            Some(Op::ExecutionMode) => {
-                let mode = ExecutionMode::from_u32(i[MODE]);
-                let literal = i.get(MODE_LITERAL).copied().unwrap_or(0);
-                match mode {
-                    Some(ExecutionMode::Invocations) => declared.instances = literal,
-                    Some(ExecutionMode::OutputVertices) => declared.max_vertices = literal,
-                    Some(m) => {
-                        if let Some(p) = input_primitive(m) {
-                            declared.input = p;
-                        }
-                        if let Some(p) = output_primitive(m) {
-                            declared.output = p;
-                        }
-                    }
-                    None => {}
-                }
-            }
-            Some(Op::Decorate) if i.len() > words::decorate::LITERAL => decorations.push((
-                i[words::decorate::TARGET],
-                i[words::decorate::DECORATION],
-                i[words::decorate::LITERAL],
-            )),
-            Some(Op::Constant) if i.len() > CONSTANT_VALUE => {
-                constants.push((i[words::RESULT_AFTER_TYPE], i[CONSTANT_VALUE]))
-            }
-            Some(Op::Variable) if i.len() > words::VARIABLE_STORAGE_CLASS => classes.push((
-                i[words::RESULT_AFTER_TYPE],
-                i[words::VARIABLE_STORAGE_CLASS],
-            )),
-            _ => {}
-        }
-        at += i.len();
-    }
-    let Some(main) = main else {
-        return Ok(None);
-    };
-    for &id in &interface {
-        let side = match classes.iter().find(|c| c.0 == id).map(|c| c.1) {
-            Some(c) if c == StorageClass::Input as u32 => Side::Input,
-            Some(c) if c == StorageClass::Output as u32 => Side::Output,
-            _ => continue,
+    for &(mode, _) in &declared.entry.modes {
+        let Some(mode) = ExecutionMode::from_u32(mode) else {
+            continue;
         };
-        let decoration = |d: Decoration| {
-            decorations
-                .iter()
-                .find(|x| x.0 == id && x.1 == d as u32)
-                .map(|x| x.2)
-        };
-        let stream = decoration(Decoration::Stream).unwrap_or(0);
-        if side == Side::Output {
-            declared.stream_mask |= 1 << stream;
+        if let Some(p) = input_primitive(mode) {
+            declared.input = p;
         }
-        declared.values.push(Interface {
-            id,
-            side,
-            location: decoration(Decoration::Location),
-            builtin: decoration(Decoration::BuiltIn),
-            stream,
-        });
+        if let Some(p) = output_primitive(mode) {
+            declared.output = p;
+        }
     }
-    let constant = |id: u32| constants.iter().find(|c| c.0 == id).map(|c| c.1);
+    for v in &declared.entry.values {
+        if v.side == Side::Output {
+            declared.stream_mask |= 1 << v.stream;
+        }
+    }
     // Streams emitted into, which the declarations may leave undecorated.
-    let mut at = words::HEADER;
-    while let Some(i) = instruction(spirv, at) {
+    let stream = |i: &[u32]| {
+        declared
+            .entry
+            .constant(i[STREAM_OPERAND])
+            .ok_or_else(|| ConvertError::Malformed(STREAM_NOT_CONSTANT.into()))
+    };
+    let mut at = super::words::HEADER;
+    while let Some(i) = staged::instruction(spirv, at) {
         if matches!(
-            Op::from_u32(opcode(i)),
+            Op::from_u32(staged::opcode(i)),
             Some(Op::EmitStreamVertex | Op::EndStreamPrimitive)
         ) {
-            let stream = constant(i[STREAM_OPERAND])
-                .ok_or_else(|| ConvertError::Malformed(STREAM_NOT_CONSTANT.into()))?;
-            declared.stream_mask |= 1 << stream;
+            declared.stream_mask |= 1 << stream(i)?;
         }
         at += i.len();
     }
     declared.stream_mask = declared.stream_mask.max(1);
     let streams = u64::BITS - declared.stream_mask.leading_zeros();
-    rewrite(spirv, main, &declared, streams, &constant)?;
-    Ok(Some(declared))
-}
-
-/// The SPIR-V made a compute program: see [`prepare`].
-fn rewrite(
-    spirv: &mut Vec<u32>,
-    main: u32,
-    declared: &Declared,
-    streams: u32,
-    constant: &dyn Fn(u32) -> Option<u32>,
-) -> Result<(), ConvertError> {
-    let staged = |id: u32| declared.values.iter().any(|v| v.id == id);
-    let mut bound = spirv[words::BOUND];
-    let mut fresh = || {
-        bound += 1;
-        bound - 1
+    let mut ids = Ids::of(spirv);
+    let emits: Vec<u32> = (0..streams).map(|_| ids.next()).collect();
+    let cut = ids.next();
+    let stand_ins: Vec<(u32, String)> = emits
+        .iter()
+        .enumerate()
+        .map(|(s, &e)| (e, emit_name(s)))
+        .chain([(cut, CUT.into())])
+        .collect();
+    let calls = |i: &[u32]| -> Result<Option<u32>, ConvertError> {
+        Ok(match Op::from_u32(staged::opcode(i)) {
+            Some(Op::EmitVertex) => Some(emits[0]),
+            Some(Op::EmitStreamVertex) => Some(emits[stream(i)? as usize]),
+            Some(Op::EndPrimitive | Op::EndStreamPrimitive) => Some(cut),
+            _ => None,
+        })
     };
-    let emits: Vec<u32> = (0..streams).map(|_| fresh()).collect();
-    let cut = fresh();
-    // main's own result type (void) and function type serve the stand-ins.
-    let mut signature = None;
-    let mut at = words::HEADER;
-    while let Some(i) = instruction(spirv, at) {
-        if Op::from_u32(opcode(i)) == Some(Op::Function) && i[words::RESULT_AFTER_TYPE] == main {
-            signature = Some((i[words::RESULT_TYPE], i[FUNCTION_TYPE]));
-        }
-        at += i.len();
-    }
-    let (void, function_type) = signature.ok_or(ConvertError::Malformed(NO_MAIN.into()))?;
-    let labels: Vec<u32> = (0..=streams).map(|_| fresh()).collect();
-
-    let mut out = Vec::from(&spirv[..words::HEADER]);
-    let mut named = false;
-    let mut functions_placed = false;
-    let mut at = words::HEADER;
-    while let Some(i) = instruction(spirv, at) {
-        at += i.len();
-        let op = Op::from_u32(opcode(i));
-        let preamble = matches!(
-            op,
-            Some(
-                Op::Capability
-                    | Op::Extension
-                    | Op::ExtInstImport
-                    | Op::MemoryModel
-                    | Op::EntryPoint
-                    | Op::ExecutionMode
-                    | Op::String
-                    | Op::SourceExtension
-                    | Op::Source
-                    | Op::SourceContinued
-                    | Op::Name
-                    | Op::MemberName
-                    | Op::ModuleProcessed
-            )
-        );
-        if !preamble && !named {
-            named = true;
-            let name = |out: &mut Vec<u32>, id: u32, s: &str| {
-                let s = string(s);
-                out.push(header(Op::Name, 2 + s.len()));
-                out.push(id);
-                out.extend(s);
-            };
-            for (k, v) in declared.values.iter().enumerate() {
-                name(&mut out, v.id, &format!("{VALUE_NAME}{k}"));
-            }
-            for (s, &e) in emits.iter().enumerate() {
-                name(&mut out, e, &emit_name(s));
-            }
-            name(&mut out, cut, CUT);
-        }
-        match op {
-            Some(Op::EntryPoint) => {
-                let names = string_words(&i[ENTRY_NAME..]);
-                let kept: Vec<u32> = i[ENTRY_NAME + names..]
-                    .iter()
-                    .copied()
-                    .filter(|&id| !staged(id))
-                    .collect();
-                out.push(header(Op::EntryPoint, ENTRY_NAME + names + kept.len()));
-                out.push(ExecutionModel::GLCompute as u32);
-                out.extend_from_slice(&i[ENTRY_FUNCTION..ENTRY_NAME + names]);
-                out.extend(kept);
-                out.push(header(Op::ExecutionMode, MODE_LITERAL + LOCAL_SIZE.len()));
-                out.extend([i[ENTRY_FUNCTION], ExecutionMode::LocalSize as u32]);
-                out.extend(LOCAL_SIZE);
-            }
-            Some(Op::ExecutionMode) if i[MODE_ENTRY] == main => {}
-            Some(Op::Name) if staged(i[words::RESULT]) => {}
-            Some(Op::Decorate) if staged(i[words::decorate::TARGET]) => {}
-            Some(Op::TypePointer) | Some(Op::Variable) => {
-                let class = match op {
-                    Some(Op::TypePointer) => POINTER_STORAGE_CLASS,
-                    _ => words::VARIABLE_STORAGE_CLASS,
-                };
-                let mut i = Vec::from(i);
-                if i[class] == StorageClass::Input as u32 || i[class] == StorageClass::Output as u32
-                {
-                    i[class] = StorageClass::Private as u32;
-                }
-                out.extend(i);
-            }
-            Some(
-                o @ (Op::EmitVertex
-                | Op::EmitStreamVertex
-                | Op::EndPrimitive
-                | Op::EndStreamPrimitive),
-            ) => {
-                let stream = match o {
-                    Op::EmitStreamVertex | Op::EndStreamPrimitive => constant(i[STREAM_OPERAND])
-                        .ok_or(ConvertError::Malformed(NO_MAIN.into()))?,
-                    _ => 0,
-                };
-                let target = match o {
-                    Op::EmitVertex | Op::EmitStreamVertex => emits[stream as usize],
-                    _ => cut,
-                };
-                let result = fresh();
-                out.extend([header(Op::FunctionCall, CALL_WORDS), void, result, target]);
-            }
-            Some(Op::Function) if !functions_placed => {
-                functions_placed = true;
-                for (&f, &label) in emits.iter().chain([&cut]).zip(&labels) {
-                    let control = spirv::FunctionControl::NONE.bits();
-                    out.extend([
-                        header(Op::Function, FUNCTION_WORDS),
-                        void,
-                        f,
-                        control,
-                        function_type,
-                    ]);
-                    out.extend([header(Op::Label, 2), label]);
-                    out.extend([header(Op::Return, 1), header(Op::FunctionEnd, 1)]);
-                }
-                out.extend_from_slice(i);
-            }
-            _ => out.extend_from_slice(i),
-        }
-    }
-    out[words::BOUND] = bound;
-    *spirv = out;
-    Ok(())
+    let values: Vec<&Interface> = declared.entry.values.iter().collect();
+    staged::privatise(
+        spirv,
+        &mut ids,
+        &Privatise {
+            entry: &declared.entry,
+            values: &values,
+            prefix: VALUE_NAME,
+            model: ExecutionModel::GLCompute,
+            classes: &[StorageClass::Input, StorageClass::Output],
+            stand_ins: &stand_ins,
+            calls: &calls,
+        },
+    )?;
+    Ok(Some(declared))
 }
 
 fn emit_name(stream: usize) -> String {
@@ -378,35 +147,21 @@ fn emit_name(stream: usize) -> String {
     }
 }
 
-/// The IR type of a stage variable's naga type: arrays of a scalar or vector.
-fn ir_ty(module: &Module, mut ty: Handle<naga::Type>) -> Result<Ty, ConvertError> {
-    let mut dims = Vec::new();
-    while let TypeInner::Array {
-        base,
-        size: naga::ArraySize::Constant(n),
-        ..
-    } = module.types[ty].inner
-    {
-        dims.push(n.get());
-        ty = base;
-    }
-    dims.reverse();
-    let (scalar, size) = match module.types[ty].inner {
-        TypeInner::Scalar(s) => (s, 1),
-        TypeInner::Vector { size, scalar } => (scalar, size as u8),
-        _ => {
-            return Err(ConvertError::Unsupported(
-                crate::refusal::GEOMETRY_INPUT_SHAPE,
-            ));
+/// The location dxil-spirv gives each stream's first register: the rows of every stream before it
+/// (`build_geometry_stream_row_offsets`), so that an output's register is its location less its
+/// stream's.
+fn stream_first_rows(outputs: &[Element]) -> [u32; stage::STREAMS] {
+    let mut rows = [0; stage::STREAMS];
+    for e in outputs {
+        if let (Some(r), Some(end)) = (rows.get_mut(e.stream as usize), e.register.checked_add(1)) {
+            *r = (*r).max(end);
         }
-    };
-    Ok(Ty {
-        dims,
-        members: alloc::vec![Basic {
-            scalar: lower::scalar_code(scalar),
-            size,
-        }],
-    })
+    }
+    let mut first = [0; stage::STREAMS];
+    for s in 1..stage::STREAMS {
+        first[s] = first[s - 1] + rows[s - 1];
+    }
+    first
 }
 
 /// A SPIR-V built-in as `ir::builtin` numbers it, or the refusal naming it on `side`.
@@ -445,33 +200,38 @@ pub(crate) fn finish(
                 _ => None,
             })
         })
-        .ok_or(ConvertError::Malformed(NO_MAIN.into()))?;
+        .ok_or(ConvertError::Malformed(staged::NO_MAIN.into()))?;
     module.entry_points.clear();
-    let function = |module: &Module, name: &str| {
-        module
-            .functions
-            .iter()
-            .find(|(_, f)| f.name.as_deref() == Some(name))
-            .map(|(h, _)| h)
-            .ok_or(ConvertError::Malformed(NO_MAIN.into()))
-    };
+    let first_rows = stream_first_rows(signatures[1]);
     let mut values = Vec::new();
-    for (k, v) in declared.values.iter().enumerate() {
-        let name = format!("{VALUE_NAME}{k}");
-        let var = module
-            .global_variables
-            .iter()
-            .find(|(_, g)| g.name.as_deref() == Some(name.as_str()))
-            .map(|(h, _)| h)
-            .ok_or(ConvertError::Malformed(NO_VALUE.into()))?;
+    for (k, v) in declared.entry.values.iter().enumerate() {
+        let var = staged::value_variable(module, VALUE_NAME, k)?;
         let builtin = v.builtin.map(|b| builtin_of(b, v.side)).transpose()?;
+        let location = v
+            .location
+            .map(|encoded| {
+                let (register, component) = staged::location(encoded);
+                let first = match v.side {
+                    Side::Input => 0,
+                    Side::Output => first_rows.get(v.stream as usize).copied().unwrap_or(0),
+                };
+                register
+                    .checked_sub(first)
+                    .map(|register| (register, component))
+                    .ok_or_else(|| ConvertError::Malformed(LOCATION_BEFORE_STREAM.into()))
+            })
+            .transpose()?;
         values.push(GeometryValue {
             var,
             side: v.side,
-            location: v.location.map(registers::decode),
+            location,
             builtin,
             stream: v.stream,
-            ty: ir_ty(module, module.global_variables[var].ty)?,
+            ty: staged::ir_ty(
+                module,
+                module.global_variables[var].ty,
+                crate::refusal::GEOMETRY_INPUT_SHAPE,
+            )?,
         });
     }
     let mut geometry = Geometry::declared(
@@ -482,9 +242,9 @@ pub(crate) fn finish(
         declared.stream_mask,
     )?;
     geometry.emit = (0..geometry.streams() as usize)
-        .map(|s| function(module, &emit_name(s)))
+        .map(|s| staged::function(module, &emit_name(s)))
         .collect::<Result<_, _>>()?;
-    geometry.cut = Some(function(module, CUT)?);
+    geometry.cut = Some(staged::function(module, CUT)?);
     let mut pass = GeometryPass {
         module,
         variant,
@@ -494,33 +254,6 @@ pub(crate) fn finish(
     };
     pass.functions()?;
     let extras = pass.entry_point(main)?;
-    let mut placed: [Vec<StageValue>; 2] = Default::default();
-    for r in pass.reflected {
-        let side = match r.side {
-            Side::Input => 0,
-            Side::Output => 1,
-        };
-        let element = r.location.and_then(|register| {
-            signatures[side].iter().find(|e| {
-                e.register == register
-                    && e.system == sysval::NONE
-                    && e.mask.trailing_zeros() == r.component
-            })
-        });
-        let (semantic, index) =
-            element.map_or_else(Default::default, |e| (e.semantic.clone(), e.index));
-        let place = Placed {
-            location: r.location,
-            component: r.component,
-            member: r.member,
-            modes: r.modes,
-            system: r.system,
-            stream: values[r.value].stream as u8,
-        };
-        placed[side].push(lower::stage_value(semantic, index, &place, false));
-    }
-    for (values, signature) in placed.iter_mut().zip(signatures) {
-        crate::container::place_system_values(values, signature);
-    }
+    let placed = staged::place(pass.reflected, |v| values[v].stream, signatures);
     Ok((extras, placed))
 }

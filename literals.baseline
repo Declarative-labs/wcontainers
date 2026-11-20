@@ -13063,10 +13063,6 @@ code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"texture_storag
 code	crates/wcontainers-shaders/src/cache.rs	str	<LoadError as core::fmt::Display>::fmt	"not a cache file"
 code	crates/wcontainers-shaders/src/cache.rs	str	Cache::insert_raw	"a cache payload under 4 GiB"
 code	crates/wcontainers-shaders/src/container.rs	bytestr	program_type	b"DXIL"
-code	crates/wcontainers-shaders/src/container.rs	bytestr	program_type	b"SHDR"
-code	crates/wcontainers-shaders/src/container.rs	bytestr	program_type	b"SHEX"
-code	crates/wcontainers-shaders/src/container.rs	bytestr	shader_model	b"SHDR"
-code	crates/wcontainers-shaders/src/container.rs	bytestr	shader_model	b"SHEX"
 code	crates/wcontainers-shaders/src/container.rs	int	ChunkHeader	4
 code	crates/wcontainers-shaders/src/container.rs	int	Header	16
 code	crates/wcontainers-shaders/src/container.rs	int	Header	4
@@ -13247,7 +13243,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_io	"in"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_io	"out"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_op	"temporary left after SSA"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"Outputs"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"vertex"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::ir_ty_of	"a declaration without a type"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"entry point without function"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"no entry point"
@@ -13274,46 +13269,6 @@ code	crates/wcontainers-shaders/src/lower/geometry.rs	int	swizzle	3
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	swizzle	4
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	Lowering<'_>::geometry_declaration	"a geometry declaration outside a geometry shader"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	str	input_vertices	"geometry input primitive"
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	16
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::domain_inputs	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	16
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	64
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::hull_entry_point	8
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::slot_words	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::slot_words	4
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::slot_words	4u32
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::tessellation_declaration	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	int	Lowering<'_>::tessellation_declaration	3
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::domain_inputs	"an input without a type"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::domain_inputs	"domain_inputs"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::domain_inputs	"stage_patches"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::domain_inputs	"stage_points"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::domain_inputs	"vertex"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::hull_entry_point	"a hull shader without its patch constant function"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::hull_entry_point	"a hull shader's control point counts"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::hull_entry_point	"an input without a type"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::hull_entry_point	"id"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::hull_entry_point	"stage_patches"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::hull_entry_point	"stage_vertices"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::slot_words	"an output without a type"
-code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"a tessellation declaration outside hull and domain"
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellation domain"
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellator output"
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellator partitioning"

@@ -34,7 +34,7 @@ use crate::variant::texel::{TexelBuffer, TexelPlace};
 
 mod evaluate;
 pub(crate) mod geometry;
-mod hull;
+pub(crate) mod hull;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -1344,7 +1344,7 @@ impl<'a> Lowering<'a> {
         if let Some(function) = domain_inputs {
             let u32_ty = self.scalar_ty(Scalar::U32);
             f.arguments.push(FunctionArgument {
-                name: Some("vertex".into()),
+                name: Some(hull::DOMAIN_VERTEX_ARGUMENT.into()),
                 ty: u32_ty,
                 binding: Some(naga::Binding::BuiltIn(naga::BuiltIn::VertexIndex)),
             });

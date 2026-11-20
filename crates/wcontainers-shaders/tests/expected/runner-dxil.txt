@@ -564,19 +564,19 @@ hlsl+hard-copy-prop-4-ps.dxil	ok ; glsl compiles
 hlsl+hard-copy-prop-5-ps.dxil	ok ; glsl compiles
 hlsl+hard-copy-prop-6-ps.dxil	ok ; glsl compiles
 hlsl+hard-copy-prop-8-ps.dxil	ok ; glsl compiles
-hlsl+hull-shader-attributes-1-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-11-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-2-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-3-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-4-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-5-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-6-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-7-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-8-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-attributes-9-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-syntax-1-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-syntax-3-hs.dxil	unsupported DxilHullShader
-hlsl+hull-shader-syntax-5-hs.dxil	unsupported DxilHullShader
+hlsl+hull-shader-attributes-1-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-11-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-2-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-3-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-4-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-5-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-6-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-7-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-8-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-attributes-9-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-syntax-1-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-syntax-3-hs.dxil	ok ; glsl absent compute
+hlsl+hull-shader-syntax-5-hs.dxil	ok ; glsl absent compute
 hlsl+initializer-flatten-1-ps.dxil	ok ; glsl compiles
 hlsl+initializer-flatten-2-ps.dxil	ok ; glsl compiles
 hlsl+initializer-flatten-3-ps.dxil	ok ; glsl compiles
@@ -862,20 +862,20 @@ hlsl+object-references-6-ps.dxil	ok ; glsl compiles
 hlsl+object-references-7-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
 hlsl+object-references-8-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-1-ps.dxil	ok ; glsl compiles
-hlsl+patch-syntax-10-hs.dxil	unsupported DxilHullShader
-hlsl+patch-syntax-11-ds.dxil	unsupported DxilDomainShader
+hlsl+patch-syntax-10-hs.dxil	ok ; glsl absent compute
+hlsl+patch-syntax-11-ds.dxil	unsupported DomainWithoutControlPoints
 hlsl+patch-syntax-12-gs.dxil	unsupported GeometryPatchInput
-hlsl+patch-syntax-13-hs.dxil	unsupported DxilHullShader
-hlsl+patch-syntax-14-ds.dxil	unsupported DxilDomainShader
-hlsl+patch-syntax-15-hs.dxil	unsupported DxilHullShader
-hlsl+patch-syntax-16-ds.dxil	unsupported DxilDomainShader
+hlsl+patch-syntax-13-hs.dxil	ok ; glsl absent compute
+hlsl+patch-syntax-14-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+hlsl+patch-syntax-15-hs.dxil	ok ; glsl absent compute
+hlsl+patch-syntax-16-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+patch-syntax-17-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-2-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-4-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-5-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-7-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-8-ps.dxil	ok ; glsl compiles
-hlsl+patch-syntax-9-hs.dxil	unsupported DxilHullShader
+hlsl+patch-syntax-9-hs.dxil	ok ; glsl absent compute
 hlsl+pixel-position-1-vs.dxil	ok ; glsl compiles
 hlsl+pointer-cast-1-ps.dxil	ok ; glsl compiles
 hlsl+pow-1-ps.dxil	ok ; glsl compiles
@@ -996,7 +996,7 @@ hlsl+round-2-ps.dxil	ok ; glsl compiles
 hlsl+round-3-ps.dxil	ok ; glsl compiles
 hlsl+round-4-ps.dxil	ok ; glsl compiles
 hlsl+rt-array-index-1-vs.dxil	unsupported RenderTargetArrayIndex
-hlsl+rt-array-index-2-ps.dxil	spirv-reader unsupported builtin %9
+hlsl+rt-array-index-2-ps.dxil	ok ; glsl compiles
 hlsl+rt-format-mismatch-1-ps.dxil	ok ; glsl compiles
 hlsl+rt-format-mismatch-10-ps.dxil	ok ; glsl compiles
 hlsl+rt-format-mismatch-11-ps.dxil	ok ; glsl compiles
@@ -1306,16 +1306,16 @@ hlsl+swizzles-7-ps.dxil	ok ; glsl compiles
 hlsl+swizzles-8-ps.dxil	ok ; glsl compiles
 hlsl+swizzles-9-ps.dxil	ok ; glsl compiles
 hlsl+tessellation-1-vs.dxil	ok ; glsl compiles
-hlsl+tessellation-10-hs.dxil	unsupported DxilHullShader
-hlsl+tessellation-2-hs.dxil	unsupported DxilHullShader
-hlsl+tessellation-3-ds.dxil	unsupported DxilDomainShader
+hlsl+tessellation-10-hs.dxil	ok ; glsl absent compute
+hlsl+tessellation-2-hs.dxil	ok ; glsl absent compute
+hlsl+tessellation-3-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+tessellation-4-ps.dxil	ok ; glsl compiles
-hlsl+tessellation-5-hs.dxil	unsupported DxilHullShader
-hlsl+tessellation-8-hs.dxil	unsupported DxilHullShader
-hlsl+tessellation-9-ds.dxil	unsupported DxilDomainShader
+hlsl+tessellation-5-hs.dxil	ok ; glsl absent compute
+hlsl+tessellation-8-hs.dxil	ok ; glsl absent compute
+hlsl+tessellation-9-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+tessellation-patch-vars-1-vs.dxil	ok ; glsl compiles
-hlsl+tessellation-patch-vars-2-hs.dxil	unsupported DxilHullShader
-hlsl+tessellation-patch-vars-3-ds.dxil	unsupported DxilDomainShader
+hlsl+tessellation-patch-vars-2-hs.dxil	ok ; glsl absent compute
+hlsl+tessellation-patch-vars-3-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+tessellation-patch-vars-4-ps.dxil	ok ; glsl compiles
 hlsl+texture-load-1-ps.dxil	ok ; glsl compiles
 hlsl+texture-load-2-ps.dxil	ok ; glsl compiles
@@ -1447,7 +1447,7 @@ hlsl+vertex-shader-ops-2-vs.dxil	ok ; glsl compiles
 hlsl+vertex-shader-ops-3-vs.dxil	ok ; glsl compiles
 hlsl+vertex-shader-ops-4-vs.dxil	ok ; glsl compiles
 hlsl+vp-array-index-1-vs.dxil	unsupported ViewportArrayIndex
-hlsl+vp-array-index-2-ps.dxil	spirv-reader unsupported builtin %10
+hlsl+vp-array-index-2-ps.dxil	ok ; glsl compiles
 hlsl+wave-ops-float-1-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-10-cs.dxil	ok views:R32Float ; glsl absent compute
 hlsl+wave-ops-float-11-cs.dxil	ok views:R32Float ; glsl absent compute

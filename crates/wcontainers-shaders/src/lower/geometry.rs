@@ -210,7 +210,7 @@ const REPLAY_VARIABLES: [&str; 7] = [
 /// The replay form's arguments.
 const VERTEX_ARGUMENT: &str = "replay_vertex";
 const INSTANCE_ARGUMENT: &str = "replay_instance";
-const INPUT_WITHOUT_TYPE: &str = "an input without a type";
+pub(super) const INPUT_WITHOUT_TYPE: &str = "an input without a type";
 
 /// A geometry shader's counts its entry points step by.
 #[derive(Clone, Copy)]

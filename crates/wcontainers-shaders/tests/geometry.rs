@@ -533,8 +533,19 @@ fn the_cull_program_validates() {
     assert!(wgsl(&program).contains("fn main"));
 }
 
+/// Each own hull and domain shader, as fxc and as dxc build it, declares its domain, partitioning,
+/// output and control points, and the two builds reflect the same inputs.
 #[test]
 fn hull_and_domain_shaders_declare_what_they_are() {
+    let converted = |name: &str, ext: &str| {
+        let file = format!("{name}.{ext}");
+        let bytes = own(&file);
+        let source = match ext {
+            "dxbc" => Source::Dxbc(&bytes),
+            _ => Source::Dxil(&bytes),
+        };
+        convert(source, &VariantKey::default(), None).unwrap_or_else(|e| panic!("{file}: {e:?}"))
+    };
     for (domain, name) in [(0u8, "tri"), (1, "quad"), (2, "line")] {
         let outputs: &[(u8, &str)] = match domain {
             2 => &[(0, "point"), (1, "line")],
@@ -542,43 +553,161 @@ fn hull_and_domain_shaders_declare_what_they_are() {
         };
         for (partitioning, mode) in ["integer", "pow2", "odd", "even"].iter().enumerate() {
             for &(output, out) in outputs {
-                let file = format!("hs_{name}_{mode}_{out}.dxbc");
-                let c = convert(Source::Dxbc(&own(&file)), &VariantKey::default(), None)
-                    .unwrap_or_else(|e| panic!("{file}: {e:?}"));
-                assert_eq!(c.modules.len(), 1);
-                assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Compute);
+                let hs = format!("hs_{name}_{mode}_{out}");
                 // Powers of two partition as integers, as Direct3D's tessellator has them.
                 let partitioning = if partitioning == 1 {
                     0
                 } else {
                     partitioning as u8
                 };
-                assert_eq!(
-                    c.reflection.extras,
-                    StageExtras::Hull {
-                        input_control_points: 1,
-                        output_control_points: 1,
-                        domain,
-                        partitioning,
-                        output_primitive: output,
-                        max_tess_factor: 64,
-                        point_locations: 1,
-                        constant_locations: 0,
-                    },
-                    "{file}"
-                );
-                wgsl(&c.modules[0]);
+                let mut inputs = Vec::new();
+                for ext in ["dxbc", "dxil"] {
+                    let c = converted(&hs, ext);
+                    assert_eq!(c.modules.len(), 1);
+                    assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Compute);
+                    assert_eq!(
+                        c.reflection.extras,
+                        StageExtras::Hull {
+                            input_control_points: 1,
+                            output_control_points: 1,
+                            domain,
+                            partitioning,
+                            output_primitive: output,
+                            max_tess_factor: 64,
+                            point_locations: 1,
+                            constant_locations: 0,
+                        },
+                        "{hs}.{ext}"
+                    );
+                    wgsl(&c.modules[0]);
+                    // A system value is linked by its kind; dxbc-spirv also names it.
+                    let mut values = c.reflection.inputs;
+                    for v in values.iter_mut().filter(|v| v.system.is_some()) {
+                        v.semantic.clear();
+                    }
+                    inputs.push(values);
+                }
+                assert_eq!(inputs[0], inputs[1], "{hs}: the builds' inputs");
             }
         }
-        let file = format!("ds_{name}.dxbc");
-        let c = convert(Source::Dxbc(&own(&file)), &VariantKey::default(), None)
-            .unwrap_or_else(|e| panic!("{file}: {e:?}"));
-        assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Vertex);
-        assert!(
-            matches!(c.reflection.extras, StageExtras::Domain { domain: d, .. } if d == domain),
-            "{file}"
+        let ds = format!("ds_{name}");
+        for ext in ["dxbc", "dxil"] {
+            let c = converted(&ds, ext);
+            assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Vertex);
+            assert_eq!(
+                c.reflection.extras,
+                StageExtras::Domain {
+                    domain,
+                    input_control_points: 1,
+                },
+                "{ds}.{ext}"
+            );
+            assert!(c.reflection.inputs.is_empty(), "{ds}.{ext}");
+            wgsl(&c.modules[0]);
+        }
+    }
+}
+
+/// An own shader as fxc (`dxbc`) or dxc (`dxil`) builds it, converted under the default key.
+fn converted_own(name: &str, ext: &str) -> Converted {
+    let file = format!("{name}.{ext}");
+    let bytes = own(&file);
+    let source = match ext {
+        "dxbc" => Source::Dxbc(&bytes),
+        _ => Source::Dxil(&bytes),
+    };
+    convert(source, &VariantKey::default(), None).unwrap_or_else(|e| panic!("{file}: {e:?}"))
+}
+
+/// Hull shaders taking three control points and giving four, each holding the position, a vector and
+/// an array of rows (which dxc writes as one array of rows), and the domain shader reading them: the
+/// two builds make the same records (the same extras and inputs), so either build's hull stage hands
+/// its values to either build's domain stage (drawn in tests/tessellation_draw.rs).
+#[test]
+fn hull_values_make_the_same_records_on_both_routes() {
+    for hs in [
+        "hs_values_odd_ccw",
+        "hs_values_even_cw",
+        "hs_values_integer_point",
+    ] {
+        let [dxbc, dxil] = ["dxbc", "dxil"].map(|ext| converted_own(hs, ext));
+        let StageExtras::Hull {
+            input_control_points,
+            output_control_points,
+            ..
+        } = dxbc.reflection.extras
+        else {
+            panic!("{hs}: {:?}", dxbc.reflection.extras);
+        };
+        assert_eq!(
+            (input_control_points, output_control_points),
+            (3, 4),
+            "{hs}"
+        );
+        assert_eq!(dxbc.reflection.extras, dxil.reflection.extras, "{hs}");
+        // In any order; a system value is linked by its kind.
+        let named = |c: Converted| {
+            let mut values = c.reflection.inputs;
+            for v in values.iter_mut().filter(|v| v.system.is_some()) {
+                v.semantic.clear();
+            }
+            values.sort_by_key(|v| format!("{v:?}"));
+            values
+        };
+        assert_eq!(named(dxbc), named(dxil), "{hs}: the builds' inputs");
+    }
+    for ext in ["dxbc", "dxil"] {
+        let c = converted_own("ds_values", ext);
+        assert_eq!(
+            c.reflection.extras,
+            StageExtras::Domain {
+                domain: 0,
+                input_control_points: 4,
+            },
+            "ds_values.{ext}"
         );
         wgsl(&c.modules[0]);
+    }
+}
+
+/// dxc's build of each own geometry shader reflects the outputs fxc's does: each at its stream,
+/// register and semantic, the streams past the first included (`gs_streams`).
+#[test]
+fn dxil_geometry_outputs_match_dxbc_on_every_stream() {
+    for gs in [
+        "gs_quads",
+        "gs_cut",
+        "gs_instances",
+        "gs_lines",
+        "gs_points",
+        "gs_unplaced",
+        "gs_adjacent",
+        "gs_line_adjacent",
+        "gs_clip",
+        "gs_streams",
+    ] {
+        let keyed = |c: Converted| {
+            let mut keys: Vec<_> = c
+                .reflection
+                .outputs
+                .iter()
+                .map(|v| {
+                    (
+                        v.stream,
+                        v.semantic.clone(),
+                        v.semantic_index,
+                        v.system,
+                        v.register,
+                        v.location,
+                        v.scalar,
+                    )
+                })
+                .collect();
+            keys.sort_by_key(|k| format!("{k:?}"));
+            keys
+        };
+        let [dxbc, dxil] = ["dxbc", "dxil"].map(|ext| keyed(converted_own(gs, ext)));
+        assert_eq!(dxbc, dxil, "{gs}");
     }
 }
 

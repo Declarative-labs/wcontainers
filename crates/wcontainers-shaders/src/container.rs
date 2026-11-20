@@ -69,24 +69,28 @@ pub(crate) const OSG5: [u8; 4] = *b"OSG5";
 pub(crate) const ISG1: [u8; 4] = *b"ISG1";
 pub(crate) const OSG1: [u8; 4] = *b"OSG1";
 
-/// Each signature chunk's tag, its elements' size and where their common fields start.
-const SIGNATURE_FORMS: [([u8; 4], usize, usize); 5] = [
-    (ISGN, size_of::<SignatureElement>(), 0),
-    (OSGN, size_of::<SignatureElement>(), 0),
+/// Each signature chunk's tag, its elements' size, where their common fields start, and where their
+/// geometry stream is, in the forms that have one.
+const SIGNATURE_FORMS: [([u8; 4], usize, usize, Option<usize>); 5] = [
+    (ISGN, size_of::<SignatureElement>(), 0, None),
+    (OSGN, size_of::<SignatureElement>(), 0, None),
     (
         OSG5,
         size_of::<StreamElement>(),
         offset_of!(StreamElement, element),
+        Some(offset_of!(StreamElement, stream)),
     ),
     (
         ISG1,
         size_of::<PrecisionElement>(),
         offset_of!(PrecisionElement, element),
+        Some(offset_of!(PrecisionElement, stream)),
     ),
     (
         OSG1,
         size_of::<PrecisionElement>(),
         offset_of!(PrecisionElement, element),
+        Some(offset_of!(PrecisionElement, stream)),
     ),
 ];
 
@@ -128,8 +132,8 @@ fn chunks<'a>(container: &'a [u8], tag: &'a [u8; 4]) -> impl Iterator<Item = &'a
 
 /// The program's shader model, from its `SHEX` or `SHDR` chunk's version token.
 pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
-    let code = chunks(container, b"SHEX")
-        .chain(chunks(container, b"SHDR"))
+    let code = chunks(container, &SHEX)
+        .chain(chunks(container, &SHDR))
         .next()?;
     let version = word(code, offset_of!(CodeHeader, version))?;
     Some((
@@ -142,10 +146,66 @@ pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
 /// `SHDR`): the token's high half.
 pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
     let code = chunks(container, b"DXIL")
-        .chain(chunks(container, b"SHEX"))
-        .chain(chunks(container, b"SHDR"))
+        .chain(chunks(container, &SHEX))
+        .chain(chunks(container, &SHDR))
         .next()?;
     Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
+}
+
+/// The fields of a DXBC instruction's first word (d3d11TokenizedProgramFormat.hpp): the opcode in its
+/// low bits, the instruction's length in words, and a control point count.
+pub mod token {
+    pub const OPCODE_BITS: u32 = 11;
+    pub const LENGTH_SHIFT: u32 = 24;
+    pub const LENGTH_BITS: u32 = 7;
+    pub const CONTROL_POINTS_SHIFT: u32 = 11;
+    pub const CONTROL_POINTS_BITS: u32 = 6;
+
+    fn field(word: u32, shift: u32, bits: u32) -> u32 {
+        word >> shift & ((1 << bits) - 1)
+    }
+
+    pub fn opcode(word: u32) -> u32 {
+        field(word, 0, OPCODE_BITS)
+    }
+
+    /// The instruction's length in words (but for custom data, whose length is the next word).
+    pub fn length(word: u32) -> u32 {
+        field(word, LENGTH_SHIFT, LENGTH_BITS)
+    }
+
+    pub fn control_points(word: u32) -> u32 {
+        field(word, CONTROL_POINTS_SHIFT, CONTROL_POINTS_BITS)
+    }
+}
+
+/// The tags of a DXBC program's code chunk (shader model 5 and 4).
+const SHEX: [u8; 4] = *b"SHEX";
+const SHDR: [u8; 4] = *b"SHDR";
+
+/// A DXBC program's declared input control points per patch (hull and domain shaders), from its code
+/// chunk.
+pub(crate) fn dxbc_input_control_points(container: &[u8]) -> Option<u32> {
+    use crate::ir::dxbc_op;
+    let code = chunks(container, &SHEX)
+        .chain(chunks(container, &SHDR))
+        .next()?;
+    let mut at = size_of::<CodeHeader>();
+    while let Some(word0) = word(code, at) {
+        let opcode = token::opcode(word0);
+        if opcode == dxbc_op::DCL_INPUT_CONTROL_POINT_COUNT {
+            return Some(token::control_points(word0));
+        }
+        let length = match opcode {
+            dxbc_op::CUSTOM_DATA => word(code, at + size_of::<u32>())?,
+            _ => token::length(word0),
+        };
+        if length == 0 {
+            return None;
+        }
+        at += length as usize * size_of::<u32>();
+    }
+    None
 }
 
 /// The start of a DXIL container's `PSV0` chunk (DirectXShaderCompiler's
@@ -160,6 +220,15 @@ struct PipelineStateGeometry {
     output_stream_mask: u32,
 }
 
+/// The start of a hull or domain shader's `PSV0` chunk: `HSInfo` and `DSInfo` both start with the
+/// input control point count.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct PipelineStateTessellation {
+    runtime_info_size: u32,
+    input_control_points: u32,
+}
+
 /// The tag of a DXIL container's pipeline state chunk.
 const PIPELINE_STATE_TAG: [u8; 4] = *b"PSV0";
 /// `D3D_PRIMITIVE_1_CONTROL_POINT_PATCH`, the first of the patch primitives.
@@ -171,6 +240,15 @@ pub(crate) fn geometry_input_primitive(container: &[u8]) -> Option<u32> {
     word(psv, offset_of!(PipelineStateGeometry, input_primitive))
 }
 
+/// A DXIL hull or domain shader's input control points per patch, from its `PSV0` chunk.
+pub(crate) fn patch_input_points(container: &[u8]) -> Option<u32> {
+    let psv = chunks(container, &PIPELINE_STATE_TAG).next()?;
+    word(
+        psv,
+        offset_of!(PipelineStateTessellation, input_control_points),
+    )
+}
+
 /// An element of an input or output signature.
 pub(crate) struct Element {
     pub(crate) semantic: alloc::string::String,
@@ -179,19 +257,22 @@ pub(crate) struct Element {
     pub(crate) system: u32,
     pub(crate) register: u32,
     pub(crate) mask: u8,
+    /// The geometry stream it belongs to (0 in the forms without one).
+    pub(crate) stream: u32,
 }
 
 /// The elements of the container's signature chunk `tag` (one of [`SIGNATURE_FORMS`]).
 pub(crate) fn signature(container: &[u8], tag: &[u8; 4]) -> alloc::vec::Vec<Element> {
     let mut out = alloc::vec::Vec::new();
-    let Some(&(_, size, common)) = SIGNATURE_FORMS.iter().find(|f| f.0 == *tag) else {
+    let Some(&(_, size, common, stream)) = SIGNATURE_FORMS.iter().find(|f| f.0 == *tag) else {
         return out;
     };
     for chunk in chunks(container, tag) {
         let count = word(chunk, offset_of!(SignatureHeader, count)).unwrap_or(0);
         let first = word(chunk, offset_of!(SignatureHeader, first)).unwrap_or(0) as usize;
         for e in 0..count as usize {
-            let at = first + size * e + common;
+            let start = first + size * e;
+            let at = start + common;
             let field = |offset| word(chunk, at + offset);
             let (Some(name), Some(index), Some(system), Some(register), Some(&mask)) = (
                 field(offset_of!(SignatureElement, name)),
@@ -213,6 +294,9 @@ pub(crate) fn signature(container: &[u8], tag: &[u8; 4]) -> alloc::vec::Vec<Elem
                 system,
                 register,
                 mask,
+                stream: stream
+                    .and_then(|offset| word(chunk, start + offset))
+                    .unwrap_or(0),
             });
         }
     }
