@@ -187,9 +187,13 @@ fn filled(rng: &mut ChaCha8Rng, size: u32, layout: &[(u32, Kind)]) -> Vec<u8> {
     bytes
 }
 
-/// A storage image format: Vulkan's, the bytes of a texel, and how its components are filled.
+/// A storage image format: Vulkan's, the bytes of a texel, and how its components are filled and
+/// compared (32-bit floats as floats; every narrower format by its bits, which both sides round
+/// alike from the same values).
 fn storage_format(format: naga::StorageFormat) -> Option<(vk::Format, u32, Option<Kind>)> {
     use naga::StorageFormat as S;
+    let one = size_of::<u8>() as u32;
+    let two = size_of::<u16>() as u32;
     let four = size_of::<u32>() as u32;
     let (format, bytes, float32) = match format {
         S::R32Float => (vk::Format::R32_SFLOAT, four, true),
@@ -215,9 +219,34 @@ fn storage_format(format: naga::StorageFormat) -> Option<(vk::Format, u32, Optio
         S::Rgba8Snorm => (vk::Format::R8G8B8A8_SNORM, four, false),
         S::Rgba8Uint => (vk::Format::R8G8B8A8_UINT, four, false),
         S::Rgba8Sint => (vk::Format::R8G8B8A8_SINT, four, false),
-        S::R8Unorm => (vk::Format::R8_UNORM, size_of::<u8>() as u32, false),
-        S::Rg8Unorm => (vk::Format::R8G8_UNORM, size_of::<u16>() as u32, false),
+        S::R8Unorm => (vk::Format::R8_UNORM, one, false),
+        S::Rg8Unorm => (vk::Format::R8G8_UNORM, two, false),
         S::Rgb10a2Unorm => (vk::Format::A2B10G10R10_UNORM_PACK32, four, false),
+        S::Rgb10a2Uint => (vk::Format::A2B10G10R10_UINT_PACK32, four, false),
+        S::Rg11b10Ufloat => (vk::Format::B10G11R11_UFLOAT_PACK32, four, false),
+        S::R8Snorm => (vk::Format::R8_SNORM, one, false),
+        S::R8Uint => (vk::Format::R8_UINT, one, false),
+        S::R8Sint => (vk::Format::R8_SINT, one, false),
+        S::Rg8Snorm => (vk::Format::R8G8_SNORM, two, false),
+        S::Rg8Uint => (vk::Format::R8G8_UINT, two, false),
+        S::Rg8Sint => (vk::Format::R8G8_SINT, two, false),
+        S::R16Float => (vk::Format::R16_SFLOAT, two, false),
+        S::R16Uint => (vk::Format::R16_UINT, two, false),
+        S::R16Sint => (vk::Format::R16_SINT, two, false),
+        S::R16Unorm => (vk::Format::R16_UNORM, two, false),
+        S::R16Snorm => (vk::Format::R16_SNORM, two, false),
+        S::Rg16Float => (vk::Format::R16G16_SFLOAT, four, false),
+        S::Rg16Uint => (vk::Format::R16G16_UINT, four, false),
+        S::Rg16Sint => (vk::Format::R16G16_SINT, four, false),
+        S::Rg16Unorm => (vk::Format::R16G16_UNORM, four, false),
+        S::Rg16Snorm => (vk::Format::R16G16_SNORM, four, false),
+        S::Rg32Uint => (vk::Format::R32G32_UINT, four * 2, false),
+        S::Rg32Sint => (vk::Format::R32G32_SINT, four * 2, false),
+        S::Rgba16Float => (vk::Format::R16G16B16A16_SFLOAT, four * 2, false),
+        S::Rgba16Uint => (vk::Format::R16G16B16A16_UINT, four * 2, false),
+        S::Rgba16Sint => (vk::Format::R16G16B16A16_SINT, four * 2, false),
+        S::Rgba16Unorm => (vk::Format::R16G16B16A16_UNORM, four * 2, false),
+        S::Rgba16Snorm => (vk::Format::R16G16B16A16_SNORM, four * 2, false),
         _ => return None,
     };
     Some((format, bytes, float32.then_some(Kind::Float)))

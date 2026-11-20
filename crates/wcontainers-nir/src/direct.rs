@@ -138,18 +138,45 @@ enum FlatInterpolation {
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Format {
     None,
-    R32Float,
+    R8Unorm,
+    R8Snorm,
+    R8Uint,
+    R8Sint,
+    R16Uint,
+    R16Sint,
+    R16Float,
+    R16Unorm,
+    R16Snorm,
+    Rg8Unorm,
+    Rg8Snorm,
+    Rg8Uint,
+    Rg8Sint,
     R32Uint,
     R32Sint,
-    Rg32Float,
-    Rgba32Float,
-    Rgba32Uint,
-    Rgba32Sint,
-    Rgba16Float,
+    R32Float,
+    Rg16Uint,
+    Rg16Sint,
+    Rg16Float,
+    Rg16Unorm,
+    Rg16Snorm,
     Rgba8Unorm,
     Rgba8Snorm,
-    R8Unorm,
-    Rg8Unorm,
+    Rgba8Uint,
+    Rgba8Sint,
+    Rgb10a2Uint,
+    Rgb10a2Unorm,
+    Rg11b10Ufloat,
+    Rg32Uint,
+    Rg32Sint,
+    Rg32Float,
+    Rgba16Uint,
+    Rgba16Sint,
+    Rgba16Float,
+    Rgba16Unorm,
+    Rgba16Snorm,
+    Rgba32Uint,
+    Rgba32Sint,
+    Rgba32Float,
     Other,
 }
 
@@ -245,6 +272,7 @@ enum Alu {
     Idiv,
     Udiv,
     Irem,
+    Imod,
     Umod,
     Ishl,
     Ishr,
@@ -665,18 +693,45 @@ fn coordinate_size(dim: ImageDimension) -> u32 {
 
 fn storage_format(f: Format) -> Result<StorageFormat, ConvertError> {
     Ok(match f {
-        Format::R32Float => StorageFormat::R32Float,
+        Format::R8Unorm => StorageFormat::R8Unorm,
+        Format::R8Snorm => StorageFormat::R8Snorm,
+        Format::R8Uint => StorageFormat::R8Uint,
+        Format::R8Sint => StorageFormat::R8Sint,
+        Format::R16Uint => StorageFormat::R16Uint,
+        Format::R16Sint => StorageFormat::R16Sint,
+        Format::R16Float => StorageFormat::R16Float,
+        Format::R16Unorm => StorageFormat::R16Unorm,
+        Format::R16Snorm => StorageFormat::R16Snorm,
+        Format::Rg8Unorm => StorageFormat::Rg8Unorm,
+        Format::Rg8Snorm => StorageFormat::Rg8Snorm,
+        Format::Rg8Uint => StorageFormat::Rg8Uint,
+        Format::Rg8Sint => StorageFormat::Rg8Sint,
         Format::R32Uint => StorageFormat::R32Uint,
         Format::R32Sint => StorageFormat::R32Sint,
-        Format::Rg32Float => StorageFormat::Rg32Float,
-        Format::Rgba32Float => StorageFormat::Rgba32Float,
-        Format::Rgba32Uint => StorageFormat::Rgba32Uint,
-        Format::Rgba32Sint => StorageFormat::Rgba32Sint,
-        Format::Rgba16Float => StorageFormat::Rgba16Float,
+        Format::R32Float => StorageFormat::R32Float,
+        Format::Rg16Uint => StorageFormat::Rg16Uint,
+        Format::Rg16Sint => StorageFormat::Rg16Sint,
+        Format::Rg16Float => StorageFormat::Rg16Float,
+        Format::Rg16Unorm => StorageFormat::Rg16Unorm,
+        Format::Rg16Snorm => StorageFormat::Rg16Snorm,
         Format::Rgba8Unorm => StorageFormat::Rgba8Unorm,
         Format::Rgba8Snorm => StorageFormat::Rgba8Snorm,
-        Format::R8Unorm => StorageFormat::R8Unorm,
-        Format::Rg8Unorm => StorageFormat::Rg8Unorm,
+        Format::Rgba8Uint => StorageFormat::Rgba8Uint,
+        Format::Rgba8Sint => StorageFormat::Rgba8Sint,
+        Format::Rgb10a2Uint => StorageFormat::Rgb10a2Uint,
+        Format::Rgb10a2Unorm => StorageFormat::Rgb10a2Unorm,
+        Format::Rg11b10Ufloat => StorageFormat::Rg11b10Ufloat,
+        Format::Rg32Uint => StorageFormat::Rg32Uint,
+        Format::Rg32Sint => StorageFormat::Rg32Sint,
+        Format::Rg32Float => StorageFormat::Rg32Float,
+        Format::Rgba16Uint => StorageFormat::Rgba16Uint,
+        Format::Rgba16Sint => StorageFormat::Rgba16Sint,
+        Format::Rgba16Float => StorageFormat::Rgba16Float,
+        Format::Rgba16Unorm => StorageFormat::Rgba16Unorm,
+        Format::Rgba16Snorm => StorageFormat::Rgba16Snorm,
+        Format::Rgba32Uint => StorageFormat::Rgba32Uint,
+        Format::Rgba32Sint => StorageFormat::Rgba32Sint,
+        Format::Rgba32Float => StorageFormat::Rgba32Float,
         Format::None => {
             return Err(unsupported(format_args!(
                 "a storage image without a format"
@@ -1741,6 +1796,57 @@ impl Builder<'_> {
                     right: product,
                 });
                 (e, ScalarKind::Float)
+            }
+            Alu::Imod => {
+                // NIR's imod takes the sign of the divisor: the remainder, plus the divisor where
+                // the two signs differ and the remainder is not zero.
+                let a = self.src(i, 0, n, ScalarKind::Sint)?;
+                let b = self.src(i, 1, n, ScalarKind::Sint)?;
+                let remainder = self.add(Expression::Binary {
+                    op: BinaryOperator::Modulo,
+                    left: a,
+                    right: b,
+                });
+                let zero = self.add(Expression::Literal(Literal::I32(0)));
+                let zero = if n == 1 {
+                    zero
+                } else {
+                    self.add(Expression::Splat {
+                        size: vector_size(n)?,
+                        value: zero,
+                    })
+                };
+                let signs = self.add(Expression::Binary {
+                    op: BinaryOperator::ExclusiveOr,
+                    left: remainder,
+                    right: b,
+                });
+                let signs_differ = self.add(Expression::Binary {
+                    op: BinaryOperator::Less,
+                    left: signs,
+                    right: zero,
+                });
+                let nonzero = self.add(Expression::Binary {
+                    op: BinaryOperator::NotEqual,
+                    left: remainder,
+                    right: zero,
+                });
+                let condition = self.add(Expression::Binary {
+                    op: BinaryOperator::And,
+                    left: signs_differ,
+                    right: nonzero,
+                });
+                let adjusted = self.add(Expression::Binary {
+                    op: BinaryOperator::Add,
+                    left: remainder,
+                    right: b,
+                });
+                let e = self.add(Expression::Select {
+                    condition,
+                    accept: adjusted,
+                    reject: remainder,
+                });
+                (e, ScalarKind::Sint)
             }
             Alu::UbitfieldExtract | Alu::IbitfieldExtract | Alu::BitfieldInsert => {
                 let kind = if op == Alu::IbitfieldExtract {

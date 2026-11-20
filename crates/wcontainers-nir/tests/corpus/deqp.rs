@@ -8,6 +8,7 @@ use crate::glsl::{
     ES_ONLY_VERSION, ES_PROFILE as ES, EXTENSION_DIRECTIVE, FRAG_COLOR as LEGACY_FRAG_COLOR,
     VERSION_DIRECTIVE,
 };
+use crate::table::COMMENT;
 use std::path::{Path, PathBuf};
 use wcontainers_nir::mesa::Stage;
 
@@ -253,7 +254,6 @@ enum Token<'a> {
 const SOURCE_QUOTES: &str = "\"\"";
 const QUOTES: [char; 2] = ['"', '\''];
 const ESCAPE: char = '\\';
-pub const COMMENT: char = '#';
 const SYMBOLS: &str = "=+-,|;()[]{}>";
 const FRACTION_MARK: char = '.';
 const EXPONENTS: [char; 2] = ['e', 'E'];

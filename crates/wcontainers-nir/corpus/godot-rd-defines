@@ -1,0 +1,48 @@
+# The general defines Godot's RenderingDevice shaders are initialized with
+# (`ShaderRD::initialize(variants, general_defines)`), at the commit `sources` pins for godot and
+# Godot's default desktop project settings, as `corpus/godot-forward-plus` writes them: one line a
+# shader file, as `godot-defines`, the path under `servers/rendering/renderer_rd/shaders`. A file not
+# listed has none. Where each value comes from (under `servers/rendering/renderer_rd`):
+# - scene_forward_clustered: `RenderForwardClustered`'s constructor (`render_forward_clustered.cpp`
+#   5244-5300): `sky_reflections/roughness_layers` 8 less one, `texture_array_reflections` true,
+#   `GI::SDFGI::LIGHTPROBE_OCT_SIZE` 6, `RendererSceneRender::MAX_DIRECTIONAL_LIGHTS` 8,
+#   `MAX_LIGHTMAPS` 8, `MATERIAL_UNIFORM_SET` 3; `force_vertex_shading` and `multi_bounce_occlusion`
+#   false, `specular_occlusion` true and texture streaming (a module the build leaves out by default)
+#   add nothing.
+# - scene_forward_mobile: `RenderForwardMobile`'s (`render_forward_mobile.cpp` 3622-3672), the same
+#   values without the SDFGI line, which it leaves commented out.
+# - canvas: `MAX_LIGHTS_PER_RENDER` 256, `SAMPLERS_BINDING_FIRST_INDEX` 10
+#   (`renderer_canvas_render_rd.h`); tex_blit: `BLIT_TEXTURE_SAMPLERS_BINDING_FIRST_INDEX` 5
+#   (`storage_rd/texture_storage.h`); particles: 3 (`storage_rd/particles_storage.h`).
+# - sky: `sky_scene_state.max_directional_lights` 4 (`environment/sky.cpp` 728), samplers from 4
+#   (`environment/sky.h`).
+# - volumetric_fog: samplers from 3 (`environment/fog.h`); volumetric_fog_process:
+#   `Fog::init_fog_shader` with the light storage's 8 directional lights, 8 roughness layers and
+#   texture array reflections.
+# - voxel_gi and the SDFGI shaders (`environment/gi.cpp` 3588-3790): `voxel_gi_max_lights` 32,
+#   `SDFGI::CASCADE_SIZE` 128 over `PROBE_DIVISOR` 16, `LIGHTPROBE_OCT_SIZE` 6, `SH_SIZE` 16, and
+#   the sky's texture array reflections for sdfgi_integrate.
+# - FSR2: `FSR2Context`'s `general_defines` (`effects/fsr2.cpp` 524-531).
+forward_clustered/scene_forward_clustered.glsl \n#define MAX_ROUGHNESS_LOD 7.0\n\n#define USE_RADIANCE_OCTMAP_ARRAY \n\n#define SDFGI_OCT_SIZE 6\n\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS 8\n\n#define MAX_LIGHTMAP_TEXTURES 8\n\n#define MAX_LIGHTMAPS 8\n\n#define MATERIAL_UNIFORM_SET 3\n
+forward_mobile/scene_forward_mobile.glsl \n#define MAX_ROUGHNESS_LOD 7.0\n\n#define USE_RADIANCE_OCTMAP_ARRAY \n\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS 8\n\n#define MAX_LIGHTMAP_TEXTURES 8\n\n#define MAX_LIGHTMAPS 8\n\n#define MATERIAL_UNIFORM_SET 3\n
+canvas.glsl #define MAX_LIGHTS 256\n\n#define SAMPLERS_BINDING_FIRST_INDEX 10\n
+tex_blit.glsl \n#define SAMPLERS_BINDING_FIRST_INDEX 5\n
+particles.glsl #define SAMPLERS_BINDING_FIRST_INDEX 3\n
+environment/sky.glsl \n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS 4\n\n#define SAMPLERS_BINDING_FIRST_INDEX 4\n
+environment/volumetric_fog.glsl #define SAMPLERS_BINDING_FIRST_INDEX 3\n
+environment/volumetric_fog_process.glsl \n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS 8\n\n#define MAX_SKY_LOD 7.0\n\n#define USE_RADIANCE_OCTMAP_ARRAY \n
+environment/voxel_gi.glsl \n#define MAX_LIGHTS 32\n
+environment/sdfgi_preprocess.glsl \n#define OCCLUSION_SIZE 8\n
+environment/sdfgi_direct_light.glsl \n#define OCT_SIZE 6\n
+environment/sdfgi_integrate.glsl \n#define OCT_SIZE 6\n\n#define SH_SIZE 16\n\n#define USE_RADIANCE_OCTMAP_ARRAY\n
+environment/gi.glsl \n#define SDFGI_OCT_SIZE 6\n
+environment/sdfgi_debug.glsl \n#define OCT_SIZE 6\n
+environment/sdfgi_debug_probes.glsl \n#define OCT_SIZE 6\n
+effects/fsr2/fsr2_depth_clip_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n
+effects/fsr2/fsr2_reconstruct_previous_depth_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n
+effects/fsr2/fsr2_lock_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n
+effects/fsr2/fsr2_accumulate_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n
+effects/fsr2/fsr2_rcas_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n
+effects/fsr2/fsr2_compute_luminance_pyramid_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n
+effects/fsr2/fsr2_autogen_reactive_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n
+effects/fsr2/fsr2_tcr_autogen_pass.glsl \n#define FFX_GPU\n\n#define FFX_GLSL 1\n\n#define FFX_FSR2_OPTION_LOW_RESOLUTION_MOTION_VECTORS 1\n\n#define FFX_FSR2_OPTION_HDR_COLOR_INPUT 1\n\n#define FFX_FSR2_OPTION_INVERTED_DEPTH 1\n\n#define FFX_FSR2_OPTION_GODOT_REACTIVE_MASK_CLAMP 1\n\n#define FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS 1\n

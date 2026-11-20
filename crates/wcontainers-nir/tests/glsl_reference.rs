@@ -31,6 +31,12 @@ mod godot;
     dead_code,
     reason = "the corpus harness; this test runs one program through it"
 )]
+#[path = "corpus/godot_rd.rs"]
+mod godot_rd;
+#[allow(
+    dead_code,
+    reason = "the corpus harness; this test runs one program through it"
+)]
 #[path = "corpus/interface.rs"]
 mod interface;
 #[allow(
@@ -45,6 +51,12 @@ mod lavapipe;
 )]
 #[path = "corpus/llvmpipe.rs"]
 mod llvmpipe;
+#[allow(
+    dead_code,
+    reason = "the corpus harness; this test runs one program through it"
+)]
+#[path = "corpus/table.rs"]
+mod table;
 
 use compare::{CompareOptions, DEFAULT_SEED, Verdict};
 use wcontainers_nir::mesa::{Nir, Stage};
@@ -337,15 +349,45 @@ fn a_godot_shader_file_gives_each_variant_its_program() {
         let given: Vec<_> = program.iter().map(|(s, t)| (*s, t.as_str())).collect();
         Nir::from_glsl(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
     }
-    let table = "# a comment\nscene.glsl #define A 1\\n\neffects/copy.glsl #define B\n";
+    let defines = "# a comment\nscene.glsl #define A 1\\n\neffects/copy.glsl #define B\n";
     assert_eq!(
-        godot::general_defines(table, std::path::Path::new("effects/copy.glsl")),
+        table::general_defines(defines, std::path::Path::new("effects/copy.glsl")),
         "#define B"
     );
     assert_eq!(
-        godot::general_defines(table, std::path::Path::new("sky.glsl")),
+        table::general_defines(defines, std::path::Path::new("sky.glsl")),
         ""
     );
+}
+
+#[test]
+fn a_godot_rd_variant_is_made_as_shader_rd_makes_it() {
+    let tree = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("godot-rd");
+    let folder = tree.join("shaders");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("blur_inc.glsl"),
+        "float weight() { return 1.0; } // a comment\n",
+    )
+    .unwrap();
+    let file = folder.join("blur.glsl");
+    std::fs::write(
+        &file,
+        "#[vertex]\n#version 450\n#VERSION_DEFINES\n#include \"blur_inc.glsl\"\n\
+         #GLOBALS\nvoid main() {}\n#[fragment]\n#version 450\n#VERSION_DEFINES\n\
+         #include \"blur_inc.glsl\"\n#CODE : FRAGMENT\nvoid main() {}\n",
+    )
+    .unwrap();
+    let stages = godot_rd::variant_sources(&tree, &file, "#define G\n", "\n#define V\n").unwrap();
+    let defines = "\n#define G\n\n#define V\n\n#define RENDER_DRIVER_VULKAN\n\
+                   #define samplerExternalOES sampler2D\n#define textureExternalOES texture2D\n";
+    let body = "float weight() { return 1.0; } \nvoid main() {}\n";
+    let expected = format!("#version 450\n{defines}{body}");
+    let extensions: Vec<_> = stages.iter().map(|(e, _)| *e).collect();
+    assert_eq!(extensions, ["vert", "frag"]);
+    for (_, source) in &stages {
+        assert_eq!(source, &expected);
+    }
 }
 
 #[test]

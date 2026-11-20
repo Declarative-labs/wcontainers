@@ -1,0 +1,404 @@
+# Each variant of Godot's RenderingDevice shaders as its C++ user initializes it
+# (`ShaderRD::initialize`), at the commit `sources` pins for godot: one line a variant, as
+#   path  index  defines
+# where path is under `servers/rendering/renderer_rd/shaders`, index is the variant's place in the
+# list Godot passes (its variant number), and the defines are Godot's text with `\n` between lines
+# (`corpus/godot-forward-plus` writes each). Every variant of the list is taken, those Godot enables
+# only for some devices or settings (multiview, 16-bit floats, the ubershader, raster or compute
+# effects) included. Lists of string literals are copied from each `initialize` call's code; those
+# its C++ builds in loops are written out as the loops make them: canvas
+# (`renderer_canvas_render_rd.cpp` 1752), scene_forward_clustered
+# (`forward_clustered/scene_shader_forward_clustered.cpp` 648-692), scene_forward_mobile
+# (`forward_mobile/scene_shader_forward_mobile.cpp` 590-608), volumetric_fog and its process
+# (`environment/fog.cpp` 221, 310), gi (`environment/gi.cpp` 3721), the octmap downsampler, filter
+# and roughness (`effects/copy_effects.cpp` 168-290), particles_copy
+# (`storage_rd/particles_storage.cpp` 166, `MAX_USERDATAS` 6) and FSR2 (`effects/fsr2.cpp`
+# 534-748). Not taken: `environment/voxel_gi_sdf.glsl` and `giprobe_write.glsl`, which no
+# `initialize` call at this commit builds.
+cluster_render.glsl 0
+cluster_render.glsl 1 \n#define USE_ATTACHMENT\n
+cluster_store.glsl 0
+cluster_debug.glsl 0
+canvas.glsl 0
+canvas.glsl 1 #define USE_NINEPATCH\n
+canvas.glsl 2 #define USE_PRIMITIVE\n
+canvas.glsl 3 #define USE_PRIMITIVE\n#define USE_POINT_SIZE\n
+canvas.glsl 4 #define USE_ATTRIBUTES\n
+canvas.glsl 5 #define USE_ATTRIBUTES\n#define USE_POINT_SIZE\n
+canvas_occlusion.glsl 0 \n#define MODE_SHADOW\n
+canvas_occlusion.glsl 1 \n#define MODE_SHADOW\n#define POSITIONAL_SHADOW\n
+canvas_occlusion.glsl 2 \n#define MODE_SDF\n
+blit.glsl 0 \n
+blit.glsl 1 \n#define USE_LAYER\n
+blit.glsl 2 \n#define USE_LAYER\n#define APPLY_LENS_DISTORTION\n
+blit.glsl 3 \n
+effects/bokeh_dof_raster.glsl 0 \n#define MODE_GEN_BLUR_SIZE\n
+effects/bokeh_dof_raster.glsl 1 \n#define MODE_BOKEH_BOX\n#define OUTPUT_WEIGHT\n
+effects/bokeh_dof_raster.glsl 2 \n#define MODE_BOKEH_BOX\n
+effects/bokeh_dof_raster.glsl 3 \n#define MODE_BOKEH_HEXAGONAL\n#define OUTPUT_WEIGHT\n
+effects/bokeh_dof_raster.glsl 4 \n#define MODE_BOKEH_HEXAGONAL\n
+effects/bokeh_dof_raster.glsl 5 \n#define MODE_BOKEH_CIRCULAR\n#define OUTPUT_WEIGHT\n
+effects/bokeh_dof_raster.glsl 6 \n#define MODE_COMPOSITE_BOKEH\n
+effects/bokeh_dof.glsl 0 \n#define MODE_GEN_BLUR_SIZE\n
+effects/bokeh_dof.glsl 1 \n#define MODE_BOKEH_BOX\n#define OUTPUT_WEIGHT\n
+effects/bokeh_dof.glsl 2 \n#define MODE_BOKEH_BOX\n
+effects/bokeh_dof.glsl 3 \n#define MODE_BOKEH_HEXAGONAL\n#define OUTPUT_WEIGHT\n
+effects/bokeh_dof.glsl 4 \n#define MODE_BOKEH_HEXAGONAL\n
+effects/bokeh_dof.glsl 5 \n#define MODE_BOKEH_CIRCULAR\n#define OUTPUT_WEIGHT\n
+effects/bokeh_dof.glsl 6 \n#define MODE_COMPOSITE_BOKEH\n
+effects/blur_raster.glsl 0 \n#define MODE_MIPMAP\n
+effects/blur_raster.glsl 1 \n#define MODE_GAUSSIAN_BLUR\n
+effects/blur_raster.glsl 2 \n#define MODE_GLOW_GATHER\n
+effects/blur_raster.glsl 3 \n#define MODE_GLOW_DOWNSAMPLE\n
+effects/blur_raster.glsl 4 \n#define MODE_GLOW_UPSAMPLE\n
+effects/blur_raster.glsl 5 \n#define MODE_COPY\n
+effects/blur_raster.glsl 6 \n#define MODE_SET_COLOR\n
+effects/copy.glsl 0 \n#define MODE_GAUSSIAN_BLUR\n
+effects/copy.glsl 1 \n#define MODE_GAUSSIAN_BLUR\n#define DST_IMAGE_8BIT\n
+effects/copy.glsl 2 \n#define MODE_GAUSSIAN_BLUR\n#define MODE_GLOW\n
+effects/copy.glsl 3 \n#define MODE_GAUSSIAN_BLUR\n#define MODE_GLOW\n#define GLOW_USE_AUTO_EXPOSURE\n
+effects/copy.glsl 4 \n#define MODE_SIMPLE_COPY\n
+effects/copy.glsl 5 \n#define MODE_SIMPLE_COPY\n#define DST_IMAGE_8BIT\n
+effects/copy.glsl 6 \n#define MODE_SIMPLE_COPY_DEPTH\n
+effects/copy.glsl 7 \n#define MODE_SET_COLOR\n
+effects/copy.glsl 8 \n#define MODE_SET_COLOR\n#define DST_IMAGE_8BIT\n
+effects/copy.glsl 9 \n#define MODE_MIPMAP\n
+effects/copy.glsl 10 \n#define MODE_LINEARIZE_DEPTH_COPY\n
+effects/copy.glsl 11 \n#define MODE_OCTMAP_TO_PANORAMA\n
+effects/copy.glsl 12 \n#define MODE_OCTMAP_ARRAY_TO_PANORAMA\n
+effects/copy_to_fb.glsl 0 \n
+effects/copy_to_fb.glsl 1 \n#define MODE_PANORAMA_TO_DP\n
+effects/copy_to_fb.glsl 2 \n#define MODE_TWO_SOURCES\n
+effects/copy_to_fb.glsl 3 \n#define MODE_SET_COLOR\n
+effects/copy_to_fb.glsl 4 \n#define USE_MULTIVIEW\n
+effects/copy_to_fb.glsl 5 \n#define USE_MULTIVIEW\n#define MODE_TWO_SOURCES\n
+effects/cube_to_dp.glsl 0 \n
+effects/cube_to_octmap.glsl 0
+effects/octmap_downsampler_raster.glsl 0
+effects/octmap_downsampler.glsl 0 \n#define OCTMAP_FORMAT rgba16f\n
+effects/octmap_downsampler.glsl 1 \n#define OCTMAP_FORMAT rgb10_a2\n
+effects/octmap_filter_raster.glsl 0 \n#define USE_LOW_QUALITY\n
+effects/octmap_filter_raster.glsl 1 \n#define USE_HIGH_QUALITY\n
+effects/octmap_filter.glsl 0 \n#define USE_LOW_QUALITY\n\n#define OCTMAP_FORMAT rgba16f\n
+effects/octmap_filter.glsl 1 \n#define USE_HIGH_QUALITY\n\n#define OCTMAP_FORMAT rgba16f\n
+effects/octmap_filter.glsl 2 \n#define USE_LOW_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgba16f\n
+effects/octmap_filter.glsl 3 \n#define USE_HIGH_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgba16f\n
+effects/octmap_filter.glsl 4 \n#define USE_LOW_QUALITY\n\n#define OCTMAP_FORMAT rgb10_a2\n
+effects/octmap_filter.glsl 5 \n#define USE_HIGH_QUALITY\n\n#define OCTMAP_FORMAT rgb10_a2\n
+effects/octmap_filter.glsl 6 \n#define USE_LOW_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgb10_a2\n
+effects/octmap_filter.glsl 7 \n#define USE_HIGH_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgb10_a2\n
+effects/octmap_roughness_raster.glsl 0
+effects/octmap_roughness.glsl 0 \n#define OCTMAP_FORMAT rgba16f\n
+effects/octmap_roughness.glsl 1 \n#define OCTMAP_FORMAT rgb10_a2\n
+effects/specular_merge.glsl 0 \n#define MODE_MERGE\n
+effects/specular_merge.glsl 1 \n#define MODE_MERGE\n#define MODE_SSR\n
+effects/specular_merge.glsl 2 \n
+effects/specular_merge.glsl 3 \n#define MODE_SSR\n
+effects/specular_merge.glsl 4 \n#define USE_MULTIVIEW\n#define MODE_MERGE\n
+effects/specular_merge.glsl 5 \n#define USE_MULTIVIEW\n#define MODE_MERGE\n#define MODE_SSR\n
+effects/specular_merge.glsl 6 \n#define USE_MULTIVIEW\n
+effects/specular_merge.glsl 7 \n#define USE_MULTIVIEW\n#define MODE_SSR\n
+effects/shadow_frustum.glsl 0
+effects/motion_vectors.glsl 0
+effects/fsr_upscale.glsl 0 \n#define MODE_FSR_UPSCALE_NORMAL\n
+effects/fsr_upscale.glsl 1 \n#define MODE_FSR_UPSCALE_FALLBACK\n
+effects/luminance_reduce_raster.glsl 0 \n#define FIRST_PASS\n
+effects/luminance_reduce_raster.glsl 1 \n
+effects/luminance_reduce_raster.glsl 2 \n#define FINAL_PASS\n
+effects/luminance_reduce.glsl 0 \n#define READ_TEXTURE\n
+effects/luminance_reduce.glsl 1 \n
+effects/luminance_reduce.glsl 2 \n#define WRITE_LUMINANCE\n
+effects/motion_vectors_store.glsl 0
+effects/resolve_raster.glsl 0
+effects/resolve.glsl 0 \n#define MODE_RESOLVE_GI\n
+effects/resolve.glsl 1 \n#define MODE_RESOLVE_GI\n#define VOXEL_GI_RESOLVE\n
+effects/resolve.glsl 2 \n#define MODE_RESOLVE_DEPTH\n
+effects/roughness_limiter.glsl 0
+effects/smaa_edge_detection.glsl 0 \n
+effects/smaa_weight_calculation.glsl 0 \n
+effects/smaa_blending.glsl 0 \n
+effects/sort.glsl 0 \n#define MODE_SORT_BLOCK\n
+effects/sort.glsl 1 \n#define MODE_SORT_STEP\n
+effects/sort.glsl 2 \n#define MODE_SORT_INNER\n
+effects/ss_effects_downsample.glsl 0 \n
+effects/ss_effects_downsample.glsl 1 \n#define USE_HALF_SIZE\n
+effects/ss_effects_downsample.glsl 2 \n#define GENERATE_MIPS\n
+effects/ss_effects_downsample.glsl 3 \n#define GENERATE_MIPS\n#define USE_HALF_SIZE\n
+effects/ss_effects_downsample.glsl 4 \n#define USE_HALF_BUFFERS\n
+effects/ss_effects_downsample.glsl 5 \n#define USE_HALF_BUFFERS\n#define USE_HALF_SIZE\n
+effects/ss_effects_downsample.glsl 6 \n#define GENERATE_MIPS\n#define GENERATE_FULL_MIPS
+effects/ssil.glsl 0 \n
+effects/ssil.glsl 1 \n#define SSIL_BASE\n
+effects/ssil.glsl 2 \n#define ADAPTIVE\n
+effects/ssil_importance_map.glsl 0 \n#define GENERATE_MAP\n
+effects/ssil_importance_map.glsl 1 \n#define PROCESS_MAPA\n
+effects/ssil_importance_map.glsl 2 \n#define PROCESS_MAPB\n
+effects/ssil_blur.glsl 0 \n#define MODE_NON_SMART\n
+effects/ssil_blur.glsl 1 \n#define MODE_SMART\n
+effects/ssil_blur.glsl 2 \n#define MODE_WIDE\n
+effects/ssil_interleave.glsl 0 \n#define MODE_NON_SMART\n
+effects/ssil_interleave.glsl 1 \n#define MODE_SMART\n
+effects/ssil_interleave.glsl 2 \n#define MODE_HALF\n
+effects/ssao.glsl 0 \n
+effects/ssao.glsl 1 \n#define SSAO_BASE\n
+effects/ssao.glsl 2 \n#define ADAPTIVE\n
+effects/ssao_importance_map.glsl 0 \n#define GENERATE_MAP\n
+effects/ssao_importance_map.glsl 1 \n#define PROCESS_MAPA\n
+effects/ssao_importance_map.glsl 2 \n#define PROCESS_MAPB\n
+effects/ssao_blur.glsl 0 \n#define MODE_NON_SMART\n
+effects/ssao_blur.glsl 1 \n#define MODE_SMART\n
+effects/ssao_blur.glsl 2 \n#define MODE_WIDE\n
+effects/ssao_interleave.glsl 0 \n#define MODE_NON_SMART\n
+effects/ssao_interleave.glsl 1 \n#define MODE_SMART\n
+effects/ssao_interleave.glsl 2 \n#define MODE_HALF\n
+effects/screen_space_reflection_downsample.glsl 0 \n
+effects/screen_space_reflection_downsample.glsl 1 \n#define MODE_ODD_WIDTH\n
+effects/screen_space_reflection_downsample.glsl 2 \n#define MODE_ODD_HEIGHT\n
+effects/screen_space_reflection_downsample.glsl 3 \n#define MODE_ODD_WIDTH\n#define MODE_ODD_HEIGHT\n
+effects/screen_space_reflection_hiz.glsl 0 \n
+effects/screen_space_reflection_hiz.glsl 1 \n#define MODE_ODD_WIDTH\n
+effects/screen_space_reflection_hiz.glsl 2 \n#define MODE_ODD_HEIGHT\n
+effects/screen_space_reflection_hiz.glsl 3 \n#define MODE_ODD_WIDTH\n#define MODE_ODD_HEIGHT\n
+effects/screen_space_reflection.glsl 0 \n
+effects/screen_space_reflection_filter.glsl 0 \n
+effects/screen_space_reflection_resolve.glsl 0 \n
+effects/screen_space_contact_shadows.glsl 0 \n#define READ_COUNT 2\n
+effects/screen_space_contact_shadows.glsl 1 \n#define READ_COUNT 3\n
+effects/screen_space_contact_shadows.glsl 2 \n#define READ_COUNT 4\n
+effects/subsurface_scattering.glsl 0 \n#define USE_11_SAMPLES\n
+effects/subsurface_scattering.glsl 1 \n#define USE_17_SAMPLES\n
+effects/subsurface_scattering.glsl 2 \n#define USE_25_SAMPLES\n
+effects/taa_resolve.glsl 0 \n#define MODE_TAA_RESOLVE
+effects/tonemap_mobile.glsl 0 \n
+effects/tonemap_mobile.glsl 1 \n#define USE_1D_LUT\n
+effects/tonemap_mobile.glsl 2 \n#define SUBPASS\n
+effects/tonemap_mobile.glsl 3 \n#define SUBPASS\n#define USE_1D_LUT\n
+effects/tonemap_mobile.glsl 4 \n#define USE_MULTIVIEW\n
+effects/tonemap_mobile.glsl 5 \n#define USE_MULTIVIEW\n#define USE_1D_LUT\n
+effects/tonemap_mobile.glsl 6 \n#define USE_MULTIVIEW\n#define SUBPASS\n
+effects/tonemap_mobile.glsl 7 \n#define USE_MULTIVIEW\n#define SUBPASS\n#define USE_1D_LUT\n
+effects/tonemap.glsl 0 \n
+effects/tonemap.glsl 1 \n#define USE_GLOW_FILTER_BICUBIC\n
+effects/tonemap.glsl 2 \n#define USE_1D_LUT\n
+effects/tonemap.glsl 3 \n#define USE_GLOW_FILTER_BICUBIC\n#define USE_1D_LUT\n
+effects/tonemap.glsl 4 \n#define USE_MULTIVIEW\n
+effects/tonemap.glsl 5 \n#define USE_MULTIVIEW\n#define USE_GLOW_FILTER_BICUBIC\n
+effects/tonemap.glsl 6 \n#define USE_MULTIVIEW\n#define USE_1D_LUT\n
+effects/tonemap.glsl 7 \n#define USE_MULTIVIEW\n#define USE_GLOW_FILTER_BICUBIC\n#define USE_1D_LUT\n
+effects/vrs.glsl 0 \n
+effects/vrs.glsl 1 \n#define USE_MULTIVIEW\n
+effects/vrs.glsl 2 \n#define SPLIT_RG\n
+effects/vrs.glsl 3 \n#define SPLIT_RG\n#define USE_MULTIVIEW\n
+environment/volumetric_fog.glsl 0
+environment/volumetric_fog.glsl 1 #define NO_IMAGE_ATOMICS\n
+environment/volumetric_fog.glsl 2 #define USE_VULKAN_MEMORY_MODEL\n
+environment/volumetric_fog.glsl 3 #define USE_VULKAN_MEMORY_MODEL\n#define NO_IMAGE_ATOMICS\n
+environment/volumetric_fog_process.glsl 0 \n#define MODE_DENSITY\n
+environment/volumetric_fog_process.glsl 1 \n#define MODE_DENSITY\n#define ENABLE_SDFGI\n
+environment/volumetric_fog_process.glsl 2 \n#define MODE_FILTER\n
+environment/volumetric_fog_process.glsl 3 \n#define MODE_FOG\n
+environment/volumetric_fog_process.glsl 4 \n#define MODE_COPY\n
+environment/volumetric_fog_process.glsl 5 \n#define NO_IMAGE_ATOMICS\n#define MODE_DENSITY\n
+environment/volumetric_fog_process.glsl 6 \n#define NO_IMAGE_ATOMICS\n#define MODE_DENSITY\n#define ENABLE_SDFGI\n
+environment/volumetric_fog_process.glsl 7 \n#define NO_IMAGE_ATOMICS\n#define MODE_FILTER\n
+environment/volumetric_fog_process.glsl 8 \n#define NO_IMAGE_ATOMICS\n#define MODE_FOG\n
+environment/volumetric_fog_process.glsl 9 \n#define NO_IMAGE_ATOMICS\n#define MODE_COPY\n
+environment/volumetric_fog_process.glsl 10 \n#define USE_VULKAN_MEMORY_MODEL\n#define MODE_DENSITY\n
+environment/volumetric_fog_process.glsl 11 \n#define USE_VULKAN_MEMORY_MODEL\n#define MODE_DENSITY\n#define ENABLE_SDFGI\n
+environment/volumetric_fog_process.glsl 12 \n#define USE_VULKAN_MEMORY_MODEL\n#define MODE_FILTER\n
+environment/volumetric_fog_process.glsl 13 \n#define USE_VULKAN_MEMORY_MODEL\n#define MODE_FOG\n
+environment/volumetric_fog_process.glsl 14 \n#define USE_VULKAN_MEMORY_MODEL\n#define MODE_COPY\n
+environment/volumetric_fog_process.glsl 15 \n#define USE_VULKAN_MEMORY_MODEL\n#define NO_IMAGE_ATOMICS\n#define MODE_DENSITY\n
+environment/volumetric_fog_process.glsl 16 \n#define USE_VULKAN_MEMORY_MODEL\n#define NO_IMAGE_ATOMICS\n#define MODE_DENSITY\n#define ENABLE_SDFGI\n
+environment/volumetric_fog_process.glsl 17 \n#define USE_VULKAN_MEMORY_MODEL\n#define NO_IMAGE_ATOMICS\n#define MODE_FILTER\n
+environment/volumetric_fog_process.glsl 18 \n#define USE_VULKAN_MEMORY_MODEL\n#define NO_IMAGE_ATOMICS\n#define MODE_FOG\n
+environment/volumetric_fog_process.glsl 19 \n#define USE_VULKAN_MEMORY_MODEL\n#define NO_IMAGE_ATOMICS\n#define MODE_COPY\n
+environment/voxel_gi.glsl 0 \n#define MODE_COMPUTE_LIGHT\n
+environment/voxel_gi.glsl 1 \n#define MODE_SECOND_BOUNCE\n
+environment/voxel_gi.glsl 2 \n#define MODE_UPDATE_MIPMAPS\n
+environment/voxel_gi.glsl 3 \n#define MODE_WRITE_TEXTURE\n
+environment/voxel_gi.glsl 4 \n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_LIGHTING\n
+environment/voxel_gi.glsl 5 \n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_WRITE\n
+environment/voxel_gi.glsl 6 \n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_PLOT\n
+environment/voxel_gi.glsl 7 \n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_PLOT\n#define MODE_DYNAMIC_SHRINK_WRITE\n
+environment/voxel_gi_debug.glsl 0 \n#define MODE_DEBUG_COLOR\n
+environment/voxel_gi_debug.glsl 1 \n#define MODE_DEBUG_LIGHT\n
+environment/voxel_gi_debug.glsl 2 \n#define MODE_DEBUG_EMISSION\n
+environment/voxel_gi_debug.glsl 3 \n#define MODE_DEBUG_LIGHT\n#define MODE_DEBUG_LIGHT_FULL\n
+environment/sdfgi_preprocess.glsl 0 \n#define MODE_SCROLL\n
+environment/sdfgi_preprocess.glsl 1 \n#define MODE_SCROLL_OCCLUSION\n
+environment/sdfgi_preprocess.glsl 2 \n#define MODE_INITIALIZE_JUMP_FLOOD\n
+environment/sdfgi_preprocess.glsl 3 \n#define MODE_INITIALIZE_JUMP_FLOOD_HALF\n
+environment/sdfgi_preprocess.glsl 4 \n#define MODE_JUMPFLOOD\n
+environment/sdfgi_preprocess.glsl 5 \n#define MODE_JUMPFLOOD_OPTIMIZED\n
+environment/sdfgi_preprocess.glsl 6 \n#define MODE_UPSCALE_JUMP_FLOOD\n
+environment/sdfgi_preprocess.glsl 7 \n#define MODE_OCCLUSION\n
+environment/sdfgi_preprocess.glsl 8 \n#define MODE_STORE\n
+environment/sdfgi_direct_light.glsl 0 \n#define MODE_PROCESS_STATIC\n
+environment/sdfgi_direct_light.glsl 1 \n#define MODE_PROCESS_DYNAMIC\n
+environment/sdfgi_integrate.glsl 0 \n#define MODE_PROCESS\n
+environment/sdfgi_integrate.glsl 1 \n#define MODE_STORE\n
+environment/sdfgi_integrate.glsl 2 \n#define MODE_SCROLL\n
+environment/sdfgi_integrate.glsl 3 \n#define MODE_SCROLL_STORE\n
+environment/gi.glsl 0 \n#define USE_VOXEL_GI_INSTANCES\n
+environment/gi.glsl 1 \n#define USE_VOXEL_GI_INSTANCES\n#define SAMPLE_VOXEL_GI_NEAREST\n
+environment/gi.glsl 2 \n#define USE_SDFGI\n
+environment/gi.glsl 3 \n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n
+environment/gi.glsl 4 \n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n#define SAMPLE_VOXEL_GI_NEAREST\n
+environment/gi.glsl 5 \n#define USE_VRS\n\n#define USE_VOXEL_GI_INSTANCES\n
+environment/gi.glsl 6 \n#define USE_VRS\n\n#define USE_VOXEL_GI_INSTANCES\n#define SAMPLE_VOXEL_GI_NEAREST\n
+environment/gi.glsl 7 \n#define USE_VRS\n\n#define USE_SDFGI\n
+environment/gi.glsl 8 \n#define USE_VRS\n\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n
+environment/gi.glsl 9 \n#define USE_VRS\n\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n#define SAMPLE_VOXEL_GI_NEAREST\n
+environment/sdfgi_debug.glsl 0
+environment/sdfgi_debug_probes.glsl 0 \n#define MODE_PROBES\n
+environment/sdfgi_debug_probes.glsl 1 \n#define MODE_PROBES\n#define USE_MULTIVIEW\n
+environment/sdfgi_debug_probes.glsl 2 \n#define MODE_VISIBILITY\n
+environment/sdfgi_debug_probes.glsl 3 \n#define MODE_VISIBILITY\n#define USE_MULTIVIEW\n
+environment/sky.glsl 0
+environment/sky.glsl 1 \n#define USE_HALF_RES_PASS\n
+environment/sky.glsl 2 \n#define USE_QUARTER_RES_PASS\n
+environment/sky.glsl 3 \n#define USE_CUBEMAP_PASS\n
+environment/sky.glsl 4 \n#define USE_CUBEMAP_PASS\n#define USE_HALF_RES_PASS\n
+environment/sky.glsl 5 \n#define USE_CUBEMAP_PASS\n#define USE_QUARTER_RES_PASS\n
+environment/sky.glsl 6 \n#define USE_MULTIVIEW\n
+environment/sky.glsl 7 \n#define USE_HALF_RES_PASS\n#define USE_MULTIVIEW\n
+environment/sky.glsl 8 \n#define USE_QUARTER_RES_PASS\n#define USE_MULTIVIEW\n
+forward_clustered/best_fit_normal.glsl 0 \n
+forward_clustered/integrate_dfg.glsl 0 \n
+forward_clustered/scene_forward_clustered.glsl 0 \n#define MODE_RENDER_DEPTH\n
+forward_clustered/scene_forward_clustered.glsl 1 \n#define MODE_RENDER_DEPTH\n#define MODE_DUAL_PARABOLOID\n
+forward_clustered/scene_forward_clustered.glsl 2 \n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n
+forward_clustered/scene_forward_clustered.glsl 3 \n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define MODE_RENDER_VOXEL_GI\n
+forward_clustered/scene_forward_clustered.glsl 4 \n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n
+forward_clustered/scene_forward_clustered.glsl 5 \n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n
+forward_clustered/scene_forward_clustered.glsl 6 \n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define MODE_RENDER_VOXEL_GI\n
+forward_clustered/scene_forward_clustered.glsl 7 \n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n
+forward_clustered/scene_forward_clustered.glsl 8 \n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_SDF\n
+forward_clustered/scene_forward_clustered.glsl 9 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n
+forward_clustered/scene_forward_clustered.glsl 10 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_DUAL_PARABOLOID\n
+forward_clustered/scene_forward_clustered.glsl 11 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n
+forward_clustered/scene_forward_clustered.glsl 12 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define MODE_RENDER_VOXEL_GI\n
+forward_clustered/scene_forward_clustered.glsl 13 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n
+forward_clustered/scene_forward_clustered.glsl 14 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n
+forward_clustered/scene_forward_clustered.glsl 15 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define MODE_RENDER_VOXEL_GI\n
+forward_clustered/scene_forward_clustered.glsl 16 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n
+forward_clustered/scene_forward_clustered.glsl 17 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_SDF\n
+forward_clustered/scene_forward_clustered.glsl 18
+forward_clustered/scene_forward_clustered.glsl 19 \n#define UBERSHADER\n
+forward_clustered/scene_forward_clustered.glsl 20 \n#define MODE_SEPARATE_SPECULAR\n
+forward_clustered/scene_forward_clustered.glsl 21 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n
+forward_clustered/scene_forward_clustered.glsl 22 \n#define USE_LIGHTMAP\n
+forward_clustered/scene_forward_clustered.glsl 23 \n#define UBERSHADER\n\n#define USE_LIGHTMAP\n
+forward_clustered/scene_forward_clustered.glsl 24 \n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n
+forward_clustered/scene_forward_clustered.glsl 25 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n
+forward_clustered/scene_forward_clustered.glsl 26 \n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 27 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 28 \n#define MODE_SEPARATE_SPECULAR\n\n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 29 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n\n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 30 \n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 31 \n#define UBERSHADER\n\n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 32 \n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 33 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n
+forward_clustered/scene_forward_clustered.glsl 34 \n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 35 \n#define UBERSHADER\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 36 \n#define MODE_SEPARATE_SPECULAR\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 37 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 38 \n#define USE_LIGHTMAP\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 39 \n#define UBERSHADER\n\n#define USE_LIGHTMAP\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 40 \n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 41 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 42 \n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 43 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 44 \n#define MODE_SEPARATE_SPECULAR\n\n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 45 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n\n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 46 \n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 47 \n#define UBERSHADER\n\n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 48 \n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_clustered/scene_forward_clustered.glsl 49 \n#define UBERSHADER\n\n#define MODE_SEPARATE_SPECULAR\n\n#define USE_LIGHTMAP\n\n#define USE_MULTIVIEW\n\n#define MOTION_VECTORS\n
+forward_mobile/scene_forward_mobile.glsl 0
+forward_mobile/scene_forward_mobile.glsl 1 \n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 2 \n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 3 \n#define MODE_RENDER_DEPTH\n#define MODE_DUAL_PARABOLOID\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 4 \n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n
+forward_mobile/scene_forward_mobile.glsl 5 \n#define USE_MULTIVIEW\n
+forward_mobile/scene_forward_mobile.glsl 6 \n#define USE_MULTIVIEW\n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 7 \n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 8 \n#define USE_MULTIVIEW\n#define MODE_RENDER_MOTION_VECTORS\n
+forward_mobile/scene_forward_mobile.glsl 9 \n#define UBERSHADER\n
+forward_mobile/scene_forward_mobile.glsl 10 \n#define UBERSHADER\n\n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 11 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 12 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_DUAL_PARABOLOID\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 13 \n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n
+forward_mobile/scene_forward_mobile.glsl 14 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n
+forward_mobile/scene_forward_mobile.glsl 15 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 16 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 17 \n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_MOTION_VECTORS\n
+forward_mobile/scene_forward_mobile.glsl 18 \n#define EXPLICIT_FP16\n
+forward_mobile/scene_forward_mobile.glsl 19 \n#define EXPLICIT_FP16\n\n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 20 \n#define EXPLICIT_FP16\n\n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 21 \n#define EXPLICIT_FP16\n\n#define MODE_RENDER_DEPTH\n#define MODE_DUAL_PARABOLOID\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 22 \n#define EXPLICIT_FP16\n\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n
+forward_mobile/scene_forward_mobile.glsl 23 \n#define EXPLICIT_FP16\n\n#define USE_MULTIVIEW\n
+forward_mobile/scene_forward_mobile.glsl 24 \n#define EXPLICIT_FP16\n\n#define USE_MULTIVIEW\n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 25 \n#define EXPLICIT_FP16\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 26 \n#define EXPLICIT_FP16\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_MOTION_VECTORS\n
+forward_mobile/scene_forward_mobile.glsl 27 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n
+forward_mobile/scene_forward_mobile.glsl 28 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 29 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 30 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_DUAL_PARABOLOID\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 31 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n
+forward_mobile/scene_forward_mobile.glsl 32 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define USE_MULTIVIEW\n
+forward_mobile/scene_forward_mobile.glsl 33 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define USE_LIGHTMAP\n
+forward_mobile/scene_forward_mobile.glsl 34 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define SHADOW_PASS\n
+forward_mobile/scene_forward_mobile.glsl 35 \n#define EXPLICIT_FP16\n\n#define UBERSHADER\n\n#define USE_MULTIVIEW\n#define MODE_RENDER_MOTION_VECTORS\n
+skeleton.glsl 0 \n#define MODE_2D\n
+skeleton.glsl 1
+particles.glsl 0
+particles_copy.glsl 0 \n#define MODE_FILL_INSTANCES\n
+particles_copy.glsl 1 \n#define MODE_FILL_SORT_BUFFER\n#define USE_SORT_BUFFER\n
+particles_copy.glsl 2 \n#define MODE_FILL_INSTANCES\n#define USE_SORT_BUFFER\n
+particles_copy.glsl 3 \n#define MODE_FILL_INSTANCES\n#define USERDATA_COUNT 1\n
+particles_copy.glsl 4 \n#define MODE_FILL_SORT_BUFFER\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 1\n
+particles_copy.glsl 5 \n#define MODE_FILL_INSTANCES\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 1\n
+particles_copy.glsl 6 \n#define MODE_FILL_INSTANCES\n#define USERDATA_COUNT 2\n
+particles_copy.glsl 7 \n#define MODE_FILL_SORT_BUFFER\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 2\n
+particles_copy.glsl 8 \n#define MODE_FILL_INSTANCES\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 2\n
+particles_copy.glsl 9 \n#define MODE_FILL_INSTANCES\n#define USERDATA_COUNT 3\n
+particles_copy.glsl 10 \n#define MODE_FILL_SORT_BUFFER\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 3\n
+particles_copy.glsl 11 \n#define MODE_FILL_INSTANCES\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 3\n
+particles_copy.glsl 12 \n#define MODE_FILL_INSTANCES\n#define USERDATA_COUNT 4\n
+particles_copy.glsl 13 \n#define MODE_FILL_SORT_BUFFER\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 4\n
+particles_copy.glsl 14 \n#define MODE_FILL_INSTANCES\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 4\n
+particles_copy.glsl 15 \n#define MODE_FILL_INSTANCES\n#define USERDATA_COUNT 5\n
+particles_copy.glsl 16 \n#define MODE_FILL_SORT_BUFFER\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 5\n
+particles_copy.glsl 17 \n#define MODE_FILL_INSTANCES\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 5\n
+particles_copy.glsl 18 \n#define MODE_FILL_INSTANCES\n#define USERDATA_COUNT 6\n
+particles_copy.glsl 19 \n#define MODE_FILL_SORT_BUFFER\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 6\n
+particles_copy.glsl 20 \n#define MODE_FILL_INSTANCES\n#define USE_SORT_BUFFER\n#define USERDATA_COUNT 6\n
+canvas_sdf.glsl 0 \n#define MODE_LOAD\n
+canvas_sdf.glsl 1 \n#define MODE_LOAD_SHRINK\n
+canvas_sdf.glsl 2 \n#define MODE_PROCESS\n
+canvas_sdf.glsl 3 \n#define MODE_PROCESS_OPTIMIZED\n
+canvas_sdf.glsl 4 \n#define MODE_STORE\n
+canvas_sdf.glsl 5 \n#define MODE_STORE_SHRINK\n
+tex_blit.glsl 0
+tex_blit.glsl 1 \n#define USE_OUTPUT1\n
+tex_blit.glsl 2 \n#define USE_OUTPUT1\n#define USE_OUTPUT2\n
+tex_blit.glsl 3 \n#define USE_OUTPUT1\n#define USE_OUTPUT2\n#define USE_OUTPUT3\n
+effects/fsr2/fsr2_depth_clip_pass.glsl 0
+effects/fsr2/fsr2_depth_clip_pass.glsl 1 \n#define FFX_HALF 1\n
+effects/fsr2/fsr2_reconstruct_previous_depth_pass.glsl 0
+effects/fsr2/fsr2_reconstruct_previous_depth_pass.glsl 1 \n#define FFX_HALF 1\n
+effects/fsr2/fsr2_lock_pass.glsl 0
+effects/fsr2/fsr2_lock_pass.glsl 1 \n#define FFX_HALF 1\n
+effects/fsr2/fsr2_accumulate_pass.glsl 0 \n
+effects/fsr2/fsr2_accumulate_pass.glsl 1 \n#define FFX_FSR2_OPTION_APPLY_SHARPENING 1\n
+effects/fsr2/fsr2_accumulate_pass.glsl 2 \n#define FFX_HALF 1\n
+effects/fsr2/fsr2_accumulate_pass.glsl 3 \n#define FFX_HALF 1\n#define FFX_FSR2_OPTION_APPLY_SHARPENING 1\n
+effects/fsr2/fsr2_rcas_pass.glsl 0
+effects/fsr2/fsr2_compute_luminance_pyramid_pass.glsl 0
+effects/fsr2/fsr2_autogen_reactive_pass.glsl 0
+effects/fsr2/fsr2_autogen_reactive_pass.glsl 1 \n#define FFX_HALF 1\n
+effects/fsr2/fsr2_tcr_autogen_pass.glsl 0
+effects/fsr2/fsr2_tcr_autogen_pass.glsl 1 \n#define FFX_HALF 1\n

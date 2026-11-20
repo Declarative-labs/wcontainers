@@ -87,18 +87,45 @@ enum wc_interpolation { WC_INTERP_PERSPECTIVE, WC_INTERP_LINEAR, WC_INTERP_FLAT 
 
 enum wc_storage_format {
    WC_FORMAT_NONE,
-   WC_FORMAT_R32_FLOAT,
+   WC_FORMAT_R8_UNORM,
+   WC_FORMAT_R8_SNORM,
+   WC_FORMAT_R8_UINT,
+   WC_FORMAT_R8_SINT,
+   WC_FORMAT_R16_UINT,
+   WC_FORMAT_R16_SINT,
+   WC_FORMAT_R16_FLOAT,
+   WC_FORMAT_R16_UNORM,
+   WC_FORMAT_R16_SNORM,
+   WC_FORMAT_RG8_UNORM,
+   WC_FORMAT_RG8_SNORM,
+   WC_FORMAT_RG8_UINT,
+   WC_FORMAT_RG8_SINT,
    WC_FORMAT_R32_UINT,
    WC_FORMAT_R32_SINT,
-   WC_FORMAT_RG32_FLOAT,
-   WC_FORMAT_RGBA32_FLOAT,
-   WC_FORMAT_RGBA32_UINT,
-   WC_FORMAT_RGBA32_SINT,
-   WC_FORMAT_RGBA16_FLOAT,
+   WC_FORMAT_R32_FLOAT,
+   WC_FORMAT_RG16_UINT,
+   WC_FORMAT_RG16_SINT,
+   WC_FORMAT_RG16_FLOAT,
+   WC_FORMAT_RG16_UNORM,
+   WC_FORMAT_RG16_SNORM,
    WC_FORMAT_RGBA8_UNORM,
    WC_FORMAT_RGBA8_SNORM,
-   WC_FORMAT_R8_UNORM,
-   WC_FORMAT_RG8_UNORM,
+   WC_FORMAT_RGBA8_UINT,
+   WC_FORMAT_RGBA8_SINT,
+   WC_FORMAT_RGB10A2_UINT,
+   WC_FORMAT_RGB10A2_UNORM,
+   WC_FORMAT_RG11B10_UFLOAT,
+   WC_FORMAT_RG32_UINT,
+   WC_FORMAT_RG32_SINT,
+   WC_FORMAT_RG32_FLOAT,
+   WC_FORMAT_RGBA16_UINT,
+   WC_FORMAT_RGBA16_SINT,
+   WC_FORMAT_RGBA16_FLOAT,
+   WC_FORMAT_RGBA16_UNORM,
+   WC_FORMAT_RGBA16_SNORM,
+   WC_FORMAT_RGBA32_UINT,
+   WC_FORMAT_RGBA32_SINT,
+   WC_FORMAT_RGBA32_FLOAT,
    WC_FORMAT_OTHER,
 };
 
@@ -145,7 +172,7 @@ enum wc_flat_kind {
    X(frsq) X(frcp) X(fexp2) X(flog2) X(fpow) X(fsin) X(fcos) X(fdot2) X(fdot3) X(fdot4) X(flt) \
    X(fge) X(feq) X(fneu) \
    X(iadd) X(isub) X(imul) X(ineg) X(iabs) X(imin) X(imax) X(umin) X(umax) X(idiv) X(udiv) \
-   X(irem) X(umod) X(ishl) X(ishr) X(ushr) X(iand) X(ior) X(ixor) X(inot) X(ilt) X(ige) X(ieq) \
+   X(irem) X(imod) X(umod) X(ishl) X(ishr) X(ushr) X(iand) X(ior) X(ixor) X(inot) X(ilt) X(ige) X(ieq) \
    X(ine) X(ult) X(uge) X(bcsel) X(i2f32) X(u2f32) X(f2i32) X(f2u32) X(b2f32) X(b2i32) \
    X(bit_count) X(ufind_msb) X(ifind_msb) X(find_lsb) X(bitfield_reverse) X(pack_half_2x16) \
    X(unpack_half_2x16) X(pack_unorm_4x8) X(unpack_unorm_4x8) X(pack_snorm_4x8) \

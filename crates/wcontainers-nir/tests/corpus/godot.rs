@@ -2,7 +2,10 @@
 //! Godot's build reads it (`gles3_builders.py`) and specialized as `ShaderGLES3` hands it to a
 //! desktop OpenGL driver (`_build_variant_code`), with no material code.
 
-use crate::deqp::COMMENT;
+use crate::godot_rd::{
+    FRAGMENT_SECTION, INCLUDE_DIRECTIVE, MATERIAL_CHUNKS, SECTION_START, VERTEX_SECTION,
+};
+use crate::table;
 use std::path::{Path, PathBuf};
 use wcontainers_nir::mesa::Stage;
 
@@ -22,20 +25,12 @@ const GENERAL_DEFINES: &str = include_str!("../../corpus/godot-defines");
 /// The format's markers (`gles3_builders.py`).
 const MODES_SECTION: &str = "#[modes]";
 const SPECIALIZATIONS_SECTION: &str = "#[specializations]";
-const VERTEX_SECTION: &str = "#[vertex]";
-const FRAGMENT_SECTION: &str = "#[fragment]";
-const SECTION_START: &str = "#[";
-const INCLUDE_DIRECTIVE: &str = "#include ";
 const ASSIGNMENT: char = '=';
 /// A specialization's default values that mean it is set.
 const SET_VALUES: [&str; 2] = ["TRUE", "1"];
-/// The escaped line break of a mode's defines and of the general defines.
-const ESCAPED_LINE_BREAK: &str = "\\n";
 /// The variant of a file without modes, and its defines.
 const DEFAULT_VARIANT: &str = "DEFAULT";
 const DEFAULT_VARIANT_DEFINES: &str = " ";
-/// Lines of a stage where `ShaderGLES3::_add_stage` puts a material's globals, uniforms and code.
-const MATERIAL_CHUNKS: [&str; 3] = ["#GLOBALS", "#MATERIAL_UNIFORMS", "#CODE"];
 
 /// What `_build_variant_code` puts first for desktop OpenGL (`is_gles_over_gl`), with
 /// `polyfill_half2float` as Godot's configuration leaves it on a desktop driver.
@@ -215,8 +210,8 @@ impl Shader {
             }
         }
         defines += "\n";
-        defines += &general.replace(ESCAPED_LINE_BREAK, "\n");
-        defines += &mode_defines.replace(ESCAPED_LINE_BREAK, "\n");
+        defines += &table::unescape(general);
+        defines += &table::unescape(mode_defines);
         defines += "\n\n";
         defines += AFTER_DEFINES;
         let stage = |lines: &[String]| {
@@ -238,18 +233,6 @@ impl Shader {
     fn has_stages(&self) -> bool {
         !self.vertex.is_empty() || !self.fragment.is_empty()
     }
-}
-
-/// The general defines of the file at `path` under the shader folder (none when it is not listed).
-pub fn general_defines(table: &str, path: &Path) -> String {
-    table
-        .lines()
-        .filter(|l| !l.starts_with(COMMENT))
-        .find_map(|l| {
-            let (file, defines) = l.split_once(char::is_whitespace).unwrap_or((l, ""));
-            (Path::new(file) == path).then(|| defines.trim().to_owned())
-        })
-        .unwrap_or_default()
 }
 
 /// A corpus item's shader file and variant, when the item is Godot's.
@@ -277,7 +260,7 @@ pub fn items(file: &Path) -> Vec<PathBuf> {
 pub fn sources(item: &Path) -> Option<Result<Vec<(Stage, String)>, String>> {
     if let Some((file, variant)) = split(item) {
         let general = under_shader_folder(&file)
-            .map(|p| general_defines(GENERAL_DEFINES, &p))
+            .map(|p| table::general_defines(GENERAL_DEFINES, &p))
             .unwrap_or_default();
         return Some(read(&file).and_then(|s| s.program(&variant, &general)));
     }

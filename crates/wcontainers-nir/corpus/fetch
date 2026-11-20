@@ -24,6 +24,9 @@ grep -v '^#' "$here/sources" | while read -r name url commit paths licence; do
         fi
         git -C "$dir" fetch -q --depth 1 "${filter[@]}" "$url" "$commit"
         git -C "$dir" checkout -q FETCH_HEAD
+    elif [ "$paths" != . ] && [ "$(git -C "$dir" sparse-checkout list | paste -sd, -)" != "$paths" ]; then
+        # The same commit with other paths: the new paths' files are fetched as they are checked out.
+        git -C "$dir" sparse-checkout set --no-cone ${paths//,/ }
     fi
     echo "fetch: $name at $commit ($licence)"
 done
