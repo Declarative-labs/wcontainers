@@ -263,7 +263,7 @@ const GLSLANG_TERMINATED: &str = "compilation terminated";
 
 /// The WebGL 2 back end's verdict on one module: the features it needs beyond the core language
 /// (`needs NAME|NAME`, absent from the part where none), then `absent compute`, `written`,
-/// `compiles`, `compile` with glslang's first error, or `write` with the back end's reason.
+/// `compiles`, `compile` with glslang's first error, or `write` with the back end's reason and naga's.
 #[cfg(not(target_arch = "wasm32"))]
 fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
     use wcontainers_gpu_webgl::glsl;
@@ -299,7 +299,7 @@ fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
     };
     let text = match glsl::write(m, settings) {
         Ok(t) => t,
-        Err(e) => return format!("{needed}{WRITE_FAILED}{e:?}"),
+        Err(e) => return format!("{needed}{WRITE_FAILED}{e:?}{}", naga_refusal(m)),
     };
     let (Some(out), Ok(glslang)) = (out, std::env::var("GLSLANG")) else {
         return format!("{needed}{WRITTEN}");
@@ -326,6 +326,57 @@ fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
         glslang_error(&String::from_utf8_lossy(&run.stdout))
     )
 }
+
+/// naga's own reason for refusing to write `m` as GLSL ES 3.00 for WebGL, as the back end's options
+/// ask, where it refuses (the back end's refusal says only that naga refused); empty where it writes.
+#[cfg(not(target_arch = "wasm32"))]
+fn naga_refusal(m: &ShaderModule) -> String {
+    use naga::back::glsl;
+    let shader_stage = if m.stage == wcontainers_gpu::ShaderStage::Vertex {
+        naga::ShaderStage::Vertex
+    } else {
+        naga::ShaderStage::Fragment
+    };
+    let options = glsl::Options {
+        // GLSL ES 3.00, WebGL 2's language: the first naga writes.
+        version: glsl::Version::Embedded {
+            version: glsl::SUPPORTED_ES_VERSIONS[0],
+            is_webgl: true,
+        },
+        writer_flags: glsl::WriterFlags::FORCE_POINT_SIZE,
+        binding_map: Default::default(),
+        zero_initialize_workgroup_memory: false,
+    };
+    let pipeline = glsl::PipelineOptions {
+        shader_stage,
+        entry_point: m.entry_point.clone(),
+        multiview: None,
+    };
+    let mut text = String::new();
+    let written = glsl::Writer::new(
+        &mut text,
+        &m.module,
+        &m.info,
+        &options,
+        &pipeline,
+        naga::proc::BoundsCheckPolicies::default(),
+    )
+    .and_then(|mut w| w.write().map(drop));
+    match written {
+        Ok(()) => String::new(),
+        Err(e) => format!(
+            "{NAGA_REFUSAL}{}",
+            e.to_string()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    }
+}
+
+/// Where a write refusal's record gives naga's own reason.
+#[cfg(not(target_arch = "wasm32"))]
+const NAGA_REFUSAL: &str = "; naga alone: ";
 
 /// glslang's first error without its place in the file (`ERROR: 0:12: 'x' : undeclared identifier`
 /// gives `'x' : undeclared identifier`), its spaces made single.

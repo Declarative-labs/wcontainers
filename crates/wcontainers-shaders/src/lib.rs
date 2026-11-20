@@ -227,11 +227,23 @@ pub fn rewrite(
     })
 }
 
-/// Refuses, by name, a vertex program writing storage, which WebGPU's vertex stage cannot.
+/// Refuses, by name, a vertex program writing storage buffers or textures, which WebGPU's vertex
+/// stage cannot.
 fn vertex_storage_write(module: &naga::Module, stage: ShaderStage) -> Result<(), ConvertError> {
-    let writable = |g: &naga::GlobalVariable| {
-        matches!(g.space, naga::AddressSpace::Storage { access }
-            if access.contains(naga::StorageAccess::STORE))
+    let writable_image = |mut ty: naga::Handle<naga::Type>| loop {
+        match module.types[ty].inner {
+            naga::TypeInner::BindingArray { base, .. } => ty = base,
+            naga::TypeInner::Image {
+                class: naga::ImageClass::Storage { access, .. },
+                ..
+            } => break access.contains(naga::StorageAccess::STORE),
+            _ => break false,
+        }
+    };
+    let writable = |g: &naga::GlobalVariable| match g.space {
+        naga::AddressSpace::Storage { access } => access.contains(naga::StorageAccess::STORE),
+        naga::AddressSpace::Handle => writable_image(g.ty),
+        _ => false,
     };
     if stage == ShaderStage::Vertex && module.global_variables.iter().any(|(_, g)| writable(g)) {
         return Err(ConvertError::Unsupported(

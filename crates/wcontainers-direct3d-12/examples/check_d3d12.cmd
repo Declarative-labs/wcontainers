@@ -27,9 +27,9 @@ echo draw:
 echo features:
 %C%\real\check_d3d12 compare-features %C%\real\features.txt %C%\ours\features.txt some crates\wcontainers-direct3d-12\examples\check\features-differing.txt
 echo outputs:
-%C%\real\check_d3d12 compare-features %C%\real\outputs.txt %C%\ours\outputs.txt all
+%C%\real\check_d3d12 compare-features %C%\real\outputs.txt %C%\ours\outputs.txt all crates\wcontainers-direct3d-12\examples\check\outputs-differing.txt
 echo answers:
-%C%\real\check_d3d12 compare-features %C%\real\answers.txt %C%\ours\answers.txt all
+%C%\real\check_d3d12 compare-features %C%\real\answers.txt %C%\ours\answers.txt all crates\wcontainers-direct3d-12\examples\check\answers-differing.txt
 echo cases:
 %C%\real\check_d3d12 compare-cases %C%\real\cases.txt %C%\ours\cases.txt
 echo case pictures:

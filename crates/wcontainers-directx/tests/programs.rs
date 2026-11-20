@@ -251,6 +251,11 @@ fn an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does() {
 }
 
 #[test]
+fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
+    level10("stream");
+}
+
+#[test]
 fn texture_atomics_as_direct3d_does() {
     case("atomics");
 }

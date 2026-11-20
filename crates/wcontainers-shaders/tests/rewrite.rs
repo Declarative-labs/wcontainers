@@ -6,9 +6,9 @@
 use naga::{Expression, Module, ShaderStage as NagaStage, TypeInner};
 use wcontainers_gpu::{
     Format, HELPER_SET, ReflectedBinding, Reflection, SlotKind, SourceStage, StageExtras,
-    VariantKey, helper_binding,
+    TexelBufferRoute, VariantKey, helper_binding,
 };
-use wcontainers_shaders::{ConvertError, ENTRY_POINT, cache, refusal, rewrite};
+use wcontainers_shaders::{ConvertError, ENTRY_POINT, Source, cache, convert, refusal, rewrite};
 
 const ROUTE_KEY: [u8; cache::KEY_BYTES] = [0; cache::KEY_BYTES];
 
@@ -137,25 +137,83 @@ enable wgpu_binding_array;
 
 #[test]
 fn a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it() {
-    let source = "
+    let buffer = "
 @group(0) @binding(STORAGE) var<storage, read_write> out: array<u32>;
 @vertex fn ENTRY(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
     out[v] = v;
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
 ";
-    let module = parse(source);
-    let reflection = Reflection {
-        stage: SourceStage::Vertex,
-        extras: StageExtras::None,
-        ..compute_reflection(&module)
-    };
-    let refused = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
-        .expect_err("no back end runs it");
-    assert_eq!(
-        refused,
-        ConvertError::Unsupported(refusal::VERTEX_STORAGE_WRITE)
-    );
+    let texture = "
+@group(0) @binding(STORAGE) var out: texture_storage_2d<r32uint, write>;
+@vertex fn ENTRY(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    textureStore(out, vec2<u32>(v, 0u), vec4<u32>(v));
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+";
+    for source in [buffer, texture] {
+        let module = parse(source);
+        let reflection = Reflection {
+            stage: SourceStage::Vertex,
+            extras: StageExtras::None,
+            ..compute_reflection(&module)
+        };
+        let refused = rewrite(module, reflection, &VariantKey::default(), &ROUTE_KEY)
+            .expect_err("no back end runs it");
+        assert_eq!(
+            refused,
+            ConvertError::Unsupported(refusal::VERTEX_STORAGE_WRITE),
+            "{source}"
+        );
+    }
+}
+
+/// Our own vertex shaders writing a storage texture, a typed storage buffer and a raw storage buffer,
+/// under each key a front asks for them: refused by name, whatever form the storage takes.
+#[test]
+fn a_vertex_program_writing_storage_is_refused_by_convert_under_every_view_key() {
+    let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
+    let slots = || 0..SlotKind::Storage.slots();
+    let keys = [
+        VariantKey::default(),
+        VariantKey {
+            storage_formats: slots().map(|s| (s, Format::R32Uint)).collect(),
+            texel_buffers: TexelBufferRoute::Storage,
+            ..VariantKey::default()
+        },
+        VariantKey {
+            storage_formats: slots().map(|s| (s, Format::R32Uint)).collect(),
+            texel_buffers: TexelBufferRoute::Storage,
+            texels_through_buffer: u64::MAX,
+            ..VariantKey::default()
+        },
+    ];
+    for name in ["vs_store_texture", "vs_store_typed", "vs_store_raw"] {
+        for ext in ["dxbc", "dxil"] {
+            let bytes = std::fs::read(own.join(format!("{name}.{ext}"))).unwrap();
+            let source = if ext == "dxil" {
+                Source::Dxil(&bytes)
+            } else {
+                Source::Dxbc(&bytes)
+            };
+            for key in &keys {
+                let refused = convert(source, key, None).map(|c| c.modules[0].stage);
+                // Without a view's format a storage texture or typed buffer is refused for that first.
+                let unnamed_view = key.storage_formats.is_empty()
+                    && matches!(
+                        refused,
+                        Err(ConvertError::Unsupported(
+                            refusal::STORAGE_FORMAT | refusal::TYPED_BUFFER
+                        ))
+                    );
+                assert!(
+                    unnamed_view
+                        || refused == Err(ConvertError::Unsupported(refusal::VERTEX_STORAGE_WRITE)),
+                    "{name}.{ext} under {key:?}: {refused:?}"
+                );
+            }
+        }
+    }
 }
 
 /// A gather whose offset the test then makes the run-time value `u.o`.

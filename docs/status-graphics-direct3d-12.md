@@ -8,33 +8,58 @@ commit cf55bbe8 (`git show cf55bbe8:docs/status-graphics-direct3d-12.md`).
 
 ## Where things stand
 
-G5 is ready for the independent check again (run 50, 2026-11-19): the check of run 48 found two
-blocking items and seven minor ones; run 49 fixed one blocking item and the minor ones, run 50
-the other blocking item:
-- Video formats (blocking, run 50): `NV12`, `420_OPAQUE` and `YUY2` now take plan 4.12's route.
-  `NV12` is an `r8unorm` luma texture and a half-size `rg8unorm` chroma texture of its own
-  (`Resource::chroma`, made and released with it); views in the `R8G8` group, copies naming
-  plane 1 and placed resources' inheritance name the chroma texture (`view_holder`,
-  `plane_holder`, `alias::inherit`). `420_OPAQUE` is stored as `NV12` and is one plane to the
-  program, as real Direct3D 12 answers. `YUY2` is `rgba8unorm` of half the width; copies,
-  footprints and `WriteToSubresource` count its pixel pairs as texels (`in_texels`,
-  `texel_location`). Footprints and creation checks are real Direct3D 12's as measured (planar
-  rows aligned to 512 bytes; `NV12` of one level and even width and height, `YUY2` of even
-  width). CheckFeatureSupport answers every ability Direct3D defines for them but the video ones
-  (section 9). New case `video-formats` (creation answers, footprints, upload, whole and region
-  copies, target views of each plane cleared, a compute shader reading each plane and `YUY2`
-  and storing into the chroma plane) equals real; new test
-  `video_formats_are_laid_out_as_planes_and_pixel_pairs`; the every-shape test now asks the
-  front's own `format_support`. Their lines in features-differing.txt now hold only the video
-  abilities.
-- The other video formats and drawing into the 16-bit packed formats (blocking in run 48): no
-  route in the plan, answered absent, on the gap list and under Departures (unchanged).
-- Run 49's fixes (1D two-pixel textures, logic operations, the 87 E_NOTIMPL methods by cause,
-  the cases list, `FrameStretched`, feature level literals, merges) stand as recorded below.
-- Merges (run 50): origin/phase-2-graphics-shaders and origin/phase-2-graphics-direct3d-11
-  (status files and the Direct3D 11 front only), every file rerun after them.
-- No seeded random test (minor, not on the bar): none added; nothing in these crates takes
-  random input today.
+G5 is ready for the independent check again (run 51, 2026-11-20): the fifth check (at c65ea523)
+left three blocking items and four minor ones, all handled in this run:
+- Atomics on typed storage views (blocking): `CheckFeatureSupport` now answers every atomic
+  operation on `R32_UINT` and `R32_SINT` and exchange on `R32_FLOAT` wherever it answers typed
+  stores, as section 9 says: the front serves them through a buffer (`AtomicsThroughBuffer`).
+  Test `atomics_on_typed_storage_views_are_answered_through_a_buffer`; the shared
+  `atomic_operations` names the bits once; features-differing.txt lines 41, 42 and 43 now lack
+  only tiled resources and, for `R32_UINT`, logic operations.
+- The 11_0 table's other required abilities answered absent (blocking): each is now on the gap
+  list with its cause (`A8_UNORM`'s typed unordered access, `B8G8R8X8_UNORM`'s buffer and vertex
+  input, `R10G10B10_XR_BIAS_A2_UNORM` and `R10G10B10A2_UNORM`'s back buffer cast to it), the
+  Departures item now names them, and features-differing.txt lists every lower answer under the
+  cause of each bit it lacks, not under one generic comment. None is built in this run.
+- bgfx 26-occlusion frame 10 (blocking, run 51): traced and shown to be real Direct3D 12's own
+  variation, not a fault of ours. bgfx's renderer reads each occlusion result from a mapped readback
+  buffer once its fence shows the list done, and draws each cube only if its last known result is
+  not zero; which frame's results it has when frame 10 is drawn depends on how fast the GPU finished
+  against the CPU. Evidence (scratch run51/): real Direct3D 12 run 20 times against a reference of
+  two real runs drew frame 10 differently once (real1/real-20-frame-10.png: "Passing pixels count:
+  91", 5 tiles beyond allowance, the worst at 224,608 with 41 pixels, the same signature as the
+  check's failure); the check's failing frame of ours (icheck50/bgfx26/ours-10.png) equals this
+  session's real frame 10 exactly (0 pixels beyond 8 outside the overlay, bin/pngdiff.py), and the
+  check's real frame 10 (icheck50/bgfx26/real-10.png) is a third outcome. So real draws frame 10 at
+  least three ways (the count text 92, or 91 with one query result zero, or 91 with none zero),
+  and which one it draws changes between sessions. Ours: a trace of fence values, the program's
+  completed-value reads and the readback bytes (scratch run51/trace.patch and trace2.patch, never
+  committed) over 32 runs showed every readback's bytes copied in before the fence value covering
+  it is reported (`completed` finishes the read backs first), and the same result latency in every
+  frame of every run. The fix is to the comparison, not the front: the bgfx references are now
+  recorded from several real runs (bin/bgfx-compare.ps1 takes 6 by default, bin/loop26.ps1 any
+  count), as the rig's `--record` already ignores tiles real draws differently from run to run,
+  so real's own variation in a session is not counted against ours. Proof: references from 10 real
+  runs, then 30 runs of ours, all 30 pass every frame (run51/loop-proof1.log); with the trace, 32
+  more runs of ours passed against two real runs (loop-trace1.log, loop-trace2.log). In this
+  session real drew frame 10 the check's "failing" way in 29 of 30 runs, so the check's two-run
+  reference would also have passed here: these runs show ours and real agree in this session, not
+  that a session like the check's (real drawing the 92 frame every time) cannot occur again; in such
+  a session ours may draw the 91 frame, which real also draws.
+- Minor: the gap list's copy_block_compressed_texture entry now says how device removal differs
+  before real's crash; the sentence on bgfx's E_NOTIMPL calls names `CreateReservedResource`;
+  `outputs` and `answers` are compared with their own lists (outputs-differing.txt,
+  answers-differing.txt), so a lower answer not listed with its cause fails, as for features.
+- The WebGPU track's shared placement alignment was not moved: naming it
+  `TEXTURE_DATA_PLACEMENT_ALIGNMENT` in the infrastructure crate's `d3d` module fails the literal
+  check (the baseline line cannot move, as the baseline only shrinks, and the name and value
+  restate `VariantFlags::TEXTURE_INFO` by the check's word rule). It stays
+  `resource::PLACEMENT_ALIGNMENT`, now tied to the SDK's `D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT` by
+  test `shared_constants_are_the_sdks` (Windows only), with the three resource placement
+  alignments of the `d3d` module. Asked of the orchestrator ("Asked of other tracks").
+- No seeded random test: none in these crates takes random input (unchanged).
+- Merges (run 51): origin/phase-2-graphics-shaders (the interface's `texel_formats` and
+  `StreamOutAfterReplay` texts, the shaders crate); nothing new on the other branches.
 
 The pass bar, item by item:
 - Wine's and vkd3d's Direct3D 12 tests giving real Direct3D 12's verdicts on the RTX 3080:
@@ -49,40 +74,42 @@ The pass bar, item by item:
 - The queue, fence, query, predication, placed-resource and indirect cases against real Direct3D
   12: the own program's 34 cases ("Cases").
 
-For the independent check, one command each (scratch `bin/all50.sh <n>` runs them all):
+For the independent check, one command each (scratch `bin/all51.sh <n>` runs them all):
 - a sample of test files: `wine-tests run --dll ... vkd3d-d3d12:test_a/test_b` ("How to run");
 - the 34 cases: `check_d3d12 cases` through the own program ("How to run");
-- the real programs: scratch `bin/real50.sh <n>` (Microsoft's two samples, Godot's two
-  platformers, bgfx 37) and `bin/bgfx50.sh <n>` (bgfx 01-cubes, 26-occlusion, 35-dynamic,
+- bgfx 26-occlusion repeated: scratch `bin/loop51.sh <tag> 30 26-occlusion record ours 10`;
+- the real programs: scratch `bin/real51.sh <n>` (Microsoft's two samples, Godot's two
+  platformers, bgfx 37) and `bin/bgfx51.sh <n>` (bgfx 01-cubes, 26-occlusion, 35-dynamic,
   38-bloom).
 Before running test files apply scratch run20/rig-wine-run-fix.patch to
 tools/graphics-rig/desktop/wine-run.ps1 and undo it afterwards ("How to run"); it is never
 committed.
 
-## Results of run 50
+## Results of run 51
 
-2026-11-20, RTX 3080, desktop shared with other tracks unless said; scratch run50/, at a6412ea6
-with the rig patch (`all50.sh 1`, then `bgfx50.sh 1`; quick checks `quick50.sh 4`, the own
-program alone `own50.sh 3`):
-- Lint clean (lint1.log, lint4.log). The crates' tests: 61 pass, none fail (test1.log, test4.log;
-  among them the new `video_formats_are_laid_out_as_planes_and_pixel_pairs` and the 3 GPU tests).
-  Literal check passes (lit1.log, lit4.log).
-- Test files 189 of 198 (full1.log, logs-full1/): the same 9 failures as runs 48 and 49, each on
+2026-11-20, RTX 3080, desktop shared with other tracks unless said; scratch run51/, at d9497d6e
+with the rig patch (`all51.sh 1`, then `bgfx51.sh 1` and `programs51.sh 1`):
+- Lint clean (lint1.log, lint2.log). The crates' tests: 63 pass, none fail (test1.log, test2.log;
+  new `atomics_on_typed_storage_views_are_answered_through_a_buffer` and
+  `shared_constants_are_the_sdks`). Literal check passes (lit1.log; lit2.log at the commit).
+- Test files 189 of 198 (full1.log, logs-full1/): the same 9 failures as runs 48 to 50, each on
   the gap list.
-- Own program (check1.log): draw 0 of 4096 pixels beyond 1; features 166 of 872 differ, each as
-  listed (169 in run 49: the three lines of the video formats' first word now name only the video
-  abilities, and their second word and `420_OPAQUE`'s now equal real); outputs 22 of 110 and
-  answers 2 of 40 differ, none beyond real; 34 of 34 cases equal, the new `video-formats` among
-  them; `antialiased-lines` 0 of 4096 beyond 63, largest difference 38.
+- Own program (check1.log): draw 0 of 4096 pixels beyond 1; features 166 of 872 differ, each
+  listed under its cause; outputs 22 of 110 and answers 2 of 40 differ, each listed (new lists);
+  34 of 34 cases equal; `antialiased-lines` 0 of 4096 beyond 63, largest difference 38.
 - Shader runner 214 of 302 (runner1.log), the same 88 failing files. Scenes 95 pass, 22 fail, 3
   absent, the same outputs (scenes1.log). Wine's five dxgi tests: 3 pass, 2 fail on the absent
   software adapter (dxgi1.log).
-- Real programs: Microsoft's two samples equal (0 pixels beyond 8; 2.8 and 2.5 s); Godot's 2D
-  platformer equal (0 of 518,400 beyond 8; 4.4 s); bgfx 37 (p1-bgfx37.log) and 01-cubes,
-  26-occlusion, 35-dynamic and 38-bloom (b1-*.log) every frame of both our runs within the
-  allowance (680 to 1164 pixels beyond 8 of 20,480 allowed, the overlay's text); Godot's 3D
-  platformer the same one pixel as before (1 of 518,400 beyond 8, difference 48 at 921,317;
-  18.9 s, against 10 s in run 49, on the shared desktop, load not taken).
+- Real programs: Microsoft's two samples equal (0 pixels beyond 8, p1-samples.log); Godot's 2D
+  platformer equal (0 of 518,400 beyond 8); bgfx 37 (p1-bgfx37.log) and 01-cubes, 26-occlusion,
+  35-dynamic and 38-bloom (b1-*.log, references from 6 real runs) every frame of both our runs
+  within the allowance (724 to 1207 pixels beyond 8 of 20,480 allowed, the overlay's text); in
+  26-occlusion's six real runs frame 120 itself drew one tile differently from run to run (35
+  pixels). Godot's 3D platformer the same one pixel as before (1 of 518,400 beyond 8, difference
+  48, frames 10, 60 and 120).
+- bgfx 26-occlusion frame 10: 10 real runs recorded, then 30 runs of ours, all pass every frame
+  (loop-proof1.log); 32 traced runs of ours and 20 real runs against two real runs as under
+  "Where things stand" (loop-trace1.log, loop-trace2.log, loop-real1.log).
 - Fence round trip `--alone`: see "Measurements".
 
 ## Test files (Wine's and vkd3d's, through our libraries, RTX 3080)
@@ -92,7 +119,7 @@ test that skips what real runs, or runs fewer checks, fails. Tests failing some 
 are held to every other check. The counted set is 198 files: d3d12 (Wine's) 10,
 vkd3d-d3d12_invalid_usage 3, vkd3d-hlsl_d3d12 9, vkd3d-d3d12 176.
 
-Failing at run 50 (run50/full1.log, logs-full1/, at a6412ea6 with the rig patch), each on the
+Failing at run 51 (run51/full1.log, logs-full1/, at d9497d6e with the rig patch), each on the
 gap list: d3d12 10 of 10, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9, vkd3d-d3d12
 167 of 176. The 9:
 - test_create_reserved_resource: ran 4 checks of real's 22, skipped 1. Tiled resources absent.
@@ -113,7 +140,7 @@ The refusals the counted test files printed (run 48's logs-full2): "logic operat
 (`RenderTargetArrayIndex`, ps_layer); none other.
 
 Whole counts by run: 129 of 198 (run 17), 157 (20), 164 (25), 169 (28), 180 (31), 184 (34), 186
-(35 to 45), 189 (46), 189 (48), 189 (49), 189 (50).
+(35 to 45), 189 (46), 189 (48), 189 (49), 189 (50), 189 (51).
 
 ## Gap list
 
@@ -142,7 +169,12 @@ Failing test files:
   (`VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation` false, plan
   4.12): ps_layer, whose context makes such a pipeline before asking (`RenderTargetArrayIndex`).
 - Not to be matched: copy_block_compressed_texture (real Direct3D 12 crashes in it: its texture
-  of part of a block is refused on both, and the test then uses the null texture).
+  of part of a block is refused on both, and the test then uses the null texture). Before the
+  crash the two part on when the device is removed: after `CopyTextureRegion` of the null texture
+  `Close` answers E_INVALIDARG on both, but real has already removed the device (its
+  `CreateFence` fails with 0x887a0005, d3d12_test_utils.h:669), where ours removes it only at
+  `ExecuteCommandLists` of the list that did not close (its `CreateFence` succeeds, its `Signal`
+  fails). Both remove the device; only when differs, on a call Direct3D leaves undefined.
 
 Formats CheckFeatureSupport answers below real, against section 9 (features-differing.txt names
 each line under its cause):
@@ -157,6 +189,26 @@ each line under its cause):
 - The video abilities of every format (decoder output, video processor input and output),
   section 9's named shortfall; `NV12`, `420_OPAQUE` and `YUY2` are served as ordinary textures
   (plan 4.12) with every other ability Direct3D defines for them.
+- `A8_UNORM` (65) typed unordered access views (Typed UAV and UAV Typed Store, which the 11_0
+  table requires; Typed Load): section 9 serves them as `rgba8unorm` storage or by
+  `StorageFormatThroughBuffer`, but the WebGPU back end gives `A8Unorm`, which it holds as
+  `rgba8unorm` (`FormatConverted`), no storage use, and the front's buffer route is not built for
+  a format the back end holds converted. The front's own open part, with the ask of G2 below.
+- `B8G8R8X8_UNORM` (88) typed buffer views and vertex input (Buffer and Input Assembler Vertex
+  Buffer, required): the interface's `VertexFormat` has `Bgra8Unorm` only, which reads the fourth
+  byte as alpha, where Direct3D reads one; a named item of the interface track (G1, asked below).
+- `R10G10B10_XR_BIAS_A2_UNORM` (89), the whole format (Texture2D, Display Scan-Out, Cast Within
+  Bit Layout and BackBuffer Castable required), and `R10G10B10A2_UNORM` (24) back buffers cast to
+  it (BackBuffer Castable Even Fully Typed, required): the format has no shader, target or storage
+  use at any level; it exists to be shown in the extended-range bias encoding, cast to and from
+  the 10-bit layout and copied for that, and no browser canvas shows that encoding (a canvas
+  shows `bgra8unorm`, `rgba8unorm` or `rgba16float`, in sRGB or Display P3). Absent, not built.
+- Atomics on typed storage views of `R32_UINT`, `R32_SINT` (every operation) and `R32_FLOAT`
+  (exchange) are answered present (run 51): the front serves them through a buffer
+  (`AtomicsThroughBuffer`, counted and warned); the fifth check's own case (scratch
+  icheck50/case-icheck-texture-atomics.log) gave real's atomic results through ours. The
+  route's own refusals stand on the list below (in vertex and geometry shaders, multisampled, past
+  slot 63, behind a geometry or domain shader).
 
 Also absent, with no failing test file: conservative rasterisation, raster order views, ray
 tracing, mesh shaders, variable rate shading, sampler feedback, 64-bit integers, depth bounds,
@@ -318,8 +370,9 @@ implemented" (87 names, `unsupported` in examples/directx; list them with `grep 
   `SetBackgroundColor`), status notifications (`Register` and `Unregister` of occlusion,
   stereo, content protection teardown and video memory budget), memory budgets
   (`QueryVideoMemoryInfo`, `SetVideoMemoryReservation`: no browser reports memory, Departures).
-- The front's own open part (no counted test file, case or real program calls one; bgfx calls
-  only `GetCachedBlob` and `QueryVideoMemoryInfo` of all 87): `IDXGIObject`'s
+- The front's own open part (no counted test file, case or real program calls one; of all 87,
+  bgfx calls `GetCachedBlob`, `QueryVideoMemoryInfo` and `CreateReservedResource`, the last
+  once a run, absent above, and goes on without it): `IDXGIObject`'s
   `GetPrivateData`, `SetPrivateData` and `SetPrivateDataInterface` on the factory, adapter,
   output and swap chain and its `GetParent` on the factory; `CheckInterfaceSupport`;
   `ResizeBuffers1`; `ClearState`; `AtomicCopyBufferUINT`, `AtomicCopyBufferUINT64`;
@@ -349,7 +402,11 @@ Direct3D defines for them (`video_format_support`). Tests:
 answer with real Direct3D 12's: an answer above real fails unless served
 (`SERVED_BEYOND_REAL`: `R32G32B32_FLOAT` sampled and gathered), an answer below real fails unless
 listed with both values in examples/check/features-differing.txt under section 9's reason, and a
-listed line that no longer holds fails. `outputs` and `answers` are compared the same way.
+listed line that no longer holds fails. `outputs` and `answers` are compared the same way, with
+their own lists (examples/check/outputs-differing.txt: the 21 `CheckColorSpaceSupport` answers for
+studio-range, BT.2020, PQ and 2.4-gamma spaces on `R10G10B10A2`, `R8G8B8A8` and `B8G8R8A8`, which
+real presents on this desktop and a canvas cannot show, and the output's primaries, the monitor's
+own on real and BT.709's on ours; answers-differing.txt: the two refusals, each with its cause).
 
 ## Cases (own program against real Direct3D 12)
 
@@ -371,7 +428,7 @@ picture within 63 of 255 (Direct3D leaves the line filter to the implementation)
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
 Run with our d3d12.dll alone (our dxgi.dll serves Direct3D 12 only and every file starts with a
-Direct3D 11 part). Run 50 (run50/runner1.log): 214 of 302, the same 88 failing files as runs 34 to 46. Each failing file's cause was sorted in run 44 (scratch
+Direct3D 11 part). Run 51 (run51/runner1.log): 214 of 302, the same 88 failing files as runs 34 to 46. Each failing file's cause was sorted in run 44 (scratch
 `bin/classify30.py`; the list is in this file at cf55bbe8, "Shader runner"): 61 run fewer checks
 than real with none failing (50 shader models above 6.0, which section 9 does not answer; the
 rest 64-bit integers, stencil export, depth bounds, raster order views, the layer and viewport
@@ -381,7 +438,7 @@ track: a texture read as another type than its view).
 
 ## Scenes (the rig's Direct3D 12 scenes, beyond the bar)
 
-Run 50 (run50/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs as runs 38 to 46. The failing outputs: raster, geometry, streamout, tessellation (DXIL geometry and
+Run 51 (run51/scenes1.log): 95 outputs pass, 22 fail, 3 absent, the same outputs as runs 38 to 46. The failing outputs: raster, geometry, streamout, tessellation (DXIL geometry and
 hull shaders and one pixel shader the converter refuses, the shaders track's); topology (43
 pixels beyond 1, all in line cells: the aliased line listed loss), samplers-filters (anisotropy
 cells) and msaa-alpha_to_coverage, which draw with largest difference 0 on wgpu's Direct3D 12
@@ -392,7 +449,7 @@ targets, minimum and maximum filtering.
 
 RTX 3080, desktop shared with other tracks, not `--alone`, debug builds, 120 frames. Frames 10, 60
 and 120 compared with real Direct3D 12's at 8 of 255.
-- Run 50: as listed under "Results of run 50". Run 49: the same but times (Godot's 3D platformer
+- Run 51: as listed under "Results of run 51". Run 50: the same, bgfx against two real runs. Run 49: the same but times (Godot's 3D platformer
   10 s), and bgfx 741 to 1225 pixels beyond 8. Run 48 (run48/p1-*.log at 3dfef503, p2-*.log at 708bd126; b1-*.log): Microsoft's
   D3D12HelloTriangle and D3D12HelloConstBuffers equal (0 pixels beyond 8; 2.6 and 2.5 s);
   Godot's 2D platformer equal (0 of 518,400 beyond 8; 3.8 s); bgfx 37-gpudrivenrendering,
@@ -419,6 +476,18 @@ and 120 compared with real Direct3D 12's at 8 of 255.
   adapter with `texture-compression-bc` but without `texture-compression-bc-sliced-3d` such a
   texture fails. Asked: hold 3D BC textures decoded there (`BlockDecoded`). The RTX 3080 has both.
 - WebGL 2 back end (G3): the same for S3TC and BPTC, which WebGL takes in 2D arrays only.
+- Orchestrator, new in run 51: the WebGPU track asked for `TEXTURE_DATA_PLACEMENT_ALIGNMENT` in
+  the infrastructure crate's `d3d` module; the literal check refuses moving the baselined
+  `resource::PLACEMENT_ALIGNMENT` there (see "Where things stand"). A ruling on moving a baselined
+  constant to its shared home, or the WebGPU track importing `resource::PLACEMENT_ALIGNMENT`
+  meanwhile, settles it.
+- WebGPU back end (G2), new in run 51: section 9 serves `A8_UNORM` storage stores as
+  `rgba8unorm` storage where `texture-formats-tier1` is present; the back end gives `A8Unorm`
+  (held as `rgba8unorm`) no storage use, so `A8_UNORM` typed unordered access views are answered
+  absent (gap list).
+- Interface (G1), new in run 51: a vertex format for `B8G8R8X8_UNORM` (bytes B, G, R, unused,
+  read with alpha one), for its vertex input and typed buffer views, which the 11_0 table
+  requires (gap list).
 - Shaders (G6), new in run 48: a pixel program made for a variant alone, for pipelines with no
   pixel shader whose variant needs one (`DEPTH_CLAMP`, `CLIP_DISTANCE`), and `DEPTH_CLAMP` on the
   stage helper's pass-throughs (gap list, depth clamping).
@@ -460,11 +529,13 @@ All on the Windows desktop through the rig; on the Mac only `nix develop -c carg
 build command starts with `set CARGO_INCREMENTAL=0&& ` (stale incremental objects once failed to
 link). Run one rig command of this branch at a time, and do not change the working tree while a
 `gpu-job` of it waits (the job refuses another tree). Scratch bin/ (this track's scratch
-directory) holds run 50's scripts: `quick50.sh <n>` (lint, the crates' tests, the literal check),
-`full50.sh <n>` (lint, tests, every test file, the own program, the shader runner), `own50.sh <n>`
-(lint, build, the own program), `scenes50.sh <n> [scenes]`, `real50.sh <n>`, `bgfx50.sh <n>`,
-`all50.sh <n>` (everything, with Wine's five dxgi tests and the `--alone` fence timing); logs land
-in scratch run50/.
+directory) holds run 51's scripts (run 50's with run51 paths; `programs51.sh` for Godot and bgfx 37,
+`bgfx51.sh` with references of 6 real runs, `loop51.sh <tag> <count> [example] [record|norecord]
+[ours|real] [real runs]` for repeated runs of one bgfx example): `quick51.sh <n>` (lint, the crates' tests, the literal check),
+`full51.sh <n>` (lint, tests, every test file, the own program, the shader runner), `own51.sh <n>`
+(lint, build, the own program), `scenes51.sh <n> [scenes]`, `real51.sh <n>`, `bgfx51.sh <n>`,
+`all51.sh <n>` (everything, with Wine's five dxgi tests and the `--alone` fence timing); logs land
+in scratch run51/.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p wcontainers-gpu -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
 - Tests (three draw on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
@@ -505,7 +576,7 @@ in scratch run50/.
 
 The literal check passes (run48/lit3.log at the last code commit and lit2.log at the Map fix). Baseline lines of this track's crates: run 43
 wcontainers-direct3d-12 471 and the infrastructure crate 63; run 48 458 and 63; run 49 457 and
-63 (main.rs's feature levels now the windows crate's `D3D_FEATURE_LEVEL_*`); run 50 456 and 63
+63 (main.rs's feature levels now the windows crate's `D3D_FEATURE_LEVEL_*`); run 50 456 and 63; run 51 456 and 63 (unchanged: the placement alignment was not moved)
 (the planes' block sizes from the interface's formats). Named in run 48:
 the cull modes, comparison functions and primitive topologies (`state`), the root signature
 versions and the input layout flag (`root`), the buffer layout (`resource`); the tests' DXGI
@@ -535,6 +606,10 @@ merges.
 
 ## Measurements
 
+- Run 51, fence-wait (own program, 2000 rounds) as `gpu-job --alone` at d9497d6e
+  (run51/alone1.log; desktop CPU load 4 % before and 5 % after, Win32_Processor LoadPercentage):
+  real first 8 µs, mean 1 µs, 99th percentile 1 µs, largest 58 µs; ours first 54 µs, mean 26 µs,
+  99th percentile 66 µs, largest 154 µs.
 - Run 50, fence-wait (own program, 2000 rounds) as `gpu-job --alone` at a6412ea6
   (run50/alone1.log, 00:13; desktop CPU load 1 % before and 2 % after, Win32_Processor
   LoadPercentage): real first 8 µs, mean 1 µs, 99th percentile 1 µs, largest 8 µs; ours first
@@ -586,7 +661,8 @@ merges.
 - The library draws on wgpu's Vulkan path: with our d3d12.dll loaded, wgpu's Direct3D 12 path
   would load it as the system's (Next 3).
 - Presenting: `CheckColorSpaceSupport` answers as Windows does on this SDR desktop for the spaces
-  we present; a 16-bit float back buffer is presented encoded into `rgb10a2unorm` (or
+  we present and absent for the 7 others real presents (outputs-differing.txt); the output's
+  primaries are BT.709's (no browser reports the monitor's); a 16-bit float back buffer is presented encoded into `rgb10a2unorm` (or
   `rgba8unorm`); sync intervals 2 to 4 show a frame for at least one refresh; `DXGI_SCALING_NONE`
   frames are shown stretched (`FrameStretched`, counted at each such frame); `SetHDRMetaData` is checked and changes nothing.
 - DXGI's memory sizes are zero and `QueryVideoMemoryInfo` and its relatives answer E_NOTIMPL (no
@@ -616,7 +692,12 @@ merges.
   abilities of `AYUV`, `Y410`, `Y416`, `P010`, `P016`, `Y210`, `Y216`, `NV11`, `AI44`, `IA44`,
   `P8` and `A8P8`, for which the plan has no route, and `B5G6R5`'s targets, blending and 4x and
   8x multisampled targets, which have no exact route on WebGPU (no 16-bit packed formats; an
-  `rgba8unorm` target blends at 8 bits). All are answered absent, never faked.
+  `rgba8unorm` target blends at 8 bits); `A8_UNORM`'s typed unordered access views (the back end
+  gives the format no storage use, and the front's buffer route is not built for it);
+  `B8G8R8X8_UNORM`'s typed buffer views and vertex input (no interface vertex format for it); and
+  `R10G10B10_XR_BIAS_A2_UNORM` with `R10G10B10A2_UNORM`'s back buffer casts to it (no canvas shows
+  the encoding). All are answered absent, never faked, and the gap list names each with its cause;
+  features-differing.txt lists every lower answer under its cause.
 - `ExecuteIndirect` leaves the state the last read-back command set (Direct3D leaves it
   undefined). `ResolveQueryData` resolves into a buffer of the front's and copies. A predicate
   covers the work up to the next `SetPredication` in the same list. An occlusion query across
@@ -652,7 +733,9 @@ merges.
 - Stream output filled sizes are written back as their low 4 bytes. Every draw through a geometry
   shader ends the open pass. A draw whose topology does not give the geometry shader's input
   primitive draws nothing.
-- bgfx's frames are compared with the overlay's GPU time and memory lines ignored.
+- bgfx's frames are compared with the overlay's GPU time and memory lines ignored, against a
+  reference recorded from several real runs (6 by default, bin/bgfx-compare.ps1): bgfx
+  26-occlusion's frame 10 is drawn three ways by real Direct3D 12 itself (run 51).
 
 ## Licences
 
@@ -670,7 +753,7 @@ merges.
   file's name.
 - Tests only: `wcontainers-gpu-webgpu`, `wgpu` 30.0.2, `pollster`, `png` (MIT OR Apache-2.0).
 - Wine's and vkd3d's tests (LGPL-2.1) are run from the rig for testing only; nothing of them is in
-  this repository. No dependency added in runs 49 and 50.
+  this repository. No dependency added in runs 49 to 51.
 
 ## Installed on the desktop
 
@@ -682,6 +765,10 @@ Nothing of this track beyond the rig's setup:
   KB each), bgfx's captured frames and logs (about 12 MB, evidence), the rig's outputs, which each
   run overwrites.
 - The rig's build folder C:\wc\target\phase-2-graphics-direct3d-12 is deleted at the end of each
-  run (run 49: 8,318,929,943 bytes deleted; run 50: 8,314,346,230 bytes). Nothing installed in
-runs 49 and 50; no build output in scratch
+  run (run 49: 8,318,929,943 bytes deleted; run 50: 8,314,346,230 bytes; run 51: 8,390,595,197
+  bytes). Run 51's repeated bgfx runs keep their logs and the evidence frames in
+  C:\wc\out\phase-2-graphics-direct3d-12\loop (5,119,280 bytes; the copied programs and libraries
+  deleted). On the rented x86 machine run 51's one copy (/work/src and /work/target
+  graphics-direct3d-12, 359,310,563 bytes) is deleted. Nothing installed in
+runs 49 to 51; no build output in scratch
   or on the Mac.

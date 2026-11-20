@@ -1,101 +1,101 @@
 # Status: graphics, shaders track (G6)
 
 Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6, 7, 8 and G6 in 12.
-The run-by-run record of runs 1 to 59 is in `docs/status-graphics-shaders-history.md` (history; where
+The run-by-run record of runs 1 to 60 is in `docs/status-graphics-shaders-history.md` (history; where
 it disagrees with this file, this file holds).
 
 Milestone G6a is reported complete for its independent check: the check's findings are settled
 below, each with the test or log at the pushed tip that shows it; the pass bar is met item by item or
 its gap is listed (A1 to A12) with its cause, the front that waits and what it would take.
 
-## G6a run 2 (run 60): the second check's findings at the pushed tip
+## G6a run 3 (run 61): the third check's findings at the pushed tip
 
-Every figure here comes from runs of the code at 81366958 (the commits after it change only this
-file and the history file). Logs in scratch `graphics-shaders/g6a2`. Merged origin/phase-2-graphics-direct3d-11
-(6 commits, none touching this crate); the other branches had nothing new. G6a run 1's section
-moved to the history file.
+Every figure here comes from runs of the code at 2545c0a9 (the commits after it change only this
+file and the history file). The last code commit changed only `tests/geometry_draw.rs`, which is
+built on Windows only, so the Linux and WebAssembly runs below (at c79b1443) ran the same code.
+Logs in scratch `graphics-shaders/g6a3`. Merged origin/phase-2-graphics-direct3d-11 (5 commits)
+and origin/phase-2-graphics-direct3d-12 (4 commits), neither touching this crate; the other
+branches had nothing new (the NIR branch is not merged: nothing of it is needed here). G6a run 2's
+section moved to the history file.
 
 Runs at the tip:
-- Laptop (i7-8750H, load 0.8 to 4.9, ours alone; 4 cargo jobs under choom), the whole suite with
-  every corpus and glslang 8.13 (suite.log, `suite-run49.sh`): 24 test binaries and doc tests,
-  106 passed, 0 failed (`--include-ignored --skip mutated`). The runner test passes: gap A1's file
-  is named as a known unnamed verdict. Then the WebAssembly corpus test under wasmtime (wasm.log):
-  the corpus, games, own and rig tests pass; of the WGSL files both builds write, the same five
-  differ as in A8, every `converter-version.txt` equal. The runner test is not run there (no runner
-  corpus is given to it; it ends the instance at its missing directory, as in run 1).
-- Rented x86 machine (192 processors, load 1 to 55 from others): `cargo fmt --all -- --check`
+- Laptop (i7-8750H, load 0.7 to 1.0, ours alone; 4 cargo jobs under choom), the whole suite with
+  every corpus and glslang 8.13 (laptop-final.log, `suite-run49.sh`): 108 passed, 0 failed
+  (`--include-ignored --skip mutated`; 2 tests new since run 2). Every corpus's verdicts equal
+  their records.
+- WebAssembly under wasmtime on the laptop (load 0.0 to 1.0, wasm.log): the corpus, games, own and
+  rig tests pass; of the WGSL files both builds write, the same five differ as in A8 (and so the
+  `cache.txt` of the three corpora holding them); every `converter-version.txt` equal. The runner
+  test ends the instance at its missing directory, as before.
+- Rented x86 machine (192 processors, load 10 to 20 from others): `cargo fmt --all -- --check`
   clean, `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean, the whole suite
-  with every corpus (no glslang): 106 passed, 0 failed (x86.log).
-- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken), one GPU job (gpu-all.log):
-  Windows clippy with warnings denied clean; every test binary at default seeds: 149 passed, 0
-  failed, 5 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`). Then
-  `geometry_draw` and `stage_draw` at the check's seeds:
-  - Seed 5101, 12 cases: stream output (both routes), streams, layered geometry and both
-    `stage_draw` tests pass; no scene is empty any more (no "0 texels drawn" and no "wrote 0 of 0"
-    in the log). `geometry_shaders_draw_as_direct3d_does` 336 comparisons, 3 failed (5106 and 5108
-    `vs_cull`, 5110 `gs_clip`: A10); the replay on WebGL 2, 264, 1 failed (5110 `gs_clip`: A10);
-    depth clamp, 72, 2 failed (5103 `gs_cut` TriangleList 33 steps, 5104 `gs_cut` TriangleStrip 59
-    steps: A12).
-  - Seed 4747, 12 cases: `geometry_shaders_draw_as_direct3d_does` 336, 4 failed (4749 and 4756
-    `vs_cull`, 4753 and 4756 `gs_clip`: A10); the replay, 264, 2 failed (4753 and 4756 `gs_clip`:
-    A10); depth clamp, 72, 1 failed (4753 `gs_cut` TriangleStrip, 23 steps: A12); the rest pass.
-- Chrome 157 on the RTX 3080 (`web/check` on the laptop run's written files, one GPU job,
-  chrome.log): every WGSL file compiles (4,320). WebGL 2 compiles 3,576 GLSL files and refuses 40,
-  each a shader whose record names the need: multisampled reads 23 (`sampler2DMS`), the primitive
-  index 8, cull distances 9 (vertex programs; the writer's array size, Known gaps). Its WebGL 2
-  context lists OES_sample_variables and OES_shader_multisample_interpolation.
+  with every corpus (no glslang): 108 passed, 0 failed (x86-final.log).
+- Fuzz on the x86 machine (`ulimit -v 8000000`, restarted past each crash, scratch
+  `g6a3/x86-fuzz.sh`; the inputs gained the 6 own files below, so case numbers differ from the
+  check's): seed 1, 2,000 cases, 14 crashes (fuzz-1.log); seed 5555, 6,000 cases, 37 crashes, 28
+  SIGSEGV and 9 `std::terminate` (fuzz-5555.log). Every one on DXIL, none on DXBC.
+- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken): Windows clippy with
+  warnings denied clean; every test binary at default seeds (gpu.log, at c79b1443): 151 passed, 0
+  failed, 5 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`). `geometry_draw` at
+  the tip (gpu-geometry.log): default seeds, 8 passed. Seed 9001, 16 cases:
+  `geometry_shaders_draw_as_direct3d_does` 448 comparisons, 4 failed (9002 `gs_clip` and
+  `vs_cull`, 9012 `vs_cull`, 9013 `gs_clip`: A10, the check's own cases and counts), the replay
+  352, 2 failed (9002 and 9013 `gs_clip`: A10), depth clamp 96, 1 failed (9014 `gs_cut`
+  TriangleStrip, 20 steps: A12); the other five tests pass. Seed 5101, 12 cases: 336/3, 264/1,
+  72/2; seed 4747, 12 cases: 336/4, 264/2, 72/1; the same named cases and step counts (33, 59,
+  23) as in runs 2 and the check. No case failed for ours drawing on an index list Direct3D drew
+  nothing of, and none for ours making no primitive.
 - Literal check on the desktop (check.txt): passes, no line to add or delete. This crate's
-  baseline lines (src, build.rs, tests/*.rs, examples): 584 (585 before; the `[0; 32]` in
-  `unbuilt` is now `VariantKey::default().layout`).
-
-- Clean-up at the end: the build folders on the laptop (6.2 GB), the x86 machine and the desktop
-  deleted; nothing built on the Mac (only `cargo fmt`). Scratch keeps the logs and `g6a2/out`
-  (50 MB, the files Chrome compiled, with glslang's `.log` files).
+  baseline lines (src, build.rs, tests/*.rs, examples): 584, unchanged.
+- Clean-up at the end: this branch's build folders on the laptop (6.4 GB), the x86 machine
+  (`graphics-shaders` 4.7 GB and `graphics-shaders-fuzz` 1.9 GB) and the desktop (8.5 GB)
+  deleted; nothing built on the Mac (only `cargo fmt`). Scratch `g6a3` keeps the logs and the
+  verdicts (2 MB).
 
 The check's findings, each against the tip:
-1. Sample mask on WebGL 2 (blocking): the two statements are corrected ("How the Direct3D fronts
-   call `convert`" and Known gaps): `SAMPLE_MASK` is the `SampleMaskInShader` route on WebGL 2
-   where the back end declares `SAMPLE_SHADING` (OES_sample_variables, which Chrome has); it is
-   drawn here on WebGPU only, since mozangle lacks the extension. The test's comment says the same.
-2. `StageIndexedStrip` (blocking): both mentions are gone; the two routes' instructions say that
-   indexed strips run (since run 50).
-3. A damaged cache record (minor): `validate` runs inside `contained`, so `capabilities` and
-   naga's validator panicking on unchecked handles end as `Malformed`. New test
-   `damaged_records_decode_to_a_conversion_or_an_error` (tests/cache.rs; `WCONTAINERS_CACHE_SEED`,
-   `WCONTAINERS_CACHE_DAMAGES`, default 20 copies of each of our own 189 converting shaders'
-   records with 1 to 4 bytes changed), on the x86 machine (cache-x86.log): seed 1, 3,780 decodes,
-   147 converted, 3,633 refused; seed 424242 (the check's) with 200 copies, 37,800 decodes, 1,490
-   converted, 36,310 refused; no panic out of `decode`. It passes in every run above. Where
-   panics abort (WebAssembly) a damaged record still ends the instance, as `contained` says.
-4. `rewrite` and vertex storage writes (minor): refused by name as by `convert`
-   (`refusal::VERTEX_STORAGE_WRITE`, now public in refusal.rs; test
-   `a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it`).
-5. Empty seeded scenes (minor): `geometry_draw` draws an indexed scene again with the seed's next
-   index list (up to 16) while Direct3D draws, streams or clamps nothing of it; `stage_draw`'s
-   strips are drawn again until they hold a whole primitive (every whole primitive draws there).
-   Default seeds are unchanged (their first lists draw). The replay tests no longer stop at an
-   empty scene (seed 5101 above).
-6. Depth clamp at other seeds (minor): gap A12, with the check's seeds and this run's 4747 one; the
-   pass bar's items 3 and 4 say "default seeds only".
-7. A10's new seeds (minor): added to A10.
-8. The runner test permanently red (minor): `KNOWN_UNNAMED` in tests/corpus.rs names
-   `hlsl+distance-4-ps.dxil` with gap A1; its verdict must still equal its record, so the test
-   passes and catches any other change.
-9. GLSL refusals by reason (minor): a glslang refusal is recorded with glslang's first error
-   (98 records: `'gl_SampleID' : undeclared identifier` 32, `'gl_SampleMask' : undeclared
-   identifier` 5, `GL_ANGLE_clip_cull_distance` not supported 30, `'sampler2DMS' : Reserved word`
-   22 and `usampler2DMS` 1, `'gl_PrimitiveID' : undeclared identifier` 8), so a new or other
-   refusal changes the record; and a write refusal is a named outcome only where a need is one the
-   WebGL 2 back end never declares (not `DUAL_SOURCE_BLEND`, `POINT_SIZE`, `SAMPLE_SHADING`), so
-   a shader needing only `SAMPLE_SHADING` must be written. Every record's GLSL part matches at the
-   tip with glslang (laptop) and without (x86).
-10. Fuzz crash rate (minor): A11 and Known gaps carry the check's count (26 of 4,000 at seed 8128,
-   all DXIL). Not re-run here.
-11. Known gaps against A8 (minor): Known gaps now names the same five shaders as A8.
-12. The `[0; 32]` literal (minor): replaced, and its baseline line deleted.
+1. A vertex program writing a storage texture (blocking): refused by name now, by `convert` and
+   `rewrite` alike. `vertex_storage_write` (src/lib.rs) also refuses a handle global whose type (or
+   binding array's element type) is a storage image with write access. New own shaders
+   `vertex_storage.hlsl` (`vs_store_texture`, `vs_store_typed`, `vs_store_raw`, fxc vs_5_0 and dxc
+   vs_6_0, compiled on the desktop by compile.cmd, which gave every other own file's bytes again).
+   New test `a_vertex_program_writing_storage_is_refused_by_convert_under_every_view_key`
+   (tests/rewrite.rs): all six files under the default key, the corpus's view keys and storage
+   textures through buffers give `VertexStorageWrite` (or, without a view's format, the format's
+   refusal first). The rewrite test now also feeds a WGSL vertex program writing a
+   `texture_storage_2d`. Their records: `unsupported VertexStorageWrite` (the raw one) and
+   `unsupported VertexStorageWrite (with views)`. A9 and "New for the owner" say what now holds.
+2. The DXBC allocation abort (blocking): the cause was this crate's, as the check said.
+   `declared_length` (src/lower.rs) now refuses a declared or ranged count past the slots its kind
+   binds (`BindingsBeyondLimit`, which those arrays met later anyway), and the register end is a
+   checked add (`Malformed` on overflow). New test
+   `a_resource_array_longer_than_its_kind_binds_is_refused_by_name` (tests/fuzz.rs): `ps_spaces`
+   with its sampler's last register set to 0x3fff_ffff and signed again. The fuzz test binary now
+   refuses any single Rust allocation over 1 GiB (its global allocator), as a host short of memory
+   would, so such a size aborts the test on every machine: with the old lowering the new test
+   aborts there ("memory allocation of 12884901888 bytes failed", SIGABRT, x86-unfixed.log), with
+   the new one it passes. Not one record changed. A11 and Known gaps say what is ours and what is
+   dxil-spirv's.
+3. More seeds of A10 and A12 (minor): added (seeds 9002, 9012, 9013 to A10; 9014 to A12).
+4. `WEBGL_DECLARABLE` a second copy of caps.rs (minor): not fixed in this run, recorded. The fact
+   lives in the WebGL 2 back end's crate, which another track owns and which offers no public form
+   of it (its `caps` needs a live context). Asked of the WebGL 2 track under "Asked of other
+   tracks"; the copy stays until then.
+5. Write refusals record only the back end's fixed text (minor): each write refusal's record now
+   also gives naga's own reason (`; naga alone: ...`, its GLSL ES 3.00 writer with the back end's
+   options on the module as converted), so a write refusal with another cause changes the record.
+   All 197 such records changed by that addition only (laptop, compared record by record); item 2
+   of the pass bar has the counts by feature.
+6. Empty scenes no longer compared (minor): `scene` (tests/geometry_draw.rs) now draws ours on each
+   index list it passes over and fails the case, by name, where ours draws or streams something
+   Direct3D drew nothing of (pictures: no texel drawn; depth clamp: every depth within the
+   allowance; stream output: every word and count equal). A replayed draw that makes no primitive
+   (`GeometryReplay::run` returning `None`) counts as ours drawing nothing; at a compared list it
+   fails as "ours made no primitive".
+7. The NIR route and the SPIR-V reader (minor): said in "New for the owner", with the three
+   refusals the check found; the reader's work is in "Next".
+8. The rest held at the check; nothing to do.
 
-The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner) exists since run
-57; this run only made it refuse vertex storage writes.
+The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner), since run 57.
 
 ## New for the owner
 
@@ -106,13 +106,24 @@ The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner) 
   route brought into the common form, with `cache::rewritten_key`. This is the public entry point
   the NIR track asked for in the brief of 2026-11-19 night; its status still says it waits (it
   read this branch at f97bec1b, before run 57). Contract and tests: history, "Run 57"; drawn on
-  the RTX 3080 by `rewrite_draw`. Since G6a run 2 it refuses a vertex program writing storage by
-  name (`refusal::VERTEX_STORAGE_WRITE`), as `convert` does: no back end runs one (gap A9).
+  the RTX 3080 by `rewrite_draw`. It refuses a vertex program writing a storage buffer (since G6a
+  run 2) or a storage texture (since G6a run 3) by name (`refusal::VERTEX_STORAGE_WRITE`), as
+  `convert` does: no back end runs one (gap A9).
+- For the NIR track: on its NIR-to-SPIR-V candidate route, three of the four 15.4 features cannot
+  reach `rewrite` yet, because the carried naga SPIR-V reader refuses glslang's SPIR-V for them
+  before a module exists (the third check, at 64787579): an array of combined image samplers
+  indexed at run time (`uniform sampler2D tex[4]; texture(tex[u.i], uv)`) gives `InvalidId(28)`,
+  a gather with a uniform offset gives `UnsupportedCapability(ImageGatherExtended)`, and a
+  formatless storage image gives `UnsupportedCapability(StorageImageWriteWithoutFormat)`. Only
+  modules from naga's WGSL front end are tested through `rewrite` (tests/rewrite.rs). Taking the
+  three in the carried reader is this track's work (it carries naga's patches), new work after
+  this milestone's check; until then the NIR route reaches `rewrite` with programs that use none
+  of them, or through another front end of naga.
 - The NIR track's other asks of this crate (its status, "Shaders track"): `stage::clip_unpositioned`
   and `Capabilities::IMMEDIATES` in the entry point, naga's reader rounding an array layer: not
   built; new work after this milestone's check.
 
-## G6: the pass bar item by item, and the gap list (checked at G6a run 1)
+## G6: the pass bar item by item, and the gap list (checked at G6a run 3)
 
 The pass bar, item by item:
 
@@ -129,8 +140,9 @@ The pass bar, item by item:
      now read by their bits). Named: `MultisampledArrayTexture` 1 and 1 (converts with the
      front's `texture_layers`; the corpus has no key), `RenderTargetArrayIndex` 1 and 1 (absent,
      as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (141, 89) and vkd3d's shader runner
-     files (1503 DXBC, 1517 DXIL). All at the tip in G6a run 1.
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (144, 92; the 3 and 3 added in G6a run
+     3 are the vertex shaders writing storage, all `VertexStorageWrite`) and vkd3d's shader runner
+     files (1503 DXBC, 1517 DXIL). All at the tip in G6a run 3.
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
    since run 47 the corpus test writes it with the WebGL 2 back end's own writing
@@ -150,7 +162,12 @@ The pass bar, item by item:
    distances (`vs_cull`) reaches WebGL 2 only through the stage helper there (gap A5). Since G6a
    run 2 a glslang refusal is recorded with glslang's first error (so a new or other refusal
    changes the record), and a write refusal is a named outcome only where a need is one the WebGL
-   2 back end never declares (not `DUAL_SOURCE_BLEND`, `POINT_SIZE` or `SAMPLE_SHADING`).
+   2 back end never declares (not `DUAL_SOURCE_BLEND`, `POINT_SIZE` or `SAMPLE_SHADING`; the
+   test's own copy of that list, asked of the WebGL 2 track). Since G6a run 3 a write refusal's
+   record also gives naga's own reason (its GLSL ES 3.00 writer on the module as converted,
+   `; naga alone: ...`), so a write refusal with another cause changes the record: all 197 are
+   features GLSL ES 3.00 lacks (storage buffers 143, image load and store 56, subgroups 23,
+   derivative control 7, cube array textures 5, each counted once per record naming it).
 3. Each variant field and flag of 6.4 has a test showing the rewritten program's result equals the
    unrewritten one's with the native feature, or real Direct3D's picture. Met for every field and
    flag but three (gap A4). Where each is tested (drawn on the RTX 3080; test binaries of
@@ -308,18 +325,28 @@ The gap list (every item of the pass bar not met):
   operands inside one call's arguments, whose order C++ leaves free (gcc and MSVC right to left,
   clang left to right). Waits: nobody until a native and a browser host share one cache. Takes: the
   operands sequenced in dxbc-spirv (upstream, or a patch carried as naga's are).
-- A9. Vertex shaders writing storage views (plan section 7, `VertexStorageAsCompute`) are refused
-  by name (`VertexStorageWrite`; runner and runner DXIL 1 each, depth-bounds-1-vs), by `convert`
-  and, since G6a run 2, by `rewrite` alike
-  (`a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it`). Cause: WebGPU
-  and WebGL 2 have no storage writes in vertex programs, and the route section 7 gives (the vertex
-  program run as compute by the stage helper, then a pass-through draw, as the cull route does) is
-  not built. Waits: the Direct3D 12 front's runner (depth-bounds); no real program seen with it.
+- A9. Vertex shaders writing storage buffers or storage textures (plan section 7,
+  `VertexStorageAsCompute`) are refused by name (`VertexStorageWrite`; runner and runner DXIL 1
+  each, depth-bounds-1-vs; own `vs_store_texture`, `vs_store_typed`, `vs_store_raw`, DXBC and
+  DXIL), by `convert` and `rewrite` alike. Storage textures only since G6a run 3: before it a
+  vertex program writing one (a storage texture under the view keys, or a typed buffer read as
+  one) was returned converted and failed only when the back end made the pipeline. Tests:
+  `a_vertex_program_writing_storage_is_refused_by_name_as_convert_refuses_it` (rewrite, a storage
+  buffer and a storage texture) and
+  `a_vertex_program_writing_storage_is_refused_by_convert_under_every_view_key` (the own files
+  under the default key, the view keys, and storage textures through buffers). Cause: WebGPU
+  forbids storage writes in vertex programs (buffers and textures alike) and WebGL 2 has no
+  storage, and the route section 7 gives (the vertex program run as compute by the stage helper,
+  then a pass-through draw, as the cull route does) is not built. Waits: the Direct3D 12 front's runner (depth-bounds); no real program seen with it.
   Takes: `convert` keeping such a program for the stage helper only, `vertex_as_compute` taking its
   storage writes, and a drawn test against Direct3D 11.
 - A10. Clip distances through the stage helper (`gs_clip` behind a geometry shader, `vs_cull` on
   the cull route) match Direct3D 11 at the default seeds 1 to 4, but at other seeds a few texels
-  are drawn on one side only. G6a run 1 (gpu-all.log, `geometry_shaders_draw_as_direct3d_does` at
+  are drawn on one side only. The third check (seed 9001, 16 cases, at 64787579) found four more,
+  all this pattern: seed 9002 `gs_clip` TriangleStrip (10 of 693 texels, largest 60), 9002
+  `vs_cull` TriangleList indexed (5 of 868, largest 49), 9012 `vs_cull` TriangleStrip (3 of 1,140,
+  largest 4), 9013 `gs_clip` TriangleStrip (7 of 459, largest 147); the replay on WebGL 2 fails
+  9002 and 9013 `gs_clip`. G6a run 1 (gpu-all.log, `geometry_shaders_draw_as_direct3d_does` at
   seed 4747, 12 cases): 336 comparisons, 8 failed. Four are this gap, the check's own: seed 4749
   `vs_cull` TriangleList indexed, 4753 and 4756 `gs_clip` TriangleStrip, 4756 `vs_cull`
   TriangleList indexed (largest 75, a few texels of 600 to 1,700 drawn). The other four are
@@ -337,19 +364,26 @@ The gap list (every item of the pass bar not met):
   the rasteriser does), then the same seeds compared again. (Seeded strips are drawn again until
   they hold a whole primitive since G6a run 2, so no scene is empty for want of one.)
 - A11. `mutated_bytecode_converts_or_fails_without_ending_the_process` (tests/fuzz.rs, ignored by
-  default as a long run) fails: signed but malformed bytecode can end the process inside the
-  converters (G6a run 1, fuzz.log: seed 7, case 301, a mutated `blend.vs.dxil`, SIGSEGV; G6a's
-  check, seed 8128, 4,000 cases, restarted past each crash: 26 crashes, SIGSEGV and
-  `std::terminate`, every one on DXIL, none on DXBC; Known gaps has the earlier counts). Cause: dxil-spirv's bitcode reader faults or calls
-  `std::terminate` on such input (and dxbc-spirv can exhaust memory). Only bytecode whose checksum
-  matches reaches the converters, so it needs a program that signs malformed bytecode. Waits:
-  nobody. Takes: the readers hardened upstream (not yet reported), or the converters run where a
-  fault cannot end the host.
+  default as a long run) fails: signed but malformed bytecode can end the process (G6a run 1,
+  fuzz.log: seed 7, case 301, a mutated `blend.vs.dxil`, SIGSEGV; the second check, seed 8128,
+  4,000 cases, restarted past each crash: 26 crashes, all DXIL; the third check, seed 5555, 6,000
+  cases: 27, 24 SIGSEGV and 2 `std::terminate` on DXIL and 1 on DXBC; Known gaps has the earlier
+  counts). Causes: on DXIL, dxil-spirv's bitcode reader faults or calls `std::terminate` on such
+  input. On DXBC the third check's crash was this crate's own: the lowering took a resource
+  array's declared count unchecked and asked Rust for gigabytes for its register list (an
+  allocation failure, which aborts). Fixed in G6a run 3: a declared or ranged count past the slots
+  its kind binds is refused (`BindingsBeyondLimit`) and the register end is a checked add
+  (`a_resource_array_longer_than_its_kind_binds_is_refused_by_name`, tests/fuzz.rs, that case
+  rebuilt by hand). Only bytecode whose checksum matches reaches the converters, so it needs a
+  program that signs malformed bytecode. Waits: nobody. Takes: on DXIL, the reader hardened
+  upstream (not yet reported), or the converters run where a fault cannot end the host; on DXBC,
+  any further allocation sized by the bytecode bounded in this crate as the count now is.
 - A12. `DEPTH_CLAMP` behind a geometry stage (`depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does`)
   is within four units in the last place of Direct3D 11's depth at the default seeds 1 to 4 (16
   comparisons), but not at all seeds: G6a's check, seed 5103 `gs_cut` TriangleList, 37 of 470
   clamped texels differ, largest 33 steps; seed 5104 `gs_cut` TriangleStrip, 173 of 177, largest
-  59 steps (allowed 4). Cause: not found. Both are `gs_cut`; the pixel program clamps a depth
+  59 steps (allowed 4); the third check, seed 9014 `gs_cut` TriangleStrip, 24 of 40 differ, 20
+  steps. Cause: not found. Both are `gs_cut`; the pixel program clamps a depth
   interpolated as a value between stages from the pass-through's unclamped depth, where Direct3D
   clamps its rasteriser's own depth, so the two interpolations may round apart by more on some
   triangles (inferred, not measured). Waits: nobody (depths some millionths
@@ -384,7 +418,10 @@ After G6a's check: its findings first, then the gap list in the order the fronts
 3. The Direct3D 11 front's aliased lines into multisampled targets (a stage helper route and the
    interface's word for it), then the rest of A5 in its order (alpha-antialiased lines and layered
    geometry on WebGL 2).
-4. The NIR track's other asks of this crate (New for the owner).
+4. The NIR track's other asks of this crate (New for the owner), first the carried naga SPIR-V
+   reader taking glslang's arrays of combined image samplers indexed at run time,
+   `ImageGatherExtended` and `StorageImageWriteWithoutFormat`, so the 15.4 rewrites are reachable
+   on its route.
 5. A4, A7, A10, A12, A9, A1, A8, A11, and "Also open", each closed with its drawn test and its line
    deleted from the gap list.
 
@@ -488,7 +525,14 @@ After G6a's check: its findings first, then the gap list in the order the fronts
   `wcontainers-gpu-webgl` (re-exports of `shader::{write, needs, GlslSettings, ShaderText}`; the
   shaders corpus test writes and checks every converted shader's GLSL through it), or give the
   same under a name of your choice and say so. And the write error drops naga's reason (it is only
-  printed): carrying it in the error would let callers name it.
+  printed): carrying it in the error would let callers name it (until then the corpus test records
+  naga's own reason beside it, G6a run 3).
+- The WebGL 2 track (G6a run 3): a public list, in the `glsl` module, of the features `caps` can
+  declare (`DUAL_SOURCE_BLEND`, `POINT_SIZE`, `SAMPLE_SHADING` today, each where its extension is
+  there). The corpus test keeps its own copy (`WEBGL_DECLARABLE` in tests/corpus.rs) to decide
+  that a GLSL write refusal of a shader needing only such features is a failure; with the list
+  public it would read yours and could not go stale when caps.rs declares another (for example
+  `CLIP_DISTANCE`, held back for a Chrome bug).
 - The interface track (run 47): no feature names a cube array view; WebGL 2 cannot make one, and
   the corpus test names it itself (`CUBE_ARRAY_VIEW`, 5 shaders).
 
@@ -1844,7 +1888,10 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   at case n. It ends at the first case that crashes (Known gaps); scratch
   `graphics-shaders/fuzz/resume.sh <seed> <cases>`, run on the laptop after one build, restarts past
   each crash and lists them; the cases our own checks refused go to
-  `~/wcontainers-graphics/fuzz-ours-<seed>.txt`.
+  `~/wcontainers-graphics/fuzz-ours-<seed>.txt`. On the x86 machine (since G6a run 3): scratch
+  `graphics-shaders/g6a3/x86-fuzz.sh`, its `seed=SEED cases=CASES` line set, passed as the command
+  of `x86-run . --name graphics-shaders-fuzz -- "$(cat ...)"`. The fuzz binary refuses any single
+  Rust allocation over 1 GiB, so a size taken unchecked from the bytecode ends it on every machine.
 - WebAssembly in one command: scratch `graphics-shaders/run10/wasm.sh` (copied to
   `~/wcontainers-graphics/wasm-run10.sh`; it adds the real programs' shaders to run 5's), run through
   `tools/graphics-rig/linux bash -c '$HOME/wcontainers-graphics/wasm-run10.sh'` after a native corpus run has filled
@@ -2180,14 +2227,15 @@ were already there.
   definition applied to Direct3D 11's depth, not against a native swapped range.
 
 - Signed but malformed DXIL can end the process natively: dxil-spirv's bitcode reader faults or calls
-  `std::terminate` (`bc/cast.hpp`) on it (G6a's check: 26 of 4000 cases at seed 8128, all DXIL,
-  none DXBC; 7 of 3000 in run 8, 9 in run 7, 10 in run 5, 15 in run 4, Measurements); malformed DXBC exhausted memory in 3 of 3000 in run 5 (1 in run 4, none in run 7), and the check of run 5
-  found one DXIL case too (seed 31337, case 4995). The exhaustion is inside the converters: with the
-  address space capped (`ulimit -v 3000000`) the DXBC cases end as `Rejected`, the C++ `bad_alloc`
-  caught at the boundary, but natively nothing bounds it without such a cap; on WebAssembly the
-  module's memory limit ends the instance. Only bytecode whose checksum matches reaches the converters, so this needs a
-  program that signs malformed bytecode. dxil-spirv is used unmodified, so the fix belongs upstream
-  (not yet reported). `tests/fuzz.rs` stays failing at those cases.
+  `std::terminate` (`bc/cast.hpp`) on it (the third check: 26 of 6,000 cases at seed 5555; the
+  second: 26 of 4,000 at seed 8128; 7 of 3000 in run 8, 9 in run 7, 10 in run 5, 15 in run 4,
+  Measurements). dxil-spirv is used unmodified, so that fix belongs upstream (not yet reported).
+  Malformed DXBC ended the process by exhausting memory in 3 of 3000 in run 5 (1 in run 4, none in
+  run 7) and in 1 of 6,000 in the third check. That last one was this crate's lowering (gap A11),
+  fixed in G6a run 3; runs 4 and 5 named dxbc-spirv's C++ `bad_alloc` (caught at the boundary
+  under `ulimit -v`) without a backtrace, so whether those were the same is not known. Only
+  bytecode whose checksum matches reaches the converters, so this needs a program that signs
+  malformed bytecode. `tests/fuzz.rs` stays failing at the DXIL cases.
 - Mutated but signed bytecode that dxbc-spirv accepts can give IR our lowering refuses (`Malformed`)
   or a module naga's validation refuses (`Invalid`, for example a constant index past an array's
   end, which Direct3D would read as zero): refused, not converted (Measurements).

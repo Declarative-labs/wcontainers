@@ -33,7 +33,7 @@ mod geometry;
 mod split;
 mod tessellation;
 mod through;
-pub(crate) use geometry::{STREAM_OUT_WITHOUT_COMPUTE, StageRun};
+pub(crate) use geometry::StageRun;
 pub(crate) use tessellation::TessRun;
 use through::Through;
 

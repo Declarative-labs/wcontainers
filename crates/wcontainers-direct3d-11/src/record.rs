@@ -18,6 +18,9 @@ struct Texture {
     subresources: Vec<Vec<u8>>,
 }
 
+/// The refusal of a texture of more than one cube where [`Recorder::cube_arrays`] is cleared.
+const NO_CUBE_ARRAYS: &str = "recorder: no cube arrays";
+
 pub struct Recorder {
     /// What it declares; tests take uses away to reach a front's slow paths.
     pub caps: Caps,
@@ -36,6 +39,8 @@ pub struct Recorder {
     pub lost: Option<LossReason>,
     /// Set to make read backs pending until a submit (or a wait) after them, as on a GPU.
     pub reads_need_submit: bool,
+    /// Cleared to refuse textures of more than one cube, as WebGL 2 does.
+    pub cube_arrays: bool,
     /// The last id submitted.
     submitted: Id,
 }
@@ -119,6 +124,7 @@ impl Recorder {
             reads: HashMap::new(),
             lost: None,
             reads_need_submit: false,
+            cube_arrays: true,
             submitted: 0,
         }
     }
@@ -214,6 +220,9 @@ impl Backend for Recorder {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Id, GpuError> {
+        if !self.cube_arrays && desc.own_view() == ViewDimension::CubeArray {
+            return Err(GpuError::Invalid(NO_CUBE_ARRAYS));
+        }
         let id = self.id();
         let mut subresources = Vec::new();
         for _layer in 0..desc.depth_or_layers {

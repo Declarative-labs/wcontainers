@@ -15,7 +15,7 @@
 093dd20d1194b903.dxil	ok ; glsl compiles
 094d3bbe64d974a5.dxil	ok ; glsl compiles
 09a0c33437843ec0.dxil	ok ; glsl compiles
-0a9dfde222225de5.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+0a9dfde222225de5.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
 0af8f13d46b03e29.dxil	ok ; glsl compiles
 0c17885409f555ea.dxil	ok ; glsl compiles
 0c8cd4518b3cc7d5.dxil	ok ; glsl compiles
@@ -171,7 +171,7 @@
 7402d9d06822b2f8.dxil	ok ; glsl compiles
 74f0dd8b01fbc31b.dxil	ok ; glsl compiles
 752971380945dcbe.dxil	ok ; glsl compiles
-7641e940074add6d.dxil	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+7641e940074add6d.dxil	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(CUBE_TEXTURES_ARRAY)
 766a5967f43b70f7.dxil	ok ; glsl compiles
 7704e707797ce3fb.dxil	ok ; glsl compiles
 782540557737427a.dxil	ok ; glsl compiles
@@ -230,7 +230,7 @@ a124648111dd823d.dxil	ok views:R32Float ; glsl absent compute
 a126fe294e3d3c30.dxil	ok views:R32Float ; glsl absent compute
 a14f16819c16c5d7.dxil	ok views:R32Float ; glsl absent compute
 a1d124a355c95f30.dxil	ok ; glsl compiles
-a34ec25cad46672c.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+a34ec25cad46672c.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 a48d8117d8e85146.dxil	ok ; glsl compiles
 a4d49b99cc6e646c.dxil	ok views:R32Float ; glsl absent compute
 a51181f3fb7dc157.dxil	ok ; glsl compiles
@@ -304,7 +304,7 @@ d1041912dbb3ef62.dxil	ok views:R32Float ; glsl absent compute
 d2dbba4f851f4bb0.dxil	ok ; glsl compiles
 d3408f0599e8b4c6.dxil	ok ; glsl compiles
 d3b735c9f7f5697b.dxil	ok views:R32Float ; glsl absent compute
-d3edd1042fcc6fc8.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+d3edd1042fcc6fc8.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
 d3f74dd934bdac2e.dxil	ok ; glsl compiles
 d4422d5aa9c2a51f.dxil	ok ; glsl compiles
 d4cf2ff8fc02da43.dxil	ok ; glsl compiles
@@ -325,7 +325,7 @@ e3c4502376c1b620.dxil	ok ; glsl compiles
 e48a9984066db3e8.dxil	ok ; glsl compiles
 e4f7c1de02d4ae96.dxil	ok ; glsl compiles
 e51610ac385cf9df.dxil	ok ; glsl compiles
-e52ae8c13c8048b8.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+e52ae8c13c8048b8.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 e5d1985b3eca7308.dxil	ok ; glsl compiles
 e65e2da1741f054d.dxil	ok ; glsl compiles
 e80379d863e36ef8.dxil	ok ; glsl compiles
@@ -425,19 +425,19 @@ godot-compute-ef54067cd5606132.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-f1bbd623757d7a64.dxil	ok ; glsl absent compute
 godot-compute-f8ba5aa849fe70e5.dxil	ok views:R32Float ; glsl absent compute
 godot-compute-fcdd20873fda5f78.dxil	ok views:R32Float ; glsl absent compute
-godot-fragment-2893de73bed23900.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-godot-fragment-f0e16912c4aaaddb.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
-godot-pixel-3ce334b77ff19481.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-4f1f1cfce08f5627.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-683372801f6cdeef.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-6c45dd7c62f78cdb.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-6c790c72decb251a.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-77afaad9b1afc36c.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-7c3616d036375caa.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-93fb6139263fd00a.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-b672aecf523d5376.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-bcba683d4c9e3430.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-d073303300ab0bdb.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-e58e8b8071c6514c.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-pixel-fce09f62b8749734.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)")
-godot-vertex-ae47f85da0f11cca.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+godot-fragment-2893de73bed23900.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(IMAGE_LOAD_STORE)
+godot-fragment-f0e16912c4aaaddb.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-3ce334b77ff19481.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-4f1f1cfce08f5627.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-683372801f6cdeef.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-6c45dd7c62f78cdb.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-6c790c72decb251a.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-77afaad9b1afc36c.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-7c3616d036375caa.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-93fb6139263fd00a.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-b672aecf523d5376.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-bcba683d4c9e3430.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-d073303300ab0bdb.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-e58e8b8071c6514c.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-pixel-fce09f62b8749734.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: one expression of a texture is sampled through two samplers (not built)"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE | SUBGROUP_OPERATIONS)
+godot-vertex-ae47f85da0f11cca.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)

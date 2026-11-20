@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl and waves.hlsl (dxc only) with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl, vertex_storage.hlsl and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -169,4 +169,8 @@ for %%e in (ps_msloop ps_msswap) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_line -Gis -Fo ps_line.dxil lines.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_primitive /Fo ps_primitive.dxbc lines.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_primitive -Gis -Fo ps_primitive.dxil lines.hlsl || exit /b 1
+for %%e in (vs_store_texture vs_store_typed vs_store_raw) do (
+  "%FXC%" /nologo /T vs_5_0 /E %%e /Fo %%e.dxbc vertex_storage.hlsl || exit /b 1
+  "%DXC%" -nologo -T vs_6_0 -E %%e -Fo %%e.dxil vertex_storage.hlsl || exit /b 1
+)
 echo %FXC% %DXC%

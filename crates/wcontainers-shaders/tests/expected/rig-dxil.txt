@@ -12,7 +12,7 @@ d3d12.ps_bundle.dxil	ok ; glsl compiles
 d3d12.ps_constants.dxil	ok ; glsl compiles
 d3d12.ps_image.dxil	ok ; glsl compiles
 d3d12.ps_root_cbv.dxil	ok ; glsl compiles
-d3d12.ps_root_srv.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+d3d12.ps_root_srv.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 d3d12.ps_static.dxil	ok ; glsl compiles
 d3d12.ps_table.dxil	ok ; glsl compiles
 depth.ps_depth.dxil	ok ; glsl compiles
@@ -60,7 +60,7 @@ textures.ps_1d_array.dxil	ok ; glsl compiles
 textures.ps_2d_array.dxil	ok ; glsl compiles
 textures.ps_3d.dxil	ok ; glsl compiles
 textures.ps_cube.dxil	ok ; glsl compiles
-textures.ps_cube_array.dxil	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+textures.ps_cube_array.dxil	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(CUBE_TEXTURES_ARRAY)
 textures.ps_load.dxil	ok ; glsl compiles
 textures.ps_mips.dxil	ok ; glsl compiles
 triangle.ps.dxil	ok ; glsl compiles

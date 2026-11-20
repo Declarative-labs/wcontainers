@@ -6,8 +6,8 @@
 //! integers absent.
 
 use wcontainers_directx_graphics_infrastructure::{
-    FormatSupport, dxgi, dxgi_format, dxgi_vertex_format, format_support as shared_format_support,
-    support1, support2, takes_samples,
+    FormatSupport, atomic_operations, dxgi, dxgi_format, dxgi_vertex_format,
+    format_support as shared_format_support, support1, support2, takes_samples,
 };
 use wcontainers_gpu::{Caps, Features, Format, FormatUse};
 
@@ -57,8 +57,9 @@ pub fn feature_level(caps: &Caps) -> Option<u32> {
 pub const SUPPORT1_TYPED_BUFFER: u32 = support1::BUFFER | support1::SHADER_LOAD;
 
 /// `D3D12_FEATURE_FORMAT_SUPPORT` for DXGI format `value`: the shared answers, with typed buffer
-/// views and stream output, which this front serves through the program (`TexelBufferAsStorage`,
-/// `StreamOutAsCompute`): stream output into the formats of 32-bit components, as Direct3D lists.
+/// views, stream output and atomics on typed storage views, which this front serves through the
+/// program (`TexelBufferAsStorage`, `StreamOutAsCompute`, `AtomicsThroughBuffer`): stream output
+/// into the formats of 32-bit components, as Direct3D lists.
 pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     if let Some(s) = video_format_support(caps, value) {
         return s;
@@ -66,6 +67,10 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     let mut s = shared_format_support(caps, value);
     if typed_buffer(caps, value) {
         s.support1 |= SUPPORT1_TYPED_BUFFER;
+    }
+    // A storage texture used with atomics is read and written through a buffer of its texels.
+    if s.support2 & support2::UAV_TYPED_STORE != 0 && caps.limits.storage_buffers_per_stage > 0 {
+        s.support2 |= atomic_operations(value);
     }
     let word = size_of::<u32>() as u32;
     let streamed = match (dxgi_format(value), dxgi_vertex_format(value)) {

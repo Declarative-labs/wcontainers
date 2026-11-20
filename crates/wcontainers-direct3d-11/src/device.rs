@@ -247,9 +247,10 @@ const GEOMETRY_STAGE_UNSERVED: &str = "geometry shaders and stream output withou
 
 /// Whether `caps` serves every requirement of feature level `level` (plan section 9): its texture
 /// sizes and targets within the adapter's limits; from 10_0 `D32_FLOAT_S8X24_UINT` targets, float
-/// targets, and the geometry stage and stream output, which the stage helper's compute route serves
-/// whole (its replay serves geometry shaders but not stream output without one); at 11_0 compute.
-fn serves(caps: &wcontainers_gpu::Caps, level: u32) -> bool {
+/// targets, and the geometry stage and stream output, which the stage helper serves through compute
+/// programs or, below 11_0, through transform feedback (its replay); from 10_1 cube arrays
+/// (`cube_arrays`, which `Caps` does not name); at 11_0 compute.
+fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
     let limits = &caps.limits;
     let [extent, cube_extent, volume, layers] = level_texture_limits(level);
     let sized = limits.max_texture_2d >= extent
@@ -258,22 +259,49 @@ fn serves(caps: &wcontainers_gpu::Caps, level: u32) -> bool {
         && limits.max_texture_layers >= layers
         && limits.color_targets >= level_targets(level);
     let renders = |f: Format, u: FormatUse| caps.formats.get(f).contains(u);
+    let staged = caps.has(Features::COMPUTE)
+        || (level < level::L11_0 && caps.has(Features::TRANSFORM_FEEDBACK));
     sized
         && (level < level::L10_0
             || (renders(Format::Depth32FloatStencil8, FormatUse::DEPTH_STENCIL)
                 && renders(Format::Rgba32Float, FormatUse::RENDER)
-                && caps.has(Features::COMPUTE)))
+                && staged))
+        && (level < level::L10_1 || cube_arrays)
 }
 
-/// The highest feature level `caps` serves, if any.
-pub fn top_level(caps: &wcontainers_gpu::Caps) -> Option<u32> {
-    DEFAULT_LEVELS.into_iter().find(|&l| serves(caps, l))
+/// The highest feature level `caps` serves, if any, with `cube_arrays` as [`serves`] takes it.
+pub fn top_level(caps: &wcontainers_gpu::Caps, cube_arrays: bool) -> Option<u32> {
+    DEFAULT_LEVELS
+        .into_iter()
+        .find(|&l| serves(caps, l, cube_arrays))
+}
+
+/// Faces of a cube.
+pub(crate) const CUBE_FACES: u32 = 6;
+
+/// Whether `backend` makes textures of more than one cube, which `Caps` does not say: a texture of
+/// two cubes of one texel, made and destroyed.
+fn makes_cube_arrays<B: Backend>(backend: &mut B) -> bool {
+    let made = backend.create_texture(&GpuTexture {
+        dimension: TextureDimension::D2,
+        format: Format::Rgba8Unorm,
+        width: 1,
+        height: 1,
+        depth_or_layers: 2 * CUBE_FACES,
+        mip_levels: 1,
+        samples: 1,
+        usage: TextureUsage::SAMPLE,
+        cube: true,
+        reinterpret: false,
+    });
+    made.map(|t| backend.destroy(Object::Texture(t))).is_ok()
 }
 
 impl<B: Backend> Device<B> {
     /// Makes the device at the first of `levels` (or of Direct3D's default list) the back end serves.
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
-        let top = top_level(backend.caps()).ok_or(Error::Unsupported)?;
+        let cube_arrays = makes_cube_arrays(&mut backend);
+        let top = top_level(backend.caps(), cube_arrays).ok_or(Error::Unsupported)?;
         let asked: &[u32] = if levels.is_empty() {
             &DEFAULT_LEVELS
         } else {
@@ -630,7 +658,7 @@ impl<B: Backend> Device<B> {
         };
         let (texture_dimension, layers) = match dimension {
             ViewDimension::D2 | ViewDimension::D2Array => (TextureDimension::D2, 1),
-            ViewDimension::Cube | ViewDimension::CubeArray => (TextureDimension::D2, 6),
+            ViewDimension::Cube | ViewDimension::CubeArray => (TextureDimension::D2, CUBE_FACES),
             ViewDimension::D3 => (TextureDimension::D3, 1),
         };
         // Multisampled textures take no writes: they are cleared by a pass.
@@ -648,7 +676,7 @@ impl<B: Backend> Device<B> {
             mip_levels: 1,
             samples,
             usage: TextureUsage::SAMPLE | filled,
-            cube: layers == 6,
+            cube: layers == CUBE_FACES,
             reinterpret: false,
         };
         let texture = self.backend.create_texture(&desc);
@@ -885,7 +913,7 @@ impl<B: Backend> Device<B> {
             TexDim::D3 => (limits.max_texture_3d.min(volume), 1),
             _ if cube => (
                 limits.max_texture_cube.min(cube_extent),
-                limits.max_texture_layers.min(level_layers.max(6)),
+                limits.max_texture_layers.min(level_layers.max(CUBE_FACES)),
             ),
             _ => (
                 limits.max_texture_2d.min(extent),
@@ -1020,13 +1048,13 @@ impl<B: Backend> Device<B> {
                 "mip generation needs shader resource and render target bindings",
             ));
         }
-        if cube && (d.array_size < 6 || d.width != d.height || d.dimension != TexDim::D2) {
+        if cube && (d.array_size < CUBE_FACES || d.width != d.height || d.dimension != TexDim::D2) {
             return Err(Error::InvalidArg(
                 "a cube texture needs at least six square faces",
             ));
         }
         // Arrays of cubes came with 10_1.
-        if cube && self.level < level::L10_1 && d.array_size != 6 {
+        if cube && self.level < level::L10_1 && d.array_size != CUBE_FACES {
             return Err(Error::InvalidArg(
                 "a cube texture below 10_1 has exactly six faces",
             ));
@@ -1110,7 +1138,7 @@ impl<B: Backend> Device<B> {
         let (format, mips) = self.check_texture(d, !init.is_empty())?;
         // The back end's cubes are whole: a cube texture of other layer counts is a 2D array
         // whose cube views see its first sixes.
-        let cube = d.misc_flags & MISC_TEXTURECUBE != 0 && d.array_size.is_multiple_of(6);
+        let cube = d.misc_flags & MISC_TEXTURECUBE != 0 && d.array_size.is_multiple_of(CUBE_FACES);
         let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
         for (flag, u) in [
             (bind::SHADER_RESOURCE, TextureUsage::SAMPLE),
@@ -1452,11 +1480,11 @@ impl<B: Backend> Device<B> {
             // A cube array sees the whole cubes left.
             v.layer_count = layers - v.first_layer.min(layers);
             if v.dimension == ViewDim::TextureCubeArray {
-                v.layer_count -= v.layer_count % 6;
+                v.layer_count -= v.layer_count % CUBE_FACES;
             }
         }
         if v.dimension == ViewDim::TextureCube && desc.is_none() {
-            v.layer_count = 6;
+            v.layer_count = CUBE_FACES;
         }
         if texture.chain == ChainBuffer::Read && kind != bind::SHADER_RESOURCE {
             return Err(Error::InvalidArg(
@@ -1501,8 +1529,8 @@ impl<B: Backend> Device<B> {
         );
         if cube
             && (t.misc_flags & MISC_TEXTURECUBE == 0
-                || !v.layer_count.is_multiple_of(6)
-                || (v.dimension == ViewDim::TextureCube && v.layer_count != 6))
+                || !v.layer_count.is_multiple_of(CUBE_FACES)
+                || (v.dimension == ViewDim::TextureCube && v.layer_count != CUBE_FACES))
         {
             return Err(Error::InvalidArg(
                 "a cube view needs faces in sixes of a cube texture",
@@ -2138,15 +2166,12 @@ impl<B: Backend> Device<B> {
         if rasterized != 0 && outputs.iter().any(|o| o.stream == rasterized) {
             return not_implemented(GEOMETRY_STREAM_DRAWN_PAST_ZERO);
         }
-        // Without compute programs a geometry shader is replayed through transform feedback
-        // (`GeometryAsReplay`), which takes no stream output without a geometry stage.
+        // Without compute programs a geometry shader, or a vertex shader's stream output, is
+        // replayed through transform feedback (`GeometryAsReplay`, `StreamOutAfterReplay`).
         let caps = self.backend.caps();
         let replayed = !caps.has(Features::COMPUTE);
         if replayed && !caps.has(Features::TRANSFORM_FEEDBACK) {
             return not_implemented(GEOMETRY_STAGE_UNSERVED);
-        }
-        if replayed && vertex {
-            return not_implemented(crate::context::STREAM_OUT_WITHOUT_COMPUTE);
         }
         let stage = if vertex {
             None
