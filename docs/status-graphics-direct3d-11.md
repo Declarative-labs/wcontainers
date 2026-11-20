@@ -56,8 +56,9 @@ Round 2, run 10 (2026-11-19, about 23:00 to 01:30 Pacific):
   which passes (455f67d7, logs/r10d-*). At 455f67d7 the whole library suite: com 15, programs
   41 with 2 ignored, all passing (logs/r10f-lib.log, 00:07 to 00:09). Front 55, unit 5, cache 1 (x86 machine); lint of both
   builds clean; literal check exit 0. Sizes and building-ahead hits in Measurements.
-- At the end the build folders were deleted (Clean-up below). Nothing was built on the Mac;
-  nothing was installed.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (19.7 GB) and the x86
+  machine's /work/target/g-d3d11 (3.0 GB) were deleted. Nothing was built on the Mac (formatting
+  only); nothing was installed.
 
 ## Wine's Direct3D 11 tests through ours
 
