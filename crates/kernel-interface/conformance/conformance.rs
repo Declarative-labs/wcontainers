@@ -12,8 +12,7 @@ pub fn resume_no_tasks<K: Kernel>(mut kernel: K) {
     assert!(kernel.resume_tasks(core::iter::empty()).next().is_none());
 }
 
-/// Runs each suite function above as its own test on the value an implementation gives, made anew for
-/// every test.
+/// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
