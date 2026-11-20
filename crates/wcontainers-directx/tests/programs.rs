@@ -289,10 +289,12 @@ fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
 }
 
 /// The same without the 16-bit normalised formats either, as a browser without
-/// `texture-formats-tier1` lacks them: `R16G16_UNORM` then needs `NormAsInteger`.
+/// `texture-formats-tier1` lacks them: `R16G16_UNORM` then needs `NormAsInteger`. A known failure:
+/// `NormAsInteger` is not built, so a texture of a 16-bit normalised format is refused without the
+/// back end's format.
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "NormAsInteger is not built in this front: a texture of a 16-bit normalised format is refused without the back end's format"]
+#[ignore]
 fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does() {
     let off = [
         wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,

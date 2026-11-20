@@ -219,6 +219,8 @@ const CULL_DISTANCES_UNSERVED: &str = "cull distances past the vertex stage, or 
      (CullDistanceAsGeometry)";
 
 /// Refused: sharing below 10_0, or of more or fewer than one kind.
+const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
+    "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)";
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
 
 /// The color targets a pass takes at feature level `level`.
@@ -2062,9 +2064,7 @@ impl<B: Backend> Device<B> {
         let (stream, drawn) =
             crate::stream::declaration(entries, strides, rasterized, self.level, &outputs, vertex)?;
         if rasterized != 0 && outputs.iter().any(|o| o.stream == rasterized) {
-            return not_implemented(
-                "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)",
-            );
+            return not_implemented(GEOMETRY_STREAM_DRAWN_PAST_ZERO);
         }
         if !self.backend.caps().has(Features::COMPUTE) {
             return not_implemented(

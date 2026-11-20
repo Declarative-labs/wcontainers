@@ -360,6 +360,15 @@ const LINES_WITHOUT_COMPUTE: &str =
     "alpha-antialiased lines without the back end's compute (AntialiasedLinesAsQuads)";
 const LINES_WITHOUT_PIXEL_SHADER: &str =
     "alpha-antialiased lines without a pixel shader to apply their coverage";
+/// A colour as Direct3D clears with it (red, green, blue, alpha).
+pub type Color = [f32; COLOR_COMPONENTS];
+/// The components of a [`Color`].
+pub const COLOR_COMPONENTS: usize = 4;
+/// A rectangle as Direct3D gives it (left, top, right, bottom).
+pub type Rect = [i32; RECT_EDGES];
+/// The edges of a [`Rect`].
+pub const RECT_EDGES: usize = 4;
+const COMPUTE_VARIANT_OF_DRAWS: &str = "a compute program variant only draws take";
 const LINES_FACING: &str = "a pixel shader reading its facing on alpha-antialiased lines";
 const VIEWPORT_BEHIND_GEOMETRY: &str =
     "a viewport the back end would round, behind a geometry stage";
@@ -871,8 +880,8 @@ impl<B: Backend> Device<B> {
     pub fn clear_view_rects(
         &mut self,
         view: &Rc<View<B>>,
-        color: [f32; 4],
-        rects: &[[i32; 4]],
+        color: Color,
+        rects: &[Rect],
     ) -> Result<()> {
         if self.predicated_out() {
             return Ok(());
@@ -2663,7 +2672,7 @@ impl<B: Backend> Device<B> {
             ..StageVariant::default()
         };
         if cv != served {
-            return not_implemented("a compute program variant only draws take");
+            return not_implemented(COMPUTE_VARIANT_OF_DRAWS);
         }
         self.count_sampling_in_shader(&[&cv]);
         let varied = cv != StageVariant::default();
@@ -2828,7 +2837,7 @@ impl<B: Backend> Device<B> {
 
     /// `ClearView` of a whole storage view: integer formats take each value cast, the others the
     /// values converted as `ClearUnorderedAccessViewFloat` converts them.
-    pub fn clear_view_uav(&mut self, view: &ShaderView<B>, color: [f32; 4]) -> Result<()> {
+    pub fn clear_view_uav(&mut self, view: &ShaderView<B>, color: Color) -> Result<()> {
         let integer = match view {
             ShaderView::Texture(v) => integer_format(v.format),
             ShaderView::Buffer(b) => b.texel.is_some_and(|(f, ..)| integer_format(f)),
@@ -5567,7 +5576,7 @@ fn twin_block(
 }
 
 /// A rectangle (left, top, right, bottom) as the pixels it holds.
-fn pixel_rect([l, t, r, b]: [i32; 4]) -> ScissorRect {
+fn pixel_rect([l, t, r, b]: Rect) -> ScissorRect {
     ScissorRect {
         x: l.max(0) as u32,
         y: t.max(0) as u32,
@@ -5577,7 +5586,7 @@ fn pixel_rect([l, t, r, b]: [i32; 4]) -> ScissorRect {
 }
 
 /// A target view's clear value of `color`: integer formats take each value cast.
-fn color_value<B: Backend>(view: &View<B>, color: [f32; 4]) -> ClearValue {
+fn color_value<B: Backend>(view: &View<B>, color: Color) -> ClearValue {
     ClearValue::Color(if integer_format(view.format) {
         color.map(|c| c as i64 as u32)
     } else {

@@ -1512,8 +1512,8 @@ impl Context {
         if color.is_null() {
             return;
         }
-        let c = unsafe { *color.cast::<[f32; 4]>() };
-        let rects: Vec<[i32; 4]> = if n == 0 || rects.is_null() {
+        let c = unsafe { *color.cast::<wcontainers_direct3d_11::Color>() };
+        let rects: Vec<wcontainers_direct3d_11::Rect> = if n == 0 || rects.is_null() {
             Vec::new()
         } else {
             unsafe { std::slice::from_raw_parts(rects, n as usize) }
@@ -1523,16 +1523,15 @@ impl Context {
         };
         if let Some(v) = front_of(&view, |v: &UnorderedAccessView| &*v.front) {
             if !rects.is_empty() {
-                return self
-                    .unserved("ID3D11DeviceContext1::ClearView of a storage view's rectangles");
+                return self.unserved(CLEAR_VIEW_STORAGE_RECTS);
             }
-            self.run("ClearView", move |f| f.clear_view_uav(&v, c));
+            self.run(CLEAR_VIEW, move |f| f.clear_view_uav(&v, c));
             return;
         }
         let Some(v) = front_of(&view, |v: &RenderTargetView| &*v.front) else {
-            return self.unserved("ID3D11DeviceContext1::ClearView of a video view");
+            return self.unserved(CLEAR_VIEW_VIDEO);
         };
-        self.run("ClearView", move |f| {
+        self.run(CLEAR_VIEW, move |f| {
             if rects.is_empty() {
                 f.clear_render_target_view(&v, c);
                 Ok(())
@@ -2691,3 +2690,8 @@ fn box3(b: &D3D11_BOX) -> Box3 {
         back: b.back,
     }
 }
+
+const CLEAR_VIEW: &str = "ClearView";
+const CLEAR_VIEW_STORAGE_RECTS: &str =
+    "ID3D11DeviceContext1::ClearView of a storage view's rectangles";
+const CLEAR_VIEW_VIDEO: &str = "ID3D11DeviceContext1::ClearView of a video view";
