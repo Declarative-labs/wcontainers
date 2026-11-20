@@ -7756,17 +7756,7 @@ restated	crates/wcontainers-wasmtime/tests/surface.rs	str	look_ahead_argument	"f
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	look_ahead_argument	"none"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	reference_with	"run"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	standard_input_matches_docker_interactive	"--interactive"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_passes_its_input	"--"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_passes_its_input	"--interactive"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_passes_its_input	"--interactive"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_passes_its_input	"--look-ahead"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_passes_its_input	"--tar"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--config"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--look-ahead"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--oci"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--tar"
-restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--tar"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_guest_sees_the_honoured_values	"mounts"
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	VIEWS	0x40_0000
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	read_through_the_other	0x10_0000

@@ -16,7 +16,7 @@ use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
     Container, Ending, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, Step, base_spec,
 };
-use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorConfig};
+use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorConfig, cli};
 
 const IMAGE: &str = "alpine:3.22";
 const PIPELINE: &str = "cat /etc/os-release | grep ^ID= | tr a-z A-Z; ls /bin | sort -r | head -3; \
@@ -630,13 +630,13 @@ fn the_command_line_program_runs_a_container() {
     let program = env!("CARGO_BIN_EXE_wcon");
     let expected = reference(PIPELINE);
     for source in [
-        ["--oci", layout.to_str().unwrap()],
-        ["--tar", files.to_str().unwrap()],
+        [cli::OCI, layout.to_str().unwrap()],
+        [cli::TAR, files.to_str().unwrap()],
     ] {
         let output = Command::new(program)
             .args(source)
-            .args(["--look-ahead", &look_ahead_argument()])
-            .args(["--", "sh", "-c", PIPELINE])
+            .args([cli::LOOK_AHEAD, &look_ahead_argument()])
+            .args([cli::END_OF_OPTIONS, "sh", "-c", PIPELINE])
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected.stdout);
@@ -652,9 +652,9 @@ fn the_command_line_program_runs_a_container() {
     std::fs::write(&config, serde_json::to_vec(&json).unwrap()).unwrap();
     let output = Command::new(program)
         .args([
-            "--tar",
+            cli::TAR,
             files.to_str().unwrap(),
-            "--config",
+            cli::CONFIG,
             config.to_str().unwrap(),
         ])
         .output()
@@ -1170,9 +1170,9 @@ fn the_command_line_program_passes_its_input() {
     let (_, files) = images();
     let input = input_lines();
     let mut child = Command::new(env!("CARGO_BIN_EXE_wcon"))
-        .args(["--tar", files.to_str().unwrap(), "--interactive"])
-        .args(["--look-ahead", &look_ahead_argument()])
-        .args(["--", "sh", "-c", INPUT_COMMAND])
+        .args([cli::TAR, files.to_str().unwrap(), cli::INTERACTIVE])
+        .args([cli::LOOK_AHEAD, &look_ahead_argument()])
+        .args([cli::END_OF_OPTIONS, "sh", "-c", INPUT_COMMAND])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()

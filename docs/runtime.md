@@ -961,7 +961,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   full|none|N`, `--size`, `--volume SOURCE:DESTINATION` (adds `bind_mount`'s mount), `--publish
   ADDRESS:PORT:CONTAINER_PORT` (repeatable; `LocalSystem::publish`), `--interactive` (its own standard input
   as the container's; `LocalSystem::input`), `--tty` (`process.terminal`), and `-- ARGUMENTS` for `process.args`; it prints the warnings by reason and exits
-  with the container's status, 125 when the library refuses. Its arguments are read with pico-args.
+  with the container's status, 125 when the library refuses. Its arguments are read with pico-args; their
+  names are the library's `cli` constants, which its tests use too.
 
 ## 15. Testing
 

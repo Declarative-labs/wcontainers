@@ -19,6 +19,9 @@ use wcontainers_runtime::{
     Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, Warned, bind_mount,
     spec_from_json,
 };
+use wcontainers_wasmtime::cli::{
+    CACHE, CONFIG, END_OF_OPTIONS, INTERACTIVE, LOOK_AHEAD, OCI, PUBLISH, SIZE, TAR, TTY, VOLUME,
+};
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorConfig};
 
 type Back = CpuSide<Arm64>;
@@ -26,19 +29,6 @@ type Back = CpuSide<Arm64>;
 /// The warning for a property of the configuration that is ignored, with its path and count.
 const IGNORED: &str = "a property the specification does not define, or an annotation, ignored";
 
-/// The program's options, as `docker run` names those it shares.
-const OCI: &str = "--oci";
-const TAR: &str = "--tar";
-const CONFIG: &str = "--config";
-const CACHE: &str = "--cache";
-const LOOK_AHEAD: &str = "--look-ahead";
-const VOLUME: &str = "--volume";
-const PUBLISH: &str = "--publish";
-const INTERACTIVE: &str = "--interactive";
-const TTY: &str = "--tty";
-const SIZE: &str = "--size";
-/// What ends the options: the arguments after it are `process.args`.
-const END_OF_OPTIONS: &str = "--";
 /// `--look-ahead`'s words; any other value is a bounded look-ahead's length.
 const LOOK_AHEAD_FULL: &str = "full";
 const LOOK_AHEAD_NONE: &str = "none";

@@ -2,6 +2,7 @@
 //! behind the kernel's `Cpu` side. One store per process; a thread's instances are made at its first
 //! run; code is translated at first use and kept in a cache shared by every executor of a [`Compiler`].
 
+pub mod cli;
 mod memory;
 pub mod starts;
 
