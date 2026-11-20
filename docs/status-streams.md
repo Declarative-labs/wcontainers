@@ -807,6 +807,28 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 4, tests (tree 814edab1 with its tests and docs): on the ARM machine fmt and clippy with
+  warnings denied over the three crates passed, the new tests/away.rs passed with 8 seeds (6
+  tests, 48 runs; the known failure ignored, and failing when run with 3 seeds: "read 1" against
+  "read -1 Interrupted system call"), the embedder tests (34, 3 seeds) and the kernel's unit
+  tests (5) passed; the literal check passes on this Mac. Whole suite on the ARM machine (the
+  command in "How to run" with `-j $ARM_JOBS` and 12 test threads; scratch streams/s3d/
+  suite-arm.log, s3d/fetched/s3d-suite.log, 11:28 to 12:04 UTC, load 6 rising to 22): 590
+  passed, 28 failed, 7 ignored; the 28 are by name run 3's 27 (s3d/failed-arm.txt against
+  s3c/failed-arm.txt) and `splice_holds_the_pipe`, whose reference echoed twice (the
+  reference-side flake run 3 saw on the Mac; it passed in run 3 on this machine and passes on the
+  Mac). The new ignored test is the known failure; the six new tests are the five more passes
+  with the one flake fewer. The 20 binaries kept on the Mac (s3d/mac-only.log, this Mac, 03:28 to
+  03:30 Pacific, load 4.3 to 7.9): 94 passed, 0 failed, `splice_holds_the_pipe` among them.
+  Combined: 625 tests, none failing by our side.
+- S3 run 4, speed with no hook implemented (ARM machine, scratch streams/s3d/speed.log, load 8.4
+  to 16.7, 12:05 to 12:18 UTC): the memory test binary of cefb66ab (S2 as merged, rebuilt this run
+  as streams-base, since the earlier build was gone) and of this run's tree, run alternately, 13
+  rounds, round 0 a warm-up. User CPU, rounds 1 to 12: before 11.922 11.942 11.915 11.955 11.971
+  11.906 11.917 11.927 11.930 11.905 11.906 11.890 (mean 11.924); after 11.792 11.803 11.844
+  11.895 11.807 11.798 11.804 11.807 11.801 11.839 11.794 11.794 (mean 11.815, -0.9 %), faster in
+  12 of 12. Wall: mean 15.337 before, 15.188 after (-1.0 %). No slowdown; why the tree is
+  faster was not measured (run 3's tree, against the same base, was +0.05 %).
 - S3 run 3, tests (tree c626d480 with its docs): the suspend test and the new stop test passed
   on the ARM machine (3 seeds; 48 and 6 runs). Clippy with warnings denied over the three crates
   and fmt passed there; the literal check passes on this Mac. Whole suite on the ARM machine
@@ -957,6 +979,7 @@ Found on the way, fixed:
   numbers in the tests are the generated constants.
 - After S3's third run: unchanged, 7577 lines (same per crate); the check passes on this Mac
   (exit 0, scratch streams/literals-s3r3.log). The literal check does not read the C guests.
+- After S3's fourth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
