@@ -147,6 +147,9 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.clip_halfz = true;
     // Uniforms packed in words into buffer 0, as the NIR route's options take them.
     caps.packed_uniforms = true;
+    // Textures and samplers stay variables the program names, which the NIR route binds by
+    // (Mesa's own programs, made from TGSI, otherwise name only a unit).
+    caps.nir_samplers_as_deref = true;
     // OpenGL's fixed-function steps the host lacks, made by st/mesa in the programs.
     caps.flatshade = false;
     caps.alpha_test = false;
