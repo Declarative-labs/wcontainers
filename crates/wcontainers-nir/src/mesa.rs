@@ -186,6 +186,7 @@ struct Words {
 }
 
 unsafe extern "C" {
+    fn wc_compiler_options() -> *const std::ffi::c_void;
     fn wc_nir_to_common_form(
         nir: *mut NirShader,
         set: u32,
@@ -212,6 +213,13 @@ unsafe extern "C" {
     fn wc_glsl_program_free(program: *mut GlslProgram);
     fn wc_nir_to_spirv(nir: *mut NirShader, out: *mut Words) -> bool;
     fn wc_words_free(words: *mut Words);
+}
+
+/// The `nir_shader_compiler_options` every route takes, a static of the process: a Mesa driver
+/// reports them so that the NIR it is handed has the routes' shape.
+pub fn compiler_options() -> *const std::ffi::c_void {
+    // SAFETY: the bridge returns a pointer to a static.
+    unsafe { wc_compiler_options() }
 }
 
 /// One shader's NIR, freed on drop.

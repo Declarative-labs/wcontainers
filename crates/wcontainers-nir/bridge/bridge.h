@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 struct nir_shader;
+struct nir_shader_compiler_options;
 
 /* The program stages the routes take, apart from Mesa's own numbering. */
 enum wc_stage {
@@ -75,6 +76,10 @@ struct wc_words {
 /* Takes a reference on Mesa's type tables; wc_finish gives it back. */
 void wc_init(void);
 void wc_finish(void);
+
+/* The NIR options every route takes; a Mesa driver reports them so that the NIR it is handed has
+ * the routes' shape. */
+const struct nir_shader_compiler_options *wc_compiler_options(void);
 
 /* NIR of one entry point of a SPIR-V module for Vulkan, or NULL. */
 struct nir_shader *wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage,

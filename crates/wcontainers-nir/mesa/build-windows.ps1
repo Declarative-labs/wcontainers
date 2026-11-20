@@ -93,6 +93,14 @@ if ($flexOutputs) {
 # Our driver, a static library built against this build's headers and compile flags for the static
 # Visual C++ runtime Mesa uses, then linked into libgallium_wgl.dll with the native libraries rustc
 # names for it (printed only when rustc runs, so kept between runs).
+# The driver links route B through wcontainers-nir, which builds the shaders crate's C++ from its
+# submodules (and dxil-spirv's SPIR-V headers).
+$repository = Join-Path $Here '..\..\..'
+$shaders = 'crates/wcontainers-shaders'
+& git -C $repository submodule update -q --init "$shaders/dxbc-spirv" "$shaders/dxil-spirv"; Run 'git submodule update'
+& git -C (Join-Path $repository "$shaders/dxil-spirv") submodule update -q --init third_party/spirv-headers
+Run 'git submodule update (dxil-spirv)'
+
 $env:WCONTAINERS_MESA = $build
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 $driverTarget = Join-Path $Root 'opengl-target'
@@ -100,7 +108,7 @@ $nativeLibs = Join-Path $build 'wcontainers-native-libs'
 # Windows PowerShell stops on a native command's standard error once it is redirected.
 $ErrorActionPreference = 'Continue'
 $printed = & cargo rustc --quiet -p wcontainers-opengl --release --lib --target-dir $driverTarget `
-    --manifest-path (Join-Path $Here '..\..\..\Cargo.toml') -- --print native-static-libs 2>&1
+    --manifest-path (Join-Path $repository 'Cargo.toml') -- --print native-static-libs 2>&1
 $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { $printed | ForEach-Object { "$_" }; throw "build-windows: cargo rustc wcontainers-opengl failed ($LASTEXITCODE)" }
 $found = $printed | ForEach-Object { "$_" } | Select-String -Pattern 'native-static-libs: (.*)$' | Select-Object -First 1

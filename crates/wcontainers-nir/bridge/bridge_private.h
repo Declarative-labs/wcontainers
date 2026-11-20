@@ -10,9 +10,6 @@
 extern "C" {
 #endif
 
-/* The NIR options every route takes (the drivers report the same). */
-const struct nir_shader_compiler_options *wc_compiler_options(void);
-
 mesa_shader_stage wc_mesa_stage(enum wc_stage stage);
 
 /* The built-in of a stage input's or output's slot, and its location in the common form where it

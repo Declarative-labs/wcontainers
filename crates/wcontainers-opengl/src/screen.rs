@@ -12,12 +12,6 @@ use crate::gallium::*;
 /// The driver's name, as `GALLIUM_DRIVER` chooses it and OpenGL's renderer string starts.
 const DRIVER_NAME: &core::ffi::CStr = c"wcontainers";
 
-unsafe extern "C" {
-    /// The NIR shape the NIR route takes (wcontainers-nir's bridge); st/mesa hands shaders over
-    /// in it.
-    fn wc_compiler_options() -> *const c_void;
-}
-
 /// One screen: Gallium's struct first, so that a `pipe_screen` pointer is one to it.
 #[repr(C)]
 pub struct Screen {
@@ -171,9 +165,9 @@ pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
     // SAFETY: the screen is complete enough for Mesa's defaults, which only write its caps.
     unsafe { u_init_pipe_screen_caps(base, 1) };
     fill_caps(&mut base.caps, &ours);
-    // SAFETY: the bridge's options are a static of the process.
-    let options = unsafe { wc_compiler_options() };
-    base.nir_options.fill(options.cast());
+    // st/mesa hands shaders over in the NIR route's shape.
+    base.nir_options
+        .fill(wcontainers_nir::mesa::compiler_options().cast());
     for &stage in STAGES {
         fill_shader_caps(&mut base.shader_caps[stage as usize], stage, &ours);
     }
