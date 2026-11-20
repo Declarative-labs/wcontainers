@@ -158,8 +158,15 @@ B against A, cycles: interpret 0.502 (instructions 0.854; native/plain 2.039 to 
 points under); by pairs 0.67 points. The study measured about 2 points of layout luck between builds of the same code
 (nine seeded layouts, +29.13 to +33.23%), and the two methods differ on the same build by 1.7 points (matrix 1.386 by
 the command, 1.462 by pairs). So by pairs the bar passes only inside that luck; by the bar's command it passes outside
-its own interval but not by more than the luck. This is one build's layout; I did not measure the spread of this build
-over seeded layouts.
+its own interval but not by more than the luck.
+
+The same build over seeded layouts, by pairs (a scratch patch to the inside's `place`, not kept, putting a seeded
+number of words, 0 to 15, before each piece, as the study's `pad` mode; scripts/layouts.sh, layouts.log and
+layouts.jsonl; each seed's build against the unpadded one, 6 pairs a program, load 4.5 to 15): compute part with seeds
+1 to 4: +18.96%, +18.92%, +22.35%, +20.77%; the unpadded build in the same runs +20.63%, +20.61%, +20.06%, +20.01%
+(and +20.53% above). So four of the five layouts measured are under +21.2% by pairs and one is over (seed 3: search
+1.10 and fib 1.055 times the unpadded build's cycles); the spread is about 3.4 points. Interpret stays at 0.99 to 1.06
+times plain in every layout: what is left over the bar's line is layout, mostly in matrix, search and fib.
 
 A sound layout with the code within the slots' 8 GiB region (described, not built; asked in the brief): interleave the
 mirror and the code area by region. A guest address g's slot becomes MIRROR + ((g >> 30) << 33) + ((g mod 2^30) << 2):
