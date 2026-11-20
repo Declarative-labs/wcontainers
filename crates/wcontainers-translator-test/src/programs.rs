@@ -258,12 +258,15 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     };
     std::fs::remove_file(&built).unwrap();
     std::fs::remove_file(&code).unwrap();
-    std::fs::rename(
-        elf,
-        out.join(&blob.name).with_added_extension(ELF_EXTENSION),
-    )
-    .unwrap();
+    std::fs::rename(elf, elf_path(&blob.name)).unwrap();
     blob
+}
+
+/// Where a built blob's linked program is kept, by the blob's name.
+pub fn elf_path(name: &str) -> PathBuf {
+    out_directory()
+        .join(name)
+        .with_added_extension(ELF_EXTENSION)
 }
 
 /// What a program did: its output and exit status.

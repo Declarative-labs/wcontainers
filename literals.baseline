@@ -6033,19 +6033,6 @@ code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"Instructi
 code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"_type"
 code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"children"
 code	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	walk	"name"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	int	main	16
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	int	main	8
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	" "
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"WC_OMIT"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"depth"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"nm"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"permissions"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"returns"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"stop"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{base}.cwasm"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{base}.wasm"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{out}/{}"
-code	crates/wcontainers-translator-test/src/bin/machine-code.rs	str	main	"{}/../../target/programs/{}.elf"
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::find_starts	8
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::find_starts	8
 code	crates/wcontainers-translator-test/src/binaries.rs	int	Binary::find_starts	8

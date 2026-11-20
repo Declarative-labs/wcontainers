@@ -122,6 +122,11 @@ pub const HOOK_TRAP: &str = "trap";
 pub use wcontainers_guest_cpu::PROBE;
 // After these six, the guest's own hooks follow, as `Guest::HOOKS` names and types them.
 
+/// The function index of a code module's first piece; the pieces of `CodeModule::pieces` follow in order.
+pub const fn first_piece_function<G: Guest>() -> u32 {
+    <G as crate::layout::Layout>::F_FIRST_PIECE
+}
+
 /// With [`crate::ProgressCount::Kept`], the u64 at the stop flag's place: the thread calls the stop hook at
 /// the next stop check where the progress count is at least this. Raising the stop writes 0 here.
 pub const fn progress_limit_offset<G: Guest>() -> usize {
