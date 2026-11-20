@@ -120,10 +120,20 @@ Measured (M5 Max, alternating pairs with ab.py, two builds of the speed test):
   Hypervisor.framework, so it is not kept (one clean primitive; the code is not in the history's last state).
 
 Tests after the change (Mac, load 4 to 6): kernel test alike with the reference and the WebAssembly side at none and
-256, the benchmark set's count the same at both (n4r11/kernel3.log); busybox 56 commands as the reference at none and
-256; exits 4 programs both modes, 0 failed (424 and 426 pieces); floor 21 cases and 1 measurement, 0 failed
+256, the benchmark set's count the same at both (n4r11/kernel3.log); at none and whole page
+(`WCONTAINERS_NATIVE_BOUND=4294967295`) the same, and busybox's 56 commands as the reference (n4r11/whole-page.log);
+busybox 56 commands as the reference at none and 256; exits 4 programs both modes, 0 failed (424 and 426 pieces); floor 21 cases and 1 measurement, 0 failed
 (n4r11/mac1.log). Clippy with warnings denied is clean for the inside (both targets) and the monitor; the literal check
 exits 0, no marks, the baseline unchanged; rustfmt clean.
+
+The rest of the suite, once before the push: on the Mac (n4r11/suite-rest.log and suite-inside.log, load 4 to 10,
+exit 0 each) the monitor's lib 7 tests, carry, forced interrupts 3443 over 8 functions at 3 look-aheads 0 failed (seed
+0x14057b7ef767814f), the differential test at 256 with a new seed 0x2545f4914f6cdd1d, 32,562 cases, 0 failing, the
+probe (0 forms of 16 bytes or fewer differ, 44 larger as before), registers, and the inside's, the policy crate's and
+the literal check's tests (342 passed); on the rented ARM64 machine (n4r11/arm4.log) the translator with and without
+the native feature, guest-cpu and arm64 tests (19 passed) and their clippy, with and without default features, clean.
+Only the speed test's compute part fails, as in run 9 (not rerun: the benchmark set's code and memory mapping are
+unchanged by this run, measured by the alternating pairs above).
 
 What N4 still needs, in order:
 1. The compute part of the bar (+37.71% against +21.2%, run 9): calls, returns and jumps through a register and the
@@ -2376,7 +2386,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 - N4 run 10: 2 MiB entries by reservation are built (plan 5.2); the benchmark set takes no block, so the bar is still
   run 9's (+37.71% against +21.2%). The contiguous bit was built and measured with no gain (walk 0.998 cycles with its
   nodes in 64 KiB groups) and is not kept. The asks of run 9 stand: the departure of adds counted ahead, and a ruling on
-  run 7's (a) or (b), on decision 14's page test, or on the bar.
+  run 7's (a) or (b), on decision 14's page test, or on the bar. A first look at what (a) could give, measured on the
+  host outside the machine with a toy loop of two alternating call sites (n4r11/slots.c and slots.log, wall time only,
+  9 rounds of 2*10^8 calls, load 3.5 to 5 with a test of this track running beside it, so a rough figure): plain
+  bl/ret 0.475 ns a call and return, the return as built (the jump's arithmetic, `br` to a slot of four words ending
+  in `br`) 0.510 ns (+6.8%), the slot one direct `b` as (a) would make it 0.504 ns (+4.8%). On this core the slot's
+  second indirect branch costs little, so (a) alone is not expected to close much of the gap; most of what fib, sort
+  and calls.c pay is elsewhere (their instructions are +86%, +144% and +115%).
 
 - N4 run 9: the compute part is now +37.71% against +21.2% (search fixed: its loop is held whole and adds once a turn).
   Please confirm the departure: adds counted ahead across parts of one piece, with exits settling the count (E and the
