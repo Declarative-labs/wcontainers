@@ -103,6 +103,8 @@ mod macos {
     const PLAIN: &str = "plain";
     const NATIVE: &str = "native";
     const UNTRANSLATED: &str = "untranslated";
+    /// What the names of the dynamic loader's variables begin with, which no child inherits.
+    const LOADER_VARIABLE_PREFIX: &str = "DYLD_";
 
     /// The program a child runs, and the image of the test program inside for the other two sides.
     const IMAGE_VARIABLE: &str = "WCONTAINERS_SPEED_IMAGE";
@@ -524,8 +526,16 @@ mod macos {
     }
 
     fn run(side: &str, image: &Path, inside: &Path) -> Run {
+        let mut command = Command::new(std::env::current_exe().expect("this test's path"));
+        // The loader's variables a build shell sets (a library path) make every child's start do work no plain
+        // program does.
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with(LOADER_VARIABLE_PREFIX) {
+                command.env_remove(name);
+            }
+        }
         let started = Instant::now();
-        let out = Command::new(std::env::current_exe().expect("this test's path"))
+        let out = command
             .env(RUN_VARIABLE, side)
             .env(IMAGE_VARIABLE, image)
             .env(INSIDE_VARIABLE, inside)
