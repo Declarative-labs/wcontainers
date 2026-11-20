@@ -170,6 +170,17 @@ Start (11:10, Mac load 7.2): origin/main and origin/phase-1-literals had nothing
   0x2545f4914f6cdd1d) pass; the speed test's native runs of the eight workloads ran with the new `Ended` (one pair
   each, not a bar). Clippy with warnings denied for the monitor crate (all targets) on the Mac and for the inside
   (all targets) on the rented ARM64 machine, format checked there; the literal check exits 0.
+- The whole suite at 4b696a28, new seeds, all exit 0 (Mac, Hypervisor.framework and Docker Desktop's reference, -j 4,
+  3 test threads, scratch native/nh1/full.sh, logs/full.log, 11:35 to 11:41, load 5.8 to 19.1): the differential
+  test, 16 drawn cases a form, 0 failing each: none 32,514 cases (seed 0x26f7e5c1), bounded 16 32,337
+  (0x26f7e5c16), bounded 256 32,359 (0x26f7e5c256); forced interrupts 13,321 stops over 15 functions (29 cases) at
+  3 look-aheads, 0 failed (seed 0x26c0ffee26); the tally; probe (0 forms of 16 bytes or fewer differ); floor (21
+  cases and 1 measurement, 0 failed); the kernel test with a stop at every counted event alike across look-aheads
+  (bench 177,072 stops, hash 10937141521840235265; calls 3,004; jumptables 5,484, as before); busybox 56 of 56; both
+  at whole page; registers, exits, carry, kept, the monitor's lib tests, the inside's and the policy crate's tests,
+  the literal check (exit 0) and its tests. On the rented ARM64 machine (logs/arm-suites.log, load 27 to 35): format
+  check of the whole tree, clippy with warnings denied for arm64, guest-cpu, the translator with native and the
+  inside (all targets), and the tests of arm64, guest-cpu and the translator with native, all passing.
 - Left for the next build run (the brief, 12:10): a counter and a warning for the look-ahead's halving.
 
 ## N4 run 25 (2026-11-20): the next check's six findings; the bar with clean child environments
