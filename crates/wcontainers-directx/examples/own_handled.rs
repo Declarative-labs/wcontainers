@@ -289,8 +289,18 @@ fn main() -> windows::core::Result<()> {
     // Which library the process's D3D11CreateDevice resolves into.
     unsafe {
         use windows::Win32::System::LibraryLoader::*;
-        let d3d11 = GetModuleHandleW(windows::core::w!("d3d11.dll"))?;
-        let entry = GetProcAddress(d3d11, s!("D3D11CreateDevice")).unwrap();
+        let d3d11 = GetModuleHandleW(&windows::core::HSTRING::from(
+            wcontainers_directx::com::D3D11_LIBRARY,
+        ))?;
+        let entry = GetProcAddress(
+            d3d11,
+            windows::core::PCSTR(
+                wcontainers_directx::com::entry::D3D11_CREATE_DEVICE
+                    .as_ptr()
+                    .cast(),
+            ),
+        )
+        .unwrap();
         let mut module = HMODULE::default();
         GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,

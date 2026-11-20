@@ -262,16 +262,17 @@ fn compile(source: &str, target: windows::core::PCSTR) -> Vec<u8> {
 
 #[test]
 fn the_forwarding_d3d11_reaches_the_library() {
+    use wcontainers_directx::com::entry;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-    use windows::core::{HSTRING, s};
+    use windows::core::{HSTRING, PCSTR, s};
     let dir = common::libraries();
     let load = |name: &str| unsafe { LoadLibraryW(&HSTRING::from(dir.join(name).as_os_str())) };
     let library = load("wcontainers_directx.dll").unwrap();
-    let forwarder = load("d3d11.dll").unwrap();
+    let forwarder = load(wcontainers_directx::com::D3D11_LIBRARY).unwrap();
     assert_ne!(library, forwarder);
     for name in [
-        s!("D3D11CreateDevice"),
-        s!("D3D11CreateDeviceAndSwapChain"),
+        PCSTR(entry::D3D11_CREATE_DEVICE.as_ptr().cast()),
+        PCSTR(entry::D3D11_CREATE_DEVICE_AND_SWAP_CHAIN.as_ptr().cast()),
         s!("D3D11On12CreateDevice"),
     ] {
         let direct = unsafe { GetProcAddress(library, name) }.unwrap();
@@ -285,12 +286,13 @@ fn device_creation_answers_as_direct3d() {
     // Through the built library, as a program calls it: the entry points pass calls from the
     // library's own module (here the test, which links it in) on to the system's.
     use std::ffi::c_void;
+    use wcontainers_directx::com::entry;
     use windows::Win32::Foundation::{E_INVALIDARG, HMODULE};
     use windows::Win32::Graphics::Direct3D::*;
     use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
     use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIAdapter};
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-    use windows::core::{HRESULT, HSTRING, s};
+    use windows::core::{HRESULT, HSTRING, PCSTR};
     type CreateDevice = unsafe extern "system" fn(
         *mut c_void,
         i32,
@@ -324,10 +326,19 @@ fn device_creation_answers_as_direct3d() {
         ))
     }
     .unwrap();
-    let create: CreateDevice =
-        unsafe { std::mem::transmute(GetProcAddress(library, s!("D3D11CreateDevice")).unwrap()) };
+    let create: CreateDevice = unsafe {
+        std::mem::transmute(
+            GetProcAddress(library, PCSTR(entry::D3D11_CREATE_DEVICE.as_ptr().cast())).unwrap(),
+        )
+    };
     let create_both: CreateBoth = unsafe {
-        std::mem::transmute(GetProcAddress(library, s!("D3D11CreateDeviceAndSwapChain")).unwrap())
+        std::mem::transmute(
+            GetProcAddress(
+                library,
+                PCSTR(entry::D3D11_CREATE_DEVICE_AND_SWAP_CHAIN.as_ptr().cast()),
+            )
+            .unwrap(),
+        )
     };
     let null: *mut c_void = std::ptr::null_mut();
     let make = |adapter: *mut c_void, driver: D3D_DRIVER_TYPE, out: *mut *mut c_void| unsafe {

@@ -37,6 +37,29 @@ static DIRECTIVES: [u8; EXPORTS.len()] = {
     out
 };
 
+/// The system's libraries whose entry points this library serves, by file name (lower case, as
+/// [`called_by_program_or`] compares them).
+pub const DXGI_LIBRARY: &str = "dxgi.dll";
+pub const D3D11_LIBRARY: &str = "d3d11.dll";
+pub const D3D10_LIBRARY: &str = "d3d10.dll";
+pub const D3D10_1_LIBRARY: &str = "d3d10_1.dll";
+pub const D3D10CORE_LIBRARY: &str = "d3d10core.dll";
+
+/// The system's entry points this library calls on for callers that are not the program.
+pub mod entry {
+    use std::ffi::CStr;
+
+    pub const CREATE_DXGI_FACTORY: &CStr = c"CreateDXGIFactory";
+    pub const CREATE_DXGI_FACTORY1: &CStr = c"CreateDXGIFactory1";
+    pub const CREATE_DXGI_FACTORY2: &CStr = c"CreateDXGIFactory2";
+    pub const D3D11_CREATE_DEVICE: &CStr = c"D3D11CreateDevice";
+    pub const D3D11_CREATE_DEVICE_AND_SWAP_CHAIN: &CStr = c"D3D11CreateDeviceAndSwapChain";
+    pub const D3D10_CREATE_DEVICE: &CStr = c"D3D10CreateDevice";
+    pub const D3D10_CREATE_DEVICE1: &CStr = c"D3D10CreateDevice1";
+    pub const D3D10_CORE_CREATE_DEVICE: &CStr = c"D3D10CoreCreateDevice";
+    pub const D3D10_CORE_GET_VERSION: &CStr = c"D3D10CoreGetVersion";
+}
+
 /// The module holding `address`.
 fn module_of(address: *const c_void) -> Option<HMODULE> {
     let mut module = HMODULE::default();
@@ -158,7 +181,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<WithFlags>("dxgi.dll", c"CreateDXGIFactory2") } {
+        return match unsafe { system::<WithFlags>(DXGI_LIBRARY, entry::CREATE_DXGI_FACTORY2) } {
             Some(f) => unsafe { f(flags, riid, out) },
             None => E_NOINTERFACE,
         };
@@ -178,7 +201,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory1(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<Plain>("dxgi.dll", c"CreateDXGIFactory1") } {
+        return match unsafe { system::<Plain>(DXGI_LIBRARY, entry::CREATE_DXGI_FACTORY1) } {
             Some(f) => unsafe { f(riid, out) },
             None => E_NOINTERFACE,
         };
@@ -198,7 +221,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<Plain>("dxgi.dll", c"CreateDXGIFactory") } {
+        return match unsafe { system::<Plain>(DXGI_LIBRARY, entry::CREATE_DXGI_FACTORY) } {
             Some(f) => unsafe { f(riid, out) },
             None => E_NOINTERFACE,
         };
