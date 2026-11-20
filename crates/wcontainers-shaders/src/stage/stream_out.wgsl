@@ -4,7 +4,8 @@
 // counts its runs' whole primitives, a scan over the workgroup gives each run its first primitive in
 // the stream, and each writes its primitives' vertices into the buffers, element by element, in the
 // order the stream has them. Writing stops for every buffer at the first primitive one of them cannot
-// hold; the filled sizes advance by what was written.
+// hold, and nothing is written where no buffer of the stream is bound; the filled sizes advance by
+// what was written. A geometry shader's streams run one after another, each with its own buffers.
 
 struct Entry {
     // Buffer (bits 0 to 7), first component (8 to 15), component count (16 to 23).
@@ -38,7 +39,14 @@ struct Values {
     // 1: units are the primitives listed in `list` (their index total first, then from word 4 each
     // primitive's records); `units` is then unused.
     listed: u32,
+    // The stream: its statistics go to words 4 + 2 * stream and 5 + 2 * stream of `filled`.
+    stream: u32,
+    // 1: units are API primitives of an indexed strip made a list, those of each instance past the
+    // index total in the first word of `list` holding none.
+    listed_total: u32,
+    pad0: u32,
     pad1: u32,
+    pad2: u32,
     // Bytes per vertex in each buffer; 0 where no buffer is bound.
     strides: vec4<u32>,
     // Bytes of each bound buffer.
@@ -48,8 +56,9 @@ struct Values {
 
 @group(1) @binding(0) var<uniform> so: Values;
 @group(1) @binding(1) var<storage, read> data: array<u32>;
-// The four buffers' filled sizes in bytes, then the primitives written and those the draw made.
-@group(1) @binding(2) var<storage, read_write> filled: array<u32, 8>;
+// The four buffers' filled sizes in bytes, then for each stream the primitives written and those the
+// draw made.
+@group(1) @binding(2) var<storage, read_write> filled: array<u32>;
 @group(1) @binding(3) var<storage, read_write> out0: array<u32>;
 @group(1) @binding(4) var<storage, read_write> out1: array<u32>;
 @group(1) @binding(5) var<storage, read_write> out2: array<u32>;
@@ -163,6 +172,11 @@ fn api_primitive(unit: u32) -> vec3<u32> {
     return vec3<u32>(first + p) + vec3<u32>(0u, 1u, 2u);
 }
 
+// Whether API primitive `unit` is one of the draw's: false past an indexed strip's listed primitives.
+fn present(unit: u32) -> bool {
+    return so.listed_total == 0u || unit % so.primitives < list[0] / so.vertices;
+}
+
 // One step of the workgroup's inclusive scan. The steps are written out, not looped: Direct3D's
 // shader compiler unrolls a loop holding a barrier and cannot unroll the form it gets.
 fn scan_step(t: u32, d: u32) {
@@ -176,14 +190,16 @@ fn scan_step(t: u32, d: u32) {
 fn main(@builtin(local_invocation_index) t: u32) {
     if t == 0u {
         var room = 0xffffffffu;
+        var bound = false;
         for (var b = 0u; b < 4u; b++) {
             start[b] = filled[b];
             let stride = so.strides[b] * so.vertices;
             if stride != 0u {
                 room = min(room, select(0u, (so.sizes[b] - start[b]) / stride, so.sizes[b] > start[b]));
+                bound = true;
             }
         }
-        capacity = room;
+        capacity = select(0u, room, bound);
     }
     // Each invocation takes a run of units, counts their primitives, and after the scan writes them
     // from the primitives of the runs before it.
@@ -193,7 +209,7 @@ fn main(@builtin(local_invocation_index) t: u32) {
     let end = min(begin + per, units);
     var n = 0u;
     for (var unit = begin; unit < end; unit++) {
-        n += select(1u, walk(unit, 0u, false), so.geometry != 0u);
+        n += select(select(0u, 1u, present(unit)), walk(unit, 0u, false), so.geometry != 0u);
     }
     scan[t] = n;
     workgroupBarrier();
@@ -209,7 +225,7 @@ fn main(@builtin(local_invocation_index) t: u32) {
     for (var unit = begin; unit < end; unit++) {
         if so.geometry != 0u {
             at += walk(unit, at, true);
-        } else {
+        } else if present(unit) {
             write_primitive(at, api_primitive(unit));
             at += 1u;
         }
@@ -220,7 +236,7 @@ fn main(@builtin(local_invocation_index) t: u32) {
         for (var b = 0u; b < 4u; b++) {
             filled[b] = start[b] + written * so.vertices * so.strides[b];
         }
-        filled[4] = written;
-        filled[5] = made;
+        filled[4u + 2u * so.stream] = written;
+        filled[5u + 2u * so.stream] = made;
     }
 }

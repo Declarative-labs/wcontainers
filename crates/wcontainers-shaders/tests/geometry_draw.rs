@@ -18,8 +18,9 @@ use wcontainers_gpu::{
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{
-    InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT, StageDraw, StageIndex, Stages,
-    StreamOutput, StreamOutputEntry, StreamTargets,
+    InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT, STREAM_BUFFERS,
+    STREAM_FILLED_WORDS, STREAMS, StageDraw, StageIndex, Stages, StreamOutput, StreamOutputEntry,
+    StreamTargets,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
@@ -42,7 +43,7 @@ struct Case {
     indexed: Option<i32>,
 }
 
-const CASES: [Case; 15] = [
+const CASES: [Case; 18] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_quads",
@@ -193,11 +194,41 @@ const CASES: [Case; 15] = [
         first_instance: 0,
         indexed: None,
     },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cut",
+        topology: InputTopology::TriangleStrip,
+        count: 14,
+        first: 2,
+        instances: 2,
+        first_instance: 1,
+        indexed: Some(3),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_lines",
+        topology: InputTopology::LineStrip,
+        count: 11,
+        first: 1,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(0),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_line_adjacent",
+        topology: InputTopology::LineStripAdjacency,
+        count: 20,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(2),
+    },
 ];
 
 /// Vertex shaders writing cull distances, drawn without a geometry shader: the stage helper's cull
 /// route.
-const CULLED: [Case; 6] = [
+const CULLED: [Case; 8] = [
     Case {
         vs: "vs_cull",
         gs: "",
@@ -258,6 +289,26 @@ const CULLED: [Case; 6] = [
         first_instance: 0,
         indexed: Some(-1),
     },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::TriangleStrip,
+        count: 16,
+        first: 1,
+        instances: 2,
+        first_instance: 0,
+        indexed: Some(1),
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "",
+        topology: InputTopology::LineStrip,
+        count: 12,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(0),
+    },
 ];
 
 /// The primitives of a `vs_cull` draw that its first two cull distances drop (all vertices left of
@@ -267,15 +318,6 @@ fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
         InputTopology::PointList => 1,
         InputTopology::LineList | InputTopology::LineStrip => 2,
         _ => 3,
-    };
-    let strip = matches!(
-        case.topology,
-        InputTopology::LineStrip | InputTopology::TriangleStrip
-    );
-    let primitives = if strip {
-        (case.count + 1).saturating_sub(n)
-    } else {
-        case.count / n
     };
     let vertex = |i: u32| -> usize {
         let place = case.first + i;
@@ -289,17 +331,15 @@ fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
         }
     };
     let floats = COLOURED_VERTEX_BYTES as usize / std::mem::size_of::<f32>();
-    let below = |first: u32, plane: fn(f32, f32) -> f32| {
-        (0..n).all(|k| {
-            let v = vertex(first + k) * floats;
+    let below = |places: &[u32], plane: fn(f32, f32) -> f32| {
+        places.iter().all(|&k| {
+            let v = vertex(k) * floats;
             plane(vertices[v], vertices[v + 1]) < 0.0
         })
     };
-    (0..primitives)
-        .filter(|&p| {
-            let first = if strip { p } else { p * n };
-            below(first, |x, _| x + 0.3) || below(first, |_, y| 0.2 - y)
-        })
+    primitive_places(case, n, indices)
+        .iter()
+        .filter(|p| below(p, |x, _| x + 0.3) || below(p, |_, y| 0.2 - y))
         .count() as u32
 }
 
@@ -348,14 +388,48 @@ fn vertices(seed: u64) -> Vec<f32> {
 }
 
 /// Seeded 16-bit indices, kept inside the vertices with the case's base vertex, an even number of
-/// them: the stage helper reads the buffer as whole words, as fronts hold it.
+/// them: the stage helper reads the buffer as whole words, as fronts hold it. A strip's have restart
+/// indices, one in the middle of the draw and others at seeded places.
 fn indices(seed: u64, case: &Case) -> Vec<u8> {
     let mut rng = fastrand::Rng::with_seed(seed ^ 0x5eed);
     let base = case.indexed.unwrap_or(0);
     let low = (-base).max(0) as u16;
     let high = (VERTICES as i32 - base.max(0)) as u16;
+    let middle = case.first + case.count / 2;
     (0..(case.first + case.count).next_multiple_of(2))
-        .flat_map(|_| rng.u16(low..high).to_le_bytes())
+        .flat_map(|i| {
+            let index = rng.u16(low..high);
+            let restart = strip(case.topology) && (i == middle || rng.u32(..RESTART_ONE_IN) == 0);
+            if restart { RESTART } else { index }.to_le_bytes()
+        })
+        .collect()
+}
+
+/// One strip index in this many is a restart, besides the one in the middle.
+const RESTART_ONE_IN: u32 = 8;
+
+fn strip(t: InputTopology) -> bool {
+    matches!(
+        t,
+        InputTopology::LineStrip | InputTopology::TriangleStrip | InputTopology::LineStripAdjacency
+    )
+}
+
+/// The draw's primitives, each as the places of its vertices among the draw's: a strip's restart
+/// indices end it, as Direct3D's do.
+fn primitive_places(case: &Case, n: u32, indices: &[u8]) -> Vec<Vec<u32>> {
+    let index = |i: u32| {
+        let at = std::mem::size_of::<u16>() * (case.first + i) as usize;
+        u16::from_le_bytes([indices[at], indices[at + 1]])
+    };
+    if !strip(case.topology) {
+        return (0..case.count / n)
+            .map(|p| (p * n..p * n + n).collect())
+            .collect();
+    }
+    (0..(case.count + 1).saturating_sub(n))
+        .filter(|&i| case.indexed.is_none() || (i..i + n).all(|k| index(k) != RESTART))
+        .map(|i| (i..i + n).collect())
         .collect()
 }
 
@@ -417,17 +491,25 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8>
     read(gpu, &target, Format::Rgba8Unorm)
 }
 
-/// What the stage helper made: the picture, or the stream output buffers' bytes and the eight words
+/// What the stage helper made: the picture, or the bound stream output buffers' bytes and the words
 /// of filled sizes and counts.
 enum Made {
     Picture(Vec<u8>),
     Streamed(Vec<Vec<u8>>, Vec<u32>),
 }
 
-/// Stream output buffers' sizes, the first small enough to fill in some cases, and the second's
-/// first filled size (an append).
-const STREAM_SIZES: [u64; 2] = [32 * 3 * 9, 4096];
-const STREAM_START: [u32; 2] = [0, 24];
+/// The stream output buffers bound: each one's size, and the filled size it starts from.
+struct Bound {
+    sizes: [Option<u64>; STREAM_BUFFERS],
+    start: [u32; STREAM_BUFFERS],
+}
+
+/// Two buffers, the first small enough to fill in some cases, the second (128 of its 32 bytes)
+/// appended to.
+const TWO_BUFFERS: Bound = Bound {
+    sizes: [Some(32 * 3 * 9), Some(32 * 128), None, None],
+    start: [0, 24, 0, 0],
+};
 
 /// The stream output declaration of the tests: the position and the colour's last three components
 /// in buffer 0 (stride 32), then a gap and the first two numbers in buffer 1 (stride 12). A geometry
@@ -461,8 +543,9 @@ fn ours<B: Backend>(
     case: &Case,
     vertices: &[f32],
     indices: &[u8],
-    stream: Option<&StreamOutput>,
+    stream: Option<(&StreamOutput, &Bound)>,
 ) -> Made {
+    let (stream, bound) = (stream.map(|s| s.0), stream.map(|s| s.1));
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them, every vertex input pulled.
     let ps = convert(
@@ -638,12 +721,14 @@ fn ours<B: Backend>(
     });
     // Stream output: buffers filled with a pattern, so bytes not written compare too.
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
-    let targets: Vec<_> = STREAM_SIZES
+    let bound = bound.unwrap_or(&TWO_BUFFERS);
+    let targets: Vec<_> = bound
+        .sizes
         .iter()
-        .map(|&size| buffer(b, &vec![0xcd; size as usize], usage))
+        .map(|size| size.map(|size| (buffer(b, &vec![0xcd; size as usize], usage), size)))
         .collect();
-    let mut start = [0u32; 8];
-    start[..2].copy_from_slice(&STREAM_START);
+    let mut start = [0u32; STREAM_FILLED_WORDS];
+    start[..STREAM_BUFFERS].copy_from_slice(&bound.start);
     let start: Vec<u8> = start.iter().flat_map(|w| w.to_le_bytes()).collect();
     let filled = buffer(b, &start, usage);
     let whole = |buffer, size| BufferRange {
@@ -684,13 +769,10 @@ fn ours<B: Backend>(
                 topology: case.topology,
                 range,
                 stream_output: stream.map(|_| StreamTargets {
-                    buffers: [
-                        Some(whole(&targets[0], STREAM_SIZES[0])),
-                        Some(whole(&targets[1], STREAM_SIZES[1])),
-                        None,
-                        None,
-                    ],
-                    filled: whole(&filled, 32),
+                    buffers: std::array::from_fn(|i| {
+                        targets[i].as_ref().map(|(t, size)| whole(t, *size))
+                    }),
+                    filled: whole(&filled, start.len() as u64),
                 }),
             },
         )
@@ -711,10 +793,10 @@ fn ours<B: Backend>(
         };
         let streamed = targets
             .iter()
-            .zip(STREAM_SIZES)
-            .map(|(t, size)| read(t, size))
+            .flatten()
+            .map(|(t, size)| read(t, *size))
             .collect();
-        let words = read(&filled, 32)
+        let words = read(&filled, start.len() as u64)
             .chunks(4)
             .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
             .collect();
@@ -863,14 +945,17 @@ fn ours<B: Backend>(
     Made::Picture(out)
 }
 
-/// Real Direct3D 11's stream output of `case` (`gs` empty: from the vertex shader) under
-/// [`declaration`], nothing drawn: the buffers' bytes, and the primitives written and needed.
+/// Real Direct3D 11's stream output of `case` (`gs` empty: from the vertex shader) under `so` into
+/// the `bound` buffers, nothing drawn: the bound buffers' bytes, and each of the first `streams`
+/// streams' primitives written and needed.
 fn direct3d_streamed(
     gpu: &Gpu,
     case: &Case,
     vertices: &[f32],
     indices: &[u8],
-) -> (Vec<Vec<u8>>, [u64; 2]) {
+    (so, bound): (&StreamOutput, &Bound),
+    streams: usize,
+) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
     let vs = bytecode("vs_geometry.dxbc");
     let elements = [
         d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
@@ -882,7 +967,6 @@ fn direct3d_streamed(
         "" => vs.clone(),
         gs => bytecode(&format!("{gs}.dxbc")),
     };
-    let so = declaration(case.gs);
     let names: Vec<std::ffi::CString> = so
         .entries
         .iter()
@@ -908,7 +992,13 @@ fn direct3d_streamed(
         gpu.device.CreateGeometryShaderWithStreamOutput(
             &code,
             Some(&entries),
-            Some(&so.strides[..2]),
+            Some(
+                &so.strides[..so
+                    .strides
+                    .iter()
+                    .rposition(|&s| s != 0)
+                    .map_or(0, |i| i + 1)],
+            ),
             D3D11_SO_NO_RASTERIZED_STREAM,
             None::<&ID3D11ClassLinkage>,
             Some(o),
@@ -921,43 +1011,62 @@ fn direct3d_streamed(
     let constants = gpu
         .immutable(&constants(), D3D11_BIND_CONSTANT_BUFFER)
         .unwrap();
-    let targets: Vec<ID3D11Buffer> = STREAM_SIZES
+    let targets: Vec<Option<ID3D11Buffer>> = bound
+        .sizes
         .iter()
-        .map(|&size| {
-            gpu.buffer(
-                &D3D11_BUFFER_DESC {
-                    ByteWidth: size as u32,
-                    Usage: D3D11_USAGE_DEFAULT,
-                    BindFlags: D3D11_BIND_STREAM_OUTPUT.0 as u32,
-                    ..Default::default()
-                },
-                Some(&vec![0xcd; size as usize]),
-            )
+        .map(|size| {
+            size.map(|size| {
+                gpu.buffer(
+                    &D3D11_BUFFER_DESC {
+                        ByteWidth: size as u32,
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: D3D11_BIND_STREAM_OUTPUT.0 as u32,
+                        ..Default::default()
+                    },
+                    Some(&vec![0xcd; size as usize]),
+                )
+                .unwrap()
+            })
+        })
+        .collect();
+    let stream_queries = [
+        D3D11_QUERY_SO_STATISTICS_STREAM0,
+        D3D11_QUERY_SO_STATISTICS_STREAM1,
+        D3D11_QUERY_SO_STATISTICS_STREAM2,
+        D3D11_QUERY_SO_STATISTICS_STREAM3,
+    ];
+    let queries: Vec<ID3D11Query> = stream_queries[..streams]
+        .iter()
+        .map(|&query| {
+            d3d11::made(|q| unsafe {
+                gpu.device.CreateQuery(
+                    &D3D11_QUERY_DESC {
+                        Query: query,
+                        MiscFlags: 0,
+                    },
+                    Some(q),
+                )
+            })
             .unwrap()
         })
         .collect();
-    let query: ID3D11Query = d3d11::made(|q| unsafe {
-        gpu.device.CreateQuery(
-            &D3D11_QUERY_DESC {
-                Query: D3D11_QUERY_SO_STATISTICS_STREAM0,
-                MiscFlags: 0,
-            },
-            Some(q),
-        )
-    })
-    .unwrap();
     let index_buffer = case
         .indexed
         .map(|_| gpu.immutable(indices, D3D11_BIND_INDEX_BUFFER).unwrap());
-    let mut statistics = D3D11_QUERY_DATA_SO_STATISTICS::default();
+    let mut statistics = vec![[0u64; 2]; streams];
     unsafe {
         let c = &gpu.context;
         c.GSSetShader(&geometry, None);
         c.GSSetConstantBuffers(0, Some(&[Some(constants)]));
         c.IASetPrimitiveTopology(d3d_topology(case.topology));
-        let buffers = [Some(targets[0].clone()), Some(targets[1].clone())];
-        c.SOSetTargets(2, Some(buffers.as_ptr()), Some(STREAM_START.as_ptr()));
-        c.Begin(&query);
+        c.SOSetTargets(
+            STREAM_BUFFERS as u32,
+            Some(targets.as_ptr()),
+            Some(bound.start.as_ptr()),
+        );
+        for query in &queries {
+            c.Begin(query);
+        }
         match (case.indexed, &index_buffer) {
             (Some(base), Some(ib)) => {
                 c.IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
@@ -971,39 +1080,38 @@ fn direct3d_streamed(
             }
             _ => c.DrawInstanced(case.count, case.instances, case.first, case.first_instance),
         }
-        c.End(&query);
-        loop {
-            let hr = (windows::core::Interface::vtable(c).GetData)(
-                windows::core::Interface::as_raw(c),
-                windows::core::Interface::as_raw(&query),
-                (&mut statistics as *mut D3D11_QUERY_DATA_SO_STATISTICS).cast(),
-                std::mem::size_of::<D3D11_QUERY_DATA_SO_STATISTICS>() as u32,
-                0,
-            );
-            if hr == windows::Win32::Foundation::S_OK {
-                break;
+        for (query, counts) in queries.iter().zip(&mut statistics) {
+            c.End(query);
+            let mut data = D3D11_QUERY_DATA_SO_STATISTICS::default();
+            loop {
+                let hr = (windows::core::Interface::vtable(c).GetData)(
+                    windows::core::Interface::as_raw(c),
+                    windows::core::Interface::as_raw(query),
+                    (&mut data as *mut D3D11_QUERY_DATA_SO_STATISTICS).cast(),
+                    std::mem::size_of::<D3D11_QUERY_DATA_SO_STATISTICS>() as u32,
+                    0,
+                );
+                if hr == windows::Win32::Foundation::S_OK {
+                    break;
+                }
+                hr.ok().unwrap();
             }
-            hr.ok().unwrap();
+            *counts = [data.NumPrimitivesWritten, data.PrimitivesStorageNeeded];
         }
         c.SOSetTargets(0, None, None);
         c.GSSetShader(None, None);
     }
     let bytes = targets
         .iter()
+        .flatten()
         .map(|t| gpu.read_buffer(t).unwrap())
         .collect();
-    (
-        bytes,
-        [
-            statistics.NumPrimitivesWritten,
-            statistics.PrimitivesStorageNeeded,
-        ],
-    )
+    (bytes, statistics)
 }
 
 /// Stream output cases: from geometry shaders (strips cut, points, lines, instances) and from the
 /// vertex shader alone (`gs` empty), some filling the first buffer.
-const STREAMED: [Case; 9] = [
+const STREAMED: [Case; 12] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_unplaced",
@@ -1094,6 +1202,36 @@ const STREAMED: [Case; 9] = [
         first_instance: 0,
         indexed: None,
     },
+    Case {
+        vs: "vs_geometry",
+        gs: "",
+        topology: InputTopology::TriangleStrip,
+        count: 13,
+        first: 1,
+        instances: 2,
+        first_instance: 0,
+        indexed: Some(2),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_cut",
+        topology: InputTopology::TriangleStrip,
+        count: 12,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(1),
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "",
+        topology: InputTopology::LineStrip,
+        count: 10,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(0),
+    },
 ];
 
 #[test]
@@ -1132,13 +1270,16 @@ fn stream_output_matches_direct3d() {
                     .map(|b| format!(" indexed, base {b}"))
                     .unwrap_or_default()
             );
-            let (reference, statistics) = direct3d_streamed(&gpu, case, &vertices, &indices);
+            let so = declaration(case.gs);
+            let (reference, statistics) =
+                direct3d_streamed(&gpu, case, &vertices, &indices, (&so, &TWO_BUFFERS), 1);
+            let statistics = statistics[0];
             let Made::Streamed(streamed, words) = ours(
                 &mut backend,
                 case,
                 &vertices,
                 &indices,
-                Some(&declaration(case.gs)),
+                Some((&so, &TWO_BUFFERS)),
             ) else {
                 unreachable!()
             };
@@ -1148,7 +1289,10 @@ fn stream_output_matches_direct3d() {
                 .zip(&streamed)
                 .map(|(a, b)| a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count())
                 .collect();
-            let counts = [u64::from(words[4]), u64::from(words[5])];
+            let counts = [
+                u64::from(words[STREAM_BUFFERS]),
+                u64::from(words[STREAM_BUFFERS + 1]),
+            ];
             eprintln!(
                 "{name}: direct3d wrote {} of {} primitives, ours {} of {}; words apart per buffer {apart:?}",
                 statistics[0], statistics[1], counts[0], counts[1]
@@ -1168,6 +1312,155 @@ fn stream_output_matches_direct3d() {
             }
             if apart.iter().any(|&n| n > 0) || counts != statistics || statistics[0] == 0 {
                 failures.push(name);
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The four-stream test's declaration: stream 0's position and colour's last three components into
+/// buffer 0, stream 1's numbers into buffer 1, stream 2's colour's first two, a gap and its numbers'
+/// last three into buffer 2, stream 3's place into buffer 3.
+fn streams_declaration() -> StreamOutput {
+    let entry =
+        |stream, semantic: Option<&str>, semantic_index, start, count, slot| StreamOutputEntry {
+            stream,
+            semantic: semantic.map(String::from),
+            semantic_index,
+            start_component: start,
+            component_count: count,
+            slot,
+        };
+    StreamOutput {
+        entries: vec![
+            entry(0, Some("SV_Position"), 0, 0, 4, 0),
+            entry(0, Some("COLOR"), 0, 1, 3, 0),
+            entry(1, Some("TEXCOORD"), 0, 0, 4, 1),
+            entry(2, Some("COLOR"), 0, 0, 2, 2),
+            entry(2, None, 0, 0, 1, 2),
+            entry(2, Some("TEXCOORD"), 0, 1, 3, 2),
+            entry(3, Some("TEXCOORD"), 1, 0, 2, 3),
+        ],
+        strides: [28, 16, 24, 8],
+    }
+}
+
+/// The four-stream test's buffers: every one bound, the first and third small enough to fill and
+/// the second and fourth appended to; then the last unbound, so its stream writes nothing.
+const STREAMS_BOUND: [Bound; 2] = [
+    Bound {
+        sizes: [Some(28 * 20), Some(16 * 64), Some(24 * 8), Some(8 * 80)],
+        start: [0, 16, 0, 8],
+    },
+    Bound {
+        sizes: [Some(28 * 40), Some(16 * 64), Some(24 * 30), None],
+        start: [28, 0, 0, 0],
+    },
+];
+
+/// The four-stream test's draws: points, once from the first vertex, once from another with two
+/// instances.
+const STREAMS_CASES: [Case; 2] = [
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_streams",
+        topology: InputTopology::PointList,
+        count: 30,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_streams",
+        topology: InputTopology::PointList,
+        count: 24,
+        first: 5,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+    },
+];
+
+#[test]
+fn streams_past_the_first_match_direct3d() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let so = streams_declaration();
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &STREAMS_CASES {
+            for (b, bound) in STREAMS_BOUND.iter().enumerate() {
+                let indices = indices(seed, case);
+                let name = format!(
+                    "seed {seed} {} from {} x{}, buffers {b}",
+                    case.count, case.first, case.instances
+                );
+                let (reference, statistics) =
+                    direct3d_streamed(&gpu, case, &vertices, &indices, (&so, bound), STREAMS);
+                let Made::Streamed(streamed, words) =
+                    ours(&mut backend, case, &vertices, &indices, Some((&so, bound)))
+                else {
+                    unreachable!()
+                };
+                compared += 1;
+                let counts: Vec<[u64; 2]> = (0..STREAMS)
+                    .map(|s| {
+                        let at = STREAM_BUFFERS + 2 * s;
+                        [u64::from(words[at]), u64::from(words[at + 1])]
+                    })
+                    .collect();
+                let apart: Vec<usize> = reference
+                    .iter()
+                    .zip(&streamed)
+                    .map(|(a, b)| a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count())
+                    .collect();
+                eprintln!(
+                    "{name}: direct3d written and made per stream {statistics:?}, ours {counts:?}; \
+                     words apart per buffer {apart:?}"
+                );
+                for (b, (a, o)) in reference.iter().zip(&streamed).enumerate() {
+                    for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
+                        if x != y {
+                            let x = u32::from_le_bytes(x.try_into().unwrap());
+                            let y = u32::from_le_bytes(y.try_into().unwrap());
+                            eprintln!("  buffer {b} word {w}: direct3d {x:#010x}, ours {y:#010x}");
+                        }
+                    }
+                }
+                // A stream whose buffers are all unbound: the RTX 3080 counts some of its
+                // primitives as written (25 of 54, 0 of 84, the same on every seed and on a new
+                // device), by no rule found, so only those it made are compared. Ours counts none
+                // written, as Wine's test_so_statistics_query has Windows do with nothing bound.
+                let unbound = |stream: usize| {
+                    so.entries
+                        .iter()
+                        .filter(|e| usize::from(e.stream) == stream)
+                        .all(|e| bound.sizes[usize::from(e.slot)].is_none())
+                };
+                let agree = (0..STREAMS).all(|s| match unbound(s) {
+                    true => counts[s][1] == statistics[s][1] && counts[s][0] == 0,
+                    false => counts[s] == statistics[s],
+                });
+                let wrote_all = statistics.iter().all(|s| s[1] > 0);
+                if apart.iter().any(|&n| n > 0) || !agree || !wrote_all {
+                    failures.push(name);
+                }
             }
         }
     }

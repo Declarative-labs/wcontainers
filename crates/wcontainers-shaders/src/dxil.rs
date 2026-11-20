@@ -1571,6 +1571,7 @@ fn stage_values(
         system: Some(system),
         location: 0,
         component: 0,
+        stream: 0,
     });
 }
 
@@ -1644,6 +1645,7 @@ fn placed_value(
         system: pixel_output.then_some(SystemValue::Target(p.register as u8)),
         location: p.register,
         component: p.component as u8,
+        stream: 0,
     }
 }
 

@@ -81,7 +81,7 @@ for %%e in (ps_dual ps_levels ps_levels_past ps_samples ps_ids ps_minlod ps_ming
 "%FXC%" /nologo /T ps_5_0 /E ps_geometry /Fo ps_geometry.dxbc geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_cull /Fo vs_cull.dxbc geometry.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_cull -Gis -Fo vs_cull.dxil geometry.hlsl || exit /b 1
-for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent gs_clip) do (
+for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent gs_clip gs_streams) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
 )

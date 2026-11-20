@@ -18,6 +18,7 @@ gs_line_adjacent.dxil	unsupported DxilGeometryShader
 gs_lines.dxil	unsupported DxilGeometryShader
 gs_points.dxil	unsupported DxilGeometryShader
 gs_quads.dxil	unsupported DxilGeometryShader
+gs_streams.dxil	unsupported DxilGeometryShader
 gs_unplaced.dxil	unsupported DxilGeometryShader
 ps_array.dxil	ok ; glsl compiles
 ps_cases.dxil	ok ; glsl compiles

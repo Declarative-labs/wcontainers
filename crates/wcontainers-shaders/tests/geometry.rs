@@ -424,6 +424,12 @@ fn the_line_program_validates() {
 }
 
 #[test]
+fn the_strip_program_validates() {
+    let program = stage::strip_program().unwrap();
+    assert!(wgsl(&program).contains("fn main"));
+}
+
+#[test]
 fn the_cull_program_validates() {
     let program = stage::cull_program().unwrap();
     assert!(wgsl(&program).contains("fn main"));

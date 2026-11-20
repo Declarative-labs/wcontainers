@@ -27,6 +27,8 @@ pub const SIZE: u32 = 64;
 pub const POSITION_BYTES: u32 = size_of::<[f32; 3]>() as u32;
 pub const COLOURED_VERTEX_BYTES: u32 = POSITION_BYTES + size_of::<[f32; 4]>() as u32;
 pub const TEXTURE_SIZE: u32 = 8;
+/// The 16-bit index that ends a strip.
+pub const RESTART: u16 = u16::MAX;
 
 pub fn bytecode(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}"));
