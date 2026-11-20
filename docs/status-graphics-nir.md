@@ -5,6 +5,74 @@ G9).
 
 ## Where it stands
 
+G9 run 7 (2026-11-20). G9 is still far from its bar: OpenGL ES 2.0 now passes nearly all of
+dEQP-GLES2 on our driver, but the driver still reports OpenGL ES 2.0 only, so seven of the nine
+lists cannot start. The table of lists and shares on our driver, the WHOLE lists (desktop, RTX
+3080, GPU queue, 14:57 to 15:02, 8 glcts at once, other tracks' jobs queued beside):
+- dEQP-GLES2: 17,165 cases; Pass 16,656, Warn 6, Fail 165, Crash 202, Skip (NotSupported) 136:
+  passed 16,662 of 17,029 run, 97.84% (run 6: 85.88%).
+- KHR-GLES2: 473 cases; Pass 422, Fail 5, Crash 6, Skip 40: 422 of 433 run, 97.46% (unchanged).
+- dEQP-GLES3, dEQP-GLES31, KHR-GLES3, KHR-GLES31, KHR-GLES32, KHR-GL33, KHR-GL46: still cannot
+  start (no context of their version). Over the lists of 15.2 together the measure is far below
+  92.9%.
+- Results: scratch `results/g9r7/full3/<list>/` (`results.csv`, and `refusals.txt`, every
+  refusal line of the runner's logs); the two runs before this run's last fix in `full1`, `full2`.
+Fixed this run (each from the failing cases' pictures and logs):
+- The cascades. A draw with the stencil test off but different front and back references (st/mesa
+  passes both as set) reached the WebGPU back end, which takes one reference a draw and treats
+  two as a broken rule: the device was then lost, and every later read back in the glcts process
+  failed ("finish_read of a read back that is not ready or failed"), so hundreds of cases after
+  it failed. The driver now gives one reference where the test is off. This alone moved
+  dEQP-GLES2 from 88.81% to 97.84%: most of run 6's Fails were these cascades, not their own.
+- Vertex streams wgpu cannot read (a stride not a multiple of 4, an attribute offset not aligned
+  to its size or past the stride, a stream bound at an unaligned offset) and instance steps past
+  one are fetched in the vertex program (`VertexPulledInShader`, `InstanceRateInShader`, counted
+  each draw): the vertex program goes through the shaders crate's `rewrite` with
+  `VariantKey::pulled` (route B's `direct::rewrite` now takes it and returns the reflection), the
+  streams are bound as storage at the added bindings and the `PulledStream` helper constants are
+  written at `HELPER_SET`; the back end's layout leaves those inputs out (one layout per set of
+  fetched inputs, kept with the elements state). Every buffer now has storage usage. The screen
+  reports instance divisors (ARB_instanced_arrays, which ES 3.0 needs). `vertex_arrays` alone:
+  534 of 571 (run 6: 324 Fails in the group).
+- A fetched input whose components would lie across words (a float at stride 17) is refused by
+  name: the shaders crate's fetch reads each component within one word, which Direct3D's
+  alignment rules guarantee and OpenGL's do not (asked of the shaders track, Requests). 76 logs.
+- Occlusion queries (`src/query.rs`): any-samples-passed and its conservative form, from the pass
+  tracker's queries (one interface query a pass, sets of 4,096 taken anew when half used), read
+  back when asked (waiting only if asked to), paused around st/mesa's own blits and clears. An
+  exact sample count (desktop GL's SAMPLES_PASSED) is refused by name: the WebGPU back end lacks
+  `OCCLUSION_COUNT` and the counting replay is not built. Not yet exercised by any list (the
+  query cases are ES 3.0's).
+- Constant alpha blending: an alpha factor reading the constant's alpha is now always the constant
+  factor (exact), and a colour factor reading it takes the alpha in every channel unless the
+  block's colour factors also read the constant's colour; then it is refused by name, unless the
+  constant's colour is its alpha. 186 logs remain (run 6: 254).
+- The shared NIR step lowers projected samples, rectangles and gathers' offsets for the driver's
+  programs too (st/mesa hands them over as written; only the GLSL corpus front lowered them):
+  run 6's 136 "a texture operand of another kind" are gone.
+- Mesa's builds (Linux and Windows) remove files an earlier patch added before applying the
+  patches again (the x86 machine's build had stopped on "already exists in working directory").
+- `cts/run-windows.ps1 -Include <regex,...>` runs groups alone (deqp-runner's `--include-tests`).
+What is left of dEQP-GLES2 (by group, from `full3`): Crash: texture.mipmap 48 and
+texture.specification 12 (most of the 120 "a program not in NIR" logs: a program Mesa hands over
+as TGSI, to trace; `tgsi_to_nir` is Mesa's own converter), fragment_ops 93 (the blend refusal),
+vertex_arrays.multiple_attributes 37 (components across words), 8-bit indices in a buffer 6,
+route B's `fcanonicalize` 8 logs, arrays of arrays of textures 4, Mesa's slots 24 and 25 4. Fail:
+texture.filtering 72, fbo.render 35, texture.vertex 28, shaders.invariance 20, texture.mipmap 6,
+and 5 single ones: not yet read case by case nor compared with the RTX 3080's own OpenGL.
+KHR-GLES2's: internalformat 5 Fail and 5 Crash, copy_sub_image 1 (the TGSI program, 12 logs).
+Next, in order: (1) OpenGL ES 3.0, which every other list needs: transform feedback through the
+shaders crate's stage helper (`Stages::new` takes a `Converted`, which `direct::rewrite` gives),
+the primitives-written query, primitive restart at the fixed index (the screen's cap; lists drop
+the restarted primitive), then the GLSL 3.30 and ESSL 3.00 caps and the formats st/mesa checks;
+(2) the TGSI program (trace which, then `tgsi_to_nir`); (3) read the GLES2 Fail groups case by
+case against the RTX 3080's OpenGL (`-Driver system`); (4) blending in the program for the
+constant's colour and alpha; (5) the literal check (not run this run).
+Seen, not yet acted on: the screen reports fewer vertex formats than OpenGL has (three-component
+16-bit and 8-bit ones), so cso's `u_vbuf` likely translates those streams on the CPU, through the
+driver's maps, uncounted. To check (whether `u_vbuf` is made for this screen) and, if so, to take
+those formats by the fetch in the program instead, counted.
+
 G9 run 6 (2026-11-20). G9 is still far from its bar, but OpenGL ES 2.0 now mostly works on our
 driver. The table of lists and shares on our driver, the WHOLE lists (desktop, RTX 3080, GPU
 queue, 14:00 to 14:07, 8 at once; the desktop's processors at 8% just after; other tracks' jobs
@@ -1275,6 +1343,10 @@ Next (after G8's check):
 - The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
   the Mesa build; the route test linked with a map, each kept object traced to its source).
 
+- One group alone (G9 run 7): add `-Include <regex>[,<regex>]` to `run-windows.ps1`, e.g.
+  `-Lists gles2-main -Include dEQP-GLES2.functional.vertex_arrays.*`. The refusals of a whole
+  run, from the Mac: `ssh -o BatchMode=yes tom@192.168.2.183 'findstr /C:"refused:" /C:"not
+  built:" C:\wc\graphics-nir\cts\results\wcontainers\<list>\*.log'`.
 - Reading a run's failures (G9 run 6): copy the list's folder back (`scp -o BatchMode=yes -r
   tom@192.168.2.183:C:/wc/graphics-nir/cts/results/wcontainers/<list> <scratch>`), then
   `scripts/qpa_images.py <case>.qpa` (scratch) writes each picture of a case's log as a PNG, and
@@ -1397,6 +1469,17 @@ Next (after G8's check):
   machine `/work/target/graphics-nir` (11 GB after run 4: Mesa, the corpus, cargo's debug and release output, the last results) is kept.
 
 ## Measurements
+
+- G9 run 7, wcontainers-nir's suite (x86-64 machine, load 1 to 5): fmt clean; clippy with
+  warnings denied clean with and without Mesa (wcontainers-nir and wcontainers-opengl without it);
+  with Mesa `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2,
+  `route` 11 passed. The driver's clippy with warnings denied clean on the desktop with Mesa. The
+  corpus run was not repeated (route B's changes this run: the shared NIR step's texture
+  lowerings, which the GLSL corpus front already made before it).
+- G9 run 7, the whole dEQP-GLES2 and KHR-GLES2 lists on our driver (desktop, RTX 3080, one GPU
+  job each, 8 glcts at once, other tracks' jobs queued beside): 14:39 to 14:45 (with the build),
+  14:57:12 to 15:01:49 for the last (4 min 37 s with the incremental build). `vertex_arrays`
+  alone (571 cases): 10 s.
 
 - The whole suite of wcontainers-nir and wcontainers-opengl (G9 run 6, x86-64 machine, load 3
   to 7): fmt clean; clippy with warnings denied clean with and without Mesa; with Mesa
@@ -1790,7 +1873,18 @@ None.
 
 ## Requests to other tracks
 
-- WebGPU back end (G9 run 6): `create_vertex_layout` accepts a stream whose stride is not a
+- Shaders track (G9 run 7): the pulled-input fetch (`variant/pull.rs`, `fetch`) reads each
+  component from one word at `address >> 2`, so a component that does not start at a multiple of
+  its size (a float at byte 17) reads the wrong bits. Direct3D's alignment rules never make one;
+  OpenGL allows any stride and offset (dEQP-GLES2's `multiple_attributes.stride.*_17`). A
+  component across two words needs two loads joined by shifts. Until then the OpenGL driver
+  refuses such an input by name.
+- Interface track (G9 run 7): the alignment a back end needs of vertex strides, attribute offsets
+  and stream offsets (WebGPU: 4, and an attribute's offset to its size up to 4, within the
+  stride) as a limit or a documented rule of `VertexLayoutDesc`. The OpenGL driver takes
+  `wgpu::VERTEX_ALIGNMENT` for it today, which is WebGPU's rule applied to every back end.
+- WebGPU back end (G9 run 6; the driver no longer depends on it since run 7, which fetches such
+  streams itself): `create_vertex_layout` accepts a stream whose stride is not a
   multiple of 4 (OpenGL allows any stride: dEQP-GLES2's `vertex_arrays` cases with strides 2 and
   17), and wgpu then refuses the pipeline ("Vertex buffer 0 stride 2 does not respect
   VERTEX_ALIGNMENT"), which fails the whole submit and every case after it in the process. The
@@ -1855,6 +1949,11 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 7: not run (the run's budget went to the desktop). The Rust added names its numbers
+(`QUERIES_PER_SET`, `VERTEX_ALIGNMENT` from wgpu's own constant, sizes from `size_of` and
+Gallium's format table); its new refusal texts go through `refuse` like run 6's, which the check
+reported. Run 6's 38 findings are still to be worked down; to run first next run.
 
 G9 run 6: exit 1 at 30a4c084's successor 7ead95aa (x86-64 machine, from a git bundle; marks 0;
 the clone and its build deleted after; output in scratch `logs/g9r6-literals.out`). 38
