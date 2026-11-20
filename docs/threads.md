@@ -708,41 +708,44 @@ at the split, each measured.
   keeps once today: the current thread, the give-way mark, the running thread, the picked runtime
   (kernel/lib.rs:136-140, :165).
 - **A worker is not a processor.** A worker says which processor it is asking for:
-  `Kernel::next(processor)`. In a live run each worker keeps one processor (section 5). In a replay the
-  log says which processor each hand-out is for, and any worker makes it (4.6). So a run may be replayed
-  with fewer or more workers than it was recorded with, and the guest sees the same processor numbers.
+  `Kernel::next(processor)`. In a live run each worker keeps one processor (section 5). The tests'
+  repeatable order serves several processors with one worker (section 11), and the guest sees the same
+  processor numbers whatever the count of workers.
 - One run queue, as today. `next(processor)` gives the processor its current thread if that need not give
   way (as `pick` does today, kernel/task.rs:18-41), else the waiting thread with the least weighted time
-  that its group puts forward and whose mask holds the processor. Which thread it gives depends only on
-  the kernel's state and the processor asked for.
-  - A group in force `Parallel` puts forward every one of its ready threads.
-  - A group in force `Serial` puts forward one thread, and only when none of its threads runs: a
-    waiter if it has one, else its ready thread with the least weighted time. This is "the group's
-    next thread". So inside a `Serial` group the order is the one-processor fair scheduler's, as it
-    is today, but for a waiter, which goes first because a whole group stands still for it (4.5).
-  - A group that is called in puts forward its waiters and nobody else (4.5). A waiter is put forward
-    whatever is called in, its own group included. Being chosen runs its call again in the kernel. It
-    goes back to guest code only when its own group is not called in.
-  - Why one thread and not any. With any, a `Serial` group's thread that gives way for a sibling pinned
-    to another processor is the only thread of the group its own processor may take, and is handed
-    out again at once. The sibling never runs, although Linux would run both. With one, the thread
-    that gave way is not put forward while a sibling has less weighted time.
-  - What that costs: when the group's next thread is pinned to a busy processor, a sibling that could
-    run on an idle one waits for it. Counted "Serial group's next thread waits for its processor
-    beside an idle one". With no thread pinned, and with one processor, the two rules choose the same
-    thread: the least of all is the least of its group.
+  that is put forward and whose mask holds the processor. Which thread it gives depends only on the
+  kernel's state and the processor asked for. Section 3's rule decides who is put forward:
+  - A ready thread with `Parallel` code that runs as `Parallel` is put forward when its memory is not
+    called in and no task that runs as `Serial` and overlaps it is handed out or due a turn (section
+    3, rules 1 and 3).
+  - A ready thread that runs as `Serial` is put forward only when it is due a turn and none of its
+    overlappers is handed out: a waiter if it has one among them, else the one with the least weighted
+    time. So among the threads of one `Serial` process the order is the one-processor fair scheduler's,
+    as it is today, but for a waiter, which goes first because its overlappers stand still for it
+    (4.5).
+  - A memory that is called in puts forward its waiters and nobody else (4.5). A waiter is put forward
+    whatever is called in, its own memory included, with one exception from section 3: a waiter of a
+    task with `Parallel` code is not chosen while a task that runs as `Serial` and overlaps it is
+    handed out. Being chosen runs its call again in the kernel. It goes back to guest code only when
+    its own memory is not called in.
+  - Why "due a turn" and not any ready `Serial` thread. With any, a `Serial` thread that gives way for
+    an overlapper pinned to another processor is the only one of them its own processor may take, and
+    is handed out again at once. The overlapper never runs, although Linux would run both. With "due a
+    turn", the thread that gave way is not put forward while an overlapper has less weighted time.
+  - What that costs: when the task due a turn is pinned to a busy processor, an overlapper that could
+    run on an idle one waits for it. Counted "Serial task due a turn waits for its processor beside an
+    idle one". With no thread pinned, and with one processor, the two rules choose the same thread.
 - **`next` makes one kernel entry for each thread it chooses.** Choosing a thread changes the run queue,
   the processor's thread and the thread's processor, and the guest sees the last through `getcpu` and
-  `rseq`. The entry is "this processor chose this thread". It takes its place in the order of entries
-  like any other, and the system is asked about it when the thread is chosen, before anything is done
-  for the thread (4.6).
+  `rseq`. The entry is "this processor chose this thread".
   - What the kernel then does for the thread (the next item) is that entry's effect. A woken call that
     runs again can park once more, or end its thread. Then the entry hands nobody out, although it may
-    have read or written bytes or written a frame. It still took effect, and it keeps its place in
-    the order. The plan's earlier form called `next` an entry "when it hands a thread out". Its fifth
-    check showed that those effects then had no place a replay could put them.
-  - `next` then chooses again. That is the next entry, asked about by itself. It goes on until a thread
-    is handed out or none is put forward.
+    have read or written bytes or written a frame. It is still an entry of that thread's, so what it
+    read and wrote reaches the proxy and the hook for the kernel's writes as the thread's own (4.6).
+    The form before called `next` an entry "when it hands a thread out". Its fifth check showed that
+    those effects then had no place a replay could put them.
+  - `next` then chooses again. That is the next entry. It goes on until a thread is handed out or none
+    is put forward.
   - When none is put forward it answers `Idle` and marks the processor idle (section 5). An answer of
     `Idle` with nothing chosen changes nothing the guest can see and nothing a replay must repeat, so
     it is not an entry.
@@ -751,9 +754,11 @@ at the split, each measured.
   signal's frame on the stack of a thread that waits its turn (`settle`, kernel/task.rs:343-404). With
   one thread running, nothing else could be using that thread's memory. With several processors a
   sibling could be, in guest code, on another processor. So both are done inside `next(processor)`,
-  once it has chosen the thread and before it hands it out. A thread of a `Serial` group is chosen only
-  when none of its group runs, so its woken call and its signal frame never touch the group's memory
-  under a running sibling. 7.2's rule for the executor's locks stands on this.
+  once it has chosen the thread and before it hands it out. A thread that runs as `Serial` is chosen
+  only when none of its overlappers is handed out, and a waiter of a `Parallel` thread only when no
+  `Serial` overlapper is (section 3, rule 4). So a woken call and a signal frame never touch a memory
+  under a running thread that the memory's code assumes is alone. 7.2's rule for the executor's locks
+  stands on this.
 - `exit` names the thread that came back (today it is implied, kernel/lib.rs:318-321).
 - Each thread is charged from its own "handed out at" time (section 11).
 - `sched_getaffinity`, `getcpu`, `/proc/cpuinfo`, `/proc/stat` and `rseq`'s CPU fields answer from the
@@ -782,9 +787,11 @@ after its system call must get its own processor's answer, or it leaves `Executi
 1. No other kernel entry is in progress (the first form). After the split (4.7): no other entry that
    touches the same things.
 2. Its own thread is stopped, with its registers saved (tr/contract.rs:13-15).
-3. In a group in force `Serial`, no other thread of its group is running guest code. A call that joins
-   its group to another is run only once that holds for the group that results (section 3).
-4. In a group in force `Parallel`, the group's other threads may be running guest code this instant. So:
+3. When its thread runs as `Serial`, no task that overlaps its memory is handed out (section 3, rule 1).
+   A call that makes a new overlap is run only once that holds for the overlap that results (section
+   3).
+4. When its thread has `Parallel` code, the other threads of its memory, and the `Parallel` tasks that
+   overlap it, may be running guest code this instant. So:
    - a value read from guest memory may change the next moment. The kernel reads each value once and
      acts on what it read. The futex wait reads its word once, as one aligned 32 bit load;
    - what it writes may be overwritten or seen half-written by another thread, as on Linux;
@@ -794,43 +801,54 @@ after its system call must get its own processor's answer, or it leaves `Executi
      is not running", abi/cpu.rs:94). Nothing in the kernel reads a running thread's registers: a signal
      is taken by the thread itself when it comes in, and a tracer's or a crash dump's read waits for the
      thread (4.5).
-5. Threads of other groups may be running. Two rules follow, and 4.5 applies them case by case:
-   - **A thread of a group in force `Serial`, or in force `Exact`, stops only at a kernel entry of its
-     own.** There are two reasons, one for each word.
-     - `Exact`: the stop then has a place in the order of entries, and a position. A thread held in
-       place has neither.
+5. Threads of other memories may be running. Two rules follow, and 4.5 applies them case by case:
+   - **A thread that runs as `Serial`, or of a process given `Exact`, stops only at a kernel entry of
+     its own.** There are two reasons, one for each.
+     - `Exact`: a stop through its own entry ends the thread's turn at a position, which the system
+       hears as it hears every turn's end (`turn` and `ran`, section 5) and can log with the process
+       (4.6). A thread held in place ends no turn, and its position is told to nobody. (The form before
+       said "a place in the order of entries"; that order is withdrawn.)
      - `Serial`: the running thread keeps its process's executor lock for its whole stay in
        `Execution::run` (7.2). That is what keeps locks off a `Serial` system call, and it only works
-       if nobody reaches the process from outside while its thread runs.
-     So the kernel never reads or changes the memory, the page permissions or the code of such a group
-     from outside it while one of its threads runs. It calls the group in first. Neither does the
-     executor, from another group's hook (7.5).
+       if nobody reaches the process from outside while its thread runs. It is also what section 3's
+       rule 2 needs: overlappers are called in, never held.
+     So the kernel never reads or changes the memory, the page permissions or the code of such a
+     thread's memory from outside while one of its threads runs. It calls the memory in first. Neither
+     does the executor, from another memory's hook (7.5).
    - **A thread ends only inside a kernel entry of its own.** The kernel never ends a running thread from
      another thread's entry.
 6. The kernel still never waits on its own stack. A `Host` call or a hook made inside an entry holds the
-   lock while it runs. A slow hook stalls every processor's kernel entries until the split.
-7. **When a hook about a process fires, no thread of that process's group runs guest code, if the group
-   is in force `Serial`.** This follows from item 5: a hook fires inside an entry, and an entry that acts
-   on a `Serial` group from outside it has called the group in first. It holds across a join too: two
-   groups become one `Serial` group only once the other running threads of both are in (section 3). In
-   a group in force `Parallel` the process's other threads may be running. Section 6 relies on this
-   for `suspend`.
+   lock while it runs. A slow hook stalls every processor's kernel entries until the split. The
+   proxy's hooks are such hooks, at every system call (4.6), and so is a wake that waits for another
+   machine (4.5, decision 14).
+7. **When a hook about a process fires, no thread of that process runs guest code, if the process runs
+   as `Serial`.** This follows from item 5: a hook fires inside an entry, and an entry that acts on a
+   `Serial` process from outside it has called it in first. It holds across a new overlap too (section
+   3). With `Parallel` code the process's other threads may be running. Section 6 relies on this.
    - The owner's guarantee is that "a hook fires only when every operation on that process is legal"
-     (interface notes lines 57-58). With the other threads running, that still holds for every
-     operation in a group that is not in force `Exact`: where one needs them stopped, the executor
-     holds them in place for it.
-   - **It does not hold for two operations in one case.** In a group in force `Parallel` and `Exact`
-     whose other threads run, `suspend` and a change of config need those threads stopped at positions.
-     Only a call-in gives that, and a hook cannot wait for one. There the two answer an error (section
-     6). The hooks this reaches are `on_thread_starting`, `on_process_outgrown` and
-     `on_memory_accessing`, and `on_process_starting` for a child made with `CLONE_VM`, whose memory
-     its parent's threads share. This narrows the ruled guarantee, so it is the owner's (decision 8),
-     with what keeping it whole would cost.
+     (interface notes lines 57-58), and the ruling on suspend by task keeps it: the handle a hook is
+     given has the calls of the `Kernel` trait limited to its one process. With the other threads
+     running, it still holds for every operation of a process that is not given `Exact`: where one
+     needs them stopped, the executor holds them in place for it.
+   - **It does not hold for one kind of operation in one case.** In a (`Parallel`, `Exact`) process
+     whose other threads run, `suspend_tasks` naming one of them, and `suspend_process`, need those
+     threads stopped at positions. Only a call-in gives that, and a hook cannot wait for one. What the
+     batch does then is not ruled; the ruling lists it as open, and its return has no error and reads
+     a task left out as one that had exited (decision 11). The hooks this reaches are those that fire
+     with other threads of the process running: `on_thread_starting`, `on_process_outgrown`,
+     `on_watched_memory_accessing`, the proxy's two hooks, `on_memory_written_by_kernel`,
+     `on_signal_delivering`, the shared-memory hooks, and `on_process_starting` for a child made with
+     `CLONE_VM`, whose memory its parent's threads share. This narrows the ruled guarantee, so it is the
+     owner's (decisions 8 and 11), with what keeping it whole would cost.
 
-One known gap, to be closed by reading every call in T2: a call that waited and runs again reads its
+One known gap, to be closed by reading every call in T1: a call that waited and runs again reads its
 arguments from guest memory again (kernel/task.rs:166-169, :360-368), except paths and descriptors, which
-are kept (`Taken`, kernel/process.rs:407-414). Linux reads them once. With one thread running, nothing
-could change them in between. In a `Parallel` group another thread can.
+are kept (`Taken`, kernel/process.rs:407-414). Linux reads them once. Another thread can change them in
+between whenever one runs while the caller is parked: in a process with `Parallel` code, and also in a
+`Serial` process with two or more threads, where a sibling runs while the caller waits. The form before
+said "in a `Parallel` group" only, and put the fix in T2; the mixed-ordering check found the `Serial`
+case, which T1 already has. A `Parallel` task that overlaps a parked `Serial` caller's memory can do the
+same to arguments in shared memory.
 
 ### 4.5 Who is stopped before what
 
