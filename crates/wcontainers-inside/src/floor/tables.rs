@@ -81,12 +81,26 @@ impl Frames {
         }
     }
 
+    /// Whether a frame for the guest's memory can be taken without the frames kept for the inside.
+    pub fn has_room_for_guest(&self) -> bool {
+        self.free != 0 || self.next + PAGE_SIZE + self.kept <= self.end
+    }
+
     /// A zeroed frame for the guest's memory, which leaves the frames kept for the inside alone.
     pub fn take_for_guest(&mut self) -> Result<u64, Full> {
-        if self.free == 0 && self.next + PAGE_SIZE + self.kept > self.end {
+        if !self.has_room_for_guest() {
             return Err(full());
         }
         self.take()
+    }
+
+    /// A run of frames a block entry can map, for the guest's memory and never used since the host gave it, if
+    /// one is left before the frames kept for the inside. None is not a refused request: pages then take frames
+    /// one at a time.
+    pub fn take_run_for_guest(&mut self) -> Option<u64> {
+        let block = self.next.next_multiple_of(BLOCK_SIZE);
+        (block + BLOCK_SIZE + self.kept <= self.end)
+            .then(|| self.take_blocks(1).expect("checked above"))
     }
 
     /// A zeroed frame.
@@ -104,8 +118,7 @@ impl Frames {
             self.next += PAGE_SIZE;
             frame
         };
-        // SAFETY: the frame is ours and reached through the linear map.
-        unsafe { ptr::write_bytes(linear(frame) as *mut u8, 0, PAGE_SIZE as usize) };
+        clear(frame);
         Ok(frame)
     }
 
@@ -135,6 +148,12 @@ impl Frames {
         unsafe { ptr::write(linear(frame) as *mut u64, self.free) };
         self.free = frame;
     }
+}
+
+/// Zeroes a frame that is ours.
+pub fn clear(frame: u64) {
+    // SAFETY: the frame is ours and reached through the linear map.
+    unsafe { ptr::write_bytes(linear(frame) as *mut u8, 0, PAGE_SIZE as usize) };
 }
 
 /// One set of translation tables for one half, from its top-level table.
@@ -335,6 +354,78 @@ impl Table {
         // SAFETY: as above.
         unsafe { ptr::write_volatile(entry_at(table, va, LEAF_LEVEL), 0) };
         invalidate(va);
+    }
+
+    /// Breaks the block holding `va`, if one does, into pages as `protect` does.
+    pub fn split_block(&self, frames: &mut Frames, va: u64) -> Result<(), Full> {
+        match self.find(va) {
+            Some((entry, BLOCK_LEVEL)) => self.split(frames, va, entry),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether a block entry maps `va`.
+    pub fn is_block(&self, va: u64) -> bool {
+        self.find(va).is_some_and(|(_, level)| level == BLOCK_LEVEL)
+    }
+
+    /// Gives the block entry at `base` new attributes, keeping its frames, and invalidates it as `protect` does.
+    pub fn protect_block(&self, base: u64, attributes: El1Attributes) {
+        let (entry, level) = self.find(base).expect("protecting an unmapped block");
+        assert_eq!(level, BLOCK_LEVEL, "protecting a block that is not one");
+        let slot = self.entry(base, BLOCK_LEVEL);
+        let block = (entry & OUTPUT_ADDRESS)
+            | ((attributes.bits() as u64 | El1Attributes::VALID.bits() as u64)
+                & !(El1Attributes::TABLE_OR_PAGE.bits() as u64));
+        // SAFETY: the entry is ours, reached through the linear map.
+        unsafe { ptr::write_volatile(slot, block) };
+        invalidate(base);
+    }
+
+    /// Unmaps the block entry at `base` and invalidates it as `protect` does.
+    pub fn unmap_block(&self, base: u64) {
+        assert!(self.is_block(base), "unmapping a block that is not one");
+        // SAFETY: the entry is ours, reached through the linear map.
+        unsafe { ptr::write_volatile(self.entry(base, BLOCK_LEVEL), 0) };
+        invalidate(base);
+    }
+
+    /// Replaces the table of page entries at `base`, which map the run of frames at `run` in order, by one block
+    /// entry over the run with `attributes`, break before make, and gives the table's frame back.
+    pub fn promote(&self, frames: &mut Frames, base: u64, run: u64, attributes: El1Attributes) {
+        let slot = self.entry(base, BLOCK_LEVEL);
+        // SAFETY: the entry is ours, reached through the linear map.
+        let table = unsafe { ptr::read_volatile(slot) };
+        assert!(
+            valid(table) && table & El1Attributes::TABLE_OR_PAGE.bits() as u64 != 0,
+            "promoting a range not mapped by a table"
+        );
+        // SAFETY: as above: made invalid, every page's entry invalidated, then the block written.
+        unsafe { ptr::write_volatile(slot, 0) };
+        barrier::dsb(ISHST);
+        for page in 0..ENTRIES {
+            El1And0::invalidate_va(VirtualAddress((base + page * PAGE_SIZE) as usize));
+        }
+        barrier::dsb(ISH);
+        barrier::isb(SY);
+        let block = (run | attributes.bits() as u64 | El1Attributes::VALID.bits() as u64)
+            & !(El1Attributes::TABLE_OR_PAGE.bits() as u64);
+        // SAFETY: as above.
+        unsafe { ptr::write_volatile(slot, block) };
+        barrier();
+        frames.give(table & OUTPUT_ADDRESS);
+    }
+
+    /// The entry for `va` at `level`, whose tables above exist.
+    fn entry(&self, va: u64, level: u32) -> *mut u64 {
+        let mut table = self.root;
+        for above in 0..level {
+            // SAFETY: table entries are reached through the linear map.
+            let value = unsafe { ptr::read_volatile(entry_at(table, va, above)) };
+            assert!(valid(value), "a table above the entry is missing");
+            table = value & OUTPUT_ADDRESS;
+        }
+        entry_at(table, va, level)
     }
 
     /// Breaks the block holding `va` into pages over the same frames with the same attributes.
