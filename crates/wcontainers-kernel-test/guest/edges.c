@@ -2,6 +2,12 @@
 //   alone:  a worker alone on the processor writes a page in a loop until a signal's handler runs;
 //           the main thread marks three moments with getppid (with "self" it sends the worker the
 //           signal itself at the second) and then joins it.
+//   taken:  a worker meets a watched region outside any call, by a store ("store") or by its
+//           signal's frame on that region as its alternate stack ("frame"), then waits in
+//           epoll_wait and nanosleep; the main thread names the region in a getppid, which the
+//           embedder watches, and joins the worker.
+//   fatal:  children each kill themselves with one signal whose default action ends them (with
+//           and without a core dump; core dumps are limited to none) and are waited for.
 //   ends:   shared mappings of a file and of a memory file start and end in every way that cuts
 //           or joins them; each step is marked with sched_yield and shows /proc/self/maps.
 //   writer: a parent maps a file shared and writable and waits for its child, which maps the same
@@ -10,6 +16,7 @@
 //           CLONE_VM, each waited for.
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
@@ -18,7 +25,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -130,6 +139,66 @@ static int edges_alone(const char *how) {
     return 0;
 }
 
+static void taken_handler(int signal) {
+    (void)signal;
+    handled = 1;
+}
+
+// Meets the embedder's watch outside any call, by its own store or by its signal's frame on the
+// watched alternate stack, then waits in two calls that only a signal could interrupt.
+static void *taken_worker(void *argument) {
+    const char *how = argument;
+    edges_sleep(EDGES_SETTLE_MS);
+    if (strcmp(how, "frame") == 0) {
+        stack_t stack = {.ss_sp = at(0), .ss_flags = 0, .ss_size = EDGES_STACK};
+        sigaltstack(&stack, NULL);
+        syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1);
+    } else {
+        *(volatile char *)at(0) = 1;
+    }
+    int poll = epoll_create1(0);
+    struct epoll_event event;
+    int answer = epoll_wait(poll, &event, 1, EDGES_CHILD_MS);
+    printf("epoll %d %s\n", answer, answer < 0 ? strerror(errno) : "");
+    struct timespec time = {0, EDGES_SETTLE_MS * MS};
+    answer = nanosleep(&time, NULL);
+    printf("sleep %d %s handled %d\n", answer, answer < 0 ? strerror(errno) : "", (int)handled);
+    return NULL;
+}
+
+static int edges_taken(const char *how) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = taken_handler;
+    action.sa_flags = SA_ONSTACK;
+    sigaction(SIGUSR1, &action, NULL);
+    mmap(at(0), EDGES_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    syscall(SYS_getppid, at(0), EDGES_STACK);  // the embedder watches the region it names
+    pthread_t worker;
+    pthread_create(&worker, NULL, taken_worker, (void *)how);
+    pthread_join(worker, NULL);
+    printf("joined\n");
+    return 0;
+}
+
+// Children each send themselves one signal whose default action ends them, some dumping core.
+static int edges_fatal(void) {
+    struct rlimit none = {0, 0};
+    setrlimit(RLIMIT_CORE, &none);
+    const int signals[] = {SIGQUIT, SIGSEGV, SIGTERM, SIGABRT, SIGUSR2};
+    for (size_t index = 0; index < sizeof signals / sizeof signals[0]; index++) {
+        pid_t child = fork();
+        if (child == 0) {
+            kill(getpid(), signals[index]);
+            _exit(0);
+        }
+        int status;
+        waitpid(child, &status, 0);
+        printf("signal %d ended %d\n", signals[index], WIFSIGNALED(status) ? WTERMSIG(status) : -1);
+    }
+    return 0;
+}
+
 static void *shared(void *where, int pages, int fd, int index) {
     return mmap(where, (size_t)pages * page, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd,
                 (off_t)index * page);
@@ -229,6 +298,12 @@ int main(int count, char **arguments) {
     const char *how = count > 2 ? arguments[2] : "";
     if (strcmp(mode, "alone") == 0) {
         return edges_alone(how);
+    }
+    if (strcmp(mode, "fatal") == 0) {
+        return edges_fatal();
+    }
+    if (strcmp(mode, "taken") == 0) {
+        return edges_taken(how);
     }
     if (strcmp(mode, "ends") == 0) {
         return edges_ends();

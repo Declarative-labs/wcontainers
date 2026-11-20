@@ -1,6 +1,7 @@
 //! The embedder's hooks at their edges (guest/edges.c): a signal sent while a thread waits on a
-//! watch outside a call, shared memory cut and joined in every way, a reader of a file mapped while
-//! its only writer is away, and the memory ids of children; compared with the reference.
+//! watch outside a call, a thread taken and put back during that wait, which fatal signals are
+//! announced, shared memory cut and joined in every way, a reader of a file mapped while its only
+//! writer is away, and the memory ids of children; compared with the reference.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -173,6 +174,154 @@ fn a_thread_alone_acts_on_a_signal_sent_during_its_watch_wait_once_the_watches_c
             Some(&delivering),
             "seed {seed}: {log:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------- taken during a watch wait
+
+/// Watches the region edges.c's main thread names in its mark (its address and size); once the worker has met the watch and the
+/// kernel is idle, takes the worker, puts it back, and ends the watch once the worker meets it again.
+#[derive(Default)]
+struct TakenWhileWaiting {
+    process: Option<TaskId>,
+    worker: Option<TaskId>,
+    region: Range<u64>,
+    accesses: usize,
+    stage: usize,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+impl Hooks for TakenWhileWaiting {
+    fn on_thread_starting(&mut self, process: Process<'_>, thread: TaskId) {
+        self.process.get_or_insert(process.id());
+        self.worker.get_or_insert(thread);
+    }
+
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if request.number == u64::from(general::__NR_getppid) {
+            let [start, size, ..] = request.arguments;
+            self.region = start..start + size;
+            process.watch_memory(self.region.clone(), WatchesFor::Writes);
+            self.log.lock().unwrap().push("watched".to_owned());
+        } else if Some(thread) == self.worker {
+            let mut log = self.log.lock().unwrap();
+            log.push(format!("worker call {}", request.number));
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn on_watched_memory_accessing(&mut self, _: Process<'_>, _: TaskId, _: u64, _: AccessKind) {
+        self.accesses += 1;
+        self.log.lock().unwrap().push("accessed".to_owned());
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        // The worker waits on the watch before it is taken, and again once it is back.
+        let waiting = if self.stage < 2 { 1 } else { 2 };
+        if self.accesses < waiting {
+            return false;
+        }
+        let worker = self.worker.expect("the worker");
+        let mut log = self.log.lock().unwrap();
+        match self.stage {
+            0 => {
+                let taken: Vec<SuspendedTask> = kernel
+                    .suspend_tasks(cpu, &[worker])
+                    .map(|(_, task)| task)
+                    .collect();
+                log.push(format!("taken {}", taken.len()));
+                TAKEN.with_borrow_mut(|held| held.extend(taken));
+            }
+            1 => {
+                let back = kernel.resume_tasks(cpu, TAKEN.take()).count();
+                log.push(format!("handed back {back}"));
+            }
+            2 => {
+                let pid = self.process.expect("the process");
+                let mut process = kernel.process(cpu, pid).expect("the process");
+                process.watch_memory(self.region.clone(), WatchesFor::None);
+                log.push("unwatched".to_owned());
+            }
+            _ => return false,
+        }
+        self.stage += 1;
+        true
+    }
+}
+
+/// edges.c `taken` with `how`: the worker taken and put back while it waits outside a call answers
+/// its later calls as the reference does, with no interruption.
+fn taken_while_waiting(how: &str) {
+    let theirs = theirs(&["taken", how]);
+    println!("reference:\n{theirs}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let hooks = TakenWhileWaiting::default();
+        let log = hooks.log.clone();
+        let run = ours(&["taken", how], Box::new(hooks), seed);
+        TAKEN.take();
+        let log = log.lock().unwrap().clone();
+        let events: Vec<&str> = log
+            .iter()
+            .map(String::as_str)
+            .filter(|event| !event.starts_with("worker call"))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "watched",
+                "accessed",
+                "taken 1",
+                "handed back 0",
+                "accessed",
+                "unwatched"
+            ],
+            "seed {seed}: {log:?}"
+        );
+        assert_eq!(stdout(&run), theirs, "seed {seed}: {log:?}");
+    }
+}
+
+#[test]
+fn a_task_taken_while_its_store_waits_on_a_watch_is_not_interrupted_later() {
+    taken_while_waiting("store");
+}
+
+#[test]
+fn a_task_taken_while_its_signal_frame_waits_on_a_watch_is_not_interrupted_later() {
+    taken_while_waiting("frame");
+}
+
+// ---------------------------------------------------------------- fatal signals announced
+
+/// The number of every signal announced, in order.
+#[derive(Default)]
+struct Announced(Arc<Mutex<Vec<i32>>>);
+
+impl Hooks for Announced {
+    fn on_signal_delivering(&mut self, _: Process<'_>, _: TaskId, signal: &SignalInformation) {
+        // SAFETY: the kernel builds every record it hands over from all of its bytes.
+        let number = unsafe { signal.__bindgen_anon_1.__bindgen_anon_1.si_signo };
+        self.0.lock().unwrap().push(number);
+    }
+}
+
+#[test]
+fn a_signal_that_dumps_core_is_announced_and_one_that_only_ends_is_not() {
+    let theirs = theirs(&["fatal"]);
+    println!("reference:\n{theirs}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let hooks = Announced::default();
+        let announced = hooks.0.clone();
+        let run = ours(&["fatal"], Box::new(hooks), seed);
+        assert_eq!(stdout(&run), theirs, "seed {seed}");
+        let cores =
+            [general::SIGQUIT, general::SIGSEGV, general::SIGABRT].map(|signal| signal as i32);
+        assert_eq!(*announced.lock().unwrap(), cores, "seed {seed}");
     }
 }
 

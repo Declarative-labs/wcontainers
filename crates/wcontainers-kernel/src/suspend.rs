@@ -36,7 +36,8 @@ impl SuspendedTask {
 /// Where a task was in line when it was taken.
 #[derive(Clone, Copy)]
 enum Place {
-    /// Parked in its call, which runs again, interrupted, when it is put back.
+    /// Parked in its call, which runs again, interrupted, when it is put back; or waiting outside
+    /// a call, which goes on waiting.
     Waiting,
     /// Its wait had ended; its call runs again first, interrupted.
     Woken,
@@ -422,7 +423,9 @@ impl Kernel {
                 syscall::mqueue::forget(self, tid);
             }
         }
-        if !matches!(place, Place::Ready) {
+        // A thread waiting outside a call (its own access, or its signal's frame, met a watch or
+        // pages not here) has no call to interrupt: it touches the memory again when put back.
+        if !matches!(place, Place::Ready) && !self.threads[&tid].filling {
             self.thread_mut(tid).suspended_in_call = true;
         }
         let thread = self.threads.remove(&tid).expect("thread exists");

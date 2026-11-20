@@ -573,8 +573,8 @@ impl Kernel {
         Ok(None)
     }
 
-    /// Linux's `complete_signal`: a fatal signal that a thread does not block ends the process now;
-    /// otherwise a thread that does not block it is woken to act on it.
+    /// Linux's `complete_signal`: a fatal signal that does not dump core and that a thread does not
+    /// block ends the process now; otherwise a thread that does not block it is woken to act on it.
     fn complete(&mut self, cx: &mut Context<'_>, pid: Pid, target: Target, signal: u32) {
         let candidates: alloc::vec::Vec<Tid> = match target {
             Target::Thread(tid) if self.threads.contains_key(&tid) => alloc::vec![tid],
@@ -603,9 +603,11 @@ impl Kernel {
         let Some(tid) = wanting else {
             return;
         };
+        // One that dumps core is left to the thread that takes it, as Linux leaves it to
+        // `get_signal`.
         let handler = self.handler(pid, signal);
         let fatal = handler == SIG_DFL
-            && matches!(default_action(signal), Default::Terminate | Default::Core)
+            && matches!(default_action(signal), Default::Terminate)
             && !self.dropped(pid, signal);
         if fatal || signal == SIGKILL {
             self.drop_pending(pid, bit(signal));

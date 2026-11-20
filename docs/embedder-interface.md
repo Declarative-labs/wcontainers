@@ -170,8 +170,12 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   `signal` is the record the handler will be given. Signals that are not acted on by a thread are
   not announced: one taken by `sigwaitinfo`, `sigtimedwait` or a read of a `signalfd` (the call's
   result), one dropped when sent because it is ignored, and one that ends its process from the
-  sender's side (`SIGKILL`, or a fatal default action with no handler; the end is announced by
-  `on_process_exiting`). If the embedder watches what acting on the signal touches (the frame,
+  sender's side (`SIGKILL`, or a default action that ends the process without dumping core, with
+  no handler: Linux's `complete_signal`; the end is announced by `on_process_exiting`). A signal
+  whose default action dumps core (`SIGQUIT`, `SIGSEGV`, `SIGABRT` and the others) is taken by a
+  thread and announced, however it was sent, as Linux leaves it to `get_signal` (test
+  `a_signal_that_dumps_core_is_announced_and_one_that_only_ends_is_not`, edges.c `fatal`). If the
+  embedder watches what acting on the signal touches (the frame,
   the restartable sequence, the stores of the threads' ends), the hook fires first and the walk
   over those watches after it; a thread that then waits on a watch keeps the signal it took and
   acts on it, with no second announcement, once the watches change.
@@ -533,7 +537,14 @@ pub enum ContextOrigin { Suspended, Copied }
   at once) and a POSIX message queue send or receive. Every other call sees the interruption when
   the task is put back: nothing of the task runs in between, so this is Linux's stop arriving then.
   A task taken at `intercept_system_call_request` has not begun its call and makes it again (the
-  request is announced again). Per call, from the restart codes in Linux's source and signal(7),
+  request is announced again). A task taken while it waits outside any call (its own load or store,
+  or the frame of a signal it acts on, met a watch or pages not here) has no call to interrupt: it
+  is not marked, so no later call of it looks interrupted; put back, it touches the memory again
+  (the access is announced again if the watch is still there) and goes on waiting, and a signal it
+  was acting on is acted on as before. Tests:
+  `a_task_taken_while_its_store_waits_on_a_watch_is_not_interrupted_later` and
+  `a_task_taken_while_its_signal_frame_waits_on_a_watch_is_not_interrupted_later` (edges.c
+  `taken`). Per call, from the restart codes in Linux's source and signal(7),
   "Interruption of system calls by signal handlers" and "by stop signals":
   - Run again from the start, having had no effect (`ERESTARTSYS`, `ERESTARTNOINTR`,
     `ERESTARTNOHAND` with no handler): a read or write that has moved nothing (pipes, sockets with
@@ -644,7 +655,9 @@ pub enum ContextOrigin { Suspended, Copied }
   original: it has its own address map (the same mappings over the same executor memory) and its
   own signal handler table, no pending signal (they stay with the process), and every task of the
   process counted as away from it (an end of the copy makes no last stores into the shared memory
-  for the tasks that went on running on the original). Keeping copies in step on several kernels
+  for the tasks that went on running on the original; test
+  `a_copys_end_makes_no_last_stores_for_the_tasks_going_on_with_the_original`, taskend.c
+  `robust-copy`: a robust lock held by such a task stays held). Keeping copies in step on several kernels
   is the embedder's business. It holds no tasks. An address map tells each kernel a process using
   it is on what changes in its shared mappings, so a process moved to a second kernel is announced
   there, and one left on the first (two processes in one memory, one moved) still is there. The

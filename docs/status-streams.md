@@ -1315,8 +1315,9 @@ anything shipped.
 - S3, signals (choices where the ruling is silent, for the owner): `on_signal_delivering` fires
   where ptrace's signal-delivery-stop is, for every signal a thread takes off its pending sets to
   act on (handler, default action, an ignoring handler); not for signals a call takes
-  (`sigwaitinfo`, `signalfd`), ones dropped at sending as ignored, or a fatal signal that ends a
-  process from the sender's side (as Linux, untraced). `send_signal` is sent when the kernel
+  (`sigwaitinfo`, `signalfd`), ones dropped at sending as ignored, or a fatal signal that does not
+  dump core, which ends a process from the sender's side (as Linux's `complete_signal`, untraced);
+  one that dumps core is taken by a thread and announced, as Linux leaves it to `get_signal`. `send_signal` is sent when the kernel
   next settles (after the hook, before any thread runs), since the handle cannot reach the
   embedder for the hooks a signal can cause (a process's end).
 - S3, `SignalInformation` is the generated C union `siginfo`, as ruled. Safe Rust can build one
