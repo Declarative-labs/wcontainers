@@ -59,7 +59,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   departure) and held the rest of a turn after an outer loop's branch: search went from +83% to +24% cycles and the
   compute part to +37.71% [+37.26 .. +37.91], still failing; the system-call part passes at 68.6 ns (below, "N4 run 9");
   run 10 built 2 MiB entries by reservation and measured the contiguous bit (no gain, not kept); the benchmark set takes no
-  block, so the bar is as in run 9 (below, "N4 run 10").
+  block, so the bar is as in run 9 (below, "N4 run 10"). Run 11 measured the page test again (no measurable cycles now, so decision 14 would
+  not move the bar), built load-time addresses (address places; code moved between movable pages is what translating
+  there gives) and kept translations in the monitor, in memory and in files of a directory (below, "N4 run 11").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -86,6 +88,77 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 11 (2026-11-19): the page test measured again; load-time addresses and kept translations
+
+Start: origin/main and origin/phase-1-literals had nothing new; no answer in the brief or the orchestrator's notes to
+the asks below. Lint and the monitor's unit tests ran on the rented ARM64 machine (n4r12/arm1.log to arm3.log); what
+needs Hypervisor.framework, Docker or a git checkout ran on the Mac (-j 4). Logs are in scratch native/n4r12.
+
+Measured first (plan N4's item "the Split route's page test measured", recorded, not a pass condition): run 10's build
+against the same build with the page test left out for every access of 16 bytes or fewer (decision 14's other way),
+native runs alternating, 6 pairs, load 9 to 13 (n4r12/ab-nopage.log): cycles fib 0.997, sieve 0.986, hash 0.996, sort
+0.999, interpret 1.141, matrix 1.027, walk 1.008, search 1.030, calls 0.988, for instructions sort 0.899, interpret
+0.891, matrix 0.752, walk 0.741 and the rest 1.000. Since run 6's two-word test the page test costs no measurable
+cycles on this M5: the cores run its words beside the access. Dropping it would not move the compute part of the bar
+(run 3 measured about 11 points when the test was longer). What is left of the gap is calls, returns and jumps through
+a register.
+
+Built (plan 3.2, "As built (N4 run 11)"):
+- d5a3b7ee guest-cpu: `AddressPlace` and `Holds` (position.rs), `Fixup::Address`, `HostCode::place` and `places`,
+  `Translation` (the code once written, as a loader keeps it) with `moved`, and `Native::movable` and
+  `Native::write_place`.
+- 1a4f579a arm64: `encode::move_address` (three wide moves for every address under 2^48 or slot address),
+  `encode::branch_reach` and `page_reach` from Arm's table (the `adrp` form added to the encoder's list), and every
+  guest address the output builds (a call's x30, `adr`, `adrp`, a literal load's address, each exit's slot address)
+  written as address places; `carry::movable` is 2^32 up to 2^45 less a branch's reach and a page.
+- 81e0a3f9 translator: a piece linking an exit within itself drops the place of the word it links over.
+- 24ee85a5 inside: an address fix-up is finished as a constant one.
+- 4086a9e6 monitor: `translate::Translator` keeps each piece it made under its guest bytes, their offset in the page,
+  whether the count is written, and the page where it is not movable, and answers the same bytes at another movable
+  page from it, moved (`reused` counts those). Tests: `moved_code_is_what_translating_there_gives` (seeded, knobs
+  `WCONTAINERS_MOVED_CASES`, default 2000, and `WCONTAINERS_MOVED_SEED`): random code of the forms that name addresses
+  and of any word, at random offsets and movable pages, every look-ahead, with and without the count, moved from one
+  page to another, must equal translating there; run with 200,000 cases, seed 0x4e3412, 936,135 address places, 0
+  failed (n4r12/arm3.log). `a_kept_piece_is_loaded_at_another_page`: the second and third asks come from the kept
+  piece and equal translating there.
+
+Measured after (n4r12/mac1.log, the speed test's build with the places against run 10's, 6 pairs, load 17 to 23, some
+runs largely on efficiency cores): cycles fib 0.955, sieve 0.999, hash 1.000, sort 1.003, interpret 1.000, matrix
+1.022, walk 1.070, search 1.029, calls 0.974; instructions within 0.1% except walk 0.988. No cost of the wider address
+sequences shows beyond the noise of this load.
+
+Tests after the change (Mac, n4r12/mac1.log, load 19 to 25): exits 4 programs both modes, 0 failed (426 pieces);
+kernel alike with the reference and the WebAssembly side at none and 256, the mappings program's block made and split
+("large entry split" 4), the known failure of the WebAssembly side's `blocks` as before; carry 1,100,823 words, every
+form in shape; forced interrupts 3458 over 8 functions at 3 look-aheads, 0 failed. Clippy with warnings denied is clean
+for arm64, guest-cpu, the translator (native feature), the inside (all targets, rented ARM64 machine) and the monitor
+(all targets, Mac); the literal check exits 0, no marks, the baseline unchanged; rustfmt clean.
+
+Then (n4r12/mac2.log, load 19 to 26): the differential test at three look-aheads with new seeds, 0 failing each: none
+32,331 cases (seed 0x6e34121201), bounded 16 32,369 (0x6e341212016), bounded 256 32,510 (0x6e3412120256); busybox 56
+commands gave the reference's output, exit code and files at none and 256; at whole page (`WCONTAINERS_NATIVE_BOUND=
+4294967295`) the kernel test alike with the reference and the WebAssembly side at none and whole page, the benchmark
+set's count at every stop the same at both, and busybox's 56 commands as the reference (n4r12/whole-page.log).
+
+Built next (bfd9f9b5, plan 3.2, the cache): `Translator::new` takes a directory; a piece it makes is written there, whole
+or not at all, as a file named by the hash of the running program's bytes (its build: the translator and its guests are
+compiled into it), the look-ahead, whether the count is written, the page where it is not movable, the offset and the
+guest bytes; a translator that misses in memory reads the file and moves the translation to the asked page. A file that
+cannot be read or does not read as a translation is counted and warned ("native translation in the cache's directory
+refused") and made again; one that cannot be written likewise ("native translation not kept in the cache's directory").
+Test tests/kept.rs (no machine): a second translator reads what the first wrote, at another page, equal to translating
+there; a spoiled file is refused once and written again. The tests' monitors run with no directory, as before.
+
+What N4 still needs, in order:
+1. The compute part of the bar (+37.71% against +21.2%, run 9): the page test no longer costs measurable cycles, so
+   only calls, returns and jumps through a register are left; this needs a ruling (see "For the orchestrator").
+2. Loaded translations shared between processes inside the machine (plan 3.2: a fork's child and the same program run
+   twice map the same bytes at the same address and could share the code area's frames, the inside then writing
+   places itself).
+3. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none, 256 and whole
+   page).
 
 ## N4 run 10 (2026-11-19): 2 MiB entries by reservation; the contiguous bit measured and not kept
 
@@ -2030,6 +2103,8 @@ end (ceiling just under 4 GiB) and the native one (2^45), which replay across th
 
 ## Licences of what N1 added (crates.io, 2026-11-18)
 
+- N4 run 11: the monitor now depends on blake3 1.8.7 (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception),
+  postcard 1.1.3 (MIT OR Apache-2.0) and serde 1.0.229 (MIT OR Apache-2.0), each already in the workspace's lock file.
 - N4 run 1: rustc-hash 2.1.3 (MIT OR Apache-2.0), in the inside, already in the workspace's lock file.
 
 N2 run 4: the monitor builds src/hvf_vector.c with `cc` 1.11.2 (MIT OR Apache-2.0, already in Cargo.lock),
@@ -2212,6 +2287,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 11: plan 3.2 says loading a translation into the code area writes its address places. As built, the monitor
+  writes them (`Translation::moved`) before it puts the piece in the link, so the inside still receives code made for
+  its address and needs no encoder; a loaded translation is not yet shared between processes inside the machine, which
+  is where the inside would write places itself. A piece on a page outside `Native::movable()` (below 2^32, or within
+  a branch's reach of the 2^45 ceiling, where its shape can depend on its address) is kept under its page as well, so
+  it is reused only at that page. Address sequences are now three wide moves for every address under 2^48, where the
+  encoder used to leave out a zero half: at most one more `movk` in a call, `adr`, `adrp` or literal load whose address
+  has a zero half (measured: no change beyond the noise on the benchmark set, below).
+
 - N4 run 10: plan 5.2 reserves a run at the first touch of a 2 MiB range that may take a block. As built, a run is
   reserved for any 2 MiB range when a private page there needs a frame and the range has no reservation, whether or
   not the range is alike then: the kernel writes a program's data before its permissions are set, and a range of a
@@ -2384,6 +2468,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 11: the page test of the Split route, as built since run 6, costs no measurable cycles on this M5: leaving it
+  out for every access of 16 bytes or fewer took 10 to 26% of the instructions of sort, interpret, matrix and walk
+  and changed no workload's cycles beyond the noise (n4r12/ab-nopage.log, 6 pairs). So decision 14 would not move
+  the compute part of the bar; what is left of +37.71% against +21.2% is calls, returns and jumps through a register.
+  The asks of run 9 stand (the departure of adds counted ahead; run 7's (a) or (b), or a changed bar). Also built:
+  load-time addresses and the monitor's kept translations with files on disk (Departures). The files' build is a hash
+  of the running monitor, since the translator's build identity is made by wcontainers-wasmtime's build script; if
+  the translator crate exported it, both back ends could key on the one identity.
 
 - N4 run 10: 2 MiB entries by reservation are built (plan 5.2); the benchmark set takes no block, so the bar is still
   run 9's (+37.71% against +21.2%). The contiguous bit was built and measured with no gain (walk 0.998 cycles with its

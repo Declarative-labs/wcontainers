@@ -193,8 +193,8 @@ rewritten) would change only that function (brief).
   `WCONTAINERS_MOVED_SEED`). A piece the emitter links within itself drops the place of the word it links
   over. The monitor keeps each piece it made (`Translator`, in memory) under the guest bytes it was made
   from, their offset in the page, whether the count is written, and the page itself where the page is not
-  movable, and answers a request for the same bytes at another movable page from it, moved there. Files on
-  disk are not built yet (below, the cache).
+  movable, and answers a request for the same bytes at another movable page from it, moved there, and keeps
+  it in a file of a directory when it is given one (below, the cache).
 - **Exits linked to each other.** A direct branch to a piece of the same loaded translation is patched into a
   direct branch once the target is translated (one aligned 4-byte write on ARM64, a rel32 on x86-64, while no
   virtual CPU runs that code, then the architecture's instruction-cache maintenance). A branch to a guest
@@ -300,6 +300,15 @@ rewritten) would change only that function (brief).
   key. Files on disk are shared between runtimes of the same build (the other project's "translated code
   cached per backend as files", design.md section 6). Inside the virtual machine a loaded translation is
   found by its key's hash and its guest address (above).
+  As built (N4 run 11, the monitor's `Translator`): the key is the piece's guest bytes, their offset in the
+  page, whether the count is written, the look-ahead, and the page where it is not movable; the build is a
+  hash of the running monitor's own bytes, which hold the translator and its guests, in place of a build
+  identity of the translator alone (that one is made by wcontainers-wasmtime's build script, for the
+  WebAssembly back end). A file is named by the hash of the build and the key, written whole or not at all,
+  and read when a piece is not kept in memory; a file refused or not written is a counted and warned slow
+  path. The offer and the withheld registers' choice are fixed by the build today, so they are in the key
+  through it. Loaded translations are not yet shared between processes inside the machine: each process's
+  pieces come through the link, from the monitor's kept translations.
 
 ### 3.3 Registers the translated code keeps for itself
 
