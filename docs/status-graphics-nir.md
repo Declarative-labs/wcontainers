@@ -5,6 +5,61 @@ G9).
 
 ## Where it stands
 
+G9 run 8 (2026-11-20). The driver now reports OpenGL ES 3.0, so dEQP-GLES3 and KHR-GLES3 run on
+it for the first time. G9 is still short of its bar: ES 3.1 and 3.2 and desktop 3.3 and 4.6
+cannot start yet (no compute dispatch, storage, images, geometry or tessellation stages in the
+context, GLSL 1.30 only). The table of lists and shares on our driver: not yet measured over the whole lists this run.
+The whole run of dEQP-GLES2, KHR-GLES2, KHR-GLES3 and dEQP-GLES3 (one GPU job, started from the
+Mac at 15:30 with its output in scratch `logs/g9r8-full.log`, results on the desktop in
+`C:\wc\graphics-nir\cts\results\wcontainers\<list>`) was still queued behind another track's
+hazard job when the run ended. Read it first next run; if it never ran, start it again with the
+command in How to run. The only measures this run are 1% shards (below), not the bar's measure.
+Done this run:
+- ES 3.0's caps: GLSL 1.30 and ESSL 3.00, primitive restart at the fixed index (strips restart
+  on the host; lists and strips drawn without restart are still drawn as they come: see what is
+  left), shadow samplers, half-float and float filtering where the format filters, and
+  `max_constant_buffer_size`. That last one was the blocker: Gallium's default copies it from
+  the fragment stage's caps when its defaults are filled, before the driver fills those, so it
+  was 0 and st/mesa turned uniform buffer objects off, and with them ES 3.0.
+- Stream output (transform feedback), `src/stream.rs`: Gallium's targets, each with a word of
+  its own for its filled size while unbound, copied into and out of the stage helper's block
+  (`STREAM_FILLED_WORDS`) at `set_stream_output_targets` (append, or start at the offset given);
+  a target's range bound from its offset rounded down to the storage alignment, the remainder
+  counted as filled. The declaration is read from the NIR's `xfb_info` by the bridge's
+  `wc_nir_stream_outputs` (each output's buffer, byte offset, the route's location or the
+  position, first component and count; gaps between outputs named as gaps). At a draw while
+  targets are bound, the vertex program is converted again with every input fetched in it
+  (`streamed` variant; its outputs as the stage helper's `StageValue`s) and the shaders crate's
+  `Stages::new(.., None, Some(declaration))` runs it as compute work before the draw
+  (`StreamOutAsCompute`, counted by the helper). Refused by name: indexed draws (ES 3.0 has
+  none with stream output), fans and loops, a streamed value at neither a location nor the
+  position. Rasterizer discard is now honoured (the draw stops after stream output; before
+  this run it was ignored).
+- `PIPE_QUERY_PRIMITIVES_EMITTED` (ES 3.0's TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN): each streamed
+  draw's count copied from the helper's statistics word into the query's slots, read back and
+  summed when asked (or when its 1,024 slots fill).
+- Programs Gallium's helpers hand over as TGSI go through Mesa's own `tgsi_to_nir` (MIT) in
+  `create_shader` (run 7's "a program not in NIR", 120 logs in GLES2, 24 in the GLES3 shard).
+Seen in the 1% GLES3 shards before the TGSI change (desktop, GPU queue, 15:2x; dEQP-GLES3 448
+cases, Pass 368, Fail 17, Crash 57, Skip 6: 83.26%; KHR-GLES3 65 cases, 57 of 63: 90.48%), the
+refusals by count of logs: flat values from the last vertex 50 (the provoking vertex: next),
+sampling an integer texture 26 (route B loads and gathers them only; OpenGL samples them with
+nearest filtering), not in NIR 24 (fixed above), `load_ubo` not taken 12 (to read), a blit the
+blitter does not make 8, the blend constant's colour and alpha 4, a comparison with a bias or
+gradients 2.
+Next, in order: (1) the provoking vertex for flat values (Mesa's `u_index_translator` and
+`u_index_generator`, MIT, rotate each primitive so the host's first vertex is OpenGL's last,
+lists made of strips; the same translator also rewrites restart for lists and for strips drawn
+without restart, counted `ProvokingRewrite` and `RestartRewrite`; indices in a buffer read back
+as fans' are); (2) sampling integer textures in route B (nearest texel loads with the sampler's
+wrap and level); (3) the GLES3 Fail and Crash groups of the whole run; (4) ES 3.1 (compute
+dispatch, storage buffers and images, indirect draws) for dEQP-GLES31 and KHR-GLES31; (5) the
+literal check's findings (below).
+Primitive restart and the screen: strips restart at the largest index on the host whether or
+not OpenGL asked, and a list never restarts there, so a list drawn with restart and a strip
+drawn without it that hold the largest index are drawn wrongly until (1); no case has been seen
+to fail on it yet, and it is listed here so that none is counted as passing by chance.
+
 G9 run 7 (2026-11-20). G9 is still far from its bar: OpenGL ES 2.0 now passes nearly all of
 dEQP-GLES2 on our driver, but the driver still reports OpenGL ES 2.0 only, so seven of the nine
 lists cannot start. The table of lists and shares on our driver, the WHOLE lists (desktop, RTX
@@ -1603,6 +1658,11 @@ Next (after G8's check):
 
 ## Licences brought in (for the owner to confirm)
 
+- G9 run 8: nothing new from outside. Two more of Mesa's MIT files are called by the driver:
+  `src/gallium/auxiliary/nir/tgsi_to_nir.c` (Broadcom and Rob Clark, MIT) and, through the
+  bridge, `src/compiler/nir/nir_xfb_info.h`'s data (MIT). wcontainers-opengl now depends on
+  wcontainers-shaders (ours) directly.
+
 - G9 run 6: the DirectX Shader Compiler's Windows release v1.9.2609 (`dxcompiler.dll`,
   `dxil.dll`), fetched by `mesa/build-windows.ps1` onto the desktop only and placed beside the
   test driver; not in this repository. Its LICENSE.TXT is the University of Illinois/NCSA Open
@@ -1949,6 +2009,14 @@ None.
   through it.
 
 ## Literal check
+
+G9 run 8: exit 1 at dd5c5606 (x86-64 machine, from a git bundle; marks 0; clone, build and
+bundle deleted after; output in scratch `logs/g9r8-literals.out`): 47 findings, 45 in
+wcontainers-opengl (draw.rs 18, state.rs 12, query.rs 5, context.rs 3, present.rs 3, and one
+each in build.rs, blit.rs, gallium.rs, view.rs; most are refusal texts passed to `refuse`, five
+are a bare 4, and `QUERIES_PER_SET` restates the Direct3D 11 front's `SET_SLOTS`), and
+`CUBE_FACES` twice (waiting on others). Not yet worked down: next run, after the provoking
+vertex.
 
 G9 run 7: not run (the run's budget went to the desktop). The Rust added names its numbers
 (`QUERIES_PER_SET`, `VERTEX_ALIGNMENT` from wgpu's own constant, sizes from `size_of` and
