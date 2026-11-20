@@ -394,6 +394,38 @@ Seventh run of T3 (2026-11-20 05:08 local on):
   literal check (status 0). checks.rs and layer1.rs's tests need the reference (on x86 their blob server
   cannot run: "exec format error"); the suite and verify-mac.sh run them.
 
+Eighth run of T3 (2026-11-20 05:50 local on):
+- Both references came back during the run: the rented ARM64 machine at a new address (ubuntu@13.59.176.235,
+  answering from 06:07, freshly started, empty), and the Mac's Docker (it dropped its connection at about 06:09
+  and ran a container again at 06:10:33). `verify-arm.sh 12` started at 06:10 on 07d7942a, `verify-mac.sh` at
+  06:10:52 on the same commit. Results below.
+- Literals, the test harness only (what is translated did not change; the translator crate gained only
+  `Omit::bits` and `Omit::from_bits`, for the measuring type, which the browser crate and the harness share
+  instead of each writing the bits):
+  - 9fc51b47: one home in `reference.rs` for the harness's cargo builds (`release_build`, `cargo`, the
+    guest's Rust triple), its target folders (`target_folder`), and Docker's mounts (`mount`,
+    `mount_writable`); binaries.rs and layer3.rs use `DOCKER`, `REFERENCE_CONTAINER` and the mounts; the
+    reference's 20 s limit (`BLOB_SECONDS`) moved to layout.rs, which the reference runner includes, so
+    layer 3's `timeout` for ordinary programs takes it from there. The reference runner is now built with an
+    explicit `--target aarch64-unknown-linux-musl` (the same as its `.cargo/config.toml`), and the Cargo that
+    builds it is the one in `CARGO`, with no fallback (Cargo always sets it for tests).
+  - af9d9276: the browser runner's setup and answers are serde structs (`#[serde(rename_all =
+    "camelCase")]`), so their keys come from the field names; the stop kinds map to Linux's signals from
+    linux-raw-sys in one table; `omit`'s bits come from `Omit::bits`. The setup's JSON is byte for byte what
+    it was for all three kinds of case (a scratch test that built both forms and compared the strings, rented
+    x86 machine; fields are in the order of their names, as serde_json's map wrote them). New test
+    `tests/omit.rs` (the bits round trip, and each check's bit as runner.js and the browser crate read it).
+  - 07d7942a: the test programs' compile flags (`ZIG_GUEST_TARGET`, `FIXED_POSITION`, `NO_SANITIZERS`,
+    `NO_BUILD_ID`, `LINK_SCRIPT`, `OUTPUT_FLAG`, the C driver, the ELF extension) named once in programs.rs and
+    used by layer 3's clang and gcc builds; the source kinds a table (`SOURCES`). The command lines are the
+    same as before, argument for argument.
+  - Baseline 7,646 to 7,451 lines. Checked on the rented x86 machine (`t3/lint.sh`): format, clippy with
+    warnings denied, the unit tests, test_guest, smoke, omit and no_std, the browser crate's wasm32 build and
+    clippy, the literal check (status 0). The reference build and the Docker mounts ran on the x86 machine
+    in the browser test until the ARM64 runner could not start there ("exec format error"), as expected.
+  - New dependency: serde 1.0.229 (MIT OR Apache-2.0) with `derive`, in wcontainers-translator-test (test
+    tooling); it was already in Cargo.lock.
+
 T3, what is left:
 - Needs an ARM64 reference (the rented ARM64 machine or the Mac's Docker), on 6975d48c or later (scratch
   `t3/r7/verify-arm.sh` and `verify-mac.sh` do all of this):
