@@ -25,11 +25,13 @@ pub enum InsideCall {
     Misaligned,
     /// A jump through a register to an address no piece can be at: the guest lands there and faults.
     Unreachable,
+    /// A return's first miss: the inside makes the target its last target, then the return goes on.
+    LastTarget,
 }
 
 impl InsideCall {
     /// Every call.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Exit,
         Self::Answer,
         Self::FloatBefore,
@@ -37,6 +39,7 @@ impl InsideCall {
         Self::Trap,
         Self::Misaligned,
         Self::Unreachable,
+        Self::LastTarget,
     ];
 
     /// The code a call carries.
