@@ -153,6 +153,40 @@ The X6 check's findings:
   the single step's name (`browser::SINGLE_STEP`) from the test's settings and derives each slow path's key
   from its name in the contract, and the memory fault hooks read the access as "a write or not".
 - Plan 5.7's sentence on `brk` zeroing pages is corrected: the stand-in's `brk` never moves the break.
+- Found on the way: the page that only loads modules (`small_binaries_translate_and_load_arm64`) was not given
+  the shared names; every launch of the page now gets them (332477f6).
+
+Measured:
+- Validity, x86, at the check's seed (`PROPTEST_CASES=40000 PROPTEST_RNG_SEED=9601`), rented x86-64 machine
+  (load 1 to 4 on 96): the four tests pass in 24 s (it hung before the fix).
+- x86's `--test programs`, `checks`, `changes` and `lookaheads`, rented x86-64 machine (`x6r3-tests.log`, load 2
+  to 13): 28 passed, 0 failed (programs 1,414 s). The stack code test fails with the rule turned off.
+- ARM64's affected tests (programs, checks, changes, lookaheads, browser, validity), rented ARM64 machine
+  (`x6r3-arm.log`, 436 s): all pass.
+- Layer 2 for x86, seed 9613, 10,000 programs, all on the CPU, 64 at once, rented x86-64 machine (load 25 to 58):
+  0 failing (156 s; 3,416 faulted, 1,116 left to an address at full, 23,976 stacks lost, 23,734 pieces
+  forgotten).
+- The five x86 layer 1 and reference tests whose verdict is the laptop's, on the i7-8750H (`x6r3-l1` there,
+  copied to scratch, load 2 to 7 with another track's build beside it): `hand_cases_do_what_they_must_x86_64`,
+  `bytes_in_no_form_stop_as_on_the_cpu_x86_64` and `sample_matches_the_cpu_in_chrome_x86_64` pass (seed 9611,
+  205 s for the three); `unoffered_forms_are_illegal_x86_64` at 100 a form passes (793 s);
+  `the_x86_64_reference_refuses_what_linux_refuses` passes; `every_form_matches_the_cpu_x86_64` at 1,000 a form,
+  seed 9611, 4 at once: 1,073 forms, 0 failing (3,200 s).
+- ARM64's two layer 1 tests on the Mac (`x6r3-arm64-l1-mac.log`, Docker Desktop, load 6 to 12): every form at
+  64 a form, seed 9612, and the Chrome sample: pass (112 s).
+- The suite in pieces, rented x86-64 machine (`x6r3/suite-x86m/`, one log a piece, load 1 to 18): every x86
+  test passes but the five above whose verdict is the laptop's (5-level paging and that CPU's features, as
+  before); the failures are those five and the ARM64 tests, which have no ARM64 reference there. ARM64's
+  tests, rented ARM64 machine (`x6r3-suite-arm.log`, 1,418 s, load 18 to 29): all pass but the two layer 1
+  tests its manual keeps on the Mac (passed there, above) and `small_binaries_translate_and_load_arm64`, which
+  then failed for the missing names and passes after 332477f6 (`x6r3-arm-binaries.log`). Clippy with warnings
+  denied for the five crates and the browser crate for both guests, and `cargo fmt --check`: pass.
+- The literal check (the Mac): exits 0; two baseline lines went (`pc_of`'s 8, the page's "kind"), none added.
+  Baseline lines of this track's crates: x86 125, guest-cpu 28, the test crate 2,088, the translator 72.
+
+So every part of X6's bar holds: the bar's programs at every look-ahead in wasmtime and in Chrome against the
+reference (the trap flag cases with the reference's stop and registers in both), with the program another
+thread changes, the code on the stack and the far frames beside them. What comes next: X6's independent check.
 
 
 ## X6, run 1, after the restart (2026-11-20)
