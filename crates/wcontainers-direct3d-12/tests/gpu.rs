@@ -6,7 +6,10 @@
 mod triangle;
 
 use wcontainers_direct3d_12::Device;
-use wcontainers_direct3d_12::state::{FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE};
+use wcontainers_direct3d_12::state::{
+    CULL_MODE_NONE, FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE,
+};
+use wcontainers_directx_graphics_infrastructure::dxgi;
 use wcontainers_gpu::{Backend, DeviceStatus, Features, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -15,9 +18,6 @@ const COLOR_VS: &[u8] =
     include_bytes!("../../wcontainers-graphics-test/shaders/dxil/common.vs_color.dxil");
 const COLOR_PS: &[u8] =
     include_bytes!("../../wcontainers-graphics-test/shaders/dxil/common.ps_color.dxil");
-/// `DXGI_FORMAT_R32G32B32_FLOAT` and `DXGI_FORMAT_R32G32B32A32_FLOAT`.
-const FLOAT3: u32 = 6;
-const FLOAT4: u32 = 2;
 
 fn webgpu() -> WebGpu {
     webgpu_without(wgpu::Features::empty())
@@ -159,12 +159,12 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
             "the adapter's own depth clamping"
         );
         let inputs = vec![
-            triangle::element("POSITION", FLOAT3, 0),
-            triangle::element("COLOR", FLOAT4, float3),
+            triangle::element("POSITION", dxgi::R32G32B32_FLOAT, 0),
+            triangle::element("COLOR", dxgi::R32G32B32A32_FLOAT, float3),
         ];
         let raster = Raster {
             fill: FILL_MODE_SOLID,
-            cull: 1,
+            cull: CULL_MODE_NONE,
             depth_clip: false,
             ..Default::default()
         };
@@ -175,7 +175,7 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
             inputs,
             raster,
             TOPOLOGY_TYPE_TRIANGLE,
-            0,
+            dxgi::UNKNOWN,
         )
         .unwrap();
         let scene = triangle::record_with(&mut device, pso, &data, stride, data.len() as u64);
@@ -205,4 +205,260 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(differing, 0, "pixels differing between the two clamps");
+}
+
+/// HLSL compiled with the system's compiler (`D3DCompile`) for shader model `target`.
+#[cfg(windows)]
+fn compiled(source: &str, target: windows::core::PCSTR) -> Vec<u8> {
+    use windows::Win32::Graphics::Direct3D::{Fxc::D3DCompile, ID3DInclude};
+    let mut code = None;
+    let entry = std::ffi::CString::new(wcontainers_shaders::ENTRY_POINT).unwrap();
+    // The source and entry outlive the call; the blob is copied out before it is released.
+    unsafe {
+        D3DCompile(
+            source.as_ptr().cast(),
+            source.len(),
+            None,
+            None,
+            None::<&ID3DInclude>,
+            windows::core::PCSTR(entry.as_ptr().cast()),
+            target,
+            0,
+            0,
+            &mut code,
+            None,
+        )
+        .unwrap();
+        let code = code.unwrap();
+        std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize())
+            .to_vec()
+    }
+}
+
+/// Depth clamped in the programs into a depth target (`DepthClampInShader`'s pixel half), with
+/// perspective (w from 1 to 4) and two viewport depth ranges, draws what the back end's own clamp
+/// draws: a triangle reaching past the far plane and before the near one, then a quad at depth 0.9
+/// tested against it with `LESS_EQUAL`.
+#[cfg(windows)]
+#[test]
+fn depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clamp() {
+    use wcontainers_direct3d_12::GraphicsPipelineDesc;
+    use wcontainers_direct3d_12::list::*;
+    use wcontainers_direct3d_12::resource::*;
+    use wcontainers_direct3d_12::root::{
+        FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, RootSignatureDesc, VERSION_1_0, serialize,
+    };
+    use wcontainers_direct3d_12::state::*;
+    use wcontainers_gpu::ColorWrites;
+
+    let vs = compiled(
+        "struct O { float4 p : SV_Position; float4 c : COLOR; };
+         O main(float4 p : POSITION, float4 c : COLOR) { O o; o.p = p; o.c = c; return o; }",
+        windows::core::s!("vs_5_0"),
+    );
+    let ps = compiled(
+        "float4 main(float4 p : SV_Position, float4 c : COLOR) : SV_Target { return c; }",
+        windows::core::s!("ps_5_0"),
+    );
+    // A vertex at (x, y, z) / w, then its colour.
+    let vertex = |x: f32, y: f32, z: f32, w: f32, c: [f32; 4]| {
+        [x * w, y * w, z * w, w, c[0], c[1], c[2], c[3]]
+    };
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let vertices = [
+        vertex(-0.95, -0.95, 0.2, 1.0, red),
+        vertex(0.95, -0.95, 1.5, 4.0, red),
+        vertex(0.0, 0.95, -0.4, 2.0, red),
+        vertex(-1.0, -1.0, 0.9, 1.0, green),
+        vertex(1.0, -1.0, 0.9, 1.0, green),
+        vertex(-1.0, 1.0, 0.9, 1.0, green),
+        vertex(1.0, -1.0, 0.9, 1.0, green),
+        vertex(1.0, 1.0, 0.9, 1.0, green),
+        vertex(-1.0, 1.0, 0.9, 1.0, green),
+    ];
+    let data: Vec<u8> = vertices
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let stride = size_of::<[f32; 8]>() as u32;
+    let size = triangle::SIZE;
+    for range in [[0.0f32, 1.0], [0.25, 0.75]] {
+        let pictures =
+            [wgpu::Features::empty(), wgpu::Features::DEPTH_CLIP_CONTROL].map(|hidden| {
+                let mut device = Device::new(webgpu_without(hidden));
+                let root = device
+                    .create_root_signature(&serialize(&RootSignatureDesc {
+                        version: VERSION_1_0,
+                        parameters: vec![],
+                        samplers: vec![],
+                        flags: FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+                    }))
+                    .unwrap();
+                let mut blend = Blend::default();
+                blend.targets[0].write_mask = ColorWrites::all().bits();
+                let pso = device
+                    .create_graphics_pipeline(&GraphicsPipelineDesc {
+                        root: Some(root),
+                        vs: &vs,
+                        ps: &ps,
+                        blend,
+                        sample_mask: u32::MAX,
+                        raster: Raster {
+                            fill: FILL_MODE_SOLID,
+                            cull: CULL_MODE_NONE,
+                            depth_clip: false,
+                            ..Default::default()
+                        },
+                        depth_stencil: DepthStencil {
+                            depth_enable: true,
+                            depth_write_all: true,
+                            depth_func: COMPARISON_LESS_EQUAL,
+                            ..Default::default()
+                        },
+                        inputs: vec![
+                            triangle::element("POSITION", dxgi::R32G32B32A32_FLOAT, 0),
+                            triangle::element(
+                                "COLOR",
+                                dxgi::R32G32B32A32_FLOAT,
+                                size_of::<[f32; 4]>() as u32,
+                            ),
+                        ],
+                        topology_type: TOPOLOGY_TYPE_TRIANGLE,
+                        dsv_format: dxgi::D32_FLOAT,
+                        rtv_formats: vec![triangle::RGBA8],
+                        samples: 1,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let texture = |format, flags| ResourceDesc {
+                    dimension: DIMENSION_TEXTURE2D,
+                    width: size.into(),
+                    height: size,
+                    depth_or_array_size: 1,
+                    mip_levels: 1,
+                    format,
+                    sample_count: 1,
+                    flags,
+                    ..Default::default()
+                };
+                let color_desc = texture(triangle::RGBA8, FLAG_RENDER_TARGET);
+                let target = device
+                    .create_committed(HeapType::Default, &color_desc)
+                    .unwrap();
+                let depth = device
+                    .create_committed(
+                        HeapType::Default,
+                        &texture(dxgi::D32_FLOAT, FLAG_DEPTH_STENCIL),
+                    )
+                    .unwrap();
+                let vertex_buffer = device
+                    .create_committed(HeapType::Upload, &triangle::buffer(data.len() as u64))
+                    .unwrap();
+                let address = device.address(vertex_buffer);
+                let mapped = device.map(vertex_buffer).unwrap();
+                // The upload heap's memory stays where it is for the resource's life.
+                unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mapped, data.len()) };
+                let view = |resource, format| TargetView {
+                    resource,
+                    format,
+                    mip: 0,
+                    first_layer: 0,
+                    layers: 1,
+                };
+                let rtv = Descriptor::RenderTarget(view(target, triangle::RGBA8));
+                let dsv = Descriptor::DepthStencil {
+                    view: view(depth, dxgi::D32_FLOAT),
+                    read_only: 0,
+                };
+                let mut list = CommandList::new();
+                list.record(Command::Pipeline(pso));
+                list.record(Command::ClearTarget {
+                    view: rtv,
+                    color: triangle::CLEAR,
+                    rects: vec![],
+                });
+                list.record(Command::ClearDepth {
+                    view: dsv,
+                    depth: Some(1.0),
+                    stencil: None,
+                    rects: vec![],
+                });
+                list.record(Command::Targets {
+                    colors: vec![rtv],
+                    depth: Some(dsv),
+                });
+                list.record(Command::Viewports(vec![ViewportF {
+                    width: size as f32,
+                    height: size as f32,
+                    min_depth: range[0],
+                    max_depth: range[1],
+                    ..Default::default()
+                }]));
+                list.record(Command::Scissors(vec![[0, 0, size as i32, size as i32]]));
+                list.record(Command::Topology(TOPOLOGY_TRIANGLELIST));
+                list.record(Command::VertexBuffers {
+                    start: 0,
+                    views: vec![VertexBufferView {
+                        address,
+                        size: data.len() as u32,
+                        stride,
+                    }],
+                });
+                list.record(Command::Draw {
+                    vertices: vertices.len() as u32,
+                    instances: 1,
+                    first_vertex: 0,
+                    first_instance: 0,
+                });
+                list.close().unwrap();
+                let (f, total) = color_desc.footprints(0, 1, 0).unwrap();
+                let readback = device
+                    .create_committed(HeapType::Readback, &triangle::buffer(total))
+                    .unwrap();
+                let mut copy = CommandList::new();
+                copy.record(Command::CopyTexture {
+                    dst: CopyLocation::Footprint {
+                        resource: readback,
+                        footprint: f[0].footprint,
+                    },
+                    at: [0; 3],
+                    src: CopyLocation::Subresource {
+                        resource: target,
+                        index: 0,
+                    },
+                    area: None,
+                });
+                copy.close().unwrap();
+                let scene = triangle::Scene {
+                    lists: vec![
+                        list.commands().unwrap().clone(),
+                        copy.commands().unwrap().clone(),
+                    ],
+                    readback,
+                    footprint: f[0].footprint,
+                    total,
+                };
+                let picture = picture(&mut device, &scene);
+                let in_programs = device
+                    .backend()
+                    .slow_paths()
+                    .count(SlowPath::DepthClampInShader);
+                assert_eq!(in_programs > 0, !hidden.is_empty(), "the slow path's count");
+                picture
+            });
+        let count = |p: &[u8], c: [u8; 4]| p.chunks(c.len()).filter(|x| *x == c).count();
+        let red = count(&pictures[0], [u8::MAX, 0, 0, u8::MAX]);
+        let green = count(&pictures[0], [0, u8::MAX, 0, u8::MAX]);
+        let differing = pictures[0]
+            .chunks(size_of::<u32>())
+            .zip(pictures[1].chunks(size_of::<u32>()))
+            .filter(|(a, b)| a != b)
+            .count();
+        eprintln!("range {range:?}: red {red}, green {green}, differing {differing}");
+        // The triangle's clamped parts in front of the quad and the quad over the rest both show.
+        assert!(red > 0 && green > 0, "red {red}, green {green}");
+        assert_eq!(differing, 0, "pixels differing between the two clamps");
+    }
 }

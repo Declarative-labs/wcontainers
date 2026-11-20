@@ -170,6 +170,7 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
             None => DXGI_ERROR_UNSUPPORTED,
         };
     }
+    objects::cleared(out);
     // Direct3D 12's feature levels: 11_0 to 12_2.
     if ![0xb000, 0xb100, 0xc000, 0xc100, 0xc200].contains(&(minimum_level as u32)) {
         return E_INVALIDARG;

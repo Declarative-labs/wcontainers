@@ -26,6 +26,29 @@ pub const TOPOLOGY_TYPE_PATCH: u32 = 4;
 pub const FILL_MODE_WIREFRAME: u32 = 2;
 pub const FILL_MODE_SOLID: u32 = 3;
 
+/// `D3D12_CULL_MODE_NONE`, `_FRONT` and `_BACK`.
+pub const CULL_MODE_NONE: u32 = 1;
+pub const CULL_MODE_FRONT: u32 = 2;
+pub const CULL_MODE_BACK: u32 = 3;
+
+/// `D3D12_COMPARISON_FUNC_NEVER` to `_ALWAYS`.
+pub const COMPARISON_NEVER: u32 = 1;
+pub const COMPARISON_LESS: u32 = 2;
+pub const COMPARISON_EQUAL: u32 = 3;
+pub const COMPARISON_LESS_EQUAL: u32 = 4;
+pub const COMPARISON_GREATER: u32 = 5;
+pub const COMPARISON_NOT_EQUAL: u32 = 6;
+pub const COMPARISON_GREATER_EQUAL: u32 = 7;
+pub const COMPARISON_ALWAYS: u32 = 8;
+
+/// `D3D_PRIMITIVE_TOPOLOGY_POINTLIST`, `_LINELIST`, `_LINESTRIP`, `_TRIANGLELIST` and
+/// `_TRIANGLESTRIP`.
+pub const TOPOLOGY_POINTLIST: u32 = 1;
+pub const TOPOLOGY_LINELIST: u32 = 2;
+pub const TOPOLOGY_LINESTRIP: u32 = 3;
+pub const TOPOLOGY_TRIANGLELIST: u32 = 4;
+pub const TOPOLOGY_TRIANGLESTRIP: u32 = 5;
+
 /// `D3D12_RENDER_TARGET_BLEND_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetBlend {
@@ -176,14 +199,14 @@ fn logic_op(value: u32) -> Result<LogicOp, Error> {
 pub fn compare(value: u32) -> Result<CompareFn, Error> {
     use CompareFn::*;
     Ok(match value {
-        1 => Never,
-        2 => Less,
-        3 => Equal,
-        4 => LessEqual,
-        5 => Greater,
-        6 => NotEqual,
-        7 => GreaterEqual,
-        8 => Always,
+        COMPARISON_NEVER => Never,
+        COMPARISON_LESS => Less,
+        COMPARISON_EQUAL => Equal,
+        COMPARISON_LESS_EQUAL => LessEqual,
+        COMPARISON_GREATER => Greater,
+        COMPARISON_NOT_EQUAL => NotEqual,
+        COMPARISON_GREATER_EQUAL => GreaterEqual,
+        COMPARISON_ALWAYS => Always,
         _ => return Err(Error::Invalid("unknown comparison")),
     })
 }
@@ -296,9 +319,9 @@ impl Raster {
             ));
         }
         let cull = match self.cull {
-            1 => CullMode::None,
-            2 => CullMode::Front,
-            3 => CullMode::Back,
+            CULL_MODE_NONE => CullMode::None,
+            CULL_MODE_FRONT => CullMode::Front,
+            CULL_MODE_BACK => CullMode::Back,
             _ => return Err(Error::Invalid("unknown cull mode")),
         };
         // Direct3D draws lines and points without the depth bias (the own case `line-bias`).
@@ -421,11 +444,11 @@ pub fn vertex_format(value: u32) -> Result<(VertexFormat, u32), Error> {
 /// `D3D_PRIMITIVE_TOPOLOGY`, for the topologies drawn without a geometry stage.
 pub fn topology(value: u32) -> Result<Topology, Error> {
     Ok(match value {
-        1 => Topology::PointList,
-        2 => Topology::LineList,
-        3 => Topology::LineStrip,
-        4 => Topology::TriangleList,
-        5 => Topology::TriangleStrip,
+        TOPOLOGY_POINTLIST => Topology::PointList,
+        TOPOLOGY_LINELIST => Topology::LineList,
+        TOPOLOGY_LINESTRIP => Topology::LineStrip,
+        TOPOLOGY_TRIANGLELIST => Topology::TriangleList,
+        TOPOLOGY_TRIANGLESTRIP => Topology::TriangleStrip,
         TOPOLOGY_LINELIST_ADJ..=TOPOLOGY_TRIANGLESTRIP_ADJ => {
             return Err(Error::NotImplemented("adjacency topologies"));
         }

@@ -54,6 +54,15 @@ pub fn give<I: Interface>(object: I, riid: *const GUID, out: *mut *mut c_void) -
     unsafe { object.query(riid, out).ok() }
 }
 
+/// Sets an interface out pointer to null before the call that fills it, as COM asks of a call that
+/// fails.
+pub(crate) fn cleared(out: *mut *mut c_void) {
+    if !out.is_null() {
+        // SAFETY: COM passes a writable out pointer or null.
+        unsafe { *out = std::ptr::null_mut() };
+    }
+}
+
 macro_rules! not_implemented {
     ($($t:ty),*) => {$(
         impl $t {
