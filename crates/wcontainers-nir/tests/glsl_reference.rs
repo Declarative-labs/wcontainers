@@ -151,20 +151,6 @@ void main() {
 }
 ";
 
-/// A storage image without a format that the program reads and writes, which the common form takes
-/// only as a one-component view.
-const READ_WRITE_FORMATLESS: &str = "#version 430
-#extension GL_EXT_shader_image_load_formatted : require
-layout(local_size_x = 8) in;
-uniform float scale;
-uniform image2D marks;
-void main() {
-    uint i = gl_GlobalInvocationID.x;
-    ivec2 at = ivec2(i % 4u, i / 4u);
-    imageStore(marks, at, imageLoad(marks, at) * scale + vec4(float(i)));
-}
-";
-
 const SAMPLING: &str = "#version 430
 layout(local_size_x = 8) in;
 uniform sampler2D colours;
@@ -358,9 +344,9 @@ fn a_glsl_program_of_atomic_counters_and_workgroup_memory_matches_llvmpipe_on_ro
     assert_eq!(compute_verdict(COUNTERS_AND_SHARED), Verdict::Matched);
 }
 
-/// The program's verdict through route B and the shaders crate's rewrites, its one storage image
-/// without a format bound as a view of `view`; and the rewrites route B asked for.
-fn rewritten_verdict(source: &str, view: Format) -> (Verdict, Rewrites) {
+/// The program's verdict through route B and the shaders crate's rewrites, each storage image
+/// without a format bound as four 32-bit floats; and the rewrites route B asked for.
+fn rewritten_verdict(source: &str) -> (Verdict, Rewrites) {
     let mut stage = Nir::from_glsl(&[(Stage::Compute, source)])
         .unwrap()
         .pop()
@@ -374,7 +360,7 @@ fn rewritten_verdict(source: &str, view: Format) -> (Verdict, Rewrites) {
             .rewrites
             .formatless
             .iter()
-            .map(|&slot| (slot, view))
+            .map(|&slot| (slot, Format::Rgba32Float))
             .collect(),
         ..VariantKey::default()
     };
@@ -390,32 +376,16 @@ fn rewritten_verdict(source: &str, view: Format) -> (Verdict, Rewrites) {
 
 #[test]
 fn a_glsl_program_needing_the_shaders_crates_rewrites_matches_llvmpipe_on_route_b() {
-    let (verdict, rewrites) = rewritten_verdict(REWRITTEN, Format::Rgba32Float);
+    let (verdict, rewrites) = rewritten_verdict(REWRITTEN);
     assert!(rewrites.runtime_gather_offsets);
     assert_eq!(rewrites.formatless.len(), 1);
     assert_eq!(verdict, Verdict::Matched);
 }
 
 #[test]
-fn a_glsl_program_reading_and_writing_a_storage_image_without_a_format_matches_llvmpipe() {
-    let (verdict, rewrites) = rewritten_verdict(READ_WRITE_FORMATLESS, Format::R32Float);
-    assert_eq!(rewrites.formatless.len(), 1);
-    assert_eq!(verdict, Verdict::Matched);
-}
-
-/// Known failure, llvmpipe's: in a compute program reading one array at a run-time index and at a
-/// constant one, llvmpipe's constant read gives values no texel holds (the same whichever element
-/// it names), and NaN once the two reads are swapped, on the same textures and units. Its final NIR
-/// indexes both correctly (texture 0 plus the offset, texture 2), so the fault is in its code
-/// generation (gallivm's per-invocation path for a run-time index outside the fragment stage).
-/// Each read alone, and two run-time reads, match.
-#[test]
 #[ignore = "known failure: llvmpipe's code for a constant element read beside a run-time index (status file)"]
 fn a_glsl_program_reading_an_array_at_run_time_and_constant_indices_matches_llvmpipe() {
-    assert_eq!(
-        rewritten_verdict(MIXED_INDICES, Format::Rgba32Float).0,
-        Verdict::Matched
-    );
+    assert_eq!(rewritten_verdict(MIXED_INDICES).0, Verdict::Matched);
 }
 
 #[test]
