@@ -199,15 +199,15 @@ fn wireframe_without_polygon_mode_is_refused_by_name() {
 }
 
 #[test]
-fn a_pipeline_with_no_topology_type_is_invalid() {
+fn a_pipeline_description_with_no_topology_type_is_invalid() {
     let mut device = Device::new(Recorder::new());
-    for bias in [0, 1] {
+    for (bias, ps) in [(0, PS), (1, PS), (0, &[][..])] {
         let (inputs, mut raster) = scene_raster(true, FILL_MODE_SOLID);
         raster.depth_bias = bias;
         let refused = triangle::pipeline_with(
             &mut device,
             VS,
-            PS,
+            ps,
             inputs,
             raster,
             TOPOLOGY_TYPE_UNDEFINED,

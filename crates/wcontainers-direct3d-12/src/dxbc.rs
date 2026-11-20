@@ -4,6 +4,9 @@
 //! textures, whose layer counts it takes from them (`VariantKey::texture_layers`). Read from the program chunk's
 //! declarations, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 
+use std::ops::Range;
+use wcontainers_gpu::SlotKind;
+
 /// The kind of value a typed view's declaration reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -63,10 +66,12 @@ const RETURN_TYPE_UINT: u32 = 4;
 const RETURN_TYPE_FLOAT: u32 = 5;
 
 /// One view declaration: an unordered access view (else a shader resource view), its (space,
-/// register) place, its dimension and its opcode.
+/// register) place, its element count (none for an array without a length), its dimension and
+/// its opcode.
 struct Declared {
     storage: bool,
     place: (u32, u32),
+    length: Option<u32>,
     dimension: u32,
     opcode: u32,
     /// Its return type's x component, for typed views.
@@ -84,11 +89,12 @@ fn views(code: &[u8]) -> Option<(Vec<Declared>, bool)> {
             DCL_RESOURCE | DCL_RESOURCE_RAW | DCL_RESOURCE_STRUCTURED => false,
             _ => return Some(()),
         };
-        let (place, ranged, kind) = view(instruction)?;
+        let (place, length, ranged, kind) = view(instruction)?;
         spaces |= ranged;
         views.push(Declared {
             storage,
             place,
+            length,
             dimension: (opcode >> RESOURCE_DIMENSION_SHIFT) & RESOURCE_DIMENSION_MASK,
             opcode: opcode & OPCODE_TYPE_MASK,
             kind,
@@ -98,53 +104,79 @@ fn views(code: &[u8]) -> Option<(Vec<Declared>, bool)> {
     Some((views, spaces))
 }
 
-/// The slot of each of `views`: its register under Direct3D 11's numbering, its place among its
-/// kind's views in (space, register) order under Direct3D 12's (`spaces`), as the converter
-/// numbers them.
-fn slots(views: &[Declared], spaces: bool) -> Vec<u32> {
+/// The elements of each of `views` (an array without a length takes the rest of the range of
+/// `ranges` holding its first register, one element where none does) with their slots: the
+/// register under Direct3D 11's numbering, the place among its kind's elements in (space,
+/// register) order under Direct3D 12's (`spaces`), as the converter numbers them.
+fn element_slots(
+    views: &[Declared],
+    spaces: bool,
+    ranges: &[(SlotKind, u32, Range<u32>)],
+) -> Vec<Vec<u32>> {
+    let places = |v: &Declared| {
+        let (space, register) = v.place;
+        let kind = if v.storage {
+            SlotKind::Storage
+        } else {
+            SlotKind::Texture
+        };
+        let length = v.length.unwrap_or_else(|| {
+            ranges
+                .iter()
+                .find(|(k, s, r)| *k == kind && *s == space && r.contains(&register))
+                .map_or(1, |(.., r)| r.end - register)
+        });
+        (register..register.saturating_add(length)).map(move |r| (space, r))
+    };
     let all = |storage: bool| {
         let places: Vec<_> = views
             .iter()
             .filter(|v| v.storage == storage)
-            .map(|v| v.place)
+            .flat_map(places)
             .collect();
         crate::dxil::sorted_places(&places)
     };
     let (uavs, srvs) = (all(true), all(false));
     views
         .iter()
-        .map(|v| match spaces {
-            true => crate::dxil::slot(if v.storage { &uavs } else { &srvs }, v.place),
-            false => v.place.1,
+        .map(|v| {
+            places(v)
+                .map(|place| match spaces {
+                    true => crate::dxil::slot(if v.storage { &uavs } else { &srvs }, place),
+                    false => place.1,
+                })
+                .collect()
         })
         .collect()
 }
 
 /// The typed unordered access views and typed buffers `code` declares (shader resource views of
-/// textures left out); `None` where `code` holds no DXBC program chunk or its tokens are
-/// malformed.
-pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
+/// textures left out), one per element of an array, whose unbounded arrays `ranges` sizes;
+/// `None` where `code` holds no DXBC program chunk or its tokens are malformed.
+pub fn typed_views(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> Option<Vec<TypedView>> {
     let (views, spaces) = views(code)?;
-    let slots = slots(&views, spaces);
-    let typed = views.iter().zip(slots).filter_map(|(v, slot)| {
+    let slots = element_slots(&views, spaces, ranges);
+    let mut out = Vec::new();
+    for (v, slots) in views.iter().zip(slots) {
         let buffer = v.dimension == DIMENSION_BUFFER;
         let typed = match v.opcode {
             DCL_UAV_TYPED => true,
             DCL_RESOURCE => buffer,
             _ => false,
         };
-        typed.then_some((v, buffer, slot))
-    });
-    typed
-        .map(|(v, buffer, slot)| {
-            Some(TypedView {
+        if !typed {
+            continue;
+        }
+        for slot in slots {
+            out.push(TypedView {
                 storage: v.storage,
                 buffer,
                 slot,
                 kind: v.kind?,
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    Some(out)
 }
 
 /// `D3D10_SB_OPCODE_DCL_SAMPLER`.
@@ -175,17 +207,21 @@ pub fn declares_unbounded_array(code: &[u8]) -> bool {
     found
 }
 
-/// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares;
-/// `None` where it holds no DXBC program chunk or its tokens are malformed.
-pub fn multisampled_arrays(code: &[u8]) -> Option<Vec<u32>> {
+/// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares, one
+/// per element of an array, whose unbounded arrays `ranges` sizes; `None` where it holds no DXBC
+/// program chunk or its tokens are malformed.
+pub fn multisampled_arrays(
+    code: &[u8],
+    ranges: &[(SlotKind, u32, Range<u32>)],
+) -> Option<Vec<u32>> {
     let (views, spaces) = views(code)?;
-    let slots = slots(&views, spaces);
+    let slots = element_slots(&views, spaces, ranges);
     Some(
         views
             .iter()
             .zip(slots)
             .filter(|(v, _)| v.opcode == DCL_RESOURCE && v.dimension == DIMENSION_2D_MS_ARRAY)
-            .map(|(_, slot)| slot)
+            .flat_map(|(_, slots)| slots)
             .collect(),
     )
 }
@@ -216,11 +252,16 @@ fn declarations(code: &[u8], mut f: impl FnMut(u32, &[u32]) -> Option<()>) -> Op
 /// return type token, for structured ones the stride, and in 5.1 the space last. Gives the
 /// (space, register) place, whether the operand names a range (5.1), and the return type's x
 /// component where the declaration is typed and names one.
-fn view(instruction: &[u32]) -> Option<((u32, u32), bool, Option<Kind>)> {
+#[allow(clippy::type_complexity)]
+fn view(instruction: &[u32]) -> Option<((u32, u32), Option<u32>, bool, Option<Kind>)> {
     let (mut at, indices) = operand_indices(instruction)?;
-    let (register, ranged) = match indices {
-        ONE_INDEX => (*instruction.get(at)?, false),
-        RANGE_INDICES => (*instruction.get(at + 1)?, true),
+    let (register, length, ranged) = match indices {
+        ONE_INDEX => (*instruction.get(at)?, Some(1), false),
+        RANGE_INDICES => {
+            let (lower, upper) = (*instruction.get(at + 1)?, *instruction.get(at + 2)?);
+            let length = (upper != UNBOUNDED_UPPER).then(|| upper.wrapping_sub(lower) + 1);
+            (lower, length, true)
+        }
         _ => return None,
     };
     at += indices as usize;
@@ -236,7 +277,7 @@ fn view(instruction: &[u32]) -> Option<((u32, u32), bool, Option<Kind>)> {
             RETURN_TYPE_UINT => Some(Kind::Uint),
             _ => None,
         });
-    Some(((space, register), ranged, kind))
+    Some(((space, register), length, ranged, kind))
 }
 
 /// Where a declaration's first operand's indices start, and how many there are (every index an
@@ -359,7 +400,7 @@ mod tests {
             0x5555,
         ];
         assert_eq!(
-            typed_views(&container(&tokens)),
+            typed_views(&container(&tokens), &[]),
             Some(vec![
                 view(true, false, 1, Kind::Float),
                 view(true, true, 2, Kind::Uint),
@@ -377,10 +418,10 @@ mod tests {
         let ms = DCL_RESOURCE | (4 << 11) | (4 << 24);
         let srv = 0x0010_1000 | (7 << 12);
         let tokens = [0x50, 0, ms_array, srv, 2, 0x5555, ms, srv, 3, 0x5555];
-        assert_eq!(multisampled_arrays(&container(&tokens)), Some(vec![2]));
-        assert_eq!(typed_views(&container(&tokens)), Some(vec![]));
+        assert_eq!(multisampled_arrays(&container(&tokens), &[]), Some(vec![2]));
+        assert_eq!(typed_views(&container(&tokens), &[]), Some(vec![]));
         let code = include_bytes!("../../wcontainers-shaders/tests/own/ps_msarray.dxbc");
-        assert_eq!(multisampled_arrays(code), Some(vec![0]));
+        assert_eq!(multisampled_arrays(code, &[]), Some(vec![0]));
     }
 
     #[test]
@@ -400,7 +441,7 @@ mod tests {
             2, 2, 2, 0x5555, 0, srv_buffer, srv, 0, 7, 7, 0x3333, 3,
         ];
         assert_eq!(
-            typed_views(&container(&tokens)),
+            typed_views(&container(&tokens), &[]),
             Some(vec![
                 view(true, false, 1, Kind::Uint),
                 view(true, true, 0, Kind::Float),

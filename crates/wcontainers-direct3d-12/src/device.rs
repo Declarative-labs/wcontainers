@@ -308,6 +308,8 @@ pub struct GraphicsPipelineDesc<'a> {
     pub strip_cut: u32,
     /// `D3D12_PRIMITIVE_TOPOLOGY_TYPE`.
     pub topology_type: u32,
+    /// A pipeline state stream gave no topology type: the draws' topologies decide.
+    pub topology_from_draws: bool,
     pub rtv_formats: Vec<u32>,
     pub dsv_format: u32,
     pub samples: u32,
@@ -1267,12 +1269,15 @@ impl<B: Backend> Device<B> {
         slow_paths.extend(programs_slow_paths(&stages));
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
-        // Direct3D 12 refuses a graphics pipeline with no topology type (`UNDEFINED`), biased or
-        // not (the own case `undefined-topology`). A geometry stage draws the primitives it makes.
+        // Direct3D 12 refuses a description of topology type `UNDEFINED` (the own case
+        // `undefined-topology`) and takes a pipeline state stream without a topology type
+        // (vkd3d's test_create_pipeline_state): then the draws' topologies decide, and nothing
+        // is built ahead. A geometry stage draws the primitives it makes.
         let topology = match desc.topology_type {
+            TOPOLOGY_TYPE_UNDEFINED if desc.topology_from_draws => None,
             TOPOLOGY_TYPE_UNDEFINED => {
                 return Err(Error::Invalid(
-                    "a graphics pipeline with no primitive topology type",
+                    "a pipeline description with no topology type",
                 ));
             }
             TOPOLOGY_TYPE_POINT => Some(Topology::PointList),
@@ -1588,7 +1593,7 @@ impl<B: Backend> Device<B> {
             true => Source::Dxil(code),
             false => Source::Dxbc(code),
         };
-        let through = formats::typed_texture_slots(code);
+        let through = formats::typed_texture_slots(code, &key.register_ranges);
         if key.texels_through_buffer == 0
             && through != 0
             && let Err(ConvertError::Unsupported("StorageImageAtomics")) =

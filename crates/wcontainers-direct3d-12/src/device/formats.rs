@@ -16,7 +16,8 @@
 use super::*;
 use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
-use wcontainers_gpu::{Filter, ViewComponent};
+use std::ops::Range;
+use wcontainers_gpu::{Filter, SlotKind, ViewComponent};
 
 /// A typed view's slot: a storage slot (else a texture slot) and its place in its kind's range
 /// (`ReflectedBinding::slot`).
@@ -64,9 +65,10 @@ pub(super) struct Formats<B: Backend> {
     variants: Vec<Variant<B>>,
 }
 
-/// The typed views a DXBC or DXIL shader declares; none where its declarations cannot be read.
-fn typed_views(code: &[u8]) -> Vec<TypedView> {
-    crate::dxbc::typed_views(code)
+/// The typed views a DXBC or DXIL shader declares, one per element of an array, whose unbounded
+/// arrays `ranges` sizes; none where its declarations cannot be read.
+fn typed_views(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> Vec<TypedView> {
+    crate::dxbc::typed_views(code, ranges)
         .or_else(|| crate::dxil::typed_views(code))
         .unwrap_or_default()
 }
@@ -85,7 +87,7 @@ pub(super) fn typed_key(
     if crate::dxbc::declares_unbounded_array(code) {
         key.register_ranges = root.register_ranges(visibility);
     }
-    for v in typed_views(code) {
+    for v in typed_views(code, &key.register_ranges) {
         let format = match v.kind {
             Kind::Float => Format::R32Float,
             Kind::Uint => Format::R32Uint,
@@ -102,8 +104,8 @@ pub(super) fn typed_key(
     key.storage_formats.sort_by_key(|f| f.0);
     key.texel_formats.sort_by_key(|f| f.0);
     // Converted reading one layer of each; the bound views' layer counts come at the draw.
-    let arrays =
-        crate::dxbc::multisampled_arrays(code).or_else(|| crate::dxil::multisampled_arrays(code));
+    let arrays = crate::dxbc::multisampled_arrays(code, &key.register_ranges)
+        .or_else(|| crate::dxil::multisampled_arrays(code));
     key.texture_layers = arrays
         .unwrap_or_default()
         .into_iter()
@@ -113,9 +115,10 @@ pub(super) fn typed_key(
     key
 }
 
-/// The slots of a shader's typed unordered access views of textures, one bit each.
-pub(super) fn typed_texture_slots(code: &[u8]) -> u64 {
-    typed_views(code)
+/// The slots of a shader's typed unordered access views of textures, one bit each, its unbounded
+/// arrays sized by `ranges`.
+pub(super) fn typed_texture_slots(code: &[u8], ranges: &[(SlotKind, u32, Range<u32>)]) -> u64 {
+    typed_views(code, ranges)
         .iter()
         .filter(|v| v.storage && !v.buffer && v.slot < 64)
         .fold(0, |m, v| m | (1 << v.slot))
