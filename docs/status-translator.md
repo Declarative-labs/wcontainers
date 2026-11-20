@@ -4,16 +4,23 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
-- T3 (this milestone): every bar is met (see "T3"; the fourth run answered the independent check's
-  findings): layers 1, 2 and 3 reran on the merged code with no mismatch, and again on the final code (fourth
-  run); the awk count; the literal check passing with a smaller baseline (8,113 lines after the init at the
-  milestone's start, 8,159 at the merge before it; 7,660 now), now checked with the branch's real history; the
-  benchmark set's speed unchanged against 97fff482 (the merge) in wasmtime and Chrome. Against f6e760ae (the
-  proof's code, before the merge) the independent check measured fib in Chrome 1.6 percent slower in 4 of 4
-  rounds, with the translator's output for the benchmark set byte for byte the same at both: that comes from
-  main's refactor of the test harness (runner.js, the browser translator), not from the translator; see the
-  fourth run. So in Chrome the bar holds against the merge, not against f6e760ae. The fifth run answered the
-  second independent check: a jump through a register into another part of a cut function is now counted.
+- T3 (this milestone) is NOT complete after the sixth run. The third independent check found that jumps
+  through a register to their own function's code past what was explored (a switch with no bound check, a
+  computed goto) went uncounted since b4384452; 40fd0c67 counts them (see "Sixth run of T3"). Its tests and
+  the reruns need an ARM64 Linux reference, and during the sixth run there was none: the rented ARM64 machine
+  was unreachable and Docker Desktop on the Mac stopped starting containers (`docker run` hung for over 20
+  minutes; `docker ps` still answered). What was checked without one is listed in the sixth run.
+- Please rule how the speed bar is read. Measured over the whole milestone, against f6e760ae (the proof's code,
+  before the merge), these are slower in 4 of 4 rounds: fib in Chrome by 1.6 to 1.7 percent, search in
+  Chrome by 0.4 percent, and in wasmtime interpret by 0.3 to 0.4 percent and matrix by 0.3 percent. The fib
+  step comes from the merge (97fff482, main's test harness): the translator's output for the benchmark set
+  is the same at both commits. Against the merge, every workload in both engines is within 0.997 to 1.004
+  (independent check). So the bar holds against the merge but not against f6e760ae.
+- Docker on the Mac (sixth run, 2026-11-20 04:30 to 05:00 local): containers stayed in "Created", and the
+  watcher did not restart Docker because `docker ps` still answered. The third independent check's
+  containers wc-translator-layer1-15045-1, -2, -4 (running) and -8 (Created) cannot be removed ("did not
+  receive an exit event"). Someone with authority over the shared Docker needs to restart it and remove them.
+  This run removed its own three (wc-translator-blobs-90637-0 to -2).
 - The P2 check's `wcontainers-abi` constants: this track added `PAGE_SHIFT` and `PAGE_MASK` to wcontainers-abi
   (06187cfd), as fix-translator.md says, but magic-literals/README.md gives that stage to the runtime track.
   They are defined exactly as the README's stage 1 writes them; when main's own arrive, keep main's lines in
@@ -46,12 +53,12 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
-T3 is done (pending its independent check): main merged (the translator on the shared guest interface), the
-literal check adopted and the baseline down to 7,660 lines, the P2 check's findings answered, the register
-jump slow path fixed (busybox awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in
-full on the merged code with no mismatch, layer 3 to 5,287 compared with none, and all three again on the
-final code with a new seed; the benchmark set's speed unchanged against the merge. The fourth and fifth runs
-answered the independent checks' findings. See "T3" and "T3, what is left".
+T3 is partly done: main merged (the translator on the shared guest interface), the literal check adopted and
+the baseline down to 7,660 lines, the P2 check's findings answered, the register jump slow path fixed (busybox
+awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in full on the merged code with
+no mismatch, layer 3 to 5,287 compared with none, and all three again with a new seed in the fourth and fifth
+runs. The sixth run counted the jumps the third independent check found uncounted (40fd0c67), and its tests
+and reruns against Linux wait for an ARM64 reference. See "Sixth run of T3" and "T3, what is left".
 
 ## T3: main's refactor, the slow path, the literal sweep
 
@@ -85,7 +92,8 @@ translates and runs WebAssembly; exact counts by target from a scratch counting 
 - Calls through the procedure linkage table: each stub ends `br x17` into another module (`free`, `malloc`,
   `memset` and so on in musl). A jump through a register to outside its own function is a tail call; it now
   goes through the lookup like a call through a register, with no warning. Only a jump to inside its own
-  function (a switch table not recognised) is the slow path, counted and warned (a range check on the target).
+  function (a switch table not recognised) is the slow path, counted and warned (a range check on the target;
+  what "inside" covers was widened in the fifth and sixth runs).
 - awk's evaluator's switch, whose table address the function computes once and keeps in a stack slot
   (`str x0, [sp, #0x30]`, later `ldr x1, [sp, #0x30]`): the switch habit now follows a 64 bit load from
   `[sp, #n]` back to the nearest store to that slot with sp unchanged between (`habits::kept_in_frame`).
@@ -225,7 +233,9 @@ Fourth run of T3 (2026-11-19 23:00 local to 2026-11-20), the independent check's
   `wcon` on the rented x86 machine, load 26 to 28 (`t3/awk-r4.log`): outputs as before; wcon's summary 3,
   none and 2 for the three commands (4, none and 3 before). The single figures vary from run to run (the
   independent check, at the same code: exact counts 2, 0 and 4, summary 1, none and 3; b4384452: exact 5, 0
-  and 4), so the remainder is a range: exact 2 to 5, 0, and 4; summary 1 to 4, none, 2 to 3.
+  and 4), so the remainder varies in single figures. The third independent check measured exact 7, 0 and 3
+  at e26b3c23, outside the range this run first wrote (2 to 5, 0, 4); what was measured so far: exact 2 to 7,
+  0, and 3 to 4. The sixth run's change raised it (see there).
 - Switch cases in another part of a cut function (b4384452's third part) now have a test (486ee285,
   `programs/cut_switch.c`: 48 cases of 64 branches each, every case twice, -O0 and -O2, full for speed and
   size): no slow path, Linux's output. The check's `check_big.c` gives 0 counted and still 1,622 translations
@@ -317,8 +327,58 @@ Fifth run of T3 (2026-11-20 02:00 to 04:00 local), the second independent check'
   - Layer 3 on the same machine, 1,000 programs from case 0, 100 in Chrome, 12 jobs, load 8 to 19, 917 s: 868
     compared (86 also in Chrome), 132 did not end in time on Linux, 0 failing (same log).
 
+Sixth run of T3 (2026-11-20 04:20 to 05:30 local), the third independent check's findings:
+- Uncounted jumps into a function's unexplored code (blocking finding). The range check covered only the
+  offsets explored, so a jump to a case of a switch with no bound check, or to a computed goto's label, went
+  through the lookup to a piece made at run time with no count. 40fd0c67:
+  - A function's whole now reaches up to the next certain start of a function: a start given or a direct
+    call's target (`Means::starts_function`). A built address does not end it, because it may be a label or
+    a switch's case base (the check's `c3_masked` builds its cases' base with `adr`).
+  - A stretch (look-ahead none or bounded, and every piece made at run time) knows no function's bounds, so
+    it takes all of its code as possibly its own: every jump through a register within the code counts,
+    except one to the stretch's own start; a jump into another module stays a tail call. Without this, a
+    computed goto's dispatches from a label made at run time to the next went uncounted (found while
+    testing: 1,201 counted of 8,401 at -O2).
+  - New test `jumps_to_their_function_beyond_what_was_explored_are_unrecognised` (`programs/unexplored_jumps.c`:
+    a `switch (k & 15)` with no bound check, 1,200 calls, and a computed goto interpreter, 7,201 dispatches; it
+    prints both counts). At -O2, -O3 and -Os, full, for speed and size, the count must equal their sum. Run
+    on the translated side only (rented x86 machine, scratch `t3/r6/scratch_jumps.rs`, no reference): 8,401
+    at -O2, -O3 and -Os (the expected 1,200 + 7,201); at -O0 7,201 (the switch has a bound check there and
+    is recognised). The same scratch at the first form of the change (no stretch rule): 1,201. Not yet run
+    against Linux (no reference, see "For the orchestrator").
+  - `switch_cases_in_other_parts_are_not_slow` (minor finding) now also requires no more translations at run
+    time than hello world at the same level (the C library's own). The scratch: cut_switch 3 and hello 3 at -O0
+    and -O2, for speed and size; 0 counted.
+- busybox awk on 40fd0c67 (`wcon` with the counting patch, rented x86 machine, load 10 to 11,
+  `t3/r6/awk-r6b.log`): outputs as before; exact counts 8, 2 and 7 for the three commands (5,306,745,
+  8,601,492 and 2,621,222 at 97fff482). The rise from the fifth run's single figures is the stretch rule:
+  pieces made at run time in the C library (0xf6fa9260 and 0xf6f96718) jumping through a register within its
+  code. With the full-function rule alone (`t3/r6/awk-r6.log`): 4, 0 and 3, so the check's estimate holds:
+  only single figures were hidden in awk.
+- Translator output (`tests/output.rs`, rented x86 machine, `t3/r6/out-r6b`) against the fifth run's:
+  busybox the same; the benchmark set differs in four modules, the benchmark program and its WORKLOAD5 build,
+  full, for speed and for size, each the same length (only the range check's constants change).
+- Layer 3's Csmith builds (minor finding): their clang builds now link with `--gc-sections`, as the C test
+  programs do (0b62e4ad), so they no longer keep musl's fenv code; the summary line now says how many
+  programs read FPSR. Scratch `t3/r6/scratch_fpsr.rs` (24 Csmith programs, both positions, rented x86
+  machine): 8 of 48 clang builds read FPSR before, 0 after. The gcc builds were not measured (they build in
+  an ARM64 Docker image); GNU ld links only what a program reaches from musl's archive.
+- Records corrected: the awk range (fourth run, above), the speed bar and Docker (For the orchestrator).
+- Checked on 0b62e4ad (rented x86 machine, `t3/lint.sh`): format, clippy with warnings denied, the
+  translator, arm64 and guest-cpu unit tests and the test crate's test_guest and smoke (30 passed), the
+  literal check (status 0, baseline 7,660 lines, unchanged).
+
 T3, what is left:
-- For the independent check: layers 1 and 2 and layer 3 with a seed other than 300, 400 and 500 (layer 1 on
+- Needs an ARM64 reference (the rented ARM64 machine or the Mac's Docker), on 0b62e4ad or later:
+  - `cargo test -p wcontainers-translator-test --test programs -- jumps_to_their_function switch_cases_in_other
+    only_jumps_inside` against Linux.
+  - The reruns with a new seed (600): layer 1 on the Mac (1,000 cases a form, 10 in Chrome), layer 2 (25,000)
+    and layer 3 (1,000 from case 0, 100 in Chrome) on the ARM64 machine; layer 3's summary will now say how
+    many programs read FPSR.
+  - Speed pairs, 0b62e4ad against 5d8dbc5a (`t3/r5/pairs.sh 4 old:<tree>:<target> new:<tree>:<target>`),
+    4 rounds; the translator's output changed only in the four full modules above.
+  - The whole suite of the four crates, debug, on the ARM64 machine, and layer 1's tests on the Mac.
+- For the independent check: layers 1 and 2 and layer 3 with a seed other than 300 to 600 (layer 1 on
   the Mac: `WC_LAYER1_CASES WC_LAYER1_CHROME WC_LAYER1_SEED`; layers 2 and 3 on the ARM64 machine, as in "How
   to run"), the awk counts (`t3/awk.sh` on the x86 machine after building `wcon`; exact counts need the
   counting patch `t3/detail/apply.py`), and the pairs (`t3/r5/pairs.sh 4 <label>:<source>:<target> ...`,
@@ -3004,7 +3064,7 @@ contract's bits, in both runners).
 
 ## Next
 
-1. T3's independent check (see "T3, what is left").
+1. T3's runs against Linux on 0b62e4ad, then its independent check (see "T3, what is left").
 2. The progress count (definition E, the brief) as its own milestone.
 3. The literal fix list: arm64's decoders and forms (steps 17 to 20) and the test crate's remaining lines
    (orchestrator's `magic-literals/fix-translator.md`).
@@ -3015,9 +3075,11 @@ contract's bits, in both runners).
 - T3: a switch whose code has no bound check before its table (the compiler proved the index's range, as for
   `k % 48` or an argument of a static function whose every caller it sees) is left unrecognised, as the
   table's length cannot be known. Its cases are never found, so each is made at run time once (bounded
-  look-ahead, counted "translated at run time", warned), and the jump to them goes through the lookup with no
-  count at each run, because the target lies past the explored function (only the code before the jump).
-  Measured with `cut_switch.c`'s `cut` static (as at 486ee285), -O2, full: 1,190 translations at run time, 0
+  look-ahead, counted "translated at run time", warned), and the jump to them goes through the lookup, counted
+  "jump through a register not recognised" each time it runs (since 40fd0c67; before it, from b4384452, not
+  counted, because the target lies past the explored code). A computed goto (a threaded interpreter's
+  dispatch) is the same slow path: its labels are not found, made at run time, and every dispatch is counted
+  (`unexplored_jumps.c`). Measured with `cut_switch.c`'s `cut` static (as at 486ee285), -O2, full: 1,190 translations at run time, 0
   counted unrecognised; with `cut` not static the compiler checks the bound, the switch is recognised and 3
   remain (the C library's, as at -O0). The independent check's `check_big.c` (`switch (k % 48)`, 1,622 at run
   time) is expected to be this case; not measured separately. Recognising it needs the index's range from the
@@ -3094,8 +3156,9 @@ contract's bits, in both runners).
 - T3: C test programs (`programs::build_with`, `Library::C`) are linked with `--gc-sections`: zig 0.16 keeps C
   library code nothing calls (`fmal`, `hypotl`, ...), and `fmal` calls musl's fenv functions, which read FPSR,
   so every C program was taken as reading FPSR and ran all its floating point on the exact path (from 06187cfd
-  to 59cb1416). Layer 3's Csmith builds (`layer3.rs`, their own command) are left as they are: they still
-  link that code, so their floating point (Csmith's programs have little) takes the exact path.
+  to 59cb1416). Layer 3's Csmith clang builds were left as they were until 0b62e4ad, so from 06187cfd to
+  then a Csmith program that kept musl's fenv code (8 of 48 in a sample) ran its floating point on the exact
+  path; since 0b62e4ad they link with `--gc-sections` too (0 of 48).
 - T3: busybox awk's counts were measured with `wcon` (the runtime track's command line program) on the rented
   x86 machine: the translator's output does not depend on the host, and that program is what runs a real
   container; this track's own binaries test only translates and loads.
@@ -3331,7 +3394,12 @@ contract's bits, in both runners).
   every slow path is) when its target lies inside its function, in its own part or another of a function cut
   in parts, other than the function's entry. A jump to outside it, or to its entry, is a tail call through
   the lookup, not counted (since b4384452, c2bafa58 and e26b3c23; before, every one was counted, and tail
-  calls through function pointers, common in the C library, paid a host call each time).
+  calls through function pointers, common in the C library, paid a host call each time). "Inside" is from
+  the function's lowest explored instruction up to the next start given or direct call's target (40fd0c67),
+  so a tail call to a function known only by its address (a pointer in data) that lies just after the
+  jumping function is counted as the slow path too: the count errs towards counting. A stretch (look-ahead
+  none or bounded, and every piece made at run time) counts every jump through a register within the code
+  other than to its own start, as it knows no function's bounds.
 - Layer 2 compares against the real CPU only for the first `WC_LAYER2_NATIVE` cases, because the
   reference runs one blob per container; full against none is compared for every case.
 - Layer 2 writes `mrs`/`msr nzcv` as raw words, because dynasm has no name for the register.
