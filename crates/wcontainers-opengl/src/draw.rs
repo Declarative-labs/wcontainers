@@ -368,57 +368,64 @@ fn viewport(v: &pipe_viewport_state, minus_one: bool) -> (Viewport, PositionTran
     )
 }
 
-/// Every factor of a blend block, source and destination, colour and alpha.
-fn factors(desc: &mut BlendDesc) -> impl Iterator<Item = &mut BlendFactor> {
-    desc.targets
-        .iter_mut()
-        .filter_map(|t| t.blend.as_mut())
-        .flat_map(|(color, alpha)| {
-            [
-                &mut color.src,
-                &mut color.dst,
-                &mut alpha.src,
-                &mut alpha.dst,
-            ]
-        })
+/// The colour factors of a blend block, source and destination, and its alpha factors.
+type Factors<'a> = (Vec<&'a mut BlendFactor>, Vec<&'a mut BlendFactor>);
+
+fn factors(desc: &mut BlendDesc) -> Factors<'_> {
+    let mut colour = Vec::new();
+    let mut alpha = Vec::new();
+    for (c, a) in desc.targets.iter_mut().filter_map(|t| t.blend.as_mut()) {
+        colour.extend([&mut c.src, &mut c.dst]);
+        alpha.extend([&mut a.src, &mut a.dst]);
+    }
+    (colour, alpha)
+}
+
+/// The constant factor reading what `factor` reads where the constant's colour is its alpha.
+fn constant_of_alpha(factor: BlendFactor) -> BlendFactor {
+    match factor {
+        BlendFactor::ConstantAlpha => BlendFactor::Constant,
+        BlendFactor::OneMinusConstantAlpha => BlendFactor::OneMinusConstant,
+        other => other,
+    }
 }
 
 /// The blend block of `desc` for the framebuffer's formats (no blending on targets that cannot
-/// blend: integer targets, as OpenGL defines), and whether the block reads the blend constant's
-/// alpha in every channel: on a back end without constant alpha factors, a block that uses no
-/// constant colour takes the constant factors instead, given the alpha in all four channels.
+/// blend: integer targets, as OpenGL defines), and whether the draw's blend constant is its alpha
+/// in every channel. On a back end without constant alpha factors, an alpha factor reading the
+/// constant's alpha is the constant factor (exact); a colour factor reading it is too where the
+/// constant is given its alpha in every channel, which a block whose colour factors also read the
+/// constant's colour allows only for a constant whose colour is its alpha.
 fn blend_for<B: Backend>(
     programs: &mut Programs<B>,
     backend: &mut B,
     desc: &BlendDesc,
     framebuffer: &pipe_framebuffer_state,
+    constant: [u32; 4],
 ) -> (B::Blend, bool) {
     let mut desc = *desc;
     let caps = backend.caps().clone();
     let mut alpha_constant = false;
     if !caps.has(Features::BLEND_CONSTANT_ALPHA) {
-        let used: Vec<BlendFactor> = factors(&mut desc).map(|f| *f).collect();
-        let reads_alpha = used.iter().any(|f| {
-            matches!(
-                f,
-                BlendFactor::ConstantAlpha | BlendFactor::OneMinusConstantAlpha
-            )
-        });
+        let (colour, alpha) = factors(&mut desc);
+        for f in alpha {
+            *f = constant_of_alpha(*f);
+        }
+        let reads = |wanted: [BlendFactor; 2]| colour.iter().any(|f| wanted.contains(f));
+        let reads_alpha = reads([
+            BlendFactor::ConstantAlpha,
+            BlendFactor::OneMinusConstantAlpha,
+        ]);
+        let reads_colour = reads([BlendFactor::Constant, BlendFactor::OneMinusConstant]);
         if reads_alpha {
-            if used
-                .iter()
-                .any(|f| matches!(f, BlendFactor::Constant | BlendFactor::OneMinusConstant))
-            {
+            let [.., a] = constant;
+            if reads_colour && constant != [a; 4] {
                 refuse(
-                    "the blend constant's colour and its alpha in one block (blending in the program is not built)",
+                    "the blend constant's colour and its alpha as colour factors of one block, for a constant whose colour is not its alpha (blending in the program is not built)",
                 );
             }
-            for f in factors(&mut desc) {
-                *f = match *f {
-                    BlendFactor::ConstantAlpha => BlendFactor::Constant,
-                    BlendFactor::OneMinusConstantAlpha => BlendFactor::OneMinusConstant,
-                    other => other,
-                };
+            for f in colour {
+                *f = constant_of_alpha(*f);
             }
             alpha_constant = true;
         }
@@ -866,8 +873,13 @@ fn draw<B: Backend>(
     let pulled_mask = pulled.iter().fold(0, |mask, l| mask | 1 << l);
     let layout = elements.block(backend, pulled_mask)?;
     let program = programs.programs[&program_key].clone();
-    let (blend, alpha_constant) =
-        blend_for(programs, backend, &blend.desc, &context.framebuffer.state);
+    let (blend, alpha_constant) = blend_for(
+        programs,
+        backend,
+        &blend.desc,
+        &context.framebuffer.state,
+        bound.blend_color,
+    );
     let bound = &context.bound;
     let [.., alpha] = bound.blend_color;
     let blend_constant = if alpha_constant {
@@ -1003,6 +1015,12 @@ fn face_passes<'a, B: Backend>(
         && (depth_stencil.faces.is_some() || reference[0] != reference[1])
         && !backend.caps().has(Features::STENCIL_PER_FACE);
     if !split {
+        // Without the stencil test the references read nothing; the back end takes one.
+        let reference = if depth_stencil.stencil {
+            reference
+        } else {
+            [reference[0]; 2]
+        };
         return Ok(vec![(&depth_stencil.block, &raster.block, reference)]);
     }
     let face = |i: usize, block: &'a B::Raster| {
