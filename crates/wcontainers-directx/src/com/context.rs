@@ -1500,7 +1500,8 @@ impl Context {
 
     pub(super) fn discard_view1(&self, _view: Ref<ID3D11View>, _rects: *const RECT, _n: u32) {}
 
-    /// `ClearView` of a whole render target view; rectangles and other views are not served.
+    /// `ClearView` of a render target view, whole or its rectangles, and of a whole storage view;
+    /// rectangles of a storage view and video views are not served.
     pub(super) fn clear_view(
         &self,
         view: Ref<ID3D11View>,
@@ -1511,16 +1512,33 @@ impl Context {
         if color.is_null() {
             return;
         }
-        let Some(v) = front_of(&view, |v: &RenderTargetView| &*v.front) else {
-            return self.unserved("ID3D11DeviceContext1::ClearView of a view not a render target");
-        };
-        if n != 0 && !rects.is_null() {
-            return self.unserved("ID3D11DeviceContext1::ClearView of rectangles");
-        }
         let c = unsafe { *color.cast::<[f32; 4]>() };
+        let rects: Vec<[i32; 4]> = if n == 0 || rects.is_null() {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(rects, n as usize) }
+                .iter()
+                .map(|r| [r.left, r.top, r.right, r.bottom])
+                .collect()
+        };
+        if let Some(v) = front_of(&view, |v: &UnorderedAccessView| &*v.front) {
+            if !rects.is_empty() {
+                return self
+                    .unserved("ID3D11DeviceContext1::ClearView of a storage view's rectangles");
+            }
+            self.run("ClearView", move |f| f.clear_view_uav(&v, c));
+            return;
+        }
+        let Some(v) = front_of(&view, |v: &RenderTargetView| &*v.front) else {
+            return self.unserved("ID3D11DeviceContext1::ClearView of a video view");
+        };
         self.run("ClearView", move |f| {
-            f.clear_render_target_view(&v, c);
-            Ok(())
+            if rects.is_empty() {
+                f.clear_render_target_view(&v, c);
+                Ok(())
+            } else {
+                f.clear_view_rects(&v, c, &rects)
+            }
         });
     }
 

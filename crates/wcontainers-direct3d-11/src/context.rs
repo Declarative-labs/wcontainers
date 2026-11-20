@@ -856,27 +856,45 @@ impl<B: Backend> Device<B> {
 
     /// Scissor rectangles as (left, top, right, bottom).
     pub fn rs_set_scissor_rects(&mut self, rects: &[[i32; 4]]) {
-        self.ctx.scissors = rects
-            .iter()
-            .map(|&[l, t, r, b]| ScissorRect {
-                x: l.max(0) as u32,
-                y: t.max(0) as u32,
-                width: (r - l.max(0)).max(0) as u32,
-                height: (b - t.max(0)).max(0) as u32,
-            })
-            .collect();
+        self.ctx.scissors = rects.iter().map(|&r| pixel_rect(r)).collect();
     }
 
     pub fn clear_render_target_view(&mut self, view: &Rc<View<B>>, color: [f32; 4]) {
         if self.predicated_out() {
             return;
         }
-        let bits = if integer_format(view.format) {
-            color.map(|c| c as i64 as u32)
-        } else {
-            color.map(f32::to_bits)
-        };
-        self.add_clear(view, ClearValue::Color(bits));
+        self.add_clear(view, color_value(view, color));
+    }
+
+    /// `ClearView` of rectangles (left, top, right, bottom) of a target view, the same rectangles
+    /// in each of its layers.
+    pub fn clear_view_rects(
+        &mut self,
+        view: &Rc<View<B>>,
+        color: [f32; 4],
+        rects: &[[i32; 4]],
+    ) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
+        let rects: Vec<ScissorRect> = rects.iter().map(|&r| pixel_rect(r)).collect();
+        self.settle();
+        let value = color_value(view, color);
+        for layer in 0..view.desc.layer_count {
+            let one = if view.desc.layer_count == 1 {
+                view.clone()
+            } else {
+                self.layer_view(view, layer, desc::bind::RENDER_TARGET)?
+            };
+            let cleared = self
+                .backend
+                .clear_rects(&one.gpu.handle, one.format, value, &rects);
+            self.gpu(cleared)?;
+            if one.copied() {
+                self.copy_twin(&one, false);
+            }
+        }
+        Ok(())
     }
 
     pub fn clear_depth_stencil_view(
@@ -2588,6 +2606,24 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// Counts the slow paths of sampling the programs of `variants` do in the shader.
+    fn count_sampling_in_shader(&mut self, variants: &[&StageVariant]) {
+        let any = |f: fn(&StageVariant) -> bool| variants.iter().any(|v| f(v));
+        let paths = [
+            (any(|v| v.lod_bias != 0), SlowPath::LodBiasInShader),
+            (any(|v| v.min_lod_clamped != 0), SlowPath::MinLodClamp),
+            (any(|v| v.border_in_shader != 0), SlowPath::BorderInShader),
+            (
+                any(|v| v.mirror_once_in_shader != 0),
+                SlowPath::MirrorOnceInShader,
+            ),
+            (any(|v| v.filter_in_shader != 0), SlowPath::FilterInShader),
+        ];
+        for (_, path) in paths.iter().filter(|(taken, _)| *taken) {
+            self.backend.slow_paths().hit(*path);
+        }
+    }
+
     /// `Dispatch` and `DispatchIndirect`; one this front cannot serve removes the device.
     pub fn dispatch(&mut self, groups: [u32; 3], indirect: Option<(&Rc<Buffer<B>>, u32)>) {
         if let Err(e) = self.try_dispatch(groups, indirect) {
@@ -2616,16 +2652,20 @@ impl<B: Backend> Device<B> {
         self.refresh_windows()?;
         self.update_set(COMPUTE, &[], &[])?;
         let cv = self.stage_variant(COMPUTE, &cs, 1);
-        let plain = StageVariant {
-            formats: 0,
-            stored_through: 0,
-            ..cv
+        let served = StageVariant {
+            formats: cv.formats,
+            stored_through: cv.stored_through,
+            lod_bias: cv.lod_bias,
+            min_lod_clamped: cv.min_lod_clamped,
+            border_in_shader: cv.border_in_shader,
+            mirror_once_in_shader: cv.mirror_once_in_shader,
+            filter_in_shader: cv.filter_in_shader,
+            ..StageVariant::default()
         };
-        if plain != StageVariant::default() {
-            return not_implemented(
-                "a compute shader sampling in a way the back end's sampler lacks (a bias, a resource clamp, border or mirror-once addressing, an unfilterable format)",
-            );
+        if cv != served {
+            return not_implemented("a compute program variant only draws take");
         }
+        self.count_sampling_in_shader(&[&cv]);
         let varied = cv != StageVariant::default();
         let key = (cs.gpu.id, cv, 0, StageVariant::default());
         let (program, helpers) = match self.programs.get(&key) {
@@ -2703,15 +2743,23 @@ impl<B: Backend> Device<B> {
         self.gpu(r)
     }
 
-    /// The binding set of a compute program's helper constants (the typed buffer views' places),
-    /// written for this dispatch; none for a program without them.
+    /// The binding set of a compute program's helper constants (the typed buffer views' places,
+    /// minimum level-of-detail clamps) and of its merged samplers, written for this dispatch; none
+    /// for a program without them.
     fn compute_helpers(&mut self, h: &Helpers) -> Result<Option<B::BindingSet>> {
-        if h.size == 0 {
+        if h.size == 0 && h.merged.is_empty() {
             return Ok(None);
         }
         let block = self.helper_block(h, COMPUTE, [0; 2], None)?;
-        if let Some((written, set)) = &self.compute_helpers
+        let mut merged = Vec::with_capacity(h.merged.len());
+        for &(binding, (texture, sampler)) in &h.merged {
+            let (clamp, _) = self.min_lod_of(COMPUTE, texture).unwrap_or((0.0, 1));
+            merged.push((binding, self.clamped_sampler(COMPUTE, sampler, clamp)?));
+        }
+        let samplers: Vec<u64> = merged.iter().map(|(_, (_, id))| *id).collect();
+        if let Some((written, made, set)) = &self.compute_helpers
             && *written == block
+            && *made == samplers
         {
             return Ok(Some(set.handle.clone()));
         }
@@ -2722,20 +2770,31 @@ impl<B: Backend> Device<B> {
                 .write_buffer_ring(RingKind::Data, &[&block[..]], align, &mut offsets);
         let ring = self.gpu(ring)?;
         self.helper_blocks = None;
-        let entries = [BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
-            stages: StageSet::COMPUTE,
-            resource: BindingResource::UniformBuffer(BufferRange {
-                buffer: &ring,
-                offset: offsets[0],
-                size: block.len() as u64,
-            }),
-        }];
+        let mut entries = Vec::with_capacity(merged.len() + 1);
+        if !block.is_empty() {
+            entries.push(BindingEntry {
+                binding: helper_binding(ShaderStage::Compute),
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &ring,
+                    offset: offsets[0],
+                    size: block.len() as u64,
+                }),
+            });
+        }
+        for (binding, (s, _)) in &merged {
+            entries.push(BindingEntry {
+                binding: *binding,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::Sampler(s),
+            });
+        }
         let set = self.backend.create_binding_set(&entries);
         let set = self.gpu(set)?;
         let id = self.id();
         self.compute_helpers = Some((
             block,
+            samplers,
             Kept::new(set.clone(), id, Object::BindingSet, &self.graveyard),
         ));
         Ok(Some(set))
@@ -2765,6 +2824,20 @@ impl<B: Backend> Device<B> {
         self.backend
             .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), 4);
         self.buffer_written(dst)
+    }
+
+    /// `ClearView` of a whole storage view: integer formats take each value cast, the others the
+    /// values converted as `ClearUnorderedAccessViewFloat` converts them.
+    pub fn clear_view_uav(&mut self, view: &ShaderView<B>, color: [f32; 4]) -> Result<()> {
+        let integer = match view {
+            ShaderView::Texture(v) => integer_format(v.format),
+            ShaderView::Buffer(b) => b.texel.is_some_and(|(f, ..)| integer_format(f)),
+        };
+        if integer {
+            self.clear_uav(view, color.map(|c| c as i64 as u32), false)
+        } else {
+            self.clear_uav(view, color.map(f32::to_bits), true)
+        }
     }
 
     /// `ClearUnorderedAccessViewUint` (`float` false) and `Float`: buffer views take the first value
@@ -4197,21 +4270,7 @@ impl<B: Backend> Device<B> {
         if depth_bias {
             self.backend.slow_paths().hit(SlowPath::DepthBiasInShader);
         }
-        if vk.lod_bias | pk.lod_bias != 0 {
-            self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
-        }
-        if vk.min_lod_clamped | pk.min_lod_clamped != 0 {
-            self.backend.slow_paths().hit(SlowPath::MinLodClamp);
-        }
-        if vk.border_in_shader | pk.border_in_shader != 0 {
-            self.backend.slow_paths().hit(SlowPath::BorderInShader);
-        }
-        if vk.mirror_once_in_shader | pk.mirror_once_in_shader != 0 {
-            self.backend.slow_paths().hit(SlowPath::MirrorOnceInShader);
-        }
-        if vk.filter_in_shader | pk.filter_in_shader != 0 {
-            self.backend.slow_paths().hit(SlowPath::FilterInShader);
-        }
+        self.count_sampling_in_shader(&[&vk, &pk]);
         if vk.from_arguments {
             self.backend
                 .slow_paths()
@@ -4841,7 +4900,7 @@ impl<B: Backend> Device<B> {
         }
         // A swap chain's buffer is also viewed as its sRGB twin, as DXGI allows its targets.
         let named = |t: &Texture<B>| {
-            if t.chain && format::srgb_twin(t.desc.format) == Some(format) {
+            if t.chain != ChainBuffer::None && format::srgb_twin(t.desc.format) == Some(format) {
                 format
             } else {
                 t.desc.format
@@ -5505,4 +5564,23 @@ fn twin_block(
         block.fill = wcontainers_gpu::FillMode::Solid;
     }
     block
+}
+
+/// A rectangle (left, top, right, bottom) as the pixels it holds.
+fn pixel_rect([l, t, r, b]: [i32; 4]) -> ScissorRect {
+    ScissorRect {
+        x: l.max(0) as u32,
+        y: t.max(0) as u32,
+        width: (r - l.max(0)).max(0) as u32,
+        height: (b - t.max(0)).max(0) as u32,
+    }
+}
+
+/// A target view's clear value of `color`: integer formats take each value cast.
+fn color_value<B: Backend>(view: &View<B>, color: [f32; 4]) -> ClearValue {
+    ClearValue::Color(if integer_format(view.format) {
+        color.map(|c| c as i64 as u32)
+    } else {
+        color.map(f32::to_bits)
+    })
 }

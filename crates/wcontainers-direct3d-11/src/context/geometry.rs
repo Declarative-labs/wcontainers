@@ -12,7 +12,8 @@ use wcontainers_gpu::{BufferUsage, VariantFlags};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
-    DomainSets, FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamTargets,
+    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw,
+    StageError, StageIndex, Stages, StreamTargets,
 };
 
 /// The stage helper of one vertex shader, input layout, hull and domain shader where bound,
@@ -42,7 +43,7 @@ pub(crate) struct StageRun<B: Backend> {
 }
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
-const FILLED_BYTES: u64 = 32;
+const FILLED_BYTES: u64 = (STREAM_FILLED_WORDS * COUNTER_BYTES) as u64;
 
 /// Direct3D's primitive topology as the stage helper takes it; `None` for patch lists.
 pub(super) fn input_topology(t: u32) -> Option<InputTopology> {
@@ -519,8 +520,10 @@ impl<B: Backend> Device<B> {
         self.helper_blocks = None;
         self.compute_helpers = None;
 
-        // Stream output: each target's filled size gathered into one block the helper advances.
-        let streamed = gs.stream.is_some() && self.ctx.so_targets.iter().any(Option::is_some);
+        // Stream output: each target's filled size gathered into one block the helper advances. A
+        // running query counts the primitives needed even with no target bound.
+        let streamed = gs.stream.is_some()
+            && (self.ctx.so_targets.iter().any(Option::is_some) || self.queries.streams_running());
         let filled = if streamed {
             Some(self.stream_filled()?)
         } else {
@@ -532,7 +535,7 @@ impl<B: Backend> Device<B> {
         } else {
             self.twins_in(&[VERTEX, GEOMETRY, PIXEL], PIXEL)
         };
-        let mut counters: [Option<B::Buffer>; 4] = Default::default();
+        let mut counters: [Option<B::Buffer>; STREAM_BUFFERS] = Default::default();
         if let Some(f) = &filled {
             self.backend
                 .write_buffer(f, 0, &[0; FILLED_BYTES as usize], WriteMode::Ordered);
@@ -547,7 +550,7 @@ impl<B: Backend> Device<B> {
         }
 
         let ctx = &self.ctx;
-        let target_handles: [_; 4] = std::array::from_fn(|i| {
+        let target_handles: [_; STREAM_BUFFERS] = std::array::from_fn(|i| {
             ctx.so_targets[i]
                 .as_ref()
                 .map(|b| (b.gpu.borrow(), b.desc.byte_width))
@@ -785,27 +788,32 @@ impl<B: Backend> Device<B> {
         Ok(f)
     }
 
-    /// The primitives a draw's stream output wrote and needed, added to the running stream
-    /// output queries of stream 0 (read back now, `ReadBackWait`).
+    /// The primitives a draw's stream output wrote and needed per stream, added to the running
+    /// stream output queries (read back now, `ReadBackWait`).
     fn stream_counted(&mut self, filled: &B::Buffer) -> Result<()> {
         if !self.queries.streams_running() {
             return Ok(());
         }
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 2 * STREAMS * COUNTER_BYTES];
         let read = self.backend.read_back_now(
             &ReadSource::Buffer {
                 buffer: filled,
-                offset: 16,
-                size: 8,
+                offset: (STREAM_BUFFERS * COUNTER_BYTES) as u64,
+                size: bytes.len() as u64,
             },
             &mut bytes,
         );
         self.gpu(read)?;
         self.backend.slow_paths().hit(SlowPath::ReadBackWait);
-        let (written, needed) = bytes.split_at(COUNTER_BYTES);
-        let written = u32::from_le_bytes(written.try_into().unwrap());
-        let needed = u32::from_le_bytes(needed.try_into().unwrap());
-        self.queries.add_streamed(written.into(), needed.into());
+        let mut counts = crate::query::Streamed::default();
+        for (count, word) in counts
+            .as_flattened_mut()
+            .iter_mut()
+            .zip(bytes.as_chunks::<COUNTER_BYTES>().0)
+        {
+            *count = u32::from_le_bytes(*word).into();
+        }
+        self.queries.add_streamed(&counts);
         Ok(())
     }
 
@@ -911,7 +919,12 @@ impl<B: Backend> Device<B> {
     }
 
     /// Layer `layer` of the drawn view `v` (bound as `kind`) as a view of that layer alone.
-    fn layer_view(&mut self, v: &Rc<View<B>>, layer: u32, kind: u32) -> Result<Rc<View<B>>> {
+    pub(super) fn layer_view(
+        &mut self,
+        v: &Rc<View<B>>,
+        layer: u32,
+        kind: u32,
+    ) -> Result<Rc<View<B>>> {
         if v.layers.borrow().is_empty() {
             let mut made = Vec::with_capacity(v.desc.layer_count as usize);
             for l in 0..v.desc.layer_count {

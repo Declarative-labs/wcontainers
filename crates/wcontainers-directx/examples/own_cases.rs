@@ -1,6 +1,8 @@
 //! Small Direct3D 11 programs for single cases, one per argument: `atomics` (texture atomics
 //! from a compute shader), `raw_signed_atomics` (signed and unsigned minimums and maximums of
-//! raw words from every pixel and thread), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
+//! raw words from every pixel and thread), `clear_view` (`ClearView` of a target's rectangles and
+//! of a whole storage view), `cs_min_lod` (a compute shader sampling, loading and
+//! gathering under `SetResourceMinLOD` clamps), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
 //! views), `split` (a pixel shader's storage view read by the next draw on the same targets),
 //! `depth_filter` (an `R32_FLOAT` depth and a colour texture sampled through one linear
 //! sampler), `deep` (a depth buffer larger than its target), `msaa_copy` (a copy between
@@ -397,6 +399,141 @@ fn main() -> windows::core::Result<()> {
                 context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
             }
             print_buffer("raw signed atomics", &words, desc.ByteWidth);
+        }
+        "clear_view" => {
+            // `ClearView` of a target's rectangles (one reaching past its edge) and of a whole
+            // storage view.
+            let at = |format, bind| Tex {
+                w: 8,
+                h: 4,
+                format,
+                samples: 1,
+                bind,
+            };
+            let target = make(
+                &at(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_RENDER_TARGET),
+                None,
+            )?;
+            let stored = make(
+                &at(DXGI_FORMAT_R32_FLOAT, D3D11_BIND_UNORDERED_ACCESS),
+                None,
+            )?;
+            let context1: ID3D11DeviceContext1 = windows::core::Interface::cast(&context)?;
+            let rects = [
+                windows::Win32::Foundation::RECT {
+                    left: 1,
+                    top: 1,
+                    right: 4,
+                    bottom: 3,
+                },
+                windows::Win32::Foundation::RECT {
+                    left: 6,
+                    top: 0,
+                    right: 12,
+                    bottom: 2,
+                },
+            ];
+            let (target_view, stored_view) = (rtv(&target).unwrap(), uav(&stored).unwrap());
+            unsafe {
+                context.ClearRenderTargetView(&target_view, &[0.0; 4]);
+                context1.ClearView(&target_view, &[1.0, 0.5, 0.25, 1.0], Some(&rects));
+                context1.ClearView(&stored_view, &[0.75, 0.0, 0.0, 0.0], None);
+            }
+            print("clear view rects", &target, 4);
+            print("clear view storage", &stored, 4);
+        }
+        "cs_min_lod" => {
+            // An 8x8 chain of four levels; texel (x, y) of level l is (l * 60, x * 32, y * 32, 255).
+            const SIDE: u32 = 8;
+            const LEVELS: u32 = 4;
+            let levels: Vec<Vec<u8>> = (0..LEVELS)
+                .map(|l| {
+                    let n = SIDE >> l;
+                    (0..n * n)
+                        .flat_map(|i| [(l * 60) as u8, (i % n * 32) as u8, (i / n * 32) as u8, 255])
+                        .collect()
+                })
+                .collect();
+            let data: Vec<D3D11_SUBRESOURCE_DATA> = levels
+                .iter()
+                .enumerate()
+                .map(|(l, bytes)| D3D11_SUBRESOURCE_DATA {
+                    pSysMem: bytes.as_ptr().cast(),
+                    SysMemPitch: (SIDE >> l) * 4,
+                    SysMemSlicePitch: 0,
+                })
+                .collect();
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: SIDE,
+                Height: SIDE,
+                MipLevels: LEVELS,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                MiscFlags: D3D11_RESOURCE_MISC_RESOURCE_CLAMP.0 as u32,
+                ..Default::default()
+            };
+            let mut chain = None;
+            unsafe { device.CreateTexture2D(&desc, Some(data.as_ptr()), Some(&mut chain))? };
+            let chain = chain.unwrap();
+            let mut view = None;
+            unsafe { device.CreateShaderResourceView(&chain, None, Some(&mut view))? };
+            let sampler = {
+                let desc = D3D11_SAMPLER_DESC {
+                    Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                    AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    MaxLOD: f32::MAX,
+                    ..Default::default()
+                };
+                let mut s = None;
+                unsafe { device.CreateSamplerState(&desc, Some(&mut s))? };
+                s
+            };
+            // Each clamp's five results in a row: two samples, two loads and a gather.
+            let clamps = [1.5f32, 5.0, 0.25];
+            let results = make(
+                &Tex {
+                    w: 5,
+                    h: clamps.len() as u32,
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    samples: 1,
+                    bind: D3D11_BIND_UNORDERED_ACCESS,
+                },
+                None,
+            )?;
+            let shader = cs("Texture2D<float4> t : register(t0);
+                SamplerState s : register(s0);
+                RWTexture2D<float4> o : register(u0);
+                cbuffer c : register(b0) { uint row; }
+                [numthreads(1, 1, 1)]
+                void main() {
+                    float2 uv = float2(0.3, 0.6);
+                    o[uint2(0, row)] = t.SampleLevel(s, uv, 0);
+                    o[uint2(1, row)] = t.SampleLevel(s, uv, 2.25);
+                    o[uint2(2, row)] = t.Load(int3(1, 1, 0));
+                    o[uint2(3, row)] = t.Load(int3(0, 0, 2));
+                    o[uint2(4, row)] = t.GatherRed(s, uv);
+                }");
+            unsafe {
+                context.CSSetShader(shader.as_ref(), None);
+                context.CSSetShaderResources(0, Some(&[view]));
+                context.CSSetSamplers(0, Some(&[sampler]));
+                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&results)].as_ptr()), None);
+                for (row, &clamp) in clamps.iter().enumerate() {
+                    context.SetResourceMinLOD(&chain, clamp);
+                    let row = constants([f32::from_bits(row as u32), 0.0, 0.0, 0.0]);
+                    context.CSSetConstantBuffers(0, Some(&[row]));
+                    context.Dispatch(1, 1, 1);
+                }
+            }
+            print("filtered cs min lod", &results, 4);
         }
         "typed" => {
             // Values each format holds exactly.

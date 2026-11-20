@@ -261,6 +261,20 @@ fn typed_storage_stores_as_direct3d_does() {
     case("typed");
 }
 
+/// `ClearView` clears a target's rectangles, clipped to the target, and a whole storage view.
+#[test]
+fn clear_view_of_rectangles_and_storage_as_direct3d_does() {
+    case("clear_view");
+}
+
+/// A compute shader sampling, loading and gathering under resource clamps takes the clamped
+/// levels, as a pixel shader does.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn a_compute_shader_samples_under_minimum_level_clamps_as_direct3d_does() {
+    case("cs_min_lod");
+}
+
 /// Without `texture-formats-tier1` (natively, the adapter's own format features), the formats
 /// WebGPU cannot store into are stored through a buffer of their texels.
 #[cfg(not(feature = "webgl"))]
@@ -272,6 +286,21 @@ fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
     let errors = case_env("typed", "untiered", &[(FEATURES_OFF, tier1)]);
     let route = wcontainers_gpu::SlowPath::StorageFormatThroughBuffer.reason();
     assert!(errors.contains(route), "{errors}");
+}
+
+/// The same without the 16-bit normalised formats either, as a browser without
+/// `texture-formats-tier1` lacks them: `R16G16_UNORM` then needs `NormAsInteger`.
+#[cfg(not(feature = "webgl"))]
+#[test]
+#[ignore = "NormAsInteger is not built in this front: a texture of a 16-bit normalised format is refused without the back end's format"]
+fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does() {
+    let off = [
+        wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
+    ]
+    .map(|f| f.as_str().unwrap())
+    .join(" ");
+    case_env("typed", "untiered16", &[(FEATURES_OFF, &off)]);
 }
 
 #[test]
@@ -413,7 +442,6 @@ fn alpha_antialiased_lines_blend_their_coverage_as_direct3d_does() {
 
 /// The same lines as an indexed strip cut by the restart index.
 #[test]
-#[ignore = "the shaders track's stage helper refuses indexed strips, which removes the device"]
 fn an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does() {
     antialiased_lines("aa_strip_indexed");
 }

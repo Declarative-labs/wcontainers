@@ -37,7 +37,8 @@ pub(crate) struct HelperBlocks<B: Backend> {
 /// A program's key: its vertex (or compute) shader's id and variant, and its pixel shader's id
 /// (0 for none) and variant.
 /// A compute helper block as written and its binding set.
-pub(crate) type ComputeHelpers<B> = (Vec<u8>, Kept<B, <B as Backend>::BindingSet>);
+/// A compute program's helper block, the merged samplers' identities and the binding set of both.
+pub(crate) type ComputeHelpers<B> = (Vec<u8>, Vec<u64>, Kept<B, <B as Backend>::BindingSet>);
 
 pub(crate) type ProgramKey = (u64, StageVariant, u64, StageVariant);
 
@@ -1152,7 +1153,7 @@ impl<B: Backend> Device<B> {
             gpu: Kept::new(gpu, id, Object::Texture, &self.graveyard),
             staged: RefCell::new(Vec::new()),
             shadow: RefCell::new(Vec::new()),
-            chain: false,
+            chain: ChainBuffer::None,
             min_lod: Cell::new(0.0),
             chroma,
         };
@@ -1395,6 +1396,11 @@ impl<B: Backend> Device<B> {
         if v.dimension == ViewDim::TextureCube && desc.is_none() {
             v.layer_count = 6;
         }
+        if texture.chain == ChainBuffer::Read && kind != bind::SHADER_RESOURCE {
+            return Err(Error::InvalidArg(
+                "a sequential swap chain's buffer past the first, which is read only",
+            ));
+        }
         if v.first_mip + v.mip_count > t.mip_levels
             || v.mip_count == 0
             || v.first_layer + v.layer_count > layers
@@ -1404,7 +1410,11 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("the view reaches past the resource"));
         }
         let (format, stencil) = match format::srgb_twin(t.format) {
-            Some(twin) if texture.chain && kind == bind::RENDER_TARGET && v.format == twin => {
+            Some(twin)
+                if texture.chain == ChainBuffer::Drawn
+                    && kind == bind::RENDER_TARGET
+                    && v.format == twin =>
+            {
                 (format::texture_format_of(twin)?, false)
             }
             _ if texture.chroma.is_some() => {
@@ -2051,6 +2061,11 @@ impl<B: Backend> Device<B> {
         let (entries, strides, rasterized) = so.unwrap_or((None, None, 0));
         let (stream, drawn) =
             crate::stream::declaration(entries, strides, rasterized, self.level, &outputs, vertex)?;
+        if rasterized != 0 && outputs.iter().any(|o| o.stream == rasterized) {
+            return not_implemented(
+                "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)",
+            );
+        }
         if !self.backend.caps().has(Features::COMPUTE) {
             return not_implemented(
                 "geometry shaders and stream output without the back end's compute programs",

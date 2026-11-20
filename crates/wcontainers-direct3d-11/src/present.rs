@@ -2,13 +2,16 @@
 //! texture of this front.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
-use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
+use wcontainers_directx_graphics_infrastructure::{
+    Model, SwapChain, SwapChainDesc, SwapChainError,
+};
 use wcontainers_gpu::{Backend, GpuError};
 
 use crate::desc::{TexDim, TextureDesc, bind};
-use crate::object::{Kept, Texture};
+use crate::object::{ChainBuffer, Kept, Texture};
 use crate::{Device, Error, Result};
 
 /// A swap chain and the textures standing for its back buffers.
@@ -18,6 +21,9 @@ pub struct Chain<B: Backend> {
     /// Bind flags of the back buffers (render target, and shader resource or unordered access as
     /// the swap chain's usage asks).
     bind: u32,
+    /// Of a swap chain with a frame latency waitable object, the fences of the presented frames
+    /// not yet retired.
+    unretired: Option<VecDeque<B::Fence>>,
 }
 
 impl<B: Backend> Chain<B> {
@@ -25,7 +31,7 @@ impl<B: Backend> Chain<B> {
         self.chain.desc()
     }
 
-    /// Back buffer `index` (`GetBuffer`): any of a flip model's, buffer 0 of a blit model's.
+    /// Back buffer `index` (`GetBuffer`): any but of the discard blit model, which gives buffer 0.
     pub fn buffer(&self, index: u32) -> Option<&Rc<Texture<B>>> {
         self.buffers.get(index as usize)
     }
@@ -60,12 +66,14 @@ fn chain_error(e: SwapChainError) -> Error {
 }
 
 impl<B: Backend> Device<B> {
-    /// A swap chain on host window `window`, its back buffers bound as `bind` says.
+    /// A swap chain on host window `window`, its back buffers bound as `bind` says; `waitable`
+    /// makes it count its frames retired for a frame latency waitable object.
     pub fn create_swap_chain(
         &mut self,
         window: u32,
         desc: &SwapChainDesc,
         bind: u32,
+        waitable: bool,
     ) -> Result<Chain<B>> {
         self.live()?;
         if !crate::format::displayed(desc.format, self.feature_level()) {
@@ -80,6 +88,7 @@ impl<B: Backend> Device<B> {
             chain,
             buffers: Vec::new(),
             bind: bind | bind::RENDER_TARGET,
+            unretired: waitable.then(VecDeque::new),
         };
         self.adopt_buffers(&mut chain);
         Ok(chain)
@@ -120,7 +129,11 @@ impl<B: Backend> Device<B> {
                 gpu: Kept::borrowed(texture.clone(), id, &self.graveyard),
                 shadow: RefCell::new(Vec::new()),
                 staged: RefCell::new(Vec::new()),
-                chain: true,
+                chain: if d.model == Model::Sequential && index > 0 {
+                    ChainBuffer::Read
+                } else {
+                    ChainBuffer::Drawn
+                },
                 min_lod: Cell::new(0.0),
                 chroma: None,
             }));
@@ -128,14 +141,33 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// `Present`: the work recorded so far, then the frame shown.
-    pub fn present(&mut self, c: &mut Chain<B>, sync_interval: u32) -> Result<()> {
+    /// `Present`: the work recorded so far, then the frame shown. Of a swap chain with a frame
+    /// latency waitable object it answers the frames retired since the last present, which release
+    /// the object, after waiting until fewer frames than the latency are unretired, so that the
+    /// program's wait for the next frame returns once one more retires, as DXGI's does.
+    pub fn present(&mut self, c: &mut Chain<B>, sync_interval: u32) -> Result<u32> {
         self.live()?;
         self.settle();
         self.report_ahead();
         c.chain
             .present(&mut self.backend, sync_interval)
-            .map_err(|e| self.chain_lost(e))
+            .map_err(|e| self.chain_lost(e))?;
+        let latency = c.chain.max_latency() as usize;
+        let Some(unretired) = &mut c.unretired else {
+            return Ok(0);
+        };
+        unretired.push_back(self.backend.submit());
+        let mut retired = 0;
+        while let Some(oldest) = unretired.front() {
+            if unretired.len() >= latency {
+                self.backend.wait_fence(oldest);
+            } else if !self.backend.fence_done(oldest) {
+                break;
+            }
+            unretired.pop_front();
+            retired += 1;
+        }
+        Ok(retired)
     }
 
     /// `ResizeBuffers`: refused while the program or a binding holds a back buffer, as DXGI does.

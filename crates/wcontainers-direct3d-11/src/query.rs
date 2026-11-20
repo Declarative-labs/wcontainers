@@ -12,9 +12,8 @@
 //! without vertex reuse or clipping splits counts them, compute invocations from the dispatches,
 //! and pixel shader invocations by a second occlusion counter replaying the draws with the depth
 //! and stencil tests off through a program counting one per pixel (one per sample where the pixel
-//! shader runs per sample). Stream output statistics and overflow predicates of stream 0 add up
-//! what the stage helper counted at each streaming draw; only stream 0 is ever written, so the
-//! others answer zero and false.
+//! shader runs per sample). Stream output statistics and overflow predicates add up what the stage
+//! helper counted per geometry stream at each streaming draw.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,6 +24,7 @@ use wcontainers_directx_graphics_infrastructure::d3d::{
 use wcontainers_gpu::{
     Backend, BufferDesc, BufferUsage, MapIntent, Object, QueryKind, ReadSource, ReadState, SlowPath,
 };
+use wcontainers_shaders::stage::STREAMS;
 
 use crate::device::Device;
 use crate::error::{Error, Result, WARNING_PREFIX};
@@ -108,10 +108,18 @@ fn is_stream_output(kind: u32) -> bool {
     (kind::SO_STATISTICS..=kind::SO_OVERFLOW_PREDICATE_STREAM3).contains(&kind)
 }
 
-/// Whether `kind` is a stream output query of stream 0 (or of all streams).
-fn of_stream_zero(kind: u32) -> bool {
-    (kind::SO_STATISTICS..=kind::SO_STATISTICS_STREAM0 + 1).contains(&kind)
+/// The geometry stream a stream output query of `kind` counts, or `None` for the predicate of
+/// every stream (`SO_OVERFLOW_PREDICATE`); `SO_STATISTICS` is stream 0's.
+fn stream_of(kind: u32) -> Option<usize> {
+    match kind {
+        kind::SO_STATISTICS => Some(0),
+        kind::SO_OVERFLOW_PREDICATE => None,
+        k => Some(((k - kind::SO_STATISTICS_STREAM0) / 2) as usize),
+    }
 }
+
+/// Primitives written and needed, per geometry stream.
+pub(crate) type Streamed = [[u64; 2]; STREAMS];
 
 impl<B: Backend> Queries<B> {
     /// Whether any query counting draws runs.
@@ -122,16 +130,20 @@ impl<B: Backend> Queries<B> {
             && self.streams.is_empty())
     }
 
-    /// Whether a stream output query of stream 0 runs.
+    /// Whether a stream output query runs.
     pub(crate) fn streams_running(&self) -> bool {
         !self.streams.is_empty()
     }
 
-    /// Adds a draw's primitives written and needed to the running stream output queries.
-    pub(crate) fn add_streamed(&mut self, written: u64, needed: u64) {
+    /// Adds a draw's primitives written and needed per stream to the running stream output queries.
+    pub(crate) fn add_streamed(&mut self, counts: &Streamed) {
         for q in &self.streams {
-            let [w, n] = q.streamed.get();
-            q.streamed.set([w + written, n + needed]);
+            let mut sums = q.streamed.get();
+            for (sum, count) in sums.iter_mut().zip(counts) {
+                sum[0] += count[0];
+                sum[1] += count[1];
+            }
+            q.streamed.set(sums);
         }
     }
 }
@@ -182,8 +194,8 @@ pub struct Query<B: Backend> {
     state: RefCell<State<B>>,
     /// A timestamp's time, in nanoseconds from the device's making.
     stamp: std::cell::Cell<u64>,
-    /// A stream output query's primitives written and needed.
-    streamed: std::cell::Cell<[u64; 2]>,
+    /// A stream output query's primitives written and needed, per stream.
+    streamed: std::cell::Cell<Streamed>,
 }
 
 /// `D3D11_QUERY_MISC_PREDICATEHINT`.
@@ -200,7 +212,7 @@ pub(crate) struct Queries<B: Backend> {
     pub(crate) counted: Vec<Rc<Query<B>>>,
     /// Pipeline statistics queries begun and not ended.
     pub(crate) statistics: Vec<Rc<Query<B>>>,
-    /// Stream output queries of stream 0 begun and not ended.
+    /// Stream output queries begun and not ended.
     streams: Vec<Rc<Query<B>>>,
     /// When the device was made: timestamps count nanoseconds from it.
     made: std::time::Instant,
@@ -258,7 +270,7 @@ impl<B: Backend> Device<B> {
             misc,
             state: RefCell::new(State::Fresh),
             stamp: std::cell::Cell::new(0),
-            streamed: std::cell::Cell::new([0; 2]),
+            streamed: std::cell::Cell::new(Streamed::default()),
         }))
     }
 
@@ -269,8 +281,8 @@ impl<B: Backend> Device<B> {
             kind::EVENT | kind::TIMESTAMP => return,
             k if answered_at_end(k) => {
                 *q.state.borrow_mut() = State::Running(Vec::new());
-                q.streamed.set([0; 2]);
-                if of_stream_zero(k) && !self.queries.streams.iter().any(|r| Rc::ptr_eq(r, q)) {
+                q.streamed.set(Streamed::default());
+                if is_stream_output(k) && !self.queries.streams.iter().any(|r| Rc::ptr_eq(r, q)) {
                     self.queries.streams.push(q.clone());
                 }
                 return;
@@ -421,11 +433,15 @@ impl<B: Backend> Device<B> {
                 }
                 kind::EVENT => short(&[1]),
                 k if is_stream_output(k) && (k - kind::SO_STATISTICS).is_multiple_of(2) => {
-                    short(&q.streamed.get())
+                    short(&q.streamed.get()[stream_of(k).expect("a stream's statistics")])
                 }
                 k if is_stream_output(k) => {
-                    let [written, needed] = q.streamed.get();
-                    short(&[u64::from(needed > written)])
+                    let sums = q.streamed.get();
+                    let overflowed = match stream_of(k) {
+                        Some(s) => sums[s][1] > sums[s][0],
+                        None => sums.iter().any(|[written, needed]| needed > written),
+                    };
+                    short(&[u64::from(overflowed)])
                 }
                 _ => short(&[]),
             };
