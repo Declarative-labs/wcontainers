@@ -1739,7 +1739,11 @@ Tests (section 7 gives the detail):
   privilege level other than 3: general protection), then ss, then rsp, then the ss test (0x2b alone), and
   the rip's canonical test last (its general protection comes after ss's read). Whether rsp's read comes
   before the ss test cannot be seen (no frame maps ss's slot but not rsp's). `retf` reads cs, then rip,
-  then tests cs (0x33 alone; 0x30 to 0x32 are general protection). A far pointer (`call`, `jmp`, `lfs`,
+  then tests cs (0x33 alone; 0x30 to 0x32 are general protection). Of the cs and ss slots a return reads the
+  selector's 16 bits alone (layer 1 on the reference: a `retfq` whose cs slot starts 5 bytes below 2^47 page
+  faults there, and a `retfd` whose cs slot ends on an unmapped byte past the selector gives general
+  protection; `iret` is given the same reads, which no case has yet told apart on the reference). A far
+  pointer (`call`, `jmp`, `lfs`,
   `lgs`, `lss`) is read as the offset, then the selector, each faulting by itself; `pop` of a segment
   register reads the selector's 16 bits alone; a far `call` writes cs's slot before the return
   address's. Seen too: the CPU makes a null selector with a privilege level (1 to 3) 0 on every `iret` to
