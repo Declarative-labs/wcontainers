@@ -95,7 +95,8 @@ layout(std430) buffer Sampled { vec4 c[16]; uvec4 n[16]; vec4 s[16]; float d[16]
 void main() {
     uint i = gl_GlobalInvocationID.x;
     vec2 at = vec2(float(i) / 8.0 + 0.0625, 0.4);
-    c[i] = textureLod(colours, at, 0.0) + texelFetch(colours, ivec2(i % 4u, 1), 0);
+    c[i] = textureLod(colours, at, 0.0) + texelFetch(colours, ivec2(i % 4u, 1), 0)
+        + texelFetchOffset(colours, ivec2(i % 2u, 1), 0, ivec2(1, 2));
     n[i] = texelFetch(counts, ivec3(i % 4u, 2, 3), 0);
     s[i] = textureLod(sky, vec3(1.0, at * 2.0 - 1.0), 0.0);
     d[i] = textureLod(depths, vec3(at, 0.5), 0.0);

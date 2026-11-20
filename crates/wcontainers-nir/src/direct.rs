@@ -3069,6 +3069,9 @@ impl Builder<'_> {
                 })
             }
             TexOp::Load => {
+                if self.tex_src(i, TexSrc::Offset).is_some() {
+                    return Err(unsupported(format_args!("a texel load with an offset")));
+                }
                 let (coordinate, array_index) = coordinate(self, Sint)?;
                 let sample = scalar_src(self, TexSrc::Sample, Sint)?;
                 let level = if sample.is_some() {
