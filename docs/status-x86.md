@@ -90,9 +90,94 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   and far-transfer group, ran layer 3 Csmith at 1,000 (0 failing), built and ran layer 1's list of unoffered
   forms (2,992 forms, every encoding, 0 failing at 100 a form), measured the not-a-number probe on x86 and ARM
   hosts and the passed-register lists, fixed `wbnoinvd`, and ran every default form on the i7-8750H at 1,000
-  a form with 0 failing (see "X5, run 5"). The bar's layer 1 and layer 3 parts hold. Left: the faster
-  passed-register lists wait on a translator bug at bounded look-ahead (X6), and the ARM64 layer 1 tests on
-  the Mac.
+  a form with 0 failing (see "X5, run 5"). The bar's layer 1 and layer 3 parts hold. Run 6 (2026-11-20)
+  fixed the translator bug that held back the faster passed-register lists (a system call's result left
+  stale in the thread block was counted clean at a join) and took those lists, marked four more instructions
+  as varying between CPUs, ran the ARM64 layer 1 tests on the Mac, ran 100,000 random instructions in no form
+  (which found `movbe` with 66 and REX.W, fixed), and ran the bar again with the new lists: every part of X5's
+  bar holds (see "X5, run 6").
+
+## X5, run 6 (2026-11-20)
+
+Machines: the rented x86-64 machine for the replay, the fix, lint and layer 2 and 3; the rented ARM64 machine
+for formatting and the facts test; the i7-8750H for layer 1's verdicts (`x5/run6/laptop-bg.sh`, 4 at once);
+the Mac for git, the literal check and the ARM64 layer 1 tests (Docker Desktop was up again). Logs in scratch
+`x5/run6/`.
+
+Done:
+- The bug that held back the faster passed-register lists (c9410112). With in = [rsp, rdi, rsi] and out =
+  [rsp, rax], rax lives in a local, and the full emitter leaves a system call's result in that local, marked
+  stale in the thread block; but the plan's forward analysis (`dirty_after`) took a system call to leave
+  nothing stale. So at a loop head reached after a system call, rax counted as clean, and a later fault or exit
+  wrote the value from before the call. Found by shrinking seed 9310 case 10 and reading the piece's module
+  (scratch `x5/run6/scratch_bounded.rs`, `dump/`): the piece from 0x400134 at bounded 56. Bounded showed it
+  because its pieces start at loop heads. One rule, `dirty_after_syscall`, now serves both. ARM64 and the old
+  x86 lists pass the result register in, so their output does not change.
+- x86 takes the shorter lists (9e175f79), measured fastest in run 5 (20.9 s against 21.6 s for the benchmark
+  set in wasmtime); plan 3.4 and section 11 say so. Not timed again after the fix, which changes code only
+  after system calls.
+- The host-dependence mark reviewed against the instructions written (2c8903ca): `dpps` and `dppd` (where an
+  unmasked exception stops one part way, the flags follow the reference's micro-operations), `maskmovdqu`
+  (faults under an all-zero mask are implementation dependent in Intel's manual) and `ldmxcsr` (AMD's
+  misaligned SSE mode takes MXCSR bit 17, which Intel refuses) were not marked and now are; `facts.rs` checks
+  them and four fully defined float forms. Plan 5.2 lists every kind marked. The address width (5-level
+  paging) changes faults of every access and is not a per-instruction mark.
+- The browser crate's lock gained the x86 crate's `rustc_apfloat` (36a0cc92), which a build there added.
+- Found by the 100,000 instructions in no form (below): `movbe` with both 66 and REX.W (`66 48 0F 38 F0/F1`)
+  is illegal instruction on the i7-8750H, where iced decodes the 64-bit form and we ran it (576d974f). The
+  decoder now takes it as invalid; two hand-made cases built with iced's encoder compare it with the reference;
+  the six `movbe` forms again at 1,000 a form, seed 9364: 0 failing.
+- The no-form test aborted at 100,000 cases with proptest's "too many local rejects" (its filter throws draws
+  away and the limit was proptest's default); it now allows as many per case as the form tests (604f4258,
+  `REJECTS_PER_CASE`). The draws are the same.
+
+Measured:
+- Layer 2 for x86 with the shorter lists, before the fix: seed 9310 case 10 fails as run 5 said (rax 1 against
+  0). With the fix, 3,000 programs at seed 9310, none on the CPU, 96 at once: 0 failing (38 s, load 1 to 20),
+  where run 5 had 367 failing.
+- The ARM64 layer 1 tests on the Mac, with the fix and the shorter lists (`arm64-l1-mac.log`, load 6 to 8, Docker Desktop):
+  `every_form_matches_the_cpu_arm64` 1,215 forms, 64 a form, seed 1, 0 failing;
+  `sample_matches_the_cpu_in_chrome_arm64` 1,215 cases, 0 failing (235 s).
+- The literal check exits 0 on the Mac.
+- On the rented x86-64 machine with the fix and the shorter lists (`batch1-x86m.log`, load 1 to 80, shared with
+  another track's jobs; nothing there reads `may_vary`, so the marks committed after do not change these):
+  clippy with warnings denied passes for the five crates; the crates' own tests pass; `--test checks x86_64` 2
+  passed; `--test programs x86_64` 14 passed (1,468 s); layer 2 for x86 at 10,000 programs, seed 9370, all
+  10,000 on the CPU, 1 in Chrome: 0 failing (162 s; 3,457 faulted, 1,240 left to an address at full); layer 2
+  for ARM64 at 3,000, seed 9371, none on a CPU: 0 failing; layer 3 Csmith for x86 at 1,000 programs, seed 9372:
+  882 compared with Linux, 118 did not end in time, 0 failing (357 s).
+- Every default form on the i7-8750H with the fix and the shorter lists (`l1-run6.log` there, copied to scratch
+  `x5/run6/l1-run6-laptop.log`): 1,063 forms, 1,000 a form, seed 9360, 4 at once, 0 failing, 3,768 s; the
+  laptop's load was 10 to 78 during, from another project's tests there. In the same job the hand-made cases
+  and `the_x86_64_reference_refuses_what_linux_refuses` passed. The Chrome sample failed at "run node": the
+  job's command lacked the laptop's node and Chrome (now under "How to run"); run again below.
+- On the i7-8750H, the rest of layer 1 (`nf6.log`, `l1-movbe.log`, `l1-nf8.log`, `l1-hand9.log` there and in
+  scratch, load 1 to 6): the unoffered forms, 2,992 forms, 100 a form, seed 9361: 0 failing (779 s; of the forms
+  the reference has it ran 71,400 cases and refused none). The Chrome sample, 3 a form, 3,189 cases, seed
+  9363, Chrome 158: 0 failing. The independent check's 100,000 random instructions, in no form, seed 9362: at
+  first 1 failing (the `movbe` above), then the abort above; after both fixes 100,000 cases, 0 failing (290 s).
+  The hand-made cases with the two new `movbe` cases: pass.
+- The suite at 36a0cc92 plus this file, on the rented x86-64 machine (`suite-x86m.log`, 2,597 s, load 5 to 80,
+  shared): clippy with warnings denied passes for the five crates; 97 passed, 13 ignored, 29 failed, all
+  expected there: the 25 ARM64 tests that need an ARM64 reference, three of the four the 5-level paging changes
+  (`every_form`, the Chrome sample, the refusal test; the no-form test at its default 64 cases passed there),
+  and `unoffered_forms_are_illegal_x86_64` (that machine has the features). On the rented ARM64 machine
+  (`suite-arm.log`, 1,181 s, load 8 to 18), the ARM64 tests of `wcontainers-arm64` and the test crate: 50
+  passed, 2 failed, the two layer 1 tests its manual keeps on the Mac, which passed on the Mac above.
+- After the suite only the `movbe` decoding, two hand-made cases and the no-form reject limit changed: clippy
+  with warnings denied passes for the x86 crate and the test crate (rented x86-64 machine), the x86 crate's
+  tests pass there, the literal check exits 0 (the Mac), and the layer 1 runs above cover the change.
+
+Literals: the check exits 0. One bare literal left the test crate (`100` of the reject limit, now
+`REJECTS_PER_CASE`); nothing was added.
+
+So X5's pass bar holds with the lists chosen: layer 1 every default form at 1,000 a form (seed 9360) and the
+unoffered forms at 100 a form (seed 9361) with 0 failing, layer 3 Csmith at 1,000 (seed 9372) with 0 failing,
+the reciprocal formula over all 2^32 inputs (run 3); the passed-register lists are measured and chosen; the
+independent check's 100,000 random instructions (seed 9362) give 0 failing; every instruction whose result
+may depend on the CPU is marked (plan 5.2 lists them).
+
+What comes next: X5's independent check, then X6.
 
 ## X5, run 5 (2026-11-19)
 
@@ -2521,7 +2606,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   every_form_matches_the_cpu_x86_64 -- --nocapture`. `WC_PROBE_ANSWER=<answer>` makes the harness translate
   for a host whose probe gives that answer (one of `PROBE_ANSWERS`), so the not-a-number fix-ups that hosts
   answering 0 need run on any host. The script is copied to `x5/run5/laptop-bg.sh`; it replaces the copy of
-  the tree there, so never start it while another of its jobs runs.
+  the tree there, so never start it while another of its jobs runs. The Chrome sample there needs
+  `PATH=$HOME/wcontainers-x86/node/bin:$PATH WC_PLAYWRIGHT_CORE=$HOME/wcontainers-x86/playwright-core
+  WC_CHROME_EXECUTABLE=$HOME/wcontainers-x86/chrome/opt/google/chrome/chrome` in the command (without them it
+  fails at "run node").
 - Layer 1's unoffered forms (X5): `WC_LAYER1_UNOFFERED_CASES=100 WC_LAYER1_SEED=<n> WC_LAYER1_JOBS=4 cargo
   test --release -p wcontainers-translator-test --test layer1 unoffered_forms_are_illegal_x86_64 --
   --nocapture` on the i7-8750H (the rented machine has most of these features); `WC_LAYER1_FORMS` limits it.
@@ -2843,6 +2931,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   the unoffered forms at 100 a form (2,993 forms, seed 9331); 10,000 no-form cases (seed 9332); the Chrome
   sample at 3 a form (seed 9333). Layer 3 Csmith for x86 at 1,000 programs (seed 5502, 879 compared) and 300
   (seed 9311). Layer 2 for x86 at 3,000 (seed 9310) with the shorter passed-register lists only.
+- X5 run 6: layer 1 against the i7-8750H, every default form at 1,000 a form (seed 9360), the unoffered forms at
+  100 a form (seed 9361), 100,000 cases in no form (seed 9362), the Chrome sample at 3 a form (seed 9363), the six
+  `movbe` forms at 1,000 (seed 9364); ARM64 layer 1 on the Mac at 64 a form (seed 1). Layer 2 for x86 at 3,000
+  (seed 9310) and 10,000, all on the CPU (seed 9370); for ARM64 at 3,000 (seed 9371). Layer 3 Csmith for x86 at
+  1,000 (seed 9372).
 
 ## Measurements
 
@@ -3188,9 +3281,9 @@ X2 (each also written into the plan's text in the same commit):
   near branches, `retnw` and `ud0` without ModRM exist only in iced's AMD decoding (iced's documentation:
   Intel ignores 66 on those branches), so the gap list counts only forms with `intel_decoder64()`. Taken from
   iced, not checked separately on the reference.
-- The passed-register lists (X5 run 5): the plan's starting lists measured fastest, but break layer 2 at
-  bounded look-ahead (a register passed out and not in, which no earlier list had); x86 keeps the longer lists
-  until X6 fixes that, and plan 3.4 says so.
+- The passed-register lists (X5 runs 5 and 6): the plan's starting lists measured fastest; with them layer 2
+  failed at bounded look-ahead, from a translator bug that run 6 fixed (a system call's result in a local),
+  and x86 now uses them (plan 3.4).
 - The never-claimed list (X5 run 5): plan 7.4's `GuestTest::REFERENCE_HAS` is the method `reference_has(form)`
   on the trait, filled from x86's constant `REFERENCE_HAS` (feature names, as the claim lists are); the list
   also holds the AVX setting's forms (setting off), and so is called the unoffered forms. `invpcid` and
