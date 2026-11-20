@@ -4,11 +4,11 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
-- Seventh run: still no ARM64 reference (the rented ARM64 machine, ubuntu@3.134.104.48, unreachable; the
-  Mac's Docker still leaves new containers in "Created"). Everything T3 still needs is one command for each
-  side once a reference is back: scratch `translator/t3/r7/verify-arm.sh` (rented ARM64 machine) and
-  `verify-mac.sh` (layer 1, the Mac). Neither had come back by 05:48. If you can bring either reference back,
-  please run them or say so.
+- Eighth run: the rented ARM64 machine came back (13.59.176.235) and ran everything T3 needs there (see
+  "Eighth run of T3"). The Mac's Docker ran containers from 06:10:32 (after your restart) only until 06:11:43;
+  since then every new container stays "Created" again, and the guard has been stopped by its stop file
+  since 06:11:38, so nothing restarts it. Layer 1's verdict (the Mac's) is the one T3 check still waiting:
+  scratch `translator/t3/r7/verify-mac.sh` runs it in one command once the Mac's Docker starts containers.
 - T3 (this milestone) is NOT complete after the sixth run. The third independent check found that jumps
   through a register to their own function's code past what was explored (a switch with no bound check, a
   computed goto) went uncounted since b4384452; 40fd0c67 counts them (see "Sixth run of T3"). Its tests and
@@ -442,6 +442,12 @@ Eighth run of T3 (2026-11-20 05:50 local on):
     about every gcc build (cases alternate clang and gcc; the clang builds read none since 0b62e4ad). Not
     looked into; expected cause, not checked: libgcc's 128 bit float routines, which musl's printf reaches,
     raise flags through FPSR, so these programs really read it and rightly run their floating point exactly.
+- Speed pairs, b946c531 against 5d8dbc5a (before 40fd0c67), 4 rounds, order rotated, rented ARM64 machine,
+  12 jobs, load 12 to 17 (14:47 to 15:05 UTC, `t3/r7/arm-job-r8.log`, `t3/pairs-summary.py`). The first try,
+  in verify-arm.sh on 07d7942a, ran the old side only: the new benchmark binary panicked without `CARGO` set
+  (fixed in b946c531). New over old: wasmtime 0.999 to 1.003 (walk 1.003, new slower in 3 of 4: 2.168 s against
+  2.161 s), Chrome 0.999 to 1.002 (sort 1.002, 3.230 against 3.222 s, new faster in 2 of 4). Unchanged on every
+  workload in both engines.
 - Layer 1 on the Mac (`verify-mac.sh`, 06:10:52 local): the Mac's Docker stopped starting containers again at
   06:11:43 (the layer's sixth container stayed "Created", as did the kernel track's probe at 06:31); stopped
   by hand at 06:37 with nothing compared (log `t3/r7/mac-layer1-r8-stuck.log`), container removed.
