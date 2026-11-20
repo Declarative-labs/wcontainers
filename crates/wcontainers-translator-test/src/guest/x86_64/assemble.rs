@@ -831,6 +831,11 @@ impl Emitter {
                 (2, true) => self.a.movzx(d(rt), word_ptr(m))?,
                 (DOUBLE, true) => self.a.mov(d(rt), dword_ptr(m))?,
                 (bytes, true) if i32::from(bytes) == WORD => self.a.mov(q(rt), qword_ptr(m))?,
+                // Both halves from the base as it was, as the pair's one load reads them.
+                (_, true) if rt == b => {
+                    self.a.mov(q(rt2), qword_ptr(m + WORD))?;
+                    self.a.mov(q(rt), qword_ptr(m))?;
+                }
                 (_, true) => {
                     self.a.mov(q(rt), qword_ptr(m))?;
                     self.a.mov(q(rt2), qword_ptr(m + WORD))?;

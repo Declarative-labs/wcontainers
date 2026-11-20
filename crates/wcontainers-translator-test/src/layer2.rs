@@ -521,22 +521,26 @@ fn group<G: GuestTest>() -> impl Strategy<Value = Op> {
 }
 
 /// Accesses fitted to their base: Arm leaves a transfer register that is also a base written back, or a pair
-/// loaded into one register, unpredictable (the CPU may raise illegal instruction). With `keep`, no access
-/// loads into the base either. Vector registers are never the base, and `fitted` already keeps a vector
-/// pair's two apart.
+/// loaded into one register, unpredictable (the CPU may raise illegal instruction). Only the last access may
+/// load into the base, and none with `keep`, so that no access follows a loaded value, which may be a code
+/// address (x86's pushed return addresses). Vector registers are never the base, and `fitted` already keeps
+/// a vector pair's two apart.
 fn through<G: GuestTest>(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Vec<GroupAccess> {
+    let last = accesses.len() - 1;
     accesses
         .into_iter()
-        .map(|mut a| {
+        .enumerate()
+        .map(|(n, mut a)| {
             if a.vector {
                 return a;
             }
             let writes_back = !matches!(a.indexing, Indexing::Offset);
-            if writes_back || (keep && a.load) {
+            let base_kept = writes_back || (a.load && (keep || n < last));
+            if base_kept {
                 a.rt = other::<G>(a.rt, &[base]);
             }
             if a.bytes == 16 {
-                let base = (writes_back || (keep && a.load)).then_some(base);
+                let base = base_kept.then_some(base);
                 let first = a.load.then_some(a.rt);
                 let not: Vec<u8> = base.into_iter().chain(first).collect();
                 a.rt2 = other::<G>(a.rt2, &not);
