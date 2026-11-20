@@ -116,38 +116,67 @@ impl Kernel {
     }
 
     /// Tells the embedder what changed in the shared memory processes map: every end first,
-    /// then every start, each in the process it is about.
+    /// then every start, each in the process it is about. What it was told is kept in step piece
+    /// by piece, so a process a hook takes off the kernel carries exactly that, and is told the
+    /// rest when it is back.
     pub(crate) fn announce_sharing(&mut self, cx: &mut Context<'_>) {
         self.map_notes.sharing_changed.set(false);
         let mapped = self.shared_mapped();
         if mapped.is_empty() && self.shared_announced.is_empty() {
             return;
         }
-        let announced = core::mem::replace(&mut self.shared_announced, mapped.clone());
+        self.sharing_round = self.sharing_round.wrapping_add(1);
+        let round = self.sharing_round;
         let none = Pieces::new();
-        for ((source, pid), pieces) in &announced {
-            // A process suspended meanwhile took what it was told with its context.
-            if !self.processes.contains_key(pid) {
+        let mut changes = Vec::new();
+        for (key, pieces) in &self.shared_announced {
+            let now = mapped.get(key).unwrap_or(&none);
+            changes.extend(
+                missing_from(pieces, now)
+                    .into_iter()
+                    .map(|piece| (false, *key, piece)),
+            );
+        }
+        for (key, pieces) in &mapped {
+            let before = self.shared_announced.get(key).unwrap_or(&none);
+            changes.extend(
+                missing_from(pieces, before)
+                    .into_iter()
+                    .map(|piece| (true, *key, piece)),
+            );
+        }
+        for (start, key @ (source, pid), (offset, range)) in changes {
+            self.announce_kernel_writes(cx);
+            // A process taken off the kernel in an earlier hook took what it was told with it.
+            if !self.processes.contains_key(&pid) {
                 continue;
             }
-            let now = mapped.get(&(*source, *pid)).unwrap_or(&none);
-            for (offset, range) in missing_from(pieces, now) {
-                self.announce_shared(cx, *pid, |system, process| {
-                    system.on_shared_memory_unmapped(process, *source, offset, range)
-                });
+            let told = self.shared_announced.entry(key).or_default();
+            if start {
+                let at = told.partition_point(|(_, other)| other.start < range.start);
+                told.insert(at, (offset, range.clone()));
+            } else {
+                *told = missing_from(told, &[(offset, range.clone())]);
+                if told.is_empty() {
+                    self.shared_announced.remove(&key);
+                }
+            }
+            self.announce_shared(cx, pid, |system, process| {
+                if start {
+                    system.on_shared_memory_mapping(process, source, offset, range)
+                } else {
+                    system.on_shared_memory_unmapped(process, source, offset, range)
+                }
+            });
+            // A hook that ended a process had everything announced again then.
+            if self.sharing_round != round {
+                return;
             }
         }
-        for ((source, pid), pieces) in &mapped {
-            if !self.processes.contains_key(pid) {
-                continue;
-            }
-            let before = announced.get(&(*source, *pid)).unwrap_or(&none);
-            for (offset, range) in missing_from(pieces, before) {
-                self.announce_shared(cx, *pid, |system, process| {
-                    system.on_shared_memory_mapping(process, *source, offset, range)
-                });
-            }
-        }
+        let here = &self.processes;
+        self.shared_announced = mapped;
+        self.shared_announced
+            .retain(|(_, pid), _| here.contains_key(pid));
     }
 
     /// A process about to go: what it maps of shared memory is announced ended while it is
@@ -170,7 +199,6 @@ impl Kernel {
         pid: Pid,
         hook: impl FnOnce(&dyn crate::System, Process<'_>),
     ) {
-        self.announce_kernel_writes(cx);
         let process = Process {
             kernel: self,
             cpu: &mut *cx.cpu,

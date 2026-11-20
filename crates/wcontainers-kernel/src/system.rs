@@ -485,6 +485,10 @@ impl Kernel {
             self.announce_sharing(cx);
         }
         self.announce_kernel_writes(cx);
+        // Its process taken off the kernel in one of those hooks is not announced.
+        if !self.processes.contains_key(&pid) {
+            return;
+        }
         let process = Process {
             kernel: self,
             cpu: &mut *cx.cpu,
@@ -501,6 +505,9 @@ impl Kernel {
         hook: impl FnOnce(&dyn System, Process<'_>),
     ) {
         self.announce_kernel_writes(cx);
+        if !self.processes.contains_key(&pid) {
+            return;
+        }
         let process = Process {
             kernel: self,
             cpu: &mut *cx.cpu,
@@ -579,7 +586,11 @@ impl Kernel {
         self.announce(cx, pid, |system, process| {
             system.on_watched_memory_accessing(process, thread, address, access)
         });
-        let map = self.processes[&pid].map.borrow();
+        // A process the hook took off the kernel has no watch here; the call finds it absent.
+        let Some(process) = self.processes.get(&pid) else {
+            return true;
+        };
+        let map = process.map.borrow();
         map.watches
             .first_watched(address, address + 1, access)
             .is_none()
@@ -641,7 +652,10 @@ impl crate::syscall::touch::Memory for CallMemory<'_, '_, '_> {
             described.push((address, end, access));
         }
         loop {
-            let hit = self.kernel.processes[&pid]
+            let Some(process) = self.kernel.processes.get(&pid) else {
+                return true;
+            };
+            let hit = process
                 .map
                 .borrow()
                 .watches
