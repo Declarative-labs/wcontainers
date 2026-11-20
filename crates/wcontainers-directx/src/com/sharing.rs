@@ -10,6 +10,7 @@ use std::rc::{Rc, Weak};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use wcontainers_direct3d_11::WARNING_PREFIX;
 use wcontainers_direct3d_11::desc::{self, BufferDesc, SubresourceData, TextureDesc};
 use wcontainers_direct3d_11::object::{Buffer, Resource, Texture};
 use wcontainers_gpu::SlowPath;
@@ -31,10 +32,6 @@ const KMT_HANDLE_MARK: usize = 0x4000_0000;
 
 /// A multisampled texture opened on another device: no staging copy holds its samples.
 const MULTISAMPLED_ACROSS_DEVICES: &str = "a multisampled texture shared between devices";
-/// The warning of a hand-over that failed.
-const NOT_COPIED: &str =
-    "wcontainers direct3d 11: a shared resource was not copied to its other devices: ";
-
 /// What a resource shared across devices of its kind is made from on another device.
 #[derive(Clone, Copy)]
 enum Made {
@@ -389,7 +386,7 @@ pub fn flushed(device: &Shared) {
     for s in held {
         if let Err(e) = s.hand_over(device) {
             eprintln!(
-                "wcontainers direct3d 11: a shared resource was not copied to its other devices: {e}"
+                "{WARNING_PREFIX}: a shared resource was not copied to its other devices: {e}"
             );
         }
     }
