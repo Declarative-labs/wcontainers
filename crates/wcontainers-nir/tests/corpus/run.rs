@@ -1,6 +1,7 @@
 //! The parent, which samples the corpus and runs one child a shader, and the child, which takes one
 //! shader through the routes.
 
+use crate::bgfx;
 use crate::compare::{self, CompareOptions, DEFAULT_SEED, SEED, Verdict};
 use crate::entry;
 use crate::glsl;
@@ -136,6 +137,7 @@ fn shader_files(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path
             .extension()
             .is_some_and(|e| e == SPIRV_EXTENSION || e == glsl::SHADER_TEST_EXTENSION)
+            || bgfx::is_desktop_shader(&path)
         {
             out.push(path);
         }
@@ -382,6 +384,7 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
     if file
         .extension()
         .is_some_and(|e| e == glsl::SHADER_TEST_EXTENSION)
+        || bgfx::is_desktop_shader(file)
     {
         return glsl_program(file, route);
     }
@@ -547,7 +550,7 @@ fn zink_route(
     }
 }
 
-/// A GLSL program of piglit's: its stages through Mesa's compiler, each through the route; a
+/// A GLSL program (a piglit test or a bgfx shader): its stages through Mesa's compiler, each through the route; a
 /// compute program dispatched, a vertex and fragment program drawn, held to llvmpipe.
 fn glsl_program(file: &Path, route: &str) -> ShaderResult {
     let mut result = ShaderResult {
@@ -557,9 +560,13 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
         unreported: None,
         routes: Vec::new(),
     };
-    let text =
-        String::from_utf8_lossy(&std::fs::read(file).expect("the file can be read")).into_owned();
-    let sources = match glsl::shader_test_sources(&text) {
+    let bytes = std::fs::read(file).expect("the file can be read");
+    let sources = if bgfx::is_desktop_shader(file) {
+        bgfx::sources(&bytes)
+    } else {
+        glsl::shader_test_sources(&String::from_utf8_lossy(&bytes))
+    };
+    let sources = match sources {
         Ok(s) => s,
         Err(e) => {
             result.refused = Some(e);

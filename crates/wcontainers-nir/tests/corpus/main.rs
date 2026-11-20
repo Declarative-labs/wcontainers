@@ -8,6 +8,8 @@
 //! without Mesa, it runs nothing.
 
 #[cfg(mesa)]
+mod bgfx;
+#[cfg(mesa)]
 mod compare;
 #[cfg(mesa)]
 mod entry;
