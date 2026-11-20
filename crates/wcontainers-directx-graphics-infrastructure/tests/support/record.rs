@@ -16,6 +16,8 @@ pub struct Recorder {
     fences: u32,
     /// Submissions the pretend GPU has finished: only those the test finishes or a wait reaches.
     done: u32,
+    /// Why the pretend device was lost, where a test loses it.
+    pub lost: Option<LossReason>,
 }
 
 /// Capabilities like WebGPU's in Chrome on a desktop GPU, as far as the tests need them.
@@ -60,6 +62,9 @@ pub fn webgpu_like_caps() -> Caps {
         features: Features::COMPUTE
             | Features::FRAGMENT_STORAGE_WRITE
             | Features::INDEPENDENT_BLEND
+            | Features::SAMPLE_MASK
+            | Features::DEPTH_BIAS_CLAMP
+            | Features::DEPTH_CLAMP
             | Features::INDIRECT
             | Features::TIMESTAMPS
             | Features::TEXTURE_VIEWS,
@@ -119,6 +124,7 @@ impl Recorder {
             next: 0,
             fences: 0,
             done: 0,
+            lost: None,
         }
     }
 
@@ -168,7 +174,7 @@ impl Backend for Recorder {
         &mut self.slow
     }
     fn status(&mut self) -> DeviceStatus {
-        DeviceStatus::Ok
+        self.lost.map_or(DeviceStatus::Ok, DeviceStatus::Lost)
     }
     fn helpers(&mut self) -> &mut Helpers<Self> {
         &mut self.helpers
