@@ -162,13 +162,46 @@ pub struct Reflection {
     pub outputs: Vec<StageValue>,
 }
 
-/// A texture a sampler uniform reads: the uniform's name and type, and the texels, as the route's
-/// resource has them.
+/// A texture a sampler or image uniform reads: the uniform's name and type, the texels as the
+/// route's resource has them, and whether it is a storage image (read back after the work).
 #[derive(Clone)]
 pub struct SampledTexture {
     pub uniform: String,
     pub ty: u32,
     pub image: Image,
+    pub storage: bool,
+}
+
+/// OpenGL's internal format, format and type of a texture of the route's format.
+fn gl_format(format: vk::Format) -> Option<(u32, u32, u32)> {
+    use vk::Format as F;
+    Some(match format {
+        F::R32G32B32A32_SFLOAT => (glow::RGBA32F, glow::RGBA, glow::FLOAT),
+        F::R32G32B32A32_SINT => (glow::RGBA32I, glow::RGBA_INTEGER, glow::INT),
+        F::R32G32B32A32_UINT => (glow::RGBA32UI, glow::RGBA_INTEGER, glow::UNSIGNED_INT),
+        F::R32G32_SFLOAT => (glow::RG32F, glow::RG, glow::FLOAT),
+        F::R32_SFLOAT => (glow::R32F, glow::RED, glow::FLOAT),
+        F::R32_SINT => (glow::R32I, glow::RED_INTEGER, glow::INT),
+        F::R32_UINT => (glow::R32UI, glow::RED_INTEGER, glow::UNSIGNED_INT),
+        F::R8G8B8A8_UNORM => (glow::RGBA8, glow::RGBA, glow::UNSIGNED_BYTE),
+        F::R8G8B8A8_SNORM => (glow::RGBA8_SNORM, glow::RGBA, glow::BYTE),
+        F::R8G8B8A8_UINT => (glow::RGBA8UI, glow::RGBA_INTEGER, glow::UNSIGNED_BYTE),
+        F::R8G8B8A8_SINT => (glow::RGBA8I, glow::RGBA_INTEGER, glow::BYTE),
+        F::R8_UNORM => (glow::R8, glow::RED, glow::UNSIGNED_BYTE),
+        F::R8G8_UNORM => (glow::RG8, glow::RG, glow::UNSIGNED_BYTE),
+        F::D32_SFLOAT => (glow::DEPTH_COMPONENT32F, glow::DEPTH_COMPONENT, glow::FLOAT),
+        _ => return None,
+    })
+}
+
+/// A storage image made by `bind_program`, to read back.
+struct StorageTexture {
+    texture: glow::Texture,
+    target: u32,
+    format: u32,
+    ty: u32,
+    bytes: usize,
+    faces: usize,
 }
 
 /// What `bind_program` made: uniform buffers, storage buffers and sampled textures.
@@ -177,6 +210,7 @@ struct Bound {
     buffers: Vec<glow::Buffer>,
     storage: Vec<glow::Buffer>,
     textures: Vec<glow::Texture>,
+    images: Vec<StorageTexture>,
 }
 
 /// Sampler types whose texture is a rectangle (the route's is two-dimensional).
@@ -657,27 +691,18 @@ impl Llvmpipe {
 
     /// A texture holding `sampled`'s texels at texture unit `unit`, with the route's sampler state
     /// (nearest, clamped to the edge, one level; a depth texture compared less or equal and its
-    /// comparison in every component, as the driver gives it before a view's swizzle), and the
-    /// sampler uniform set to the unit.
+    /// comparison in every component, as the driver gives it before a view's swizzle), or a
+    /// storage image at image unit `unit`; and the uniform set to the unit.
     fn sampled_texture(
         &self,
         program: glow::Program,
         unit: u32,
         sampled: &SampledTexture,
-    ) -> Result<glow::Texture, Error> {
+    ) -> Result<(glow::Texture, Option<StorageTexture>), Error> {
         let gl = &self.gl;
         let image = &sampled.image;
-        let (internal, format, ty) = match image.format {
-            vk::Format::R32G32B32A32_SFLOAT => (glow::RGBA32F, glow::RGBA, glow::FLOAT),
-            vk::Format::R32G32B32A32_SINT => (glow::RGBA32I, glow::RGBA_INTEGER, glow::INT),
-            vk::Format::R32G32B32A32_UINT => {
-                (glow::RGBA32UI, glow::RGBA_INTEGER, glow::UNSIGNED_INT)
-            }
-            vk::Format::D32_SFLOAT => {
-                (glow::DEPTH_COMPONENT32F, glow::DEPTH_COMPONENT, glow::FLOAT)
-            }
-            other => return Err(format!("a texture of format {other:?} is not made here")),
-        };
+        let (gl_internal, format, ty) = gl_format(image.format)
+            .ok_or_else(|| format!("a texture of format {:?} is not made here", image.format))?;
         let target = match image.view {
             _ if RECTANGLE_SAMPLERS.contains(&sampled.ty) => glow::TEXTURE_RECTANGLE,
             vk::ImageViewType::TYPE_1D => glow::TEXTURE_1D,
@@ -696,7 +721,7 @@ impl Llvmpipe {
             size(image.extent.depth)?,
         );
         let layers = size(image.layers)?;
-        let internal = size(internal)?;
+        let internal = size(gl_internal)?;
         let pixels = |bytes| glow::PixelUnpackData::Slice(Some(bytes));
         // SAFETY: plain OpenGL calls on the current context; each upload's bytes hold its texels.
         unsafe {
@@ -766,6 +791,29 @@ impl Llvmpipe {
                     );
                 }
             }
+            let readback = sampled.storage.then_some(StorageTexture {
+                texture,
+                target,
+                format,
+                ty,
+                bytes: image.bytes.len(),
+                faces: if target == glow::TEXTURE_CUBE_MAP {
+                    image.layers as usize
+                } else {
+                    1
+                },
+            });
+            if sampled.storage {
+                gl.bind_image_texture(
+                    unit,
+                    Some(texture),
+                    0,
+                    true,
+                    0,
+                    glow::READ_WRITE,
+                    gl_internal,
+                );
+            }
             let nearest = size(glow::NEAREST)?;
             let edge = size(glow::CLAMP_TO_EDGE)?;
             gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, nearest);
@@ -800,7 +848,7 @@ impl Llvmpipe {
                     sampled.uniform
                 ));
             }
-            Ok(texture)
+            Ok((texture, readback))
         }
     }
 
@@ -833,9 +881,9 @@ impl Llvmpipe {
                     .push(self.buffer(glow::SHADER_STORAGE_BUFFER, i, bytes)?);
             }
             for (unit, texture) in (0..).zip(sampled) {
-                bound
-                    .textures
-                    .push(self.sampled_texture(program, unit, texture)?);
+                let (texture, image) = self.sampled_texture(program, unit, texture)?;
+                bound.textures.push(texture);
+                bound.images.extend(image);
             }
             // Later textures (a draw's targets) are bound on a unit no sampler uses.
             gl.active_texture(glow::TEXTURE0 + u32::try_from(sampled.len()).unwrap_or(0));
@@ -843,13 +891,14 @@ impl Llvmpipe {
         }
     }
 
-    /// Each storage block's bytes after the work, then every buffer and texture deleted; or
-    /// OpenGL's error.
+    /// Each storage block's bytes after the work, then each storage image's, then every buffer and
+    /// texture deleted; or OpenGL's error.
     fn finish(&self, bound: Bound, storage_blocks: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, Error> {
         let Bound {
             buffers: made,
             storage,
             textures,
+            images,
         } = bound;
         let gl = &self.gl;
         // SAFETY: plain OpenGL calls on the current context, on buffers made by `bind_program`.
@@ -860,6 +909,21 @@ impl Llvmpipe {
                 let mut read = vec![0; bytes.len()];
                 gl.bind_buffer(glow::SHADER_STORAGE_BUFFER, Some(*buffer));
                 gl.get_buffer_sub_data(glow::SHADER_STORAGE_BUFFER, 0, &mut read);
+                out.push(read);
+            }
+            for image in &images {
+                let mut read = vec![0; image.bytes];
+                gl.bind_texture(image.target, Some(image.texture));
+                let face_bytes = image.bytes / image.faces;
+                for (face, texels) in (0..).zip(read.chunks_mut(face_bytes)) {
+                    let target = if image.faces > 1 {
+                        glow::TEXTURE_CUBE_MAP_POSITIVE_X + face
+                    } else {
+                        image.target
+                    };
+                    let pixels = glow::PixelPackData::Slice(Some(texels));
+                    gl.get_tex_image(target, 0, image.format, image.ty, pixels);
+                }
                 out.push(read);
             }
             let error = gl.get_error();

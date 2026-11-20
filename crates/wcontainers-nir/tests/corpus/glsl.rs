@@ -279,34 +279,59 @@ fn gl_inputs<'a>(
     })
 }
 
-/// Gives a route's texture resource the texels of the sampler it is, making that sampler's
-/// texture on OpenGL's side from it the first time.
+/// Where a storage resource of the route's is on OpenGL's side: a storage block's index, or a
+/// storage image's index among the textures with its components' kind.
+#[derive(Clone, Copy)]
+enum GlStorage {
+    Block(usize),
+    Image(usize, Option<Kind>),
+}
+
+/// Gives a route's texture or storage image resource the texels of the sampler or image it is,
+/// making that uniform's texture on OpenGL's side from it the first time; its index among the
+/// textures.
 fn sampled_texture(
     elements: &mut [Element],
     binding: u32,
     names: &[GlslName],
     gl: &Reflection,
     inputs: &mut GlInputs,
-) -> Result<(), String> {
+    storage: bool,
+) -> Result<usize, String> {
     let [Element::Image(image)] = elements else {
-        return Err("an array of textures is not set up for GLSL here".into());
+        return Err("an array of textures or images is not set up for GLSL here".into());
     };
-    let name = named(names, GlslNameKind::Sampler, binding)
-        .ok_or_else(|| format!("no sampler of the program at texture binding {binding}"))?;
+    let kind = if storage {
+        GlslNameKind::Image
+    } else {
+        GlslNameKind::Sampler
+    };
+    let name = named(names, kind, binding)
+        .ok_or_else(|| format!("no {kind:?} of the program at binding {binding}"))?;
     let variable = gl
         .uniforms
         .iter()
         .find(|v| bare(&v.name) == name.name)
-        .ok_or_else(|| format!("llvmpipe has no sampler {}", name.name))?;
-    match inputs.sampled.iter().find(|s| s.uniform == variable.name) {
-        Some(made) => image.clone_from(&made.image),
-        None => inputs.sampled.push(SampledTexture {
-            uniform: variable.name.clone(),
-            ty: variable.ty,
-            image: image.clone(),
-        }),
+        .ok_or_else(|| format!("llvmpipe has no {kind:?} {}", name.name))?;
+    match inputs
+        .sampled
+        .iter()
+        .position(|s| s.uniform == variable.name)
+    {
+        Some(at) => {
+            image.clone_from(&inputs.sampled[at].image);
+            Ok(at)
+        }
+        None => {
+            inputs.sampled.push(SampledTexture {
+                uniform: variable.name.clone(),
+                ty: variable.ty,
+                image: image.clone(),
+                storage,
+            });
+            Ok(inputs.sampled.len() - 1)
+        }
     }
-    Ok(())
 }
 
 /// The route's resources of one stage, given the same bytes as the program's blocks, found by
@@ -318,7 +343,7 @@ fn route_resources(
     names: &[GlslName],
     gl: &Reflection,
     inputs: &mut GlInputs,
-) -> Result<(Vec<compare::Resource>, Vec<usize>), String> {
+) -> Result<(Vec<compare::Resource>, Vec<GlStorage>), String> {
     let (mut resources, immediates) = compare::resources(module, reflection, rng)?;
     if !immediates.is_empty() {
         return Err("immediate data is not set up for GLSL here".into());
@@ -338,7 +363,13 @@ fn route_resources(
                 &mut inputs.storage_blocks,
             ),
             vk::DescriptorType::SAMPLED_IMAGE => {
-                sampled_texture(&mut r.elements, binding, names, gl, inputs)?;
+                sampled_texture(&mut r.elements, binding, names, gl, inputs, false)?;
+                continue;
+            }
+            vk::DescriptorType::STORAGE_IMAGE => {
+                let kind = r.image_kind;
+                let at = sampled_texture(&mut r.elements, binding, names, gl, inputs, true)?;
+                storage_of.push(GlStorage::Image(at, kind));
                 continue;
             }
             vk::DescriptorType::SAMPLER => continue,
@@ -364,30 +395,45 @@ fn route_resources(
         gl_bytes.resize(size, 0);
         bytes.clone_from(gl_bytes);
         if kind == GlslNameKind::StorageBlock {
-            storage_of.push(index);
+            storage_of.push(GlStorage::Block(index));
         }
     }
     Ok((resources, storage_of))
 }
 
-/// The differences between llvmpipe's storage blocks and the route's, each word by its member's type.
+/// The differences between llvmpipe's storage blocks and images (the images after the blocks)
+/// and the route's: a block's words by its member's type, an image's by its components' kind.
 fn storage_differences(
     gl: &Reflection,
     inputs: &GlInputs,
-    storage_of: &[usize],
+    storage_of: &[GlStorage],
     reference: &[Vec<u8>],
     routed: &[Vec<u8>],
     found: &mut Vec<String>,
 ) {
-    for (&index, after) in storage_of.iter().zip(routed) {
-        let kinds = &inputs.storage_blocks[index].1;
-        compare::differences(
-            &format!("storage block {}", gl.storage_blocks[index].name),
-            &reference[index],
-            after,
-            |at| kinds.get(at).copied().flatten(),
-            found,
-        );
+    for (&place, after) in storage_of.iter().zip(routed) {
+        match place {
+            GlStorage::Block(index) => {
+                let kinds = &inputs.storage_blocks[index].1;
+                compare::differences(
+                    &format!("storage block {}", gl.storage_blocks[index].name),
+                    &reference[index],
+                    after,
+                    |at| kinds.get(at).copied().flatten(),
+                    found,
+                );
+            }
+            GlStorage::Image(at, kind) => {
+                let rank = inputs.sampled[..at].iter().filter(|t| t.storage).count();
+                compare::differences(
+                    &format!("image {}", inputs.sampled[at].uniform),
+                    &reference[gl.storage_blocks.len() + rank],
+                    after,
+                    |_| Some(kind.unwrap_or(Kind::Uint)),
+                    found,
+                );
+            }
+        }
     }
 }
 

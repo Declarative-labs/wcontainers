@@ -233,7 +233,7 @@ pub struct Resource {
     /// A storage buffer's scalars, to compare its contents.
     layout: Vec<(u32, Kind)>,
     /// A storage image's components.
-    image_kind: Option<Kind>,
+    pub image_kind: Option<Kind>,
 }
 
 fn image(

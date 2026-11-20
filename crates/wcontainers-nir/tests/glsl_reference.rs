@@ -65,6 +65,8 @@ uniform usampler3D counts;
 uniform samplerCube sky;
 uniform sampler2DShadow depths;
 uniform isampler2DArray layered;
+layout(r32ui) uniform uimage2D marks;
+layout(rgba32f) uniform image2D tints;
 layout(std430) buffer Sampled { vec4 c[16]; uvec4 n[16]; vec4 s[16]; float d[16]; ivec4 l[16]; };
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -74,6 +76,9 @@ void main() {
     s[i] = textureLod(sky, vec3(1.0, at * 2.0 - 1.0), 0.0);
     d[i] = textureLod(depths, vec3(at, 0.5), 0.0);
     l[i] = texelFetch(layered, ivec3(i % 4u, 3, i % 2u), 0);
+    ivec2 own = ivec2(i % 4u, i / 4u);
+    imageStore(marks, own, uvec4(imageLoad(marks, own).x * 3u + i));
+    imageStore(tints, own, imageLoad(tints, own) * c[i]);
 }
 ";
 
@@ -110,7 +115,7 @@ fn a_glsl_compute_program_matches_llvmpipe_on_route_b() {
 }
 
 #[test]
-fn a_glsl_program_sampling_textures_matches_llvmpipe_on_route_b() {
+fn a_glsl_program_sampling_textures_and_storing_images_matches_llvmpipe_on_route_b() {
     assert_eq!(compute_verdict(SAMPLING), Verdict::Matched);
 }
 
