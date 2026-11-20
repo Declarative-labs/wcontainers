@@ -3833,12 +3833,13 @@ dependencies = [
 name = "wcontainers-opengl"
 version = "0.1.0"
 dependencies = [
- "cc",
+ "bindgen",
  "pollster",
  "serde",
  "serde_json",
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
+ "wcontainers-nir",
  "wgpu",
  "windows-sys 0.61.2",
 ]
