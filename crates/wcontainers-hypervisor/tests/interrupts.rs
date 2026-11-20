@@ -189,6 +189,19 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
+    /// A loop of loads at index x3 from bases x0 and x1 that no instruction of it writes, summing their products
+    /// in x5: the bases' alignment is tested once before the loop.
+    const INVARIANT_BASES: [u32; 8] = [
+        0xd2800005, // mov x5, #0
+        0xf8637802, // ldr x2, [x0, x3, lsl #3]
+        0xf8637824, // ldr x4, [x1, x3, lsl #3]
+        0x9b041445, // madd x5, x2, x4, x5
+        0xf1000463, // subs x3, x3, #1
+        0x54ffff81, // b.ne back to the first ldr
+        0xaa0503e0, // mov x0, x5
+        0xd65f03c0, // ret
+    ];
+
     /// `clrex` between a load and a store exclusive: the store fails.
     const CLEARED: [u32; 4] = [
         0xc85f7c02, // ldxr x2, [x0]
@@ -468,6 +481,8 @@ mod macos {
         let writable = DATA + PAGE_SIZE / 2;
         let read_only = DATA + DATA_WRITABLE + PAGE_SIZE / 2;
         let misaligned = writable + size_of::<u32>() as u64;
+        // Misaligned, and the access at index two crosses into the next page.
+        let crossing = DATA + PAGE_SIZE - 2 * size_of::<u64>() as u64 - size_of::<u32>() as u64;
         let mut rng = fastrand::Rng::with_seed(seed);
         let system = [
             (3, rng.u64(..)),
@@ -518,6 +533,15 @@ mod macos {
                 "written-back index",
                 &WRITTEN_BACK_INDEX,
                 vec![start(&[(3, writable)])],
+            ),
+            (
+                "invariant bases",
+                &INVARIANT_BASES,
+                vec![
+                    start(&[(0, writable), (1, read_only), (3, words)]),
+                    start(&[(0, writable), (1, misaligned), (3, words)]),
+                    start(&[(0, writable), (1, crossing), (3, words)]),
+                ],
             ),
             ("float", &FLOAT, float_cases(seed, 8, 10, &[])),
             ("system", &SYSTEM, float_cases(seed, 13, 8, &system)),
