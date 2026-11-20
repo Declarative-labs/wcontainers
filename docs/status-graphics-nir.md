@@ -916,8 +916,8 @@ Next (after G8's check):
 - The Mesa build runs on the rented x86-64 machine, not the laptop (15.8 says laptop): the brief of
   2026-11-19 makes the rented machines the default. The choice's times (15.3: "measured on the
   laptop") are taken there too, alone on ten cores, as that machine's notes take timings.
-- The choice is made on the SPIR-V corpus first; it is final only when GLSL and the other sources
-  are in and `corpus/choose` is run again over all of them.
+- The choice was made on the SPIR-V corpus first (run 4) and made final over the whole corpus,
+  GLSL and the other sources in, by `corpus/choose` over all 18,222 items (run 11's, read in run 13).
 - Zink is built beside llvmpipe and lavapipe: its `nir_to_spirv` is candidate A's first step.
   SPIRV-Tools is off (Mesa takes it when present; nothing of ours needs it).
 - Candidate B reads NIR through a flattened copy the bridge makes (`bridge/flat.c`), not through
