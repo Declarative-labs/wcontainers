@@ -87,7 +87,7 @@ pub trait ProcessInfo {
     fn is_inspected(&self) -> bool;
 }
 
-/// How one process is run.
+/// The way one process is run.
 pub struct ExecutionConfig<E: Executor> {
     pub thread_ordering: ThreadOrdering,
     pub replay_determinism: ReplayDeterminism,
@@ -142,7 +142,7 @@ pub type SystemCallResponse = Result<u64, Errno>;
 /// Linux's own record of a signal.
 pub type SignalInformation = siginfo;
 
-/// The memory a shared mapping shows, as the embedder addresses it.
+/// The memory behind a shared mapping, as the embedder addresses it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MemoryObject {
     File {

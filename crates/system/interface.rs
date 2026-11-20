@@ -114,7 +114,7 @@ pub trait TaskIdSource: Sync {
     fn free_task_id(&self, id: TaskId);
 }
 
-/// The other side of every stream end the kernel holds, as ruled.
+/// The embedder's side of each of the kernel's streams, as ruled.
 pub trait StreamPeer: Sync {
     fn send_stream(&self, end: End, bytes: &[u8]);
     fn credit_stream(&self, end: End, bytes: u64);

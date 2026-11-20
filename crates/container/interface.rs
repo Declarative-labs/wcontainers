@@ -21,7 +21,7 @@ pub enum StopReason {
     Finished { status: i32 },
 }
 
-/// The machine a container appears to run on.
+/// The machine as a container's programs see it.
 #[derive(Clone, Debug, Default)]
 pub struct GuestMachine<Offer> {
     pub offer: Offer,
