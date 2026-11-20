@@ -1,7 +1,7 @@
 //! Both candidates end to end on programs naga writes as SPIR-V: SPIR-V to NIR, NIR's serialised
 //! key, the common form's step, then Zink's SPIR-V and naga's reader (A) or NIR read straight into
 //! naga (B), each validated.
-#![cfg(mesa)]
+#![cfg(all(mesa, feature = "standalone"))]
 
 use wcontainers_gpu::{ShaderStage, SlotKind};
 use wcontainers_nir::ConvertError;

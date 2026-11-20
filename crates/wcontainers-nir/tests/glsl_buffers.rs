@@ -2,7 +2,7 @@
 //! byte offsets), run: a GLSL compute program reading a std140 uniform block and writing a std430
 //! storage block goes through Mesa's GLSL compiler, the common form and naga's SPIR-V writer, runs
 //! on lavapipe, and is held to what GLSL's layout rules and arithmetic give, computed here.
-#![cfg(mesa)]
+#![cfg(all(mesa, feature = "standalone"))]
 
 #[allow(
     dead_code,

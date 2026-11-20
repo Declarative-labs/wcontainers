@@ -5,7 +5,7 @@
 //! every value and count is run, so there is no count of cases to choose. SPIR-V's extended
 //! multiplications, made of 32-bit ones by Mesa, on seeded operands (`WC_NIR_SEED`, and
 //! `WC_NIR_INPUT_SETS` cases) and the edges of both signs.
-#![cfg(mesa)]
+#![cfg(all(mesa, feature = "standalone"))]
 
 #[allow(
     dead_code,

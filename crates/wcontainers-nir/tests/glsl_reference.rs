@@ -1,7 +1,7 @@
 //! The GLSL comparison of the corpus run on one compute program: llvmpipe runs it through OpenGL,
 //! route B's module runs on lavapipe, on the same seeded uniforms and blocks, and every word of its
 //! storage blocks agrees.
-#![cfg(mesa)]
+#![cfg(all(mesa, feature = "standalone"))]
 
 #[allow(
     dead_code,

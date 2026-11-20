@@ -1,5 +1,7 @@
 //! Links the pinned Mesa's compiler libraries and the bridge to them when `WCONTAINERS_MESA` names the
 //! Meson build folder `mesa/build` made; without it the crate builds without the parts that read NIR.
+//! Without the `standalone` feature only the bridge is built: Mesa is linked by the program the
+//! crate is linked into (the OpenGL driver inside Mesa's own library).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -16,7 +18,11 @@ const LINK_SEARCH: &str = "cargo::rustc-link-search=native=";
 const LINK_STATIC: &str = "cargo::rustc-link-lib=static=";
 const LINK_DYNAMIC: &str = "cargo::rustc-link-lib=dylib=";
 
+/// Set by cargo when the `standalone` feature is on.
+const STANDALONE_FEATURE: &str = "CARGO_FEATURE_STANDALONE";
 const BRIDGE_SOURCE: &str = "bridge/bridge.c";
+/// The SPIR-V steps: Mesa's SPIR-V reader and candidate A's Zink compiler.
+const SPIRV_SOURCE: &str = "bridge/spirv.c";
 const BRIDGE_HEADER: &str = "bridge/bridge.h";
 /// Candidate B's flattening of NIR.
 const FLAT_SOURCE: &str = "bridge/flat.c";
@@ -27,7 +33,7 @@ const PRIVATE_HEADER: &str = "bridge/bridge_private.h";
 const GLSL_LIBRARY: &str = "wcontainers_nir_glsl";
 const BRIDGE_LIBRARY: &str = "wcontainers_nir_bridge";
 /// The file whose flags (defines and C standard) the bridge takes from Mesa's compile commands.
-const FLAGS_FROM: &str = "nir_to_spirv.c";
+const FLAGS_FROM: &str = "nir_serialize.c";
 /// The C++ file of Mesa's GLSL compiler whose flags the GLSL front takes.
 const CPP_FLAGS_FROM: &str = "standalone.cpp";
 
@@ -110,6 +116,7 @@ fn main() {
     println!("{RERUN_IF_CHANGED}{FLAT_SOURCE}");
     println!("{RERUN_IF_CHANGED}{FLAT_HEADER}");
     println!("{RERUN_IF_CHANGED}{GLSL_SOURCE}");
+    println!("{RERUN_IF_CHANGED}{SPIRV_SOURCE}");
     println!("{RERUN_IF_CHANGED}{PRIVATE_HEADER}");
     let roots = [source_folder(build), build.clone()];
     let includes: Vec<PathBuf> = INCLUDES
@@ -117,18 +124,43 @@ fn main() {
         .flat_map(|folder| roots.iter().map(move |root| root.join(folder)))
         .collect();
 
+    let standalone = env::var_os(STANDALONE_FEATURE).is_some();
     let mut bridge = cc::Build::new();
-    let flags = mesa_flags(build, FLAGS_FROM);
     // Mesa's headers warn under the flags cc adds by default; Mesa builds them without those.
     bridge
         .file(BRIDGE_SOURCE)
         .file(FLAT_SOURCE)
         .includes(&includes)
         .warnings(false);
-    for flag in &flags {
+    if standalone {
+        bridge.file(SPIRV_SOURCE);
+    }
+    for flag in mesa_flags(build, FLAGS_FROM) {
         bridge.flag(flag);
     }
     bridge.compile(BRIDGE_LIBRARY);
+    let made_from = build.join(MADE_FROM);
+    println!("{RERUN_IF_CHANGED}{}", made_from.display());
+    let recorded =
+        std::fs::read_to_string(&made_from).expect("the Mesa build records what it built");
+    let commit = recorded
+        .lines()
+        .next()
+        .expect("the record starts with the commit");
+    let options = blake3::hash(recorded.as_bytes()).to_hex();
+    println!("{RUSTC_ENV}{MESA_BUILD_VARIABLE}{ASSIGN}{commit}{VERSION_PARTS}{options}");
+    for folder in CONVERTER_SOURCES {
+        println!("{RERUN_IF_CHANGED}{folder}");
+    }
+    println!(
+        "{RUSTC_ENV}{SOURCES_VARIABLE}{ASSIGN}{}",
+        converter_sources_hash()
+    );
+    println!("{CFG}");
+    if !standalone {
+        return;
+    }
+
     let mut glsl = cc::Build::new();
     glsl.cpp(true)
         .file(GLSL_SOURCE)
@@ -147,22 +179,6 @@ fn main() {
     for name in SYSTEM_LIBRARIES {
         println!("{LINK_DYNAMIC}{name}");
     }
-    let made_from = build.join(MADE_FROM);
-    println!("{RERUN_IF_CHANGED}{}", made_from.display());
-    let recorded = std::fs::read_to_string(&made_from).expect("mesa/build records what it built");
-    let commit = recorded
-        .lines()
-        .next()
-        .expect("the record starts with the commit");
-    let options = blake3::hash(recorded.as_bytes()).to_hex();
-    println!("{RUSTC_ENV}{MESA_BUILD_VARIABLE}{ASSIGN}{commit}{VERSION_PARTS}{options}");
-    for folder in CONVERTER_SOURCES {
-        println!("{RERUN_IF_CHANGED}{folder}");
-    }
-    println!(
-        "{RUSTC_ENV}{SOURCES_VARIABLE}{ASSIGN}{}",
-        converter_sources_hash()
-    );
     println!(
         "{RUSTC_ENV}{LAVAPIPE_VARIABLE}{ASSIGN}{}",
         target_file(build, LAVAPIPE_TARGET).display()
@@ -171,7 +187,6 @@ fn main() {
         "{RUSTC_ENV}{EGL_VARIABLE}{ASSIGN}{}",
         target_file(build, EGL_TARGET).display()
     );
-    println!("{CFG}");
 }
 
 /// BLAKE3 of every file under `CONVERTER_SOURCES`, each path then its bytes, in path order.

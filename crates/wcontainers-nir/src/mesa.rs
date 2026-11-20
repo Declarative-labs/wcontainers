@@ -2,7 +2,9 @@
 
 use crate::ConvertError;
 use crate::bind::{self, KINDS};
+#[cfg(feature = "standalone")]
 use std::ffi::{CStr, CString, c_char};
+#[cfg(feature = "standalone")]
 use std::sync::Once;
 use wcontainers_gpu::{ReflectedBinding, ShaderStage};
 
@@ -137,6 +139,7 @@ pub struct GlslStage {
     pub names: Vec<GlslName>,
 }
 
+#[cfg(feature = "standalone")]
 #[repr(C)]
 struct RawGlslName {
     kind: GlslNameKind,
@@ -148,12 +151,14 @@ struct RawGlslName {
     element: u32,
 }
 
+#[cfg(feature = "standalone")]
 #[repr(C)]
 struct RawGlslNames {
     data: *mut RawGlslName,
     count: usize,
 }
 
+#[cfg(feature = "standalone")]
 #[repr(C)]
 struct GlslProgram {
     stages: [*mut NirShader; Stage::ALL.len()],
@@ -161,6 +166,7 @@ struct GlslProgram {
     log: *mut c_char,
 }
 
+#[cfg(feature = "standalone")]
 /// A string the bridge owns, copied.
 fn owned_string(text: *const c_char) -> String {
     if text.is_null() {
@@ -172,12 +178,28 @@ fn owned_string(text: *const c_char) -> String {
         .into_owned()
 }
 
+#[cfg(feature = "standalone")]
 #[repr(C)]
 struct Words {
     data: *mut u32,
     count: usize,
 }
 
+unsafe extern "C" {
+    fn wc_nir_to_common_form(
+        nir: *mut NirShader,
+        set: u32,
+        ranges: *const SlotRange,
+        out: *mut Bindings,
+    ) -> BindResult;
+    fn wc_bindings_free(bindings: *mut Bindings);
+    fn wc_nir_alpha_to_one(nir: *mut NirShader);
+    fn wc_nir_serialize(nir: *const NirShader, out: *mut Bytes) -> bool;
+    fn wc_nir_free(nir: *mut NirShader);
+    fn wc_bytes_free(bytes: *mut Bytes);
+}
+
+#[cfg(feature = "standalone")]
 unsafe extern "C" {
     fn wc_init();
     fn wc_spirv_to_nir(
@@ -188,24 +210,14 @@ unsafe extern "C" {
     ) -> *mut NirShader;
     fn wc_glsl_to_nir(sources: *const *const c_char, out: *mut GlslProgram) -> bool;
     fn wc_glsl_program_free(program: *mut GlslProgram);
-    fn wc_nir_to_common_form(
-        nir: *mut NirShader,
-        set: u32,
-        ranges: *const SlotRange,
-        out: *mut Bindings,
-    ) -> BindResult;
-    fn wc_bindings_free(bindings: *mut Bindings);
-    fn wc_nir_alpha_to_one(nir: *mut NirShader);
-    fn wc_nir_serialize(nir: *const NirShader, out: *mut Bytes) -> bool;
     fn wc_nir_to_spirv(nir: *mut NirShader, out: *mut Words) -> bool;
-    fn wc_nir_free(nir: *mut NirShader);
-    fn wc_bytes_free(bytes: *mut Bytes);
     fn wc_words_free(words: *mut Words);
 }
 
 /// One shader's NIR, freed on drop.
 pub struct Nir(*mut NirShader);
 
+#[cfg(feature = "standalone")]
 /// Mesa's type tables, held for the life of the process (Mesa counts their references).
 fn initialised() {
     static INIT: Once = Once::new();
@@ -218,6 +230,15 @@ impl Nir {
         self.0
     }
 
+    /// Takes the NIR a Mesa driver was handed (a Gallium shader state's `ir.nir`), freed on drop.
+    ///
+    /// # Safety
+    /// `nir` is a live `nir_shader` the caller owns and does not use again.
+    pub unsafe fn from_raw(nir: *mut std::ffi::c_void) -> Nir {
+        Nir(nir.cast())
+    }
+
+    #[cfg(feature = "standalone")]
     /// The NIR of one entry point of a Vulkan SPIR-V module.
     pub fn from_spirv(words: &[u32], stage: Stage, entry_point: &str) -> Result<Nir, ConvertError> {
         initialised();
@@ -230,6 +251,7 @@ impl Nir {
         Ok(Nir(nir))
     }
 
+    #[cfg(feature = "standalone")]
     /// The stages of one GLSL program as the OpenGL driver receives them: compiled and linked by
     /// Mesa's GLSL compiler, then st/mesa's steps for the driver's capabilities (`bridge/glsl.cpp`),
     /// each buffer an array of words; with each stage's names. One entry a source, in
@@ -380,6 +402,7 @@ impl Nir {
         Ok(copy)
     }
 
+    #[cfg(feature = "standalone")]
     /// Candidate A's first step: SPIR-V written by Zink's compiler (the shader is prepared for it
     /// in place, so it is consumed).
     pub fn into_spirv(self) -> Result<Vec<u32>, ConvertError> {
@@ -417,10 +440,12 @@ pub const CONVERTER_VERSION: &str = concat!(
     env!("WCONTAINERS_MESA_MADE_FROM")
 );
 
+#[cfg(feature = "standalone")]
 /// Lavapipe, Mesa's Vulkan driver on the processor, built with the Mesa this crate links: the
 /// reference the corpus run holds the routes to (plan 15.3).
 pub const LAVAPIPE: &str = env!("WCONTAINERS_LAVAPIPE");
 
+#[cfg(feature = "standalone")]
 /// Mesa's EGL from the same build, through which llvmpipe, Mesa's OpenGL driver on the processor,
 /// is reached: the reference for GLSL programs (plan 15.3).
 pub const EGL: &str = env!("WCONTAINERS_EGL");

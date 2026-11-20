@@ -35,6 +35,8 @@ if (-not (Test-Path (Join-Path $Llvm 'bin\llvm-config.exe'))) {
 }
 
 $env:PATH = "$FlexBison;$(Join-Path $Llvm 'bin');$env:PATH"
+# bindgen reads Mesa's headers for the driver with this LLVM's libclang.
+$env:LIBCLANG_PATH = Join-Path $Llvm 'bin'
 
 # The pinned Mesa, with the patches applied again from the pinned commit whenever they change.
 $pinFile = Join-Path $Here 'pin.toml'
@@ -69,6 +71,10 @@ if (Test-Path $build) { $setup = @('--reconfigure') }
 Write-Output "build-windows: Mesa $tag ($commit), meson $(& meson --version), LLVM $(& llvm-config --version)"
 & meson setup $build $src --vsenv --native-file $options --prefix $install @setup; Run 'meson setup'
 Set-Content -NoNewline -Path $configuredFrom -Value $want
+# What was built, as the Linux build records it: the commit, the options and the patches (part of
+# wcontainers-nir's converter version).
+$madeFrom = Join-Path $build 'wcontainers-made-from'
+Set-Content -NoNewline -Path $madeFrom -Value "$commit`n$(Get-Content -Raw $options)$wanted"
 # win_flex names its temporary files the same in every run, so two at once fail: its outputs are
 # made first, one at a time (the build steps whose command runs it, read from build.ninja).
 $flexOutputs = @()
