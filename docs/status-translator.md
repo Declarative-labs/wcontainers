@@ -4,6 +4,10 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## For the orchestrator
 
+- Seventh run: still no ARM64 reference (the rented ARM64 machine, ubuntu@3.134.104.48, unreachable; the
+  Mac's Docker still leaves new containers in "Created"). Everything T3 still needs is one command for each
+  side once a reference is back: scratch `translator/t3/r7/verify-arm.sh` (rented ARM64 machine) and
+  `verify-mac.sh` (layer 1, the Mac). If you can bring either reference back, please run them or say so.
 - T3 (this milestone) is NOT complete after the sixth run. The third independent check found that jumps
   through a register to their own function's code past what was explored (a switch with no bound check, a
   computed goto) went uncounted since b4384452; 40fd0c67 counts them (see "Sixth run of T3"). Its tests and
@@ -55,7 +59,7 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 M0 to M5, S1, P1 and P2 are done (P2: the long run reached the plan's bars on 2026-11-19 13:52; see "P2").
 T3 is partly done: main merged (the translator on the shared guest interface), the literal check adopted and
-the baseline down to 7,660 lines, the P2 check's findings answered, the register jump slow path fixed (busybox
+the baseline down to 7,650 lines, the P2 check's findings answered, the register jump slow path fixed (busybox
 awk: millions to single figures), FPSR read first fixed; layers 1 and 2 rerun in full on the merged code with
 no mismatch, layer 3 to 5,287 compared with none, and all three again with a new seed in the fourth and fifth
 runs. The sixth run counted the jumps the third independent check found uncounted (40fd0c67), and its tests
@@ -369,8 +373,27 @@ Sixth run of T3 (2026-11-20 04:20 to 05:30 local), the third independent check's
   translator, arm64 and guest-cpu unit tests and the test crate's test_guest and smoke (30 passed), the
   literal check (status 0, baseline 7,660 lines, unchanged).
 
+Seventh run of T3 (2026-11-20 05:08 local on):
+- Still no ARM64 reference at the start: arm-run's machine (now ubuntu@3.134.104.48) did not answer, and the
+  Mac's Docker still left every new container in "Created" (this run's probe `wc-translator-probe-83328`,
+  `alpine:3.22 echo ok`, too). So none of the checks below that need Linux could run.
+- What waits for a reference is now one command each, in scratch `t3/r7`: `verify-arm.sh [jobs]` (from the
+  Mac: makes the old side `old-5d8dbc5a` as a git tree, sends it and pairs.sh to the ARM64 machine, then one
+  arm-run job: the three register jump tests, layer 2 at seed 600 (25,000, all on the CPU, 5 in Chrome),
+  layer 3 at seed 600 (1,000, 100 in Chrome), the pairs against 5d8dbc5a (4 rounds) and the whole debug suite
+  of the four crates; log `arm-job.log`, status `arm-status.txt`), and `verify-mac.sh` (layer 1 at seed 600,
+  1,000 a form, 10 in Chrome, then layer 1's tests; logs `mac-layer1*.log`). `wait-reference.sh` waits for
+  either reference.
+- Literals (4b7687fc, test files only, no change to what is translated): the guest page in checks.rs,
+  smoke.rs and layer1.rs's tests from `wcontainers_abi::PAGE_SIZE`, test_guest's memory pages from
+  `contract::WASM_PAGE_BYTES`. Baseline 7,660 to 7,650 lines (translator-test 1,350). Checked on the rented
+  x86 machine (`t3/lint.sh`): format, clippy with warnings denied, the unit tests, test_guest and smoke, the
+  literal check (status 0). checks.rs and layer1.rs's tests need the reference (on x86 their blob server
+  cannot run: "exec format error"); the suite and verify-mac.sh run them.
+
 T3, what is left:
-- Needs an ARM64 reference (the rented ARM64 machine or the Mac's Docker), on 0b62e4ad or later:
+- Needs an ARM64 reference (the rented ARM64 machine or the Mac's Docker), on 4b7687fc or later (scratch
+  `t3/r7/verify-arm.sh` and `verify-mac.sh` do all of this):
   - `cargo test -p wcontainers-translator-test --test programs -- jumps_to_their_function switch_cases_in_other
     only_jumps_inside` against Linux.
   - The reruns with a new seed (600): layer 1 on the Mac (1,000 cases a form, 10 in Chrome), layer 2 (25,000)
