@@ -103,7 +103,7 @@ Words used here:
 - **handed out**: the kernel has given a thread a processor and has not yet seen its next kernel entry.
   While handed out it may be in guest code or on its way into the kernel (the mixed-ordering check's
   word). The scheduling rule excludes by it (section 3).
-- **called in**: the kernel asks for a running thread with `thread_stop`, and the thread comes back by
+- **called in**: the kernel asks for a running thread with `stop_thread`, and the thread comes back by
   itself through `Kernel::exit`. A call that needs it back first parks, as any call that waits does. A
   memory is called in while such a call's mark is on it (4.5).
 - **waiter**: a thread whose call parked for a call-in and has been woken, and has not run again yet.
@@ -770,7 +770,7 @@ at the split, each measured.
     answers it;
   - `next(processor)` hands out only a thread whose mask holds that processor, and the idle processor
     woken for a ready thread (section 5) is one in that thread's mask;
-  - a thread running on a processor that its new mask leaves out is asked in with `thread_stop`, and the
+  - a thread running on a processor that its new mask leaves out is asked in with `stop_thread`, and the
     call that set the mask parks until it has come in. Linux's call also returns only once the thread
     has been moved (`affine_move_task`, kernel/sched/core.c, waits for the move);
   - a mask that gains processors stops nobody. If the thread is ready and one of the gained processors
@@ -854,7 +854,8 @@ same to arguments in shared memory.
 
 Three primitives do all of it.
 
-**Stop one thread** (suggested: a `Host` service `thread_stop(thread)`). The kernel asks the system to
+**Stop one thread** (suggested: a `Host` service `stop_thread(thread)`; the form before called it
+`thread_stop`, renamed for the ruling that method names are verb first). The kernel asks the system to
 bring a running thread back, and does not wait for it. The thread comes in by itself, through an entry of
 its own, after its next stop check. The request goes through the system, not straight to the executor,
 because a system that replays must be able to stop a thread at its recorded count in place of a stop
@@ -871,7 +872,7 @@ rt/system.rs:256-266), and a memory called in is woken only by that thread's own
 
 So the stop word becomes a set of reasons. Each is a bit that only its owner writes, with an atomic or
 and an atomic and, never a plain store of the whole word:
-- **asked in** (suggested `STOP_ASKED`): set by `thread_stop`, from any host thread. Only the thread
+- **asked in** (suggested `STOP_ASKED`): set by `stop_thread`, from any host thread. Only the thread
   itself takes it off, and only inside a kernel entry of its own, as the first thing after the kernel's
   lock is taken, whatever that entry is for. Whatever the kernel wanted the thread for (a signal, a
   memory called in, a `Serial` overlapper due a turn, a process ending, a new mask), it finds at that
@@ -903,14 +904,14 @@ that did to the executor's locks; 7.2 no longer leans on the bit at all.)
   instruction, settling a fault, compiling) finds the bit at its first stop check.
 - What can happen is a request that crosses an entry and leaves the bit set with nothing left to do.
   That costs one stop check that hands in an `Exit::Stop` the kernel has no use for, counted "stop
-  asked for nothing". A replaying system whose `thread_stop` does nothing never sets the bit (4.6).
+  asked for nothing". A replaying system whose `stop_thread` does nothing never sets the bit (4.6).
 
 What it costs a system call: one plain load of the word and a branch, after the lock is taken. The
 atomic and is made only when the bit is set.
 
 **Call a memory in** (the kernel's). A call that needs threads stopped names every memory it needs at
 once: each memory it will reach, and the other side of an overlap it makes (section 3). The kernel asks
-`thread_stop` for each of their running threads other than the caller, puts the call's mark on each
+`stop_thread` for each of their running threads other than the caller, puts the call's mark on each
 memory named, and parks the call. Section 3's rule 3 uses the same mark for the overlappers of a
 `Serial` task that is due a turn; that mark belongs to the due task, and comes off when it has been
 handed out or is no longer due.
@@ -948,7 +949,7 @@ The rule now:
   under a running thread whose code assumes it is alone, and when its work is done no overlapper that
   must not run beside it, and no thread of a memory it named, is in guest code. Every process lock it
   needs is free, and 7.2's rule stands as it was.
-- **A thread in a waiter's way is asked in at once**, with `thread_stop`, whether or not it has a slice
+- **A thread in a waiter's way is asked in at once**, with `stop_thread`, whether or not it has a slice
   (section 5). Its overlappers stand still for the waiter, so it does not wait for a slice to end.
 - **A mark belongs to its call.** It comes off when the call has run again. It also comes off when the
   call is given up: its thread is ended by a fatal signal while it waits. No other signal interrupts a
@@ -1180,7 +1181,7 @@ What is stopped before what, where M is the memory changed:
   - When no thread of its memory is running other than the caller, it ends at once, as today
     (kernel/task.rs:685, kernel/signal.rs:481-485). With one processor that is always so.
   - A `Serial` process whose thread is running (the signal came from outside the process): the thread
-    is asked in with `thread_stop`, and the whole ending is done in the entry that brings it in. Ending
+    is asked in with `stop_thread`, and the whole ending is done in the entry that brings it in. Ending
     a thread writes into the process's memory (the word cleared at a thread's exit, which fires
     `on_memory_written_by_kernel`), so it must not be done under a running thread.
   - A `Parallel` process: the threads that are not running are ended at once. Each running one other than
@@ -1189,7 +1190,7 @@ What is stopped before what, where M is the memory changed:
 - **fork from a threaded process**: M's other threads are stopped for the length of the copy in
   `memory_duplicate`, so that no page is copied half-written. Counted "memory stopped for a fork" or
   "memory called in for a fork".
-- **A signal for a running thread**: that thread only, by `thread_stop`, and nobody waits. It takes the
+- **A signal for a running thread**: that thread only, by `stop_thread`, and nobody waits. It takes the
   signal on its way back to the guest, as every thread does (kernel/task.rs:326-339).
 - **A signal for a process is never left with a thread that will not take it.** For a signal sent to a
   whole process the kernel picks one thread that does not block it (`complete`,
@@ -1212,7 +1213,7 @@ What is stopped before what, where M is the memory changed:
   `Parallel` one: there the sibling left out is the parked one. Wherever the signal is delivered, the
   kernel fires `on_signal_delivering` first, inside the entry of the thread that takes it, so the
   signal is at that thread's position (section 2).
-- **A stop signal, `SIGCONT`, a tracer**: the process's running threads, by `thread_stop` for each. Each
+- **A stop signal, `SIGCONT`, a tracer**: the process's running threads, by `stop_thread` for each. Each
   parks itself when it comes in.
 - **A futex wait or wake**: nobody. Both are kernel entries, so the wait's "compare, then park" and the
   wake are already in one order.
@@ -1232,7 +1233,7 @@ What is stopped before what, where M is the memory changed:
     every processor's entries (4.4 item 6). The plan has no answer yet; it is decision 14. The
     priority-inheritance group (six operations) is not covered by the two calls (decision 13).
 - **A thread's mask leaves out the processor it runs on** (`sched_setaffinity`): that thread only, by
-  `thread_stop`. The caller parks until it has come in (4.3).
+  `stop_thread`. The caller parks until it has come in (4.3).
 - **`membarrier`**: a group stop of the caller's memory when its threads run as `Parallel`, and for the
   commands that mean every process, of every such memory. Each held thread has passed a full barrier:
   it took its mark off with a sequentially consistent store. A memory that runs as `Serial` needs
@@ -1243,7 +1244,7 @@ What is stopped before what, where M is the memory changed:
     one processor. A sequence is restarted only in a kernel entry of its own thread (`rseq_preempted`,
     kernel/signal.rs:648-665, called today only for a thread that gives way, kernel/task.rs:133-137),
     and a group stop holds threads in place with no entry. So for this command each such thread is asked
-    in with `thread_stop` and restarts its sequence in the entry that brings it in, and the caller parks
+    in with `stop_thread` and restarts its sequence in the entry that brings it in, and the caller parks
     until all have. Linux's call also returns only after every such CPU has been interrupted. In a
     `Serial` process the other threads are not running, and each was taken off through an entry.
 - **The container's first process ends**: every other process is ended as by a fatal signal, as Linux
@@ -1294,7 +1295,7 @@ answered from a log. Threads add three needs to the second:
 - **reading a thread's progress count, and stopping a thread at a given count**, needed only under
   `Exact` and ruled to come with this plan ("signals as an input"; decision 12). Counted turns
   (`Turn::Counted`, rt/lib.rs:25-27) already end a turn at a count for a system that asks for one, and
-  only code with the count can be given one, so `turn` is told the thread's guarantee. `thread_stop` is
+  only code with the count can be given one, so `turn` is told the thread's guarantee. `stop_thread` is
   asked of the system (4.5), so a replaying system can do nothing for a stop and end the turn at the
   recorded count instead;
 - **a moment before a `Serial` `Exact` task's turn**, or a take of dirty memory across every place
@@ -1465,7 +1466,7 @@ What changes with it:
       its report).
     - Otherwise: every running thread on a processor that the ready thread's mask holds.
   - *Due in.* A running thread is due in when it was handed out with a fair slice, or the kernel has
-    asked it in with `thread_stop` and it has not come in since. The kernel keeps both facts itself,
+    asked it in with `stop_thread` and it has not come in since. The kernel keeps both facts itself,
     for each processor's thread; it does not read the stop word. Either way the thread makes a kernel
     entry of its own after a bounded time (4.5: no request to stop is lost). That entry runs the
     scheduler's tick (kernel/task.rs:88-104): the thread gives way if it has had its share, and
@@ -1479,11 +1480,11 @@ What changes with it:
     through another processor's entry or through an event, and the deadline leaves the slices
     (below). So the kernel must ask.
   - *What the kernel does.* When such a ready thread has nobody due in in its way, the kernel asks in
-    the one in its way with the most weighted time, with `thread_stop`. For a `Serial` thread due a
+    the one in its way with the most weighted time, with `stop_thread`. For a `Serial` thread due a
     turn behind running overlappers, those are its overlappers, and every one of them is asked in
     (they are called in, section 3, rule 2).
   - *A waiter is served at once.* For a waiter, a thread in its way that has only a slice does not
-    count as due in: the kernel asks one in with `thread_stop` when the waiter is woken. Its
+    count as due in: the kernel asks one in with `stop_thread` when the waiter is woken. Its
     overlappers stand still until the waiter's call has run (4.5), and a slice can be milliseconds.
     Counted "thread asked in for a waiter".
   - **The plan's earlier form left a thread waiting for ever behind its own sibling, with one
@@ -1557,7 +1558,7 @@ What changes with it:
   (4.5). Its promise is part of the interface, for every executor: once `stop` has returned, the thread
   makes a kernel entry of its own after a bounded amount of guest code, whatever it was doing when
   `stop` was called. `StopFlag`'s `raised` latch (rt/lib.rs:38-74) goes, because the bit is the latch.
-  The system is handed the handle as it is handed the flag today (rt/lib.rs:164-166). Its `thread_stop`
+  The system is handed the handle as it is handed the flag today (rt/lib.rs:164-166). Its `stop_thread`
   service and its timer thread call it. The timer thread keeps one slice's end and one thread per
   processor, as `turn` told it, and the container's one deadline, as the hook above told it.
 - **A thread never leaves without its exit**, with two exceptions: the thread whose own entry ended it,
@@ -1665,7 +1666,7 @@ the interface. That `System` is also `Sync` does not follow from them, and stays
   - What it does not take off: everything that is not about one process. That is the words `turn`,
     `ran` and `idle` keep per processor, the container's deadline, its picture of other processes,
     which a hook cannot look up (interface notes lines 76-77), and its counters.
-  - Three of this plan's calls are not handed a `Process`: `thread_stop`, `on_processor_needed` and
+  - Three of this plan's calls are not handed a `Process`: `stop_thread`, `on_processor_needed` and
     `on_deadline_changed`. None is about one process's record. (The form before had two more that
     were, `kernel_entry_admit` and `on_kernel_entry_ended`; both are withdrawn, 4.6.)
   - What it asks of this plan: one bound. The kernel's state moves between host threads under the
@@ -2567,7 +2568,7 @@ on which side each falls. Its sixth check faulted that. They fall so:
     records keeps each process's log inside and sends it out in batches, as the inside sends
     warnings (native.md section 5.4). (The form before put `kernel_entry_admit` and
     `on_kernel_entry_ended` here; both are withdrawn, 4.6.)
-  - `thread_stop`: an interrupt from one virtual CPU to another through the interrupt controller
+  - `stop_thread`: an interrupt from one virtual CPU to another through the interrupt controller
     (above; not measured).
   - `on_deadline_changed`: arms the inside's timer (section 5).
   - `on_processor_needed`: wakes a virtual CPU that waits inside. When that processor's stack is
@@ -2633,7 +2634,7 @@ written in its section 5.3.
     called at :561 and :574; `preempts`, kernel/schedule.rs:224-238). With several processors, and
     when no idle processor can take the woken thread, it is compared with the thread in its way that
     has the most weighted time (section 5). If it should run first, that thread's processor is
-    marked to give way and the thread is asked in with `thread_stop`. The plan's earlier form
+    marked to give way and the thread is asked in with `stop_thread`. The plan's earlier form
     compared it with the running thread with the most weighted time in the whole container. That
     may be a thread of another process while the woken thread waits behind its own sibling, or a
     thread on a processor outside the woken thread's mask, and stopping it gains nothing.
@@ -3006,7 +3007,7 @@ Each bar is checkable by the named tests. The cheapest large win is first.
   embedder's call failing, never a guest's. (The form before also limited a "recorded kernel" to
   `Exact`; that kernel is withdrawn, 4.6.)
   - abi: `Cpu` and `Host` by `&self` and `Sync`; the processor in `Kernel::next`; the thread in
-    `Kernel::exit`; the `Host` service `thread_stop`; the hooks `on_processor_needed` and
+    `Kernel::exit`; the `Host` service `stop_thread`; the hooks `on_processor_needed` and
     `on_deadline_changed` (5); the stop word as a set of reasons, with `raise_stop` as an atomic or
     (4.5). The proxy, the hook for the kernel's writes, the signal hook and the shared-memory hooks
     are the interface track's; T1 fires each where its entry is, once that track has added it.
@@ -3611,7 +3612,7 @@ kernels (section 2).
      which `arrived` is handed in the kernel's place, and which `Carry::Leave` hands the executor so
      that it lets its own lock go first (4.2). `Start` carries the processors, the first
      process's `ExecutionConfig`, and whether the system orders entries. `Cpu` and `Host`: methods take
-     `&self`; both are `Sync`. `Host` gains two services, `thread_stop(thread)` and
+     `&self`; both are `Sync`. `Host` gains two services, `stop_thread(thread)` and
      `kernel_entry_admit(entry)`, and three hooks, `on_processor_needed(processor)`,
      `on_deadline_changed(deadline)` and `on_execution_config_in_force_changing(process, config)`
      (decision 1). The kernel's deadline is no longer in a thread's slice: the
@@ -3643,7 +3644,7 @@ kernels (section 2).
 10. **Names.** Suggested, all yours: "group" for threads that share memory; "config in force", with
     `ProcessInfo::execution_config_in_force()`; "recorded kernel" for one whose system orders
     entries; "called in", "waiter", "group stop", "held", "stop point" and "stop lock"; "the Serial
-    form" and "the Parallel form" of code; `processors` and `ProcessorId`; the services `thread_stop`
+    form" and "the Parallel form" of code; `processors` and `ProcessorId`; the services `stop_thread`
     and `kernel_entry_admit`, with `KernelEntry` and `EntryAdmission { Now, Later }`; `Start`'s field
     `kernel_entry_admission` with `Unasked` and `Asked`; the hooks `on_processor_needed`,
     `on_deadline_changed`, `on_kernel_entry_ended`, `on_process_called_in` and
