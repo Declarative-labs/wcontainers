@@ -25,8 +25,8 @@ pub const INCLUDE_DIRECTIVE: &str = "#include ";
 /// Lines of a stage where a material's globals, uniforms and code go (`_add_stage`).
 pub const MATERIAL_CHUNKS: [&str; 3] = ["#GLOBALS", "#MATERIAL_UNIFORMS", "#CODE"];
 const COMPUTE_SECTION: &str = "#[compute]";
-/// What Godot's build cuts from each line before reading it.
-const LINE_COMMENT: &str = "//";
+/// GLSL's line comment, which Godot's build cuts from each line before reading it.
+const GLSL_COMMENT_START: &str = "//";
 /// An include under this is found from Godot's root, any other beside the including file.
 const THIRD_PARTY: &str = "thirdparty/";
 /// The line `_build_variant_code` replaces with the defines.
@@ -69,7 +69,7 @@ fn read_into(
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     for line in text.lines() {
         let line = line.replace('\r', "");
-        let line = line.split(LINE_COMMENT).next().unwrap_or_default();
+        let line = line.split(GLSL_COMMENT_START).next().unwrap_or_default();
         let section = [
             (VERTEX_SECTION, Stage::Vertex),
             (FRAGMENT_SECTION, Stage::Fragment),
