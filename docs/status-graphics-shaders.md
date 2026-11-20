@@ -49,6 +49,8 @@ Runs at the tip:
 - A queue-check run by mistake while waiting (`tools/graphics-rig/queue-check`, a test of the
   queue, stopped after a minute): it waited for this run's GPU job to end before it sent the same
   tree, and left no task in the queue (checked with pueue's status).
+- Clean-up at the end: this branch's build folders on the laptop (8.0 GB) and the desktop (8.4 GB)
+  deleted; nothing built on the Mac (only `cargo fmt`); the rented machines not used.
 
 The check's findings, each against the tip:
 1. `SwizzledDepth` missing (blocking): on the gap list now, as A4's fifth part (a case of
