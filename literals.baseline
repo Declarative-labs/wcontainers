@@ -6598,7 +6598,6 @@ code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"divide
 code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"finished"
 code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"float exception"
 code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"general protection"
-code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"kind"
 code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"load"
 code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"lookAhead"
 code	crates/wcontainers-translator-test/src/browser.rs	str	run_in_chrome	"memory fault"
@@ -7991,7 +7990,6 @@ code	crates/wcontainers-translator-test/src/runner.rs	int	Machine<G>::new	65536
 code	crates/wcontainers-translator-test/src/runner.rs	int	Machine<G>::new	65536
 code	crates/wcontainers-translator-test/src/runner.rs	int	hooks	8
 code	crates/wcontainers-translator-test/src/runner.rs	int	instantiate	65536
-code	crates/wcontainers-translator-test/src/runner.rs	int	pc_of	8
 code	crates/wcontainers-translator-test/src/runner.rs	int	slot	4
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16
 code	crates/wcontainers-translator-test/src/runner.rs	int	stand_in	16

@@ -1,10 +1,10 @@
 // Code that writes the page it runs from, with no announcement: a loop that writes the immediate of its own
 // next instruction on every pass, and an instruction that writes into its own first byte, which runs as it
-// was read and is something else the next time.
+// was read and is something else the next time. From the build: PAGE_SIZE and PASSES (the loop's passes).
 #include <stdio.h>
 #include <string.h>
 
-static unsigned char page[4096] __attribute__((aligned(4096)));
+static unsigned char page[PAGE_SIZE] __attribute__((aligned(PAGE_SIZE)));
 
 static const unsigned char loop_code[] = {
     0x88, 0x0d, 0x01, 0x00, 0x00, 0x00, // mov [rip+1], cl: the next instruction's immediate
@@ -27,10 +27,10 @@ int main(void) {
     memcpy(page, loop_code, sizeof loop_code);
     unsigned long sum = 0;
     unsigned eax;
-    __asm__ volatile("call *%2" : "=a"(eax), "+d"(sum) : "r"(page), "c"(200) : "rsi", "rdi", "r8", "r9", "r10", "r11", "memory", "cc");
+    __asm__ volatile("call *%2" : "=a"(eax), "+d"(sum) : "r"(page), "c"(PASSES) : "rsi", "rdi", "r8", "r9", "r10", "r11", "memory", "cc");
     printf("eax %u sum %lu\n", eax, sum);
 
-    unsigned char *own = page + 2048;
+    unsigned char *own = page + PAGE_SIZE / 2;
     memcpy(own, own_code, sizeof own_code);
     fn f = (fn)(void *)own;
     long first = f(100);

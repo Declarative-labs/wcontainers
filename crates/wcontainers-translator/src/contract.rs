@@ -19,10 +19,11 @@
 //! the next point where its thread can stop: a stop check whose hook runs, a system call, or leaving `run`.
 //! After any of those the piece checks again. The one exception is a stack frame checked when the stack
 //! pointer moved down: a change to a page of a running function's own frame, at or above the stack pointer
-//! less the guest's red zone (`Guest::RED_ZONE`), is noticed at the next function entry, not at once. Memory
-//! below that is no frame and is checked at every access. So whoever changes a process's page permissions must first bring every other
-//! running thread of that process to a stop (raise its stop flag and wait until its hook runs or it has
-//! left `run`), as a real kernel interrupts the other processors before it changes a page table. The
+//! less the guest's red zone (`Guest::RED_ZONE`), is noticed at the next function entry, not at once; a runner
+//! that takes the write bits from a page a frame may cover, to lock it for code, makes that thread give up its
+//! WebAssembly frames. Memory below that is no frame and is checked at every access. So whoever changes a
+//! process's page permissions must first bring every other running thread of that process to a stop (raise
+//! its stop flag and wait until its hook runs or it has left `run`), as a real kernel interrupts the other processors before it changes a page table. The
 //! thread making the change is already stopped, in its system call or hook. With one host thread this
 //! happens by itself, because only a stopped thread lets the kernel run.
 
@@ -165,6 +166,11 @@ pub fn permission_byte(
 /// to the bottom loop ([`UNWIND_DEEP`]). The last parameter of every piece is an estimate of what its callers
 /// use.
 pub const STACK_BUDGET: i64 = 128 * 1024;
+
+/// Tuning number: the most bytes one frame check covers. A move of the stack pointer down that a check this
+/// size cannot cover makes no frame, so the accesses below it are each checked, and the check's code (a test
+/// for each page) stays small.
+pub const FRAME_CHECK_BYTES: u64 = 16 * wcontainers_abi::PAGE_SIZE;
 
 /// Tuning number: a slow path warns once per address (or number), when its count there reaches this.
 pub const WARNING_THRESHOLD: u64 = 1;

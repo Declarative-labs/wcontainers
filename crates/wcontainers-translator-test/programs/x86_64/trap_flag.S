@@ -1,6 +1,8 @@
 // The trap flag set by the program: the instruction CASE picks runs with TF set and the thread stops after
 // it with SIGTRAP (TRAP_TRACE), as section 5.1 of the plan says. Every register holds a value of its own.
-#define TF 0x100
+// From the build: CASE, TF (the trap flag's bit in rflags), SYS_write and SYS_exit.
+// Bytes below the stack pointer the cases push into and copy within.
+#define SCRATCH 256
 .text
 .globl _start
 _start:
@@ -19,7 +21,7 @@ _start:
   mov $0xdddd, %r13
   mov $0xeeee, %r14
   mov $0xffff, %r15
-  sub $256, %rsp
+  sub $SCRATCH, %rsp
 #if CASE == 8
   // iretq to `landed` with TF in the rflags it loads: the instruction there runs, then the stop.
   mov %ss, %eax
@@ -43,7 +45,7 @@ landed:
   push %rdx
 #elif CASE == 4
   // write(1, rsp, 0): the stop comes after the instruction after the system call.
-  mov $1, %eax
+  mov $SYS_write, %eax
   mov $1, %edi
   mov %rsp, %rsi
   xor %edx, %edx
@@ -52,8 +54,8 @@ landed:
   andq $~TF, (%rsp)
 #elif CASE == 6
   mov $3, %ecx
-  lea 64(%rsp), %rdi
-  lea 128(%rsp), %rsi
+  lea SCRATCH/4(%rsp), %rdi
+  lea SCRATCH/2(%rsp), %rsi
 #elif CASE == 7
   mov %ss, %eax
 #endif
@@ -92,6 +94,6 @@ landed:
   inc %r14
   inc %r15
   // Not reached: the single step stops the program first.
-  mov $60, %eax
+  mov $SYS_exit, %eax
   xor %edi, %edi
   syscall

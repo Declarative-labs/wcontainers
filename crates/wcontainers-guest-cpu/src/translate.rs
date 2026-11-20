@@ -696,6 +696,9 @@ pub struct HookDone {
 /// The name of the slow path [`Reason::CodeWrittenWithoutAnnouncement`].
 pub const CODE_WRITTEN_WITHOUT_ANNOUNCEMENT: &str = "code written without announcement";
 
+/// The name of the slow path [`Reason::CodeTranslatedFromLiveStackFrame`].
+pub const CODE_TRANSLATED_FROM_LIVE_STACK_FRAME: &str = "code translated from a live stack frame";
+
 /// Every slow path of the translated code and its runners, with the fixed name its counter and warning
 /// carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -719,10 +722,13 @@ pub enum Reason {
     StackNearlyFull = 13,
     /// A page holding translated code was written without an announcement, so its pieces were dropped.
     CodeWrittenWithoutAnnouncement = 14,
+    /// A page holding a frame a thread had proved writable was locked for code, so the thread gave up its
+    /// WebAssembly frames.
+    CodeTranslatedFromLiveStackFrame = 15,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 15] = [
+    pub const ALL: [Reason; 16] = [
         Reason::TranslatedAtRunTime,
         Reason::LeftToAddress,
         Reason::ContinuedAfterStackLoss,
@@ -738,6 +744,7 @@ impl Reason {
         Reason::LoopNotProven,
         Reason::StackNearlyFull,
         Reason::CodeWrittenWithoutAnnouncement,
+        Reason::CodeTranslatedFromLiveStackFrame,
     ];
 
     pub fn from_i32(value: i32) -> Option<Self> {
@@ -774,6 +781,7 @@ impl Reason {
             Reason::LoopNotProven => "loop not proven",
             Reason::StackNearlyFull => "engine stack nearly full",
             Reason::CodeWrittenWithoutAnnouncement => CODE_WRITTEN_WITHOUT_ANNOUNCEMENT,
+            Reason::CodeTranslatedFromLiveStackFrame => CODE_TRANSLATED_FROM_LIVE_STACK_FRAME,
         }
     }
 }

@@ -17,17 +17,29 @@ use wcontainers_x86::X86_64;
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
-/// A blob at full look-ahead in Chrome, translated for speed and for size, gives Linux's run.
-fn full_matches_in_chrome<G: GuestTest>(blob: &Blob, theirs: &Ran) {
-    for optimise in [Optimise::Speed, Optimise::Size] {
-        let ours =
-            browser::translated_with::<G>(blob, (LookAhead::Full, optimise), Default::default());
-        assert_eq!(
-            ours.ran, *theirs,
-            "{} at full for {optimise:?} in Chrome",
-            blob.name
-        );
-    }
+/// The look-aheads every program runs at: none, full for speed and for size, and bounded with every piece but
+/// the first made at run time.
+const EVERY_LOOK_AHEAD: [(LookAhead, Optimise); 4] = [
+    (LookAhead::None, Optimise::Speed),
+    (LookAhead::Full, Optimise::Speed),
+    (LookAhead::Full, Optimise::Size),
+    (LookAhead::AT_RUN_TIME, Optimise::Speed),
+];
+
+/// A blob in Chrome at every look-ahead gives Linux's run. Returns each run's report, with what it was.
+fn every_look_ahead_matches_in_chrome<G: GuestTest>(
+    blob: &Blob,
+    theirs: &Ran,
+) -> Vec<(String, browser::Report)> {
+    EVERY_LOOK_AHEAD
+        .into_iter()
+        .map(|how| {
+            let ours = browser::translated_with::<G>(blob, how, Default::default());
+            let what = format!("{} at {how:?} in Chrome", blob.name);
+            assert_eq!(ours.ran, *theirs, "{what}");
+            (what, ours)
+        })
+        .collect()
 }
 
 fn programs_match_linux<G: GuestTest>() {
@@ -112,7 +124,7 @@ fn unwinding_matches_linux<G: GuestTest>() {
                 blob.name
             );
             every_look_ahead_matches::<G>(&blob, &theirs, print_counters::<G>);
-            full_matches_in_chrome::<G>(&blob, &theirs);
+            every_look_ahead_matches_in_chrome::<G>(&blob, &theirs);
         }
     }
 }
@@ -126,7 +138,7 @@ fn stacks_switched_by_the_program_match_linux<G: GuestTest>() {
             let theirs = native::<G>(&blob);
             assert_eq!(theirs.status, 0, "{}", blob.name);
             every_look_ahead_matches::<G>(&blob, &theirs, print_counters::<G>);
-            full_matches_in_chrome::<G>(&blob, &theirs);
+            every_look_ahead_matches_in_chrome::<G>(&blob, &theirs);
         }
     }
 }
@@ -170,7 +182,7 @@ fn cut_functions_and_split_translations_match_linux<G: GuestTest>(split: &[(&str
         let theirs = native::<G>(&blob);
         assert_eq!(theirs.status, 0, "{}", blob.name);
         every_look_ahead_matches::<G>(&blob, &theirs, |_, _| {});
-        full_matches_in_chrome::<G>(&blob, &theirs);
+        every_look_ahead_matches_in_chrome::<G>(&blob, &theirs);
     }
     for &(name, optimisation) in split {
         let blob = build::<G>(name, optimisation, Library::C);
@@ -238,11 +250,7 @@ fn every_look_ahead_matches<G: GuestTest>(
     assert_eq!(&none, theirs, "{} at none", blob.name);
     check(&format!("{} at None", blob.name), &none_machine);
     let mut runs = Vec::new();
-    for how in [
-        (LookAhead::Full, Optimise::Speed),
-        (LookAhead::Full, Optimise::Size),
-        (LookAhead::AT_RUN_TIME, Optimise::Speed),
-    ] {
+    for &how in &EVERY_LOOK_AHEAD[1..] {
         let (ours, machine, registers) = translated_for::<G>(blob, how);
         let (look_ahead, optimise) = how;
         runs.push((
@@ -776,60 +784,156 @@ fn written_code_and_null_calls_match_linux_x86_64() {
     written_code_and_null_calls_match_linux::<X86_64>();
 }
 
+/// The passes of `self_written`'s loop, each of which writes the page it runs from.
+const SELF_WRITTEN_PASSES: u64 = 200;
+
 /// Code that writes the page it runs from: the next instruction's immediate on every pass of a loop, and an
 /// instruction's own first byte, which it runs as it was read. Every look-ahead as on Linux, each write
 /// to a page of translated code counted, and in Chrome.
 #[test]
 fn self_written_code_matches_linux_x86_64() {
+    use wcontainers_abi::PAGE_SIZE;
+    let defines = [
+        format!("PAGE_SIZE={PAGE_SIZE}"),
+        format!("PASSES={SELF_WRITTEN_PASSES}"),
+    ];
+    let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
     for optimisation in ["-O0", "-O2"] {
-        let blob = build::<X86_64>("self_written", optimisation, Library::C);
+        let blob = build_with::<X86_64>("self_written", optimisation, Library::C, &defines);
         let theirs = native::<X86_64>(&blob);
         assert_eq!(theirs.status, 0, "{}", blob.name);
         every_look_ahead_matches::<X86_64>(&blob, &theirs, |what, machine| {
             let written = machine.count(Reason::CodeWrittenWithoutAnnouncement);
             eprintln!("{what}: code written without announcement {written} times");
-            assert!(written >= 200, "{what}");
+            assert!(written >= SELF_WRITTEN_PASSES, "{what}");
         });
-        full_matches_in_chrome::<X86_64>(&blob, &theirs);
+        let name = Reason::CodeWrittenWithoutAnnouncement.name();
+        for (what, ours) in every_look_ahead_matches_in_chrome::<X86_64>(&blob, &theirs) {
+            let written = ours.count(name);
+            assert!(written >= SELF_WRITTEN_PASSES, "{what}: {written}");
+        }
     }
 }
+
+/// Code a function writes at its own stack pointer and calls, then writes again there with other bytes and
+/// calls again (`programs/x86_64/stack_code.S`): by a push, by a store through the stack pointer, and by a
+/// store through the frame pointer. The page is locked for code while the function's frame is in progress, so
+/// the thread gives up its frames, counted, and the second write is seen. Every look-ahead as on Linux, and in
+/// Chrome.
+#[test]
+fn code_on_the_stack_matches_linux_x86_64() {
+    for case in 0..STACK_CODE_CASES {
+        let defines = [
+            format!("CASE={case}"),
+            format!("SYS_exit={}", X86_64::STAND_IN.exit),
+            format!("FIRST={STACK_CODE_FIRST}"),
+            format!("SECOND={STACK_CODE_SECOND}"),
+            format!("SHIFT={STACK_CODE_SHIFT}"),
+            format!("PAGE_SIZE={}", wcontainers_abi::PAGE_SIZE),
+        ];
+        let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
+        let blob = build_with::<X86_64>("stack_code", "-O0", Library::None, &defines);
+        let theirs = native::<X86_64>(&blob);
+        let status = (STACK_CODE_FIRST << STACK_CODE_SHIFT) + STACK_CODE_SECOND;
+        assert_eq!(theirs.status, status as i32, "{}", blob.name);
+        every_look_ahead_matches::<X86_64>(&blob, &theirs, |what, machine| {
+            let given_up = machine.count(Reason::CodeTranslatedFromLiveStackFrame);
+            eprintln!("{what}: frames given up {given_up} times");
+            assert!(given_up > 0, "{what}");
+        });
+        let given_up = Reason::CodeTranslatedFromLiveStackFrame.name();
+        for (what, ours) in every_look_ahead_matches_in_chrome::<X86_64>(&blob, &theirs) {
+            assert!(ours.count(given_up) > 0, "{what}");
+        }
+    }
+}
+
+/// What `far_frame` stores at its new stack pointer and halfway up.
+const FAR_FRAME_LOW: u32 = 20;
+const FAR_FRAME_HIGH: u32 = 22;
+/// A descent no stack of a test reaches, as a 32-bit immediate allows.
+const FAR_FRAME_PAST_THE_STACK: u64 = 0x2be2_a860;
+
+/// A move of the stack pointer down past what one frame check covers (`FRAME_CHECK_BYTES`), within the stack
+/// and far past it, translates at once and runs as on Linux at every look-ahead, and in Chrome.
+#[test]
+fn far_frames_match_linux_x86_64() {
+    use wcontainers_translator::contract::FRAME_CHECK_BYTES;
+    let within = 2 * FRAME_CHECK_BYTES;
+    for descent in [within, FAR_FRAME_PAST_THE_STACK] {
+        let defines = [
+            format!("DESCENT={descent}"),
+            format!("LOW={FAR_FRAME_LOW}"),
+            format!("HIGH={FAR_FRAME_HIGH}"),
+            format!("SYS_exit={}", X86_64::STAND_IN.exit),
+        ];
+        let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
+        let mut blob = build_with::<X86_64>("far_frame", "-O0", Library::None, &defines);
+        blob.stack_bytes = blob.stack_bytes.max(2 * within);
+        let theirs = native::<X86_64>(&blob);
+        if descent == within {
+            assert_eq!(theirs.status, (FAR_FRAME_LOW + FAR_FRAME_HIGH) as i32);
+        }
+        every_look_ahead_matches::<X86_64>(&blob, &theirs, |_, _| {});
+        every_look_ahead_matches_in_chrome::<X86_64>(&blob, &theirs);
+    }
+}
+
+/// The cases of `programs/x86_64/stack_code.S`: the second write by a push, by a store through rsp, and by a
+/// store through rbp.
+const STACK_CODE_CASES: u32 = 3;
+/// What the code `stack_code` writes the first time returns, and the second time; it exits with the first
+/// shifted by `STACK_CODE_SHIFT`, plus the second.
+const STACK_CODE_FIRST: u32 = 7;
+const STACK_CODE_SECOND: u32 = 9;
+const STACK_CODE_SHIFT: u32 = 4;
 
 /// The cases of `programs/x86_64/trap_flag.S`: `popf` setting TF before a `nop`, a `jmp`, a `call`, a `ret` and
 /// a `syscall`, a `popf` clearing it, a `rep movsb`, a load of ss, and `iretq` setting it.
 const TRAP_FLAG_CASES: u32 = 9;
 
 /// The trap flag set by the program: each case stops with SIGTRAP `TRAP_TRACE` where the reference stops, with
-/// its general registers and rip, at every look-ahead, and in Chrome with its status.
+/// its general registers and rip, at every look-ahead in wasmtime and in Chrome.
 #[test]
 fn trap_flag_steps_match_linux_x86_64() {
+    use wcontainers_translator_test::browser::SINGLE_STEP;
     use wcontainers_translator_test::guest::x86_64::{SIGTRAP, TRAP_TRACE};
+    let set = <X86_64 as wcontainers_guest_cpu::Guest>::REASONS
+        .iter()
+        .find(|r| r.0 == wcontainers_x86::Reason::TrapFlagSet)
+        .unwrap()
+        .1;
     for case in 0..TRAP_FLAG_CASES {
-        let define = format!("CASE={case}");
-        let blob = build_with::<X86_64>("trap_flag", "-O0", Library::None, &[&define]);
+        let defines = [
+            format!("CASE={case}"),
+            format!("TF={}", wcontainers_x86::TF),
+            format!("SYS_write={}", X86_64::STAND_IN.write),
+            format!("SYS_exit={}", X86_64::STAND_IN.exit),
+        ];
+        let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
+        let blob = build_with::<X86_64>("trap_flag", "-O0", Library::None, &defines);
         let (theirs, stop) = native_with_stop::<X86_64>(&blob);
         let (signal, code, registers) = stop.expect("the reference stops by a signal");
         assert_eq!((signal, code), (SIGTRAP, TRAP_TRACE), "case {case}");
-        for how in [
-            (LookAhead::None, Optimise::Speed),
-            (LookAhead::Full, Optimise::Speed),
-            (LookAhead::Full, Optimise::Size),
-            (LookAhead::AT_RUN_TIME, Optimise::Speed),
-        ] {
-            let (ours, machine, block) = translated_for::<X86_64>(&blob, how);
-            let what = format!("case {case} at {how:?}");
-            assert_eq!(ours, theirs, "{what}");
-            // The record holds the general registers in the block's order, then rip.
+        // The record holds the general registers in the block's order, then rip.
+        let same_stop = |block: &wcontainers_x86::X86Block, what: &str| {
             let (gpr, rip) = registers.split_at(block.gpr.len());
             assert_eq!(&block.gpr[..], gpr, "general registers of {what}");
             assert_eq!(block.rip, rip[0], "rip of {what}");
-            let set = <X86_64 as wcontainers_guest_cpu::Guest>::REASONS
-                .iter()
-                .find(|r| r.0 == wcontainers_x86::Reason::TrapFlagSet)
-                .unwrap()
-                .1;
+        };
+        for how in EVERY_LOOK_AHEAD {
+            let (ours, machine, block) = translated_for::<X86_64>(&blob, how);
+            let what = format!("case {case} at {how:?}");
+            assert_eq!(ours, theirs, "{what}");
+            same_stop(&block, &what);
             assert!(machine.count_named(set) > 0, "{what}");
         }
-        full_matches_in_chrome::<X86_64>(&blob, &theirs);
+        for (what, ours) in every_look_ahead_matches_in_chrome::<X86_64>(&blob, &theirs) {
+            let what = format!("case {case}: {what}");
+            assert_eq!(ours.stop, SINGLE_STEP, "{what}");
+            same_stop(&ours.block::<X86_64>().expect("a stop's state"), &what);
+            assert!(ours.count(set) > 0, "{what}");
+        }
     }
 }
 
@@ -861,12 +965,7 @@ fn code_written_by_another_thread_matches_linux_x86_64() {
         let theirs = native::<X86_64>(&blob);
         assert_eq!(theirs.status, 0, "{}", blob.name);
         let mut runs = Vec::new();
-        for how in [
-            (LookAhead::None, Optimise::Speed),
-            (LookAhead::Full, Optimise::Speed),
-            (LookAhead::Full, Optimise::Size),
-            (LookAhead::AT_RUN_TIME, Optimise::Speed),
-        ] {
+        for how in EVERY_LOOK_AHEAD {
             let mut machine = ready_on::<X86_64>(
                 &blob,
                 how,

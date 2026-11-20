@@ -1509,7 +1509,7 @@ fn pushes_return<G: Guest>(d: &Decoded<G>) -> bool {
 /// stack pointer unless the frame already covers that; the check reaches as far down as the moves that follow
 /// in the block before anything that calls, makes a system call, or moves the stack pointer up or by an
 /// unknown amount, so those need none; with nothing known it also covers the return address a call left at
-/// the stack pointer, so a return reads it unchecked.
+/// the stack pointer, so a return reads it unchecked. Nothing reaches past [`FRAME_CHECK_BYTES`].
 fn frame_checked<G: Guest>(
     decoded: &Decodes<G>,
     instructions: &[u64],
@@ -1524,21 +1524,25 @@ fn frame_checked<G: Guest>(
     if delta >= 0 || pushes_return(d) || covers(frame, delta - red_zone, 0) {
         return (None, frame);
     }
+    let high = match (frame, G::RETURN_ADDRESS) {
+        (None, ReturnAddress::Stack { bytes }) => i64::from(bytes),
+        _ => 0,
+    };
+    let within = |descent: i64| high - (descent - red_zone) <= FRAME_CHECK_BYTES as i64;
+    if !within(delta) {
+        return (None, frame);
+    }
     let mut descent = delta;
     for o in &instructions[i + 1..] {
         let next = &decoded[o];
         match stack_move(next) {
             _ if next.effects.calls || next.effects.syscall => break,
             StackMove::None => {}
-            StackMove::By { delta, .. } if delta < 0 => descent += delta,
+            StackMove::By { delta, .. } if delta < 0 && within(descent + delta) => descent += delta,
             _ => break,
         }
     }
     let low = descent - red_zone;
-    let high = match (frame, G::RETURN_ADDRESS) {
-        (None, ReturnAddress::Stack { bytes }) => i64::from(bytes),
-        _ => 0,
-    };
     let checked = match frame {
         Some((lo, hi)) if lo <= high && hi >= low => (lo.min(low), hi.max(high)),
         _ => (low, high),

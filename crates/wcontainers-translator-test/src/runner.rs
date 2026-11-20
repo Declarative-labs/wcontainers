@@ -256,7 +256,24 @@ pub fn fields<G: GuestTest>(block: &G::Block) -> crate::guest::State {
 
 /// The guest's pc in a thread state.
 fn pc_of<G: GuestTest>(thread: &[u8]) -> u64 {
-    u64::from_le_bytes(thread[G::PC_OFFSET..][..8].try_into().unwrap())
+    u64::from_le_bytes(
+        thread[G::PC_OFFSET..][..size_of::<u64>()]
+            .try_into()
+            .unwrap(),
+    )
+}
+
+/// The guest's stack pointer in a thread state.
+fn stack_pointer_of<G: GuestTest>(thread: &[u8]) -> u64 {
+    let sp = G::BITS
+        .iter()
+        .find(|b| b.bit == G::SP_BIT)
+        .expect("the stack pointer's bit");
+    u64::from_le_bytes(
+        thread[usize::from(sp.offset)..][..size_of::<u64>()]
+            .try_into()
+            .unwrap(),
+    )
 }
 
 /// The block at the start of a thread state.
@@ -792,8 +809,8 @@ fn set_permissions<G: GuestTest>(host: &mut Host<G>, range: Range<u64>, permissi
     }
 }
 
-/// A write lock the CPU side holds on a page: the page holds code it translated.
-const LOCK_CODE: u8 = 1;
+/// A write lock the CPU side holds on a page, a bit for each reason: the page holds code it translated.
+pub const LOCK_CODE: u8 = 1;
 
 /// What the table says a page allows: what the kernel said, without writing while a lock is held.
 fn allowed<G: GuestTest>(host: &Host<G>, page: u64) -> Permissions {
@@ -832,18 +849,33 @@ fn set_lock<G: GuestTest>(host: &mut Host<G>, page: u64, lock: u8, held: bool) {
 }
 
 /// Lock for code every page a translation was made from (guest addresses), where code changes are detected
-/// by such writes.
-fn lock_code<G: GuestTest>(host: &mut Host<G>, read: &[Range<u64>]) {
+/// by such writes. Given the stack pointer of a thread in progress, whether a page newly locked may lie in a
+/// frame it proved writable (plan 5.7, "Frames"): at or above the stack pointer less the red zone, with every
+/// page from there to it readable and writable.
+fn lock_code<G: GuestTest>(host: &mut Host<G>, read: &[Range<u64>], sp: Option<u64>) -> bool {
     if G::CODE_CHANGES != CodeChanges::Detected {
-        return;
+        return false;
     }
-    for range in read {
-        for page in range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE) {
-            if (page as usize) < host.locks.len() {
-                set_lock(host, page, LOCK_CODE, true);
-            }
-        }
+    let pages: Vec<u64> = read
+        .iter()
+        .flat_map(|range| range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE))
+        .filter(|&page| (page as usize) < host.locks.len())
+        .collect();
+    let in_frame = sp.is_some_and(|sp| {
+        let first = sp.wrapping_sub(G::RED_ZONE) / PAGE_SIZE;
+        let Some(last) = pages.iter().copied().filter(|&p| p >= first).max() else {
+            return false;
+        };
+        let frame = Permissions::READ | Permissions::WRITE;
+        let end = (first..=last)
+            .find(|&p| !allowed(host, p).contains(frame))
+            .unwrap_or(last + 1);
+        pages.iter().any(|p| (first..end).contains(p))
+    });
+    for page in pages {
+        set_lock(host, page, LOCK_CODE, true);
     }
+    in_frame
 }
 
 /// Code was written on a page locked for code: every piece translated from the page is dropped (the lookup
@@ -1183,7 +1215,8 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 let page = address as u64 / PAGE_SIZE;
                 let host = caller.data_mut();
                 host.exact_mark = None;
-                let locked_write = access == 1
+                let write = access != 0;
+                let locked_write = write
                     && host
                         .locks
                         .get(page as usize)
@@ -1205,11 +1238,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 let pc = pc_of::<G>(&thread);
                 let registers = block::<G>(&thread);
                 let code = code_at(&mut caller, pc);
-                let access = if access == 1 {
-                    Access::Write
-                } else {
-                    Access::Read
-                };
+                let access = if write { Access::Write } else { Access::Read };
                 let stopped = match G::memory_fault(address as u64, &code, &registers) {
                     MemoryFault::Page => Stopped::Exit(Exit::MemoryFault {
                         address: address as u64,
@@ -1280,10 +1309,12 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                     .read(&caller, run.start as usize, &mut bytes)
                     .expect("code inside guest memory");
                 let offset = address - run.start;
-                if exact == 1 {
-                    let one = LookAhead::Bounded(1);
+                let sp = stack_pointer_of::<G>(&snapshot(&mut caller));
+                let in_frame = if exact == 1 {
+                    let one = (LookAhead::Bounded(1), sp);
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, one, (true, unlocked));
+                    let in_frame =
+                        instantiate_code(&mut caller, code, offset, one, (true, unlocked));
                     let Some(wasmtime::Ref::Func(Some(piece))) = table.get(&mut caller, exact_slot)
                     else {
                         panic!("the piece is in the exact slot");
@@ -1292,6 +1323,7 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                     if !unlocked {
                         caller.data_mut().exact_pieces.insert(address, piece);
                     }
+                    in_frame
                 } else {
                     // Code made at run time never takes the place of a piece the lookup finds.
                     assert_eq!(
@@ -1299,10 +1331,10 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                         0,
                         "code asked for at {address:#x}, which has a piece"
                     );
-                    let look_ahead = (caller.data_mut().run_time)();
+                    let look_ahead = ((caller.data_mut().run_time)(), sp);
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, look_ahead, (false, false));
-                }
+                    instantiate_code(&mut caller, code, offset, look_ahead, (false, false))
+                };
                 let time = start.elapsed();
                 slow_path(
                     caller.data_mut(),
@@ -1310,6 +1342,18 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                     address,
                     time,
                 );
+                // A frame in progress may have been proved writable over the page just locked, so the
+                // thread gives up its frames and carries on from its registers (plan 5.7, "Frames").
+                if in_frame {
+                    slow_path(
+                        caller.data_mut(),
+                        Reason::CodeTranslatedFromLiveStackFrame.number(),
+                        address,
+                        Duration::ZERO,
+                    );
+                    caller.data_mut().lose_stack = true;
+                    return 0;
+                }
                 1
             },
         )
@@ -1522,28 +1566,27 @@ fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load
     }
 }
 
-/// Translate and instantiate code reached at run time: the code bytes at a load address, from one start.
-/// With `exact`, the one piece goes in the exact slot; with `unlocked` too, its page is not locked for code.
+/// Translate and instantiate code reached at run time by a thread with stack pointer `sp`: the code bytes at
+/// a load address, from one start. With `exact`, the one piece goes in the exact slot; with `unlocked` too,
+/// its page is not locked for code. Whether a page it locked may lie in a frame of the thread.
 fn instantiate_code<G: GuestTest>(
     store: &mut impl wasmtime::AsContextMut<Data = Host<G>>,
     code: (&[u8], u64),
     start: u64,
-    look_ahead: LookAhead,
+    (look_ahead, sp): (LookAhead, u64),
     (exact, unlocked): (bool, bool),
-) {
+) -> bool {
     let range = 0..code.0.len() as u64;
     let how = (look_ahead, store.as_context().data().optimise);
     let load = translate_load(store, code, range, &[start], how, Omit::default());
     let mut store = store.as_context_mut();
-    // `instantiate` locks the pages of every load but an exact one.
-    if exact && !unlocked {
-        lock_code(store.data_mut(), &load.read);
-    }
+    let in_frame = !unlocked && lock_code(store.data_mut(), &load.read, Some(sp));
     let slots = instantiate(&mut store, &load, exact);
     if !exact {
         let addresses = slots.into_keys().collect();
         store.data_mut().run_time_loads.push((load.read, addresses));
     }
+    in_frame
 }
 
 /// Give each address picked the piece of the load picked for it, from each load's pieces by address and
@@ -1571,7 +1614,7 @@ fn instantiate<G: GuestTest>(
 ) -> HashMap<u64, u32> {
     let mut store = store.as_context_mut();
     if !exact {
-        lock_code(store.data_mut(), &load.read);
+        lock_code(store.data_mut(), &load.read, None);
     }
     let table = lookup_table(&mut store);
     let host = store.data();

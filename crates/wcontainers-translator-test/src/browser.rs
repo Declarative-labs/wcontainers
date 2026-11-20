@@ -21,7 +21,22 @@ fn target() -> PathBuf {
 /// Where the page's runs keep their files, under the browser build.
 const CASES: &str = "cases";
 /// The kind of stop the browser runner reports for a single step of the trap flag.
-const SINGLE_STEP: &str = "single step";
+pub const SINGLE_STEP: &str = "single step";
+
+/// Keys of the page's settings and answer.
+const RUNNER_KEY: &str = "runner";
+const LOCK_CODE_KEY: &str = "lockCode";
+const SINGLE_STEP_KEY: &str = "singleStep";
+const STOP_KIND_KEY: &str = "kind";
+const STOP_STATE_KEY: &str = "stateAtStop";
+
+/// The names and numbers the browser runner shares with the wasmtime runner.
+fn runner_names() -> Value {
+    let mut names = serde_json::Map::new();
+    names.insert(LOCK_CODE_KEY.into(), crate::runner::LOCK_CODE.into());
+    names.insert(SINGLE_STEP_KEY.into(), SINGLE_STEP.into());
+    names.into()
+}
 
 /// A new directory for one run of the page, under this process's and this call's numbers so that runs at the
 /// same time never share files; the caller removes it when the run has ended.
@@ -89,6 +104,10 @@ fn stand_in<G: GuestTest>() -> Value {
 /// What happened in Chrome: the program's output and status, and the runner's report.
 pub struct Report {
     pub ran: Ran,
+    /// The kind of stop the runner reported, and the thread state then (the contract's thread state size, or
+    /// empty when the stop left none).
+    pub stop: String,
+    pub state: Vec<u8>,
     /// How long the guest ran in the page each time it was run, translating and compiling the first module
     /// not included.
     pub runs: Vec<f64>,
@@ -98,6 +117,13 @@ pub struct Report {
 }
 
 impl Report {
+    /// The register block of the thread state at the stop, if the stop left one.
+    pub fn block<G: GuestTest>(&self) -> Option<G::Block> {
+        use zerocopy::FromBytes;
+        let bytes = self.state.get(..size_of::<G::Block>())?;
+        Some(G::Block::read_from_bytes(bytes).expect("a thread block"))
+    }
+
     pub fn count(&self, reason: &str) -> u64 {
         self.counters
             .iter()
@@ -181,7 +207,7 @@ fn run_in_chrome<G: GuestTest>(
         .iter()
         .map(|(range, permissions)| serde_json::json!([range.start, range.end, permissions.bits()]))
         .collect();
-    let setup = serde_json::json!({
+    let mut setup = serde_json::json!({
         "codeBytes": blob.code_bytes,
         "load": blob.load,
         "memoryBytes": place.memory_bytes,
@@ -205,20 +231,22 @@ fn run_in_chrome<G: GuestTest>(
             | (u8::from(omit.returns) << 2)
             | (u8::from(omit.depth) << 3),
     });
+    setup[RUNNER_KEY] = runner_names();
     let result = launch(&directory, &setup, flags);
     std::fs::remove_dir_all(&directory).unwrap();
+    // An array of bytes, or none where the runner gives null (a stop with no thread state).
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
             .as_array()
-            .expect("bytes")
-            .iter()
+            .into_iter()
+            .flatten()
             .map(|b| b.as_u64().unwrap() as u8)
             .collect()
     };
     let stopped = &result["stopped"];
     // A process killed by a signal is reported as a shell does, 128 plus Linux's number of the signal each
     // stop raises (the same numbers on every guest).
-    let status = match stopped["kind"].as_str() {
+    let status = match stopped[STOP_KIND_KEY].as_str() {
         // Linux reports the low 8 bits of the status.
         Some("finished") => stopped["status"].as_i64().unwrap() as i32 & 0xff,
         Some("memory fault") => 128 + 11,
@@ -251,6 +279,11 @@ fn run_in_chrome<G: GuestTest>(
             stderr: bytes("stderr"),
             status,
         },
+        stop: stopped[STOP_KIND_KEY]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        state: bytes(STOP_STATE_KEY),
         counters,
         runs: result["runs"]
             .as_array()
@@ -408,7 +441,7 @@ pub fn cases<G: crate::guest::GuestTest>(
         .iter()
         .map(|range| serde_json::json!([range.start, range.end - range.start]))
         .collect();
-    let setup = serde_json::json!({
+    let mut setup = serde_json::json!({
         "codeBytes": code_bytes,
         "load": code,
         "memoryBytes": memory_bytes,
@@ -423,6 +456,7 @@ pub fn cases<G: crate::guest::GuestTest>(
         "stopAtSyscall": true,
         "standIn": stand_in::<G>(),
     });
+    setup[RUNNER_KEY] = runner_names();
     let result = launch(&directory, &setup, None);
     std::fs::remove_dir_all(&directory).unwrap();
     let numbers = |value: &Value| -> Vec<u8> {

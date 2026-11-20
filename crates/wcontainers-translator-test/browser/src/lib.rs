@@ -256,6 +256,8 @@ const STEP_NAMES: [&str; 4] = ["off", "run", "exact", "trap"];
 const UNWIND_GO_TO_EXACT_KEY: &str = "unwindGoToExact";
 const STEPS_KEY: &str = "steps";
 const CPU_STEPS_KEY: &str = "cpuSteps";
+const SP_OFFSET_KEY: &str = "spOffset";
+const RED_ZONE_KEY: &str = "redZone";
 const CODE_CHANGES_DETECTED_KEY: &str = "codeChangesDetected";
 
 // Every hook's arguments fit `cpu_hook`'s and its results `HookDone`'s.
@@ -400,6 +402,16 @@ pub extern "C" fn contract() -> i32 {
         (STEPS_KEY, serde_json::json!(STEP_NAMES)),
         (CPU_STEPS_KEY, serde_json::json!(G::STEPS)),
         (CODE_CHANGES_DETECTED_KEY, serde_json::json!(detected)),
+        (
+            SP_OFFSET_KEY,
+            serde_json::json!(
+                G::BITS
+                    .iter()
+                    .find(|b| b.bit == G::SP_BIT)
+                    .map(|b| b.offset)
+            ),
+        ),
+        (RED_ZONE_KEY, serde_json::json!(G::RED_ZONE)),
     ] {
         more.insert(key.into(), value);
     }
