@@ -263,6 +263,13 @@ fn b8g8r8x8_elements_read_as_direct3d_reads_them() {
     case("bgrx");
 }
 
+/// `R10G10B10_XR_BIAS_A2_UNORM` textures take the shapes, bindings, CPU access and copies
+/// Direct3D gives them, keeping their bytes.
+#[test]
+fn xr_bias_textures_as_direct3d_does() {
+    case("xr");
+}
+
 #[test]
 fn texture_atomics_as_direct3d_does() {
     case("atomics");
@@ -358,13 +365,9 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
         ),
         (
             DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
-            D3D11_FORMAT_SUPPORT_TEXTURE2D.0
-                | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE.0
-                | D3D11_FORMAT_SUPPORT_DISPLAY.0
-                | D3D11_FORMAT_SUPPORT_CAST_WITHIN_BIT_LAYOUT.0
-                | D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
+            D3D11_FORMAT_SUPPORT_DISPLAY.0 | D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
             0,
-            "extended-range back buffers: the interface has no such format",
+            "extended-range swap chains: the infrastructure crate makes none",
         ),
         (
             DXGI_FORMAT_NV12,
@@ -394,16 +397,55 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
 /// bits, so it fails on ours where real Direct3D's word holds only bits ours lacks.
 #[test]
 fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
+    format_support_compared("ours", &[], &[]);
+}
+
+/// The same where the back end lacks the 16-bit normalised formats (a browser without
+/// `texture-formats-tier1`): they are held as their integer twins (`NormAsInteger`) and so not
+/// blended (`BlendInShader` is not built), and claim nothing else Direct3D does not.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn format_support_without_16_bit_norm_as_direct3d_reports_it_but_the_named_shortfalls() {
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    let off = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
+    let unblended = |f| {
+        (
+            f,
+            D3D11_FORMAT_SUPPORT_BLENDABLE.0,
+            0,
+            "blending into integer twins",
+        )
+    };
+    let twins = [
+        DXGI_FORMAT_R16G16B16A16_UNORM,
+        DXGI_FORMAT_R16G16B16A16_SNORM,
+        DXGI_FORMAT_R16G16_UNORM,
+        DXGI_FORMAT_R16G16_SNORM,
+        DXGI_FORMAT_R16_UNORM,
+        DXGI_FORMAT_R16_SNORM,
+    ]
+    .map(unblended);
+    format_support_compared("ours-no16", &[(FEATURES_OFF, off)], &twins);
+}
+
+/// Compares every format's support through ours, run with `env` in a directory labelled `label`,
+/// with real Direct3D's, allowing `SUPPORT_DIFFERENCES` and `more` (whose bits are added).
+fn format_support_compared(
+    label: &str,
+    env: &[(&str, &str)],
+    more: &[(DXGI_FORMAT, i32, i32, &str)],
+) {
     let (code, want) = run_with(
         "own_cases",
         &place("format_support-system", false),
         &["format_support"],
     );
     assert_eq!(code, 0, "{want}");
-    let (code, got) = run_with(
+    let (code, got) = run_env(
         "own_cases",
-        &place("format_support-ours", true),
+        &place(&format!("format_support-{label}"), true),
         &["format_support"],
+        env,
     );
     assert_eq!(code, 0, "{got}");
     let words = |l: &str| -> (i32, [i32; 3]) {
@@ -436,8 +478,9 @@ fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
         let diff2 = (want2 ^ got2) & !ABSENT_SUPPORT2;
         let named = SUPPORT_DIFFERENCES
             .iter()
-            .find(|s| s.0 == DXGI_FORMAT(format))
-            .map_or((0, 0), |s| (s.1, s.2));
+            .chain(more)
+            .filter(|s| s.0 == DXGI_FORMAT(format))
+            .fold((0, 0), |(a, b), s| (a | s.1, b | s.2));
         // Direct3D fails the second query of a word without bits.
         let codes_agree = want_code == got_code || got2 == 0 && got_code != 0;
         if claimed != (0, 0) || (diff1, diff2) != named || !codes_agree {

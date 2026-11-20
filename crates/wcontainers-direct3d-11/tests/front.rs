@@ -3481,12 +3481,28 @@ fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
     assert!(dev.removed.is_some());
 }
 
-/// Direct3D's float to normalised conversion: clamped, NaN as zero, rounded to the nearest.
+/// Direct3D's float to normalised conversion: clamped, NaN as zero, rounded to the nearest with
+/// halves toward zero, as the RTX 3080 clears (the halves measured there).
 #[test]
 fn clear_values_of_integer_twins_are_encoded_as_direct3d_converts_them() {
     use wcontainers_direct3d_11::format::encode_norm;
     use wcontainers_gpu::Format;
-    assert_eq!(encode_norm(Format::R16Unorm, 0.5), u32::from(u16::MAX / 2 + 1));
+    let half = 0.5;
+    assert_eq!(encode_norm(Format::R16Unorm, half), u32::from(u16::MAX / 2));
+    let one_and_a_half = 1.5;
+    assert_eq!(
+        encode_norm(Format::R16Unorm, one_and_a_half / f32::from(u16::MAX)),
+        1
+    );
+    assert_eq!(
+        encode_norm(Format::Rgba16Snorm, half),
+        u32::from(i16::MAX.unsigned_abs() / 2)
+    );
+    assert_eq!(
+        encode_norm(Format::Rgba16Snorm, -one_and_a_half / f32::from(i16::MAX)),
+        -1i32 as u32
+    );
+    assert_eq!(encode_norm(Format::R16Unorm, 0.6 / f32::from(u16::MAX)), 1);
     assert_eq!(encode_norm(Format::Rg16Unorm, 2.0), u32::from(u16::MAX));
     assert_eq!(encode_norm(Format::R16Unorm, f32::NAN), 0);
     assert_eq!(
