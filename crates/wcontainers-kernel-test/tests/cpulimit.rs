@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use wcontainers_kernel::reason::CORE_DUMP_NOT_WRITTEN;
 use wcontainers_kernel_test::assert_same_output;
 
 #[test]
@@ -12,7 +13,7 @@ fn cpu_limit_matches_reference() {
     assert!(
         ours.warnings
             .iter()
-            .all(|warned| warned.reason == "core dump not written"),
+            .all(|warned| warned.reason == CORE_DUMP_NOT_WRITTEN),
         "{:?}",
         ours.warnings
     );
@@ -27,7 +28,7 @@ fn cpu_limit_on_the_wall_clock_matches_reference() {
     assert!(
         ours.warnings
             .iter()
-            .all(|warned| warned.reason == "core dump not written"),
+            .all(|warned| warned.reason == CORE_DUMP_NOT_WRITTEN),
         "{:?}",
         ours.warnings
     );

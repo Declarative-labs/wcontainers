@@ -3575,7 +3575,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	str	xattr_names	"user."
 code	crates/wcontainers-kernel-test/src/layer1.rs	str	xattr_names	"user.a"
 code	crates/wcontainers-kernel-test/src/layer1.rs	str	xattr_names	"user.b"
 code	crates/wcontainers-kernel-test/src/lib.rs	int	schedule_seeds	3
-code	crates/wcontainers-kernel-test/src/lib.rs	str	assert_same_output	"\n"
 code	crates/wcontainers-kernel-test/src/lib.rs	str	same_output_seeded	"\n"
 code	crates/wcontainers-kernel-test/src/lib.rs	str	schedule_seeds	"SCHEDULE_SEED"
 code	crates/wcontainers-kernel-test/src/lib.rs	str	schedule_seeds	"SCHEDULE_SEEDS"
@@ -8007,7 +8006,6 @@ restated	crates/wcontainers-kernel-test/tests/boundary.rs	str	generated_files_ar
 restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	files	"10000"
 restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	files	"8192"
 restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	system	"env"
-restated	crates/wcontainers-kernel-test/tests/cpulimit.rs	str	cpu_limit_matches_reference	"core dump not written"
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	int	numbers_above_linux_calls_match_reference	1000
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_above_linux_calls_match_reference	"1000"
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_in_gaps_match_reference	"400"
