@@ -11,8 +11,8 @@
 //! natively and the inside goes on, counted and warned. Another zeroes blocks and cleans cache lines on pages
 //! never touched, read-only, allowing nothing and unmapped. Another jumps through tables of bytes to targets that
 //! can and cannot run, and runs again with a stop at every counted event, whose positions must agree across
-//! look-aheads. The benchmark set's programs run at their small size. hello and these programs also run in the
-//! reference, whose output and exit code the native side must give.
+//! look-aheads. The benchmark set's programs run at their small size, and so again. hello and these programs
+//! also run in the reference, whose output and exit code the native side must give.
 //!
 //! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes; `WCONTAINERS_KERNEL_SEEDS` runs that
 //! many seeds, it and the ones after it.
@@ -211,13 +211,27 @@ mod macos {
             exits[1], exits[2],
             "the virtual machine's exits grow with the number of system calls"
         );
-        // The benchmark set at its small size, whose count at every stop must agree across look-aheads.
+        // The benchmark set at its small size, whose count at every stop must agree across look-aheads, with stops
+        // where its system calls end turns and then after every counted event.
         for name in [BENCH, CALLS] {
             let built = freestanding(PROGRAMS_DIRECTORY, name, name, &[], None);
             let image = std::fs::read(built).expect("the built program");
             let native = alone(seed, name, &image, &[]);
             print!("{name}: {}", String::from_utf8_lossy(&native.host.stdout));
             against_reference(name, &native);
+            let started = Instant::now();
+            let (files, starting) = container(name, image, &[]);
+            let every = native_at_every_event(seed, REALTIME_NANOSECONDS, &files, &starting);
+            assert_eq!(
+                (every.status, &every.host.stdout),
+                (native.status, &native.host.stdout),
+                "{name}: a stop at every counted event changed the run"
+            );
+            println!(
+                "{name}: a stop at every counted event, (stops, hash of positions) {:?} alike across look-aheads, in {:?}",
+                every.positions,
+                started.elapsed()
+            );
         }
         let jump_tables = compile(OWN_GUEST, JUMP_TABLES, CLibrary::Musl);
         let (native, _) = both(seed, JUMP_TABLES, &jump_tables, &[]);
