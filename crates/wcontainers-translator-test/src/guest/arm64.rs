@@ -352,6 +352,7 @@ fn case(
         state: State(state),
         tracking,
         seed,
+        placed: Default::default(),
     }
 }
 

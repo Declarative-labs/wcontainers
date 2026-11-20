@@ -93,7 +93,7 @@ impl Check<'_> {
         setup(&mut state);
         let landed = self
             .reference
-            .case(code, SEED, &state)
+            .case(code, SEED, &Default::default(), &state)
             .unwrap_or_else(|e| panic!("{name}: the runner failed: {e}"))
             .landed();
         assert_eq!(
@@ -661,7 +661,9 @@ fn the_x86_64_reference_refuses_what_linux_refuses() {
     ] {
         let mut state = start();
         state[at(field)] = value;
-        let ran = reference.case(&[0x90], SEED, &state).expect("the runner");
+        let ran = reference
+            .case(&[0x90], SEED, &Default::default(), &state)
+            .expect("the runner");
         let CaseRan::Refused(why) = ran else {
             panic!("{field} {value:#x}: ran, {ran:?}");
         };
@@ -670,7 +672,12 @@ fn the_x86_64_reference_refuses_what_linux_refuses() {
     let mut state = start();
     state[at("fs_base")] = (DATA + 0x40).into();
     let landed = reference
-        .case(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0], SEED, &state)
+        .case(
+            &[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0],
+            SEED,
+            &Default::default(),
+            &state,
+        )
         .expect("the runner")
         .landed();
     assert_eq!((landed.signal, landed.code), STEP);
@@ -678,7 +685,7 @@ fn the_x86_64_reference_refuses_what_linux_refuses() {
     let mut state = start();
     state[at("gs_base")] = (wcontainers_x86::USER_END - 2 * wcontainers_abi::PAGE_SIZE).into();
     let landed = reference
-        .case(&[0x90], SEED, &state)
+        .case(&[0x90], SEED, &Default::default(), &state)
         .expect("the runner")
         .landed();
     assert_eq!(
@@ -784,7 +791,7 @@ fn the_x86_64_reference_comes_back_after_its_connection_is_lost() {
     let mut reference = Reference::start(&X86_64);
     let nop = |reference: &mut Reference| {
         let landed = reference
-            .case(&[0x90], SEED, &start())
+            .case(&[0x90], SEED, &Default::default(), &start())
             .expect("the runner")
             .landed();
         assert_eq!((landed.signal, landed.code), STEP);

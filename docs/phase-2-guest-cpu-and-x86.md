@@ -1733,11 +1733,20 @@ Tests (section 7 gives the detail):
   `call` does. So the meanings: read (access 0, checked first), test the selector, push (access 1, for `call
   far`), test the offset is canonical, then move rsp and transfer. `iretq` differs in two ways (section 2, run
   7). It first tests NT and gives general protection when it is set, before any read (section 5.1). And it
-  reads its frame as five 8-byte accesses in the CPU's order, not as one, so a page fault names the slot the
-  CPU names: rflags (rsp + 16) first, then CS with its null-selector test, and SS before rsp; a CS that is not
-  null but not a code segment faults only after rip's slot has been read. Where rip's read falls against SS's,
-  and each selector test against the reads, is settled at X5 by reference cases with partly mapped `iretq`
-  frames, before its meaning is written. A far transfer with selector 0x33 is, for the translator, a jump or
+  reads its frame as five accesses of the operand size in the CPU's order, not as one, so a fault names the
+  slot the CPU names, each slot canonical or not by itself (X5, scratch `x5/run5/iret.c` and `iret.out`, partly
+  mapped frames on the reference): rflags first, then cs, then rip, then the cs test (null, not code, or a
+  privilege level other than 3: general protection), then ss, then rsp, then the ss test (0x2b alone), and
+  the rip's canonical test last (its general protection comes after ss's read). Whether rsp's read comes
+  before the ss test cannot be seen (no frame maps ss's slot but not rsp's). `retf` reads cs, then rip,
+  then tests cs (0x33 alone; 0x30 to 0x32 are general protection). A far pointer (`call`, `jmp`, `lfs`,
+  `lgs`, `lss`) is read as the offset, then the selector, each faulting by itself; `pop` of a segment
+  register reads the selector's 16 bits alone; a far `call` writes cs's slot before the return
+  address's. Seen too: the CPU makes a null selector with a privilege level (1 to 3) 0 on every `iret` to
+  user mode, so a program sees what it loaded only until the next interrupt or signal (layer 1 reconciles
+  it, and the meanings that load selectors are marked as varying); and an `iret` that loads AC from an
+  unaligned frame takes an alignment check on its later reads, which Linux takes for a split lock and
+  retries for ever (layer 1 leaves such cases out; AC is never held here, plan 5.1). A far transfer with selector 0x33 is, for the translator, a jump or
   call through memory (`FlowKind::JumpThrough` or `CallThrough(Memory)`, the return address 16 bytes up for
   `call far`'s matching `retf`) and `retf` and `iretq` are returns that leave to the bottom loop when the
   target is not the one expected; they are rare, so no more than that. Selector 0x23 (Linux's 32-bit user code
@@ -1866,9 +1875,11 @@ base, as on the reference (Intel): `mov fs, r16` and `pop fs` with selector 0 or
 0x2b set the FS base to 0 (check 10: `8ee0` with fs base 0x40000000 left it 0), and the same for GS. Their
 meanings write the base's register bit, so the check analysis, which keys `fs:` accesses on the FS base
 and treats any instruction that writes the bit as changing it (its effects say so), sees them as
-writers like `wrfsbase`. The other segment registers (cs, ss, ds, es) read as Linux's user values;
-writing a segment register is general protection unless the value is one Linux allows, decided by layer
-1.
+writers like `wrfsbase`. The selectors of ds, es, fs and gs are thread state too (`X86Block::selectors`,
+the control `Selectors`); cs and ss always read as Linux's 64-bit user segments, 0x33 and 0x2b. A load
+(`mov`, `pop`, `lfs`, `lgs`, `lss`) takes a null selector or a readable segment of Linux's (0x20 to 0x23, 0x28
+to 0x2b, 0x30 to 0x33, 0x78 to 0x7b) for ds, es, fs and gs, 0x2b alone for ss, and is general protection
+otherwise; `mov` to cs is illegal. All of this was decided by layer 1 against the reference (X5).
 
 ### 5.6 String instructions
 
@@ -3099,7 +3110,7 @@ apply unchanged.
   binding, expected small beside the binding's own work), and how many programs fire that counter.
 - Not seen, expected from sources: `sysenter` giving general protection on a kernel without 32-bit
   emulation (section 5.2), and Linux keeping NT and ID across signal delivery (section 6). Where rip's
-  read falls in `iretq`'s order (section 5.3), settled at X5.
+  read falls in `iretq`'s order: settled at X5 (section 5.3).
 - The cost of checking the accesses that no group or proof covers (bit offsets, gathers, masked moves,
   8- and 16-bit indexes, section 3.4) on real programs, measured at X5 and X8; and the cost of code
   written on the page that writes it (one fault, one step and two translations a write, section 5.7),

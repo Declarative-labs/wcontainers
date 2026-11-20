@@ -356,12 +356,21 @@ impl Reference {
     }
 
     /// Run one instruction from `state` (its pc field is ignored: the instruction is at CODE) and the data
-    /// area of `seed`. `Err` is the runner's own failure, never the guest's.
-    pub fn case(&mut self, code: &[u8], seed: u64, state: &[u128]) -> Result<CaseRan, String> {
+    /// area of `seed` with `placed` over it. `Err` is the runner's own failure, never the guest's.
+    pub fn case(
+        &mut self,
+        code: &[u8],
+        seed: u64,
+        placed: &(u32, Vec<u8>),
+        state: &[u128],
+    ) -> Result<CaseRan, String> {
         assert_eq!(state.len(), self.fields, "a value for every field");
         let mut record = vec![RECORD_CASE, code.len() as u8];
         record.extend_from_slice(code);
         record.extend_from_slice(&seed.to_le_bytes());
+        record.extend_from_slice(&placed.0.to_le_bytes());
+        record.push(u8::try_from(placed.1.len()).expect("placed bytes fit a record's count"));
+        record.extend_from_slice(&placed.1);
         for value in state {
             record.extend_from_slice(&value.to_le_bytes());
         }

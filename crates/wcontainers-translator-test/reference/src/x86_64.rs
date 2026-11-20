@@ -37,6 +37,7 @@ const FTW: usize = 23;
 const R0: usize = 24;
 const XMM: usize = 32;
 const YMMH: usize = 48;
+use crate::x86_64::SELECTORS;
 /// The frame's `gregs` index of each general register, in field order.
 const GREGS: [usize; 16] = [
     libc::REG_RAX as usize,
@@ -64,6 +65,99 @@ static mut HOST_FP: [u8; HOST_FP_CAPACITY] = [0; HOST_FP_CAPACITY];
 static mut HOST_FP_BYTES: usize = 0;
 static mut HOST_FS: u64 = 0;
 static mut HOST_GS: u64 = 0;
+static mut HOST_SELECTORS: [u16; SEGMENTS] = [0; SEGMENTS];
+
+/// The segment registers a case sets, in the state's order.
+const SEGMENT_REGISTERS: &[iced_x86::Register] = &[
+    iced_x86::Register::DS,
+    iced_x86::Register::ES,
+    iced_x86::Register::FS,
+    iced_x86::Register::GS,
+];
+const SEGMENTS: usize = SEGMENT_REGISTERS.len();
+
+/// fs and gs, whose bases `arch_prctl` sets.
+fn has_base(register: iced_x86::Register) -> bool {
+    matches!(register, iced_x86::Register::FS | iced_x86::Register::GS)
+}
+
+/// For each of `SEGMENT_REGISTERS`, a function that loads it from its argument and one that gives it: `mov
+/// sreg, edi; ret` and `mov eax, sreg; ret`, encoded once into a page of their own.
+struct SegmentMoves {
+    load: [extern "C" fn(u32); SEGMENTS],
+    read: [extern "C" fn() -> u32; SEGMENTS],
+}
+
+static mut SEGMENT_MOVES: Option<SegmentMoves> = None;
+
+fn segment_moves() -> &'static SegmentMoves {
+    use iced_x86::{Code, Encoder, Instruction, Register};
+    unsafe {
+        if let Some(moves) = &*addr_of!(SEGMENT_MOVES) {
+            return moves;
+        }
+        let mut encoder = Encoder::new(u64::BITS);
+        let mut starts = Vec::new();
+        let mut end = 0;
+        for (to, register) in [(true, Register::EDI), (false, Register::EAX)] {
+            for &segment in SEGMENT_REGISTERS {
+                starts.push(end);
+                let mov = if to {
+                    Instruction::with2(Code::Mov_Sreg_r32m16, segment, register)
+                } else {
+                    Instruction::with2(Code::Mov_r32m16_Sreg, register, segment)
+                };
+                for instruction in [mov.expect("a move"), Instruction::with(Code::Retnq)] {
+                    end += encoder.encode(&instruction, 0).expect("an encoding");
+                }
+            }
+        }
+        let bytes = encoder.take_buffer();
+        let page = libc::mmap(
+            core::ptr::null_mut(),
+            bytes.len(),
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        ) as *mut u8;
+        assert_ne!(
+            page,
+            libc::MAP_FAILED as *mut u8,
+            "a page for the segment moves"
+        );
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), page, bytes.len());
+        libc::mprotect(page.cast(), bytes.len(), libc::PROT_READ | libc::PROT_EXEC);
+        let at = |n: usize| page.add(starts[n]) as *const ();
+        let count = SEGMENT_REGISTERS.len();
+        *addr_of_mut!(SEGMENT_MOVES) = Some(SegmentMoves {
+            load: core::array::from_fn(|n| {
+                core::mem::transmute::<*const (), extern "C" fn(u32)>(at(n))
+            }),
+            read: core::array::from_fn(|n| {
+                core::mem::transmute::<*const (), extern "C" fn() -> u32>(at(count + n))
+            }),
+        });
+        (*addr_of!(SEGMENT_MOVES)).as_ref().expect("made")
+    }
+}
+
+/// Load ds, es, fs and gs with the case's selectors. One of fs or gs not null clears its base, so a case gives
+/// such a selector only with a base of 0; a null one is left as `arch_prctl` set it, with the base kept.
+fn load_selectors(selectors: [u16; SEGMENTS]) {
+    let moves = segment_moves();
+    for (n, (&selector, &register)) in selectors.iter().zip(SEGMENT_REGISTERS).enumerate() {
+        if selector != 0 || !has_base(register) {
+            (moves.load[n])(selector.into());
+        }
+    }
+}
+
+/// The selectors of ds, es, fs and gs.
+fn selectors() -> [u16; SEGMENTS] {
+    let moves = segment_moves();
+    core::array::from_fn(|n| (moves.read[n])() as u16)
+}
 
 fn arch_prctl(code: i64, value: u64) -> i64 {
     let result: i64;
@@ -174,12 +268,26 @@ impl Machine for Cpu {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
         "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14",
         "xmm15", "ymmh0", "ymmh1", "ymmh2", "ymmh3", "ymmh4", "ymmh5", "ymmh6", "ymmh7", "ymmh8",
-        "ymmh9", "ymmh10", "ymmh11", "ymmh12", "ymmh13", "ymmh14", "ymmh15",
+        "ymmh9", "ymmh10", "ymmh11", "ymmh12", "ymmh13", "ymmh14", "ymmh15", "ds", "es", "fs",
+        "gs",
     ];
 
     /// Linux refuses a base at or above the top of user space (2^47 - 4096); nothing else changes then.
     unsafe fn enter(uc: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str> {
         unsafe {
+            let wanted: [u16; SEGMENTS] = core::array::from_fn(|n| state[SELECTORS + n] as u16);
+            let base = |register| match register {
+                iced_x86::Register::FS => state[FS],
+                _ => state[GS],
+            };
+            if SEGMENT_REGISTERS
+                .iter()
+                .zip(wanted)
+                .any(|(&r, selector)| selector != 0 && has_base(r) && base(r) != 0)
+            {
+                return Err("a selector loaded into fs or gs needs a base of 0");
+            }
+            *addr_of_mut!(HOST_SELECTORS) = selectors();
             HOST_FS = get_base(ARCH_GET_FS);
             HOST_GS = get_base(ARCH_GET_GS);
             if arch_prctl(ARCH_SET_FS, state[FS] as u64) != 0 {
@@ -224,6 +332,7 @@ impl Machine for Cpu {
             }
             let keep = state[RFLAGS] as u64 & KEEP_BITS;
             core::arch::asm!("pushfq", "or qword ptr [rsp], {0}", "popfq", in(reg) keep);
+            load_selectors(wanted);
         }
         Ok(())
     }
@@ -239,6 +348,15 @@ impl Machine for Cpu {
     ) {
         unsafe {
             core::arch::asm!("pushfq", "and qword ptr [rsp], {0}", "popfq", in(reg) !(KEEP_BITS | AC));
+            for (n, selector) in selectors().into_iter().enumerate() {
+                state[SELECTORS + n] = selector.into();
+            }
+            let moves = segment_moves();
+            for (n, &register) in SEGMENT_REGISTERS.iter().enumerate() {
+                if !has_base(register) {
+                    (moves.load[n])((*addr_of!(HOST_SELECTORS))[n].into());
+                }
+            }
             state[FS] = get_base(ARCH_GET_FS).into();
             state[GS] = get_base(ARCH_GET_GS).into();
             arch_prctl(ARCH_SET_FS, HOST_FS);

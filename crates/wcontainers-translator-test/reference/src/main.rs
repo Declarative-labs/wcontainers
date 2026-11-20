@@ -355,6 +355,9 @@ fn serve_cases(mut input: std::fs::File, mut output: std::fs::File) -> ! {
         let code = request.take(length).to_vec();
         let seed = request.u64();
         fill(seed, &mut expected);
+        let at = request.u32();
+        let count = request.u8() as usize;
+        place(&(at, request.take(count).to_vec()), &mut expected);
         protect(
             DATA + DATA_WRITABLE,
             DATA_READ_ONLY,

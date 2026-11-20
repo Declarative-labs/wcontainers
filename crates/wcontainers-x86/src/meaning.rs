@@ -81,6 +81,7 @@ pub fn written(i: &Instruction) -> bool {
         || crate::float::written(i)
         || crate::text::written(m)
         || crate::descriptors::written(m)
+        || crate::segments::written(i)
         || m == Maskmovdqu
     {
         return true;
@@ -151,6 +152,12 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     if crate::descriptors::written(m) {
         crate::descriptors::emit(e, i, m);
         e.next();
+        return true;
+    }
+    if crate::segments::written(i) {
+        if crate::segments::emit(e, i) {
+            e.next();
+        }
         return true;
     }
     if crate::text::written(m) {
@@ -673,7 +680,7 @@ fn not_canonical<E: Emitter<X86_64> + ?Sized>(e: &mut E, local: u32) {
 
 /// Stop with general protection, as the CPU does for a branch to it, when the address in `local` is not
 /// canonical.
-fn canonical_target<E: Emitter<X86_64> + ?Sized>(e: &mut E, local: u32) {
+pub(crate) fn canonical_target<E: Emitter<X86_64> + ?Sized>(e: &mut E, local: u32) {
     not_canonical(e, local);
     e.sink().if_(BlockType::Empty);
     e.trap(Trap::GeneralProtection);
@@ -687,7 +694,7 @@ fn push<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 }
 
 /// Push the i64 in `value`, the instruction's operand (read from memory at `mem`) or what it makes.
-fn push_value<E: Emitter<X86_64> + ?Sized>(
+pub(crate) fn push_value<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     i: &Instruction,
     mem: Option<u32>,
@@ -3112,6 +3119,12 @@ fn pop_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     e.sink().local_set(value);
     e.sink().local_get(from).i64_const(bytes.into()).i64_add();
     e.set(RSP);
+    load_rflags(e, value, bytes);
+}
+
+/// Load the flags user mode may write from the i64 in `value`, of `bytes` bytes, as `popf` and `iret` do at
+/// CPL 3.
+pub(crate) fn load_rflags<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32, bytes: u32) {
     let written = (POPPED_CONTROL as i64) & mask((bytes * u8::BITS) as u8);
     e.get_control(Control::Rflags);
     e.sink()

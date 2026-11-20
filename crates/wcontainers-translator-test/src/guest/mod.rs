@@ -139,14 +139,16 @@ impl Encoded {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State(pub Vec<u128>);
 
-/// One layer 1 case: the instruction, the state to start from, whether the float flags are kept exact, and
-/// the data area's seed.
+/// One layer 1 case: the instruction, the state to start from, whether the float flags are kept exact, the
+/// data area's seed, and bytes placed over the seed's data from an offset (a frame or a pointer the
+/// instruction reads; none when empty).
 #[derive(Clone, Debug)]
 pub struct Case {
     pub code: Encoded,
     pub state: State,
     pub tracking: bool,
     pub seed: u64,
+    pub placed: (u32, Vec<u8>),
 }
 
 /// What the reference reported: the signal, its `si_code` and `si_addr`, and the pc in the frame.

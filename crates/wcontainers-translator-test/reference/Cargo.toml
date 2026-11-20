@@ -11,8 +11,9 @@ publish = false
 libc = "0.2.191"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-# Tells which instructions the trap flag stops part way (rep string instructions and gathers).
-iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder", "instr_info"] }
+# Tells which instructions the trap flag stops part way (rep string instructions and gathers), and encodes
+# the moves to and from segment registers the runner uses.
+iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder", "encoder", "instr_info"] }
 
 [profile.release]
 panic = "abort"

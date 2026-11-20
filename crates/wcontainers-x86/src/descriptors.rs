@@ -12,7 +12,7 @@ use wcontainers_guest_cpu::Emitter;
 
 /// A selector's requested privilege level, which no user segment depends on. Its bit choosing the local table
 /// is compared, so a local selector names nothing.
-const SELECTOR_PRIVILEGE: u16 = 0b11;
+pub const SELECTOR_PRIVILEGE: u16 = 0b11;
 /// A selector's lowest index bit: the bits below it are the privilege level and the local table's bit.
 pub const SELECTOR_INDEX: u16 = 1 << 3;
 /// The kernel's 64-bit code segment, which user mode may not name.
@@ -41,15 +41,15 @@ const WHOLE_LIMIT: u32 = u32::MAX;
 const CPU_NUMBER_LIMIT: u32 = 0;
 
 /// A segment user mode can name, with the access rights `lar` gives and the limit `lsl` gives.
-struct Segment {
-    selector: u16,
+pub(crate) struct Segment {
+    pub(crate) selector: u16,
     rights: u32,
     limit: u32,
     writable: bool,
 }
 
 /// Every one is readable; only the data segment is writable.
-const SEGMENTS: [Segment; 4] = [
+pub(crate) const SEGMENTS: [Segment; 4] = [
     Segment {
         selector: USER32_CS,
         rights: 0x00cf_fb00,

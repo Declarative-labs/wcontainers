@@ -28,6 +28,8 @@ mod meaning;
 #[cfg(feature = "translate")]
 mod operand;
 #[cfg(feature = "translate")]
+mod segments;
+#[cfg(feature = "translate")]
 mod simd;
 #[cfg(feature = "translate")]
 mod text;
@@ -40,7 +42,8 @@ pub mod encoding;
 pub use decode::{Instruction, claim_group, decode};
 #[cfg(feature = "translate")]
 pub use descriptors::{
-    CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, TASK_STATE, USER_CS, USER_DS, USER32_CS,
+    CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
+    USER32_CS,
 };
 #[cfg(feature = "translate")]
 pub use flags::{Condition, Flag, Flags, Shape, Test};
@@ -63,8 +66,9 @@ pub struct X86_64;
 
 /// The saved registers of a thread: the general registers in hardware order (rax, rcx, rdx, rbx, rsp, rbp,
 /// rsi, rdi, r8 to r15), rip, the six arithmetic flags at their rflags positions, the other rflags bits user
-/// code keeps (TF, DF, NT and ID, at their positions), the FS and GS bases, a 512-byte area in the FXSAVE
-/// layout (its x87 slots in physical order R0 to R7) and the upper halves of the sixteen ymm registers.
+/// code keeps (TF, DF, NT and ID, at their positions), the FS and GS bases, the selectors of ds, es, fs and
+/// gs, a 512-byte area in the FXSAVE layout (its x87 slots in physical order R0 to R7) and the upper halves
+/// of the sixteen ymm registers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct X86Block {
@@ -75,10 +79,29 @@ pub struct X86Block {
     pub rflags: u64,
     pub fs_base: u64,
     pub gs_base: u64,
-    pub reserved1: u64,
+    pub selectors: [u16; SEGMENT_REGISTERS],
     pub fxsave: Fxsave,
     pub ymm_high: [[u8; 16]; 16],
 }
+
+/// The segment registers a program can load, in `X86Block::selectors`' order; cs and ss hold Linux's 64-bit
+/// user segments always.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentRegister {
+    Ds,
+    Es,
+    Fs,
+    Gs,
+}
+
+/// `X86Block::selectors`' order.
+pub const SEGMENT_REGISTER_ORDER: [SegmentRegister; SEGMENT_REGISTERS] = [
+    SegmentRegister::Ds,
+    SegmentRegister::Es,
+    SegmentRegister::Fs,
+    SegmentRegister::Gs,
+];
+pub const SEGMENT_REGISTERS: usize = SegmentRegister::Gs as usize + 1;
 
 /// The FXSAVE area (Intel SDM Vol. 1 10.5.1, table 10-2), its x87 slots in physical order R0 to R7.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
@@ -173,6 +196,7 @@ pub const FLAGS_WORD: usize = core::mem::offset_of!(X86Block, flags);
 pub const RFLAGS: usize = core::mem::offset_of!(X86Block, rflags);
 pub const FS_BASE: usize = core::mem::offset_of!(X86Block, fs_base);
 pub const GS_BASE: usize = core::mem::offset_of!(X86Block, gs_base);
+pub const SELECTORS: usize = core::mem::offset_of!(X86Block, selectors);
 pub const FXSAVE: usize = core::mem::offset_of!(X86Block, fxsave);
 /// MXCSR and the xmm registers in the FXSAVE area.
 pub const MXCSR: usize = FXSAVE + core::mem::offset_of!(Fxsave, mxcsr);
@@ -236,7 +260,7 @@ impl X86Block {
         rflags: 0,
         fs_base: 0,
         gs_base: 0,
-        reserved1: 0,
+        selectors: [0; SEGMENT_REGISTERS],
         fxsave: Fxsave::ZERO,
         ymm_high: [[0; 16]; 16],
     };

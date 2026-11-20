@@ -34,6 +34,7 @@ fn regions<G: GuestTest>() -> [(std::ops::Range<u64>, Permissions); 3] {
 fn start_data(case: &Case) -> Vec<u8> {
     let mut data = vec![0u8; DATA_BYTES as usize];
     fill(case.seed, &mut data);
+    crate::layout::place(&case.placed, &mut data);
     data
 }
 
@@ -183,7 +184,7 @@ fn translated_in_one_page<G: GuestTest>(cases: &[Case]) -> Vec<Outcome> {
 /// Run a case on the reference.
 pub fn on_reference<G: GuestTest>(reference: &mut Reference, case: &Case) -> Outcome {
     let landed = reference
-        .case(case.code.code(), case.seed, &case.state.0)
+        .case(case.code.code(), case.seed, &case.placed, &case.state.0)
         .unwrap_or_else(|e| panic!("the reference runner failed: {e}"))
         .landed();
     let signal = Signal {

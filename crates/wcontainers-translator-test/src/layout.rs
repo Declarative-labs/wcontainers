@@ -81,6 +81,8 @@ pub mod x86_64 {
     pub const CODE_SPAN: u64 = 32 << 10;
     /// As ARM64's.
     pub const RUNNER: core::ops::Range<u64> = 0x6000_0000..0xb000_0000;
+    /// The state's field of ds' selector; es', fs' and gs' follow it.
+    pub const SELECTORS: usize = 64;
 }
 
 /// The reference's wire: records both ways, each a little-endian u32 length and that many bytes. The runner
@@ -97,6 +99,14 @@ pub const RESULT_RAN: u8 = 0;
 pub const RESULT_FAILED: u8 = 1;
 pub const RESULT_REFUSED: u8 = 2;
 pub const RESULT_RUNNER_FAILED: u8 = 3;
+
+/// Put `placed`'s bytes over the data from its offset, as far as the data reaches.
+pub fn place(placed: &(u32, Vec<u8>), into: &mut [u8]) {
+    let (at, bytes) = placed;
+    for (to, &byte) in into.iter_mut().skip(*at as usize).zip(bytes) {
+        *to = byte;
+    }
+}
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {

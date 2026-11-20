@@ -3,6 +3,7 @@
 
 mod assemble;
 mod loops;
+mod segments;
 
 use super::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
@@ -33,7 +34,8 @@ const FTW: usize = 23;
 const R0: usize = 24;
 const XMM: usize = 32;
 const YMMH: usize = 48;
-const FIELDS: usize = 64;
+use crate::layout::x86_64::SELECTORS;
+const FIELDS: usize = SELECTORS + wcontainers_x86::SEGMENT_REGISTERS;
 
 /// The six flags and the bits of rflags user code keeps besides them.
 const SIX_FLAGS: u64 = wcontainers_x86::ARITHMETIC_FLAGS;
@@ -75,7 +77,7 @@ impl GuestTest for X86_64 {
             "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12",
             "xmm13", "xmm14", "xmm15", "ymmh0", "ymmh1", "ymmh2", "ymmh3", "ymmh4", "ymmh5",
             "ymmh6", "ymmh7", "ymmh8", "ymmh9", "ymmh10", "ymmh11", "ymmh12", "ymmh13", "ymmh14",
-            "ymmh15",
+            "ymmh15", "ds", "es", "fs", "gs",
         ],
     };
     const C_TARGET: &'static str = "x86_64-linux-musl";
@@ -177,6 +179,7 @@ impl GuestTest for X86_64 {
         }
         state.extend(f.xmm.map(u128::from_le_bytes));
         state.extend(block.ymm_high.map(u128::from_le_bytes));
+        state.extend(block.selectors.map(u128::from));
         assert_eq!(state.len(), FIELDS);
         State(state)
     }
@@ -206,6 +209,9 @@ impl GuestTest for X86_64 {
         for (to, from) in block.ymm_high.iter_mut().zip(&s[YMMH..YMMH + 16]) {
             *to = from.to_le_bytes();
         }
+        for (to, from) in block.selectors.iter_mut().zip(&s[SELECTORS..]) {
+            *to = *from as u16;
+        }
         thread[..size_of::<X86Block>()].copy_from_slice(block.as_bytes());
     }
 
@@ -214,7 +220,7 @@ impl GuestTest for X86_64 {
         thread[at..at + size_of::<u32>()].copy_from_slice(&1u32.to_le_bytes());
     }
 
-    fn reconcile(case: &Case, expected: &mut Outcome, _actual: &Outcome) {
+    fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
         // RF is in the frame of every fault, and the runner's own trap flag in r11 after `syscall`.
         expected.state.0[RFLAGS] &= !RF;
         let instruction = Decoder::with_ip(
@@ -225,7 +231,10 @@ impl GuestTest for X86_64 {
         )
         .decode();
         // AC is never held (plan 5.1): a popped AC reads back clear by design.
-        if matches!(instruction.mnemonic(), Mnemonic::Popf | Mnemonic::Popfq) {
+        if matches!(
+            instruction.mnemonic(),
+            Mnemonic::Popf | Mnemonic::Popfq | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq
+        ) {
             expected.state.0[RFLAGS] &= !u128::from(wcontainers_x86::ALIGNMENT_CHECK);
         }
         // The CPU's part of an unmasked SIMD exception is MXCSR's flags; the kernel works out the si_code.
@@ -254,6 +263,22 @@ impl GuestTest for X86_64 {
             let limit = u128::MAX >> (u128::BITS - width.min(u32::BITS));
             if expected.state.0[field] & limit != limit {
                 expected.state.0[field] &= !(u128::MAX >> (u128::BITS - width));
+            }
+        }
+        // `mov ss` holds the trap back by an instruction: the `int3` filler after it ran and stopped past
+        // itself (`reference_stop`).
+        let next = CODE + u64::from(case.code.length);
+        if expected.stop == Stop::Landed(next) && expected.state.0[RIP] == u128::from(next + 1) {
+            expected.state.0[RIP] = next.into();
+        }
+        // The CPU makes a null selector with a privilege level 0 on the `iret` to user mode that runs the
+        // reference's handler; a program sees that only after an interrupt or a signal.
+        for field in SELECTORS..FIELDS {
+            let ours = actual.state.0[field];
+            if expected.state.0[field] == 0
+                && ours & !u128::from(wcontainers_x86::SELECTOR_PRIVILEGE) == 0
+            {
+                expected.state.0[field] = ours;
             }
         }
         if instruction.mnemonic() == Mnemonic::Syscall {
@@ -795,6 +820,12 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                     ][draw.below(5) as usize],
                 ),
                 K::dr_reg => Operand::R(Register::DR0 + draw.below(8) as u32),
+                K::seg_reg => Operand::R(
+                    segments::SEGMENT_REGISTERS
+                        [draw.below(segments::SEGMENT_REGISTERS.len() as u64) as usize],
+                ),
+                K::fs => Operand::R(Register::FS),
+                K::gs => Operand::R(Register::GS),
                 K::imm8 => Operand::Unsigned(draw.value() as u32 & 0xff),
                 K::imm8_const_1 => Operand::Unsigned(1),
                 K::imm16 => Operand::Unsigned(draw.value() as u32 & 0xffff),
@@ -884,6 +915,7 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         }
     }
     // Point the memory operand where the draw says, through its registers or the segment base.
+    let mut aimed = None;
     let mut seed = None;
     let mut source = None;
     if let Some(m) = memory {
@@ -908,6 +940,7 @@ fn case(code: Code, seed: u64) -> Option<Case> {
             0
         };
         aim(&mut draw, &mut state, &m, to.wrapping_sub(moved), address32);
+        aimed = Some(to);
         // A string compare's strings made of the memory operand's own elements.
         if is_text_compare(code)
             && (DATA..=DATA + DATA_BYTES - u64::from(wcontainers_x86::XMM_BYTES)).contains(&to)
@@ -926,6 +959,19 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     if is_text_compare(code) {
         text_strings(&mut draw, &mut state, &instruction, source);
     }
+    let seed = seed.unwrap_or_else(|| draw.next());
+    let placed = if segments::is_segment_form(&instruction) {
+        segments::draw(
+            &mut draw,
+            &instruction,
+            bytes.len(),
+            &mut state,
+            aimed,
+            seed,
+        )?
+    } else {
+        Default::default()
+    };
     if reaches_runner(&bytes, &state) {
         return None;
     }
@@ -933,7 +979,8 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         code: Encoded::new(&bytes),
         state: State(state),
         tracking,
-        seed: seed.unwrap_or_else(|| draw.next()),
+        seed,
+        placed,
     })
 }
 
@@ -1429,6 +1476,7 @@ fn no_form(draw: u64, seed: u64) -> Option<Case> {
         state: base.state,
         tracking: false,
         seed,
+        placed: Default::default(),
     })
 }
 
@@ -1445,6 +1493,7 @@ pub fn plain(code: &[u8]) -> Case {
         state: State(state),
         tracking: false,
         seed: 0x5eed,
+        placed: Default::default(),
     }
 }
 
@@ -1495,6 +1544,7 @@ fn hand_cases() -> Vec<Designed> {
     .into_iter()
     .chain(cpuid_cases())
     .chain(table_cases())
+    .chain(segments::far_to_32_bit_cases())
     .collect()
 }
 

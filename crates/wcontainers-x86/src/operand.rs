@@ -367,13 +367,18 @@ pub fn setcc(m: Mnemonic) -> Option<Condition> {
 pub fn stack_bytes(i: &Instruction) -> u32 {
     let ins = &i.iced;
     let width = match ins.op_kind(0) {
-        // `pushf`, `popf`, `leave` and `enter` with 66 move words; they have no register or memory operand.
+        // `pushf`, `popf`, `leave`, `enter` and the pushes and pops of fs and gs with 66 move words; they have no
+        // general register or memory operand.
         _ if matches!(
             ins.code(),
             iced_x86::Code::Pushfw
                 | iced_x86::Code::Popfw
                 | iced_x86::Code::Leavew
                 | iced_x86::Code::Enterw_imm16_imm8
+                | iced_x86::Code::Pushw_FS
+                | iced_x86::Code::Pushw_GS
+                | iced_x86::Code::Popw_FS
+                | iced_x86::Code::Popw_GS
         ) =>
         {
             u16::BITS as u8

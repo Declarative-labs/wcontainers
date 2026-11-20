@@ -20,6 +20,8 @@ use wcontainers_guest_cpu::*;
 pub enum Control {
     /// The rflags bits user code keeps outside the six flags (TF, DF, NT and ID), at their positions.
     Rflags,
+    /// The selectors of ds, es, fs and gs, 16 bits each in `crate::SegmentRegister`'s order, as an i64.
+    Selectors,
     /// i32s: MXCSR, whether its flags are kept, and the float hook's unmasked exception.
     Mxcsr,
     MxcsrTracking,
@@ -69,6 +71,7 @@ pub enum Reason {
     TrapFlagNotStepped,
     AlignmentCheckNotProvided,
     MxcsrFlagsReadNotKept,
+    FarTransferTo32Bit,
 }
 
 /// The thread state the float hook works on: MXCSR in the block to the end of the private words.
@@ -316,7 +319,7 @@ impl Guest for X86_64 {
 
     fn control_ty(c: Control) -> ValType {
         match c {
-            Control::Rflags => ValType::I64,
+            Control::Rflags | Control::Selectors => ValType::I64,
             _ => ValType::I32,
         }
     }
@@ -324,6 +327,7 @@ impl Guest for X86_64 {
     fn control_offset(c: Control) -> usize {
         match c {
             Control::Rflags => RFLAGS,
+            Control::Selectors => crate::SELECTORS,
             Control::Mxcsr => MXCSR,
             Control::MxcsrTracking => MXCSR_TRACKING,
             Control::FloatException => FLOAT_EXCEPTION,
@@ -471,6 +475,10 @@ impl Guest for X86_64 {
             Reason::MxcsrFlagsReadNotKept,
             "MXCSR's exception flags read while not kept",
         ),
+        (
+            Reason::FarTransferTo32Bit,
+            "far transfer to 32-bit code, not provided",
+        ),
     ];
 
     type Host = Host;
@@ -505,6 +513,20 @@ impl Guest for X86_64 {
             GS => block.gs_base,
             r => block.gpr[usize::from(r)],
         };
+        // The slots of a far return's frame fault one by one, each through the stack segment.
+        if let Some(slots) = crate::segments::frame_slots(&i) {
+            for (by, bytes) in slots {
+                let start = value(RSP).wrapping_add_signed(by);
+                if address.wrapping_sub(start) < bytes.into() {
+                    let last = start.wrapping_add(u64::from(bytes) - 1);
+                    return if crate::is_canonical(start) && crate::is_canonical(last) {
+                        MemoryFault::Page
+                    } else {
+                        MemoryFault::Stack
+                    };
+                }
+            }
+        }
         for access in Self::accesses(&i).into_iter().flatten() {
             let mut start = access.displacement as u64;
             match access.base {
@@ -545,11 +567,20 @@ impl Guest for X86_64 {
             if let Some(segment) = access.segment {
                 start = start.wrapping_add(value(segment));
             }
-            let bytes = access.fixed_bytes().unwrap_or(1).into();
-            let last = start.wrapping_add(bytes - 1);
+            let mut bytes: u64 = access.fixed_bytes().unwrap_or(1).into();
             if address.wrapping_sub(start) >= bytes {
                 continue;
             }
+            // A far pointer's offset and selector are two reads, each faulting by itself.
+            if crate::segments::reads_pointer(&i) && access.kind == AccessKind::Read {
+                for (by, piece) in crate::segments::pointer_pieces(&i) {
+                    let from = start.wrapping_add(by.into());
+                    if address.wrapping_sub(from) < piece.into() {
+                        (start, bytes) = (from, piece.into());
+                    }
+                }
+            }
+            let last = start.wrapping_add(bytes - 1);
             // An access that wraps past the top of the address space is canonical at both ends.
             let canonical = crate::is_canonical(start) && crate::is_canonical(last);
             return if canonical {
@@ -615,7 +646,7 @@ impl Guest for X86_64 {
                 target: None,
                 kind: FlowKind::CallThrough(through()),
             },
-            Ret => Flow {
+            Ret | Retf | Iret | Iretd | Iretq => Flow {
                 falls_through: false,
                 target: None,
                 kind: FlowKind::Return,
@@ -701,7 +732,12 @@ impl Guest for X86_64 {
                 None,
             ],
             Pop => {
-                let bytes = stack_bytes(i);
+                // A segment register's pop reads the selector's 16 bits alone.
+                let bytes = if crate::segments::written(i) {
+                    size_of::<u16>() as u32
+                } else {
+                    stack_bytes(i)
+                };
                 let pop = through(RSP, 0, bytes, AccessKind::Read);
                 // The destination's address is worked out with the stack pointer moved.
                 let destination = explicit.map(|mut m| {
@@ -711,6 +747,22 @@ impl Guest for X86_64 {
                     m
                 });
                 [Some(pop), destination]
+            }
+            Call if crate::segments::is_far(i) => {
+                let bytes = crate::segments::far_call_push(i);
+                [
+                    explicit,
+                    Some(through(RSP, -i64::from(bytes), bytes, AccessKind::Write)),
+                ]
+            }
+            // Each slot is checked by itself, in the reference's order (`frame_slots`); this covers them all.
+            Retf | Iret | Iretd | Iretq => {
+                let slots = crate::segments::frame_slots(i).expect("a frame");
+                let end = slots.iter().map(|&(by, bytes)| by + i64::from(bytes)).max();
+                [
+                    Some(through(RSP, 0, end.unwrap_or(0) as u32, AccessKind::Read)),
+                    None,
+                ]
             }
             Call => {
                 let push = through(RSP, -i64::from(SLOT), SLOT, AccessKind::Write);
@@ -772,7 +824,8 @@ impl Guest for X86_64 {
                 before_access: true,
             },
             Pop if writes_rsp => StackMove::Unknown,
-            Leave | Enter => StackMove::Unknown,
+            Leave | Enter | Retf | Iret | Iretd | Iretq => StackMove::Unknown,
+            Call if crate::segments::is_far(i) => StackMove::Unknown,
             Pop | Popf | Popfq => StackMove::By {
                 delta: stack_bytes(i).into(),
                 before_access: false,
@@ -929,6 +982,7 @@ impl Guest for X86_64 {
             // Intel's approximations are its own (plan 5.8).
             m if crate::float::estimates(m) => true,
             m if crate::descriptors::may_vary(m) => true,
+            _ if crate::segments::may_vary(i) => true,
             // Intel leaves the result of 16 bits undefined.
             Bswap => crate::meaning::width(i, 0) == crate::operand::W16,
             m => matches!(
