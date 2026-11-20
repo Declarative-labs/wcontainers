@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::ops::Range;
 use core::time::Duration;
@@ -168,3 +169,10 @@ pub struct SystemVSegmentId(pub i32);
 /// The kernel's own number for a shared anonymous memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AnonymousMemoryId(pub u64);
+
+/// The optional processor features a program is told it has, in each guest architecture's own form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessorFeatures {
+    Arm64 { hwcap: u64, hwcap2: u64 },
+    X86_64 { cpuid_features: Vec<String> },
+}

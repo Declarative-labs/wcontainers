@@ -8,7 +8,7 @@ use core::ops::{ControlFlow, Range};
 use wcontainers_abi::{BackendRequestId, ConnectionId, End, HostError, SystemCallRequest, Warning};
 use wcontainers_kernel::TaskId;
 use wcontainers_kernel_interface::{
-    AccessKind, MemoryObject, Process, SignalInformation, SystemCallResponse,
+    AccessKind, MemoryObject, Process, ProcessorFeatures, SignalInformation, SystemCallResponse,
 };
 
 /// The embedder of a kernel, as the union of every concern below.
@@ -103,6 +103,14 @@ pub trait ProcessTracer {
     /// Another process is about to read this one's internal state.
     fn on_inspection_starting<P: Process<State = Self::ProcessState>>(&self, process: P) {}
     fn on_inspection_ended<P: Process<State = Self::ProcessState>>(&self, process: P) {}
+
+    fn choose_processor_features<P: Process<State = Self::ProcessState>>(
+        &self,
+        process: P,
+        supported: &ProcessorFeatures,
+    ) -> ProcessorFeatures {
+        supported.clone()
+    }
 }
 
 /// The source of the ids of processes and threads.
