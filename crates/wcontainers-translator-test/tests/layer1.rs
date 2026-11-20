@@ -20,6 +20,9 @@ use wcontainers_translator_test::layer1::{
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_x86::X86_64;
 
+/// How many draws a strategy's filters may throw away for each case before the run gives up.
+const REJECTS_PER_CASE: u32 = 100;
+
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
 }
@@ -96,7 +99,7 @@ fn run_forms<G: GuestTest>(
         let reference = RefCell::new(taken.unwrap_or_else(|| Reference::start(&G::REFERENCE)));
         let mut config = Config::with_cases(count);
         config.failure_persistence = None;
-        config.max_global_rejects = 100 * count;
+        config.max_global_rejects = REJECTS_PER_CASE * count;
         let mut runner = generator(seed, name, config);
         let result = runner.run(&G::cases(form), |case| {
             check(&mut reference.borrow_mut(), form, &case).map_err(TestCaseError::fail)
@@ -228,6 +231,7 @@ fn bytes_in_no_form_stop_as_on_the_cpu<G: GuestTest>() {
     key[8..16].copy_from_slice(b"no form ");
     let mut config = Config::with_cases(count);
     config.failure_persistence = None;
+    config.max_local_rejects = REJECTS_PER_CASE * count;
     let mut runner =
         TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
     let reference = RefCell::new(Reference::start(&G::REFERENCE));
