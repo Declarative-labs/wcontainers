@@ -4,8 +4,8 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 3 (2026-11-19). Not complete: candidate B, GLSL, the rest of the corpus, the choice and the
-15.4 parts remain (Next).
+G8 run 3 (2026-11-19). Not complete: candidate B is started and measured but not finished; GLSL, the
+rest of the corpus, the choice and the 15.4 parts remain (Next).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -22,7 +22,8 @@ Done:
   inputs, outputs and system values are removed. The drivers (G9, G10) must hand over the same.
 - `Nir::to_common_form` (`wc_nir_to_common_form`), every route's step: sampled array layers rounded
   to the nearest even integer (Vulkan's rule; the common form's layer is an integer, and naga's
-  SPIR-V reader truncates the float layer); the binding rule of 6.4 (each combined image sampler
+  SPIR-V reader truncates the float layer); compute dispatches counted from workgroup 0 with no
+  global offset (`nir_lower_compute_system_values` with no bases); the binding rule of 6.4 (each combined image sampler
   split into a texture and a sampler at the same set and binding; every resource renumbered into its
   stage's set kind by kind in the program's (set, binding) order; the reflection as
   `ReflectedBinding`, program set in `space`, program binding in `register`; unsized arrays of
@@ -33,7 +34,19 @@ Done:
 - Candidate A (`zink-spirv-naga`): Zink's `ntv_shader_prepare` and `nir_to_spirv` (native Vulkan,
   SPIR-V 1.3), cleaned of Zink's `Index 0` decorations and its unneeded `DrawParameters`, read by
   naga's SPIR-V reader and validated with what the common form allows.
-- The corpus run (`tests/corpus`, one command, How to run): every `.spv` under `WC_NIR_CORPUS`, each
+- Candidate B (`nir-naga`, `src/direct.rs`, `bridge/flat.c`, `flat.h`): the bridge takes the
+  shader out of SSA (phi webs into registers; every other value used outside its block, or by an
+  `if`, into a register of its own; derefs made again in each block) and flattens it into plain
+  arrays (types, struct fields, variables, then the instructions in order with `if`, `else`,
+  `loop` and their ends as markers). Mesa's numbering stays in C: every kind and operation crosses
+  as the bridge's own enums (`WC_ALU_OPS`, `WC_INTRINSICS`, mirrored in order in Rust). Rust walks
+  it into naga: stage inputs and outputs as entry point arguments and a result struct through
+  locals (the position's y negated on the way out: the common form's clip space is WGSL's, as naga's
+  SPIR-V reader makes it for A), buffers through `vulkan_resource_index` chains, registers as u32
+  or bool locals, NIR's untyped values kept with the kind their instruction gives and bitcast at
+  each use, constants made at each use in the kind it needs, a texture sampled with a comparison
+  made a depth texture. What it does not take is refused by name ("not taken: ..."). Held by
+  `tests/route.rs` (both candidates bind a sampling program alike; a compute program). every `.spv` under `WC_NIR_CORPUS`, each
   shader and route in a child process of its own; a crash or hang is named and attributed to the step
   it happened in (the route, or the comparison). One JSON line a shader. Knobs: `WC_NIR_SHADERS` (a
   seeded sample), `WC_NIR_SEED` (the sample and every shader's inputs; default 0x5eed),
@@ -94,11 +107,26 @@ once, load 0.3 at the start, 5.3 at the end; 124 s with the build): 1005 shaders
   glslang program never writes, so such modules ask a back end for clip distances they do not use
   (validated with `CLIP_DISTANCES` today).
 
+Candidate B on the whole corpus, held to lavapipe (same run, both routes; x86-64 machine, 192 at
+once, load 10.2 at the start and 17.8 at the end, shared with other tracks; 4 minutes): of the 839,
+471 convert and match, 0 differ, 6 not compared (the same hanging `irradiancecube.frag`), 362 fail
+to convert, all by name. Shader by shader: 457 match on both routes, 269 on A only, 14 on B only.
+Median conversion time of the 457 (192 at once, so not the choice's measurement): A 327 us, B 139
+us. B's failures, largest first: 140 a stage input or output that is an array or a block (clip and
+cull distances, arrays at locations, matrices); 117 a row-major matrix (HLSL's buffers; naga has no
+row-major: rows as an array of vectors with loads transposed is the way); 32 a resource index used
+as a value (an array of buffers indexed at run time, or a descriptor passed on); 23
+`load_first_vertex` and 6 `load_base_instance` (the draw's bases, as for A); 12 a texture of
+another dimension (texel buffers, subpass inputs); 6 `image_deref_load`, 3 `image_deref_store`, 1
+`image_deref_size` (storage images: not walked yet); 4 `load_point_coord`; 4 `fmod`, 2 `frem`; 3 a
+storage image without a format; 3 vertex programs without a position (as A); 3 arrays of textures
+and samplers needing `TEXTURE_AND_SAMPLER_BINDING_ARRAY`; 2 `deref_atomic`; 1 `load_view_index`.
+
 Next, in this order:
-1. Candidate B: NIR walked into naga in Rust. The bridge will need NIR's structures in Rust; bindgen
-   was tried and dropped in run 1 (Departures); a flattened form written by the C side (types,
-   variables, then each function's control flow and instructions, out of SSA into registers) and
-   read by Rust is the plan. Run it over the corpus beside candidate A (`ROUTES` in `run.rs`).
+1. Candidate B's gaps above, largest first, each held by the corpus: stage arrays and blocks (split
+   into one argument or member a location, clip and cull distances as naga's built-ins); row-major
+   matrices; storage images and atomics; `fmod`, `frem`, point coordinates. Then the choice can be
+   made on comparable routes.
 2. Candidate A's fixable defects, so that the choice compares each at its best: Zink's matrix
    decorations (a patch to the pinned Mesa: decorate arrays of matrices, take the explicit stride);
    push constants as spilled immediates; the unused clip and cull outputs.
@@ -227,7 +255,10 @@ Next, in this order:
   2026-11-19 makes the rented machines the default.
 - Zink is built beside llvmpipe and lavapipe: its `nir_to_spirv` is candidate A's first step.
   SPIRV-Tools is off (Mesa takes it when present; nothing of ours needs it).
-- The bridge's eight functions are declared by hand in `src/mesa.rs`, not by bindgen: bindgen's output
+- Candidate B reads NIR through a flattened copy the bridge makes (`bridge/flat.c`), not through
+  NIR's own structures from Rust: bindgen is out (below), and the copy keeps Mesa's numbering and
+  layout on the C side, so a Mesa update changes C only.
+- The bridge's functions are declared by hand in `src/mesa.rs` and `src/direct.rs`, not by bindgen: bindgen's output
   is included from Cargo's `OUT_DIR`, whose name the literal check refuses as a new code string here
   (its one constant, `CARGO_OUT_DIR`, is private to wcontainers-literals).
 
@@ -270,6 +301,8 @@ None.
   array layer into an integer with a truncating `As` (`front/spv/image.rs`), where Vulkan and
   Direct3D round to the nearest even integer; a layer of 1.6 reads layer 1 instead of 2. The NIR
   route rounds in NIR first; dxil-spirv's and dxbc-spirv's output reaches the same reader.
+- Interface or shaders track (later, when the Vulkan driver reports `vkCmdDispatchBase`): a helper
+  value for the base workgroup; the routes now count dispatches from workgroup 0.
 - Literals track: `CARGO_OUT_DIR` public (in a public module), so a build script can name `OUT_DIR`
   through it.
 
