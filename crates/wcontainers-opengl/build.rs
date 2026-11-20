@@ -80,6 +80,8 @@ fn main() {
         .prepend_enum_name(false)
         .derive_default(true)
         .layout_tests(false)
+        // Mesa's comments hold C examples, which rustdoc would run as Rust.
+        .generate_comments(false)
         .generate()
         .expect("bindgen reads Mesa's Gallium headers");
     let file =

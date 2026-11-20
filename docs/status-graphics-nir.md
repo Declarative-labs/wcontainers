@@ -1398,6 +1398,13 @@ Next (after G8's check):
 
 ## Measurements
 
+- The whole suite of wcontainers-nir and wcontainers-opengl (G9 run 6, x86-64 machine, load 3
+  to 7): fmt clean; clippy with warnings denied clean with and without Mesa; with Mesa
+  `glsl_buffers` 1, `glsl_reference` 10 and 2 ignored (the known failures), `narrow` 2, `route`
+  11 passed, and the driver's doc tests none (bindgen no longer copies Mesa's comments, whose C
+  examples rustdoc ran as Rust and failed: 2 failures before); without Mesa every target builds,
+  no tests run. The corpus run was not repeated this run (route B's one change, the sample level
+  outside comparisons, is held by the conformance runs; the corpus run is the next run's).
 - The whole dEQP-GLES2 and KHR-GLES2 lists on our driver (G9 run 6, desktop, RTX 3080, one GPU
   job, 8 glcts processes at once, other tracks' jobs queued beside; the desktop's processors at
   8% just after): 17,638 cases in 6 min 45 s (14:00:07 to 14:06:52, with the job's start). A 1%
