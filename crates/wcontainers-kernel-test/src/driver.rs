@@ -11,8 +11,8 @@ use wcontainers_abi::{
     SystemCallRequest, Warning,
 };
 use wcontainers_kernel::{
-    AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, Process, Start, System,
-    SystemCallResponse, TaskId,
+    AccessKind, Errno, ExecutionConfig, FileRecord, Kernel, Process, SignalInformation, Start,
+    System, SystemCallResponse, TaskId,
 };
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
@@ -311,6 +311,14 @@ impl System for TestHost<Box<dyn Hooks>> {
     fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
         self.hook()
             .on_memory_written_by_kernel(process, thread, range);
+    }
+    fn on_signal_delivering(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        self.hook().on_signal_delivering(process, thread, signal);
     }
 }
 

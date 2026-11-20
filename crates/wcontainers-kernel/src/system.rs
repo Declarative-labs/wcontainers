@@ -120,6 +120,9 @@ pub enum MemoryError {
 /// What a system call answers: its value, or the error it fails with.
 pub type SystemCallResponse = Result<u64, crate::Errno>;
 
+/// Linux's own record of a signal.
+pub type SignalInformation = crate::linux::general::siginfo;
+
 /// What an embedder implements: the abi's services, the task ids, and the hooks. Every hook is
 /// synchronous, fires only when every operation on its process is legal, and never nests.
 pub trait System: Host + Sync {
@@ -189,6 +192,15 @@ pub trait System: Host + Sync {
     /// The kernel wrote `range` of the process's memory for `thread`.
     fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
         let _ = (process, thread, range);
+    }
+    /// `thread` has taken `signal` to act on it, before anything of its action.
+    fn on_signal_delivering(
+        &self,
+        process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        let _ = (process, thread, signal);
     }
 }
 
@@ -355,6 +367,16 @@ impl Process<'_> {
     ) -> Result<(), Unsupported> {
         let _ = (thread, range, watches);
         Err(Unsupported::PerThreadWatch)
+    }
+
+    /// Sends `signal` to one thread of the process when the kernel next settles, before any
+    /// thread runs again; a record must be built from zero, as Linux's `clear_siginfo` builds one.
+    pub fn send_signal(&mut self, thread: TaskId, signal: SignalInformation) {
+        let information = crate::signal::information_bytes(&signal);
+        self.kernel
+            .signals_sent
+            .push_back((self.pid, thread.pid(), information));
+        self.kernel.unsettled = true;
     }
 
     /// The ranges the process (its threads, and the kernel for it) wrote since this was last

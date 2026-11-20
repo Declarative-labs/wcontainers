@@ -3,7 +3,9 @@
 use std::ops::{ControlFlow, Range};
 
 use wcontainers_abi::{Cpu, SystemCallRequest};
-use wcontainers_kernel::{AccessKind, Kernel, Process, SystemCallResponse, TaskId, task_id_after};
+use wcontainers_kernel::{
+    AccessKind, Kernel, Process, SignalInformation, SystemCallResponse, TaskId, task_id_after,
+};
 
 /// A test's side of the kernel's hooks and task id calls, for the tests that act at some of them;
 /// each left alone does nothing, or for task ids, counts as the kernel's default does.
@@ -64,6 +66,14 @@ pub trait Hooks: Send {
         range: Range<u64>,
     ) {
         let _ = (process, thread, range);
+    }
+    fn on_signal_delivering(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        let _ = (process, thread, signal);
     }
     /// The kernel has nothing to run: the test may act on it through ordinary calls. Whether it
     /// did anything that may let the kernel go on.

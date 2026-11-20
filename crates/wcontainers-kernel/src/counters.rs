@@ -182,6 +182,10 @@ pub mod reason {
     pub const TASK_ID_OUT_OF_RANGE: &str = "task id out of range";
     /// A request for memory found no room below the executor's ceiling. Detail: the call's number.
     pub const PROCESS_OUTGROWN: &str = "process outgrew the ceiling";
+    /// A signal the embedder sent through a process's handle names no thread of that process, has
+    /// no valid number, or does not fit the receiving user's queue; it is not sent. Detail: the
+    /// signal's number.
+    pub const SIGNAL_NOT_SENT: &str = "signal from the embedder not sent";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
     /// The CPU side answered that this host cannot make a memory, a thread or a block of shared

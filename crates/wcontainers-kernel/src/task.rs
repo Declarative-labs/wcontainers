@@ -560,6 +560,10 @@ impl Kernel {
                 self.announce_kernel_writes(cx);
                 continue;
             }
+            if let Some((pid, tid, info)) = self.signals_sent.pop_front() {
+                self.send_from_embedder(cx, pid, tid, info);
+                continue;
+            }
             if let Some(tid) = self.signalled.pop_front() {
                 let Some(thread) = self.threads.get(&tid) else {
                     continue;

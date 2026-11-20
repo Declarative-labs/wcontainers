@@ -33,6 +33,11 @@
 //     itself, and in another reads it with process_vm_readv; prints what each saw.
 //   cmdline WHOSE LONG: reads the command line of itself (self) or, from a child, of its parent
 //     (parent) through /proc, without touching its strings, and counts the letters a.
+//   signals: takes signals of several kinds (queued, blocked then let through, sent by another
+//     thread during a read, a fault), one taken by sigwaitinfo and one ignored, and prints each
+//     its handlers saw, in order.
+//   interrupted SENDER: a child reads an empty pipe into the buffer until a SIGUSR1 interrupts
+//     it; the parent sends it with sigqueue (SENDER parent) or leaves it to the embedder (none).
 //   environ WHOSE LONG: runs itself again with LONG in its environment, then reads that
 //     environment through /proc as cmdline reads the command line.
 #define _GNU_SOURCE
@@ -70,6 +75,7 @@
 #include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <setjmp.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1013,6 +1019,106 @@ static int environment(char **argv, char *whose, const char *value) {
     return 0;
 }
 
+enum { SIGNALS_KEPT = 16 };
+static int signals_seen, signals_kept[SIGNALS_KEPT][3];
+static sigjmp_buf fault_return;
+static int main_thread, signal_pipe[2];
+
+static void keep_signal(int signal, siginfo_t *info, void *context) {
+    (void)context;
+    int at = __atomic_fetch_add(&signals_seen, 1, __ATOMIC_SEQ_CST);
+    if (at >= SIGNALS_KEPT) return;
+    signals_kept[at][0] = signal;
+    signals_kept[at][1] = info->si_code;
+    signals_kept[at][2] = info->si_value.sival_int;
+}
+
+static void keep_fault(int signal, siginfo_t *info, void *context) {
+    keep_signal(signal, info, context);
+    siglongjmp(fault_return, 1);
+}
+
+static void *interrupt_main(void *unused) {
+    (void)unused;
+    struct timespec wait = {0, 50 * 1000 * 1000};
+    nanosleep(&wait, NULL);
+    syscall(SYS_tgkill, getpid(), main_thread, SIGUSR1);
+    nanosleep(&wait, NULL);
+    write(signal_pipe[1], "x", 1);
+    return NULL;
+}
+
+static void handle(int signal, void (*handler)(int, siginfo_t *, void *), int flags) {
+    struct sigaction action = {0};
+    action.sa_sigaction = handler;
+    action.sa_flags = SA_SIGINFO | flags;
+    sigaction(signal, &action, NULL);
+}
+
+static void mask(int how, int signal) {
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, signal);
+    sigprocmask(how, &set, NULL);
+}
+
+static int signals(void) {
+    handle(SIGUSR1, keep_signal, SA_RESTART);
+    handle(SIGUSR2, keep_signal, SA_RESTART);
+    handle(SIGRTMIN, keep_signal, SA_RESTART);
+    handle(SIGSEGV, keep_fault, SA_NODEFER);
+    signal(SIGTERM, SIG_IGN);
+    mask(SIG_BLOCK, SIGUSR2);
+    kill(getpid(), SIGUSR2);
+    sigqueue(getpid(), SIGRTMIN, (union sigval){.sival_int = 7});
+    kill(getpid(), SIGTERM);
+    mask(SIG_UNBLOCK, SIGUSR2);
+    mask(SIG_BLOCK, SIGUSR1);
+    sigqueue(getpid(), SIGUSR1, (union sigval){.sival_int = 9});
+    sigset_t waited;
+    sigemptyset(&waited);
+    sigaddset(&waited, SIGUSR1);
+    siginfo_t info;
+    int signal = sigwaitinfo(&waited, &info);
+    printf("waited %d value %d\n", signal, info.si_value.sival_int);
+    mask(SIG_UNBLOCK, SIGUSR1);
+    main_thread = gettid();
+    pipe(signal_pipe);
+    pthread_t interrupter;
+    pthread_create(&interrupter, NULL, interrupt_main, NULL);
+    char byte;
+    long got = read(signal_pipe[0], &byte, 1);
+    pthread_join(interrupter, NULL);
+    printf("read %ld\n", got);
+    if (!sigsetjmp(fault_return, 1)) *(volatile char *)(buffer + pages * page) = 0;
+    for (int at = 0; at < signals_seen && at < SIGNALS_KEPT; at++)
+        printf("signal %d code %d value %d\n", signals_kept[at][0], signals_kept[at][1],
+               signals_kept[at][2]);
+    return 0;
+}
+
+static int interrupted(const char *sender) {
+    pid_t child = fork();
+    if (child == 0) {
+        handle(SIGUSR1, keep_signal, 0);
+        pipe(signal_pipe);
+        long got = read(signal_pipe[0], buffer, 1);
+        printf("read %ld %s\n", got, strerror(errno));
+        for (int at = 0; at < signals_seen; at++)
+            printf("signal %d code %d value %d\n", signals_kept[at][0], signals_kept[at][1],
+                   signals_kept[at][2]);
+        fflush(stdout);
+        _exit(0);
+    }
+    if (!strcmp(sender, "parent")) {
+        struct timespec wait = {0, 100 * 1000 * 1000};
+        nanosleep(&wait, NULL);
+        sigqueue(child, SIGUSR1, (union sigval){.sival_int = 42});
+    }
+    waitpid(child, NULL, 0);
+    return 0;
+}
+
 static int exec_program(char *path) {
     char *arguments[] = {path, NULL};
     execve(path, arguments, NULL);
@@ -1048,6 +1154,8 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "proxy")) return proxy();
     if (!strcmp(mode, "exec") && argc > 4) return exec_program(argv[4]);
     if (!strcmp(mode, "vm")) return vm();
+    if (!strcmp(mode, "signals")) return signals();
+    if (!strcmp(mode, "interrupted") && argc > 4) return interrupted(argv[4]);
     if (!strcmp(mode, "cmdline") && argc > 4) return proc_strings("cmdline", argv[4]);
     if (!strcmp(mode, "environ") && argc > 5) return environment(argv, argv[4], argv[5]);
     if (!strcmp(mode, "environread") && argc > 4) return proc_strings("environ", argv[4]);

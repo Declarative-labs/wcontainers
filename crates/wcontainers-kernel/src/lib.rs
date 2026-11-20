@@ -47,8 +47,9 @@ pub use counters::reason;
 pub use ends::Standard;
 pub use errno::Errno;
 pub use system::{
-    AccessKind, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism, System,
-    SystemCallResponse, TaskId, ThreadOrdering, Unsupported, WatchesFor, task_id_after,
+    AccessKind, ExecutionConfig, MemoryError, Process, ProcessInfo, ReplayDeterminism,
+    SignalInformation, System, SystemCallResponse, TaskId, ThreadOrdering, Unsupported, WatchesFor,
+    task_id_after,
 };
 
 use counters::Counters;
@@ -157,6 +158,9 @@ pub struct Kernel {
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
     signalled: VecDeque<Tid>,
+    /// Signals the embedder sent to a thread of a process, with their information, sent when the
+    /// kernel settles.
+    signals_sent: VecDeque<(Pid, Tid, [u8; core::mem::size_of::<SignalInformation>()])>,
     /// Processes sent a fatal signal while their memory is watched, with the signal: their
     /// threads end of it on their way back to the program, once the kernel's stores at the end
     /// have met the watches (`SIGNAL_GROUP_EXIT`).
@@ -277,6 +281,7 @@ impl Kernel {
             watching: false,
             watches_raised: 0,
             unsettled: false,
+            signals_sent: VecDeque::new(),
             ids_let_go: Vec::new(),
             outgrown: Rc::default(),
             init: None,

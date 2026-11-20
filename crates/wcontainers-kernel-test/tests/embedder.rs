@@ -12,8 +12,8 @@ use std::ops::ControlFlow;
 use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
 use wcontainers_kernel::linux::general;
 use wcontainers_kernel::{
-    AccessKind, Errno, Kernel, MemoryError, Process, System, SystemCallResponse, TaskId,
-    WatchesFor, reason, task_id_after,
+    AccessKind, Errno, Kernel, MemoryError, Process, SignalInformation, System, SystemCallResponse,
+    TaskId, WatchesFor, reason, task_id_after,
 };
 use wcontainers_kernel_test::driver::{self, Run};
 use wcontainers_kernel_test::hooks::Hooks;
@@ -228,6 +228,16 @@ impl Hooks for Recorder {
         range: std::ops::Range<u64>,
     ) {
         self.operate(&mut process, &format!("written {range:?}"));
+    }
+
+    fn on_signal_delivering(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        let (number, ..) = signal_fields(signal);
+        self.operate(&mut process, &format!("signal {number} to {thread:?}"));
     }
 
     fn on_process_starting(&mut self, mut process: Process<'_>) {
@@ -1880,5 +1890,239 @@ fn a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop() {
         let asked = asked.lock().unwrap();
         let (requests, responses) = asked_about(&asked, general::__NR_rt_sigreturn);
         assert!(requests > 0 && requests == responses, "{asked:?}");
+    }
+}
+
+/// What `on_signal_delivering` was given: the thread, and the record's number, code and value.
+type Delivered = Arc<Mutex<Vec<(TaskId, i32, i32, i32)>>>;
+
+/// A record's number, code and value (`si_value.sival_int`, the bytes a handler reads as it).
+fn signal_fields(signal: &SignalInformation) -> (i32, i32, i32) {
+    // SAFETY: the kernel builds every record it hands over from all of its bytes.
+    let header = unsafe { signal.__bindgen_anon_1.__bindgen_anon_1 };
+    // SAFETY: as above.
+    let value = unsafe { header._sifields._rt._sigval.sival_int };
+    (header.si_signo, header.si_code, value)
+}
+
+/// A record of `signal` queued with `value` from outside the container (no sender process).
+fn queued_signal(signal: u32, value: i32) -> SignalInformation {
+    // SAFETY: every member of the record is made of integers, for which zero is valid.
+    let mut record: SignalInformation = unsafe { std::mem::zeroed() };
+    // SAFETY: a record built from zero has every member's bytes set.
+    let header = unsafe { &mut record.__bindgen_anon_1.__bindgen_anon_1 };
+    header.si_signo = signal as i32;
+    header.si_code = general::SI_QUEUE;
+    header._sifields._rt._sigval.sival_int = value;
+    record
+}
+
+/// Lines `signal S code C value V` of embedder.c's output, as the hook's fields.
+fn handled_signals(output: &str) -> Vec<(i32, i32, i32)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split(' ').collect();
+            match words.as_slice() {
+                ["signal", signal, "code", code, "value", value] => Some((
+                    signal.parse().unwrap(),
+                    code.parse().unwrap(),
+                    value.parse().unwrap(),
+                )),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Records every signal the kernel announces, after running every operation of the handle.
+#[derive(Default)]
+struct SignalRecorder {
+    delivered: Delivered,
+}
+
+impl Hooks for SignalRecorder {
+    fn on_signal_delivering(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        signal: &SignalInformation,
+    ) {
+        assert!(process.info().memory_mapped() > 0);
+        let _ = process.take_dirty_memory();
+        let (number, code, value) = signal_fields(signal);
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((thread, number, code, value));
+    }
+}
+
+#[test]
+fn every_signal_a_thread_takes_to_act_on_is_announced_first_with_its_record() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["signals", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let handled = handled_signals(&theirs);
+    // Queued, let through, sent by another thread during a read, and a fault; not the one
+    // sigwaitinfo took nor the ignored one.
+    assert_eq!(handled.len(), 4, "{theirs}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let recorder = SignalRecorder::default();
+        let delivered = recorder.delivered.clone();
+        let run = run_embedder("signals", Box::new(recorder), seed);
+        assert_eq!(stdout(&run), theirs, "seed {seed}");
+        let delivered = delivered.lock().unwrap();
+        let fields: Vec<(i32, i32, i32)> = delivered
+            .iter()
+            .map(|&(_, number, code, value)| (number, code, value))
+            .collect();
+        assert_eq!(fields, handled, "seed {seed}");
+        // The one sent by another thread is announced in the thread it was sent to.
+        let first = delivered[0].0;
+        assert!(delivered.iter().all(|(thread, ..)| *thread == first));
+    }
+}
+
+/// When the embedder sends embedder.c's `interrupted` child its signal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Sending {
+    /// Inside the proxy's request hook of the read, before the read runs.
+    AtRequest,
+    /// Inside the watch hook of the read, which then waits on the watch until between steps.
+    DuringWatchWait,
+    /// Between steps, while the read waits for data.
+    BetweenSteps,
+}
+
+struct SignalSender {
+    sending: Sending,
+    delivered: Delivered,
+    reader: Option<(TaskId, TaskId)>,
+    sent: bool,
+    watch_lifted: bool,
+}
+
+impl SignalSender {
+    /// Sends the reader SIGUSR1 with 42, and two that are not sent: one to a thread of another
+    /// process and one with no number.
+    fn send(&mut self, process: &mut Process<'_>, thread: TaskId) {
+        process.send_signal(thread, queued_signal(general::SIGUSR1, SENT_VALUE));
+        let parent = process.info().parent().expect("a parent");
+        process.send_signal(parent, queued_signal(general::SIGUSR1, SENT_VALUE));
+        process.send_signal(thread, queued_signal(0, SENT_VALUE));
+        self.sent = true;
+    }
+}
+
+/// The value embedder.c's parent queues with its signal.
+const SENT_VALUE: i32 = 42;
+
+impl Hooks for SignalSender {
+    fn intercept_system_call_request(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        let read =
+            request.number == u64::from(general::__NR_read) && request.arguments[1] == BUFFER;
+        if read && self.reader.is_none() {
+            self.reader = Some((process.id(), thread));
+            match self.sending {
+                Sending::AtRequest => self.send(&mut process, thread),
+                Sending::DuringWatchWait => process.watch_memory(page_of(BUFFER), WatchesFor::All),
+                Sending::BetweenSteps => {}
+            }
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn on_watched_memory_accessing(
+        &mut self,
+        mut process: Process<'_>,
+        thread: TaskId,
+        _: u64,
+        _: AccessKind,
+    ) {
+        if !self.sent {
+            self.send(&mut process, thread);
+        }
+    }
+
+    fn on_signal_delivering(&mut self, _: Process<'_>, thread: TaskId, signal: &SignalInformation) {
+        let (number, code, value) = signal_fields(signal);
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((thread, number, code, value));
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let Some((id, thread)) = self.reader else {
+            return false;
+        };
+        let Some(mut process) = kernel.process(cpu, id) else {
+            return false;
+        };
+        match self.sending {
+            Sending::BetweenSteps if !self.sent => {
+                self.send(&mut process, thread);
+                true
+            }
+            Sending::DuringWatchWait if self.sent && !self.watch_lifted => {
+                process.watch_memory(page_of(BUFFER), WatchesFor::None);
+                self.watch_lifted = true;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[test]
+fn a_signal_the_embedder_sends_interrupts_a_read_as_one_another_process_sends() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["interrupted", &address, &pages, "parent"]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let sent = (general::SIGUSR1 as i32, general::SI_QUEUE, SENT_VALUE);
+    assert_eq!(handled_signals(&theirs), [sent], "{theirs}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let ours = run_embedder_below(&["interrupted", "parent"], None, seed, None);
+        assert_eq!(stdout(&ours), theirs, "seed {seed}");
+        for sending in [
+            Sending::AtRequest,
+            Sending::DuringWatchWait,
+            Sending::BetweenSteps,
+        ] {
+            let sender = SignalSender {
+                sending,
+                delivered: Delivered::default(),
+                reader: None,
+                sent: false,
+                watch_lifted: false,
+            };
+            let delivered = sender.delivered.clone();
+            let run =
+                run_embedder_below(&["interrupted", "none"], Some(Box::new(sender)), seed, None);
+            let label = format!("{sending:?}, seed {seed}");
+            assert_eq!(stdout(&run), theirs, "{label}: {:?}", run.counters);
+            let delivered = delivered.lock().unwrap();
+            assert_eq!(delivered.len(), 1, "{label}: {delivered:?}");
+            assert_eq!(
+                (delivered[0].1, delivered[0].2, delivered[0].3),
+                sent,
+                "{label}"
+            );
+            // The one to another process's thread and the one with no number.
+            assert_eq!(
+                counted(&run, reason::SIGNAL_NOT_SENT),
+                2,
+                "{label}: {:?}",
+                run.counters
+            );
+        }
     }
 }

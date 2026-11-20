@@ -11,6 +11,7 @@ use crate::linux_extra::{SIG_DFL, SIG_IGN};
 use crate::memory::Backing;
 use crate::process::{Channel, Pid, Queued, Report, Tid};
 use crate::syscall::Outcome;
+use crate::system::{SignalInformation, TaskId};
 use crate::{Context, Errno, Kernel};
 
 /// The bit for a signal in a signal set.
@@ -105,6 +106,38 @@ pub(crate) fn fault_info(signal: u32, code: i32, address: u64) -> [u8; 128] {
     info
 }
 
+/// The bytes the kernel keeps for a signal's information.
+type InformationBytes = [u8; core::mem::size_of::<SignalInformation>()];
+
+/// One word of a signal's information.
+type Word = super::linux::ctypes::c_int;
+const WORD_BYTES: usize = core::mem::size_of::<Word>();
+
+/// The words of a signal's information (its `_si_pad` member).
+type InformationWords = [Word; core::mem::size_of::<SignalInformation>() / WORD_BYTES];
+
+/// Linux's record of a signal from the bytes the kernel keeps.
+pub(crate) fn information(bytes: &InformationBytes) -> SignalInformation {
+    let (chunks, _) = bytes.as_chunks::<WORD_BYTES>();
+    let words: InformationWords = core::array::from_fn(|at| Word::from_le_bytes(chunks[at]));
+    SignalInformation {
+        __bindgen_anon_1: siginfo__bindgen_ty_1 { _si_pad: words },
+    }
+}
+
+/// The bytes the kernel keeps for a record of a signal built from zero.
+pub(crate) fn information_bytes(information: &SignalInformation) -> InformationBytes {
+    // SAFETY: every member of the record is made of integers, any bytes are valid for them, and
+    // a record built from zero (Linux's `clear_siginfo`) has every byte set.
+    let words: InformationWords = unsafe { information.__bindgen_anon_1._si_pad };
+    let mut bytes: InformationBytes = [0; core::mem::size_of::<SignalInformation>()];
+    let (chunks, _) = bytes.as_chunks_mut::<WORD_BYTES>();
+    for (chunk, word) in chunks.iter_mut().zip(words) {
+        *chunk = word.to_le_bytes();
+    }
+    bytes
+}
+
 /// The signal number a `siginfo` carries.
 fn signal_of(info: &[u8; 128]) -> u32 {
     u32::from_le_bytes(info[0..4].try_into().expect("four bytes"))
@@ -158,6 +191,29 @@ impl Kernel {
         info: [u8; 128],
     ) -> Result<(), crate::Errno> {
         self.send(cx, Target::Thread(tid), signal, info)
+    }
+
+    /// A signal the embedder sent to thread `tid` of process `pid` through its handle, sent as
+    /// `rt_tgsigqueueinfo` sends one; counted and not sent when it cannot be.
+    pub(crate) fn send_from_embedder(
+        &mut self,
+        cx: &mut Context<'_>,
+        pid: Pid,
+        tid: Tid,
+        info: InformationBytes,
+    ) {
+        let signal = signal_of(&info);
+        let ours = self
+            .threads
+            .get(&tid)
+            .is_some_and(|thread| thread.process == pid);
+        if !ours
+            || !(1..=_NSIG).contains(&signal)
+            || self.queue_to_thread(cx, tid, signal, info).is_err()
+        {
+            self.counters
+                .count(cx.host, reason::SIGNAL_NOT_SENT, u64::from(signal));
+        }
     }
 
     /// SIGXFSZ for a write past the file size limit, as `send_sig` sends it.
@@ -602,18 +658,29 @@ impl Kernel {
         }
         let mut handled = false;
         loop {
-            let mask = self.threads[&tid].signal_mask;
+            let pid = self.threads[&tid].process;
+            let queued = match self.thread_mut(tid).signal_taken.take() {
+                Some(queued) => queued,
+                None => {
+                    let mask = self.threads[&tid].signal_mask;
+                    let Some(queued) = self.dequeue_signal(tid, !mask) else {
+                        break;
+                    };
+                    let signal = information(&queued.info);
+                    self.announce(cx, pid, |system, process| {
+                        system.on_signal_delivering(process, TaskId::of(tid), &signal)
+                    });
+                    queued
+                }
+            };
+            let signal = queued.signal;
             if self.watched(tid)
-                && !self.walk_watched(cx, |kernel, cx| kernel.frame_touched(cx, tid, !mask))
+                && !self.walk_watched(cx, |kernel, cx| kernel.frame_touched(cx, tid, signal))
             {
+                self.thread_mut(tid).signal_taken = Some(queued);
                 self.wait_on_watch(tid, Some(resume), true);
                 return None;
             }
-            let Some(queued) = self.dequeue_signal(tid, !mask) else {
-                break;
-            };
-            let signal = queued.signal;
-            let pid = self.threads[&tid].process;
             let action = self.processes[&pid].actions.borrow()[signal as usize - 1];
             let handler = action.sa_handler_kernel;
             if handler == SIG_IGN {
@@ -1144,17 +1211,12 @@ impl Kernel {
         self.force_signal(tid, fault_info(SIGSEGV, code as i32, address), (0, 0));
     }
 
-    /// Meets the embedder's watches on what acting on the next signal of those `allowed` touches:
-    /// the frame and restartable sequence of a handler, or the thread ends of a fatal one; false
-    /// if the thread must wait.
-    fn frame_touched(&mut self, cx: &mut Context<'_>, tid: Tid, allowed: u64) -> bool {
+    /// Meets the embedder's watches on what acting on the signal taken touches: the frame and
+    /// restartable sequence of a handler, or the thread ends of a fatal one; false if the thread
+    /// must wait.
+    fn frame_touched(&mut self, cx: &mut Context<'_>, tid: Tid, signal: u32) -> bool {
         let thread = &self.threads[&tid];
         let pid = thread.process;
-        let signal = first_ready(thread.pending.set, allowed)
-            .or_else(|| first_ready(self.processes[&pid].pending.set, allowed));
-        let Some(signal) = signal else {
-            return true;
-        };
         let action = self.processes[&pid].actions.borrow()[signal as usize - 1];
         if action.sa_handler_kernel == SIG_IGN {
             return true;

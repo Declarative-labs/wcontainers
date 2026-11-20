@@ -32,7 +32,11 @@ pub trait System: Host + Sync {
     fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {}
     fn on_watched_memory_accessing(&self, process: Process<'_>, thread: TaskId, address: u64, kind: AccessKind) {}
     fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {}
+    fn on_signal_delivering(&self, process: Process<'_>, thread: TaskId, signal: &SignalInformation) {}
 }
+
+/// Linux's own record of a signal (the generated binding of `struct siginfo`).
+pub type SignalInformation = wcontainers_kernel::linux::general::siginfo;
 
 /// A process or thread id: one space for both, as Linux's `pid_t`.
 pub struct TaskId(pub u32);
@@ -134,6 +138,23 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
   into the file every process mapping it shares, as another process's `write` to a shared file
   is. The embedder's own `write_memory` fires neither this hook nor a watch.
 
+- `on_signal_delivering`: a thread has taken a signal off its pending sets (its own, then its
+  process's) to act on it, before anything of the action: before a handler's frame is written,
+  before a default action ends, stops or ignores, and before an ignoring handler drops it. This
+  is the point of Linux's signal-delivery-stop under ptrace (`get_signal` right after
+  `dequeue_signal`). It is on the thread's way back to its program: after the call it was in has
+  answered (after `intercept_system_call_response`, and before a call interrupted by a handler is
+  set to restart or answer EINTR), or after the CPU side stopped it between instructions (a
+  fault, the end of its time). So for a signal taken at a system call, the call is the position.
+  `signal` is the record the handler will be given. Signals that are not acted on by a thread are
+  not announced: one taken by `sigwaitinfo`, `sigtimedwait` or a read of a `signalfd` (the call's
+  result), one dropped when sent because it is ignored, and one that ends its process from the
+  sender's side (`SIGKILL`, or a fatal default action with no handler; the end is announced by
+  `on_process_exiting`). If the embedder watches what acting on the signal touches (the frame,
+  the restartable sequence, the stores of the threads' ends), the hook fires first and the walk
+  over those watches after it; a thread that then waits on a watch keeps the signal it took and
+  acts on it, with no second announcement, once the watches change.
+
 ### The system call proxy
 
 - `intercept_system_call_request` is asked once for every system call a thread makes, when the
@@ -185,6 +206,7 @@ impl Process<'_> {
     pub fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
     pub fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor) -> Result<(), Unsupported>;
     pub fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
+    pub fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
 }
 
 impl Kernel {
@@ -240,6 +262,19 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
 - `watch_thread_memory` is declared for executors that can watch one thread and not its siblings
   (the abi's `PerThreadWatch` subtrait of `Cpu`); no executor implements it today, and the kernel
   reaches the executor as `dyn Cpu`, so the call is refused by name (`Unsupported::PerThreadWatch`).
+
+- `send_signal` sends a signal to one thread of the process, as `rt_tgsigqueueinfo` would with
+  `signal` as its record (the number is the record's `si_signo`; the sender is whoever the
+  record names, for example none with `SI_QUEUE` for a signal from outside the container). It
+  is sent when the kernel next settles: after the hook it was called in returns, before any
+  thread runs again; between steps, `Kernel::next` then answers `Next::Idle` with a time of 0, as
+  for a watch changed between steps. From there it is any other signal: a thread blocked in an
+  interruptible call is woken and the call answers EINTR or restarts by its handler's
+  `SA_RESTART`; a thread waiting on a watch acts on it once the watches change. A signal that
+  names no thread of the process, has a number outside 1 to 64, or does not fit the receiving
+  user's queue is not sent, counted (`signal from the embedder not sent`, with its number) and
+  warned. The record must be built from zero, as Linux's `clear_siginfo` builds one: the kernel
+  reads it whole, and in Rust the bytes of a union member never written are not readable.
 
 ### Watches and system calls
 
@@ -387,6 +422,5 @@ pub enum Unsupported {
   `Process` (the executor's `MemoryId`, which holds across vfork and exec). Shared pages marked
   watched when one sharer leaves come with `suspend`: the marking will set `WatchesFor::All` on
   those pages in every process still sharing them.
-- `type ProcessState` (ruled; to wait for the reviewable-rust layout), signals as an input
-  (`on_signal_delivering`, `Process::send_signal`, ruled at 17:10 on 2026-11-19).
+- `type ProcessState` (ruled; to wait for the reviewable-rust layout).
 - `set_thread_ordering`, the inspection hooks and `StopReason`: not ruled or not asked for yet.

@@ -311,6 +311,8 @@ pub(crate) struct Thread {
     pub filling: bool,
     /// Waits on a watch with a signal's frame to write: acts on its signals before it runs.
     pub delivering: bool,
+    /// A signal taken and announced to act on, kept while the thread waits on a watch first.
+    pub signal_taken: Option<Queued>,
     /// Taken off the CPU in its own code since it last went back to it, so its restartable
     /// sequence is checked first (`rseq_event_mask`).
     pub rseq_event: bool,
@@ -589,6 +591,7 @@ impl Thread {
             woken_at: None,
             filling: false,
             delivering: false,
+            signal_taken: None,
             rseq_event: false,
             fault: (0, 0),
             forced: 0,
