@@ -1,26 +1,51 @@
 # wcontainers: guest threads in parallel
 
-Status: plan, 2026-11-18, corrected after its sixth independent check (docs/status-threads.md says what
-changed each time). Nothing here is built. The owner rules on section 16 first.
+Status: plan, revised 2026-11-19 to the owner's rulings of that day and to the independent check of
+the one scheduling rule. **This revision has had no independent check. Until one is recorded in
+docs/status-threads.md, every part it changed is unchecked.** The form before it had been corrected
+after its sixth independent check (docs/status-threads.md says what changed each time). Nothing here is
+built. The owner rules on section 16 first.
+
+The rulings are in the interface notes, from "Ruled by the owner, 2026-11-19: where replay is
+recorded" to the end. The check is orchestrator/threads-mixed-ordering/REPORT.md, called "the
+mixed-ordering check" here. What they changed, in short:
+- **Replay is per process, at its own system calls.** The order of kernel entries recorded and replayed,
+  the "recorded kernel", its services `kernel_entry_admit` and `on_kernel_entry_ended`, and the rule
+  that a kernel is recorded whole are withdrawn (4.6). A process given `None` costs nothing and is never
+  made to carry a neighbour's guarantee.
+- **One scheduling rule, kept inside the kernel, with nothing on the interface**: a task whose code is
+  `Serial` is given a processor only while no task that overlaps its memory has one. It replaces groups
+  in force, the config in force, "the strictest wins" and the hook
+  `on_execution_config_in_force_changing` (section 3).
+- **Suspend and resume are by task**, with a process context and a `Kernel` trait. They replace
+  `Process::suspend(self)`, `SuspendedProcess<E>`, and this plan's `Kernel::process_call_in` with its
+  hook `on_process_called_in` (sections 5 and 6).
+- **New hooks the plan now builds on**: the system call proxy, the hook for the kernel's writes, the
+  signal hook, and the shared-memory hooks with `MemoryObject` (sections 2, 3, 4.6). Locks across
+  machines (`wake_waiters`, `move_waiters`) are agreed in substance (4.5).
 
 ## Known faults, to settle when T1 is built
 
 These are open. None is hidden further down.
 
-1. **The last corrections were not checked.** The sixth check found two faults that would have hung a
-   run or broken a replay. Their cures are new in this form and no independent agent has read them:
-   - a woken call runs again whatever is called in, so two call-ins never wait for each other (4.3,
-     4.5). A model of the rule was searched and found no such wait (section 14). A model is not the
-     code;
-   - a kernel is recorded whole or not at all, so a process given `None` in a recorded kernel is put
-     in order and logged like the rest (section 3, 4.6). This changes what `None` means beside a
-     recorded process, and it is the owner's first decision.
-   Also new and unread: a replay that has left its recording ends and does not wait (4.6); a worker
-   inside a guest hook that is not a stop point may not enter the kernel (4.2); what `suspend` may hand
-   out (4.2); the kernel's lock handed back to the executor with a thread that leaves (4.2, 7.2); the
-   native output's two forms and the map of this plan's calls onto the native executor (section 10).
-   Section 12 names a test for each. They are the first tests to write.
-2. **A live run needs one worker for each processor.** A worker serves one processor (section 5). A
+1. **This revision is unchecked, and the scheduling rule's protocol is not modelled.** The model of
+   call-ins that section 14 reports (62,189 states) was of the rules for groups. It must be redone for
+   the rule of section 3 as the mixed-ordering check corrects it: exclusion by "handed out", readers
+   called in and never held, a `Serial` task that is due a turn stopping reader hand-outs, a reader's
+   waiter chosen only while no `Serial` task that overlaps it is handed out, and the kernel's rules
+   following the phase. Until it is, the rule is sound by the check's reading and by nothing else.
+   Also still unread by any checker from the form before: a woken call runs again whatever is called
+   in, so two call-ins never wait for each other (4.3, 4.5); a worker inside a guest hook that is not a
+   stop point may not enter the kernel (4.2); the kernel's lock handed back to the executor with a
+   thread that leaves (4.2, 7.2); the native output's two forms and the map of this plan's calls onto
+   the native executor (section 10). Section 12 names a test for each. They are the first tests to
+   write.
+2. **Replay has no milestone of its own yet.** It needs two kernel primitives the rulings name and
+   nobody has designed: handing the embedder each system call result of a recorded process, and running
+   a process with its system calls answered from a log (4.6). A process with two or more threads also
+   needs the order of its threads' turns in its log, and a way to make a replay follow it (decision
+   17). Until those exist, no test here replays anything.
+3. **A live run needs one worker for each processor.** A worker serves one processor (section 5). A
    thread pinned to a processor that no worker serves would never run. So `run_until_finished` starts
    one worker for each processor, whatever the host has, and the plan has no setting for fewer
    (section 11). On a host with fewer cores than the container has processors, the host shares its
@@ -28,16 +53,24 @@ These are open. None is hidden further down.
    `run` itself must serve every processor. Running fewer workers than processors is not designed:
    the kernel would have to know which processors share a worker, and ask a thread in for a processor
    that is not its own.
-3. **The length of a fair slice is still worked out as for one processor**, from the whole run queue
+4. **The length of a fair slice is still worked out as for one processor**, from the whole run queue
    (kernel/task.rs:43-53). With several processors that gives shorter slices than needed. It is never
    unfair. T1 counts the turns that ended for nobody.
-4. **In a `Serial` group whose next thread is pinned to a busy processor, a sibling that could run on an
-   idle one waits** (4.3). Linux would run it. It is the price of a simple rule that keeps a pinned
+5. **A `Serial` task pinned to a busy processor makes an overlapping `Serial` task that could run on an
+   idle one wait** (4.3). Linux would run it. It is the price of a simple rule that keeps a pinned
    thread from starving, and it is counted.
-5. **A call that waited and runs again reads its arguments from guest memory again** (4.4). That is
-   wrong only in a `Parallel` group. T2 closes it by reading every call.
-6. **What T1 adds to a system call is known only in parts**: the lock and its holder's word, each
-   measured alone (section 14). T1's three builds measure the whole (section 12, decision 7).
+6. **A call that waited and runs again reads its arguments from guest memory again** (4.4). That is
+   wrong wherever another thread can run while the caller is parked: in a `Parallel` process, and also
+   in a `Serial` process with two or more threads, where a sibling runs while the caller waits (the
+   mixed-ordering check's side finding; the form before said `Parallel` only). So it is T1's, not T2's:
+   T1 closes it by reading every call.
+7. **What T1 adds to a system call is known only in parts**: the lock and its holder's word, each
+   measured alone (section 14). The proxy's two calls to the system at each system call (4.6) are the
+   interface track's, and were not measured at all. T1's three builds measure the whole (section 12,
+   decision 7).
+8. **The rule's mixed case on the WebAssembly executor is expected to work and is not built**: a
+   `Serial` task beside `Parallel` ones that share a file mapping or System V memory with it, with the
+   shared pages copied at each switch (7.4). Until it is built, those tasks all run as `Serial` there.
 
 Words used here:
 - **executor**: what runs the guest's instructions behind the kernel's `Cpu` side (`Executor`,
@@ -48,10 +81,18 @@ Words used here:
 - **embedder**: whoever implements `System` (rt/lib.rs:146) and drives a container.
 - **block**: a block of shared pages (`SharedId`, abi/cpu.rs:14-16). The kernel shows every mapped file
   through one. A memory **shows** a block's page where a mapping of it puts that page.
-- **group**: every guest thread that can reach the same guest memory without the kernel in between
-  (section 3). The owner's rulings are per group. A name is suggested in section 16.
+- **task**: Linux's word for one thread of execution; one task is one thread. The owner's later rulings
+  use it (`TaskId`, `suspend_tasks`). This plan says thread for the same thing, and task where it
+  states a ruling.
+- **overlap**: a task overlaps every task whose memory is its own memory, or shows a page of a block
+  that some mapping may write and that its own memory shows too (section 3). The owner's scheduling
+  rule is said in this word.
 - **config**: a process's `ExecutionConfig` (section 2): its thread ordering, its replay guarantee and its
-  translator config. The **config in force** is what its group really runs under (section 3).
+  translator config. A process runs under the config it was given. There is no config "in force" any
+  more (section 3).
+- **`Serial` code** and **`Parallel` code**: the form of translated code a memory runs (7.2). It is
+  `Serial` code when any process that owns the memory was given `Serial`. A task **runs as `Serial`**
+  when its code is `Serial` code, or when the executor cannot run it beside others (section 3).
 - **guarantee**: a process's `replay_determinism`: `Exact`, `External` or `None`.
 - **stop point**: a place in translated code after which a piece no longer relies on what it found out
   about page permissions before it. The translator's contract names three: a stop check whose hook runs,
@@ -59,14 +100,16 @@ Words used here:
   stop points. Every other hook returns into the middle of a piece, which carries on with what it knew.
 - **stop word**: the 32 bit word after a thread's registers that translated code tests at each stop check
   (abi/registers.rs:54-57). Zero means carry on. Section 4.5 makes it a set of reasons.
+- **handed out**: the kernel has given a thread a processor and has not yet seen its next kernel entry.
+  While handed out it may be in guest code or on its way into the kernel (the mixed-ordering check's
+  word). The scheduling rule excludes by it (section 3).
 - **called in**: the kernel asks for a running thread with `thread_stop`, and the thread comes back by
   itself through `Kernel::exit`. A call that needs it back first parks, as any call that waits does. A
-  group is called in while such a call's mark is on it (4.5).
+  memory is called in while such a call's mark is on it (4.5).
 - **waiter**: a thread whose call parked for a call-in and has been woken, and has not run again yet.
-- **recorded kernel**: a kernel whose system said at the start that it orders kernel entries (4.6). A
-  system that records a run, replays one, or makes a repeatable order for tests is such a system.
 - **group stop**: the executor makes every other thread of one guest memory held, in place, while one
-  change is made. It is kept per memory (4.5); the threads it reaches are always of one group.
+  change is made. It is kept per memory (4.5); the threads it reaches are always of one memory. It
+  never holds a thread of another memory for a `Serial` task's turn: those are called in (section 3).
 - **stop lock**: one lock per guest memory, in the executor. Whoever needs that memory's other threads
   held takes it first (4.5).
 - **held**: a thread is held when it is at a stop point and has no access of its own to its memory under
