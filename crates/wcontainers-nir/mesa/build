@@ -41,6 +41,8 @@ patches=("$here"/patches/*.patch)
 applied=$mesa_dir/src/.git/wcontainers-patches
 if ! cat "${patches[@]}" | cmp -s - "$applied"; then
     git -C "$mesa_dir/src" checkout -q -f "$commit"
+    # Files an earlier patch added are not the commit's; they go too.
+    git -C "$mesa_dir/src" clean -q -f -d
     for patch in "${patches[@]}"; do
         git -C "$mesa_dir/src" apply "$patch"
     done

@@ -90,6 +90,8 @@ $wanted = ($patches | ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
 $had = if (Test-Path $applied) { Get-Content -Raw $applied } else { $null }
 if ($wanted -ne $had) {
     & git -C $src checkout -q -f $commit; Run 'git checkout'
+    # Files an earlier patch added are not the commit's; they go too.
+    & git -C $src clean -q -f -d; Run 'git clean'
     foreach ($patch in $patches) {
         & git -C $src apply --ignore-whitespace $patch.FullName; Run "applying $($patch.Name)"
     }
