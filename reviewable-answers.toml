@@ -973,7 +973,7 @@ is_float = { answer = "first_word", confidence = 0.8502801026584957, model = "pe
 is_free = { answer = "first_word", confidence = 0.7702303743714247, model = "perplexity/pplx-decider-v1.2-20261016" }
 is_fresh = { answer = "first_word", confidence = 0.8593810391343446, model = "perplexity/pplx-decider-v1.2-20261016" }
 is_full = { answer = "first_word", confidence = 0.8886451935143738, model = "perplexity/pplx-decider-v1.2-20261016" }
-is_inspected = { answer = "first_word", confidence = 0.4994800553324269, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true }
+is_inspected = { answer = "first_word", confidence = 0.4994800553324269, model = "perplexity/pplx-decider-v1.2-20261016", uncertain = true, disputed = "its answer, first_word, is right: is_ is the verb of a predicate, as in is_mapped and is_full" }
 is_long = { answer = "first_word", confidence = 0.9376218342025948, model = "perplexity/pplx-decider-v1.2-20261016" }
 is_lower = { answer = "first_word", confidence = 0.8657265086571725, model = "perplexity/pplx-decider-v1.2-20261016" }
 is_mapped = { answer = "first_word", confidence = 0.6723139727146725, model = "perplexity/pplx-decider-v1.2-20261016" }
