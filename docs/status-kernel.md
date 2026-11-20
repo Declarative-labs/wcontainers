@@ -203,8 +203,10 @@ k6c17/ttylock-probe.sh and the job's log beside it), 30 times on one CPU (`--cpu
 So the first case is a race in Linux itself (the woken reader and the splice's next call both
 want the pipe's lock), and no kernel can be held to one answer for it. The guest no longer runs
 it (3c4a7075); the property it was written for, a reader coming to the pipe while a splice waits
-waits for the next line, is still compared by the other three. Not yet run against the ARM64
-reference after the change (no machine with Docker for it).
+waits for the next line, is still compared by the other three. Ours on the changed guest (a
+probe test running our side alone, scratch k6c17/ttylock_ours_probe.rs, 20 runs; x86 machine
+job kernel/20261120-132855-2179166, load 8): each of the three lines 20 of 20 as Linux's above.
+Not yet run against the ARM64 reference after the change (no machine with Docker for it).
 
 Literal check at 3c4a7075 (Mac, load 2.4, as it needs the history; scratch k6c17/lit.txt): one
 finding, the second start (For the orchestrator); the baseline is 8448 lines, as before.
