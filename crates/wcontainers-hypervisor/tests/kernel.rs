@@ -68,8 +68,9 @@ mod macos {
     const CODE: &str = "code";
 
     /// The changes `code` makes to code that ran: one announced, one announced by a child sharing the memory, one
-    /// the kernel learns of when the page stops being executable, and one announced in the middle of a function.
-    const CODE_CHANGES: u64 = 4;
+    /// the kernel learns of when the page stops being executable, one announced in the middle of a function, and
+    /// one where a return lands.
+    const CODE_CHANGES: u64 = 5;
     /// Why `code`'s output differs on the WebAssembly side.
     const CODE_KNOWN: &str = "the WebAssembly side runs a function's old code after only its second cache line is rewritten and announced";
 

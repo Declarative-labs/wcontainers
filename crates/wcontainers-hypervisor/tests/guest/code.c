@@ -9,7 +9,8 @@
    again before it runs. Then a function whose load's page test is placed after its last instruction and whose
    end branches to a ret on the next page has only an instruction on its second cache line rewritten and that
    line announced: the translation must be dropped although its last host code belongs to its first
-   instruction. */
+   instruction. Last, a caller in written code is rewritten where its callee's return lands, after that return
+   came back there twice: the return must reach the new code. */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -32,6 +33,11 @@ static void write_function(uint32_t *at, uint32_t value) {
     at[0] = 0x52800000u | (value << 5);
     at[1] = 0xd65f03c0u;
     announce(at);
+}
+
+/* A function in the program's own code that a written caller calls. */
+__attribute__((noinline)) static int callee(void) {
+    return 0;
 }
 
 static uint32_t *code_memory(int flags, size_t length) {
@@ -101,5 +107,23 @@ int main(void) {
     announce(loads + line);
     int eight = ((loading)loads)(&loaded);
     printf("private, middle rewritten after a load: %d %d\n", seven, eight);
+
+    /* A caller in written code: stp x29, x30, [sp, #-16]!; blr x0; mov w0, #9; ldp x29, x30, [sp], #16; ret.
+       Its callee's return comes back into it twice, then the code it returns to is rewritten to give 10: the
+       callee's return must reach the new code. */
+    uint32_t *caller = code_memory(MAP_PRIVATE, 4096);
+    caller[0] = 0xa9bf7bfdu;
+    caller[1] = 0xd63f0000u;
+    caller[2] = 0x52800000u | (9 << 5);
+    caller[3] = 0xa8c17bfdu;
+    caller[4] = 0xd65f03c0u;
+    announce(caller);
+    int (*calls)(function) = (int (*)(function))caller;
+    int nine = calls(callee);
+    int again = calls(callee);
+    caller[2] = 0x52800000u | (10 << 5);
+    announce(caller + 2);
+    int ten = calls(callee);
+    printf("private, a return's target rewritten: %d %d %d\n", nine, again, ten);
     return 0;
 }
