@@ -521,6 +521,22 @@ fn stencil_views_read_the_stencil_as_direct3d_does() {
 }
 
 #[test]
+fn depth_only_draws_clamped_and_clipped_as_direct3d_does() {
+    case("unshaded");
+}
+
+/// The same without the back end's depth clamping, which the pixel program writing nothing then
+/// applies (`DepthClampInShader`).
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn depth_only_draws_clamped_in_the_program_as_direct3d_does() {
+    let clamp = wgpu::Features::DEPTH_CLIP_CONTROL.as_str().unwrap();
+    let errors = case_env("unshaded", "unclamped", &[(FEATURES_OFF, clamp)]);
+    let route = wcontainers_gpu::SlowPath::DepthClampInShader.reason();
+    assert!(errors.contains(route), "{errors}");
+}
+
+#[test]
 fn a_depth_bias_on_lines_and_points_as_direct3d_does() {
     case("biased_lines");
 }
