@@ -102,7 +102,6 @@ pub trait ProcessTracer {
 
     /// Another process is about to read this one's internal state.
     fn on_inspection_starting<P: Process<State = Self::ProcessState>>(&self, process: P) {}
-    /// Announces that another process has finished reading this one's internal state.
     fn on_inspection_ended<P: Process<State = Self::ProcessState>>(&self, process: P) {}
 }
 
