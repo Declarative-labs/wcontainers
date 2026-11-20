@@ -39,7 +39,11 @@ pub trait System: Sync {
 
     fn on_process_starting<P: Process<State = Self::ProcessState>>(&self, process: P) {}
     fn on_program_starting<P: Process<State = Self::ProcessState>>(&self, process: P) {}
-    fn on_thread_starting<P: Process<State = Self::ProcessState>>(&self, process: P, thread: TaskId) {
+    fn on_thread_starting<P: Process<State = Self::ProcessState>>(
+        &self,
+        process: P,
+        thread: TaskId,
+    ) {
     }
     fn on_process_exiting<P: Process<State = Self::ProcessState>>(&self, process: P) {}
     fn on_process_outgrown<P: Process<State = Self::ProcessState>>(&self, process: P, bytes: u64) {}
