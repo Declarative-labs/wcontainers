@@ -208,11 +208,6 @@ fn whole_blocks(range: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
     (first..block_of(range.end)).step_by(BLOCK_SIZE as usize)
 }
 
-/// The block-sized ranges that overlap `range`.
-fn touched_blocks(range: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
-    (block_of(range.start)..range.end).step_by(BLOCK_SIZE as usize)
-}
-
 impl Memory {
     fn new(space: AddressSpace) -> Memory {
         Memory {
@@ -563,15 +558,11 @@ impl NativeCpu {
     }
 
     /// A zeroed frame for the private page at `page`: the frame at its offset in the run reserved for its
-    /// block-sized range, where a run is reserved at the range's first touch when the whole range is alike, else
-    /// a frame of its own (docs/native.md section 5.2).
+    /// block-sized range, reserved now if it has none, else, when no run is left, a frame of its own
+    /// (docs/native.md section 5.2).
     fn private_frame(&mut self, memory: MemoryId, page: u64) -> Result<u64, CpuError> {
         let base = block_of(page);
-        let m = self.memory(memory)?;
-        let first_touch = !m.reserved.contains_key(&base)
-            && m.pages.range(base..base + BLOCK_SIZE).next().is_none()
-            && m.alike(base).is_some();
-        if first_touch
+        if !self.memory(memory)?.reserved.contains_key(&base)
             && let Some(run) = self
                 .runs
                 .pop()
@@ -623,8 +614,8 @@ impl NativeCpu {
         }
     }
 
-    /// Maps the block-sized range at `base` with one block entry when its reservation is complete and the range
-    /// still alike.
+    /// Maps the block-sized range at `base` with one block entry when every page of it holds its frame of the
+    /// range's reservation and they are alike.
     fn promote(&mut self, memory: MemoryId, base: u64) -> Result<(), CpuError> {
         let m = self.memory(memory)?;
         let (Some(reservation), Some(allowed)) = (m.reserved.get(&base), m.alike(base)) else {
@@ -756,13 +747,6 @@ impl NativeCpu {
         Ok(())
     }
 
-    /// A private frame holding a copy of `frame`.
-    fn copy_of(&mut self, frame: u64) -> Result<u64, CpuError> {
-        let copy = self.guest_frame()?;
-        frame_bytes(copy).copy_from_slice(frame_bytes(frame));
-        Ok(copy)
-    }
-
     /// Makes `copy` hold what `source` holds, its private pages copied at once, giving how many were.
     fn copy_memory(&mut self, source: MemoryId, copy: MemoryId) -> Result<u64, CpuError> {
         let from = self.memory(source)?;
@@ -818,15 +802,17 @@ impl NativeCpu {
                 let held = m.frame(&self.shared, at);
                 match held {
                     Some(frame) if !zeroed(at) => {
-                        let copy = self.copy_of(frame)?;
-                        self.replace(
-                            memory,
-                            at,
-                            Page {
-                                frame: copy,
-                                shared: None,
-                            },
-                        )?;
+                        let copy = self.private_frame(memory, at)?;
+                        frame_bytes(copy).copy_from_slice(frame_bytes(frame));
+                        let private = Page {
+                            frame: copy,
+                            shared: None,
+                        };
+                        if let Err(error) = self.replace(memory, at, private) {
+                            self.release(memory, at, copy);
+                            return Err(error);
+                        }
+                        self.promote(memory, block_of(at))?;
                     }
                     _ if own.is_some() => self.unback(memory, at)?,
                     _ => {}
@@ -1605,8 +1591,13 @@ impl Cpu for NativeCpu {
         let was: Vec<(u64, El1Attributes)> = m
             .pages
             .range(range.clone())
-            .filter(|&(&at, _)| !blocks.contains(&block_of(at)))
+            .filter(|&(&at, _)| blocks.binary_search(&block_of(at)).is_err())
             .map(|(&at, _)| (at, attributes(m.allows(at))))
+            .collect();
+        let reserved: Vec<u64> = m
+            .reserved
+            .range(block_of(range.start)..range.end)
+            .map(|(&base, _)| base)
             .collect();
         if permissions.is_empty() {
             m.allowed.remove(range.clone());
@@ -1621,7 +1612,7 @@ impl Cpu for NativeCpu {
                 with_frames(|frames| table.protect(frames, at, now)).map_err(out_of_memory)?;
             }
         }
-        for base in touched_blocks(&range) {
+        for base in reserved {
             self.promote(memory, base)?;
         }
         Ok(())
