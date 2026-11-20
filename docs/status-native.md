@@ -150,8 +150,25 @@ refused") and made again; one that cannot be written likewise ("native translati
 Test tests/kept.rs (no machine): a second translator reads what the first wrote, at another page, equal to translating
 there; a spoiled file is refused once and written again. The tests' monitors run with no directory, as before.
 
+Speed bar after both (n4r12/speed.log and speed.jsonl, 16:53 to 16:57, load 10 to 17, 15 pairs, look-ahead 256, seed 1,
+2000 resamples): compute part +38.80% [+38.22 .. +39.73], FAILS against +21.2%. Native against plain, cycles
+(instructions): fib +48.6 (+86.1), sieve +29.6 (+31.9; only 36 to 38% of its runs on performance cores, run 9 had
++18.1 on them), hash +3.2 (+27.2), sort +77.4 (+144.2), interpret +91.6 (+105.0), matrix +40.0 (+66.1), walk +17.4
+(+81.5), search +24.1 (+26.6); calls +61.4 (+115.1). Untranslated against plain, cycles: fib -3.7, sieve +20.6, hash
+-2.7, sort -5.8, interpret -6.7, matrix -13.9, walk +16.4, search -10.3, calls -21.6. System-call part: 170.1 ns a call,
+the kernel's share 99.4 ns, the back end's 70.6 ns [68.5 .. 73.5], PASSES against 100 ns. Every figure but sieve's is
+within 3 points of run 9's.
+
+The rest of the suite, once before the push: on the Mac (n4r12/mac3.log, load 13 to 17, exit 0 each) floor 21 cases and 1
+measurement, 0 failed; probe 0 forms of 16 bytes or fewer differ (44 larger, as before); registers; the inside's, the
+policy crate's and the literal check's tests pass; the monitor's lib 9 tests and tests/kept.rs on the rented ARM64
+machine (n4r12/arm5.log); the translator with and without the native feature, guest-cpu and arm64 tests pass and clippy
+with warnings denied is clean for them, the inside (all targets and its softfloat target) and the no_std cores
+(n4r12/arm6.log). With the runs above that is the whole suite of what this track owns; only the speed test fails, on its
+compute part.
+
 What N4 still needs, in order:
-1. The compute part of the bar (+37.71% against +21.2%, run 9): the page test no longer costs measurable cycles, so
+1. The compute part of the bar (+38.80% against +21.2%): the page test no longer costs measurable cycles, so
    only calls, returns and jumps through a register are left; this needs a ruling (see "For the orchestrator").
 2. Loaded translations shared between processes inside the machine (plan 3.2: a fork's child and the same program run
    twice map the same bytes at the same address and could share the code area's frames, the inside then writing
