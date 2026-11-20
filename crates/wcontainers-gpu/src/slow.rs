@@ -16,6 +16,9 @@ const STREAM_OUT_AFTER_REPLAY: &str = "stream output of the replay route written
 /// The reason [`SlowPath::FrameStretched`] shows.
 const FRAME_STRETCHED: &str = "frame stretched to its window against the swap chain's scaling";
 
+/// The reason [`SlowPath::SharedThroughHost`] shows.
+const SHARED_THROUGH_HOST: &str = "shared resource copied between devices through the host";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -302,11 +305,14 @@ pub enum SlowPath {
     /// A frame shown stretched to a window of another size than its buffers, where the swap chain
     /// asked for no stretching (a listed loss: the host's window scales whatever it shows).
     FrameStretched,
+    /// A resource shared between devices that hold no common GPU memory, kept as one copy per
+    /// device and copied through a read back at the API's synchronisation points.
+    SharedThroughHost,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 110] = [
+    pub const ALL: [SlowPath; 111] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -417,6 +423,7 @@ impl SlowPath {
         SlowPath::FloatBitsClearByDraw,
         SlowPath::StreamOutAfterReplay,
         SlowPath::FrameStretched,
+        SlowPath::SharedThroughHost,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -552,6 +559,7 @@ impl SlowPath {
             SlowPath::FloatBitsClearByDraw => FLOAT_BITS_CLEAR_BY_DRAW,
             SlowPath::StreamOutAfterReplay => STREAM_OUT_AFTER_REPLAY,
             SlowPath::FrameStretched => FRAME_STRETCHED,
+            SlowPath::SharedThroughHost => SHARED_THROUGH_HOST,
         }
     }
 }
@@ -637,7 +645,8 @@ mod tests {
             PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
-            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched";
+            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched \
+            SharedThroughHost";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {
