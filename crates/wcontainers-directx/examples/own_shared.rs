@@ -16,8 +16,8 @@ fn main() -> windows::core::Result<()> {
     };
     use windows::core::{Interface, PCWSTR};
 
-    const SIDE: u32 = 4;
-    const TEXEL: u32 = 4;
+    const TEXTURE_SIDE: u32 = 4;
+    const TEXEL_BYTES: u32 = 4;
     /// The bits DXGI's KMT handles carry (Wine's `is_kmt_handle`).
     const KMT_BITS: usize = 0xc000_0000;
 
@@ -60,14 +60,14 @@ fn main() -> windows::core::Result<()> {
     );
 
     let pattern = |seed: u8| -> Vec<u8> {
-        (0..SIDE * SIDE * TEXEL)
+        (0..TEXTURE_SIDE * TEXTURE_SIDE * TEXEL_BYTES)
             .map(|i| (i as u8).wrapping_mul(7).wrapping_add(seed))
             .collect()
     };
     let texture = |d: &ID3D11Device, misc: D3D11_RESOURCE_MISC_FLAG, init: &[u8]| {
         let desc = D3D11_TEXTURE2D_DESC {
-            Width: SIDE,
-            Height: SIDE,
+            Width: TEXTURE_SIDE,
+            Height: TEXTURE_SIDE,
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -82,7 +82,7 @@ fn main() -> windows::core::Result<()> {
         };
         let data = D3D11_SUBRESOURCE_DATA {
             pSysMem: init.as_ptr().cast(),
-            SysMemPitch: SIDE * TEXEL,
+            SysMemPitch: TEXTURE_SIDE * TEXEL_BYTES,
             SysMemSlicePitch: 0,
         };
         let mut t = None;
@@ -133,11 +133,11 @@ fn main() -> windows::core::Result<()> {
             c.Map(&s, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
         }
         let mut hex = String::new();
-        for y in 0..SIDE {
+        for y in 0..TEXTURE_SIDE {
             let row = unsafe {
                 std::slice::from_raw_parts(
                     m.pData.cast::<u8>().add((y * m.RowPitch) as usize),
-                    (SIDE * TEXEL) as usize,
+                    (TEXTURE_SIDE * TEXEL_BYTES) as usize,
                 )
             };
             for byte in row {
@@ -185,7 +185,16 @@ fn main() -> windows::core::Result<()> {
     finish(&a, &ca)?;
     show("the other device after a clear and flush", &b, &cb, &other)?;
     let next = pattern(9);
-    unsafe { cb.UpdateSubresource(&other, 0, None, next.as_ptr().cast(), SIDE * TEXEL, 0) };
+    unsafe {
+        cb.UpdateSubresource(
+            &other,
+            0,
+            None,
+            next.as_ptr().cast(),
+            TEXTURE_SIDE * TEXEL_BYTES,
+            0,
+        )
+    };
     finish(&b, &cb)?;
     show("its device after the other's update and flush", &a, &ca, &t)?;
 
@@ -218,7 +227,7 @@ fn main() -> windows::core::Result<()> {
     let r = unsafe {
         a.CreateBuffer(
             &D3D11_BUFFER_DESC {
-                ByteWidth: SIDE * TEXEL,
+                ByteWidth: TEXTURE_SIDE * TEXEL_BYTES,
                 Usage: D3D11_USAGE_DEFAULT,
                 BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
                 MiscFlags: D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0 as u32,

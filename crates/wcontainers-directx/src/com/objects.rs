@@ -24,6 +24,12 @@ use wcontainers_direct3d_11::object as front;
 
 use super::*;
 
+/// Each resource interface's place among a resource object's vtable pointers ([`counted!`]).
+const DXGI_PLACE: isize = -2;
+const SURFACE_PLACE: isize = -3;
+const D3D10_PLACE: isize = -4;
+const KEYED_PLACE: isize = -5;
+
 /// The device front of a device of ours.
 fn device_front(device: &ID3D11Device) -> Shared {
     device
@@ -143,10 +149,10 @@ pub struct Buffer {
 
 counted!(Buffer => Buffer_Impl {
     main: ID3D11Buffer, ID3D11Buffer_Vtbl;
-    dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
-    surface: IDXGISurface1, IDXGISurface1_Vtbl, -3;
-    d3d10: ID3D10Buffer, ID3D10Buffer_Vtbl, -4, if offers_d3d10;
-    keyed: IDXGIKeyedMutex, IDXGIKeyedMutex_Vtbl, -5, if keyed_mutex;
+    dxgi: IDXGIResource1, IDXGIResource1_Vtbl, DXGI_PLACE;
+    surface: IDXGISurface1, IDXGISurface1_Vtbl, SURFACE_PLACE;
+    d3d10: ID3D10Buffer, ID3D10Buffer_Vtbl, D3D10_PLACE, if offers_d3d10;
+    keyed: IDXGIKeyedMutex, IDXGIKeyedMutex_Vtbl, KEYED_PLACE, if keyed_mutex;
 });
 
 impl Buffer {
@@ -234,7 +240,7 @@ fn dxgi_usage(bind: u32) -> DXGI_USAGE {
 
 /// A texture of one dimension: its interface, description structure, conversion and resource type.
 macro_rules! texture {
-    ($name:ident, $imp:ident, $iface:ident $(| $also:ident)*, $vtbl:ident, $desc:ident, $back:path, $dim:ident, $iface10:ident, $vtbl10:ident, $at10:expr $(, $surface:ident)?) => {
+    ($name:ident, $imp:ident, $iface:ident $(| $also:ident)*, $vtbl:ident, $desc:ident, $back:path, $dim:ident, $iface10:ident, $vtbl10:ident $(, $surface:ident)?) => {
         pub struct $name {
             pub front: Locked<Rc<front::Texture<Chosen>>>,
             pub(super) child: Child,
@@ -246,10 +252,10 @@ macro_rules! texture {
 
         counted!($name => $imp {
             main: $iface $(| $also)*, $vtbl;
-            dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
-            $($surface: IDXGISurface1, IDXGISurface1_Vtbl, -3, if one_subresource;)?
-            d3d10: $iface10, $vtbl10, $at10, if offers_d3d10;
-            keyed: IDXGIKeyedMutex, IDXGIKeyedMutex_Vtbl, $at10 - 1, if keyed_mutex;
+            dxgi: IDXGIResource1, IDXGIResource1_Vtbl, DXGI_PLACE;
+            $($surface: IDXGISurface1, IDXGISurface1_Vtbl, SURFACE_PLACE, if one_subresource;)?
+            d3d10: $iface10, $vtbl10, D3D10_PLACE, if offers_d3d10;
+            keyed: IDXGIKeyedMutex, IDXGIKeyedMutex_Vtbl, KEYED_PLACE, if keyed_mutex;
         });
 
         impl $name {
@@ -486,7 +492,6 @@ texture!(
     D3D11_RESOURCE_DIMENSION_TEXTURE1D,
     ID3D10Texture1D,
     ID3D10Texture1D_Vtbl,
-    -4,
     surface
 );
 texture!(
@@ -499,7 +504,6 @@ texture!(
     D3D11_RESOURCE_DIMENSION_TEXTURE2D,
     ID3D10Texture2D,
     ID3D10Texture2D_Vtbl,
-    -4,
     surface
 );
 texture!(
@@ -512,7 +516,6 @@ texture!(
     D3D11_RESOURCE_DIMENSION_TEXTURE3D,
     ID3D10Texture3D,
     ID3D10Texture3D_Vtbl,
-    -4,
     surface
 );
 

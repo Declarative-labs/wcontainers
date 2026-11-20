@@ -29,6 +29,12 @@ use super::{Chosen, Shared, hresult, missing};
 /// The bit DXGI's kernel-mode (KMT) handles carry, by which programs tell them from NT handles.
 const KMT_HANDLE_MARK: usize = 0x4000_0000;
 
+/// A multisampled texture opened on another device: no staging copy holds its samples.
+const MULTISAMPLED_ACROSS_DEVICES: &str = "a multisampled texture shared between devices";
+/// The warning of a hand-over that failed.
+const NOT_COPIED: &str =
+    "wcontainers direct3d 11: a shared resource was not copied to its other devices: ";
+
 /// What a resource shared across devices of its kind is made from on another device.
 #[derive(Clone, Copy)]
 enum Made {
@@ -240,7 +246,7 @@ impl Share {
         if let Made::Texture(d) = self.made
             && d.sample_count > 1
         {
-            return Err(missing("a multisampled texture shared between devices"));
+            return Err(missing(MULTISAMPLED_ACROSS_DEVICES));
         }
         let made = {
             let mut f = device.borrow_mut();

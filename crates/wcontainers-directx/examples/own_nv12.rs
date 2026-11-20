@@ -26,6 +26,7 @@ fn main() -> windows::core::Result<()> {
 
     let code = |r: windows::core::Result<()>| r.err().map_or(0, |e| e.code().0) as u32;
     // Shaders compiled by the system's d3dcompiler_47.dll.
+    let entry = std::ffi::CString::new(wcontainers_shaders::ENTRY_POINT).unwrap();
     let compile = |src: &str, target: PCSTR| -> Vec<u8> {
         let mut blob = None;
         unsafe {
@@ -35,7 +36,7 @@ fn main() -> windows::core::Result<()> {
                 PCSTR::null(),
                 None,
                 None::<&ID3DInclude>,
-                s!("main"),
+                PCSTR(entry.as_ptr().cast()),
                 target,
                 0,
                 0,
@@ -394,7 +395,7 @@ fn main() -> windows::core::Result<()> {
 
     // 420_OPAQUE: made bound to nothing and copied; Direct3D refuses its views and CPU access.
     for (name, usage, bind, cpu) in [
-        ("none", D3D11_USAGE_DEFAULT, 0, 0),
+        ("unbound", D3D11_USAGE_DEFAULT, 0, 0),
         (
             "shader resource",
             D3D11_USAGE_DEFAULT,

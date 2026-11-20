@@ -227,6 +227,7 @@ const CULL_DISTANCES_UNSERVED: &str = "cull distances past the vertex stage, or 
 const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
     "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)";
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
+const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound to nothing";
 
 /// The color targets a pass takes at feature level `level`.
 fn level_targets(level: u32) -> u32 {
@@ -1080,9 +1081,7 @@ impl<B: Backend> Device<B> {
         if d.format == dxgi::OPAQUE_420
             && (d.bind_flags != 0 || d.usage != usage::DEFAULT || d.cpu_access_flags != 0)
         {
-            return Err(Error::InvalidArg(
-                "a 420_OPAQUE texture is of default usage, bound to nothing",
-            ));
+            return Err(Error::InvalidArg(OPAQUE_420_BOUND));
         }
         if d.format == format::YUY2 {
             if d.dimension != TexDim::D2
