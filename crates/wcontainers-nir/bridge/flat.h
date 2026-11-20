@@ -152,7 +152,7 @@ enum wc_flat_kind {
    X(unpack_snorm_4x8) X(pack_unorm_2x16) X(unpack_unorm_2x16) X(ball_fequal2) X(ball_fequal3) \
    X(ball_fequal4) X(bany_fnequal2) X(bany_fnequal3) X(bany_fnequal4) X(ball_iequal2) \
    X(ball_iequal3) X(ball_iequal4) X(bany_inequal2) X(bany_inequal3) X(bany_inequal4) X(fmod) \
-   X(frem) X(u2u16) X(u2u32)
+   X(frem) X(u2u16) X(u2u32) X(b2b1)
 
 #define WC_INTRINSICS(X)                                                                           \
    X(LOAD_DEREF) X(STORE_DEREF) X(DECL_REG) X(LOAD_REG) X(STORE_REG) X(VULKAN_RESOURCE_INDEX)    \

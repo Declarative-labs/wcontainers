@@ -295,6 +295,7 @@ enum Alu {
     Frem,
     U2u16,
     U2u32,
+    B2b1,
     Unsupported,
 }
 
@@ -1388,6 +1389,8 @@ fn alu_form(op: Alu) -> Option<(ScalarKind, AluForm)> {
         Alu::F2u32 => (Float, F::Cast(Uint)),
         Alu::B2f32 => (Bool, F::Cast(Float)),
         Alu::B2i32 => (Bool, F::Cast(Sint)),
+        // A 32-bit boolean word (OpenGL's default-block booleans) as a boolean: not zero.
+        Alu::B2b1 => (Uint, F::Cast(Bool)),
         Alu::BitCount => (Uint, F::Math(M::CountOneBits)),
         Alu::UfindMsb => (Uint, F::Math(M::FirstLeadingBit)),
         Alu::IfindMsb => (Sint, F::Math(M::FirstLeadingBit)),
@@ -1786,7 +1789,11 @@ impl Builder<'_> {
                         self.add(Expression::As {
                             expr: a,
                             kind: to,
-                            convert: Some(WIDTH),
+                            convert: Some(if to == ScalarKind::Bool {
+                                naga::BOOL_WIDTH
+                            } else {
+                                WIDTH
+                            }),
                         }),
                         to,
                     ),
