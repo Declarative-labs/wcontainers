@@ -11,7 +11,8 @@ run 46's results stale and three gap causes wrong. Run 47 fixed those findings (
 the gap list is now worked in the order the fronts need it ("Next"); run 48 did the Direct3D 12
 front's two named items (arrays of views in shader model 5.1 DXBC, the evaluated attribute's
 -1.16e-10; see "Run 48"); run 49 the Direct3D 11 front's `GeometryStreams` (see "Run 49"); run 50
-its indexed strips through the stage helper (`StageIndexedStrip`, see "Run 50").
+its indexed strips through the stage helper (`StageIndexedStrip`) and, from A7, triangle strips
+with adjacency (see "Run 50").
 Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
@@ -155,8 +156,8 @@ The gap list (every item of the pass bar not met):
   tessellation-patch-vars and clip-cull-distance-1 files). Takes: the three execution models in the carried reader (inputs as arrays per
   vertex, `EmitVertex`/`EndPrimitive`, the patch constant function), lowered as the DXBC route's.
 - A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
-  which Direct3D does not allow; several streams of points convert since run 49), triangle strips
-  with adjacency (indexed strips of every other kind run on every route since run 50), indirect draws through the stages, the
+  which Direct3D does not allow; several streams of points convert since run 49); indexed strips
+  and triangle strips with adjacency run since run 50; indirect draws through the stages, the
   primitive's number behind a geometry shader (the rig's geometry scene's `ps_id`, the Direct3D 11
   front), cull distances from a geometry or domain shader, typed buffers in geometry shaders.
   Takes: each its route and a drawn test, the primitive's number first.
@@ -2301,6 +2302,27 @@ Run 50 (the gap list in the fronts' order: the Direct3D 11 front's `StageIndexed
     one line of the Direct3D 11 crate it named stale was deleted; this crate's baseline unchanged.
 - Not drawn: 32-bit indices of a strip (the same reading as the vertex stage's; the tests' index
   buffers are 16-bit) and indexed strips after a domain stage (patches have no strips).
+- Triangle strips with adjacency (A7's `GeometryTriangleStripAdjacency`, refused until now) go
+  through the same listing, indexed or not (a draw without indices lists its vertex numbers): a
+  triangle at each even place of a strip whose six places hold no restart, its vertices and
+  adjacent vertices as Direct3D orders them. The first run took OpenGL's table and differed from
+  the RTX 3080 on every odd triangle (gpu4.log); the stream output dump showed Direct3D keeps an
+  odd triangle's first vertex and swaps the other two, as for strips without adjacency: (i, i + 3,
+  i + 4, i + 6, i + 2, i - 2), with i + 5 for the last triangle's i + 6 and i + 1 for the first
+  triangle's i - 2. New cases against real Direct3D 11: `gs_adjacent` drawn from a triangle strip
+  with adjacency instanced (17 vertices, two instances) and indexed with restarts (24 indices), and
+  its stream output, not indexed and indexed with two instances. At seeds 1 to 8 (gpu5.log) every
+  texel and every word equal, counts equal: geometry 224 comparisons with the one A10 failure
+  (`gs_clip` at seed 6), stream output 112 and 0, four streams 32 and 0, antialiased lines 96 and
+  0, primitive numbers 112 and 0. Lint clean on Windows; literal check passes (check3.txt); this
+  crate's baseline 610 lines (556 code, 46 restated, 6 role, 2 redefinition), unchanged.
+- The whole suite on the laptop at a575a13d with every corpus and glslang (suite.log, i7-8750H,
+  4 cargo jobs under choom, load about 4 from other work): every test passes but
+  `runner_shaders_give_their_recorded_verdicts`, whose one differing entry is
+  `hlsl+distance-4-ps.dxil` (A1, left failing); corpus test 10 of 11 in 400 s.
+- Clean-up: this branch's build folders on the laptop (`~/wcontainers-graphics/target/
+  phase-2-graphics-shaders`) and the desktop (`C:\wc\target\phase-2-graphics-shaders`) deleted
+  at the end; logs kept in scratch `graphics-shaders/run50`. Nothing was built on the Mac.
 
 Run 49 (the gap list in the fronts' order: the Direct3D 11 front's `GeometryStreams`):
 - Merged origin/phase-2-graphics-webgpu and origin/phase-2-graphics-direct3d-11 (no conflicts);
@@ -2470,7 +2492,7 @@ Run 47 (the check of run 46's report: every finding fixed or recorded):
 
 Next (in order). The gap list (top of this file) in the order the fronts need it:
 0. Done in run 50: indexed strips through the stage helper (the Direct3D 11 front's
-   `StageIndexedStrip`). Done in run 49: `GeometryStreams` (several streams of points). The primitive's number behind a
+   `StageIndexedStrip`) and triangle strips with adjacency (A7). Done in run 49: `GeometryStreams` (several streams of points). The primitive's number behind a
    geometry shader is not waited on now: the Direct3D 11 front draws the rig's geometry scene's
    `ps_id` with the back end's native primitive index (its status, run 5: 135 scenes pass). The
    stage helper's own route for it stays on A7.
@@ -2713,6 +2735,8 @@ The older list, kept for its detail:
   front can drop its `NotImplemented("StageIndexedStrip")` and un-ignore
   `an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does`. Pass the draw's index
   buffer in `StageDraw::index` as for lists; the helper restarts at the format's largest index.
+  Triangle strips with adjacency into a geometry shader run too (no longer
+  `GeometryTriangleStripAdjacency`).
 - The Direct3D 12 track (run 50): its "Next" 5 (a DXBC `Buffer<float4>` vertex shader with
   `DrawBaseSource::Arguments` failing validation, "Index 3 is out of bounds") was fixed here in
   run 29; nothing waits on it. Indexed strips through the stage helper work as above (its
