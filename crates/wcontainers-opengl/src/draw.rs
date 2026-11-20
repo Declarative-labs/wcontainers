@@ -383,6 +383,10 @@ fn index_format(size: u16) -> IndexFormat {
 fn viewport(v: &pipe_viewport_state, minus_one: bool) -> (Viewport, PositionTransform) {
     let [sx, sy, sz] = v.scale;
     let [tx, ty, tz] = v.translate;
+    // OpenGL clamps its depth range to the host's; only Mesa's blitter maps -1..1 to itself, for
+    // depths it gives at zero or above, which the zero-to-one reading draws alike.
+    let host_range = 0.0..=1.0;
+    let minus_one = minus_one && host_range.contains(&(tz - sz)) && host_range.contains(&(tz + sz));
     let (near, far) = if minus_one {
         (tz - sz, tz + sz)
     } else {
