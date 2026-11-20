@@ -517,7 +517,7 @@ const CAUGHT_TYPE: &str = "WcCaught";
 const FED_ATTRIBUTE: &str = "wc_fed";
 /// The directive a GLSL source starts with, and the version of the feeders and catchers of
 /// desktop programs: the first with no interpolation to match between stages.
-const VERSION_DIRECTIVE: &str = "#version";
+pub const VERSION_DIRECTIVE: &str = "#version";
 const ES_PROFILE: &str = "es";
 const DESKTOP_HEADER: &str = "#version 450 compatibility";
 /// What OpenGL's own names start with.

@@ -1,6 +1,7 @@
 //! bgfx's compiled shaders (its `shaderc` output, `examples/runtime/shaders/<renderer>/*.bin`): a
 //! desktop GLSL one read as the program bgfx's OpenGL renderer hands the driver (`renderer_gl.cpp`).
 
+use crate::glsl::VERSION_DIRECTIVE;
 use wcontainers_nir::mesa::Stage;
 
 /// The extension of bgfx's compiled shaders, and the folder of its desktop GLSL ones.
@@ -16,7 +17,6 @@ const STAGES: [(&[u8], Stage); 3] = [
 ];
 /// What bgfx's OpenGL renderer puts before a source without a version: its least desktop OpenGL,
 /// 4.3 (`BGFX_CONFIG_RENDERER_OPENGL`).
-const VERSION_DIRECTIVE: &str = "#version";
 const VERSION_LINE: &str = "#version 430\n";
 
 /// Whether a file is one of bgfx's desktop GLSL shaders, by its place in bgfx's layout.
