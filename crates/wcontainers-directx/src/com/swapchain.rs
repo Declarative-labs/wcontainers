@@ -252,7 +252,11 @@ impl Factory_Impl {
             format: d.Format.0 as u32,
             buffers: d.BufferCount,
             model,
-            usage: TextureUsage::empty(),
+            usage: if shader_input {
+                TextureUsage::SAMPLE
+            } else {
+                TextureUsage::empty()
+            },
         };
         let ours = device.cast_object_ref::<Device>()?;
         let front: Shared = (*ours.front).clone();

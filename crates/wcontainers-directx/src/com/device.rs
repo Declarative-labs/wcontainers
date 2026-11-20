@@ -5,15 +5,15 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
 
-use windows::Win32::Foundation::E_INVALIDARG;
+use windows::Win32::Foundation::{E_INVALIDARG, HANDLE};
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
 use windows::Win32::Graphics::Direct3D10::{
     ID3D10Device, ID3D10Device1, ID3D10Device1_Vtbl, ID3D10Multithread, ID3D10Multithread_Vtbl,
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_A4B4G4R4_UNORM, DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE,
-    DXGI_FORMAT_V408,
+    DXGI_FORMAT, DXGI_FORMAT_A4B4G4R4_UNORM, DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_R1_UNORM,
+    DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_OFFER_RESOURCE_PRIORITY, DXGI_OFFER_RESOURCE_PRIORITY_HIGH,
@@ -21,15 +21,17 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIResource,
 };
 use windows::core::{
-    ComObjectInner, ComObjectInterface, GUID, IUnknownImpl, Interface, OutRef, Ref, Result,
-    implement,
+    ComObjectInner, ComObjectInterface, GUID, IUnknown, IUnknownImpl, Interface, OutRef, PCWSTR,
+    Ref, Result, implement,
 };
 
-use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData, TextureDesc};
+use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData, TexDim, TextureDesc};
 use wcontainers_direct3d_11::format;
+use wcontainers_direct3d_11::object::Resource;
 use wcontainers_gpu::SourceStage;
 
 use super::counted::{Counted, Held};
+use super::sharing;
 use super::*;
 
 /// `IDXGIDevice1::SetMaximumFrameLatency`'s default and its largest value.
@@ -379,7 +381,7 @@ impl Device_Impl {
             .borrow_mut()
             .create_buffer(&d, bytes)
             .map_err(hresult)?;
-        give(out, Buffer::new(front, self.me()).into())
+        give(out, Buffer::made(front, self.me()).into())
     }
 
     /// The front texture of a description and the program's initial data.
@@ -429,7 +431,7 @@ impl Device_Impl {
     ) -> Result<()> {
         let d = convert::texture1d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         let front = self.texture(d, init)?;
-        give(out, Texture1D::new(front, self.me()).into())
+        give(out, Texture1D::made(front, self.me()).into())
     }
 
     pub(super) fn create_texture2_d(
@@ -440,7 +442,7 @@ impl Device_Impl {
     ) -> Result<()> {
         let d = convert::texture2d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         let front = self.texture(d, init)?;
-        give(out, Texture2D::new(front, self.me()).into())
+        give(out, Texture2D::made(front, self.me()).into())
     }
 
     pub(super) fn create_texture3_d(
@@ -451,7 +453,7 @@ impl Device_Impl {
     ) -> Result<()> {
         let d = convert::texture3d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         let front = self.texture(d, init)?;
-        give(out, Texture3D::new(front, self.me()).into())
+        give(out, Texture3D::made(front, self.me()).into())
     }
 
     /// `CreateTexture2D1`: only the undefined layout is served (no other is reported).
@@ -467,7 +469,7 @@ impl Device_Impl {
         }
         let d = convert::texture2d(&unsafe { convert::same_fields(d1) });
         let front = self.texture(d, init)?;
-        give(out, Texture2D::new(front, self.me()).into())
+        give(out, Texture2D::made(front, self.me()).into())
     }
 
     pub(super) fn create_texture3_d1(
@@ -482,7 +484,7 @@ impl Device_Impl {
         }
         let d = convert::texture3d(&unsafe { convert::same_fields(d1) });
         let front = self.texture(d, init)?;
-        give(out, Texture3D::new(front, self.me()).into())
+        give(out, Texture3D::made(front, self.me()).into())
     }
 
     pub(super) fn create_shader_resource_view1(
@@ -537,6 +539,84 @@ impl Device_Impl {
             MiscFlags: d1.MiscFlags,
         };
         as_one(out, |o| self.create_query(&d, o))
+    }
+
+    /// The resource of `share` on this device, as the interface `riid` names.
+    fn open(
+        &self,
+        share: Option<Rc<sharing::Share>>,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if out.is_null() || riid.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        unsafe { *out = std::ptr::null_mut() };
+        let share = share.ok_or(E_INVALIDARG)?;
+        let object: IUnknown = match share.on(&self.front)? {
+            Resource::Buffer(b) => {
+                ID3D11Buffer::from(Buffer::new(b, self.me()).sharing(Some(share))).into()
+            }
+            Resource::Texture(t) => {
+                let kept = Some(share);
+                match t.desc.dimension {
+                    TexDim::D1 => {
+                        ID3D11Texture1D::from(Texture1D::new(t, self.me()).sharing(kept)).into()
+                    }
+                    TexDim::D2 => {
+                        ID3D11Texture2D::from(Texture2D::new(t, self.me()).sharing(kept)).into()
+                    }
+                    TexDim::D3 => {
+                        ID3D11Texture3D::from(Texture3D::new(t, self.me()).sharing(kept)).into()
+                    }
+                }
+            }
+        };
+        unsafe { object.query(riid, out) }.ok()
+    }
+
+    /// `OpenSharedResource`: a resource shared through a KMT handle.
+    pub(super) fn open_shared_resource(
+        &self,
+        handle: HANDLE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        self.open(sharing::by_handle(handle), riid, out)
+    }
+
+    /// `OpenSharedResource1`: a resource shared through an NT handle.
+    pub(super) fn open_shared_resource1(
+        &self,
+        handle: HANDLE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        self.open(sharing::by_nt_handle(handle), riid, out)
+    }
+
+    /// `OpenSharedResourceByName`: a resource whose NT handle was made under `name`.
+    pub(super) fn open_shared_resource_by_name(
+        &self,
+        name: &PCWSTR,
+        _access: u32,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if name.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        self.open(sharing::by_name(unsafe { name.as_wide() }), riid, out)
+    }
+
+    /// Direct3D 10's `OpenSharedResource`.
+    pub(super) fn open_shared_resource10(
+        &self,
+        handle: HANDLE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        self.open_shared_resource(handle, riid, out)
     }
 
     /// The front texture behind a resource a target view names, refusing buffers (their views
@@ -1233,11 +1313,14 @@ impl Device_Impl {
         format: DXGI_FORMAT,
         samples: u32,
     ) -> Result<u32> {
-        // Values that name no DXGI format.
-        const LAST_VIDEO: i32 = DXGI_FORMAT_V408.0;
+        // Values Direct3D 11 refuses here (measured on the RTX 3080): `R1_UNORM`, and those past
+        // its last format but the later ones it was not asked about.
+        const LAST_OF_DIRECT3D_11: i32 = DXGI_FORMAT_B4G4R4A4_UNORM.0;
         const FIRST_FEEDBACK: i32 = DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE.0;
         const LAST: i32 = DXGI_FORMAT_A4B4G4R4_UNORM.0;
-        if !matches!(format.0, 0..=LAST_VIDEO | FIRST_FEEDBACK..=LAST) {
+        if format == DXGI_FORMAT_R1_UNORM
+            || !matches!(format.0, 0..=LAST_OF_DIRECT3D_11 | FIRST_FEEDBACK..=LAST)
+        {
             return Err(E_INVALIDARG.into());
         }
         if samples == 0 || samples > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT {

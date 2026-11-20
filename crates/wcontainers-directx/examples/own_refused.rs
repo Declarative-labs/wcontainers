@@ -1,4 +1,4 @@
-//! A small Direct3D 11 program asking for what the front does not serve yet: a texture shared
+//! A small Direct3D 11 program asking for a texture shared
 //! through a keyed mutex, a 3D texture, a structured buffer, a texture of 4 samples, and a draw blending with the pixel shader's second output. Prints what each call answered, as `<call> <hresult>`, and the device's
 //! removal reason after the draw; real Direct3D answers 0 to all of them.
 

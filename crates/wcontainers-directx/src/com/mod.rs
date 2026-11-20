@@ -16,6 +16,7 @@ mod factory;
 mod generated;
 mod objects;
 mod output;
+mod sharing;
 mod swapchain;
 
 use std::cell::RefCell;

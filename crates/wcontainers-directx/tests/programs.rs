@@ -1,7 +1,7 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
 //! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces`,
 //! `own_indirect`, `own_min_lod`, `own_packed`, `own_nv12`, `own_yuy2`, `own_cases`,
-//! `own_level10`, `own_d3d10` and `lifetimes`) run as ordinary programs, once beside the system's d3d11.dll and once with our
+//! `own_level10`, `own_d3d10`, `own_shared` and `lifetimes`) run as ordinary programs, once beside the system's d3d11.dll and once with our
 //! forwarding d3d11.dll and library beside them, and what each printed compared.
 #![cfg(windows)]
 
@@ -84,7 +84,7 @@ fn own_handled_draws_the_same_through_ours() {
 }
 
 #[test]
-fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
+fn own_refused_cases_are_served_through_ours_as_direct3d_serves_them() {
     let (code, text) = run("own_refused", &place("refused-system", false));
     assert_eq!(code, 0, "{text}");
     assert_eq!(
@@ -95,14 +95,7 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     );
     let (code, ours) = run("own_refused", &place("refused-ours", true));
     assert_eq!(code, 0, "{ours}");
-    // E_NOTIMPL for keyed-mutex sharing; the two queries, structured views, 4 samples and the
-    // dual-source draw served as Direct3D serves them.
-    assert_eq!(
-        ours,
-        "CreateTexture2D(keyed mutex) 0x80004001\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
-         CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
-         CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
-    );
+    assert_eq!(ours, text);
 }
 
 #[test]
@@ -154,10 +147,35 @@ fn two_pixel_formats_sample_load_and_copy_as_direct3d_does() {
 }
 
 #[test]
-fn yuy2_pixel_pairs_view_write_copy_and_map_as_direct3d_does() {
-    let (code, want) = run("own_yuy2", &place("yuy2-system", false));
+fn resources_shared_between_devices_answer_and_read_as_direct3d_does() {
+    let (code, want) = run("own_shared", &place("shared-system", false));
     assert_eq!(code, 0, "{want}");
-    let (code, got) = run("own_yuy2", &place("yuy2-ours", true));
+    let (code, got) = run("own_shared", &place("shared-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn yuy2_pixel_pairs_view_write_copy_and_map_as_direct3d_does() {
+    yuy2_compared(&[]);
+}
+
+/// A known failure: `GetDimensions` of a YUY2 view reports the texture's width in pixels on the
+/// RTX 3080 and in pixel pairs, the view's texels, through ours (no helper value gives a program
+/// another width than its texture's).
+#[test]
+#[ignore = "GetDimensions of YUY2 views: pixels on the RTX 3080, pixel pairs through ours"]
+fn yuy2_view_sizes_read_as_direct3d_reads_them() {
+    yuy2_compared(&["sizes"]);
+}
+
+fn yuy2_compared(args: &[&str]) {
+    let (code, want) = run_with("own_yuy2", &place("yuy2-system", false), args);
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run_with("own_yuy2", &place("yuy2-ours", true), args);
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
         assert_eq!(w, g, "the first line that differs");
@@ -263,6 +281,13 @@ fn b8g8r8x8_elements_read_as_direct3d_reads_them() {
     case("bgrx");
 }
 
+/// `R10G10B10_XR_BIAS_A2_UNORM` textures take the shapes, bindings, CPU access and copies
+/// Direct3D gives them, keeping their bytes.
+#[test]
+fn xr_bias_textures_as_direct3d_does() {
+    case("xr");
+}
+
 #[test]
 fn texture_atomics_as_direct3d_does() {
     case("atomics");
@@ -282,8 +307,8 @@ fn typed_storage_stores_as_direct3d_does() {
 /// real Direct3D may have and ours never claims: video, the first word's bits from
 /// `DECODER_OUTPUT` up (`ID3D11VideoDevice` is not served), logic
 /// operations (`D3D11_OPTIONS.OutputMergerLogicOp`), tiled resources
-/// (`D3D11_OPTIONS1.TiledResourcesTier`), sharing (shared resources are refused) and multiplane
-/// overlays (`IDXGIOutput2::SupportsOverlays`).
+/// (`D3D11_OPTIONS1.TiledResourcesTier`) and multiplane overlays
+/// (`IDXGIOutput2::SupportsOverlays`).
 const ABSENT_SUPPORT1: i32 = !(D3D11_FORMAT_SUPPORT_DECODER_OUTPUT.0 - 1);
 /// Multisampling bits, claimed where the back end draws some sample count of the format
 /// (`CheckMultisampleQualityLevels` answers which); real Direct3D's further counts are the plan's
@@ -294,7 +319,6 @@ const MULTISAMPLE_SUPPORT1: i32 = D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET.
     | D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE.0;
 const ABSENT_SUPPORT2: i32 = D3D11_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP.0
     | D3D11_FORMAT_SUPPORT2_TILED.0
-    | D3D11_FORMAT_SUPPORT2_SHAREABLE.0
     | D3D11_FORMAT_SUPPORT2_MULTIPLANE_OVERLAY.0;
 
 /// Video formats Microsoft's tables leave optional at 11_0, which ours reports absent altogether.
@@ -323,20 +347,12 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
     const TARGET: i32 = D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
         | D3D11_FORMAT_SUPPORT_BLENDABLE.0
         | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN.0;
-    const VIDEO_STORAGE: i32 =
-        D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0 | D3D11_FORMAT_SUPPORT_SHADER_GATHER.0;
     &[
         (
             DXGI_FORMAT_R32G32B32_FLOAT,
             D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | D3D11_FORMAT_SUPPORT_SHADER_GATHER.0,
             0,
             "sampling, optional at 11_0: served, where the back end filters the format",
-        ),
-        (
-            DXGI_FORMAT_R10G10B10A2_UNORM,
-            D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
-            0,
-            "back buffer views of other formats than the sRGB twin",
         ),
         (
             DXGI_FORMAT_B5G6R5_UNORM,
@@ -358,31 +374,9 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
         ),
         (
             DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
-            D3D11_FORMAT_SUPPORT_TEXTURE2D.0
-                | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE.0
-                | D3D11_FORMAT_SUPPORT_DISPLAY.0
-                | D3D11_FORMAT_SUPPORT_CAST_WITHIN_BIT_LAYOUT.0
-                | D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
+            D3D11_FORMAT_SUPPORT_DISPLAY.0 | D3D11_FORMAT_SUPPORT_BACK_BUFFER_CAST.0,
             0,
-            "extended-range back buffers: the interface has no such format",
-        ),
-        (
-            DXGI_FORMAT_NV12,
-            VIDEO_STORAGE | D3D11_FORMAT_SUPPORT_BLENDABLE.0,
-            D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
-            "NV12 storage views, gathers and blending",
-        ),
-        (
-            DXGI_FORMAT_420_OPAQUE,
-            D3D11_FORMAT_SUPPORT_TEXTURE2D.0,
-            0,
-            "420_OPAQUE textures",
-        ),
-        (
-            DXGI_FORMAT_YUY2,
-            VIDEO_STORAGE,
-            D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE.0,
-            "YUY2 storage views and gathers",
+            "extended-range swap chains: the infrastructure crate makes none",
         ),
     ]
 };
@@ -394,16 +388,55 @@ const SUPPORT_DIFFERENCES: &[(DXGI_FORMAT, i32, i32, &str)] = {
 /// bits, so it fails on ours where real Direct3D's word holds only bits ours lacks.
 #[test]
 fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
+    format_support_compared("ours", &[], &[]);
+}
+
+/// The same where the back end lacks the 16-bit normalised formats (a browser without
+/// `texture-formats-tier1`): they are held as their integer twins (`NormAsInteger`) and so not
+/// blended (`BlendInShader` is not built), and claim nothing else Direct3D does not.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn format_support_without_16_bit_norm_as_direct3d_reports_it_but_the_named_shortfalls() {
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    let off = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
+    let unblended = |f| {
+        (
+            f,
+            D3D11_FORMAT_SUPPORT_BLENDABLE.0,
+            0,
+            "blending into integer twins",
+        )
+    };
+    let twins = [
+        DXGI_FORMAT_R16G16B16A16_UNORM,
+        DXGI_FORMAT_R16G16B16A16_SNORM,
+        DXGI_FORMAT_R16G16_UNORM,
+        DXGI_FORMAT_R16G16_SNORM,
+        DXGI_FORMAT_R16_UNORM,
+        DXGI_FORMAT_R16_SNORM,
+    ]
+    .map(unblended);
+    format_support_compared("ours-no16", &[(FEATURES_OFF, off)], &twins);
+}
+
+/// Compares every format's support through ours, run with `env` in a directory labelled `label`,
+/// with real Direct3D's, allowing `SUPPORT_DIFFERENCES` and `more` (whose bits are added).
+fn format_support_compared(
+    label: &str,
+    env: &[(&str, &str)],
+    more: &[(DXGI_FORMAT, i32, i32, &str)],
+) {
     let (code, want) = run_with(
         "own_cases",
         &place("format_support-system", false),
         &["format_support"],
     );
     assert_eq!(code, 0, "{want}");
-    let (code, got) = run_with(
+    let (code, got) = run_env(
         "own_cases",
-        &place("format_support-ours", true),
+        &place(&format!("format_support-{label}"), true),
         &["format_support"],
+        env,
     );
     assert_eq!(code, 0, "{got}");
     let words = |l: &str| -> (i32, [i32; 3]) {
@@ -436,8 +469,9 @@ fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
         let diff2 = (want2 ^ got2) & !ABSENT_SUPPORT2;
         let named = SUPPORT_DIFFERENCES
             .iter()
-            .find(|s| s.0 == DXGI_FORMAT(format))
-            .map_or((0, 0), |s| (s.1, s.2));
+            .chain(more)
+            .filter(|s| s.0 == DXGI_FORMAT(format))
+            .fold((0, 0), |(a, b), s| (a | s.1, b | s.2));
         // Direct3D fails the second query of a word without bits.
         let codes_agree = want_code == got_code || got2 == 0 && got_code != 0;
         if claimed != (0, 0) || (diff1, diff2) != named || !codes_agree {

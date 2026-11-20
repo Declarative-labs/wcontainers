@@ -1601,8 +1601,10 @@ impl Context {
         }
         if event.is_invalid() {
             self.front.borrow_mut().flush();
+            super::sharing::flushed(&self.front);
         } else {
             self.front.borrow_mut().finish();
+            super::sharing::flushed(&self.front);
             let _ = unsafe { windows::Win32::System::Threading::SetEvent(event) };
         }
     }
@@ -1804,6 +1806,7 @@ impl Context {
     pub(super) fn flush(&self) {
         if !self.is_deferred() {
             self.front.borrow_mut().flush();
+            super::sharing::flushed(&self.front);
         }
     }
 

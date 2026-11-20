@@ -362,6 +362,131 @@ fn main() -> windows::core::Result<()> {
             unsafe { context.Draw(1, 0) };
             print("B8G8R8X8_UNORM element", &target, 16);
         }
+        "xr" => {
+            // R10G10B10_XR_BIAS_A2_UNORM textures: which shapes and bindings are taken, their
+            // bytes kept through initial data, updates, CPU writes and copies, and copies with
+            // R10G10B10A2 textures.
+            const XR: DXGI_FORMAT = DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM;
+            let (side, texel) = (2u32, 4u32);
+            let pitch = side * texel;
+            let first: Vec<u8> = (0..pitch * side).map(|i| (i * 37 + 11) as u8).collect();
+            let second: Vec<u8> = first.iter().map(|b| b ^ 0xa5).collect();
+            let tex = |format, bind| Tex {
+                w: side,
+                h: side,
+                format,
+                samples: 1,
+                bind,
+            };
+            for (what, bind) in [
+                ("shader resource", D3D11_BIND_SHADER_RESOURCE),
+                ("render target", D3D11_BIND_RENDER_TARGET),
+                ("unordered access", D3D11_BIND_UNORDERED_ACCESS),
+            ] {
+                println!(
+                    "{what}: {:#010x}",
+                    code(make(&tex(XR, bind), None).map(drop))
+                );
+            }
+            let mut one = None;
+            let d1 = D3D11_TEXTURE1D_DESC {
+                Width: side,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: XR,
+                Usage: D3D11_USAGE_DEFAULT,
+                ..Default::default()
+            };
+            let r = unsafe { device.CreateTexture1D(&d1, None, Some(&mut one)) };
+            println!("1D: {:#010x}", code(r));
+            let mut three = None;
+            let d3 = D3D11_TEXTURE3D_DESC {
+                Width: side,
+                Height: side,
+                Depth: side,
+                MipLevels: 1,
+                Format: XR,
+                Usage: D3D11_USAGE_DEFAULT,
+                ..Default::default()
+            };
+            let r = unsafe { device.CreateTexture3D(&d3, None, Some(&mut three)) };
+            println!("3D: {:#010x}", code(r));
+            let mut levels = 0;
+            let r = unsafe {
+                let mips = D3D11_TEXTURE2D_DESC {
+                    Width: side,
+                    Height: side,
+                    MipLevels: 0,
+                    ArraySize: 1,
+                    Format: XR,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    ..Default::default()
+                };
+                let mut t = None;
+                device.CreateTexture2D(&mips, None, Some(&mut t)).map(|_| {
+                    let mut d = D3D11_TEXTURE2D_DESC::default();
+                    t.unwrap().GetDesc(&mut d);
+                    levels = d.MipLevels;
+                })
+            };
+            println!("mip chain: {:#010x} levels {levels}", code(r));
+            let t = make(&tex(XR, D3D11_BIND_FLAG(0)), Some((&first, pitch)))?;
+            print("initialised", &t, texel);
+            unsafe { context.UpdateSubresource(&t, 0, None, second.as_ptr().cast(), pitch, 0) };
+            print("updated", &t, texel);
+            for other in [
+                DXGI_FORMAT_R10G10B10A2_UNORM,
+                DXGI_FORMAT_R10G10B10A2_TYPELESS,
+            ] {
+                let o = make(&tex(other, D3D11_BIND_FLAG(0)), Some((&first, pitch)))?;
+                unsafe { context.CopyResource(&o, &t) };
+                print(&format!("copied into {}", other.0), &o, texel);
+                let x = make(&tex(XR, D3D11_BIND_FLAG(0)), Some((&second, pitch)))?;
+                unsafe { context.CopyResource(&x, &o) };
+                print(&format!("copied from {}", other.0), &x, texel);
+            }
+            let staging = D3D11_TEXTURE2D_DESC {
+                Width: side,
+                Height: side,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: XR,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_STAGING,
+                CPUAccessFlags: (D3D11_CPU_ACCESS_READ.0 | D3D11_CPU_ACCESS_WRITE.0) as u32,
+                ..Default::default()
+            };
+            let mut s = None;
+            unsafe { device.CreateTexture2D(&staging, None, Some(&mut s))? };
+            let s = s.unwrap();
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            unsafe { context.Map(&s, 0, D3D11_MAP_WRITE, 0, Some(&mut mapped))? };
+            for y in 0..side {
+                let row = &first[(y * pitch) as usize..][..pitch as usize];
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        row.as_ptr(),
+                        mapped
+                            .pData
+                            .cast::<u8>()
+                            .add((y * mapped.RowPitch) as usize),
+                        row.len(),
+                    )
+                };
+            }
+            unsafe { context.Unmap(&s, 0) };
+            unsafe { context.CopyResource(&t, &s) };
+            print("written by the CPU", &t, texel);
+            let removed = unsafe { device.GetDeviceRemovedReason() };
+            println!("removed: {:#010x}", code(removed));
+        }
         "atomics" => {
             // Each texel gets four threads' operations, which commute, so the result is fixed.
             let shader = cs("RWTexture2D<uint> u : register(u0);

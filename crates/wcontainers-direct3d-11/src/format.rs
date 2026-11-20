@@ -123,6 +123,25 @@ pub fn storage_viewed(dxgi: u32) -> bool {
         )
 }
 
+/// Whether DXGI format `dxgi` is one of BC6H's and BC7's, which come with feature level 11_0.
+pub fn from_11_0(dxgi: u32) -> bool {
+    matches!(dxgi, dxgi::BC6H_TYPELESS..=dxgi::BC7_UNORM_SRGB)
+}
+
+/// Whether Direct3D takes typed buffer views of DXGI format `dxgi` among the formats of one
+/// texel: not of sRGB, alpha-only, shared-exponent or 16-bit packed formats.
+pub fn buffer_viewed(dxgi: u32) -> bool {
+    !is_srgb(dxgi)
+        && !matches!(
+            dxgi,
+            dxgi::A8_UNORM
+                | dxgi::R9G9B9E5_SHAREDEXP
+                | dxgi::B5G6R5_UNORM
+                | dxgi::B5G5R5A1_UNORM
+                | dxgi::B4G4R4A4_UNORM
+        )
+}
+
 /// Whether `format` holds integers, which are neither filtered nor resolved.
 pub fn is_integer(format: Format) -> bool {
     matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
@@ -138,11 +157,17 @@ pub fn nv12_plane(view: u32) -> Option<usize> {
     }
 }
 
+/// Whether textures of DXGI format `dxgi` are a plane of 8-bit luma and one of chroma pairs at
+/// half size: NV12, and 420_OPAQUE, whose layout is the driver's and which is held as NV12.
+pub fn two_planes(dxgi: u32) -> bool {
+    matches!(dxgi, NV12 | dxgi::OPAQUE_420)
+}
+
 /// Bytes of a row and rows of a subresource of DXGI format `dxgi` stored as `format`, as the
 /// program lays it out: NV12's chroma rows follow its luma rows at the same pitch.
 pub fn subresource_rows(dxgi: u32, format: Format, width: u32, height: u32) -> (u32, u32) {
     let (row, rows) = row_bytes(format, width, height);
-    if dxgi == NV12 {
+    if two_planes(dxgi) {
         (row, rows + rows / 2)
     } else {
         (row, rows)
@@ -206,8 +231,10 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
         (dxgi::B8G8R8X8_TYPELESS, _) => Bgrx8Unorm,
         (dxgi::BC6H_TYPELESS, _) => Bc6hRgbUfloat,
         (dxgi::BC7_TYPELESS, _) => Bc7RgbaUnorm,
+        // Its bits: such textures are never bound, so nothing reads them as values.
+        (dxgi::R10G10B10_XR_BIAS_A2_UNORM, _) => Rgb10a2Unorm,
         // The luma plane; the chroma plane is a texture of its own.
-        (NV12, _) => R8Unorm,
+        (NV12 | dxgi::OPAQUE_420, _) => R8Unorm,
         (YUY2, _) => Rgba8Unorm,
         _ => return texture_format_of(dxgi),
     };
@@ -233,6 +260,11 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
                 "a view of a YUY2 texture is R8G8B8A8_UNORM or _UINT",
             )),
         };
+    }
+    if view == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
+        return Err(Error::InvalidArg(
+            "a view of the extended-range format, which Direct3D never binds",
+        ));
     }
     if view != texture && typeless_group(view) != texture {
         return Err(Error::InvalidArg(
@@ -426,7 +458,9 @@ pub fn typeless_group(dxgi: u32) -> u32 {
         dxgi::R16G16B16A16_TYPELESS..=dxgi::R16G16B16A16_SINT => dxgi::R16G16B16A16_TYPELESS,
         dxgi::R32G32_TYPELESS..=dxgi::R32G32_SINT => dxgi::R32G32_TYPELESS,
         dxgi::R32G8X24_TYPELESS..=dxgi::X32_TYPELESS_G8X24_UINT => dxgi::R32G8X24_TYPELESS,
-        dxgi::R10G10B10A2_TYPELESS..=dxgi::R10G10B10A2_UINT => dxgi::R10G10B10A2_TYPELESS,
+        dxgi::R10G10B10A2_TYPELESS..=dxgi::R10G10B10A2_UINT | dxgi::R10G10B10_XR_BIAS_A2_UNORM => {
+            dxgi::R10G10B10A2_TYPELESS
+        }
         dxgi::R8G8B8A8_TYPELESS..=dxgi::R8G8B8A8_SINT => dxgi::R8G8B8A8_TYPELESS,
         dxgi::R16G16_TYPELESS..=dxgi::R16G16_SINT => dxgi::R16G16_TYPELESS,
         dxgi::R32_TYPELESS..=dxgi::R32_SINT => dxgi::R32_TYPELESS,
@@ -449,6 +483,47 @@ pub fn typeless_group(dxgi: u32) -> u32 {
         dxgi::BC7_TYPELESS..=dxgi::BC7_UNORM_SRGB => dxgi::BC7_TYPELESS,
         f => f,
     }
+}
+
+/// Whether Direct3D takes render target views in the other formats of its group of a swap chain's
+/// buffer of DXGI format `dxgi` (Microsoft's 11_0 table's BackBuffer Castable Even Fully Typed row).
+pub fn back_buffer_cast(dxgi: u32) -> bool {
+    matches!(
+        dxgi,
+        dxgi::R10G10B10A2_UNORM
+            | dxgi::R10G10B10_XR_BIAS_A2_UNORM
+            | dxgi::R8G8B8A8_UNORM
+            | dxgi::R8G8B8A8_UNORM_SRGB
+            | dxgi::B8G8R8A8_UNORM
+            | dxgi::B8G8R8A8_UNORM_SRGB
+    )
+}
+
+/// Whether Direct3D 11 shares resources of DXGI format `dxgi` between devices (Microsoft's 11_0
+/// table's Shared Resource row, as the RTX 3080 answers it).
+pub fn shared(dxgi: u32) -> bool {
+    matches!(
+        typeless_group(dxgi),
+        dxgi::R32G32B32A32_TYPELESS
+            | dxgi::R16G16B16A16_TYPELESS
+            | dxgi::R10G10B10A2_TYPELESS
+            | dxgi::R11G11B10_FLOAT
+            | dxgi::R8G8B8A8_TYPELESS
+            | dxgi::R16G16_TYPELESS
+            | dxgi::R32_TYPELESS
+            | dxgi::R8G8_TYPELESS
+            | dxgi::R16_TYPELESS
+            | dxgi::R8_TYPELESS
+            | dxgi::A8_UNORM
+            | dxgi::BC1_TYPELESS
+            | dxgi::BC2_TYPELESS
+            | dxgi::BC3_TYPELESS
+            | dxgi::B8G8R8A8_TYPELESS
+            | dxgi::B8G8R8X8_TYPELESS
+            | dxgi::NV12
+            | dxgi::OPAQUE_420
+            | dxgi::YUY2
+    )
 }
 
 /// Whether Direct3D copies between `a` and `b`, of different groups, as the same bits (Direct3D 10.1's
@@ -564,8 +639,8 @@ pub fn components(format: Format) -> u32 {
 }
 
 /// Direct3D's conversion of `value` into a channel of normalised `format` (clamped to its range,
-/// NaN as zero, scaled and rounded to the nearest integer), as the bits of a channel of its
-/// integer twin (`NormAsInteger`).
+/// NaN as zero, scaled and rounded to the nearest integer, halves toward zero as the RTX 3080
+/// clears and draws them), as the bits of a channel of its integer twin (`NormAsInteger`).
 pub fn encode_norm(format: Format, value: f32) -> u32 {
     let signed = signed_normalized(format);
     let bits = format.block().2 * u8::BITS / format.components().count_ones();
@@ -576,7 +651,16 @@ pub fn encode_norm(format: Format, value: f32) -> u32 {
     } else {
         value.clamp(low, 1.0)
     };
-    (v * max as f32).round() as i32 as u32
+    let scaled = v * max as f32;
+    let whole = scaled.trunc();
+    // Away from zero only where the rest is more than half a step.
+    let rest = (scaled - whole).abs();
+    let rounded = if rest > 1.0 - rest {
+        whole + scaled.signum()
+    } else {
+        whole
+    };
+    rounded as i32 as u32
 }
 
 /// The typed DXGI format a texture of `format` is stored for.

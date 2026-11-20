@@ -432,7 +432,7 @@ pub struct Rasterizer<B: Backend> {
 }
 
 /// One input element resolved against the vertex shader's signature.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LayoutElement {
     pub location: u32,
     pub slot: u32,
@@ -454,7 +454,7 @@ pub struct InputLayout {
     /// Every element, as the vertex stage fetches them behind a geometry shader or stream output.
     pub all: Vec<LayoutElement>,
     /// Per input slot: none (per vertex) or the instance step rate.
-    pub instance_steps: [Option<u32>; 32],
+    pub instance_steps: [Option<u32>; crate::context::VERTEX_SLOTS],
 }
 
 pub struct Shader<B: Backend> {

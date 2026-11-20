@@ -22,7 +22,7 @@ pub use context::{
     COLOR_COMPONENTS, COMPUTE, Color, DOMAIN, GEOMETRY, HULL, Mapped, PIXEL, RECT_EDGES, Rect,
     STAGES, UAV_SLOTS, VERTEX,
 };
-pub use device::{Device, FormatSupport, Removal, level_texture_limits, top_level};
+pub use device::{CUBE_FACES, Device, FormatSupport, Removal, level_texture_limits, top_level};
 pub use error::{Error, Result, WARNING_PREFIX};
 pub use present::Chain;
 pub use wcontainers_directx_graphics_infrastructure::{Model, SwapChainDesc};

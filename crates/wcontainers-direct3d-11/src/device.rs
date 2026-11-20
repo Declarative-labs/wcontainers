@@ -21,6 +21,7 @@ use crate::format;
 use crate::object::*;
 use crate::shader::{self, Helpers, StageVariant};
 pub use wcontainers_directx_graphics_infrastructure::FormatSupport;
+use wcontainers_directx_graphics_infrastructure::dxgi;
 
 /// The helper constants of both draw stages as written into the back end's data ring, the indirect
 /// arguments buffer bound beside them (by id, 0 for none), and the set binding them.
@@ -104,6 +105,9 @@ pub struct Device<B: Backend> {
     /// them from one).
     pub(crate) format_lists: Vec<Vec<Format>>,
     pub(crate) format_ids: HashMap<Vec<Format>, u32>,
+    /// Input layout ids by what the layout fetches, so that layouts of equal elements made for
+    /// different vertex shaders are one in the caches and in building ahead's tuples.
+    layout_ids: HashMap<LayoutContent, u64>,
     /// Combinations drawn and built ahead.
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
@@ -223,6 +227,7 @@ const CULL_DISTANCES_UNSERVED: &str = "cull distances past the vertex stage, or 
 const GEOMETRY_STREAM_DRAWN_PAST_ZERO: &str =
     "drawing a geometry stream past 0 (the stage helper draws stream 0 alone)";
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
+const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound to nothing";
 
 /// The color targets a pass takes at feature level `level`.
 fn level_targets(level: u32) -> u32 {
@@ -277,7 +282,7 @@ pub fn top_level(caps: &wcontainers_gpu::Caps, cube_arrays: bool) -> Option<u32>
 }
 
 /// Faces of a cube.
-pub(crate) const CUBE_FACES: u32 = 6;
+pub const CUBE_FACES: u32 = 6;
 
 /// Whether `backend` makes textures of more than one cube, which `Caps` does not say: a texture of
 /// two cubes of one texel, made and destroyed.
@@ -370,6 +375,7 @@ impl<B: Backend> Device<B> {
             compute_helpers: None,
             format_lists: Vec::new(),
             format_ids: HashMap::new(),
+            layout_ids: HashMap::new(),
             ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
             zeros: Zeros {
@@ -389,6 +395,11 @@ impl<B: Backend> Device<B> {
         })
     }
 
+    /// Counts a slow path the library around the front takes for this device.
+    pub fn count_slow_path(&mut self, path: SlowPath) {
+        self.backend.slow_paths().hit(path);
+    }
+
     pub fn feature_level(&self) -> u32 {
         self.level
     }
@@ -400,10 +411,47 @@ impl<B: Backend> Device<B> {
         use crate::desc::support::*;
         use crate::desc::support2::*;
         let caps = self.backend.caps();
+        // Every resource is shared through the host where devices hold no common memory
+        // (`SharedThroughHost`), so formats Direct3D shares claim it at 11_0.
+        let shareable = |support1: u32| {
+            if format::shared(dxgi) && support1 & TEXTURE2D != 0 && self.level >= level::L11_0 {
+                crate::desc::SUPPORT2_SHAREABLE
+            } else {
+                0
+            }
+        };
         if matches!(dxgi, format::NV12 | format::YUY2) {
+            let mut s = self.video_format_support(dxgi);
+            s.support2 |= shareable(s.support1);
+            return s;
+        }
+        if dxgi == dxgi::OPAQUE_420 {
+            // Held as NV12's planes; only made, copied and shared.
+            let held = [Format::R8Unorm, Format::Rg8Unorm]
+                .iter()
+                .all(|&f| caps.formats.get(f).contains(FormatUse::COPY_OUT));
+            let support1 = if held { TEXTURE2D } else { 0 };
             return FormatSupport {
-                support1: self.video_format_support(dxgi),
-                support2: 0,
+                support1,
+                support2: shareable(support1),
+            };
+        }
+        if dxgi == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
+            // 2D textures held in its bits, mapped and copied with the R10G10B10A2 formats,
+            // never viewed (Microsoft's 11_0 table gives it no shader or target use); displaying
+            // it is the swap chain's.
+            let held = caps
+                .formats
+                .get(Format::Rgb10a2Unorm)
+                .contains(FormatUse::COPY_OUT);
+            let support1 = if held {
+                TEXTURE2D | CPU_LOCKABLE | CAST_WITHIN_BIT_LAYOUT
+            } else {
+                0
+            };
+            return FormatSupport {
+                support1,
+                support2: shareable(support1),
             };
         }
         let mut s = wcontainers_directx_graphics_infrastructure::format_support(caps, dxgi);
@@ -412,15 +460,21 @@ impl<B: Backend> Device<B> {
             // Held as its integer twin: what the twin serves, sampled, gathered and its mips
             // generated through decoding, never blended (`BlendInShader` is not built), and not
             // multisampled (plan 4.12).
-            let vertex = s.support1 & (IA_VERTEX_BUFFER | BUFFER);
+            // Buffers, and comparisons through views of depth textures, keep the format's own
+            // uses (the twin's index buffers are not its).
+            let buffers = IA_VERTEX_BUFFER
+                | IA_INDEX_BUFFER
+                | BUFFER
+                | SHADER_SAMPLE_COMPARISON
+                | SHADER_GATHER_COMPARISON;
+            let own = s.support1 & buffers;
             s = wcontainers_directx_graphics_infrastructure::format_support(caps, twin);
             s.support1 &= !(BLENDABLE
                 | MULTISAMPLE_RENDERTARGET
                 | MULTISAMPLE_LOAD
                 | MULTISAMPLE_RESOLVE
-                | IA_VERTEX_BUFFER
-                | BUFFER);
-            s.support1 |= vertex;
+                | buffers);
+            s.support1 |= own;
             if s.support1 & SHADER_LOAD != 0 {
                 s.support1 |= SHADER_SAMPLE | SHADER_GATHER;
             }
@@ -507,38 +561,67 @@ impl<B: Backend> Device<B> {
             BLENDABLE,
         );
         remove(!format::displayed(dxgi, level), DISPLAY);
+        if format::back_buffer_cast(dxgi) && s.support1 & DISPLAY != 0 {
+            s.support1 |= BACK_BUFFER_CAST;
+        }
+        if level < level::L11_0 && format::from_11_0(dxgi) {
+            s.support1 = 0;
+        }
         if level < level::L11_0 || s.support1 == 0 {
             s.support2 = 0;
         }
+        s.support2 |= shareable(s.support1);
         s
     }
 
-    /// `CheckFormatSupport` of NV12 and YUY2: 2D textures of one level, through views of each
-    /// plane's format (NV12) or of R8G8B8A8 (YUY2).
-    fn video_format_support(&self, dxgi: u32) -> u32 {
+    /// `CheckFormatSupport` and `D3D11_FEATURE_FORMAT_SUPPORT2` of NV12 and YUY2: 2D textures of
+    /// one level, through views of each plane's format (NV12) or of R8G8B8A8 (YUY2), their storage
+    /// views natively or through a buffer of texels.
+    fn video_format_support(&self, dxgi: u32) -> FormatSupport {
         use crate::desc::support::*;
+        use crate::desc::support2::*;
         let formats = &self.backend.caps().formats;
-        let uses = if dxgi == format::NV12 {
-            formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm)
+        let planes: &[Format] = if dxgi == format::NV12 {
+            &[Format::R8Unorm, Format::Rg8Unorm]
         } else {
-            formats.get(Format::Rgba8Unorm)
+            &[Format::Rgba8Unorm]
         };
+        let uses = planes
+            .iter()
+            .fold(FormatUse::all(), |all, &f| all & formats.get(f));
         if uses.is_empty() {
-            return 0;
+            return FormatSupport::default();
         }
-        let mut bits = TEXTURE2D;
+        let mut s = FormatSupport {
+            support1: TEXTURE2D,
+            support2: 0,
+        };
         for (has, bit) in [
             (FormatUse::SAMPLE, SHADER_LOAD),
-            (FormatUse::FILTER, SHADER_SAMPLE),
+            (FormatUse::FILTER, SHADER_SAMPLE | SHADER_GATHER),
             (FormatUse::RENDER, RENDER_TARGET),
+            (FormatUse::BLEND, BLENDABLE),
             (FormatUse::COPY_OUT, CPU_LOCKABLE),
         ] {
-            // Direct3D reports no target use of YUY2, though it takes target views of it.
-            if uses.contains(has) && !(dxgi == format::YUY2 && bit == RENDER_TARGET) {
-                bits |= bit;
+            // Direct3D reports no target use or blending of YUY2, though it takes target views
+            // of it.
+            if uses.contains(has)
+                && !(dxgi == format::YUY2 && bit & (RENDER_TARGET | BLENDABLE) != 0)
+            {
+                s.support1 |= bit;
             }
         }
-        bits
+        let stored = planes
+            .iter()
+            .all(|&f| formats.get(f).contains(FormatUse::STORAGE_WRITE) || self.through_takes(f));
+        if stored && self.level >= level::L11_0 {
+            s.support1 |= TYPED_UNORDERED_ACCESS_VIEW;
+            s.support2 |= UAV_TYPED_STORE;
+        }
+        if self.level < level::L10_1 {
+            s.support1 &= !SHADER_GATHER;
+        }
+        s
     }
 
     /// Whether textures of `format` drawn into or for depth take `samples` samples.
@@ -804,8 +887,6 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// A format the back end lacks altogether is not served; one it holds without these uses is
-    /// refused as a driver without them refuses it.
     /// Whether storage views of `format` are read and written through a buffer of their texels,
     /// where the back end copies the format but cannot store into it (`StorageFormatThroughBuffer`).
     pub(crate) fn stored_through(&self, format: Format) -> bool {
@@ -880,7 +961,12 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("a texture's misc flags on a buffer"));
         }
         if d.misc_flags
-            & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED | MISC_SHARED)
+            & !(MISC_DRAWINDIRECT_ARGS
+                | MISC_ALLOW_RAW_VIEWS
+                | MISC_STRUCTURED
+                | MISC_SHARED
+                | MISC_SHARED_KEYEDMUTEX
+                | MISC_SHARED_NTHANDLE)
             != 0
         {
             return not_implemented(
@@ -966,7 +1052,7 @@ impl<B: Backend> Device<B> {
                 "the texture is larger than the feature level allows",
             ));
         }
-        let full = 32 - d.width.max(d.height).max(d.depth).leading_zeros();
+        let full = u32::BITS - d.width.max(d.height).max(d.depth).leading_zeros();
         let mips = if d.mip_levels == 0 {
             full
         } else {
@@ -975,7 +1061,8 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
-        if d.format == format::NV12 {
+        let sharing = MISC_SHARED | MISC_SHARED_KEYEDMUTEX | MISC_SHARED_NTHANDLE;
+        if format::two_planes(d.format) {
             if d.dimension != TexDim::D2
                 || !d.width.is_multiple_of(2)
                 || !d.height.is_multiple_of(2)
@@ -986,9 +1073,15 @@ impl<B: Backend> Device<B> {
                     "an NV12 texture is 2D, of one sample and of even width and height",
                 ));
             }
-            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+            if mips != 1 || d.misc_flags & !sharing != 0 {
                 return not_implemented("NV12 textures of more than one level or with misc flags");
             }
+        }
+        // 420_OPAQUE is only copied and shared: Direct3D gives it no view and no CPU access.
+        if d.format == dxgi::OPAQUE_420
+            && (d.bind_flags != 0 || d.usage != usage::DEFAULT || d.cpu_access_flags != 0)
+        {
+            return Err(Error::InvalidArg(OPAQUE_420_BOUND));
         }
         if d.format == format::YUY2 {
             if d.dimension != TexDim::D2
@@ -1000,9 +1093,16 @@ impl<B: Backend> Device<B> {
                     "a YUY2 texture is 2D, of one sample and of even width",
                 ));
             }
-            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+            if mips != 1 || d.misc_flags & !sharing != 0 {
                 return not_implemented("YUY2 textures of more than one level or with misc flags");
             }
+        }
+        if d.format == dxgi::R10G10B10_XR_BIAS_A2_UNORM
+            && (d.dimension != TexDim::D2 || mips != 1 || cube)
+        {
+            return Err(Error::InvalidArg(
+                "an R10G10B10_XR_BIAS_A2_UNORM texture is 2D of one level, not a cube",
+            ));
         }
         let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
         if d.bind_flags & drawn != 0
@@ -1021,6 +1121,9 @@ impl<B: Backend> Device<B> {
             && (self.level < level::L10_0 || !sharing.is_power_of_two())
         {
             return Err(Error::InvalidArg(SHARING_INVALID));
+        }
+        if self.level < level::L11_0 && format::from_11_0(d.format) {
+            return Err(Error::InvalidArg("a format of a later feature level"));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         let format = self.held_as_integer(format).unwrap_or(format);
@@ -1064,6 +1167,8 @@ impl<B: Backend> Device<B> {
                 | MISC_GENERATE_MIPS
                 | MISC_RESOURCE_CLAMP
                 | MISC_SHARED
+                | MISC_SHARED_KEYEDMUTEX
+                | MISC_SHARED_NTHANDLE
                 | MISC_GDI_COMPATIBLE)
             != 0
         {
@@ -1074,8 +1179,10 @@ impl<B: Backend> Device<B> {
         }
         // GDI draws into B8G8R8A8 render targets of one sample and default usage.
         if d.misc_flags & MISC_GDI_COMPATIBLE != 0
-            && (!matches!(d.format, 87 | 90 | 91)
-                || d.bind_flags & bind::RENDER_TARGET == 0
+            && (!matches!(
+                d.format,
+                dxgi::B8G8R8A8_UNORM | dxgi::B8G8R8A8_TYPELESS | dxgi::B8G8R8A8_UNORM_SRGB
+            ) || d.bind_flags & bind::RENDER_TARGET == 0
                 || d.usage != usage::DEFAULT
                 || d.sample_count != 1
                 || d.dimension != TexDim::D2)
@@ -1153,7 +1260,7 @@ impl<B: Backend> Device<B> {
         if d.usage == usage::STAGING && d.cpu_access_flags & cpu::READ != 0 {
             needs |= FormatUse::COPY_OUT;
         }
-        if d.bind_flags & bind::UNORDERED_ACCESS != 0 && self.feature_level() < 0xb000 {
+        if d.bind_flags & bind::UNORDERED_ACCESS != 0 && self.feature_level() < level::L11_0 {
             return Err(Error::InvalidArg(
                 "unordered access needs feature level 11_0",
             ));
@@ -1165,8 +1272,21 @@ impl<B: Backend> Device<B> {
         if d.bind_flags & !bindable != 0 {
             return Err(Error::InvalidArg("bind flags a texture cannot have"));
         }
-        if d.dimension == TexDim::D3 && d.bind_flags & bind::DEPTH_STENCIL != 0 {
+        if d.dimension == TexDim::D3
+            && (d.bind_flags & bind::DEPTH_STENCIL != 0 || format.is_depth_stencil())
+        {
             return Err(Error::InvalidArg("a 3D texture cannot hold depth"));
+        }
+        if d.dimension == TexDim::D1 && format.block().1 > 1 {
+            return Err(Error::InvalidArg("a 1D texture cannot be block-compressed"));
+        }
+        if d.bind_flags & bind::UNORDERED_ACCESS != 0
+            && !format::is_srgb(d.format)
+            && !format::storage_viewed(d.format)
+        {
+            return Err(Error::InvalidArg(
+                "the format does not support the bind flags",
+            ));
         }
         self.check_format(format, needs)?;
         Ok((format, mips))
@@ -1240,7 +1360,7 @@ impl<B: Backend> Device<B> {
         self.bury();
         // NV12's chroma plane: a texture of its own the program sees only through views and
         // through the joined rows of maps, copies and writes.
-        let chroma = if d.format == crate::format::NV12 {
+        let chroma = if format::two_planes(d.format) {
             let plane = TextureDesc {
                 format: crate::format::R8G8_TYPELESS,
                 width: d.width / 2,
@@ -1445,7 +1565,8 @@ impl<B: Backend> Device<B> {
         }
         let read_only = desc.map_or(0, |d| d.read_only);
         if read_only & !(DSV_READ_ONLY_DEPTH | DSV_READ_ONLY_STENCIL) != 0
-            || read_only != 0 && (kind != bind::DEPTH_STENCIL || self.feature_level() < 0xb000)
+            || read_only != 0
+                && (kind != bind::DEPTH_STENCIL || self.feature_level() < level::L11_0)
         {
             return Err(Error::InvalidArg(
                 "read-only depth-stencil views need feature level 11_0",
@@ -1553,6 +1674,13 @@ impl<B: Backend> Device<B> {
                     && v.format == twin =>
             {
                 (format::texture_format_of(twin)?, false)
+            }
+            // Target views of a swap chain's buffer may take the other formats of its group.
+            _ if texture.chain == ChainBuffer::Drawn
+                && kind == bind::RENDER_TARGET
+                && format::back_buffer_cast(t.format) =>
+            {
+                format::view_format(v.format, format::typeless_group(t.format), texture.format)?
             }
             _ if texture.chroma.is_some() => {
                 format::view_format(v.format, format::R8_TYPELESS, texture.format)?
@@ -1849,10 +1977,12 @@ impl<B: Backend> Device<B> {
             }
             let f = format::texture_format_of(format)?;
             match f.block() {
-                (1, 1, bytes) if !f.is_depth_stencil() => (bytes, Some(f)),
+                (1, 1, bytes) if !f.is_depth_stencil() && format::buffer_viewed(format) => {
+                    (bytes, Some(f))
+                }
                 _ => {
                     return Err(Error::InvalidArg(
-                        "a buffer view of a block or depth format",
+                        "a buffer view of a format Direct3D does not view buffers as",
                     ));
                 }
             }
@@ -1952,13 +2082,13 @@ impl<B: Backend> Device<B> {
             let mut left = u8::MAX;
             while left != 0 {
                 let first = left.trailing_zeros() as usize;
-                let members = (first..8)
+                let members = (first..MAX_COLOR_TARGETS)
                     .filter(|&i| block.targets[i] == block.targets[first])
                     .fold(0u8, |m, i| m | 1 << i);
                 left &= !members;
                 let desc = BlendDesc {
                     independent: false,
-                    targets: [d.targets[first]; 8],
+                    targets: [d.targets[first]; MAX_COLOR_TARGETS],
                     ..*d
                 };
                 let gpu = self.backend.create_blend(&blend_block(&desc));
@@ -2303,21 +2433,21 @@ impl<B: Backend> Device<B> {
     ) -> Result<Rc<InputLayout>> {
         // No elements is a layout for a vertex shader without inputs; one with inputs is refused
         // below, as each of its inputs needs an element.
-        if elements.len() > 32 {
-            return Err(Error::InvalidArg("an input layout has at most 32 elements"));
+        if elements.len() > INPUT_ELEMENTS {
+            return Err(Error::InvalidArg("an input layout has too many elements"));
         }
         // Direct3D matches the elements against the bytecode's input signature, whatever its
         // stage; each input the input assembler does not generate needs an element.
         let inputs = shader::input_signature(vs_bytecode)?;
-        let mut next_offset = [0u32; 32];
-        let mut instance_steps = [None; 32];
+        let mut next_offset = [0u32; crate::context::VERTEX_SLOTS];
+        let mut instance_steps = [None; crate::context::VERTEX_SLOTS];
         let mut resolved = Vec::new();
         let mut pulled = Vec::new();
         let mut pulled_paths = Vec::new();
         let steps_natively = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
         for e in elements {
-            if e.slot >= 32 {
-                return Err(Error::InvalidArg("input slot past 31"));
+            if e.slot as usize >= crate::context::VERTEX_SLOTS {
+                return Err(Error::InvalidArg("an input slot past the last"));
             }
             let vf = format::vertex_format(e.format)
                 .ok_or(Error::InvalidArg("a format vertex input cannot have"))?;
@@ -2396,7 +2526,15 @@ impl<B: Backend> Device<B> {
                 ));
             }
         }
-        let id = self.id();
+        let content = (resolved.clone(), pulled.clone(), instance_steps);
+        let id = match self.layout_ids.get(&content) {
+            Some(&id) => id,
+            None => {
+                let id = self.id();
+                self.layout_ids.insert(content, id);
+                id
+            }
+        };
         let all = resolved.iter().chain(&pulled).copied().collect();
         Ok(Rc::new(InputLayout {
             id,
@@ -2408,6 +2546,16 @@ impl<B: Backend> Device<B> {
         }))
     }
 }
+
+/// Elements an input layout has at most (`D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT`).
+const INPUT_ELEMENTS: usize = 32;
+
+/// What an input layout fetches: the back end's elements, the program's and the instance steps.
+type LayoutContent = (
+    Vec<LayoutElement>,
+    Vec<LayoutElement>,
+    [Option<u32>; crate::context::VERTEX_SLOTS],
+);
 
 /// The back end's description of a buffer of `size` bytes for `d`.
 pub(crate) fn gpu_buffer(d: &BufferDesc, size: u64) -> GpuBuffer {
@@ -2434,7 +2582,10 @@ pub(crate) fn gpu_buffer(d: &BufferDesc, size: u64) -> GpuBuffer {
     if d.usage == usage::STAGING {
         usage |= BufferUsage::READ_BACK;
     }
-    let intent = if d.usage == usage::DYNAMIC {
+    // Default constant buffers are rewritten by `UpdateSubresource`, often between draws.
+    let intent = if d.usage == usage::DYNAMIC
+        || d.usage == usage::DEFAULT && d.bind_flags & bind::CONSTANT_BUFFER != 0
+    {
         MapIntent::Often
     } else {
         MapIntent::Rarely

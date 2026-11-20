@@ -2,7 +2,8 @@
 //! through the device's adapter, `CreateSwapChain`, the back buffer (the same object each time)
 //! cleared and read back, `Present`, and `ResizeBuffers` refused while the buffer is held and served
 //! after; then a flip model swap chain's frame latency waitable object, waited on before and after
-//! a present. Prints each answer, for comparing with real Direct3D line by line.
+//! a present; then views of other formats of a back buffer's group. Prints each answer, for
+//! comparing with real Direct3D line by line.
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -171,6 +172,87 @@ fn main() -> windows::core::Result<()> {
     println!("wait after the latency grew {:#x}", wait(0));
     println!("wait past the latency {:#x}", wait(0));
     unsafe { CloseHandle(object)? };
+    drop(chain);
+
+    // Views of the formats of a back buffer's group: Direct3D casts back buffers of some fully
+    // typed formats within their group.
+    let r10 = [
+        DXGI_FORMAT_R10G10B10A2_UNORM,
+        DXGI_FORMAT_R10G10B10A2_UINT,
+        DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
+    ];
+    let r8 = [
+        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        DXGI_FORMAT_R8G8B8A8_UINT,
+        DXGI_FORMAT_R8G8B8A8_SNORM,
+        DXGI_FORMAT_R8G8B8A8_SINT,
+    ];
+    let b8 = [DXGI_FORMAT_B8G8R8A8_UNORM_SRGB];
+    for (format, members) in [
+        (DXGI_FORMAT_R10G10B10A2_UNORM, &r10[..]),
+        (DXGI_FORMAT_R8G8B8A8_UNORM, &r8[..]),
+        (DXGI_FORMAT_B8G8R8A8_UNORM, &b8[..]),
+    ] {
+        let window: HWND = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("own_swap_chain casts"),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                200,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )?
+        };
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
+            Format: format,
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT,
+            Flags: 0,
+            ..waitable
+        };
+        let chain = unsafe { factory2.CreateSwapChainForHwnd(&device, window, &desc, None, None) };
+        println!(
+            "swap chain of {} {:#010x}",
+            format.0,
+            code(chain.as_ref().map(|_| ()).map_err(|e| e.clone()))
+        );
+        let chain = chain?;
+        let buffer: ID3D11Texture2D = unsafe { chain.GetBuffer(0)? };
+        for m in members {
+            let rtv = D3D11_RENDER_TARGET_VIEW_DESC {
+                Format: *m,
+                ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
+                ..Default::default()
+            };
+            let srv = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                Format: *m,
+                ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                    },
+                },
+            };
+            let (mut target, mut view) = (None, None);
+            let rt =
+                unsafe { device.CreateRenderTargetView(&buffer, Some(&rtv), Some(&mut target)) };
+            let sr =
+                unsafe { device.CreateShaderResourceView(&buffer, Some(&srv), Some(&mut view)) };
+            println!(
+                "views of {} as {}: {:#010x} {:#010x}",
+                format.0,
+                m.0,
+                code(rt),
+                code(sr)
+            );
+        }
+    }
 
     let r = unsafe { device.GetDeviceRemovedReason() };
     println!("GetDeviceRemovedReason {:#010x}", code(r));
