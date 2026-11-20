@@ -968,6 +968,21 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- S3 run 10, tests. ARM machine (scratch streams/run10): fmt and clippy with warnings denied over
+  the three crates passed; the six new tests pass at 3 seeds and all six fail with the kernel
+  changes stashed (negative.log); away (12, the known failure ignored), edges (4), embedder (35),
+  the kernel's unit tests (5) and the binaries the changed code reaches (processes, procsignals,
+  procstatus but `fdinfo_matches_reference`, userlimits, zombie, taskend) pass (affected-2.log,
+  affected-3.log, affected-4.log; 19:18 to 20:00 UTC, load 13 to 30). Whole suite on tree
+  f5317e13, in four pieces (suite.sh, suite-1.log to suite-4.log, 19:20 to about 20:25 UTC, load
+  about 20 to 30): 608 passed, 27 failed, 7 ignored (642 tests: run 9's 636 and the 6 new). The 27
+  (failed-arm.txt) are run 9's 26 and `the_workspace_keeps_to_its_baseline`, which failed on that
+  tree because the futex lines moved (fixed in ac7203c9; the literal crate's tests pass on the
+  ARM machine at 6e50fe49). The later commits change a named constant and a copy's end only;
+  away, taskend, embedder and edges were run again after them. The 20 binaries kept on the Mac
+  (this Mac, tree ac7203c9, 11:21 to 11:23 Pacific, load 2.2 rising to 7.3; run10/mac-only.log):
+  94 passed, 0 failed, `proc_task_matches_reference` and both proclist tests among them. So no
+  test fails by our side.
 - S3 run 9, tests (tree a98582a9). ARM machine: fmt and clippy with warnings denied over the
   three crates passed; embedder (35), away (12, the known failure ignored), edges (4) and the
   kernel's unit tests (5) passed at 3 seeds (scratch streams/run9/affected.log, 17:23 UTC, load
@@ -1226,6 +1241,10 @@ Found on the way, fixed:
 - After S3's sixth run: unchanged, 7577 lines; the check passes on this Mac (exit 0, scratch
   streams/s3f/literals.log).
 - After S3's fifth run: unchanged, 7577 lines; the check passes on this Mac (exit 0).
+- After S3's tenth run: 7570 lines (seven fewer: the futex word's size is one named constant,
+  `FUTEX_WORD`, and the robust list's offsets are `offset_of!` on `robust_list_head`); the check
+  exits 0 with no marks (x86 and ARM machines, scratch streams/run10/literals.log,
+  affected-4.log), and its crate's tests pass there, the workspace test among them.
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -1365,6 +1384,15 @@ anything shipped.
   held for the embedder's credit; bytes the embedder sends after the kernel closed an input end are
   dropped uncounted; output after the embedder closed its end is compared with a pipe whose reader
   the reference program closed itself.
+
+- S3 run 10, tasks away that end with their process: a task away is ended where it stays held
+  by the embedder (its `SuspendedTask`), so what the kernel cannot reach is not done: a `pidfd`
+  opened for that thread is not woken at its end, and a descriptor table only that task used
+  (after `unshare(CLONE_FILES)`) is let go when the embedder drops the handed-back task, outside
+  the kernel's closing of files. A `vfork` parent whose child's context ends on another kernel
+  is not let go here. `/proc` shows an away task's state as `T (stopped)` (not compared: the
+  reference cannot stop one thread alone) and its `fd` directory empty. A copy's end makes no last
+  stores for the tasks still running on the original.
 
 ## For the orchestrator
 
