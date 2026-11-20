@@ -26,6 +26,33 @@ fn register(rng: &mut fastrand::Rng) -> u8 {
     rng.u8(..ZERO)
 }
 
+/// The value a run of wide moves leaves in `rd`, each word read back by the decoder; the first must not keep.
+fn moved(words: &[u32], rd: u8) -> u64 {
+    let mut first = true;
+    words.iter().fold(0u64, |acc, &w| {
+        let value = match decode(w) {
+            I::MoveWide {
+                width: Width::X64,
+                op,
+                rd: r,
+                imm,
+                shift,
+            } if r == x(rd) => {
+                let placed = u64::from(imm) << shift;
+                match op {
+                    MoveWide::Zero => placed,
+                    MoveWide::Not => !placed,
+                    MoveWide::Keep if !first => (acc & !(u64::from(u16::MAX) << shift)) | placed,
+                    MoveWide::Keep => panic!("{w:#010x}: a keep with nothing before it"),
+                }
+            }
+            other => panic!("{w:#010x}: a move decoded as {other:?}"),
+        };
+        first = false;
+        value
+    })
+}
+
 #[test]
 fn every_encoding_decodes_as_meant() {
     let seed = knob("WCONTAINERS_ENCODE_SEED", SEED);
@@ -33,35 +60,33 @@ fn every_encoding_decodes_as_meant() {
     let mut rng = fastrand::Rng::with_seed(seed);
     let unit = 4;
     let mut logical = 0;
+    let mut inverted = 0;
     for _ in 0..cases {
         let (rd, rn, rs) = (register(&mut rng), register(&mut rng), register(&mut rng));
         let value = rng.u64(..);
-        let built: Vec<u64> = encode::move_constant(rd, value)
-            .iter()
-            .scan(0u64, |acc, &w| {
-                match decode(w) {
-                    I::MoveWide {
-                        width: Width::X64,
-                        op: MoveWide::Zero,
-                        rd: r,
-                        imm,
-                        shift,
-                    } if r == x(rd) => *acc = u64::from(imm) << shift,
-                    I::MoveWide {
-                        width: Width::X64,
-                        op: MoveWide::Keep,
-                        rd: r,
-                        imm,
-                        shift,
-                    } if r == x(rd) => {
-                        *acc = (*acc & !(u64::from(u16::MAX) << shift)) | (u64::from(imm) << shift)
-                    }
-                    other => panic!("{value:#x}: a move decoded as {other:?}"),
+        // The value, the same with its upper half all ones (which a `movn` builds), and an address either side.
+        let upper = u64::MAX << u32::BITS;
+        let address = value >> u16::BITS;
+        for constant in [value, value | upper] {
+            let words = encode::move_constant(rd, constant);
+            assert_eq!(moved(&words, rd), constant, "moves of {constant:#x}");
+            inverted += usize::from(matches!(
+                decode(words[0]),
+                I::MoveWide {
+                    op: MoveWide::Not,
+                    ..
                 }
-                Some(*acc)
-            })
-            .collect();
-        assert_eq!(built.last(), Some(&value), "moves of {value:#x}");
+            ));
+        }
+        for constant in [address, !address] {
+            let words = encode::move_address(rd, constant);
+            assert_eq!(
+                moved(&words, rd),
+                constant,
+                "address moves of {constant:#x}"
+            );
+            assert!(words.len() < (u64::BITS / u16::BITS) as usize);
+        }
 
         let lsb = rng.u32(..u64::BITS);
         let bits = rng.u32(1..=u64::BITS - lsb);
@@ -240,7 +265,13 @@ fn every_encoding_decodes_as_meant() {
     }
     assert!(encode::branch(false, 1 << 28).is_err());
     assert!(encode::and_immediate(0, 0, 0).is_err());
-    println!("seed {seed}, {cases} cases, {logical} logical immediates");
+    assert!(
+        cases == 0 || inverted > 0,
+        "no constant was built by a movn"
+    );
+    println!(
+        "seed {seed}, {cases} cases, {logical} logical immediates, {inverted} built by a movn"
+    );
 }
 
 /// The exception forms, which the CPU we present decodes as traps or not at all, read back by Arm's table.
