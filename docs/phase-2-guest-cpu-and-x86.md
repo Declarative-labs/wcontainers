@@ -3190,9 +3190,11 @@ apply unchanged.
   emulation (section 5.2), and Linux keeping NT and ID across signal delivery (section 6). Where rip's
   read falls in `iretq`'s order: settled at X5 (section 5.3).
 - The cost of checking the accesses that no group or proof covers (bit offsets, gathers, masked moves,
-  8- and 16-bit indexes, section 3.4) on real programs, measured at X5 and X8; and the cost of code
-  written on the page that writes it (one fault, one step and two translations a write, section 5.7),
-  measured at X6.
+  8- and 16-bit indexes, section 3.4) on real programs, measured at X5 and X8. The cost of code written on
+  the page that writes it (one fault, one step and two translations a write, section 5.7), measured at X6:
+  about 5.5 ms a write in wasmtime at full on the rented x86-64 machine under load (a loop writing its next
+  instruction, 20,000 more passes against 200), nearly all of it translating and compiling the two pieces;
+  the JIT case of section 5.7 pays this for every write next to running code.
 - Not seen, expected: which fault a gather element, a masked span or a `maskmovdqu` half that reaches a
   non-canonical address gives (section 5.4 applies the stack-segment rule to it); that an instruction
   writing into its own bytes runs as it was read (section 5.7). Layer 1 and X6's programs check both.
@@ -3200,7 +3202,8 @@ apply unchanged.
   frame (MXCSR on x86, FPSR on ARM64) while they are not kept sees the flags last written, and nothing
   counts it (section 5.8).
 - The cost of a single step (a trip to the bottom loop, a translation of one instruction and two stop hook
-  calls, section 5.1), measured at X6; only programs that set TF pay it. Not seen, expected from Intel's
+  calls, section 5.1); only programs that set TF pay it. Not measurable at X6: a step stops the program,
+  and carrying on needs a SIGTRAP handler, which comes with the kernel's personality (X10, `run10/tf.c`). Not seen, expected from Intel's
   manual (a float exception is a fault): RF in the frame of a SIMD or x87 float exception's signal, checked
   at X10 beside `rf.c`'s cases.
 

@@ -1503,11 +1503,17 @@ fn emit(program: &Program, pad: usize) -> Result<(Vec<u8>, u64, u64), IcedError>
 }
 
 /// Assemble a program into a flat blob that starts at its first byte: once to find where its area falls,
-/// once more with the area's end moved to a page boundary (the code before it is the same).
+/// once more with the area's end moved to a page boundary and its start onto a page of its own (the code
+/// before it is the same).
 pub(super) fn assemble(program: &Program) -> Blob {
     let page = PAGE_SIZE as usize;
     let (_, _, area) = emit(program, 0).expect("assembles");
-    let pad = (page - (area as usize + AREA_BYTES) % page) % page;
+    let mut pad = (page - (area as usize + AREA_BYTES) % page) % page;
+    // No page holds both the area and code or a table: such a page is locked as translated code, and every
+    // store to the area would drop its translations.
+    if (area as usize + pad) / page * page < area as usize {
+        pad += page;
+    }
     let (bytes, code_bytes, area) = emit(program, pad).expect("assembles");
     assert_eq!((area as usize + AREA_BYTES) % page, 0);
     Blob {

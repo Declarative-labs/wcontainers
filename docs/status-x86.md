@@ -103,6 +103,50 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   second independent check of X5 found: `stmxcsr` was not marked as varying, nothing tested MXCSR's designed
   answers, layer 2's generator could write over its own code, and `rep stos` of a wider value stored one
   element a turn (see "X5, run 8").
+- X6 (bounded look-ahead, the rare paths, code written without announcement): run 1 (2026-11-20) fixed the X5
+  check's findings, built the hooks' unwind payloads, write locks for code in both runners with the step and
+  the exact mark, single steps by the trap flag in both runners, x86's change programs and tests, and the
+  programs the bar names; see "X6, run 1" for what holds and what is left.
+
+## X6, run 1 (2026-11-20)
+
+Machines: the rented x86-64 machine for lint, every x86 test and layer 2 (copies `x86`, `x86-tf`, `x86-l2`,
+`x86-u`, run side by side); the rented ARM64 machine for the ARM64 tests; the Mac for git, formatting and the
+literal check. Logs in scratch `x6-*.log` and `x6/`.
+
+The X5 check's findings:
+- Layer 2's generator (finding 1): lifting the restriction once code written without announcement is seen
+  was tried and is wrong for x86. Case 11616 of seed 24621 then still fails, on layer 2's own invariant that
+  no store reaches below the area (the program writes over its code and would then run bytes no case
+  defines), not on a difference from the CPU. So the restriction now applies only to a guest whose calls write
+  return addresses into memory (`ReturnAddress::Stack`, x86), and ARM64 makes the pointer-chasing programs
+  again, the same ones per seed as before X5 run 8. The Departures entry says which class x86 no longer makes
+  and why it stays (807d8ce6).
+- CPUID claims x87, MMX and FXSR while their meanings are X7's (finding 2): recorded, nothing to do in X6. X7
+  must close it before a real program that uses `long double` runs.
+- `the_x86_64_reference_runs_programs` needs zig (finding 3): its verdict comes from a run inside the Nix
+  shell, on the rented x86-64 machine (`x86-run`), not from the laptop's background runs.
+
+Built (X6):
+- The stop and memory fault hooks return the unwind payload their call sites unwind with (ebb4d9ce); ARM64's
+  runners and the wasmtime runtime return `UNWIND_LEAVE` as before.
+- Code written without announcement (plan 5.7, "As built at X6"): `Translation::read` (instructions and jump
+  tables, `JumpTable::read`), per-page write locks with a reason in both runners, the step (drop every
+  translation made from the page, unlock, `UNWIND_GO_TO_EXACT`), the exact mark, kernel writes taking the
+  step, the counter "code written without announcement" (d38245be, b6a323d0, 7aa5afc6).
+- Single steps by the trap flag (plan 5.1, as built there): `Guest::step` for x86 on three private words,
+  `popf` and `iretq` raising the stop flag with "trap flag set by the program: single steps", `mov ss` holding
+  the trap back, both runners asking `step` (the browser through `cpu_step`) (0d3c9cda).
+- x86's hand-made change programs and the three changes tests for x86 (3924e111); x86's `switch.h` for the
+  fiber and coroutine programs (bf0073cb).
+- Programs: `written_code.c` (code written on another page, then written again), `self_written.c` (a loop
+  writing its next instruction's immediate, and an instruction writing its own first byte, which runs as it
+  was read: the reference prints `100 93 90`), `trap_flag.S` (nine cases).
+- Fixed on the way: `frame_slots` worked out an operand size for every faulting instruction and underflowed
+  (a panic in debug builds) on byte accesses (3924e111).
+
+Measured:
+- PENDING
 
 ## X5, run 8 (2026-11-20)
 
@@ -2780,6 +2824,17 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 - The plan's header now counts nine checks.
 
 ## How to run
+
+- X6 (on the rented x86-64 machine, `x86-run <checkout> --name x86 -- '<command>'`): `cargo test -p
+  wcontainers-translator-test --test programs -- trap_flag_steps_match_linux_x86_64
+  self_written_code_matches_linux_x86_64 written_code_and_null_calls_match_linux_x86_64
+  unwinding_matches_linux_x86_64 stacks_switched_by_the_program_match_linux_x86_64` (Chrome included), and
+  `--test changes -- x86_64` (knobs as for ARM64: `WC_CHANGES_CASES`, `WC_CHANGES_SEED`,
+  `WC_CHANGES_PROGRAM_SEEDS`). The cost of one write to the page a loop runs from: copy scratch
+  `x6/smc_cost.c` into `programs/x86_64/` and `x6/scratch_smc_cost.rs` into the test crate's `tests/`, then
+  `cargo test --release -p wcontainers-translator-test --test scratch_smc_cost -- --nocapture`. The panics
+  program natively: scratch `x6/scratch_panics.rs` the same way. Several copies run side by side under
+  different `--name`s; two jobs on one name share one copy of the tree and must not overlap.
 
 - X5 run 7's checks that need no reference: `cargo test -p wcontainers-translator-test --test layer1 --
   every_default_code_is_drawn_and_written_x86_64 offered_features_are_the_ones_programs_are_told
