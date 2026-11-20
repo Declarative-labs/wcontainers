@@ -143,6 +143,15 @@ hook message, the translator's own `PROBE`, now the interface's one constant, an
 `reference_x86_64.rs`). Lint: `cargo clippy -D warnings` on the x86, interface, translator and test
 crates, all targets, clean (rented machine); `cargo fmt --check` clean.
 
+The suite at the end (2c315d46, rented x86-64 machine, load 3 to 6, `suite-run3.log`): `cargo test --release
+--no-fail-fast -p wcontainers-guest-cpu -p wcontainers-x86 -p wcontainers-arm64 -p wcontainers-translator -p
+wcontainers-translator-test`. Every x86 test passes but the four the machine's 5-level paging changes
+(`every_form_matches_the_cpu_x86_64`, `bytes_in_no_form_stop_as_on_the_cpu_x86_64`,
+`sample_matches_the_cpu_in_chrome_x86_64`, `the_x86_64_reference_refuses_what_linux_refuses`), whose
+verdicts come from the laptop; the 25 ARM64 tests that need an ARM64 reference fail there, as before.
+Not run this run: those four on the laptop in full (only the float forms of the first), and the ARM64
+tests on the rented ARM64 machine; nothing ARM64 changed but the interface's one new constant.
+
 What comes next, in this order: the SSE4.2 string compares; the segment, descriptor and far-transfer
 instructions with `iretq`'s reference cases; `enter`; `wait`; `maskmovdqu`; layer 1 of the never-claimed
 list at 100 a form; layer 3 Csmith at 1,000; the passed-register lists; the Chrome sample against the
