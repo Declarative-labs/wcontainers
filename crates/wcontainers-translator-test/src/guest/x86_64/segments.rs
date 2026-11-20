@@ -42,8 +42,9 @@ pub fn is_segment_form(instruction: &Instruction) -> bool {
         }),
         Lfs | Lgs | Lss | Retf | Iret | Iretd | Iretq => true,
         Call | Jmp => {
+            use iced_x86::MemorySize::{SegPtr16, SegPtr32, SegPtr64};
             instruction.op0_kind() == OpKind::Memory
-                && memory_size(instruction) > size_of::<u64>() as u32
+                && matches!(instruction.memory_size(), SegPtr16 | SegPtr32 | SegPtr64)
         }
         _ => false,
     }
