@@ -12,8 +12,10 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   owner's rulings of the afternoon of 2026-11-19 (verb-first names, `free_task_id` with no default,
   `on_memory_written_by_kernel`, the system call proxy, `WatchesFor` and `AccessKind`) settled in
   the ninth run (see "S2 sixth check findings"); its seventh check's findings settled in the
-  tenth run (see "S2 seventh check findings").
-- What comes next: S2's eighth independent check. Not built and left open on purpose: export of
+  tenth run (see "S2 seventh check findings"); its eighth check's findings settled in the
+  eleventh run (see "S2 eighth check findings").
+- What comes next: S2's ninth independent check. After S2 passes, the next milestone (to be
+  specified) builds the interface crates of origin/phase-1-interfaces; not started here. Not built and left open on purpose: export of
   a process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), the watch put on shared pages when one sharer leaves (it comes with
   `suspend`), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made by connect,
@@ -89,7 +91,7 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   answered to the proxy: `a_new_program_and_a_handlers_return_are_answered_as_at_linuxs_exit_stop`.
 - Watches met before calls write, inside the hook and left unmet and met later (between steps,
   through `Kernel::process`), the result unchanged:
-  `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 48 children each making one
+  `a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged`, 51 children each making one
   call into a watched buffer (the output first compared with the reference's), inputs put there by the parent before the child starts: read, readv
   (two pages), recvmsg (a datagram, which Linux loses at a fault), a handler's frame on an
   alternate stack in the buffer, pread64, getcwd, uname, fstat, pipe2, wait4, getrandom,
@@ -101,7 +103,9 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   recvmsg with its header on a page apart from its data (a datagram, and a stream read in part),
   raw recvmmsg with its header and its length on two pages, sched_setattr refused for its size
   and capset refused for its version, and (sixth check) a memory sharer killed by SIGKILL and by
-  SIGTERM, its clear-tid word in the buffer. Each call announced the
+  SIGTERM, its clear-tid word in the buffer, and (eighth check) a vfork child with a clear-tid
+  word that runs a program, a vfork child holding a robust lock that runs a program, and
+  `process_vm_writev` on the process itself. Each call announced the
   hook in exactly one process, at an address in the buffer, as a write, with the page as it was
   when the process started; the output is the same as with no watch; nothing counted outside a
   description, met at a copy or cut short; and at each process's end every page of the buffer
@@ -424,6 +428,53 @@ Found on the way, fixed:
 - [minor] The ninth run's "tree before S2 measured 4 % slower" did not reproduce: the check
   measured the two trees alike (see "Measurements").
 
+## S2 eighth check findings, settled in the eleventh run
+
+- [blocking] `process_vm_readv` and `process_vm_writev` on a task of the caller's own process
+  copied the other side with no watch met, no hook and no count. The walk (syscall/touch.rs) now
+  meets the other side's segments, tags stripped, as read or written, when the task is the
+  caller's own; the copy checks the other side's watches and description as it checks the local
+  side's (memory.rs `Watches::copy_reach`, used by `Guest::accessible` too). Tests: the calls
+  test's `process_vm_writev` (a Writes watch from the child's start), and
+  `a_programs_own_memory_reached_by_the_process_vm_calls_meets_its_watches` (embedder.c `vm`:
+  under lazy memory a page of data the program never touches is written by one child and read by
+  another; filled inside the hook and between steps, the reference's output). Before the fix
+  (kernel changes stashed, ARM machine, scratch streams/s2k/before-fix.log): ours
+  "process_vm_writev 8 \nprocess_vm_readv 8 \n" against the reference's "written!" and
+  "initiali".
+- [blocking] `/proc/<pid>/cmdline` and `environ` read a process's memory with no watch met. A
+  read of such a file (`read`, `pread64`, `readv`, `preadv`, `preadv2`, `sendfile`, `splice`:
+  touch.rs `read_descriptor`) now meets, before the caller's buffer, the strings it copies in the
+  memory of the process the file names, whichever process that is; the hook names that process
+  and the reading thread, and a thread waiting on another process's watch waits on that
+  process's memory and is woken when its watches change or it ends (or runs a program). The read
+  itself treats a watched page as not there and is checked against the description, as a call's
+  copies are; the call checks both memories after it runs. A walk starts again when a hook
+  raised a watch in any process (the count of raised watches is now the kernel's). Test
+  `a_command_line_read_through_proc_meets_the_watches_of_the_process_it_names` (embedder.c
+  `cmdline self|parent LONG`, a 12288-letter argument, under lazy memory, filled inside the hook
+  and between steps; for `parent` a child reads its parent's command line and the hook names the
+  parent with the child's thread). Before the fix: "cmdline 10040 letters 1926" against the
+  reference's "letters 10000" (with the earlier 10000-letter argument).
+- [blocking] The document's claims: the item saying another process's memory is met at the copy
+  with no hook is gone; the document now says `process_vm_*` on another process is refused
+  (ENOSYS, counted) and `/proc/<pid>/mem` does not exist, describes both reads above, names the
+  thread an access through `/proc` is announced with, and counts the calls tested.
+- [minor] A vfork child with `CLONE_CHILD_CLEARTID` that runs a program left the word. `execve`
+  now does Linux's `exec_mm_release` after `de_thread`: the caller's robust list (locks marked as
+  their owner's death, waiters woken, priority-inheriting locks handed on) and its clear-tid word
+  while another process still uses the memory it leaves, then forgets both. The walk of `execve`
+  meets these stores (`Ending::Exec`, was `Others`). The robust list at exec was not checked by
+  the check; it was missing too. Tests: two calls of the calls test (`vfork exec cleartid`,
+  `robust exec owner died`), each matching the reference and announced before the store. Before
+  the fix (only the exec store stashed, s2k/before-exec-fix.log): both 0 where the reference has 1.
+- [minor] Two dynamic calls through `&dyn System` a system call with no hook implemented, and a
+  noted range a copy: carried to the next milestone, as the orchestrator ruled (the kernel becomes
+  generic over its `System` when it implements the interface crates). Measured by the eighth
+  check (ARM machine, load 12 to 23): user CPU medians of the memory test binary 11.837 s before
+  S2 and 11.872 s at its tip (+0.3 %, ranges overlapping). This run adds one flag test to a call
+  with no watch anywhere (`Kernel::watching`, already tested) and nothing else to that path.
+
 ## Measurements
 
 - Third run's fixes, stream tests (20 tests, seeds 1 to 3): passed, 27.2 s, load 73 to 82 (21:15).
@@ -601,6 +652,26 @@ Found on the way, fixed:
   Not measured by this track; the tenth run's changes add one hook call to `execve` and
   `rt_sigreturn` only, and a check on `execve` under a ceiling below the address space's end.
 
+- Eleventh run, tests: the embedder tests (27, seeds 1 to 3) passed on the ARM machine at
+  93d65247's tree with the `processes` tests (scratch streams/s2k/embedder-4.log, load 12 to 23),
+  and the kernel's unit tests (4) at 48c90e4c (embedder-3.log); clippy with warnings denied over
+  the three crates passed there and on the x86 machine. Whole suite on the ARM machine at
+  48c90e4c's tree (the command in "How to run" with `-j $ARM_JOBS` and 12 test threads;
+  s2k/fetched/suite-arm.log, 2222 s, ending about 06:08 UTC, load 29 to 40): 576 passed, 28
+  failed, 6 ignored; the 28 are by name exactly the tenth run's (s2k/failed-arm.txt against
+  s2j/failed-arm.txt), and the two new embedder tests pass. The 20 binaries kept on the Mac at
+  the same tree (s2k/mac-only.log, this Mac, 21:32 to 21:34 Pacific, load 4 to 19): 94 passed,
+  `splice_holds_the_pipe` among them. The literal check's tests on this Mac: all passed
+  (s2k/literals-mac.log). Combined: 610 tests, 604 passed, 6 ignored, none failed. 93d65247 only
+  adds a wake at exec, tested by the embedder and processes tests above.
+- Eleventh run, speed (ARM machine, s2k/speed-2.log, load 28 to 44, 06:20 UTC): the memory test
+  binary of 1bacb2d4 (S2 before this run) and of 93d65247, each built alone with `cargo test -p
+  wcontainers-kernel-test --test memory`, run alternately 7 rounds, round 0 a warm-up: user CPU
+  12.224 12.207 12.181 12.225 12.218 11.981 s before, 11.984 11.952 11.959 11.992 11.980 11.983
+  s after. No slowdown. A first try (s2k/speed.log) timed the whole suite's build of the binary
+  against one built alone: 12.3 s user and 0.88 s system against 11.9 and 0.30, every round; the
+  difference is the build (the suite's packages build it differently), not the code, and that
+  comparison is not used.
 - Tenth run, tests: the embedder tests (25, seeds 1 to 3) and the kernel's unit tests (4) passed
   on the ARM machine; clippy with warnings denied over the three crates passed there. Whole suite
   on the ARM machine at ae37b07c's tree (the command in "How to run" with `-j $ARM_JOBS` and 12
@@ -651,6 +722,9 @@ Found on the way, fixed:
 - After the tenth run: 7577 lines (the mmap gap's `128 << 20` now `MMAP_GAP_MIN` with Linux's
   `MAX_GAP` beside it); the check passes on this Mac (exit 0, scratch streams/s2j/literals-2.log;
   it needs the git history, which the rented machines' copies lack).
+- After the eleventh run: unchanged, 7577 lines; the check passes on this Mac (exit 0, scratch
+  streams/s2k/literals-2.log; the new test's argument length is `3 * PAGE_SIZE`, since 10000 was
+  taken for a restatement of another constant).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -693,9 +767,13 @@ anything shipped.
   writes by other processes to shared pages are not in a process's record.
 - Watches act on whole pages of `PAGE_SIZE`. Left to the copy check (listed with why in
   docs/embedder-interface.md): `semctl` GETALL/SETALL and the IPC `*_INFO` commands,
-  `restart_syscall`, a priority-inheriting lock handed on at a thread's end, another process's
-  memory (process_vm_readv/writev, /proc/<pid>/mem: the copy stops short at a watched page with no
-  hook, until inspection is built), and thread-end stores when the container ends.
+  `restart_syscall`, a priority-inheriting lock handed on at a thread's end, and thread-end
+  stores when the container ends. `process_vm_*` on another process is refused (ENOSYS, counted)
+  and `/proc/<pid>/mem` is not built.
+- A read of another process's command line or environment through `/proc` announces
+  `on_watched_memory_accessing` with that process and the reading thread, a thread of another
+  process (the interface did not say which thread; this is the task making the access). For the
+  owner.
 - The first process's end now kills the others in the kernel (Docker kills them from outside), so
   each is announced and its number freed.
 - Task ids: the embedder's id carries no generation (the earlier ruling said it would): the
@@ -761,12 +839,12 @@ anything shipped.
   `MemoryError::{NotMapped, NotRead, Executor}`; `Unsupported`; `ExecutionConfig::supported`;
   `Start::ceiling`, `Start::execution`; `task_id_after` (the default counter);
   `PerThreadWatch::set_thread_permissions`.
-- For the owner (speed): the system call proxy costs every call two calls of empty methods
-  through `&dyn System`, and every copy into program memory notes its range for
-  `on_memory_written_by_kernel`. The ninth run measured about 0.5 % user CPU on the memory test
-  binary; S2's seventh check measured no difference from before S2 (see "Measurements"). Zero
-  cost by construction would need the kernel generic over its `System` (resolved at compile
-  time), a larger change than this milestone's.
+- Carried to the next milestone (orchestrator, 2026-11-19 night): the system call proxy costs
+  every call two calls of empty methods through `&dyn System`, and every copy into program memory
+  notes its range for `on_memory_written_by_kernel`. The ninth run measured about 0.5 % user CPU
+  on the memory test binary; S2's seventh and eighth checks measured no difference beyond noise
+  (+0.3 %). The kernel becomes generic over its `System` when it implements the interface
+  crates.
 - For the owner: a thread waiting on a watch the embedder never resolves cannot be killed (see
   "Departures"); Linux's userfaultfd wait can be, skipping the kernel's store.
 - For the owner: a container whose first program does not fit below `Start::ceiling` fails its
