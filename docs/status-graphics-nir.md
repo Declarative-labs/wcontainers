@@ -633,7 +633,9 @@ None.
 
 ## Literal check
 
-Run 7: exit 0 at the run's last code commit (x86-64 machine, from a git bundle of the branch; marks
+Run 8: exit 0 at the run's last code commit (x86-64 machine, from a git bundle; marks 0; a first
+try found the GLSL version directive named twice, in `glsl.rs` and the new `bgfx.rs`: now imported);
+wcontainers-nir still has no baseline lines. Run 7: exit 0 at the run's last code commit (x86-64 machine, from a git bundle of the branch; marks
 0); wcontainers-nir still has no baseline lines. Run 6: exit 0 at 4294fcf0 (x86-64 machine, from a git bundle; marks 0; the 18 changes that could
 add lines are the shaders branch's, as before). The bridge's numbers are `#define`s, named once;
 the Rust added has no new bare literals (test data apart). Adopted with the branch (merged from the
