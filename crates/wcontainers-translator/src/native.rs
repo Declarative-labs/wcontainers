@@ -108,17 +108,27 @@ pub fn translate_native<G: Native>(
     let mut out = HostCode::new();
     // The host offset of each part's start, by guest address.
     let mut entries = BTreeMap::new();
+    // The current straight-line part's instructions so far, with their guest addresses.
+    let mut part: Vec<(u64, G::Instruction)> = Vec::new();
     for (k, h) in held.iter().enumerate() {
         let here = guest(h.at);
         out.start(here, events[k], G::stopping(&h.instruction, here));
         if part_starts[k] {
             entries.insert(here, out.offset());
             out.enter_ahead(leads[part_of(k)]);
+            part.clear();
         }
         if let Some(total) = adds[k] {
             G::count(&mut out, total);
         }
-        G::carry(&h.instruction, &code[h.at..h.at + h.length], here, &mut out);
+        G::carry(
+            &part,
+            &h.instruction,
+            &code[h.at..h.at + h.length],
+            here,
+            &mut out,
+        );
+        part.push((here, h.instruction));
         let next = h.at + h.length;
         if h.goes_on && held.get(k + 1).is_none_or(|n| n.at != next) {
             G::exit(&mut out, guest(next));
