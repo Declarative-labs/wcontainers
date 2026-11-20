@@ -4,91 +4,75 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 The run-by-run record of runs 1 to 63 is in `docs/status-graphics-shaders-history.md` (history; where
 it disagrees with this file, this file holds).
 
-Milestone G6a is reported complete for its independent check: the check's findings are settled
-below, each with the test or log at the pushed tip that shows it; the pass bar is met item by item or
-its gap is listed (A1 to A18) with its cause, the front that waits and what it would take.
+Milestone G6b (gap A6: DXIL geometry, hull and domain shaders) is in progress: DXIL geometry
+shaders convert and draw equal to real Direct3D 11 (run 65); hull and domain shaders, and the
+Direct3D 12 rig scenes, remain (A6 below). G6a's check is passed; its last findings are settled
+in run 65 below.
 
-## G6a run 6 (run 64): the sixth check's findings at the pushed tip
+## G6b run 1 (run 65)
 
-Every figure here comes from runs of the code at 5cfba8a0 (the commits after it change only this
-file and the history file). Logs in scratch `graphics-shaders/g6a6`. No branch had anything new to
-merge (the NIR branch is not merged: nothing of it is needed here). G6a run 5's section moved to
-the history file.
+Merged origin/phase-2-graphics-direct3d-11 (12 commits; no other branch had anything new). G6a
+run 6's section moved to the history file.
 
-Runs at the tip:
-- Laptop (i7-8750H, load 1.2 before, 1.0 after, ours alone; 4 cargo jobs under choom), the whole
-  suite with every corpus and glslang 8.13 (laptop-suite.log, `suite-run49.sh`): 111 passed, 1
-  failed (`--include-ignored --skip mutated`): the one failure is
-  `damaged_records_decode_without_a_panic`, new in this run, a known failure listed with gap A16.
-  The two new tests of `rewrite` pass. Every corpus's verdicts equal their records, which are
-  unchanged. `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean there.
-- WebAssembly under wasmtime on the laptop (load 1.0 before, 5.0 after with the other track's
-  work; wasm.log, wasm-differ.txt): the corpus test's 11 tests pass, every corpus mounted. Of the
-  files both builds write, the same 27 WGSL files differ as in G6a runs 4 and 5 (A8), and so the
-  `cache.txt` of the four corpora holding them; every `converter-version.txt` equal.
-- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken): Windows clippy with
-  warnings denied clean (win-clippy.log); every test binary at default seeds (gpu.log): 154
-  passed, 0 failed, 6 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`, and
-  `damaged_records_decode_without_a_panic`). `filter_draw` at the sixth check's seed 9911, 10
-  cases: 1,708 comparisons, 2 failed (9913 Rgba8Unorm `bias` against WebGPU's own sampler, DXBC
-  and DXIL, 4 of 4,096 texels each: gap A18), 184 known failures (anisotropic).
-- Chrome on the desktop (one GPU job, chrome.log), the files the laptop's suite wrote at the tip
-  (the same WGSL and GLSL bytes as G6a run 5's; only `cache.txt` and `converter-version.txt`
-  differ, and the new `rewrite` directory): WGSL 4,323 compile (corpus 185, games 527, games DXIL 441,
-  own 135 and 73, rig 79 and 56, runner 1,438 and 1,386, and the 3 of `tests/rewrite.rs`, among
-  them the check's pixel program picking by a flat input), none fail. GLSL ES 3.00: 3,576
-  compile, 40 fail, the same 40 files with the same verdicts as G6a run 5, each a shader whose
-  record names the need (`MULTISAMPLE_READ` 22, `SAMPLE_SHADING|MULTISAMPLE_READ` 1,
-  `PRIMITIVE_INDEX` 8, `CLIP_DISTANCE|CULL_DISTANCE` 9).
-- Formatting: `cargo fmt -p wcontainers-shaders -- --check` clean (on the Mac). `cargo fmt --all
-  -- --check` finds only `crates/wcontainers-direct3d-11/tests/front.rs`, the Direct3D 11
-  track's file as merged, which this branch leaves alone.
-- Literal check on the desktop (check.txt): passes, nothing to delete; this crate's lines in
-  `literals.baseline` (src, build.rs, tests, examples): 586, as at G6a run 5.
-- A16's count of panics (panic-sites.log): on the laptop, below.
-- A queue-check run by mistake while waiting (`tools/graphics-rig/queue-check`, a test of the
-  queue, stopped after a minute): it waited for this run's GPU job to end before it sent the same
-  tree, and left no task in the queue (checked with pueue's status).
-- Clean-up at the end: this branch's build folders on the laptop (8.0 GB) and the desktop (8.4 GB)
-  deleted; nothing built on the Mac (only `cargo fmt`); the rented machines not used.
+The fourth check's findings, each settled at the tip:
+1. `rewrite` and arrays past their kind's slots (minor): fixed. `common::split_arrays` refuses an
+   array whose elements run past the slots of its kind (`BindingsBeyondLimit`, checked
+   arithmetic), as the DXBC route does. Test `an_array_longer_than_its_kind_binds_is_refused_by_name`
+   (tests/rewrite.rs: samplers, textures and storage textures, one past the kind's slots and
+   2^31 - 1 long). The same test on the code before the fix fails (x86 machine: "sampler x 17",
+   naga's unnamed `Invalid`), as the check's OWN1 did.
+2. The Direct3D 11 front's two asks (minor): halves toward zero are built (`variant::texel::encode`
+   rounds the magnitude less a half up, so 0.5 into 16 bits gives 0x7fff); no drawn test of this
+   crate writes an exact half, so it is gap A19. `ClearView`'s rectangles: `builtin::storage_clear`
+   already clears a box (`origin` to `end`, x, y and layer), so each rectangle is one dispatch of
+   it; the rest is the front's (under "Asked of other tracks").
+3. A10 at seed 31337 (information): the check's figures are added to A10.
+4. A11 at seed 86420 (information): the check's figures are added to A11.
 
-The check's findings, each against the tip:
-1. `SwizzledDepth` missing (blocking): on the gap list now, as A4's fifth part (a case of
-   `swizzled`), with its cause, the Direct3D 12 front waiting from its runner, and what it takes;
-   pass bar item 3 says so. Reading that front's list again found one more item the status lacked,
-   the shader model 4.0 multisampled load in a loop, now in "Also open" with this track's finding
-   that fxc's build converts right.
-2. The NIR track's state and its `sampled_pairs` request (blocking): "New for the owner" now says
-   that track calls `rewrite` since its run 14 and lists its `sampled_pairs` request as not built.
-   Its IMMEDIATES request (20 of Godot's programs refused by `rewrite`'s validation) is built in
-   this run: `capabilities` names `Capabilities::IMMEDIATES` for an immediate global (test
-   `immediates_are_taken_and_named_as_a_capability`).
-3. `rewrite` and derivative uniformity (minor): fixed. After a split `rewrite` turns WGSL's
-   derivative uniformity check off, as the DXBC and DXIL routes do. Test
-   `a_texture_picked_by_an_input_is_sampled_in_any_control_flow` (the check's own program: a
-   pixel program sampling an array element picked by a flat input); `tests/rewrite.rs` now writes
-   its WGSL into `WCONTAINERS_SHADERS_OUT`/rewrite, so Chrome compiles it with the corpora (above).
-4. The filter test's comparison against WebGPU's own sampler at seed 9913 (minor): reproduced at
-   the tip (above), not fixed: gap A18, with its cause and what it takes. The test is unchanged.
-5. The cache's damaged records in WebAssembly (minor): our own panics are gone (`capabilities`
-   reads types with `get_handle`), but naga's validator still panics on such modules, so gap A16
-   lists it with its count, pass bar item 6 says the damaged-entry case holds natively only, and a
-   new test `damaged_records_decode_without_a_panic` (ignored, a known failure) fails on any panic,
-   contained or not. The test that passes keeps its wasm32 ignore, whose reason now names A16.
-6. Aliased lines into multisampled targets (minor): gap A17, with the Direct3D 11 front's known
-   failure by name.
-7. The two typed values in tests/fuzz.rs (minor): build.rs now writes dxbc-spirv's `OpCode` and
-   `UavFlag` from `dxbc/dxbc_types.h` (`dxbc_op`, `dxbc_uav`), which the test includes; the view
-   declarations' opcodes, the sampler declaration's and the coherent flag come from there. The
-   flags' place in the token (bit 16) is not an enum in dxbc-spirv (its `getUavFlags` extracts it
-   in code), so it stays a named constant citing that function.
-8. A10 and A12 at seed 9901 (information): added to both gaps as the check's figures.
+Built in this run (A6, the geometry part):
+- `lower/geometry.rs` is one pass (`GeometryPass`) over stage values either route describes
+  (`GeometryValue`: the private variable, side, register and component or built-in, stream, type),
+  with the emit and cut functions made empty by the caller and filled by the pass. The DXBC route
+  describes its declarations; every WGSL file of every corpus is byte for byte what it was before
+  (4,323 files compared, x86 machine against the laptop's files of G6a run 6), but for the cut
+  function's new name (`gs_cut_strip`, so tests' `gs_cut` file names do not restate it).
+- `dxil/geometry.rs`: dxil-spirv's Geometry model made a compute program in the SPIR-V words
+  before naga's reader takes it (stage variables private and renamed, decorations kept aside,
+  `OpEmitVertex`/`OpEmitStreamVertex`/`OpEndPrimitive`/`OpEndStreamPrimitive` calls of empty
+  functions), then the same pass builds the compute or replay form. The carried naga is not
+  changed. A patch as input is refused by name (`GeometryPatchInput`, from the container's
+  `PSV0` chunk) as on the DXBC route; a clip distance read, cull distances and a written
+  primitive number are refused with the DXBC route's names.
+- Corpus: of the 26 DXIL geometry shaders refused as `DxilGeometryShader`, 19 convert (own 10,
+  rig 6, runner 3) and 7 are refused with the DXBC route's names (`CullDistance` 4, `ClipDistance`
+  1, `PrimitiveId` 1, `GeometryPatchInput` 1). Records updated; `DxilGeometryShader` is gone.
+- Drawn: `geometry_draw`'s `geometry_shaders_draw_as_direct3d_does` and
+  `geometry_shaders_replayed_on_webgl_draw_as_direct3d_does` draw every geometry case again with
+  dxc's build of the geometry shader (vertex and pixel programs fxc's, as no DXIL build of them
+  exists), against real Direct3D 11 drawing fxc's build, seeds 1 to 4: 192 comparisons (80 DXIL)
+  and 152 (80 DXIL), 0 failed. Mutated copies fail: the instance number read as the primitive
+  number (gs_instances, 572 of 820 texels apart) and the locations moved by a register (the
+  linking assert).
 
-The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner), since run 57; that
-track calls it since its run 14.
+Runs at the tip (logs in scratch `graphics-shaders/g6b1`):
+- x86 machine (96 processors, load 19 to 33, others' work beside; -j 48): clippy with warnings
+  denied clean; the whole suite with every corpus (`--include-ignored --skip mutated`, no
+  glslang there): 24 test binaries, all pass (x86-suite2.log). The corpora were copied there from
+  the laptop (the machine was new).
+- Desktop (RTX 3080, through the queue, 3 cargo jobs): Windows clippy clean; `geometry_draw` at
+  the default seeds: 8 passed (gpu-geometry2.log); the whole GPU suite: below.
+- Literal check (desktop): passes; this crate's lines in `literals.baseline` 586 before the run,
+  575 after (11 deleted; the moved geometry code's strings named once).
+- Not run in this run: the laptop (glslang's GLSL outcomes: the new shaders all need compute, so
+  their records name no GLSL compile), WebAssembly, Chrome.
 
 ## New for the owner
 
+- Run 65: DXIL geometry shaders convert (A6's geometry part): a front gets the same compute and
+  replay forms, pass-through and reflection from dxc's build as from fxc's. Normalised codes
+  are encoded with halves toward zero, as the RTX 3080 does (the Direct3D 11 front's ask; A19).
+  `rewrite` refuses an array longer than its kind's slots by name (`BindingsBeyondLimit`).
+  `stage::LIST_VARIABLE` is public (a test reads it). No interface change.
 - `wcontainers_shaders::rewrite(module, reflection, &variant, &route_key)` (built in run 57,
   src/lib.rs): the 15.4 rewrites (arrays of textures, storage textures and samplers split into an
   element each, gathers at run-time offsets moved to a shifted coordinate, formatless storage
@@ -130,7 +114,7 @@ track calls it since its run 14.
   rounding an array layer and keeping an unordered not-equal (findings for the DXBC and DXIL routes
   too, which reach the same reader).
 
-## G6: the pass bar item by item, and the gap list (checked at G6a run 6)
+## G6: the pass bar item by item, and the gap list (checked at G6a run 6; A6, A10, A11 and A19 at run 65)
 
 The pass bar, item by item:
 
@@ -345,11 +329,17 @@ The gap list (every item of the pass bar not met):
   the tessellator needs compute, so tessellation stays absent there). Waits: the Direct3D 11 front
   at feature level 10_0 on WebGL 2 (its geometry shaders and their stream output now run; its
   alpha-antialiased lines remain). Takes: each its route and its drawn test on ANGLE.
-- A6. DXIL geometry, hull and domain shaders (`DxilGeometryShader`, `DxilHullShader`,
-  `DxilDomainShader`): naga's SPIR-V reader has no such execution models, so the stage helper takes
-  them by the DXBC route only. Waits: the Direct3D 12 front (its runner's geometry, tessellation,
-  tessellation-patch-vars and clip-cull-distance-1 files). Takes: the three execution models in the carried reader (inputs as arrays per
-  vertex, `EmitVertex`/`EndPrimitive`, the patch constant function), lowered as the DXBC route's.
+- A6. DXIL hull and domain shaders (`DxilHullShader`, `DxilDomainShader`): naga's SPIR-V reader
+  has no tessellation execution models, so the stage helper takes them by the DXBC route only.
+  DXIL geometry shaders convert since run 65 (G6b run 1 above). Waits: the Direct3D 12 front (the
+  rig's tessellation scene, and its runner's tessellation and tessellation-patch-vars files).
+  Takes: as for geometry, the SPIR-V made a compute program before the reader (the hull's control
+  point function and patch constant function, the domain's inputs), and `lower/hull.rs` and the
+  domain lowering made passes over stage values as `lower/geometry.rs` now is; then the drawn
+  tessellation tests with dxc's builds. Also open for A6: the Direct3D 12 rig scenes (geometry,
+  raster, streamout, tessellation) drawn through the Direct3D 12 front against real Direct3D 12,
+  not run yet; and the vertex and pixel programs of `geometry_draw` have no DXIL build (the
+  geometry shader alone is dxc's).
 - A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
   which Direct3D does not allow; several streams of points convert since run 49); indexed strips
   and triangle strips with adjacency run since run 50; indirect draws through the stages, the
@@ -442,13 +432,18 @@ The gap list (every item of the pass bar not met):
   at about the same rate and nothing new: 9906, 9909 (20 texels differ, largest 75) and 9924
   (largest 133) `gs_clip` TriangleList, 9906, 9920 and 9931 `vs_cull` triangles, and 9932 `vs_cull`
   LineStrip indexed (2 of 159, largest 88); the replay on WebGL 2 fails the same five `gs_clip`
-  cases.
+  cases. The G6a fourth check of run 64's tip (seed 31337, 16 cases): 448 comparisons, 3 failed,
+  all this pattern (31344 `vs_cull` TriangleList indexed 3 of 778, largest 132; 31351 `gs_clip`
+  TriangleStrip 8 of 816, largest 81; 31351 `vs_cull` TriangleList 3 of 1,669, largest 68); the
+  replay on WebGL 2 failed 31351 `gs_clip` (352 comparisons).
 - A11. `mutated_bytecode_converts_or_fails_without_ending_the_process` (tests/fuzz.rs, ignored by
   default as a long run) fails: signed but malformed bytecode can end the process (G6a run 1,
   fuzz.log: seed 7, case 301, a mutated `blend.vs.dxil`, SIGSEGV; the second check, seed 8128,
   4,000 cases, restarted past each crash: 26 crashes, all DXIL; the third check, seed 5555, 6,000
   cases: 27, 24 SIGSEGV and 2 `std::terminate` on DXIL and 1 on DXBC; the fifth check, seed
-  24680, 8,000 cases: 31, 26 SIGSEGV and 4 `std::terminate` on DXIL and 1 on DXBC; Known gaps has
+  24680, 8,000 cases: 31, 26 SIGSEGV and 4 `std::terminate` on DXIL and 1 on DXBC; the fourth
+  check of run 64's tip, seed 86420, 6,000 cases: 27, all DXIL inside dxil-spirv, 20 SIGSEGV and
+  7 `std::terminate`, none on DXBC or in this crate's Rust; Known gaps has
   the earlier counts). Causes:
   - DXIL: dxil-spirv's bitcode reader faults or calls `std::terminate` on such input.
   - DXBC, the third check's case: this crate's own lowering took a resource array's declared count
@@ -560,6 +555,14 @@ The gap list (every item of the pass bar not met):
   of detail at a decision). Takes: either the GPU's level of detail computation matched exactly
   (not documented for the RTX 3080), or the owner ruling that the main comparison's allowance
   applies to this comparison too; the test is left as it is meanwhile.
+- A19. Normalised codes with halves toward zero (`variant::texel::encode`, run 65, the Direct3D 11
+  front's ask from its measurement on the RTX 3080: 0.5 into a 16-bit normalised texture held as
+  its integer twin gives 0x7fff there): built, but no drawn test of this crate writes an exact
+  half, so the rule is the front's measurement, not this crate's; the drawn tests that run the
+  encoding (`targets_in_shader`, storage formats, typed buffers) pass with it. Waits: the
+  Direct3D 11 front (its difference list). Takes: an own program writing 0.5 and -0.5 into 8- and
+  16-bit normalised targets, storage textures and typed buffers, compared exactly with real
+  Direct3D 11 (fxc and dxc builds).
 - Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the DXIL route
   for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
   holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
@@ -588,11 +591,13 @@ since run 55 (A2), and `SwizzledDepth` (A4). The Direct3D 11 front's atg-simplec
 Every refusal in the nine records (`tests/expected`, at the tip), by name and count, with where it
 is accounted for (counted with `grep` over the records, G6a run 4; the records are unchanged at
 G6a run 5's tip):
-- On the gap list: `DxilHullShader` 28, `DxilGeometryShader` 26, `DxilDomainShader` 9 (A6);
-  `VertexStorageWrite` 8 (A9); `GeometryPatchInput` 5 (A13); `HullWithoutControlPoints` 1 (A14);
-  `GeometryStreams` 1, `PrimitiveId` 1 (a geometry shader writing the primitive's number,
-  `primitive-id-2-gs`) and `CullDistance` 4 (geometry shaders writing cull distances,
-  `clip-cull-distance-1-18` to `-21-gs`) (A7); "convert rejected: Unknown type!" 1 (A1).
+- On the gap list: `DxilHullShader` 28, `DxilDomainShader` 9 (A6; `DxilGeometryShader`'s 26
+  are gone in run 65: 19 convert, the other 7 counted under their names below);
+  `VertexStorageWrite` 8 (A9); `GeometryPatchInput` 6 (A13; DXBC 5, DXIL 1 since run 65);
+  `HullWithoutControlPoints` 1 (A14); `GeometryStreams` 1, `PrimitiveId` 2 (a geometry shader
+  writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL) and `CullDistance` 8
+  (geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL)
+  (A7); "convert rejected: Unknown type!" 1 (A1).
 - Absent on both back ends, reported as the guest expects (plan 4.12 and section 9's absent
   lists): `Float64` 42 and
   `Int64` 35 (no 64-bit types), `RasterizerOrderedView` 12 (no fragment interlock), `StencilRef` 7,
@@ -604,35 +609,29 @@ G6a run 5's tip):
   "ImageSparseFetch" 2 and "ImageSparseSampleImplicitLod" 1 (DXIL); `InterpolateAt` 3;
   `SampleClamp` 2 (DXBC) and the reader's "image sample operand 0x80" 2 (DXIL, the same minimum
   level operand); `AtomicSignedness` 1; `ResourceArray` 1; a clip or cull distance read as an input
-  (`ClipDistance` 3, `CullDistance` 3: pixel shaders and `clip-cull-distance-1-16-gs`); a DXIL
+  (`ClipDistance` 4, `CullDistance` 3: pixel shaders and `clip-cull-distance-1-16-gs`, DXBC and,
+  since run 65, DXIL); a DXIL
   pixel shader's layer or viewport index (the reader's "unsupported builtin %9" 2 and "%10" 2, among
   them the rig's `raster.ps.dxil` and our own `ps_layer.dxil`).
 
 ## Next
 
-After G6a's check: its findings first, then the gap list in the order the fronts need it.
-1. A4's `combine` (`BlendInShader`, then `LogicOpInShader`): the Direct3D 11 front waits on it to
-   blend into the 16-bit normalised textures it holds as integer twins.
-2. A6, DXIL geometry, hull and domain shaders: at the tip they refuse 15 of the rig's 72 DXIL
-   shaders (four of the Direct3D 12 front's scenes), 38 runner and 10 own files. The DXBC route's
-   geometry lowering builds its forms from dxbc-spirv's IR; the DXIL route needs the carried naga
-   reader to read the Geometry, TessellationControl and TessellationEvaluation execution models,
-   then the same records, emit and cut functions as `lower/geometry.rs` and `lower/hull.rs`,
-   factored so both routes share them. Several runs.
-3. Arrays of constant and structured buffers on the DXIL route (`ResourceArray`; the reader's one
-   buffer split into a buffer per element), and A4's `SwizzledDepth` (the Direct3D 12 front's
-   runner).
-4. The Direct3D 11 front's aliased lines into multisampled targets (A17: a stage helper route and
-   the interface's word for it), then the rest of A5 in its order (alpha-antialiased lines and layered
-   geometry on WebGL 2).
-5. The NIR track's other asks of this crate (New for the owner), first the carried naga SPIR-V
-   reader taking glslang's arrays of combined image samplers indexed at run time,
-   `ImageGatherExtended` and `StorageImageWriteWithoutFormat`, so the 15.4 rewrites are reachable
-   on its route; `sampled_pairs` from `rewrite` whatever it splits.
-6. The rest of A4, A7, A10, A12, A13, A14, A15, A9, A1, A8, A11, A16, A18, and "Also open", each closed with its drawn test
-   and its line deleted from the gap list.
+G6b continues (A6), in the order the Direct3D 12 front needs it:
+1. The Direct3D 12 rig scenes geometry, raster and streamout through the Direct3D 12 front
+   against real Direct3D 12 (`tools/graphics-rig/scenes --api d3d12`, the front's library built
+   from this branch), now that their DXIL geometry shaders convert; fix what they show.
+2. DXIL hull and domain shaders (A6's "Takes"), then the rig's tessellation scene and the runner's
+   tessellation files, and `tessellation_draw` with dxc's builds; the corpus counts before and
+   after; a mutated copy of each new test shown to fail.
+3. Then G6b's check. After it: A4's `combine`, `ResourceArray` on DXIL, A17, A19, the NIR track's
+   asks, and the rest of the gap list.
 
 ## Asked of other tracks
+
+- Answered for the Direct3D 11 front (its asks of this track, run 65): halves toward zero are
+  built (A19 for the drawn proof); `ClearView` of a storage view's rectangles takes
+  `builtin::storage_clear` with each rectangle's `origin` and `end` (one dispatch a rectangle),
+  which exists since run 56: the rest is the front's.
 
 - The Direct3D 11 track (run 58): stream output from a vertex shader alone on WebGL 2 is
   `GeometryReplay::streamed(backend, &vertex, &so)` (the vertex shader converted as for a replay,
@@ -2180,6 +2179,11 @@ were already there.
 
 ## Departures from the plan
 
+- DXIL geometry shaders (run 65): G6b's task names the carried naga reader reading the Geometry
+  model with emit and cut. The model is instead made a compute program in the SPIR-V words before
+  the reader (`dxil/geometry.rs`), as this crate already prepares widths, registers and images
+  there: the reader needs no new carried patch, and the stage values' places are read from the
+  decorations directly. Same result (the shared pass builds the forms), one fewer change to carry.
 - The status file's run-by-run record (runs 1 to 58, 2,900 lines, with its superseded "Next"
   lists) moved to `docs/status-graphics-shaders-history.md` in G6a run 1, so that this file stays
   short and every statement in it is current; "Run N" references point there.

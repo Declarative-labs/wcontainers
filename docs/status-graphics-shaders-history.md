@@ -3396,3 +3396,82 @@ The older list, kept for its detail:
 - GLSL ES 3.00 lacks bitfield operations, `textureGather` and multisampled samplers: what Chrome's
   WebGL 2 refuses (corpus 13, rig DXBC 6, rig DXIL 1, own 2) is only these. 6.5 gives the first two to the WebGL 2
   back end's writing; multisampled reads are absent there.
+
+## G6a run 6 (run 64): the sixth check's findings at the pushed tip
+
+Every figure here comes from runs of the code at 5cfba8a0 (the commits after it change only this
+file and the history file). Logs in scratch `graphics-shaders/g6a6`. No branch had anything new to
+merge (the NIR branch is not merged: nothing of it is needed here). G6a run 5's section moved to
+the history file.
+
+Runs at the tip:
+- Laptop (i7-8750H, load 1.2 before, 1.0 after, ours alone; 4 cargo jobs under choom), the whole
+  suite with every corpus and glslang 8.13 (laptop-suite.log, `suite-run49.sh`): 111 passed, 1
+  failed (`--include-ignored --skip mutated`): the one failure is
+  `damaged_records_decode_without_a_panic`, new in this run, a known failure listed with gap A16.
+  The two new tests of `rewrite` pass. Every corpus's verdicts equal their records, which are
+  unchanged. `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean there.
+- WebAssembly under wasmtime on the laptop (load 1.0 before, 5.0 after with the other track's
+  work; wasm.log, wasm-differ.txt): the corpus test's 11 tests pass, every corpus mounted. Of the
+  files both builds write, the same 27 WGSL files differ as in G6a runs 4 and 5 (A8), and so the
+  `cache.txt` of the four corpora holding them; every `converter-version.txt` equal.
+- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken): Windows clippy with
+  warnings denied clean (win-clippy.log); every test binary at default seeds (gpu.log): 154
+  passed, 0 failed, 6 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`, and
+  `damaged_records_decode_without_a_panic`). `filter_draw` at the sixth check's seed 9911, 10
+  cases: 1,708 comparisons, 2 failed (9913 Rgba8Unorm `bias` against WebGPU's own sampler, DXBC
+  and DXIL, 4 of 4,096 texels each: gap A18), 184 known failures (anisotropic).
+- Chrome on the desktop (one GPU job, chrome.log), the files the laptop's suite wrote at the tip
+  (the same WGSL and GLSL bytes as G6a run 5's; only `cache.txt` and `converter-version.txt`
+  differ, and the new `rewrite` directory): WGSL 4,323 compile (corpus 185, games 527, games DXIL 441,
+  own 135 and 73, rig 79 and 56, runner 1,438 and 1,386, and the 3 of `tests/rewrite.rs`, among
+  them the check's pixel program picking by a flat input), none fail. GLSL ES 3.00: 3,576
+  compile, 40 fail, the same 40 files with the same verdicts as G6a run 5, each a shader whose
+  record names the need (`MULTISAMPLE_READ` 22, `SAMPLE_SHADING|MULTISAMPLE_READ` 1,
+  `PRIMITIVE_INDEX` 8, `CLIP_DISTANCE|CULL_DISTANCE` 9).
+- Formatting: `cargo fmt -p wcontainers-shaders -- --check` clean (on the Mac). `cargo fmt --all
+  -- --check` finds only `crates/wcontainers-direct3d-11/tests/front.rs`, the Direct3D 11
+  track's file as merged, which this branch leaves alone.
+- Literal check on the desktop (check.txt): passes, nothing to delete; this crate's lines in
+  `literals.baseline` (src, build.rs, tests, examples): 586, as at G6a run 5.
+- A16's count of panics (panic-sites.log): on the laptop, below.
+- A queue-check run by mistake while waiting (`tools/graphics-rig/queue-check`, a test of the
+  queue, stopped after a minute): it waited for this run's GPU job to end before it sent the same
+  tree, and left no task in the queue (checked with pueue's status).
+- Clean-up at the end: this branch's build folders on the laptop (8.0 GB) and the desktop (8.4 GB)
+  deleted; nothing built on the Mac (only `cargo fmt`); the rented machines not used.
+
+The check's findings, each against the tip:
+1. `SwizzledDepth` missing (blocking): on the gap list now, as A4's fifth part (a case of
+   `swizzled`), with its cause, the Direct3D 12 front waiting from its runner, and what it takes;
+   pass bar item 3 says so. Reading that front's list again found one more item the status lacked,
+   the shader model 4.0 multisampled load in a loop, now in "Also open" with this track's finding
+   that fxc's build converts right.
+2. The NIR track's state and its `sampled_pairs` request (blocking): "New for the owner" now says
+   that track calls `rewrite` since its run 14 and lists its `sampled_pairs` request as not built.
+   Its IMMEDIATES request (20 of Godot's programs refused by `rewrite`'s validation) is built in
+   this run: `capabilities` names `Capabilities::IMMEDIATES` for an immediate global (test
+   `immediates_are_taken_and_named_as_a_capability`).
+3. `rewrite` and derivative uniformity (minor): fixed. After a split `rewrite` turns WGSL's
+   derivative uniformity check off, as the DXBC and DXIL routes do. Test
+   `a_texture_picked_by_an_input_is_sampled_in_any_control_flow` (the check's own program: a
+   pixel program sampling an array element picked by a flat input); `tests/rewrite.rs` now writes
+   its WGSL into `WCONTAINERS_SHADERS_OUT`/rewrite, so Chrome compiles it with the corpora (above).
+4. The filter test's comparison against WebGPU's own sampler at seed 9913 (minor): reproduced at
+   the tip (above), not fixed: gap A18, with its cause and what it takes. The test is unchanged.
+5. The cache's damaged records in WebAssembly (minor): our own panics are gone (`capabilities`
+   reads types with `get_handle`), but naga's validator still panics on such modules, so gap A16
+   lists it with its count, pass bar item 6 says the damaged-entry case holds natively only, and a
+   new test `damaged_records_decode_without_a_panic` (ignored, a known failure) fails on any panic,
+   contained or not. The test that passes keeps its wasm32 ignore, whose reason now names A16.
+6. Aliased lines into multisampled targets (minor): gap A17, with the Direct3D 11 front's known
+   failure by name.
+7. The two typed values in tests/fuzz.rs (minor): build.rs now writes dxbc-spirv's `OpCode` and
+   `UavFlag` from `dxbc/dxbc_types.h` (`dxbc_op`, `dxbc_uav`), which the test includes; the view
+   declarations' opcodes, the sampler declaration's and the coherent flag come from there. The
+   flags' place in the token (bit 16) is not an enum in dxbc-spirv (its `getUavFlags` extracts it
+   in code), so it stays a named constant citing that function.
+8. A10 and A12 at seed 9901 (information): added to both gaps as the check's figures.
+
+The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner), since run 57; that
+track calls it since its run 14.
