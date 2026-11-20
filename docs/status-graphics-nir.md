@@ -4,10 +4,12 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 5 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and candidate
-B leads on both counts (The choice, below). Run 5: route B takes stage values in one form, lowered
-IO (what the OpenGL linker hands over), and alphaToOne's two steps are made and tested. GLSL, the
-rest of the corpus, the 15.4 rewrites and robustBufferAccess remain (Next).
+G8 run 6 (2026-11-20). Not complete. Both candidates are measured on the SPIR-V corpus and candidate
+B leads on both counts (The choice, below). Run 6: GLSL reaches the bridge (Mesa's GLSL compiler
+and linker, then st/mesa's steps after a link) and route B takes what comes out, OpenGL's buffers
+as arrays of words; held by a run on lavapipe against GLSL's own layout and arithmetic. The GLSL
+reference on llvmpipe and the GLSL corpus, the rest of the corpus, the 15.4 rewrites and
+robustBufferAccess remain (Next).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -81,6 +83,42 @@ Done:
   invocations, 14,680,064 results, seed 0x5eed for the second operand and the upper bits; 0 differ).
   Checked to see differences: with the multiply's and the shift count's masks taken out (temporary),
   6,151,775 results differed.
+- GLSL (`Nir::from_glsl`, `wc_glsl_to_nir` in `bridge/glsl.cpp`, a C++ file built by a second
+  `cc::Build` with the flags of Mesa's `standalone.cpp`): Mesa's GLSL compiler and linker on the
+  standalone scaffolding (`libglsl_standalone`, no gallium screen), one context for every source:
+  OpenGL 4.6 compatibility, GLSL 4.60, the ES 3.x compatibility extensions, and the limits the
+  OpenGL driver is to report (named `WC_GL_*` in `glsl.cpp`; G9 reports the same). Then, per stage,
+  st/mesa's steps after a link (`st_link_glsl_to_nir`, `st_glsl_to_nir_post_opts`,
+  `st_finalize_nir`, MIT) for that driver's capabilities: dead IO variables removed;
+  `gl_nir_lower_buffers` (which ends in `nir_lower_explicit_io`: every buffer access is a block
+  index and a byte offset); fragment coordinates and point coordinates transformed for the common
+  form's origin (upper left, centres at half: `nir_lower_wpos_ytransform` and
+  `nir_lower_pntc_ytransform`, their state values added to the parameters); system values; state
+  references; atomic counters into storage buffers (no hardware counters); 64-bit integers lowered;
+  rectangle textures and gathers with offsets lowered (`nir_lower_tex`: no rectangles, no gather
+  offsets); uniform places assigned in words (packed storage, `PackedDriverUniformStorage`) and the
+  default block made uniform buffer 0 (`nir_lower_uniforms_to_ubo`, every block one index up);
+  samplers as derefs; `gl_FragColor` written to every draw buffer (`nir_lower_fragcolor`, the
+  driver's own step, as Zink's). A built-in uniform structure of the compatibility profile (the
+  lighting state) is refused by name. Compile and link errors come back with Mesa's log
+  (`ConvertError::Glsl`).
+- OpenGL's buffers in route B (`wc_nir_buffers_as_words`, bridge.c): each uniform block becomes a
+  variable of `vec4<u32>` words (the common form's uniform arrays step by 16 bytes; its size the
+  block's, the default block's from the parameters), each storage block a runtime-sized array of
+  `u32`, writable only where the program writes it; uniform block i binds at i, storage block j at
+  the number of uniform blocks plus j (the program's set and binding in the reflection);
+  `load_ubo`, `load_ssbo`, `store_ssbo` (by its write mask), the storage atomics and
+  `get_ssbo_size` become 32-bit derefs of those words at offset / 4, which route B already takes.
+  A block index not constant after folding, or an access not 32 bits wide, is left as it is and
+  refused by name. This is also 15.4's robustBufferAccess step 2 (storage as runtime-sized arrays
+  of words, 32-bit accesses). Held by `tests/route.rs` (a vertex and fragment program with default
+  uniforms, a std140 block, std430 blocks, a sampler, an atomic: both stages convert and validate,
+  bindings counted by kind; a program that does not compile is refused with its log) and
+  `tests/glsl_buffers.rs`: a GLSL compute program reading a std140 block (vec3, float, float array,
+  mat3, ivec2) and writing a std430 block (atomic, runtime array, `.length()`) runs on lavapipe
+  through route B and naga's SPIR-V writer and matches what GLSL's layout rules and arithmetic give,
+  computed in the test (exact values). Checked to see differences: with the word's component within
+  its vector forced to 0 (temporary), 10 of 17 values differed.
 - Whether lavapipe runs `demote_samples` (checked first, as G8 says): it does not. In the pinned
   Mesa only broadcom, freedreno, asahi, KosmicKrisp and imagination take it; llvmpipe, gallivm and
   lavapipe have no code for it (searched in the source). So the fragment programs of
@@ -158,35 +196,20 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 (`nir-naga`, `src/direct.rs`). The patch moved A to 728, which changes neither order.
 
 Next, in this order:
-1. GLSL into the bridge: Mesa's standalone GLSL compiler (`libglsl_standalone`; `standalone.cpp`
-   shows the calls: `initialize_context_to_defaults`, `standalone_add_shader_source`,
-   `_mesa_glsl_compile_shader`, `link_shaders_init`, `gl_nir_link_glsl`; the linked NIR is
-   `_LinkedShaders[stage]->Program->nir`; a C++ file, so a second `cc::Build` whose flags come from
-   `standalone.cpp`'s compile command), then st/mesa's after-link lowering for the caps the OpenGL
-   driver will report (decide and record them: G9 must report the same); the reference is
-   llvmpipe (EGL surfaceless). Read in run 5 (`st_glsl_to_nir.cpp`, `gl_nir_linker.c`), so the
-   shape route B must take from GLSL is known:
-   - The linker always lowers IO (`gl_nir_lower_optimize_varyings` runs `nir_lower_io_passes`):
-     route B takes that now. Set `GLSLFragCoordIsSysVal`, `GLSLFrontFacingIsSysVal` and
-     `GLSLPointCoordIsSysVal` in the context (the driver's caps), and run `nir_lower_fragcolor`
-     for `gl_FragColor` (it writes every draw buffer). Legacy varyings (`gl_TexCoord`,
-     `gl_FrontColor`: `VARYING_SLOT_TEX0`, `COL0`) reach `builtin_at` as "another built-in" and
-     are refused; give them locations past the generic ones or keep them refused, and record it.
-   - Blocks: `gl_nir_lower_buffers` makes each uniform and storage block a `deref_cast` of
-     `vec2(block index, byte offset)` with the deref chain below it (the driver runs
-     `nir_lower_explicit_io`); route B must take that cast as it takes Vulkan's descriptor chains.
-   - Default-block uniforms: `st_finalize_nir` assigns their places
-     (`st_nir_assign_uniform_locations`, which needs the program's parameter list:
-     `_mesa_ensure_and_associate_uniform_storage`), lowers them (`st_nir_lower_uniforms`:
-     `nir_lower_io` then `nir_lower_uniforms_to_ubo`) into `load_ubo(0, byte offset)` with every
-     other block one index up. Route B must take `load_ubo` with explicit offsets: the block as an
-     array of `vec4<u32>` (a uniform array's stride is 16 in the common form), each component
-     read by its word and bitcast at the use.
-   - Samplers: `gl_nir_lower_samplers_as_deref` (the driver reports `nir_samplers_as_deref`),
-     images likewise; the binding is the sampler's index, bound to its unit at draw time.
-   - Constants: a context from `_mesa_init_constants` (libmesa, linked already) rather than the
-     scaffolding's GLSL 1.20 minimums, API compatibility at GLSL 4.60 with the ES compatibility
-     extensions, so one context takes desktop and ES sources.
+1. The GLSL reference on llvmpipe and the GLSL corpus mode. The corpus run takes GLSL programs
+   (vertex and fragment pairs, compute alone) through `Nir::from_glsl` to both routes; the
+   reference is llvmpipe running the same GLSL through EGL surfaceless (`libEGL` and
+   `libgallium` of the pinned build, a GL 4.6 compatibility context), on the same seeded inputs:
+   default uniforms set with `glUniform*` from the seed and, on the route's side, written into
+   uniform buffer 0 at each parameter's word (the bridge must hand the parameter list's layout out:
+   name, type, `ValueOffset`, and the state values, `STATE_FB_WPOS_Y_TRANSFORM` and
+   `STATE_FB_PNTC_Y_TRANSFORM`, which the route's side fills as st/mesa does for the target's
+   height); blocks bound with the same bytes; vertex outputs by transform feedback, fragment
+   outputs into the same targets. Then pin the GLSL sources (piglit's `.shader_test` files and
+   dEQP's GLES programs, Godot Compatibility, bgfx, Dolphin) in `corpus/sources`. Legacy varyings
+   (`gl_TexCoord`, `gl_FrontColor`: `VARYING_SLOT_TEX0`, `COL0`) reach `builtin_at` as "another
+   built-in" and are refused; decide (locations past the generic ones) when the corpus shows how
+   many.
 2. The rest of the corpus (piglit and dEQP GLSL, Godot Compatibility, bgfx, Dolphin; Godot Forward+
    SPIR-V; the shaders of `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and
    `dEQP-VK.robustness.buffer_access.*`), each pinned in `corpus/sources`. Then `corpus/choose` again
@@ -198,7 +221,7 @@ Next, in this order:
    `demote_samples`).
 4. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
-   shaders crate (Requests; not there at shaders' tip 2fa6dc19); robustBufferAccess's three steps
+   shaders crate (Requests; not there at shaders' tip 2e8abb3e, run 6); robustBufferAccess's three steps
    (needs `HelperValue::BufferRange`).
 5. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
    end on the seeded inputs.
@@ -235,11 +258,17 @@ Next, in this order:
   commit is not the pinned one, makes the build folder again when the commit or the options change
   (Meson reads a machine file only when a folder is made), and fails unless llvmpipe and lavapipe were
   built.
+- GLSL tests: `cargo test -p wcontainers-nir --test route --test glsl_buffers` (with
+  `WCONTAINERS_MESA`, on the x86 machine).
 - Test with Mesa (on the x86 machine, after the build):
   `export WCONTAINERS_MESA=$CARGO_TARGET_DIR/mesa/build; cargo test -p wcontainers-nir` and
   `cargo clippy -p wcontainers-nir --all-targets -- -D warnings`; and both again without the variable.
-- The literal check needs the git history, which the rented machine's copy lacks: it runs on the Mac
-  (`RAYON_NUM_THREADS=3 cargo run -j 4 -q -p wcontainers-literals -- check`). With
+- The literal check needs the git history, which the rented machine's copy lacks. Run 6 ran it on
+  the x86 machine from a git bundle of the branch (`git bundle create <scratch>/nir.bundle
+  phase-2-graphics-nir`, sent with `x86-run --ssh 'cat > /work/probes/graphics-nir.bundle'`,
+  cloned there, `cargo fetch`, then the check in `nix develop`; the clone and its build deleted
+  after). Runs 1 to 5 ran it on the Mac (`RAYON_NUM_THREADS=3 cargo run -j 4 -q -p
+  wcontainers-literals -- check`). With
   `crates/wcontainers-shaders/dxbc-spirv`'s own submodule checked out the check fails on its Python
   scripts (the baseline holds it not checked out): fetch only the shaders crate's two submodules and
   dxil-spirv's `third_party/spirv-headers`, which the shaders crate's build needs.
@@ -261,6 +290,8 @@ Next, in this order:
   at load 0.43 at the start.
 - Corpus run with the comparison, 1005 shaders, 192 children, x86-64 machine at load 0.3 rising to
   5.3: 124 s including an incremental build (run 3).
+- `tests/glsl_buffers.rs` and `tests/route.rs` (run 6): 0.08 s and 0.01 s, x86-64 machine, load
+  0.5 to 4.2.
 - `tests/narrow.rs` (2,097,152 invocations, both programs on lavapipe): 0.47 s, x86-64 machine,
   load 0.08 (run 5).
 - The choice's timing (run 4, `corpus/choose`, x86-64 machine, ten cores, one child at a time, load
@@ -282,8 +313,15 @@ Next, in this order:
 - Mesa 26.3.1 (fetched by the build script, not in this repository). Its `docs/license.rst` says each
   file's SPDX tag governs; the core is MIT. Linked into wcontainers-nir's tests today: Mesa's static
   libraries `libzink`, `libglsl_standalone`, `libglsl`, `libglcpp`, `libmesa`, `libvtn`, `libnir`,
-  `libcompiler`, `libmesa_util`, `libblake3`, `libmesa_util_c11` (the linker keeps only the objects
-  used). Kept by the linker in run 4 (`mesa/linked-licences`; list in scratch
+  `libcompiler`, `libmesa_util`, `libblake3`, `libmesa_util_c11`, and since run 6 `libglsl_util`
+  and `libglcpp_standalone` (the linker keeps only the objects used). Run 6, with GLSL linked
+  (`results/run6/nir-linked-licences-r6.txt`): 243 files, 77 of them from the GLSL libraries
+  (`libglsl` 68, `libglsl_util` 4, `libglcpp` 3, `libglcpp_standalone` 1, `libglsl_standalone`
+  1), all with the MIT permission text. Four of those are generated and carry a second notice:
+  `glsl_parser.cpp` and `glcpp-parse.c` are Bison's output (Bison's skeleton is GPL-3.0-or-later
+  with the Bison special exception, which lets the output be distributed under any terms),
+  `glsl_lexer.cpp` and `glcpp-lex.c` are flex's output (flex's own BSD-style licence). The other
+  166 are run 4's files and licences, unchanged. Kept by the linker in run 4 (`mesa/linked-licences`; list in scratch
   `results/run4/nir-linked-licences.txt`): 129 files, from `libnir` 65, `libmesa_util` 37, `libvtn`
   14, `libblake3` 7, `libcompiler` 3, `libzink` 2, `libmesa_util_c11` 1. Their licences: 89 carry
   the MIT permission text, 28 the SPDX tag MIT, 2 are generated by Mesa's build from MIT scripts
@@ -361,6 +399,16 @@ Next, in this order:
   that differ only in the order of operations differ by more than one rounding. The tolerance is
   1024 units in the last place or 2^-20 absolute (`compare.rs`), stated and checked to still catch a
   change of constants (Where it stands).
+- GLSL is compiled on Mesa's standalone scaffolding with st/mesa's steps after a link written out
+  in `glsl.cpp` for one set of capabilities, not by st/mesa itself (which needs a gallium screen
+  and context: G9's driver). The steps and their order are st/mesa's; the shader-variant steps
+  st/mesa takes at draw time (clamped colours, flat shading, two-sided colour, user clip planes,
+  point size), which depend on the draw's state, are not taken here: G9 hands its variants over
+  and its own corpus run holds them.
+- OpenGL's buffer accesses reach route B as arrays of words, not as typed blocks: after
+  `gl_nir_lower_buffers` only byte offsets remain (the block types are gone from the
+  instructions), so the bridge makes the words form, the one 15.4 names for robustBufferAccess.
+  Program binding for OpenGL: uniform block index, storage block index after them.
 - Vulkan capability classes: a program needing what our Vulkan 1.1 will not report is counted apart,
   not as a route failure (the pass bar's "named reason").
 
@@ -399,7 +447,10 @@ None.
 
 ## Literal check
 
-Adopted with the branch (merged from the shaders branch, which carries it). wcontainers-nir has no
+Run 6: exit 0 at 4294fcf0 (x86-64 machine, from a git bundle; marks 0; the 18 changes that could
+add lines are the shaders branch's, as before). The bridge's numbers are `#define`s, named once;
+the Rust added has no new bare literals (test data apart). Adopted with the branch (merged from the
+shaders branch, which carries it). wcontainers-nir has no
 baseline lines: the check passes with none for it (run on the Mac, runs 1 to 4, exit 0; in run 4 the
 two new scripts' numbers were taken out (the timing cores are passed in, the load read by `read`), and
 one baseline line the Direct3D 11 merge left stale was deleted, as the check asked;
