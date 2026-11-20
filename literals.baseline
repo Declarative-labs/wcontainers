@@ -6922,7 +6922,6 @@ code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"image"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	gcc_image	"inspect"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"-c"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"-v"
-code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"alpine:latest"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"ordinary"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"sh"
 code	crates/wcontainers-translator-test/src/layer3.rs	str	ordinary	"timeout -s KILL 20 /o/{}"
@@ -7311,9 +7310,6 @@ restated	crates/wcontainers-translator-test/tests/output.rs	str	bench	"thread"
 restated	crates/wcontainers-translator-test/tests/programs.rs	float	measure	1e6
 restated	crates/wcontainers-translator-test/tests/programs.rs	float	switching_speed	1e9
 restated	crates/wcontainers-translator-test/tests/programs.rs	int	stops_at_every_check_change_nothing	1000
-restated	crates/wcontainers-translator-test/tests/programs.rs	str	a_container_docker_does_not_make_fails_the_case	"alpine:latest"
-restated	crates/wcontainers-translator-test/tests/programs.rs	str	a_container_that_does_not_start_fails_the_case	"alpine:latest"
-restated	crates/wcontainers-translator-test/tests/programs.rs	str	a_programs_own_ending_is_its_result	"alpine:latest"
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	0x10000
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	0x10000
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOOK_AHEADS	256

@@ -130,7 +130,7 @@ pub fn ordinary(source: &Path, compiler: Compiler, optimisation: &str, position:
         command
             .arg("-v")
             .arg(format!("{}:/o:ro", out_directory().display()))
-            .args(["alpine:latest", "sh", "-c"])
+            .args([crate::reference::IMAGE, "sh", "-c"])
             .arg(format!(
                 "timeout -s KILL 20 /o/{}",
                 elf.file_name().unwrap().to_str().unwrap()
