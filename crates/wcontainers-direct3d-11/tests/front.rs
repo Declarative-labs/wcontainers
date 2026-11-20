@@ -3511,3 +3511,60 @@ fn clear_values_of_integer_twins_are_encoded_as_direct3d_converts_them() {
     );
     assert_eq!(encode_norm(Format::R8Snorm, 1.0), i8::MAX as u32);
 }
+
+/// Creation refuses what Direct3D refuses before any back-end call: 3D textures of a depth group,
+/// 1D block-compressed textures, unordered access binding of formats never viewed so, typed
+/// buffer views of formats never viewed as buffers, and BC6H and BC7 below 11_0, which are not
+/// claimed there either.
+#[test]
+fn creation_refuses_what_direct3d_refuses() {
+    use wcontainers_directx_graphics_infrastructure::dxgi;
+    let invalid =
+        |r: Result<(wcontainers_gpu::Format, u32), Error>| matches!(r, Err(Error::InvalidArg(_)));
+    let mut dev = device();
+    let side = 4;
+    let mut volume = tex2d(side, side, dxgi::R24G8_TYPELESS, 0);
+    volume.dimension = TexDim::D3;
+    volume.depth = side;
+    assert!(invalid(dev.check_texture(&volume, false)));
+    let mut line = tex2d(side, 1, dxgi::BC1_UNORM, 0);
+    line.dimension = TexDim::D1;
+    assert!(invalid(dev.check_texture(&line, false)));
+    line.format = dxgi::R8G8B8A8_UNORM;
+    assert!(dev.check_texture(&line, false).is_ok());
+    let mut faces = tex2d(side, side, dxgi::R10G10B10_XR_BIAS_A2_UNORM, 0);
+    faces.array_size = wcontainers_direct3d_11::CUBE_FACES;
+    faces.misc_flags = MISC_TEXTURECUBE;
+    assert!(invalid(dev.check_texture(&faces, false)));
+    let stored = tex2d(side, side, dxgi::B5G6R5_UNORM, bind::UNORDERED_ACCESS);
+    assert!(invalid(dev.check_texture(&stored, false)));
+    let bytes = 64;
+    let typed = BufferDesc {
+        byte_width: bytes,
+        usage: usage::DEFAULT,
+        bind_flags: bind::SHADER_RESOURCE,
+        ..Default::default()
+    };
+    let buffer = dev.create_buffer(&typed, None).unwrap();
+    for format in [
+        dxgi::R8G8B8A8_UNORM_SRGB,
+        dxgi::A8_UNORM,
+        dxgi::B5G6R5_UNORM,
+    ] {
+        assert!(
+            matches!(
+                dev.create_buffer_srv(&buffer, format, 0, 1, false),
+                Err(Error::InvalidArg(_))
+            ),
+            "format {format}"
+        );
+    }
+    assert!(
+        dev.create_buffer_srv(&buffer, dxgi::R8G8B8A8_UNORM, 0, 1, false)
+            .is_ok()
+    );
+    let l10 = Device::new(Recorder::new(None), &[level::L10_0]).unwrap();
+    assert_eq!(l10.format_support(dxgi::BC7_UNORM).support1, 0);
+    let bc7 = tex2d(side, side, dxgi::BC7_UNORM, bind::SHADER_RESOURCE);
+    assert!(invalid(l10.check_texture(&bc7, false)));
+}

@@ -281,7 +281,7 @@ pub fn top_level(caps: &wcontainers_gpu::Caps, cube_arrays: bool) -> Option<u32>
 }
 
 /// Faces of a cube.
-pub(crate) const CUBE_FACES: u32 = 6;
+pub const CUBE_FACES: u32 = 6;
 
 /// Whether `backend` makes textures of more than one cube, which `Caps` does not say: a texture of
 /// two cubes of one texel, made and destroyed.
@@ -1033,10 +1033,11 @@ impl<B: Backend> Device<B> {
                 return not_implemented("YUY2 textures of more than one level or with misc flags");
             }
         }
-        if d.format == dxgi::R10G10B10_XR_BIAS_A2_UNORM && (d.dimension != TexDim::D2 || mips != 1)
+        if d.format == dxgi::R10G10B10_XR_BIAS_A2_UNORM
+            && (d.dimension != TexDim::D2 || mips != 1 || cube)
         {
             return Err(Error::InvalidArg(
-                "an R10G10B10_XR_BIAS_A2_UNORM texture is 2D of one level",
+                "an R10G10B10_XR_BIAS_A2_UNORM texture is 2D of one level, not a cube",
             ));
         }
         let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
@@ -1210,7 +1211,7 @@ impl<B: Backend> Device<B> {
         {
             return Err(Error::InvalidArg("a 3D texture cannot hold depth"));
         }
-        if d.dimension == TexDim::D1 && format.block().0 > 1 {
+        if d.dimension == TexDim::D1 && format.block().1 > 1 {
             return Err(Error::InvalidArg("a 1D texture cannot be block-compressed"));
         }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0
