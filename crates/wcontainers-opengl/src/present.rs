@@ -232,7 +232,7 @@ fn show<B: HostWindows>(
             width,
             height,
         }],
-        blend_constant: [0; 4],
+        blend_constant: Default::default(),
         stencil_reference: [0; 2],
         immediates: &[],
         range: DrawRange::Vertices {

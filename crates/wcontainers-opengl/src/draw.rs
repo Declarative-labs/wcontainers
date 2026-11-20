@@ -717,12 +717,7 @@ fn draw<B: Backend>(
         depth_stencil: &depth_stencil.block,
         raster: &raster.block,
         vertex_layout: &elements.block,
-        bindings: [
-            sets[0].as_ref(),
-            sets[1].as_ref(),
-            sets[2].as_ref(),
-            sets[3].as_ref(),
-        ],
+        bindings: std::array::from_fn(|set| sets[set].as_ref()),
         vertex_buffers: &streams,
         index: None,
         topology,

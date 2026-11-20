@@ -118,7 +118,7 @@ impl<B: Backend> Default for Bound<B> {
             raster: std::ptr::null(),
             elements: std::ptr::null(),
             vertex_buffers: Vec::new(),
-            blend_color: [0; 4],
+            blend_color: Default::default(),
             stencil_ref: [0; 2],
             sample_mask: u32::MAX,
             viewport: pipe_viewport_state::default(),
