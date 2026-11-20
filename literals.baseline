@@ -1600,7 +1600,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"struct Out { @location(0) count: vec4<f32>, @builtin(sample_mask) mask: u32 }\n                 @fragment fn main(@builtin(sample_mask) covered: u32) -> Out {\… #dc4dd7c6c2d83fe6
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"the pixel counter's program on this back end"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::set_constant_ranges	"a constant range not in multiples of 16 constants, or past 4096"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::try_dispatch	"a compute shader sampling in a way the back end's sampler lacks (a bias, a resource clamp, border or mirror-once addressing, an unfilterable format)"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an empty slot read as a depth texture, a multisampled array or a comparison sampler"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an empty unordered access slot a shader uses"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::write_helpers	"minimum level-of-detail clamps on textures both draw stages sample"
@@ -1609,11 +1608,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	uint_element	"a clear of 
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	16
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	8
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	8
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a draw through a geometry shader or stream output while a counted occlusion or \\n                 statistics query runs"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a geometry shader reading helper constants"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a vertex shader variant behind a geometry shader"
@@ -2432,7 +2426,6 @@ code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_render_target_view	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_float	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_uint	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_view	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::dispatch_indirect	3
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_get_blend_state	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_set_blend_state	4
@@ -2445,9 +2438,6 @@ code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_render_tar
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_state	"ClearState"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_unordered_access_view_float	"ClearUnorderedAccessViewFloat"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_unordered_access_view_uint	"ClearUnorderedAccessViewUint"
-code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_view	"ClearView"
-code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_view	"ID3D11DeviceContext1::ClearView of a view not a render target"
-code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_view	"ID3D11DeviceContext1::ClearView of rectangles"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::copy_resource	"CopyResource"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::copy_structure_count	"CopyStructureCount"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::copy_subresource_region	"CopySubresourceRegion"
@@ -2577,7 +2567,6 @@ code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXG
 code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXGISwapChain1_Impl>::GetRestrictToOutput	"IDXGISwapChain1::GetRestrictToOutput"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXGISwapChain1_Impl>::IsTemporaryMonoSupported	"IDXGISwapChain1::IsTemporaryMonoSupported"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXGISwapChain1_Impl>::SetBackgroundColor	"IDXGISwapChain1::SetBackgroundColor"
-code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXGISwapChain2_Impl>::GetFrameLatencyWaitableObject	"IDXGISwapChain2::GetFrameLatencyWaitableObject"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXGISwapChain2_Impl>::GetMatrixTransform	"IDXGISwapChain2::GetMatrixTransform"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXGISwapChain2_Impl>::GetSourceSize	"IDXGISwapChain2::GetSourceSize"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<SwapChain_Impl as IDXGISwapChain2_Impl>::SetMatrixTransform	"IDXGISwapChain2::SetMatrixTransform"
@@ -22695,7 +22684,6 @@ redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_wi
 redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw::SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/src/device/bind.rs	int	VERTEX	VERTEX = 1
-redefinition	crates/wcontainers-direct3d-12/src/device/geometry.rs	int	FILLED_BYTES	FILLED_BYTES = 32
 redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	CUSTOMDATA	CUSTOMDATA = 53
 redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DCL_RESOURCE	DCL_RESOURCE = 88
 redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DCL_UAV_TYPED	DCL_UAV_TYPED = 156
