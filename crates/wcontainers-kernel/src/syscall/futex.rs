@@ -21,6 +21,9 @@ use crate::{Context, Errno, Kernel};
 /// What a futex is known by (`union futex_key`): a private one, or a shared one in a private
 /// mapping, by its memory and address; a shared one in a shared mapping by the file's inode and
 /// the offset in it, so every process that maps it finds the same futex.
+/// The size of a futex word.
+const FUTEX_WORD: u64 = size_of::<u32>() as u64;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Private(u32, u64),
@@ -179,11 +182,10 @@ fn key_in(
     shared: bool,
     write: bool,
 ) -> Result<Key, Errno> {
-    const WORD: u64 = size_of::<u32>() as u64;
-    if !address.is_multiple_of(WORD) {
+    if !address.is_multiple_of(FUTEX_WORD) {
         return Err(Errno::EINVAL);
     }
-    if !crate::user::access_ok(address, WORD) {
+    if !crate::user::access_ok(address, FUTEX_WORD) {
         return Err(Errno::EFAULT);
     }
     if !shared {
@@ -240,9 +242,8 @@ fn write_word(
 }
 
 fn store_word(guest: &mut crate::user::Guest<'_>, address: u64, value: u32) -> Result<(), Errno> {
-    const WORD: u64 = size_of::<u32>() as u64;
     // An atomic change needs the page writable, as the CPU's exclusive store does.
-    if guest.accessible(address, WORD, wcontainers_abi::Permissions::WRITE) < WORD {
+    if guest.accessible(address, FUTEX_WORD, wcontainers_abi::Permissions::WRITE) < FUTEX_WORD {
         return Err(Errno::EFAULT);
     }
     guest.write_value(address, &value)
@@ -1235,7 +1236,7 @@ fn owner_died(
     pi: bool,
     pending: bool,
 ) -> bool {
-    if !address.is_multiple_of(size_of::<u32>() as u64) {
+    if !address.is_multiple_of(FUTEX_WORD) {
         return false;
     }
     let Ok(value) = end.memory(kernel, cx).read_value::<u32>(address) else {
