@@ -11,7 +11,8 @@ use windows::core::{BOOL, Interface, Result};
 
 /// What a stream describes.
 pub enum Pipeline {
-    Graphics(Box<D3D12_GRAPHICS_PIPELINE_STATE_DESC>),
+    /// The description, and whether the stream gave a primitive topology type.
+    Graphics(Box<D3D12_GRAPHICS_PIPELINE_STATE_DESC>, bool),
     Compute(D3D12_COMPUTE_PIPELINE_STATE_DESC),
 }
 
@@ -86,6 +87,7 @@ pub unsafe fn read(stream: &D3D12_PIPELINE_STATE_STREAM_DESC) -> Result<Pipeline
         return Err(E_INVALIDARG.into());
     }
     let mut g = defaults();
+    let mut topology_given = false;
     let mut cs = D3D12_SHADER_BYTECODE::default();
     let mut root: *mut c_void = std::ptr::null_mut();
     let mut seen = 0u64;
@@ -139,7 +141,8 @@ pub unsafe fn read(stream: &D3D12_PIPELINE_STATE_STREAM_DESC) -> Result<Pipeline
                 g.IBStripCutValue = value!(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE)
             }
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY => {
-                g.PrimitiveTopologyType = value!(D3D12_PRIMITIVE_TOPOLOGY_TYPE)
+                g.PrimitiveTopologyType = value!(D3D12_PRIMITIVE_TOPOLOGY_TYPE);
+                topology_given = true;
             }
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS => {
                 let f = value!(D3D12_RT_FORMAT_ARRAY);
@@ -209,7 +212,7 @@ pub unsafe fn read(stream: &D3D12_PIPELINE_STATE_STREAM_DESC) -> Result<Pipeline
         })),
         (true, false) => {
             g.pRootSignature = root;
-            Ok(Pipeline::Graphics(Box::new(g)))
+            Ok(Pipeline::Graphics(Box::new(g), topology_given))
         }
         _ => Err(E_INVALIDARG.into()),
     }

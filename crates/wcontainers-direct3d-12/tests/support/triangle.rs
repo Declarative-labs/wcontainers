@@ -38,6 +38,45 @@ pub fn buffer(size: u64) -> ResourceDesc {
 }
 
 pub fn pipeline<B: Backend>(device: &mut Device<B>, vs: &[u8]) -> Result<PipelineId, Error> {
+    pipeline_with(
+        device,
+        vs,
+        PS,
+        vec![element("POSITION", 16, 0), element("COLOR", 6, 8)],
+        Raster {
+            fill: 3,
+            cull: 1,
+            depth_clip: true,
+            ..Default::default()
+        },
+        3,
+        0,
+    )
+}
+
+/// Input element `name` of `format` at `offset` in slot 0.
+pub fn element(name: &str, format: u32, offset: u32) -> InputElement {
+    InputElement {
+        semantic: name.into(),
+        semantic_index: 0,
+        format,
+        slot: 0,
+        offset,
+        per_instance: false,
+        step_rate: 0,
+    }
+}
+
+/// The scene's pipeline with other programs, inputs, rasterising and topology type.
+pub fn pipeline_with<B: Backend>(
+    device: &mut Device<B>,
+    vs: &[u8],
+    ps: &[u8],
+    inputs: Vec<InputElement>,
+    raster: Raster,
+    topology_type: u32,
+    dsv_format: u32,
+) -> Result<PipelineId, Error> {
     let root = device.create_root_signature(&serialize(&RootSignatureDesc {
         version: 1,
         parameters: vec![],
@@ -46,29 +85,16 @@ pub fn pipeline<B: Backend>(device: &mut Device<B>, vs: &[u8]) -> Result<Pipelin
     }))?;
     let mut blend = Blend::default();
     blend.targets[0].write_mask = 15;
-    let element = |name: &str, format, offset| InputElement {
-        semantic: name.into(),
-        semantic_index: 0,
-        format,
-        slot: 0,
-        offset,
-        per_instance: false,
-        step_rate: 0,
-    };
     device.create_graphics_pipeline(&GraphicsPipelineDesc {
         root: Some(root),
         vs,
-        ps: PS,
+        ps,
         blend,
         sample_mask: u32::MAX,
-        raster: Raster {
-            fill: 3,
-            cull: 1,
-            depth_clip: true,
-            ..Default::default()
-        },
-        inputs: vec![element("POSITION", 16, 0), element("COLOR", 6, 8)],
-        topology_type: 3,
+        raster,
+        inputs,
+        topology_type,
+        dsv_format,
         rtv_formats: vec![RGBA8],
         samples: 1,
         ..Default::default()
@@ -86,6 +112,24 @@ pub struct Scene {
 
 pub fn record<B: Backend>(device: &mut Device<B>) -> Scene {
     let pso = pipeline(device, VS).unwrap();
+    let data: Vec<u8> = TRIANGLE
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    // The vertex buffer's size as gt-d3d12 makes it.
+    record_with(device, pso, &data, size_of::<[f32; 5]>() as u32, 256)
+}
+
+/// The scene drawn with pipeline `pso` from vertices `data`, `stride` bytes apart, in an upload
+/// buffer of `buffer_bytes`.
+pub fn record_with<B: Backend>(
+    device: &mut Device<B>,
+    pso: PipelineId,
+    data: &[u8],
+    stride: u32,
+    buffer_bytes: u64,
+) -> Scene {
     let target_desc = ResourceDesc {
         dimension: DIMENSION_TEXTURE2D,
         width: SIZE.into(),
@@ -101,15 +145,10 @@ pub fn record<B: Backend>(device: &mut Device<B>) -> Scene {
         .create_committed(HeapType::Default, &target_desc)
         .unwrap();
     let vertices = device
-        .create_committed(HeapType::Upload, &buffer(256))
+        .create_committed(HeapType::Upload, &buffer(buffer_bytes))
         .unwrap();
     let address = device.address(vertices);
     assert_ne!(address, 0);
-    let data: Vec<u8> = TRIANGLE
-        .iter()
-        .flatten()
-        .flat_map(|f| f.to_le_bytes())
-        .collect();
     let mapped = device.map(vertices).unwrap();
     // The upload heap's memory stays where it is for the resource's life.
     unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mapped, data.len()) };
@@ -144,12 +183,12 @@ pub fn record<B: Backend>(device: &mut Device<B>) -> Scene {
         start: 0,
         views: vec![VertexBufferView {
             address,
-            size: 60,
-            stride: 20,
+            size: data.len() as u32,
+            stride,
         }],
     });
     list.record(Command::Draw {
-        vertices: 3,
+        vertices: data.len() as u32 / stride,
         instances: 1,
         first_vertex: 0,
         first_instance: 0,

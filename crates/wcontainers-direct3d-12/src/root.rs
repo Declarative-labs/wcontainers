@@ -2,6 +2,9 @@
 //! `D3D12SerializeVersionedRootSignature` writes, `CreateRootSignature` reads and shader compilers
 //! embed in DXIL.
 
+use std::ops::Range;
+use wcontainers_gpu::SlotKind;
+
 /// `D3D12_ROOT_PARAMETER_TYPE` with its payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RootParameterKind {
@@ -27,6 +30,14 @@ pub struct RootParameter {
     /// `D3D12_SHADER_VISIBILITY`.
     pub visibility: u32,
 }
+
+/// `D3D12_DESCRIPTOR_RANGE_TYPE_SRV`, `_UAV`, `_CBV` and `_SAMPLER`.
+pub const RANGE_SRV: u32 = 0;
+pub const RANGE_UAV: u32 = 1;
+pub const RANGE_CBV: u32 = 2;
+pub const RANGE_SAMPLER: u32 = 3;
+/// `D3D12_DESCRIPTOR_RANGE_UNBOUNDED`.
+pub const RANGE_UNBOUNDED: u32 = u32::MAX;
 
 /// `D3D12_DESCRIPTOR_RANGE1`; ranges of version 1.0 have flags 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +86,32 @@ const DESCRIPTORS_VOLATILE: u32 = 1;
 const DATA_VOLATILE: u32 = 2;
 
 impl RootSignatureDesc {
+    /// The register ranges of the descriptor tables a stage of `D3D12_SHADER_VISIBILITY`
+    /// `visibility` sees, by kind and space (`VariantKey::register_ranges`). Unbounded ranges are
+    /// left out: resource binding tier 1 sizes no array by them.
+    pub fn register_ranges(&self, visibility: u32) -> Vec<(SlotKind, u32, Range<u32>)> {
+        let all = 0;
+        self.parameters
+            .iter()
+            .filter(|p| p.visibility == all || p.visibility == visibility)
+            .flat_map(|p| match &p.kind {
+                RootParameterKind::Table(ranges) => ranges.as_slice(),
+                _ => &[],
+            })
+            .filter(|r| r.count != RANGE_UNBOUNDED)
+            .filter_map(|r| {
+                let kind = match r.kind {
+                    RANGE_SRV => SlotKind::Texture,
+                    RANGE_UAV => SlotKind::Storage,
+                    RANGE_CBV => SlotKind::Uniform,
+                    RANGE_SAMPLER => SlotKind::Sampler,
+                    _ => return None,
+                };
+                Some((kind, r.space, r.register..r.register.checked_add(r.count)?))
+            })
+            .collect()
+    }
+
     /// This signature at `version` (1 for 1.0, 2 for 1.1), as the versioned deserializer converts:
     /// to 1.0 the flags go; to 1.1 each range and root descriptor of a 1.0 signature gets the flags
     /// that say 1.0's behaviour (descriptors and data volatile; sampler ranges descriptors only).

@@ -128,6 +128,15 @@ impl Recorder {
         }
     }
 
+    /// A recorder whose capabilities `change` alters (for the Direct3D 12 front's tests, which
+    /// share this file).
+    #[allow(dead_code)]
+    pub fn with_caps(change: impl FnOnce(&mut Caps)) -> Self {
+        let mut recorder = Self::new();
+        change(&mut recorder.caps);
+        recorder
+    }
+
     fn id(&mut self, what: impl std::fmt::Debug) -> Result<Id, GpuError> {
         self.next += 1;
         self.calls.push(format!("create {} {what:?}", self.next));

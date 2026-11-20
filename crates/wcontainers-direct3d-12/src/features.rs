@@ -18,10 +18,10 @@ pub const LEVEL_11_0_TEXTURE_2D: u32 = 16384;
 pub const LEVEL_11_0_TEXTURE_3D: u32 = 2048;
 pub const LEVEL_11_0_TEXTURE_LAYERS: u32 = 2048;
 /// What 11_0 asks of the raster and blend blocks that the front draws only through the back end:
-/// wireframe, depth clamping, a depth bias clamp, independent blending and a partial sample mask.
-pub const LEVEL_11_0_FIXED_FUNCTION: Features = Features::POLYGON_MODE
-    .union(Features::DEPTH_CLAMP)
-    .union(Features::DEPTH_BIAS_CLAMP)
+/// a depth bias clamp, independent blending and a partial sample mask. Depth clamping is done in
+/// the programs where the back end lacks it (`DepthClampInShader`); wireframe without the back
+/// end's polygon mode (`FillModeConverted`) is refused by name until the stage helper draws it.
+pub const LEVEL_11_0_FIXED_FUNCTION: Features = Features::DEPTH_BIAS_CLAMP
     .union(Features::INDEPENDENT_BLEND)
     .union(Features::SAMPLE_MASK);
 /// `D3D_SHADER_MODEL_6_0`.
