@@ -253,8 +253,10 @@ fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/ps_spaces.dxbc");
     let mut b = std::fs::read(path).unwrap();
     let words: Vec<u32> = b
-        .chunks_exact(size_of::<u32>())
-        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .as_chunks::<{ size_of::<u32>() }>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
         .collect();
     let tag = u32::from_le_bytes(*b"SHEX");
     let mut at = words
