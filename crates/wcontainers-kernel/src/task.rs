@@ -220,8 +220,14 @@ impl Kernel {
                 self.finish_call(cx, tid);
                 self.return_to_user(cx, tid, Resume::FromRegisters);
             }
+            // A call woken within its own run (what it waits for came while it parked) is in
+            // line and runs again, as Linux's task woken between `prepare_to_wait` and
+            // `schedule` does.
             syscall::Outcome::Parked => {
-                debug_assert!(self.threads[&tid].call.wait.is_some());
+                debug_assert!(
+                    self.threads[&tid].call.wait.is_some() || self.in_line(tid),
+                    "a parked call neither waits nor is in line"
+                );
             }
             syscall::Outcome::Gone => {}
         }
@@ -253,9 +259,15 @@ impl Kernel {
                 .threads
                 .get(&tid)
                 .is_some_and(|thread| thread.call.wait.is_none())
+            && !self.run_queue.contains(tid)
         {
             self.park(tid, Channel::Backend);
         }
+    }
+
+    /// Whether a thread that does not wait is in line to run, or waits aside in its stopped process.
+    fn in_line(&self, tid: Tid) -> bool {
+        self.run_queue.contains(tid) || self.processes[&self.threads[&tid].process].stopped
     }
 
     /// Takes a lock a call keeps until it ends, while it waits too (Linux's mutexes a sleeping

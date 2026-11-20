@@ -61,6 +61,39 @@ fn clients_talk_to_a_server_outside_as_linux() {
     }
 }
 
+/// A server on this machine that echoes every byte at once as it comes. Returns its port.
+fn echoing_server() -> u16 {
+    let listener = TcpListener::bind("0.0.0.0:0").expect("a TCP port");
+    let port = listener.local_addr().expect("an address").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_nodelay(true);
+            std::thread::spawn(move || {
+                let mut byte = [0u8];
+                while matches!(stream.read(&mut byte), Ok(1)) {
+                    if stream.write_all(&byte).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+/// A blocking read whose host's bytes arrive while it parks (between its two pulls of the host's
+/// stream) is woken within its own call and runs again, as Linux's reader woken between
+/// `prepare_to_wait` and `schedule` does.
+#[test]
+fn reads_woken_while_they_park_run_again() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let port = echoing_server().to_string();
+    let ours = assert_same_output(&out, "echoes", &[DOCKER_HOST_NAME, &port, "3000"]);
+    let text = String::from_utf8_lossy(&ours.outcome.stdout);
+    assert!(text.contains("echoed 3000 wrong 0 end 0"), "{text}");
+}
+
 /// A connection to the outside reads as reset after the container is saved and brought back on
 /// a new host (plan section 12); without a save it goes on.
 #[test]
