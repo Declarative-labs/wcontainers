@@ -52,8 +52,13 @@ foreach ($list in $chosen) {
         --fraction-start $FractionStart --jobs $RunnerJobs -- @deqpArguments | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { $failed = $true }
 
+    $results = Join-Path $output 'results.csv'
+    if (-not (Test-Path $results)) {
+        Write-Output "cts: $name on ${Driver}: no results (deqp-runner could not run the list, above)"
+        continue
+    }
     $counts = @{}
-    foreach ($row in Import-Csv -Header Case, Result, Seconds (Join-Path $output 'results.csv')) {
+    foreach ($row in Import-Csv -Header Case, Result, Seconds $results) {
         $counts[$row.Result] = 1 + [int]$counts[$row.Result]
     }
     $total = ($counts.Values | Measure-Object -Sum).Sum
