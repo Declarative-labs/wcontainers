@@ -287,8 +287,11 @@ median 107 us, mean 125 us. B has more matching shaders and less time per shader
 
 Next, in this order:
 1. Route B's invalid modules on piglit (126 "invalid: ...", most of them type resolution in fragment
-   programs, and "Expected data type"): route faults, to fix first. Then textures and images on the
-   GLSL side (79 programs): the same seeded texels as `compare::resources` gives the route, made as
+   programs; the first looked at, `glsl-fs-shadow2DGradARB-01`: a depth comparison gives naga a
+   scalar while NIR's `tex` with `is_shadow` has as many components as GLSL's legacy `shadow2D*`
+   (four), and the program reads its components: route B must widen the scalar to NIR's
+   components; the others, and "Expected data type", still to look at): route faults, to fix
+   first. Then textures and images on the GLSL side (84 programs): the same seeded texels as `compare::resources` gives the route, made as
    OpenGL textures at the sampler's unit (`GlslNameKind::Sampler` gives the route's binding).
    Then OpenGL's other attributes (`glColorPointer` and its kin, or generic attributes where Mesa
    aliases them) and subroutine uniforms (`glUniformSubroutinesuiv`, the route's word from the
