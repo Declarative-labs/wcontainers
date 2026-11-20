@@ -1101,15 +1101,17 @@ pub(crate) struct TaskEnd {
 }
 
 impl TaskEnd {
-    /// The end of task `tid`, taken off the kernel from process `pid`.
-    pub fn of_away(pid: Pid, tid: Tid, away: &crate::process::Away) -> Self {
-        Self {
+    /// The end of task `tid`, taken off the kernel from process `pid`; none if it makes no stores
+    /// here.
+    pub fn of_away(pid: Pid, tid: Tid, away: &crate::process::Away) -> Option<Self> {
+        let stores = away.last_stores?;
+        Some(Self {
             pid,
             tid,
-            robust_list: away.robust_list,
-            clear_child_tid: away.clear_child_tid,
+            robust_list: stores.robust_list,
+            clear_child_tid: stores.clear_child_tid,
             may_lock_any: away.shown.credentials.has(CAP_IPC_LOCK),
-        }
+        })
     }
 
     fn memory<'a>(

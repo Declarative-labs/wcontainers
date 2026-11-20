@@ -931,8 +931,9 @@ impl Kernel {
     ) {
         let away = core::mem::take(&mut self.processes.get_mut(&pid).expect("process exists").away);
         for (index, (tid, task)) in away.into_iter().enumerate() {
-            let end = syscall::futex::TaskEnd::of_away(pid, tid, &task);
-            syscall::futex::task_end(self, cx, &end, others_use_memory(index));
+            if let Some(end) = syscall::futex::TaskEnd::of_away(pid, tid, &task) {
+                syscall::futex::task_end(self, cx, &end, others_use_memory(index));
+            }
             syscall::timer::thread_end(self, tid);
             if task.vfork_parent.is_some() {
                 self.wake(Channel::Vfork(tid));

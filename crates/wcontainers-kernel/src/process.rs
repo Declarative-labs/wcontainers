@@ -188,11 +188,17 @@ pub(crate) struct Away {
     pub shown: Leader,
     /// Its file system context while the task lives, for `/proc`'s links.
     pub fs: alloc::rc::Weak<RefCell<FsContext>>,
-    /// `set_robust_list`'s head and `set_tid_address`'s word, for the end's last stores.
-    pub robust_list: u64,
-    pub clear_child_tid: u64,
+    /// What its end stores into the memory; none for a task that goes on running elsewhere.
+    pub last_stores: Option<LastStores>,
     /// The `vfork` parent it keeps waiting.
     pub vfork_parent: Option<Tid>,
+}
+
+/// `set_robust_list`'s head and `set_tid_address`'s word, for a thread's last stores at its end.
+#[derive(Clone, Copy)]
+pub(crate) struct LastStores {
+    pub robust_list: u64,
+    pub clear_child_tid: u64,
 }
 
 impl Away {
@@ -205,8 +211,10 @@ impl Away {
                 ..Leader::of(thread)
             },
             fs: Rc::downgrade(&thread.fs),
-            robust_list: thread.robust_list.0,
-            clear_child_tid: thread.clear_child_tid,
+            last_stores: Some(LastStores {
+                robust_list: thread.robust_list.0,
+                clear_child_tid: thread.clear_child_tid,
+            }),
             vfork_parent: thread.vfork_parent,
         }
     }

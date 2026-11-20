@@ -338,8 +338,7 @@ impl Kernel {
             process.away.insert(
                 tid,
                 Away {
-                    robust_list: 0,
-                    clear_child_tid: 0,
+                    last_stores: None,
                     ..Away::of(thread)
                 },
             );
