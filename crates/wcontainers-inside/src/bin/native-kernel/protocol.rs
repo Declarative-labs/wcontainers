@@ -17,10 +17,12 @@ wcontainers_inside::requests! {
     Ended { status, turns, stops, positions } -> ();
 }
 
-/// The test crate's policy's seed and the wall clock's reading at the start.
+/// The test crate's policy's seed, the wall clock's reading at the start, and the counted events after which every
+/// turn ends (none: the schedule's limits).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct PolicySeeds {
     pub seed: u64,
     pub wall_start: u64,
+    pub turn_events: u64,
 }

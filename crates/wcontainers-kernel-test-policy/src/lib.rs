@@ -137,6 +137,8 @@ pub struct TestPolicy<H> {
     pub turns: u64,
     /// The CPU side's slow paths, and what the policy refused.
     pub warnings: Vec<Warned>,
+    /// When set, every turn ends after this many counted events, in place of the schedule's limit.
+    pub turn_events: Option<u64>,
     refused: u64,
 }
 
@@ -148,6 +150,7 @@ impl<H: Host> TestPolicy<H> {
             clock: RepeatableClock::new(wall_start),
             turns: 0,
             warnings: Vec::new(),
+            turn_events: None,
             refused: 0,
         }
     }
@@ -240,7 +243,9 @@ impl<H: Host> System for TestPolicy<H> {
 
     fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
         Turn::Counted {
-            limit: self.schedule.turn_limit(slice_nanoseconds),
+            limit: self
+                .turn_events
+                .or_else(|| self.schedule.turn_limit(slice_nanoseconds)),
         }
     }
 

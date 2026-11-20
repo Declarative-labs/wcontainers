@@ -9,8 +9,10 @@
 //! writes code and announces it, in private memory and in memory a child changes. Another asks for memory as
 //! programs do, more than the machine has in all; asked to write more than the machine has at once, it is killed
 //! natively and the inside goes on, counted and warned. Another zeroes blocks and cleans cache lines on pages
-//! never touched, read-only, allowing nothing and unmapped. The benchmark set's programs run at their small size.
-//! hello and these programs also run in the reference, whose output and exit code the native side must give.
+//! never touched, read-only, allowing nothing and unmapped. Another jumps through tables of bytes to targets that
+//! can and cannot run, and runs again with a stop at every counted event, whose positions must agree across
+//! look-aheads. The benchmark set's programs run at their small size. hello and these programs also run in the
+//! reference, whose output and exit code the native side must give.
 //!
 //! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes; `WCONTAINERS_KERNEL_SEEDS` runs that
 //! many seeds, it and the ones after it.
@@ -52,7 +54,8 @@ mod macos {
         be_signed, compile, compiled, freestanding, load_average,
     };
     use crate::container::{
-        Outcome, REALTIME_NANOSECONDS, native, one_program as container, seeds, summary, wasm,
+        Outcome, REALTIME_NANOSECONDS, native, native_at_every_event, one_program as container,
+        seeds, summary, wasm,
     };
 
     /// The bar's first program, from the kernel test crate.
@@ -84,6 +87,9 @@ mod macos {
     /// block's start, where Linux reports the address in the register (the WebAssembly meaning of `dc zva`).
     const BLOCKS_KNOWN: &str =
         "the WebAssembly side reports a zeroed block's fault at the block's start";
+
+    /// This track's program of jumps through tables of bytes.
+    const JUMP_TABLES: &str = "jumptables";
 
     /// The bits of a mebibyte's size, the unit `memory` takes its argument in.
     const MIB_BITS: u32 = 20;
@@ -213,6 +219,24 @@ mod macos {
             print!("{name}: {}", String::from_utf8_lossy(&native.host.stdout));
             against_reference(name, &native);
         }
+        let jump_tables = compile(OWN_GUEST, JUMP_TABLES, CLibrary::Musl);
+        let (native, _) = both(seed, JUMP_TABLES, &jump_tables, &[]);
+        print!(
+            "{JUMP_TABLES}: {}",
+            String::from_utf8_lossy(&native.host.stdout)
+        );
+        against_reference(JUMP_TABLES, &native);
+        let (files, starting) = container(JUMP_TABLES, jump_tables, &[]);
+        let every = native_at_every_event(seed, REALTIME_NANOSECONDS, &files, &starting);
+        assert_eq!(
+            (every.status, &every.host.stdout),
+            (native.status, &native.host.stdout),
+            "{JUMP_TABLES}: a stop at every counted event changed the run"
+        );
+        println!(
+            "{JUMP_TABLES}: a stop at every counted event, (stops, hash of positions) {:?} alike across look-aheads",
+            every.positions
+        );
         let forks = compile(OWN_GUEST, FORKS, CLibrary::Musl);
         let (native, _) = both(seed, FORKS, &forks, &[]);
         print!("{FORKS}: {}", String::from_utf8_lossy(&native.host.stdout));

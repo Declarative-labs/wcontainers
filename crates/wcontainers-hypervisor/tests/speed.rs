@@ -75,7 +75,9 @@ mod macos {
         BENCH, CALLS, IMAGE_BASE, MEMORY, ONE_CPU, OWN_GUEST, PROGRAMS_DIRECTORY, be_signed, build,
         compiled, freestanding, load_average, look_ahead, machine, page_size, setting,
     };
-    use crate::container::{DEFAULT_SEED, REALTIME_NANOSECONDS, native_at, one_program, program};
+    use crate::container::{
+        DEFAULT_SEED, Policy, REALTIME_NANOSECONDS, native_at, one_program, program,
+    };
     use crate::untranslated::{Exited, Load, Program as Loadable, Request, Segment};
 
     /// bench.c's workloads, in the order of its `WORKLOAD` numbers, which start at one.
@@ -408,14 +410,12 @@ mod macos {
             .to_string_lossy()
             .into_owned();
         let (files, starting) = one_program(&name, std::fs::read(&path).expect("the program"), &[]);
-        let outcome = native_at(
-            &inside,
-            look_ahead(),
-            DEFAULT_SEED,
-            REALTIME_NANOSECONDS,
-            &files,
-            &starting,
-        );
+        let policy = Policy {
+            seed: DEFAULT_SEED,
+            wall_start: REALTIME_NANOSECONDS,
+            turn_events: None,
+        };
+        let outcome = native_at(&inside, look_ahead(), policy, &files, &starting);
         report(exit_code(outcome.status), &outcome.host.stdout)
     }
 

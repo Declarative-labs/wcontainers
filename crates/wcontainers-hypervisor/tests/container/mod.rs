@@ -195,16 +195,43 @@ pub fn summary(warnings: &[Warned]) -> std::collections::BTreeMap<&str, u64> {
 /// none and at the bound [`look_ahead`] gives, which must agree in everything the guest and its host see and in
 /// the count at every stop; gives the bounded run's outcome.
 pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> Outcome {
-    let none = native_at(
-        program(),
-        LookAhead::None,
-        seed,
-        wall_start,
-        files,
-        starting,
-    );
+    native_alike(seed, wall_start, None, files, starting)
+}
+
+/// As [`native`], every turn ending after one counted event, so that the threads stop at every one.
+pub fn native_at_every_event(
+    seed: u64,
+    wall_start: u64,
+    files: &[File],
+    starting: &Starting,
+) -> Outcome {
+    native_alike(seed, wall_start, Some(1), files, starting)
+}
+
+/// As [`native`], every turn ending after `turn_events` counted events when that is given.
+fn native_alike(
+    seed: u64,
+    wall_start: u64,
+    turn_events: Option<u64>,
+    files: &[File],
+    starting: &Starting,
+) -> Outcome {
+    let at = |look_ahead| {
+        native_at(
+            program(),
+            look_ahead,
+            Policy {
+                seed,
+                wall_start,
+                turn_events,
+            },
+            files,
+            starting,
+        )
+    };
+    let none = at(LookAhead::None);
     let bounded = look_ahead();
-    let outcome = native_at(program(), bounded, seed, wall_start, files, starting);
+    let outcome = at(bounded);
     let what = |o: &Outcome| {
         (
             o.status,
@@ -230,16 +257,29 @@ pub fn program() -> &'static [u8] {
     PROGRAM_IMAGE.get_or_init(|| build(PROGRAM))
 }
 
+/// What the test crate's policy inside is made from: its seed, the wall clock's reading at the start, and the
+/// counted events after which every turn ends, if not the schedule's limits.
+#[derive(Clone, Copy)]
+pub struct Policy {
+    pub seed: u64,
+    pub wall_start: u64,
+    pub turn_events: Option<u64>,
+}
+
 /// Runs the container in the kernel inside the machine of the test program's image `program` at `look_ahead`,
-/// its wall clock starting at `wall_start`.
+/// with the policy made from `policy`.
 pub fn native_at(
     program: &[u8],
     look_ahead: LookAhead,
-    seed: u64,
-    wall_start: u64,
+    policy: Policy,
     files: &[File],
     starting: &Starting,
 ) -> Outcome {
+    let Policy {
+        seed,
+        wall_start,
+        turn_events,
+    } = policy;
     let (machine, memory, loaded, start) = machine(program, MEMORY, ONE_CPU);
     let mut cpu = machine.cpu().expect("a virtual CPU");
     boot(&mut cpu, &memory, &loaded, 0, start).expect("booting");
@@ -291,7 +331,11 @@ pub fn native_at(
             parts.answer(link, answer);
         } else {
             match protocol::Request::from_word(word).expect("a request of the set") {
-                protocol::Request::Policy => link.put(&PolicySeeds { seed, wall_start }),
+                protocol::Request::Policy => link.put(&PolicySeeds {
+                    seed,
+                    wall_start,
+                    turn_events: turn_events.unwrap_or_default(),
+                }),
                 protocol::Request::Warned => {
                     let protocol::Warned { count, detail } = link.get();
                     warnings.push(Warned {

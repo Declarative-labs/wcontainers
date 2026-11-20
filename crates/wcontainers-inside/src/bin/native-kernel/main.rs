@@ -31,8 +31,13 @@ mod kernel {
         let floor = Floor::boot(start);
         // The test crate's policy counts its turns, which needs the count in every piece.
         let mut cpu = NativeCpu::new(floor.global, true).expect("frames for the CPU side");
-        let PolicySeeds { seed, wall_start } = floor::ask(&Policy {}, &[]);
+        let PolicySeeds {
+            seed,
+            wall_start,
+            turn_events,
+        } = floor::ask(&Policy {}, &[]);
         let mut policy = TestPolicy::new(LinkHost { ring: Doorbell }, seed, wall_start);
+        policy.turn_events = (turn_events != 0).then_some(turn_events);
         let mut kernel = Kernel::new();
         if let Err(refused) = container::start(&mut Doorbell, &mut kernel, &mut cpu, &mut policy) {
             panic!("the kernel refused a file: {refused:?}");

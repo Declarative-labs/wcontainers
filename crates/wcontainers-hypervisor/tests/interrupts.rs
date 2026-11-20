@@ -131,6 +131,64 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
+    /// A dispatch loop through a jump table of bytes that one of its operations rewrites: the stream x9 is stored at
+    /// x0, the table x10 at x0 + 16; operation 0 adds one, 1 doubles, 2 swaps the table's first two entries, 3
+    /// returns, and an entry of 255 goes where there is no code.
+    const JUMP_TABLE: [u32; 19] = [
+        0xf9000009, // str x9, [x0]
+        0x91004006, // add x6, x0, #16
+        0xf90000ca, // str x10, [x6]
+        0xd2800005, // mov x5, #0
+        0x38401403, // ldrb w3, [x0], #1
+        0x386368c3, // ldrb w3, [x6, x3]
+        0x10000061, // adr x1, the base
+        0x8b030821, // add x1, x1, x3, lsl #2
+        0xd61f0020, // br x1
+        0x910004a5, // the base: add x5, x5, #1
+        0x17fffffa, // b back to the first ldrb
+        0x8b0500a5, // add x5, x5, x5
+        0x17fffff8, // b back to the first ldrb
+        0x794000c8, // ldrh w8, [x6]
+        0x5ac00508, // rev16 w8, w8
+        0x790000c8, // strh w8, [x6]
+        0x17fffff4, // b back to the first ldrb
+        0xaa0503e0, // mov x0, x5
+        0xd65f03c0, // ret
+    ];
+
+    /// As [`JUMP_TABLE`] with signed bytes: 0 adds one, -1 doubles then adds one, -8 adds ten, 2 returns, and -128
+    /// goes back before the code.
+    const SIGNED_JUMP_TABLE: [u32; 17] = [
+        0xf9000009, // str x9, [x0]
+        0x91004006, // add x6, x0, #16
+        0xf90000ca, // str x10, [x6]
+        0xd2800005, // mov x5, #0
+        0x14000003, // b to the first ldrb
+        0x910028a5, // add x5, x5, #10
+        0x14000001, // b to the first ldrb
+        0x38401403, // ldrb w3, [x0], #1
+        0x386368c3, // ldrb w3, [x6, x3]
+        0x10000081, // adr x1, the base
+        0x8b238821, // add x1, x1, w3, sxtb #2
+        0xd61f0020, // br x1
+        0x8b0500a5, // add x5, x5, x5
+        0x910004a5, // the base: add x5, x5, #1
+        0x17fffff9, // b back to the first ldrb
+        0xaa0503e0, // mov x0, x5
+        0xd65f03c0, // ret
+    ];
+
+    /// A byte load that writes back its base, which is then the register added to the jump's base: the target is
+    /// a pointer's worth past it, not one of a byte's.
+    const WRITTEN_BACK_INDEX: [u32; 6] = [
+        0x10000081, // adr x1, the base
+        0x38401469, // ldrb w9, [x3], #1
+        0x8b030821, // add x1, x1, x3, lsl #2
+        0xd61f0020, // br x1
+        0xd28006e0, // the base: mov x0, #55
+        0xd65f03c0, // ret
+    ];
+
     /// `clrex` between a load and a store exclusive: the store fails.
     const CLEARED: [u32; 4] = [
         0xc85f7c02, // ldxr x2, [x0]
@@ -267,6 +325,12 @@ mod macos {
         failed: u64,
     }
 
+    /// The function's word at guest address `pc`, if it has one there.
+    fn word_at(words: &[u32], pc: u64) -> Option<&u32> {
+        let index = pc.checked_sub(CODE)? / Arm64::MAX_LENGTH;
+        words.get(usize::try_from(index).ok()?)
+    }
+
     /// Runs one function's checks from one case.
     fn check(runner: &mut Runner, name: &str, words: &[u32], case: &Case, tally: &mut Tally) {
         let mut fail = |what: String| {
@@ -289,8 +353,7 @@ mod macos {
                     state.count
                 ));
             }
-            let index = ((state.pc - CODE) / Arm64::MAX_LENGTH) as usize;
-            if let Some(&word) = words.get(index) {
+            if let Some(&word) = word_at(words, state.pc) {
                 count += u64::from(counted(state.pc, &Arm64::flow(&decode(word))));
             }
         }
@@ -361,8 +424,7 @@ mod macos {
             // the same count and registers. Only a stop asked for at that pc (replay's check) lands there.
             let carried = |state: &GuestState| {
                 look_ahead == LookAhead::None
-                    || words
-                        .get(((state.pc - CODE) / Arm64::MAX_LENGTH) as usize)
+                    || word_at(words, state.pc)
                         .is_none_or(|&word| Arm64::route(&decode(word)) != Route::Nothing)
             };
             if let Some(k) = (0..boundaries.len()).find(|&k| !reached[k] && carried(&boundaries[k]))
@@ -387,6 +449,17 @@ mod macos {
             lines.join(", ")
         );
     }
+
+    /// [`JUMP_TABLE`]'s operations, a byte each from the lowest: one that returns, and one that reaches entry 4.
+    const JUMPS: u64 = 0x0300_0201_0002_0100;
+    const JUMPS_NOWHERE: u64 = 0x0303_0303_0304_0100;
+    /// Its table: 0, 2, 4, 8 and 255.
+    const TABLE: u64 = 0xff_0804_0200;
+    /// [`SIGNED_JUMP_TABLE`]'s operations, one that returns and one that reaches entry 4, and its table: 0, -1, -8,
+    /// 2 and -128.
+    const SIGNED_JUMPS: u64 = 0x0301_0002_0100;
+    const SIGNED_JUMPS_BACK: u64 = u64::from_le_bytes([0, 4, 0, 0, 0, 0, 0, 0]);
+    const SIGNED_TABLE: u64 = 0x80_02f8_ff00;
 
     /// The functions and their cases, starting states drawn from `seed`.
     fn functions(seed: u64) -> Vec<(&'static str, &'static [u32], Vec<Case>)> {
@@ -424,6 +497,27 @@ mod macos {
                     start(&[(0, writable), (1, read_only)]),
                     start(&[(0, writable), (1, misaligned)]),
                 ],
+            ),
+            (
+                "jump table",
+                &JUMP_TABLE,
+                vec![
+                    start(&[(0, writable), (9, JUMPS), (10, TABLE)]),
+                    start(&[(0, writable), (9, JUMPS_NOWHERE), (10, TABLE)]),
+                ],
+            ),
+            (
+                "signed jump table",
+                &SIGNED_JUMP_TABLE,
+                vec![
+                    start(&[(0, writable), (9, SIGNED_JUMPS), (10, SIGNED_TABLE)]),
+                    start(&[(0, writable), (9, SIGNED_JUMPS_BACK), (10, SIGNED_TABLE)]),
+                ],
+            ),
+            (
+                "written-back index",
+                &WRITTEN_BACK_INDEX,
+                vec![start(&[(3, writable)])],
             ),
             ("float", &FLOAT, float_cases(seed, 8, 10, &[])),
             ("system", &SYSTEM, float_cases(seed, 13, 8, &system)),
