@@ -944,18 +944,24 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
     }
 }
 
+/// A case's hull, domain and (if any) geometry shader, and the build they are read from.
+#[derive(Clone, Copy)]
+struct Staged<'a> {
+    hs: &'a str,
+    ds: &'a str,
+    gs: Option<&'a str>,
+    route: Route,
+}
+
 /// The same patches streamed through the whole stage helper: the vertex and hull stages, the
 /// tessellator, the domain stage as compute and geometry shader `gs` if given, then stream output of
 /// the location and the patch's number; the vertices written and the primitives the helper counted.
 fn ours_staged<B: Backend>(
     b: &mut B,
-    hs: &str,
-    ds: &str,
-    gs: Option<&str>,
+    programs: &Staged<'_>,
     points: u32,
     bound: usize,
     factors: &[[f32; 8]],
-    route: Route,
 ) -> (Vec<Vertex>, [u32; 2]) {
     use wcontainers_gpu::*;
     use wcontainers_shaders::convert;
@@ -963,6 +969,7 @@ fn ours_staged<B: Backend>(
         DomainSets, InputTopology, StageDraw, Stages, StreamOutput, StreamOutputEntry,
         StreamTargets,
     };
+    let Staged { hs, ds, gs, route } = *programs;
     let plain = VariantKey::default();
     let read = |name: &str| bytecode(&format!("{name}.{}", route.extension()));
     let vs = convert(route.source(&read("vs_patch")), &plain, None).unwrap();
@@ -1163,8 +1170,18 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
             let (reference, written) = direct3d(&gpu, hs, ds, *gs, *points, bound, &factors);
             let reference = &reference[..written as usize * per];
             for route in Route::BOTH {
-                let (streamed, counted) =
-                    ours_staged(&mut backend, hs, ds, *gs, *points, bound, &factors, route);
+                let (streamed, counted) = ours_staged(
+                    &mut backend,
+                    &Staged {
+                        hs,
+                        ds,
+                        gs: *gs,
+                        route,
+                    },
+                    *points,
+                    bound,
+                    &factors,
+                );
                 compared += 1;
                 let name = format!(
                     "seed {seed} {hs} {} {points} points {route:?}",

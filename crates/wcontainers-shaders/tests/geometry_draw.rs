@@ -669,8 +669,8 @@ fn gs_source<'a>(case: &Case, code: &'a [u8]) -> Source<'a> {
     }
 }
 
-/// The case's vertex, geometry and pixel programs, linked as a front links them: the vertex shader
-/// under `vs_key`, the geometry shader with `gs_flags` too.
+/// The case's vertex, geometry and pixel programs as its route's compiler builds them, linked as a
+/// front links them: the vertex shader under `vs_key`, the geometry shader with `gs_flags` too.
 fn linked(
     case: &Case,
     vs_key: VariantKey,
@@ -679,12 +679,9 @@ fn linked(
 ) -> (Converted, Option<Converted>, Converted) {
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them.
-    let ps = convert(
-        Source::Dxbc(&bytecode("ps_geometry.dxbc")),
-        &VariantKey::default(),
-        None,
-    )
-    .unwrap();
+    let ext = case.route.extension();
+    let ps_code = bytecode(&format!("ps_geometry.{ext}"));
+    let ps = convert(case.route.source(&ps_code), &VariantKey::default(), None).unwrap();
     let gs_key = VariantKey {
         output_interpolation: ps
             .reflection
@@ -699,8 +696,8 @@ fn linked(
     let gs_code = gs_bytecode(case);
     let gs =
         (!case.gs.is_empty()).then(|| convert(gs_source(case, &gs_code), &gs_key, None).unwrap());
-    let vs_code = bytecode(&format!("{}.dxbc", case.vs));
-    let vs = convert(Source::Dxbc(&vs_code), &vs_key, None).unwrap();
+    let vs_code = bytecode(&format!("{}.{ext}", case.vs));
+    let vs = convert(case.route.source(&vs_code), &vs_key, None).unwrap();
     // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
     // without them (wgpu's Direct3D 12 path), linked past every value either program passes;
     // counted from the reflection as a front counts them.
@@ -743,9 +740,8 @@ fn linked(
             samples,
             ..base.clone()
         };
-        let ps_code = bytecode("ps_geometry.dxbc");
         let ps = convert(
-            Source::Dxbc(&ps_code),
+            case.route.source(&ps_code),
             &key(&VariantKey::default(), 1),
             None,
         )
@@ -756,7 +752,7 @@ fn linked(
                 (vs, Some(gs), ps)
             }
             None => {
-                let vs = convert(Source::Dxbc(&vs_code), &key(&vs_key, 0), None).unwrap();
+                let vs = convert(case.route.source(&vs_code), &key(&vs_key, 0), None).unwrap();
                 (vs, None, ps)
             }
         }
@@ -2062,7 +2058,7 @@ fn geometry_shaders_draw_as_direct3d_does() {
     let mut dropped = [0u32; CULLED.len()];
     let mut failures = Vec::new();
     let mut compared = 0;
-    // Each geometry shader also as dxc builds it, its vertex and pixel programs fxc's.
+    // Each case also as dxc builds its vertex, geometry and pixel programs.
     let dxil = CASES.map(|c| Case {
         route: Route::Dxil,
         ..c
