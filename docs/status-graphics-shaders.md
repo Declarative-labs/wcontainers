@@ -2340,7 +2340,11 @@ and the DXIL route's typed buffer arrays):
   - Literal check (desktop, check3.txt): passes; this crate's baseline 590 lines (536 code, 46
     restated, 6 role, 2 redefinition), from 594 (four deleted: three of the old storage texture
     code, one message now a shared constant).
-  - The whole GPU suite at the run's last code: below ("gpu-all").
+  - Desktop, every test binary of this crate in one GPU job at default seeds (gpu-all.log, at the
+    run's last code, 22:13 to 22:27 Pacific): 21 binaries, 134 pass, 0 fail, 5 ignored.
+- Clean-up: this branch's build folder on the desktop deleted at the end; nothing built on the
+  laptop (load 34 from other work) or the Mac (only rustfmt). The x86 machine keeps
+  `/work/target/graphics-shaders` and the corpora copy for the next run.
 
 Run 54 (the gap list in the fronts' order: A4's `decoded` and normalised targets, `NormAsInteger`):
 - Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts); the others had
