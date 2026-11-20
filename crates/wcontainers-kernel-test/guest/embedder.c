@@ -45,9 +45,10 @@
 //     /proc/self/maps.
 //   environ WHOSE LONG: runs itself again with LONG in its environment, then reads that
 //     environment through /proc as cmdline reads the command line.
-//   suspend: three threads block, one reading an empty pipe, one on a mutex the main thread
-//     holds and one in a futex wait with a timeout; the main thread sleeps twice, then writes the pipe,
-//     changes and wakes the futex, lets the mutex go, joins them and prints what each saw.
+//   suspend: four threads block, one reading an empty pipe, one on a mutex the main thread
+//     holds, one in a futex wait with a timeout and one taking from a System V semaphore; the main
+//     thread sleeps twice, then writes the pipe, changes and wakes the futex, lets the mutex go,
+//     gives to the semaphore, joins them and prints what each saw.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -65,6 +66,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/ipc.h>
+#include <sys/sem.h>
 #include <sys/shm.h>
 #include <sys/mman.h>
 #include <sys/msg.h>
@@ -1204,7 +1206,7 @@ static int exec_program(char *path) {
     return 0;
 }
 
-static int suspend_pipe[2], suspend_word, suspend_locked;
+static int suspend_pipe[2], suspend_word, suspend_locked, suspend_semaphore, suspend_taken;
 static pthread_mutex_t suspend_lock = PTHREAD_MUTEX_INITIALIZER;
 static char suspend_read[8];
 static long suspend_got;
@@ -1228,8 +1230,16 @@ static void *suspend_timed(void *argument) {
     return argument;
 }
 
+static void *suspend_semaphore_taker(void *argument) {
+    struct sembuf take = {0, -1, 0};
+    suspend_taken = semop(suspend_semaphore, &take, 1);
+    return argument;
+}
+
 static int suspend_threads(void) {
-    void *(*mains[])(void *) = {suspend_reader, suspend_locker, suspend_timed};
+    void *(*mains[])(void *) = {suspend_reader, suspend_locker, suspend_timed,
+                                suspend_semaphore_taker};
+    suspend_semaphore = semget(IPC_PRIVATE, 1, IPC_CREAT | 0600);
     enum { COUNT = sizeof mains / sizeof *mains };
     pthread_t threads[COUNT];
     pipe(suspend_pipe);
@@ -1242,9 +1252,12 @@ static int suspend_threads(void) {
     __atomic_store_n(&suspend_word, 1, __ATOMIC_SEQ_CST);
     syscall(SYS_futex, &suspend_word, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
     pthread_mutex_unlock(&suspend_lock);
+    struct sembuf give = {0, 1, 0};
+    semop(suspend_semaphore, &give, 1);
     for (int at = 0; at < COUNT; at++) pthread_join(threads[at], NULL);
-    printf("read %ld %.*s\nlocked %d\nword %d\n", suspend_got, (int)suspend_got, suspend_read,
-           suspend_locked, suspend_word);
+    semctl(suspend_semaphore, 0, IPC_RMID);
+    printf("read %ld %.*s\nlocked %d\nword %d\nsemaphore %d\n", suspend_got, (int)suspend_got,
+           suspend_read, suspend_locked, suspend_word, suspend_taken);
     return 0;
 }
 

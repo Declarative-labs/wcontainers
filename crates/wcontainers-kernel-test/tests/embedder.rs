@@ -2433,7 +2433,7 @@ struct Suspender {
 }
 
 /// The threads embedder.c's `suspend` starts besides its main thread.
-const SUSPENDED_THREADS: usize = 3;
+const SUSPENDED_THREADS: usize = 4;
 
 impl Suspender {
     fn check(&self, what: &str, holds: bool) {
@@ -2695,6 +2695,15 @@ impl Hooks for Suspender {
     }
 }
 
+/// Every order of `N` places: each array of `N` places that names every place once.
+fn orders_of<const N: usize>() -> Vec<[usize; N]> {
+    let place = |code: usize, at: usize| code / N.pow(at as u32) % N;
+    (0..N.pow(N as u32))
+        .map(|code| std::array::from_fn(|at| place(code, at)))
+        .filter(|order: &[usize; N]| order.iter().collect::<BTreeSet<_>>().len() == N)
+        .collect()
+}
+
 #[test]
 fn tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs() {
     let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
@@ -2702,16 +2711,10 @@ fn tasks_suspended_from_hooks_and_between_steps_go_on_as_the_reference_runs() {
     let theirs = reference::run(&program, &["suspend", &address, &pages]);
     let theirs = String::from_utf8_lossy(&theirs.stdout).into_owned();
     let seeds: Vec<u64> = wcontainers_kernel_test::schedule_seeds().collect();
-    let orders = [
-        [0, 1, 2],
-        [0, 2, 1],
-        [1, 0, 2],
-        [1, 2, 0],
-        [2, 0, 1],
-        [2, 1, 0],
-    ];
+    let orders = orders_of::<SUSPENDED_THREADS>();
+    assert_eq!(orders.len(), (1..=SUSPENDED_THREADS).product::<usize>());
     for plan in [SuspendPlan::Hooks, SuspendPlan::Kernel] {
-        for (index, order) in orders.into_iter().enumerate() {
+        for (index, &order) in orders.iter().enumerate() {
             let seed = seeds[index % seeds.len()];
             let wrong = Arc::new(Mutex::new(Vec::new()));
             let refused_in_step = Arc::new(Mutex::new(None));
