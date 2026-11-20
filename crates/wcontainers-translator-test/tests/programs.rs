@@ -604,9 +604,9 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     (native, best, Some(in_chrome))
 }
 
-/// A jump through a register to outside its function is a tail call, no slow path; one to inside its function
-/// that no table explains is, counted each time it runs; a switch whose table's address its function keeps in
-/// its frame is a table explained. The program makes `ROUNDS` of each, for speed and for size.
+/// A jump through a register to outside its function, or to its own start, is a tail call, no slow path; one
+/// to inside its function that no table explains is, counted each time it runs; a switch whose table's address
+/// its function keeps in its frame is a table explained. The program makes `ROUNDS` of each, for speed and for size.
 #[test]
 fn only_jumps_inside_their_function_are_unrecognised() {
     const ROUNDS: u64 = 1200;
@@ -625,5 +625,25 @@ fn only_jumps_inside_their_function_are_unrecognised() {
             ROUNDS,
             "for {optimise:?}"
         );
+    }
+}
+
+/// A switch whose cases lie in other parts of a function cut in parts jumps to them as tail calls, no slow
+/// path, as on Linux.
+#[test]
+fn switch_cases_in_other_parts_are_not_slow() {
+    for optimisation in ["-O0", "-O2"] {
+        let blob = build("cut_switch", optimisation, Library::C);
+        let theirs = native(&blob);
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let (ours, machine, _) = translated_for(&blob, (LookAhead::Full, optimise));
+            let what = format!("at {optimisation} for {optimise:?}");
+            assert_eq!(ours, theirs, "{what}");
+            assert_eq!(
+                machine.count(Reason::JumpThroughRegisterNotRecognised),
+                0,
+                "{what}"
+            );
+        }
     }
 }
