@@ -208,10 +208,15 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     }
 }
 
-/// Direct3D's opcode of a sampler declaration, an instruction's length in words (bits 24 to 30 of its
-/// first word), and the word of a declaration holding its last register (after the opcode, operand,
-/// id and first register).
-const SAMPLER_DECLARATION: u32 = 0x5a;
+/// dxbc-spirv's enums, as build.rs writes them from its headers (`dxbc_op`, `dxbc_uav`).
+mod codes {
+    include!(concat!(env!("OUT_DIR"), "/ir_codes.rs"));
+}
+
+/// Direct3D's opcode of a sampler declaration, an instruction's opcode (bits 0 to 10 of its first
+/// word) and length in words (bits 24 to 30), and the word of a declaration holding its last register
+/// (after the opcode, operand, id and first register).
+const SAMPLER_DECLARATION: u32 = codes::dxbc_op::DCL_SAMPLER;
 const OPCODE_BITS: u32 = 0x7ff;
 const LENGTH_SHIFT: u32 = 24;
 const LENGTH_BITS: u32 = 0x7f;
@@ -255,9 +260,12 @@ fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
 }
 
 /// Direct3D's opcodes of the typed, raw and structured view declarations, and the bit of their first
-/// word declaring the view globally coherent.
-const VIEW_DECLARATIONS: std::ops::RangeInclusive<u32> = 0x9c..=0x9e;
-const GLOBALLY_COHERENT_BIT: u32 = 1 << 16;
+/// word declaring the view globally coherent: the view flags start at bit 16 (dxbc-spirv's
+/// `OpToken::getUavFlags`).
+const VIEW_DECLARATIONS: std::ops::RangeInclusive<u32> =
+    codes::dxbc_op::DCL_UAV_TYPED..=codes::dxbc_op::DCL_UAV_STRUCTURED;
+const VIEW_FLAGS_SHIFT: u32 = 16;
+const GLOBALLY_COHERENT_BIT: u32 = codes::dxbc_uav::GLOBALLY_COHERENT << VIEW_FLAGS_SHIFT;
 
 /// A signed compute shader whose first view is declared `globallycoherent`: refused by name, as no
 /// back end makes its stores seen across workgroups; unchanged, it converts.

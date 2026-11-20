@@ -1,8 +1,81 @@
-# Shaders track (G6): the record of runs 1 to 62
+# Shaders track (G6): the record of runs 1 to 63
 
 The run-by-run record moved out of docs/status-graphics-shaders.md in G6a run 1 (run 59). It is
 history: where it disagrees with the status file, the status file holds. Its "Next" lists are
 superseded by the status file's.
+
+## G6a run 5 (run 63): the fifth check's findings at the pushed tip
+
+Every figure here comes from runs of the code at 211e0656 (the commits after it change only this
+file and the history file; the laptop's suite and clippy ran on the code of ffb07f91, which is the same,
+211e0656 deleting one baseline line). Logs in scratch `graphics-shaders/g6a5`. Merged
+origin/phase-2-graphics-direct3d-11 (with the interface change `Format::integer_twin`) and
+origin/phase-2-graphics-direct3d-12; the others had nothing new (the NIR branch is not merged:
+nothing of it is needed here). G6a run 4's section moved to the history file.
+
+Runs at the tip:
+- Laptop (i7-8750H, load 1.3 before, 1.0 after, ours alone; 4 cargo jobs under choom), the whole
+  suite with every corpus and glslang 8.13 (laptop-suite.log, `suite-run49.sh`): 109 passed, 0
+  failed (`--include-ignored --skip mutated`; one more than run 4, the new test below). Every
+  corpus's verdicts equal their records, which are unchanged. `cargo clippy -p
+  wcontainers-shaders --all-targets -- -D warnings` clean there.
+- WebAssembly under wasmtime on the laptop (load 0.3 before, 1.0 after; wasm.log,
+  wasm-differ.txt): the corpus test's 11 tests pass, every corpus mounted. Of the files both builds
+  write, the same 27 WGSL files differ as in run 4 (A8), and so the `cache.txt` of the four corpora
+  holding them; every `converter-version.txt` equal.
+- Desktop (RTX 3080, through the queue, 3 cargo jobs, load not taken): Windows clippy with
+  warnings denied clean (win-clippy.log); every test binary at default seeds (gpu.log): 152
+  passed, 0 failed, 5 ignored (the 3 corpora, the fuzz test, `print_geometry_programs`).
+  `geometry_draw` at the fifth check's seed 7301, 24 cases: `geometry_shaders_draw_as_direct3d_does`
+  672 comparisons, 4 failed (7308 `vs_cull` TriangleList, 7313 `vs_cull` LineList and LineStrip,
+  7319 `vs_cull` TriangleStrip indexed: A10), depth clamp 144, 1 failed (7305 `gs_cut`
+  TriangleList, 26 steps: A12); the replay on WebGL 2, stream output (96 comparisons, the 24
+  written counts of A15 apart), layers and layered geometry pass.
+- Chrome on the desktop (one GPU job, chrome.log), the files the laptop's suite wrote at the tip
+  (the same WGSL and GLSL bytes as run 4's; only `cache.txt` and `converter-version.txt` differ,
+  as the converter's source changed): WGSL 4,320 compile (corpus 185, games 527, games DXIL 441,
+  own 135 and 73, rig 79 and 56, runner 1,438 and 1,386), none fail. GLSL ES 3.00: 3,576 compile,
+  40 fail, and each of the 40 is a shader whose record names the need (`MULTISAMPLE_READ` 22,
+  `SAMPLE_SHADING|MULTISAMPLE_READ` 1, `PRIMITIVE_INDEX` 8, `CLIP_DISTANCE|CULL_DISTANCE` 9).
+- Formatting: `cargo fmt -p wcontainers-shaders -- --check` clean (on the Mac). `cargo fmt --all
+  -- --check` finds only `crates/wcontainers-direct3d-11/tests/front.rs`, the Direct3D 11
+  track's file as merged, which this branch leaves alone.
+- Literal check on the desktop (check.txt): it named one line to delete (the barrier's workgroup
+  scope, now `ir::scope::WORKGROUP`), deleted in 211e0656; the MD5 test's float went with
+  `md5_block`. This crate's lines in `literals.baseline` (src, build.rs, tests, examples): 588 at
+  run 4, 586 now.
+- Fuzz: the fifth check's DXBC case replayed alone on the laptop (seed 24680, case 1397, under
+  `ulimit -v 6000000`): "1 rejected", as the check found; no long fuzz run (A11).
+- Clean-up at the end: this branch's build folders on the laptop (7.4 GB) and the desktop
+  (8.4 GB) deleted; nothing built on the Mac (only `cargo fmt` and `cargo metadata`); the x86 machine not used.
+
+The check's findings, each against the tip:
+1. `TargetInShader::combine` missing from the gap list (blocking): on it now, as A4's fourth part
+   (`BlendInShader`, `LogicOpInShader`), with its cause, the Direct3D 11 front waiting on it for
+   its integer twins, and what it takes; pass bar item 3 says four parts, not three, and "Next"
+   puts it first.
+2. `globallycoherent` dropped without a word on the DXBC route (minor): fixed. A view declared
+   globally coherent is refused by name (`GloballyCoherent`, src/lower.rs at its declaration), as
+   the DXIL route refused it; test `a_globally_coherent_view_is_refused_by_name` (tests/fuzz.rs:
+   the own `cs_atomics.dxbc` converts, and with its first view declaration's coherent bit set and
+   signed again it is refused). The barrier keeps its workgroup reach: with no globally coherent
+   view, a device-wide fence has nothing more to order; its scope and memory kinds are now read by
+   dxbc-spirv's names (`ir::scope`, `ir::memory`, generated by build.rs). "Also open" says so.
+3. A11's DXBC cause no longer true (minor): corrected. The fifth check's case is dxbc-spirv's,
+   not ours: the replaced word is a temporary's register index, and dxbc-spirv sizes its list of
+   temporaries by it unchecked (A11 names the function and the other lists sized the same way).
+4. `vs_cull` lines drawn where Direct3D draws nothing (minor): in A10, with this run's figures
+   for the same seeds, and the check's other failing seeds in A10 and A12.
+5. The hand-written MD5 block function (minor): gone. `sign` uses the `md-5` crate's
+   `block_api::compress` and takes MD5's initial state from `Md5Core::default()`
+   (`SerializableState`); `md-5` 0.11 (MIT OR Apache-2.0, already in the workspace through the
+   Direct3D 12 crate) is a dev-dependency now. `signing_again_gives_the_compilers_checksum` passes
+   on every input; the departure that excused the hand-written function is deleted.
+6. The written count of a stream with no buffer bound (minor): gap A15, with this run's figures.
+7. The carried findings: the check found all six settled; nothing changed them here (the corpus
+   records are unchanged and pass, the refusal list at the end of the gap list still holds).
+
+The NIR track's entry point: `wcontainers_shaders::rewrite` (New for the owner), since run 57.
 
 ## G6a run 4 (run 62): the fourth check's findings at the pushed tip
 

@@ -207,6 +207,9 @@ pub fn rewrite(
         vertex_storage_write(&module, stage)?;
         if common::split_arrays(&mut module)? {
             reflection.sampled_pairs = common::sampled_pairs(&module)?;
+            // An element picked at run time is sampled inside a switch on the index, which may
+            // differ between a quad's lanes.
+            lower::derivatives_anywhere(&mut module);
         }
         common::gather_offsets(&mut module)?;
         common::storage_textures(&mut module, variant, stage, &mut reflection)?;
@@ -340,15 +343,21 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
 /// for only where the back end has them (dual-source blending, `VariantFlags::DUAL_SOURCE`, clip
 /// distances, WebGPU's `clip_distances` and GLSL ES's EXT_clip_cull_distance, and storage views of
 /// 16-bit normalised formats, which a front binds only where the format has `STORAGE_WRITE`, and
-/// subgroup operations in pixel and compute programs, `Features::SUBGROUPS`).
+/// subgroup operations in pixel and compute programs, `Features::SUBGROUPS`), and immediates, which
+/// only another route's program declares (Vulkan's push constants, through [`rewrite`]). A type
+/// handle out of range (a damaged cache record) counts as no type, for the validator to refuse.
 pub fn capabilities(module: &naga::Module) -> Capabilities {
     use naga::StorageFormat as S;
+    let inner = |ty: naga::Handle<naga::Type>| module.types.get_handle(ty).ok().map(|t| &t.inner);
     let mut capabilities = WEBGPU_CAPABILITIES;
     if module.uses_subgroups() {
         capabilities |= Capabilities::SUBGROUP;
     }
     for (_, global) in module.global_variables.iter() {
-        if let naga::TypeInner::Image {
+        if global.space == naga::AddressSpace::Immediate {
+            capabilities |= Capabilities::IMMEDIATES;
+        }
+        if let Some(naga::TypeInner::Image {
             class:
                 naga::ImageClass::Storage {
                     format:
@@ -361,7 +370,7 @@ pub fn capabilities(module: &naga::Module) -> Capabilities {
                     ..
                 },
             ..
-        } = module.types[global.ty].inner
+        }) = inner(global.ty)
         {
             capabilities |= Capabilities::STORAGE_TEXTURE_16BIT_NORM_FORMATS;
         }
@@ -370,7 +379,7 @@ pub fn capabilities(module: &naga::Module) -> Capabilities {
         let primitive = |ty: naga::Handle<naga::Type>, b: &Option<naga::Binding>| {
             let index = Some(naga::Binding::BuiltIn(naga::BuiltIn::PrimitiveIndex));
             *b == index
-                || matches!(&module.types[ty].inner, naga::TypeInner::Struct { members, .. }
+                || matches!(inner(ty), Some(naga::TypeInner::Struct { members, .. })
                     if members.iter().any(|m| m.binding == index))
         };
         if ep
@@ -384,8 +393,8 @@ pub fn capabilities(module: &naga::Module) -> Capabilities {
         let Some(result) = &ep.function.result else {
             continue;
         };
-        let bindings: Vec<&naga::Binding> = match &module.types[result.ty].inner {
-            naga::TypeInner::Struct { members, .. } => {
+        let bindings: Vec<&naga::Binding> = match inner(result.ty) {
+            Some(naga::TypeInner::Struct { members, .. }) => {
                 members.iter().filter_map(|m| m.binding.as_ref()).collect()
             }
             _ => result.binding.iter().collect(),
