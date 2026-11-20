@@ -4,3 +4,4 @@
 saschawillems-vulkan https://github.com/SaschaWillems/Vulkan d2d49bf7f2d8469ad9fee47b2a43b430d7e10e1b . MIT
 piglit https://gitlab.freedesktop.org/mesa/piglit.git 925102811fff4d9501277d2a640aa5e01d91a9d6 . MIT and others (its COPYING), test data only
 bgfx https://github.com/bkaradzic/bgfx.git e76ecedf90d667c5a5e2a07d65f98bcd39e78f28 examples/runtime/shaders/glsl,LICENSE BSD-2-Clause
+vk-gl-cts https://github.com/KhronosGroup/VK-GL-CTS.git 5bb4c7e83acea0fc73e3333625e4f20542e584d0 data/gles2/shaders,data/gles3/shaders,data/gles31/shaders,LICENSE Apache-2.0, test data only

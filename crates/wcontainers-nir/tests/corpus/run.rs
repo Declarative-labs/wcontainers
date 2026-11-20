@@ -3,6 +3,7 @@
 
 use crate::bgfx;
 use crate::compare::{self, CompareOptions, DEFAULT_SEED, SEED, Verdict};
+use crate::deqp;
 use crate::entry;
 use crate::glsl;
 use crate::lavapipe;
@@ -52,6 +53,11 @@ const DUMP: &str = "WC_NIR_DUMP";
 /// invocations race gives the same result each time.
 const DRIVER_THREADS_VARIABLE: &str = "LP_NUM_THREADS";
 const NO_DRIVER_THREADS: &str = "0";
+/// The folder of the Vulkan CTS's `alpha_to_one` programs (`corpus/cts-programs`): each fragment
+/// program goes through `Nir::alpha_to_one` before the routes, and is held by G10's CTS cases, not
+/// by lavapipe, which does not run the `demote_samples` the step makes.
+const ALPHA_TO_ONE_FOLDER: &str = "alpha_to_one";
+const HELD_BY_CTS: &str = "held by G10's CTS cases: lavapipe does not run demote_samples";
 /// The argument that makes the process the child running one shader.
 const ONE: &str = "--one";
 
@@ -134,6 +140,8 @@ fn shader_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for path in entries {
         if path.is_dir() {
             shader_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == deqp::EXTENSION) {
+            out.extend(deqp::items(&path));
         } else if path
             .extension()
             .is_some_and(|e| e == SPIRV_EXTENSION || e == glsl::SHADER_TEST_EXTENSION)
@@ -385,6 +393,7 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
         .extension()
         .is_some_and(|e| e == glsl::SHADER_TEST_EXTENSION)
         || bgfx::is_desktop_shader(file)
+        || deqp::sources(file).is_some()
     {
         return glsl_program(file, route);
     }
@@ -422,8 +431,18 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
     if result.unreported.is_some() {
         return result;
     }
+    let alpha_to_one = stage == Stage::Fragment
+        && file
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|f| f == ALPHA_TO_ONE_FOLDER);
     let nir = match Nir::from_spirv(&words, stage, &entry.name) {
-        Ok(nir) => nir,
+        Ok(mut nir) => {
+            if alpha_to_one {
+                nir.alpha_to_one();
+            }
+            nir
+        }
         Err(e) => {
             result.refused = Some(e.to_string());
             return result;
@@ -444,7 +463,9 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
             } else {
                 direct_route(nir, stage)
             };
-            if let Some((module, reflection)) = converted {
+            if converted.is_some() && alpha_to_one {
+                route.outcome = Outcome::Compared(Verdict::NotRun(HELD_BY_CTS.into()));
+            } else if let Some((module, reflection)) = converted {
                 provisional(
                     &result,
                     RouteResult {
@@ -550,7 +571,7 @@ fn zink_route(
     }
 }
 
-/// A GLSL program (a piglit test or a bgfx shader): its stages through Mesa's compiler, each through the route; a
+/// A GLSL program (a piglit test, a bgfx shader or a dEQP case): its stages through Mesa's compiler, each through the route; a
 /// compute program dispatched, a vertex and fragment program drawn, held to llvmpipe.
 fn glsl_program(file: &Path, route: &str) -> ShaderResult {
     let mut result = ShaderResult {
@@ -560,14 +581,16 @@ fn glsl_program(file: &Path, route: &str) -> ShaderResult {
         unreported: None,
         routes: Vec::new(),
     };
-    let bytes = std::fs::read(file).expect("the file can be read");
-    let sources = if bgfx::is_desktop_shader(file) {
-        bgfx::sources(&bytes)
+    let sources = if let Some(sources) = deqp::sources(file) {
+        sources
+    } else if bgfx::is_desktop_shader(file) {
+        bgfx::sources(&std::fs::read(file).expect("the file can be read"))
     } else {
+        let bytes = std::fs::read(file).expect("the file can be read");
         glsl::shader_test_sources(&String::from_utf8_lossy(&bytes))
     };
     let sources = match sources {
-        Ok(s) => s,
+        Ok(s) => glsl::at_full_precision(s),
         Err(e) => {
             result.refused = Some(e);
             return result;

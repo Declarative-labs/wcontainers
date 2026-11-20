@@ -12,6 +12,8 @@ mod bgfx;
 #[cfg(mesa)]
 mod compare;
 #[cfg(mesa)]
+mod deqp;
+#[cfg(mesa)]
 mod entry;
 #[cfg(mesa)]
 mod glsl;

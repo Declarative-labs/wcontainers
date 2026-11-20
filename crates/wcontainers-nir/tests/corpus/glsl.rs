@@ -564,12 +564,19 @@ const FED_ATTRIBUTE: &str = "wc_fed";
 /// The directive a GLSL source starts with, and the version of the feeders and catchers of
 /// desktop programs: the first with no interpolation to match between stages.
 pub const VERSION_DIRECTIVE: &str = "#version";
-const ES_PROFILE: &str = "es";
+pub const ES_PROFILE: &str = "es";
+/// The one GLSL ES version without the profile word: GLSL ES 1.00.
+pub const ES_ONLY_VERSION: u32 = 100;
+pub const EXTENSION_DIRECTIVE: &str = "#extension";
+/// Every precision qualifier made `highp`, and the defaults that are not (`at_full_precision`).
+const FULL_PRECISION: &str = "#define lowp highp\n#define mediump highp\nprecision highp float;\n\
+                              precision highp int;\nprecision highp sampler2D;\n\
+                              precision highp samplerCube;\n";
 const DESKTOP_HEADER: &str = "#version 450 compatibility";
 /// What OpenGL's own names start with.
 const OPENGL_PREFIX: &str = "gl_";
 /// Fragment outputs of OpenGL's own.
-const FRAG_COLOR: &str = "gl_FragColor";
+pub const FRAG_COLOR: &str = "gl_FragColor";
 const FRAG_DATA: &str = "gl_FragData";
 const FRAG_DEPTH: &str = "gl_FragDepth";
 /// OpenGL's attribute that is generic attribute 0.
@@ -640,7 +647,37 @@ fn version_line(source: &str) -> Option<&str> {
 }
 
 fn is_es(source: &str) -> bool {
-    version_line(source).is_some_and(|l| l.split_whitespace().any(|w| w == ES_PROFILE))
+    version_line(source).is_some_and(|l| {
+        l.split_whitespace()
+            .any(|w| w == ES_PROFILE || w.parse() == Ok(ES_ONLY_VERSION))
+    })
+}
+
+/// An ES program with its precision qualifiers made `highp`, as every stage of the corpus takes
+/// it: our driver computes `mediump` and `lowp` at full precision (the bridge lowers none), while
+/// llvmpipe computes them in 16 bits (its `fp16` and `int16` capabilities); GLSL ES allows both,
+/// so the reference is held to the precision the route gives.
+pub fn at_full_precision(sources: Vec<(Stage, String)>) -> Vec<(Stage, String)> {
+    sources
+        .into_iter()
+        .map(|(stage, source)| {
+            if !is_es(&source) {
+                return (stage, source);
+            }
+            // After the version and every extension directive, which come before declarations.
+            let mut at = 0;
+            let mut end = 0;
+            for line in source.split_inclusive('\n') {
+                end += line.len();
+                let line = line.trim();
+                if line.starts_with(VERSION_DIRECTIVE) || line.starts_with(EXTENSION_DIRECTIVE) {
+                    at = end;
+                }
+            }
+            let text = format!("{}\n{FULL_PRECISION}{}", &source[..at], &source[at..]);
+            (stage, text)
+        })
+        .collect()
 }
 
 /// A vertex program wrapped in its own source: its `main` renamed by the preprocessor and called
@@ -838,8 +875,14 @@ fn attributes(
                 None => return Err(format!("OpenGL's attribute {name} is not set up here")),
             },
         };
-        // An attribute the route's module does not read is fed to llvmpipe alone.
-        let route = name_at(names, GlslNameKind::Input, name);
+        // A slot of an attribute the route's module does not read is fed to llvmpipe alone.
+        let route = |slot: u32| {
+            names
+                .iter()
+                .filter(|n| n.kind == GlslNameKind::Input && n.name == name)
+                .find(|n| (n.element..n.element + n.count).contains(&slot))
+                .map(|n| n.at + slot - n.element)
+        };
         let elements = u32::try_from(v.array_size.max(1)).unwrap_or(1);
         for column in 0..elements * ty.columns {
             let words: Vec<u32> = if name == POINT_ATTRIBUTE {
@@ -857,9 +900,9 @@ fn attributes(
                 components: ty.rows,
                 count: 1,
             };
-            if let Some(route) = route {
+            if let Some(location) = route(column) {
                 theirs.push(Attribute {
-                    location: route + column,
+                    location,
                     format: compare::attribute_format(one),
                     stride: one.bytes(),
                     bytes: words.iter().flat_map(|w| w.to_le_bytes()).collect(),

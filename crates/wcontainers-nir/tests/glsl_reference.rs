@@ -13,6 +13,12 @@ mod compare;
     dead_code,
     reason = "the corpus harness; this test runs one program through it"
 )]
+#[path = "corpus/deqp.rs"]
+mod deqp;
+#[allow(
+    dead_code,
+    reason = "the corpus harness; this test runs one program through it"
+)]
 #[path = "corpus/glsl.rs"]
 mod glsl;
 #[allow(
@@ -105,6 +111,56 @@ void main() {
 }
 ";
 
+const LIBRARY_FILE: &str = r#"# a comment
+group basic "Basic"
+    case add
+        version 300 es
+        values
+        {
+            input float in0 = [ 0.5 | 1.0 ];
+            input int in1 = [ 1 | -2 ];
+            output bvec2 out0 = [ bvec2(true, false) | bvec2(false, true) ];
+            output mat2 out1 = [ mat2(1.0, 0.0, 0.0, 1.0) | mat2(2.0, 0.0, 0.0, 2.0) ];
+        }
+
+        both ""
+            #version 300 es
+            precision mediump float;
+            ${DECLARATIONS}
+            void main()
+            {
+                ${SETUP}
+                out0 = bvec2(in0 > 0.75, in1 < 0);
+                out1 = mat2(in0);
+                ${OUTPUT}
+            }
+        ""
+    end
+
+    case wrong
+        expect compile_fail
+        both ""
+            void main() { undeclared = 1; }
+        ""
+    end
+end
+
+case pair
+    version 100 es
+    vertex ""
+        ${VERTEX_DECLARATIONS}
+        varying mediump float v;
+        void main() { v = dEQP_Position.x; ${VERTEX_OUTPUT} }
+    ""
+    fragment ""
+        precision mediump float;
+        ${FRAGMENT_DECLARATIONS}
+        varying mediump float v;
+        void main() { ${FRAG_COLOR} = vec4(v); }
+    ""
+end
+"#;
+
 const TEST_FILE: &str = "[require]
 GLSL >= 4.30
 
@@ -145,6 +201,49 @@ fn a_glsl_program_sampling_textures_and_storing_images_matches_llvmpipe_on_route
 #[test]
 fn a_glsl_program_of_bitfields_signs_and_exponents_matches_llvmpipe_on_route_b() {
     assert_eq!(compute_verdict(BITS), Verdict::Matched);
+}
+
+#[test]
+fn a_deqp_library_file_gives_each_case_its_program() {
+    use wcontainers_nir::mesa::Stage::{Fragment, Vertex};
+    let vertex = deqp::case_program(LIBRARY_FILE, "basic.add_vertex").unwrap();
+    assert_eq!(
+        vertex.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        [Vertex, Fragment]
+    );
+    assert!(vertex[0].1.contains("in highp vec4 dEQP_Position;"));
+    assert!(vertex[0].1.contains("int in1 = int(a_in1);"));
+    assert!(vertex[0].1.contains("v_out0 = vec2(out0);"));
+    assert!(!vertex[0].1.contains("${"));
+    assert!(
+        vertex[1]
+            .1
+            .contains("wc_output_1 = vec4(out1[1][0], out1[1][1], 0.0, 0.0);")
+    );
+    let fragment = deqp::case_program(LIBRARY_FILE, "basic.add_fragment").unwrap();
+    assert_eq!(fragment.len(), 1);
+    assert!(
+        fragment[0]
+            .1
+            .contains("dEQP_FragColor = vec4(out1[0][0], out1[0][1], out1[1][0], out1[1][1]);")
+    );
+    assert!(
+        fragment[0]
+            .1
+            .contains("wc_output_1 = uvec4(uint(out0[0]), uint(out0[1]), 0u, 0u);")
+    );
+    assert!(
+        deqp::case_program(LIBRARY_FILE, "basic.wrong_vertex")
+            .unwrap_err()
+            .contains("compile_fail")
+    );
+    let pair = deqp::case_program(LIBRARY_FILE, "pair").unwrap();
+    assert!(pair[0].1.contains("attribute highp vec4 dEQP_Position;"));
+    assert!(pair[1].1.contains("gl_FragColor = vec4(v);"));
+    for program in [&vertex, &fragment, &pair] {
+        let given: Vec<_> = program.iter().map(|(s, t)| (*s, t.as_str())).collect();
+        Nir::from_glsl(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
+    }
 }
 
 #[test]
