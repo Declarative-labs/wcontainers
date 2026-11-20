@@ -329,9 +329,10 @@ per translation (`ProgressCount::Kept`); without it the output is what it was.
 
 - **Where it lives.** The u64 at the stop flag's place becomes the limit, and the count is the u64 after it
   (offsets 800 and 808 on ARM64, `contract::progress_limit_offset` and `progress_count_offset`). Whenever
-  registers are saved the block holds the count. A piece at full or bounded look-ahead keeps it in a local,
-  loaded at its entry, written back with the registers and loaded again after a call; at none every event
-  adds to the block.
+  registers are saved the block holds the count. In translated code the count is a piece's last parameter
+  and last result, so a call passes it and gets it back with no memory access, at every look-ahead. A tail
+  call off the hot path (to a stop, to a loop's checked copy, to exact code) passes it through the block,
+  and code that carries on after a stop or a system call loads it from there.
 - **The check.** The stop check stays where it is, and tests "count >= limit" instead of the flag. Raising
   the stop writes a limit of 0.
 - **Positions.** A stop is at (count, pc), the count being the events before the instruction at pc. Between

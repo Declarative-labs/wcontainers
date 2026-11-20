@@ -1306,9 +1306,25 @@ pub(crate) fn save_passed<G: Guest>(
 }
 
 /// Store the progress count in i64 local `local` into the thread block.
-fn store_count<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, local: u32) {
+pub(crate) fn store_count<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, local: u32) {
     block.push(s);
     s.local_get(local).i64_store(memarg(
+        MEMORY_STATE,
+        progress_count_offset::<G>() as u64,
+        natural_align::<u64>(),
+    ));
+}
+
+/// Load the progress count from the thread block into i64 local `local`.
+pub(crate) fn load_count<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, local: u32) {
+    push_count::<G>(s, block);
+    s.local_set(local);
+}
+
+/// Push the progress count from the thread block.
+pub(crate) fn push_count<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
+    block.push(s);
+    s.i64_load(memarg(
         MEMORY_STATE,
         progress_count_offset::<G>() as u64,
         natural_align::<u64>(),

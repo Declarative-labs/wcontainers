@@ -1874,7 +1874,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                                 float_mode: false,
                             };
                             self.write_back();
-                            self.arguments();
+                            self.rare_arguments();
                             self.sink().return_call(f);
                         }
                         _ => {
@@ -2067,6 +2067,25 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
     }
 
+    /// [`Self::arguments`] for a tail call off the hot path (to a stop, to a loop's checked copy, to exact
+    /// code): the count goes through the thread block, so its local ends before the call and does not
+    /// crowd the registers of the loop it leaves from.
+    fn rare_arguments(&mut self) {
+        let block = self.fixed(G_THREAD_BLOCK);
+        let count = self.count;
+        let mut s = self.sink();
+        if let Some(count) = count {
+            store_count::<G>(&mut s, block, count);
+        }
+        for i in 0..G::PASSED {
+            s.local_get(i);
+        }
+        s.local_get(G::L_RETURN).local_get(G::L_DEPTH);
+        if count.is_some() {
+            push_count::<G>(&mut s, block);
+        }
+    }
+
     /// Copy every register whose place in the thread block may be stale there, and the flags too.
     fn write_back(&mut self) {
         self.write_back_registers();
@@ -2254,7 +2273,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         if let AfterStop::Hand(f) = after {
             self.write_back();
-            self.arguments();
+            self.rare_arguments();
             self.sink().return_call(f).end();
             return;
         }
@@ -2268,7 +2287,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .end();
         match after {
             AfterStop::Enter(f) => {
-                self.arguments();
+                self.rare_arguments();
                 self.sink().return_call(f);
             }
             AfterStop::Reload(live) => {
@@ -2292,19 +2311,23 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         self.sink().end();
     }
 
-    /// Load registers from the thread block: the tracked ones in `live`, and the passed ones but the
-    /// parameter `skip`.
+    /// Load registers from the thread block: the tracked ones in `live`, the passed ones but the parameter
+    /// `skip`, and the progress count, so none of them is live across the call that left.
     fn reload(&mut self, live: Registers, skip: Option<u32>) {
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in live.intersect(tracked::<G>()).bits() {
             let local = self.register(bit);
             Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
         }
+        let count = self.count;
         let mut s = self.sink();
         for (i, slot) in passed_slots::<G>().enumerate() {
             if skip != Some(i as u32) {
                 slot.load_into(&mut s, block, i as u32);
             }
+        }
+        if let Some(count) = count {
+            load_count::<G>(&mut s, block, count);
         }
     }
 
@@ -2756,7 +2779,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         }
         self.sink().local_get(local).if_(BlockType::Empty);
         self.write_back();
-        self.arguments();
+        self.rare_arguments();
         self.this_address(0);
         self.sink().return_call(G::F_EXACT).end();
         false
