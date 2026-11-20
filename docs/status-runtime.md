@@ -17,10 +17,14 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   kernel `debug_assert` (task.rs:206) that allows no already-woken parked call: asked of the kernel track.
 - The whole LTP comparison at full (ARM machine, after the hang's fix d4fe761b): 4,226 tests, 4,204 verdicts
   equal to the stand-in's. Of the 22 others, 16 are the stand-in running past the 900 s limit where the back
-  end and real Linux pass, 2 wait on the address ceiling (pth_str01, pth_str03), and 4 are the back end slower
-  than the limit (gf16, gf17, mmapstress09, mmapstress10), run again with a longer limit (section "J5 run 5").
+  end and real Linux pass, 2 wait on the address ceiling (pth_str01, pth_str03), and 4 were slower than the
+  limit with the executor: with 3,600 s gf16 and gf17 pass, and mmapstress09 and 10 wait on the progress count
+  (section "J5 run 6").
 - J5 run 6: the four slow LTP tests and the whole kernel test crate at each look-ahead on the ARM machine
-  (section "J5 run 6"); a program of this track's own against the library's public surface served a TCP
+  (section "J5 run 6"): every verdict equals the stand-in's but the known three and the tests waiting by name
+  (address ceiling: java x2, node system, python system modules, LTP pth_str01 and 03; the progress count: LTP
+  mmapstress09 and 10; the kernel's task.rs:206: outside `clients_talk_to_a_server_outside_as_linux` at full on
+  that machine). Two owned surface tests were fixed for Docker on Linux. A program of this track's own against the library's public surface served a TCP
   connection from the host and read and wrote files of a host directory at full, none and bound 7 (ARM machine).
 - Next: see "Left" at the end of section "J5 run 6".
 
@@ -198,6 +202,42 @@ size the guest is told (plan section 8), which `Machine` holds once the kernel t
   ("progress counted by stop checks", the placeholder unit), many instructions each, so the guest's 12 s takes
   far longer. These two wait on the progress count
   (the translator track builds it; with a count of the guest's instructions the clock moves as on the stand-in).
+- J5's bar: the whole kernel test crate on the ARM machine (the same job, after the LTP tests; 97f79592, which
+  differs from the tip only in names, messages, the two casts above and the owned surface tests; 12 jobs and 12
+  test threads; Docker 29.9.3; logs and lists `j5run7/arm/*.log`, `l-*.txt` by `j5run6/verdicts.sh`):
+  - Stand-in: 2,153 s, load 15 to 21; 249 tests; fails exactly the manual's 25 reference differences plus
+    procstatus fdinfo (the zig relocation) and `terminal::splice_holds_the_pipe` (its 2.5 s of real time),
+    the same list as run 4's on that machine.
+  - Full: 3,030 s, load 21 to 12. Equal to the stand-in's test by test but: align and sharedviews pass (the
+    stand-in's known failures, ignored there), counterclock across saves ignored (the executor's known
+    failure), splice_holds_the_pipe passes; waiting on the address ceiling: java `start_up_matches_reference`
+    and `threads_and_collections_match_reference`, node `system_program_matches_reference`, python
+    `system_test_modules_match_reference`; waiting on the kernel track's assertion (task.rs:206):
+    `outside::clients_talk_to_a_server_outside_as_linux` (`outside_connections_read_reset_after_a_restore`
+    passed this time).
+  - None: 1,525 s, load 12 to 22; 241 tests (the eight tests of the K6b runtimes' files left out by name, as
+    since run 2: go `program_matches_reference`, java x2, node x2, python x3). Equal to the stand-in's but the
+    known three and splice_holds_the_pipe, as at full; the outside tests pass.
+  - Bounded (N 44, seed 0): 4,152 s, load 22 to 35; 249 tests. Equal to the stand-in's but the known three and
+    the four waiting on the address ceiling, as at full; splice_holds_the_pipe failed on both sides; the
+    outside tests pass.
+  - So every verdict at full, none and bounded equals the stand-in's, test by test, but the known three, the
+    tests waiting by name above, and splice_holds_the_pipe's real-time reading (failed on the stand-in, passed
+    at full and none). The tests the manual settles on the Mac were run there at the same commit (run 5): all
+    pass on every side.
+  - The eight runtimes' tests at none, run apart (ARM machine, copy `runtime-check` at 1d09248f, 8 jobs, a 100
+    minute limit, load 22 to 28; `j5run7/arm/runtimes-none.log`): go `program_matches_reference` passes (1,247
+    s), node `start_up_matches_reference` and python `system_program_matches_reference` pass; java x2, node
+    `system_program_matches_reference` and python `system_test_modules_match_reference` fail on the address
+    ceiling as at full ("Could not allocate compressed class space", "address above the address space");
+    python `language_test_modules_match_reference` had not ended at the limit (it passes on the stand-in and at
+    full and bounded). So none left out nothing but that one, for its time.
+- Left for J5: the kernel track's fix of task.rs:206 (outside `clients_talk_to_a_server_outside_as_linux` at
+  full on the ARM machine); the address ceiling's move (java x2, node system, python system modules, LTP
+  pth_str01 and pth_str03); the progress count (LTP mmapstress09 and mmapstress10). Nothing of this track's own
+  is left to build for J5. The literal list: spec.rs's JSON keys and other reasons (hard cases 1 and 2, the
+  orchestrator's ruling), the kernel's defaults (step 13) and the constants waiting on the kernel and
+  translator; baseline lines unchanged this run (runtime 265, wasmtime 94, the driver 31).
 
 ## J5 run 5 (2026-11-19, the task's run 4; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running; and the rented ARM machine)
 
