@@ -143,7 +143,7 @@ Measured:
   test at seed 6061: pass. Bounded against none, x86: 4 cases a program at seed 1, and 40 a program at seed
   6062 (74 s): pass.
 - The program another thread changes: passes (29 s, load 3); the mutation above timed out at 200 s.
-- The suite at b38ce04a, rented x86-64 machine (`x6r2-suite-x86m-attach.log`, `x6r2-suite-x86m-full.log`, 3,319
+- The suite at b38ce04a, rented x86-64 machine (`x6r2-suite-x86m-attach.log`, `x6r2-suite-x86m-full.log/suite.log`, 3,319
   s, load 2 to 24 on 96): clippy with warnings denied for the five crates passes; 120 passed, 15 ignored, 30
   failed, the same 30 kinds as X5 run 8 and for the same reasons: 25 ARM64 tests (no ARM64 reference there),
   `every_form_matches_the_cpu_x86_64`, `sample_matches_the_cpu_in_chrome_x86_64` and
