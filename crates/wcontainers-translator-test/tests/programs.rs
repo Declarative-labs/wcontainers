@@ -595,3 +595,27 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     );
     (native, best, Some(in_chrome))
 }
+
+/// A jump through a register to outside its function is a tail call, no slow path; one to inside its function
+/// that no table explains is, counted each time it runs; a switch whose table's address its function keeps in
+/// its frame is a table explained. The program makes `ROUNDS` of each, for speed and for size.
+#[test]
+fn only_jumps_inside_their_function_are_unrecognised() {
+    const ROUNDS: u64 = 1200;
+    let blob = build_with(
+        "register_jumps",
+        "-O0",
+        Library::None,
+        &[&format!("ROUNDS={ROUNDS}")],
+    );
+    let theirs = native(&blob);
+    for optimise in [Optimise::Speed, Optimise::Size] {
+        let (ours, machine, _) = translated_for(&blob, (LookAhead::Full, optimise));
+        assert_eq!(ours, theirs, "for {optimise:?}");
+        assert_eq!(
+            machine.count(Reason::JumpThroughRegisterNotRecognised),
+            ROUNDS,
+            "for {optimise:?}"
+        );
+    }
+}

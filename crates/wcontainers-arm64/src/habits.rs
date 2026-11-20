@@ -105,8 +105,58 @@ fn constant(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<u64> {
             operand: Operand::Imm(value),
             ..
         } => Some(constant(before, rn, i)?.wrapping_add(value)),
+        Instruction::Load {
+            bytes,
+            signed: None,
+            address:
+                Address::Offset {
+                    base: Reg::Sp,
+                    offset,
+                },
+            ..
+        } if usize::from(bytes) == size_of::<u64>() => kept_in_frame(before, offset, i),
         _ => None,
     }
+}
+
+/// The blob offset a function keeps in the frame slot at `sp + slot` before `end`: what the nearest store to the
+/// slot wrote, with `sp` unchanged since.
+fn kept_in_frame(before: &[(u64, Instruction)], slot: i64, end: usize) -> Option<u64> {
+    let sp = Arm64::reg_bit(Reg::Sp).expect("sp has a bit");
+    let word = size_of::<u64>();
+    for i in (0..end).rev() {
+        let stored = match before[i].1 {
+            Instruction::Store {
+                bytes,
+                rt,
+                address:
+                    Address::Offset {
+                        base: Reg::Sp,
+                        offset,
+                    },
+            } if usize::from(bytes) == word => [Some((rt, offset)), None],
+            Instruction::StorePair {
+                bytes,
+                rt,
+                rt2,
+                address:
+                    Address::Offset {
+                        base: Reg::Sp,
+                        offset,
+                    },
+            } if usize::from(bytes) == word => {
+                [Some((rt, offset)), Some((rt2, offset + word as i64))]
+            }
+            _ => [None, None],
+        };
+        if let Some((rt, _)) = stored.into_iter().flatten().find(|&(_, at)| at == slot) {
+            return constant(before, rt, i);
+        }
+        if crate::guest::effects(&before[i].1).defs.has_bit(sp) {
+            return None;
+        }
+    }
+    None
 }
 
 /// How many entries the nearest bound check allows: a flag setting subtraction of an immediate (`cmp` or

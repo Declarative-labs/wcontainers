@@ -1,0 +1,83 @@
+// Jumps through a register, ROUNDS of each: a tail call to another function whose address is read from data,
+// a jump into its own function to an address no table explains (its start plus an offset worked out from
+// data), and a switch whose table's address the function keeps in its frame. Exits with the low bits of what
+// the calls gave back.
+.text
+.globl _start
+_start:
+  ldr x19, =ROUNDS
+  mov x20, #0
+1:
+  mov x0, x20
+  bl apply
+  mov x20, x0
+  mov x1, #1
+  mov x2, #0
+  bl wander
+  add x20, x20, x0
+  mov x0, x19
+  bl choose
+  add x20, x20, x0
+  subs x19, x19, #1
+  b.ne 1b
+  and x0, x20, #0x7f
+  mov x8, #93
+  svc #0
+
+// A tail call through a register.
+apply:
+  adr x9, next
+  ldr x9, [x9]
+  br x9
+
+step:
+  add x0, x0, #3
+  ret
+
+// With x1 set, jumps to its own second instruction, which gives back 2; x2 is 0.
+wander:
+  cbnz x1, 2f
+  mov x0, #2
+  ret
+2:
+  adr x9, wander
+  adr x10, inside
+  ldr x10, [x10]
+  eor x10, x10, x2
+  add x9, x9, x10
+  mov x1, #0
+  br x9
+
+// A switch on the low two bits of x0, its table's address kept at sp + 16.
+choose:
+  sub sp, sp, #32
+  adr x1, cases
+  str x1, [sp, #16]
+  and x0, x0, #3
+  cmp x0, #3
+  b.hi 9f
+  ldr x1, [sp, #16]
+  ldrb w0, [x1, x0]
+  adr x1, 3f
+  add x0, x1, x0, lsl #2
+  br x0
+3:
+  mov x0, #10
+  b 9f
+  mov x0, #20
+  b 9f
+  mov x0, #30
+  b 9f
+  mov x0, #40
+9:
+  add sp, sp, #32
+  ret
+
+.data
+cases:
+  .byte 0, 2, 4, 6
+.balign 8
+next:
+  .quad step
+inside:
+  .quad 4

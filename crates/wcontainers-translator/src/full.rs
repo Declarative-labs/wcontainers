@@ -2332,12 +2332,17 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .iter()
             .filter_map(|c| self.function.at.get(c).map(|&b| (*c, b)))
             .collect();
-        if present.is_empty() {
+        // Cases that start pieces of their own (a function cut in parts): a jump to one is a tail call.
+        let elsewhere: Vec<u64> = cases
+            .iter()
+            .copied()
+            .filter(|c| !self.function.at.contains_key(c) && self.index.contains_key(c))
+            .collect();
+        let known = || present.iter().map(|c| c.0).chain(elsewhere.iter().copied());
+        let (Some(lo), Some(hi)) = (known().min(), known().max()) else {
             self.unrecognised_jump(target);
             return;
-        }
-        let lo = present.iter().map(|c| c.0).min().unwrap();
-        let hi = present.iter().map(|c| c.0).max().unwrap();
+        };
         let slots = (hi - lo) / G::ALIGN + 1;
         // The engines take at most this many targets in one `br_table`.
         if slots > BR_TABLE_TARGETS {
@@ -2355,12 +2360,20 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             self.stop_check(Pc::Local(target), AfterStop::Reload(live));
         }
         let index = self.temporary(ValType::I64);
+        let at = self.at;
+        if !elsewhere.is_empty() {
+            self.sink().block(BlockType::Empty);
+            self.labels.push(Label::Other);
+        }
         self.sink().block(BlockType::Empty);
         self.labels.push(Label::Other);
         let mut labels = Vec::new();
         for k in 0..slots {
-            let label = match present.iter().find(|c| c.0 == lo + G::ALIGN * k) {
+            let case = lo + G::ALIGN * k;
+            let label = match present.iter().find(|c| c.0 == case) {
                 Some(&(_, b)) => self.depth(self.label_for(b).unwrap()),
+                // The block around this one.
+                None if elsewhere.contains(&case) => 1,
                 None => 0,
             };
             labels.push(label);
@@ -2392,21 +2405,57 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .br_table(labels, 0)
             .end();
         self.labels.pop();
-        // Made the target again here, so that the engine works it out only when no case is taken.
+        // Made the target again on each way out, so that the engine works it out only when no case is taken.
         let register = self.register(G::reg_bit(rn).expect("a general register"));
         G::branch_target(self, register);
         self.sink().local_set(target);
         self.unrecognised_jump(target);
+        if !elsewhere.is_empty() {
+            self.sink().end();
+            self.labels.pop();
+            self.at = at;
+            G::branch_target(self, register);
+            self.sink().local_set(target);
+            self.write_back();
+            self.leave_through_lookup(target);
+        }
     }
 
-    /// Leave the piece through the lookup, counted.
+    /// Leave the piece through the lookup. A jump to outside its function is a tail call, which costs what a call
+    /// through a register costs; one to inside it is a table left unrecognised, the slow path, counted.
     fn unrecognised_jump(&mut self, target: u32) {
         self.sites[Reason::JumpThroughRegisterNotRecognised as usize] += 1;
         self.write_back();
-        self.sink()
+        let offsets = &self.function.offsets;
+        let first = offsets
+            .iter()
+            .copied()
+            .min()
+            .expect("a function has an instruction");
+        let last = offsets
+            .iter()
+            .copied()
+            .max()
+            .expect("a function has an instruction");
+        let load = self.fixed(G_LOAD_ADDRESS);
+        let mut s = self.sink();
+        s.local_get(target);
+        load.push(&mut s);
+        s.i64_sub()
+            .i64_const(first as i64)
+            .i64_sub()
+            .i64_const((last - first) as i64)
+            .i64_le_u()
+            .if_(BlockType::Empty)
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)
-            .call(F_WARN);
+            .call(F_WARN)
+            .end();
+        self.leave_through_lookup(target);
+    }
+
+    /// Call the piece for the guest address in `target` as a tail call, the registers written back.
+    fn leave_through_lookup(&mut self, target: u32) {
         let piece = self.look_up(target);
         self.arguments();
         self.call_looked_up(piece, target, true);
