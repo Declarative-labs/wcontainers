@@ -4,6 +4,19 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## For the orchestrator
 
+- The literal check fails on this branch since the fifteenth run's merge of origin/phase-1, with
+  one finding only: "literals.baseline was started more than once, by 68214b2eec10, da21d326f277".
+  da21d326 is the streams track's own start of the baseline ("took the literal check from
+  phase-1-literals at 7668c010 and started the streams baseline"), which origin/phase-1 carries;
+  this branch's baseline started from phase-1-literals' 68214b2e. No change in the tree can settle
+  it and history is not rewritten here: it needs the literals track's or the orchestrator's ruling.
+  Every other finding is settled (the baseline went from 8487 to 8451 lines with the merge).
+- The merge of origin/phase-1 renamed `wcontainers_abi::Syscall` to `SystemCallRequest` and made
+  the kernel's host the `System` trait, so this branch also changed, minimally, crates it does
+  not own but carries: wcontainers-runtime (its `Outside` now requires `System`, the stream
+  methods' new names, the start's new fields), wcontainers-wasmtime and wcontainers-translator-test
+  (the renamed request type). Their owners will meet the same edits when they merge phase-1.
+
 - K6c's bar rests on the gap list's entries past plan section 15, decided by the eleventh run
   without the owner's answer (Questions; Known gaps, first part): page residency (mincore03,
   mlock201, mlock05, mmap12, vma01), the test harness (fork09, creat05, fcntl12, fcntl12_64,
@@ -19,6 +32,14 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   ARM64 machine (native Docker, no vsock link); the Mac's run was stopped at 07:40 on the 19th.
 
 ## Where things stand
+
+K6c, fifteenth run: origin/phase-1 (the streams track's embedder trait, hooks, watches and
+ceiling) is merged, with the conflicts settled so both sides' tests keep working; a large write
+to the backend no longer redoes its earlier parts at each run of the call (a test); a ceiling
+smaller than the stack's random move is refused instead of underflowing. K6c's bar is still not
+met: ADSP038 has no verdict yet (a four-hour run at f84695a7 ends by 12:46 UTC, the twelve-hour
+run by 17:14 UTC), the gap list past section 15 waits for the owner, and the literal check fails
+on the second baseline start the merge brought (For the orchestrator). See "K6c, fifteenth run".
 
 K6c, fourteenth run: every finding of the thirteenth run's check is answered (see "K6c,
 fourteenth run"), and the runtime track's assertion (a call woken while it parks) is fixed with a
@@ -132,6 +153,79 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, fifteenth run
+
+origin/phase-1 brought the streams track's second milestone (44 commits: the embedder's `System`
+trait with task ids, hooks, watches on memory, the written-page record, the executor's ceiling,
+`SystemCallRequest`, the stream methods' new names). Merged as 8620f9be. How the conflicts were
+settled, so both sides' tests keep working:
+- The test driver keeps this track's shape (the runtime crate's loop, a lock per field) and takes
+  phase-1's hooks: `TestHost<H = NoHooks>`, `System` for the test host with and without hooks,
+  `Prepared::hooks` and `ceiling`, `run_with_client` and `StreamClient`, the idle step's
+  `between_steps`. A saved host now goes on in place (`move_on`) so the hooks go with it.
+- Mapping placement keeps this track's Linux search (below the program and its heap, down to the
+  lowest address; layout randomization) on phase-1's ceiling: the map's base is `mmap_base` of
+  the ceiling, phase-1's `mmap_gap` went (its test now checks `mmap_base`), and
+  `find_free_beside` lost the heap floor it no longer uses. Guard pages and watches both narrow
+  a page's permissions; `dup_mmap` (phase-1's `copy_map`) takes the guards as before.
+- A command line read through /proc is read from anonymous memory only and meets the watches;
+  process_vm_readv and writev on another process meet that process's watches; the kernel's
+  writes into another process's memory are announced as written by the calling thread.
+- The literal check: the baseline conflict was settled as docs/literals.md says (both sides'
+  lines, then the lines the check printed as gone deleted: 8487 to 8451 lines); one fact was
+  defined twice by the merge (`STACK_ALIGNMENT`, now signal.rs's alone), the driver's salts and
+  ranges are named, and the embedder test's task id pool starts at 100 (1000 restated
+  `OOM_SCORE_ADJ_MAX`). One finding stays, from history (For the orchestrator).
+- Found by phase-1's ceiling test (`a_small_ceiling_is_kept_and_a_first_program_past_it_is_refused`,
+  failing at the merge): with layout randomization a ceiling smaller than the stack's random
+  move underflowed the stack's top; it is now no room, which the ceiling check refuses (be0cb221).
+
+ADSP038, the bar's last test without a verdict. Measured with a probe image (the suite's tar
+with a runtest `probe` of `aiodio_sparse -o 4 -w 18192k -n N`; ARM machine, 08:29 to 08:46 UTC,
+load 15 to 23, at 8620f9be): 1 reader 82.6 s, 32 readers 104.1 s, 128 readers 326.4 s, and
+every run warned "backend question asked again" (16). A profile of the twelve-hour run (perf, 30
+s, 3 h 16 min in) showed the kernel's own work, not the guest, taking the time. The cause in
+the code: a write to the backend goes one message (128 KiB) at a time, and each answer ran the
+call again from the start, so each run copied the whole buffer out of the program again and
+fingerprinted every part already answered: for an 18 MiB write about 2.6 GB copied and 1.3 GB
+hashed (expected from the code, not measured), all charged to the writer as system time, which
+the fair scheduler then makes wait while every reader runs as long. And io_submit's next
+request's first answer met the previous request's replies, so it was asked again. Fixed
+(f84695a7): what the backend took of a write is kept between the call's runs (a checkpoint of
+the replies, keyed by node and offset, with whether a short answer ended it), and each run reads
+only the rest of the buffer and asks only the next part; not for appends, nor where a mapped
+file's page cache must take the whole write. Test: backend `large_writes_match_reference`
+(guest/backendlargewrite.c: a write, a pwrite and a writev of many messages, three asynchronous
+writes submitted together, the file read back, on both kinds of backend) failed before the fix
+(the warning; ARM machine, 08:41 UTC) and passes after; backend, aio, write, splice, transfer
+and rootbackend give the known ARM list only (08:44 UTC, load 20).
+With the fix, ADSP037 (512 readers) passes in 4282.6 s (before: 4467 s; ARM machine, job
+kernel-p/20261120-084611-1359804 at f84695a7, 08:46 to 09:58 UTC, two side by side, load 10 to
+23), without the "asked again" warning. So the writer's repeated work was not what makes these
+tests slow: most of the time goes to the readers. What the profiles show (ADSP038 at 684b15ec
+and at f84695a7, perf, 20 to 30 s each): the kernel's own work per reader's read (`settle`, the
+thread table's lookups, the stand-in's context switches between 1000 threads) and not the guest.
+Each reader reads 4 KiB at a time from a backend file that is not mapped, so every read is a
+backend message (no page cache for unmapped backend files; Linux's readers hit its page cache),
+and the writer's next part waits behind every reader's. Expected, not measured: a page cache for
+unmapped backend files, or cheaper per-thread bookkeeping, is what would shorten it.
+ADSP038 at f84695a7 runs beside it with a four-hour limit (same job; results
+target/ltp-k6c15/adsp.tsv in the kernel-p folder there, followed into scratch
+k6c15/adsp-attach.log; ends by 12:46 UTC), and the twelve-hour run at 684b15ec goes on (ends by
+17:14 UTC).
+
+Whole suite at the merge, 8620f9be, on the ARM machine (`cargo test -j 12 -p wcontainers-abi -p
+wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast -- --test-threads=4`, 08:28 to 10:00
+UTC, load 13 to 37, beside the LTP runs; scratch k6c15/suite-attach.log, k6c15/fail15.txt): 272
+passed, 37 failed, 6 ignored. The 37 are the known ARM list (k6c14/fail14.txt) and phase-1's
+ceiling test, fixed since (be0cb221; the embedder tests that need no reference pass on the x86
+machine; the others need an ARM64 reference). On the Mac at f84695a7 (k6c15/mac4.sh, mac4.log;
+08:46 to 08:51 UTC, load 5 to 8): layer 1 seeds 9191120, 9191121 and 9191122 (300 in memory, 32
+on the backend, 32 cached each) matched, every test of the Mac list passed, and timers passed 3
+of 3. write and tmpfsfull passed on the Mac at 265fd927. Literals at 265fd927: only the second
+start (For the orchestrator); the baseline is 8448 lines (8487 before the merge).
+FINAL_SUITE
 
 ## K6c, fourteenth run
 
@@ -4587,6 +4681,21 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the fifteenth run: three things stand between the bar and the independent check.
+1. ADSP038: read the four-hour run at f84695a7 (`arm-run --attach kernel-p
+   20261120-084611-1359804`, or `arm-run --fetch kernel-p target/ltp-k6c15/adsp.tsv
+   <scratch>/kernel/k6c15/`; ends by 12:46 UTC on the 20th) and the twelve-hour run at 684b15ec
+   (item 1 below; ends by 17:14 UTC). A pass is the reference's verdict. Then delete the ARM
+   machine's /work/target/kernel-p and /work/target/kernel-m (build folders made for this run).
+   If neither passes: the time goes to the readers' backend reads (fifteenth run), so the next
+   step is Linux's page cache for unmapped backend files (FUSE without FOPEN_DIRECT_IO keeps
+   read pages; a direct write drops the range), measured on the probe image
+   (`aiodio_sparse -o 4 -w 18192k -n N`; the fifteenth run's numbers are the baseline).
+2. The owner's ruling on the gap list past section 15 (For the orchestrator).
+3. The literal check's second baseline start (For the orchestrator); every other finding is
+   settled. Then say the bar is met; the Mac's part is scratch k6c15/mac4.sh (fresh layer 1
+   seeds from 9191123).
 
 K6c, after the fourteenth run: the bar waits only on ADSP038's verdict and the owner's
 ruling on the gap list (For the orchestrator).
