@@ -1889,7 +1889,20 @@ Handled, and proven by tests rather than assumed:
   against its build with a `nop` in each call's place, both in `native-kernel`, in alternating pairs; beside each
   pair the kernel's own share of a call is measured in the test's process over the kernel test crate's CPU side
   that runs no instructions (layer 1's method), and the bootstrap is over the pairs of both. The untranslated run
-  at EL0 is not built yet.
+  (N4 run 5) runs the same file's own instructions at EL0 in the machine, recorded beside each pair and never
+  part of the bar.
+  What a run costs before the program's first instruction is part of every workload's figure, since each run is
+  a whole process. Measured on the M5 (N4 run 18, matrix's file with its rounds skipped, three runs each): native
+  162 to 182 million cycles and 1.08 billion instructions, plain 84 to 123 million and 0.58 billion, untranslated
+  15 to 22 million and 0.04 billion. Of the native start, 164 million cycles were the monitor's answer to the
+  inside's routines request: the float state moves were found by decoding all 2^15 system registers of `msr` and
+  `mrs` through the whole decoder three times for each of two registers, and that first decode built the
+  decoder's index of forms. As built since then, the moves are found in one pass over `msr`'s
+  system registers through that form's own decode, once a process (about 16 million cycles, most of it the
+  forms table read once), and the index is built at the first translation instead (about 78 million cycles, a
+  cost of the shared decoder, crates/wcontainers-arm64/src/forms.rs, which the WebAssembly output pays too;
+  building it form by form instead of bucket by bucket gives the same index for about 0.1 million, measured
+  with a scratch patch: put to the translator track).
 
 ## 9. Milestones
 
