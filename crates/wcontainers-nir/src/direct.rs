@@ -1816,6 +1816,12 @@ impl Builder<'_> {
                             _ => source_kind,
                         };
                         let b = self.src(i, 1, count(1), right_kind)?;
+                        // The common form has no exclusive or of booleans: they differ.
+                        let o = if boolean && o == BinaryOperator::ExclusiveOr {
+                            BinaryOperator::NotEqual
+                        } else {
+                            o
+                        };
                         let comparison = matches!(
                             o,
                             BinaryOperator::Less
