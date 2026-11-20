@@ -45,7 +45,7 @@ for archive, obj in sorted(linked):
         licence, shown = "unknown object", path
     else:
         shown = os.path.relpath(source, source_root)
-        head = open(source, errors="replace").read(8192)
+        head = open(source, errors="replace").read()
         tag = next((spdx.search(l).group(1) for l in head.splitlines() if spdx.search(l)), None)
         if tag:
             licence = tag

@@ -1936,7 +1936,6 @@ code	crates/wcontainers-direct3d-11/src/shader.rs	int	typed_views	5
 code	crates/wcontainers-direct3d-11/src/shader.rs	int	word	4
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	SignatureElement::generated	"SV_InstanceID"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	SignatureElement::generated	"SV_VertexID"
-code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"an atomic minimum or maximum of the other signedness (AtomicExchangeLoop)"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders converted into several program stages"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders that read helper constants the front does not write"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	convert	"SampleCount"
