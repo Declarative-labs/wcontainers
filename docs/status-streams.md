@@ -18,8 +18,10 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   are settled in S3's first run (see "S3").
 - S3 (the orchestrator's 2026-11-20 section of the brief): all three parts are built and tested
   (signals as an input, shared memory announced per process with the memory id, and suspend and
-  resume by task with a process context, the last in run 2). What is left: the independent
-  check. See "S3".
+  resume by task with a process context, the last in run 2); run 3 made a task taken in its call
+  answer as Linux's stop makes it answer (the brief's 03:00 and 04:00 rules). What is left: the
+  speed with no hook implemented shown unchanged or ruled on, and the independent check. See
+  "S3".
 - Waiting, not to be built in S3 (the brief's list): the kernel generic over its `System` and
   `ProcessState` (after the kernel track merges); `wake_waiters` and `move_waiters`; the
   scheduling rule for Serial and Parallel tasks sharing memory; moving crates into the layout.
@@ -95,10 +97,39 @@ Run 2 did part 3, suspend and resume by task with a process context (suspend.rs)
   process moved to a second `Kernel` value, checked there by memory id and size, and brought
   back). The output equals the reference's in every case. With the futex line leaving disabled,
   the hooks plan hangs (the mutex waiter's wake is lost): checked once on the ARM machine.
-- Not covered by a test: a message queue waiter taken (the same code path as the semaphore's);
+- Not covered by a test: a message queue waiter taken (it leaves its line as the futex waiter does);
   running a moved process on the second kernel (only its state is checked there). The semaphore
   waiter would also go on correctly on the same kernel without leaving its line (its result is
   kept by its number), so only the futex case is shown to need it.
+
+Run 3 did the brief's rules of 2026-11-20 03:00 and 04:00 (written after run 2 ended):
+- A task taken in its call (parked, or woken and not yet run) is treated as Linux treats a signal
+  with no handler arriving in that call: the thread's `suspended_in_call` makes `signal_pending`
+  true for the call's next run (Linux's freezer wake), cleared once that run has been made, and
+  each call answers by its own code; the restart codes then run it again. Waiters in lines a wake
+  chooses from leave them when taken: a futex wait (its deadline dropped, so it answers as
+  interrupted and `restart_syscall` keeps its time), a semaphore operation (told EINTR, Linux's
+  answer after a stop), a message queue send or receive. This replaced run 2's restart from the
+  instruction for those three and its "keeps its call and goes on waiting" for the rest.
+- The per-call list (restart, go on with the time left, answer what was done, EINTR) is in
+  docs/embedder-interface.md, "Suspending and resuming tasks".
+- Test: `a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer`
+  (guest/stopped.c, its own program: a child's seven threads wait in a futex wait, a futex wait
+  already woken, a 600 ms sleep, a write of twice the pipe's size, a semaphore operation,
+  `epoll_wait` and a pipe read; the parent stops the child, changes and wakes the futex and reads
+  the semaphore's waiter count while it is stopped, continues it, writes the byte and empties the
+  pipe). The reference is stopped and continued with SIGSTOP and SIGCONT; ours is taken off the
+  kernel between steps and put back, the parent's `kill` answered 0 and its wait for the stop
+  answered with the child (the parent is taken at that wait so the kernel goes idle). Two plans
+  (`suspend_process` then `resume_process` and `resume_tasks`; `suspend_tasks` of every thread put
+  back in reverse), 3 seeds each. Every answer equals the reference: EAGAIN, 0, 0 having slept the
+  whole 600 ms, 65536, EINTR, EINTR, 1; the wake while stopped finds nobody (0), no semaphore
+  waiter. With `suspended_in_call` left out of `signal_pending` it fails (the epoll wait never
+  ends).
+- embedder.c `suspend`'s semaphore taker takes again after EINTR (the reference never sees one).
+- stopped.c is its own program because adding it to embedder.c made Nix's zig 0.16.0 on the ARM
+  machine emit an object with undefined section symbols (`ld.lld: undefined symbol:` with no
+  name), as the manual says it does for fdinfo.c; the Mac's zig was not tried.
 
 Open points for the check and the owner (also in "Departures"):
 - A thread that exits while its siblings are away is, to the kernel, the last thread of its
@@ -875,12 +906,17 @@ anything shipped.
 
 - S3, suspend and resume (choices where the ruling is silent, for the owner): the kernel's calls
   take the executor (`cpu`) as `Kernel::process` does, and return the concrete `vec::IntoIter`
-  (an iterator that borrows nothing of the kernel). A call waiting in a line the kernel keeps
-  outside the task (futex, System V semaphore, POSIX message queue) is taken out of the line and
-  made again when the task is resumed, as Linux restarts a call a stop interrupted; every other
-  waiting call keeps its place in the call and resumes waiting, as ruled. The reason: a task
-  away cannot be told of a wake, and a futex wait that kept its place would lose it (the test
-  shows the hang). Inside a hook, a task the kernel is in the middle of a step for cannot be
+  (an iterator that borrows nothing of the kernel). A task taken in its call answers as Linux's
+  stop makes it answer (the brief's 04:00 rule). The interruption is seen by the call when the
+  task is put back, not when it is taken: running a call inside a hook would announce hooks
+  inside a hook, and the kernel's calls do not take the `System`. Nothing of the task runs in
+  between, so this is Linux's stop arriving at the moment of resumption; waiters in a line a
+  wake chooses from (futex, semaphore, message queue) leave it when taken, so a wake while away
+  never chooses them. One consequence: a write half done whose pipe is emptied while it is away
+  writes more before it answers, where a stop on Linux at the moment of taking would have
+  answered the count then (both are answers Linux can give). The orchestrator's 04:00 note lists
+  `epoll_wait` among calls that start again; Linux answers EINTR there after a stop (signal(7),
+  and the reference agrees), so the kernel follows Linux. Inside a hook, a task the kernel is in the middle of a step for cannot be
   taken; it is left out and counted, except at `intercept_system_call_request` (taken before its
   call). `suspend_process(self)` on the handle, when such a task is its own, leaves the process
   and answers a copy of the context with the tasks taken. `copy_process_context` shares the
