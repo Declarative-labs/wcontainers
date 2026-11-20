@@ -608,6 +608,109 @@ fn hull_and_domain_shaders_declare_what_they_are() {
     }
 }
 
+/// An own shader as fxc (`dxbc`) or dxc (`dxil`) builds it, converted under the default key.
+fn converted_own(name: &str, ext: &str) -> Converted {
+    let file = format!("{name}.{ext}");
+    let bytes = own(&file);
+    let source = match ext {
+        "dxbc" => Source::Dxbc(&bytes),
+        _ => Source::Dxil(&bytes),
+    };
+    convert(source, &VariantKey::default(), None).unwrap_or_else(|e| panic!("{file}: {e:?}"))
+}
+
+/// Hull shaders taking three control points and giving four, each holding the position, a vector and
+/// an array of rows (which dxc writes as one array of rows), and the domain shader reading them: the
+/// two builds make the same records (the same extras and inputs), so either build's hull stage hands
+/// its values to either build's domain stage (drawn in tests/tessellation_draw.rs).
+#[test]
+fn hull_values_make_the_same_records_on_both_routes() {
+    for hs in [
+        "hs_values_odd_ccw",
+        "hs_values_even_cw",
+        "hs_values_integer_point",
+    ] {
+        let [dxbc, dxil] = ["dxbc", "dxil"].map(|ext| converted_own(hs, ext));
+        let StageExtras::Hull {
+            input_control_points,
+            output_control_points,
+            ..
+        } = dxbc.reflection.extras
+        else {
+            panic!("{hs}: {:?}", dxbc.reflection.extras);
+        };
+        assert_eq!(
+            (input_control_points, output_control_points),
+            (3, 4),
+            "{hs}"
+        );
+        assert_eq!(dxbc.reflection.extras, dxil.reflection.extras, "{hs}");
+        // In any order; a system value is linked by its kind.
+        let named = |c: Converted| {
+            let mut values = c.reflection.inputs;
+            for v in values.iter_mut().filter(|v| v.system.is_some()) {
+                v.semantic.clear();
+            }
+            values.sort_by_key(|v| format!("{v:?}"));
+            values
+        };
+        assert_eq!(named(dxbc), named(dxil), "{hs}: the builds' inputs");
+    }
+    for ext in ["dxbc", "dxil"] {
+        let c = converted_own("ds_values", ext);
+        assert_eq!(
+            c.reflection.extras,
+            StageExtras::Domain {
+                domain: 0,
+                input_control_points: 4,
+            },
+            "ds_values.{ext}"
+        );
+        wgsl(&c.modules[0]);
+    }
+}
+
+/// dxc's build of each own geometry shader reflects the outputs fxc's does: each at its stream,
+/// register and semantic, the streams past the first included (`gs_streams`).
+#[test]
+fn dxil_geometry_outputs_match_dxbc_on_every_stream() {
+    for gs in [
+        "gs_quads",
+        "gs_cut",
+        "gs_instances",
+        "gs_lines",
+        "gs_points",
+        "gs_unplaced",
+        "gs_adjacent",
+        "gs_line_adjacent",
+        "gs_clip",
+        "gs_streams",
+    ] {
+        let keyed = |c: Converted| {
+            let mut keys: Vec<_> = c
+                .reflection
+                .outputs
+                .iter()
+                .map(|v| {
+                    (
+                        v.stream,
+                        v.semantic.clone(),
+                        v.semantic_index,
+                        v.system,
+                        v.register,
+                        v.location,
+                        v.scalar,
+                    )
+                })
+                .collect();
+            keys.sort_by_key(|k| format!("{k:?}"));
+            keys
+        };
+        let [dxbc, dxil] = ["dxbc", "dxil"].map(|ext| keyed(converted_own(gs, ext)));
+        assert_eq!(dxbc, dxil, "{gs}");
+    }
+}
+
 #[test]
 fn the_tessellator_program_validates() {
     let m = stage::tessellator_program().unwrap();

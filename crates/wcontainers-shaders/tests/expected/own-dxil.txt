@@ -16,6 +16,7 @@ cs_view_sampled.dxil	ok views:R32Float ; glsl absent compute
 ds_line.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_quad.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_tri.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_values.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | ARRAY_OF_ARRAYS | DYNAMIC_ARRAY_SIZE)
 gs_adjacent.dxil	ok ; glsl absent compute
 gs_clip.dxil	ok ; glsl absent compute
 gs_cut.dxil	ok ; glsl absent compute
@@ -29,6 +30,7 @@ gs_tess_line.dxil	ok ; glsl absent compute
 gs_tess_point.dxil	ok ; glsl absent compute
 gs_tess_tri.dxil	ok ; glsl absent compute
 gs_unplaced.dxil	ok ; glsl absent compute
+gs_values_tess.dxil	ok ; glsl absent compute
 hs_line_even_line.dxil	ok ; glsl absent compute
 hs_line_even_point.dxil	ok ; glsl absent compute
 hs_line_integer_line.dxil	ok ; glsl absent compute
@@ -61,6 +63,9 @@ hs_tri_odd_point.dxil	ok ; glsl absent compute
 hs_tri_pow2_ccw.dxil	ok ; glsl absent compute
 hs_tri_pow2_cw.dxil	ok ; glsl absent compute
 hs_tri_pow2_point.dxil	ok ; glsl absent compute
+hs_values_even_cw.dxil	ok ; glsl absent compute
+hs_values_integer_point.dxil	ok ; glsl absent compute
+hs_values_odd_ccw.dxil	ok ; glsl absent compute
 ps_array.dxil	ok ; glsl compiles
 ps_cases.dxil	ok ; glsl compiles
 ps_clip.dxil	ok ; glsl compiles
