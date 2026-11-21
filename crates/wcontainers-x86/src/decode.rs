@@ -27,6 +27,9 @@ pub struct Instruction {
     pub too_long: bool,
     /// For an x87 instruction, its opcode as FOP keeps it: the escape byte's low three bits, then ModRM.
     pub x87_opcode: u16,
+    /// A 128-bit lane of a VEX instruction run as its legacy form (`crate::vex`): its memory operand needs no
+    /// alignment and is already checked when the instruction is 256 bits wide.
+    pub vex_lane: bool,
 }
 
 /// `wait`'s opcode.
@@ -38,6 +41,15 @@ const X87_ESCAPE_MASK: u8 = 0xf8;
 /// The claim of a `Code` (`claims::CLAIM_*`, or a told feature's), from iced's tables at build time.
 pub fn claim(code: Code) -> u8 {
     groups::GROUPS[code as usize]
+}
+
+/// The legacy form a 128-bit lane of a VEX `Code` runs, and how its operands map (`lanes.rs`).
+pub fn lane_form(code: Code) -> (Code, u8) {
+    let (form, kind) = groups::LANE_FORMS[code as usize];
+    (
+        Code::try_from(usize::from(form)).unwrap_or(Code::INVALID),
+        kind,
+    )
 }
 
 /// The told feature a claim names, by its place in `claims::TOLD_FEATURES`.
@@ -100,6 +112,7 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
             operand_size_prefix,
             too_long,
             x87_opcode,
+            vex_lane: false,
         },
         length,
     ))

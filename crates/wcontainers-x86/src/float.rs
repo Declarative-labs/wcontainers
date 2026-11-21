@@ -506,7 +506,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     let mem = memory_use(i).map(|kind| {
         let at = address(e, i);
         let bytes = memory_bytes(i);
-        if bytes == XMM_BYTES {
+        if bytes == XMM_BYTES && !i.vex_lane {
             crate::simd::aligned16(e, at);
         }
         e.check(at, bytes, check_kind(kind), 0);
@@ -607,10 +607,18 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             op => op,
         };
     }
-    let immediate = if ins.op_count() > 2 {
-        ins.immediate8()
-    } else {
-        0
+    let immediate = match ins.op_count() {
+        // A legacy compare takes three bits of its predicate, a VEX one five.
+        count if count > 2 && op == Operation::Compare => {
+            ins.immediate8()
+                & if i.vex_lane {
+                    crate::exact::VEX_PREDICATES
+                } else {
+                    PREDICATE_MASK
+                }
+        }
+        count if count > 2 => ins.immediate8(),
+        _ => 0,
     };
     // A conversion naming an MMX register makes the change to the x87 side (one from memory does not)
     // before its own exceptions, after the slow path's test, which comes before anything is written.
@@ -623,12 +631,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     if e.float_mode() {
         e.sink().if_(BlockType::Empty);
         transition(e);
-        exact(
-            e,
-            encode(op, double, scalar, immediate, destination.unwrap_or(0)),
-            b,
-            r,
-        );
+        exact(e, encode(op, double, scalar, immediate), a, b, r);
         e.sink().else_();
         transition(e);
         fast(e, op, double, scalar, immediate, a, b, r);
@@ -695,14 +698,18 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     }
 }
 
-/// The exact path: the hook does the instruction on the destination register and `b` into `r`, or stops the thread with the
-/// unmasked exception it met.
-fn exact<E: Emitter<X86_64> + ?Sized>(e: &mut E, code: i32, b: u32, r: u32) {
+/// The exact path: the hook does the instruction on `a` (the destination's value) and `b` into `r`, or stops
+/// the thread with the unmasked exception it met.
+fn exact<E: Emitter<X86_64> + ?Sized>(e: &mut E, code: i32, a: u32, b: u32, r: u32) {
     let (low, high, exception) = (
         e.local(ValType::I64),
         e.local(ValType::I64),
         e.local(ValType::I64),
     );
+    for half in 0..2 {
+        e.sink().local_get(a).i64x2_extract_lane(half);
+        e.set_control(Control::FloatOperand(half));
+    }
     e.sink()
         .i32_const(code)
         .local_get(b)
@@ -807,6 +814,11 @@ fn fast<E: Emitter<X86_64> + ?Sized>(
             }
             if p & PREDICATE_NEGATED != 0 {
                 s.v128_not();
+            }
+            if immediate & crate::exact::PREDICATE_UNORDERED_FLIPPED != 0 {
+                compare(&mut s, a, a, UNORDERED);
+                compare(&mut s, b, b, UNORDERED);
+                s.v128_or().v128_xor();
             }
             s.local_set(r);
         }

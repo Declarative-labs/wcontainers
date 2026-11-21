@@ -399,7 +399,7 @@ const QWORD: u32 = size_of::<u64>() as u32;
 const INSERTPS_SOURCE_SHIFT: u8 = 6;
 const INSERTPS_TARGET_SHIFT: u8 = 4;
 /// `mpsadbw`'s immediate: bit 2 picks dst's starting four bytes, bits 0 and 1 the source's four.
-const MPSADBW_DESTINATION_SHIFT: u8 = 2;
+pub(crate) const MPSADBW_DESTINATION_SHIFT: u8 = 2;
 /// The low 32 bits of each 64-bit lane.
 const LOW_HALVES: i128 = 0x0000_0000_ffff_ffff_0000_0000_ffff_ffff;
 /// The bits of a `pshufb` index that count: the zeroing top bit and the four of the byte's number.
@@ -530,7 +530,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     let mem = memory_use(i).map(|kind| {
         let at = address(e, i);
         let bytes = memory_bytes(i);
-        if bytes == XMM_BYTES && !matches!(m, Movups | Movupd | Movdqu | Lddqu) {
+        if bytes == XMM_BYTES && !i.vex_lane && !matches!(m, Movups | Movupd | Movdqu | Lddqu) {
             aligned16(e, at);
         }
         e.check(at, bytes, check_kind(kind), 0);

@@ -81,8 +81,6 @@ const OPERATIONS: [Operation; 22] = {
 const DOUBLE: i32 = 1 << u8::BITS;
 const SCALAR: i32 = DOUBLE << 1;
 const IMMEDIATE_SHIFT: u32 = 2 * u8::BITS;
-/// The destination xmm register's number, in the fourth byte: the hook reads its value from the block.
-const DESTINATION_SHIFT: u32 = 3 * u8::BITS;
 
 /// The comparison predicates of `cmpps` (Intel SDM Vol. 2 CMPPS, table 3-8), in the order of their numbers.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,6 +94,12 @@ enum Predicate {
     NotLessOrEqual,
     Ordered,
 }
+
+/// VEX's further compare predicates: bit 3 makes the answer for an unordered pair the other one, bit 4 swaps
+/// a signaling compare and a quiet one; a legacy form takes the low three bits alone.
+pub(crate) const PREDICATE_UNORDERED_FLIPPED: u8 = 1 << 3;
+pub(crate) const PREDICATE_SIGNALING_FLIPPED: u8 = 1 << 4;
+pub(crate) const VEX_PREDICATES: u8 = (PREDICATE_SIGNALING_FLIPPED << 1) - 1;
 
 const PREDICATES: [Predicate; 8] = {
     use Predicate::*;
@@ -129,23 +133,11 @@ pub(crate) const DOT_PRODUCT_SHIFT: u32 = u8::BITS / 2;
 /// The exceptions found before the computation, which keep it from being done when one is unmasked.
 const BEFORE: u32 = MXCSR_INVALID | MXCSR_DENORMAL | MXCSR_DIVIDE_BY_ZERO;
 
-pub fn encode(
-    operation: Operation,
-    double: bool,
-    scalar: bool,
-    immediate: u8,
-    destination: u8,
-) -> i32 {
+pub fn encode(operation: Operation, double: bool, scalar: bool, immediate: u8) -> i32 {
     operation as i32
         | if double { DOUBLE } else { 0 }
         | if scalar { SCALAR } else { 0 }
         | i32::from(immediate) << IMMEDIATE_SHIFT
-        | i32::from(destination) << DESTINATION_SHIFT
-}
-
-/// The destination register's number in the hook's i32.
-pub fn destination(code: i32) -> u8 {
-    (code >> DESTINATION_SHIFT) as u8
 }
 
 /// Run one instruction on `a` (the destination's value) and `b` (the source's) with MXCSR as it is, adding
@@ -457,18 +449,21 @@ impl Context {
         use Predicate as P;
         use core::cmp::Ordering as O;
         let p = PREDICATES[usize::from(immediate) % PREDICATES.len()];
-        let signaling = matches!(p, P::Less | P::LessOrEqual | P::NotLess | P::NotLessOrEqual);
+        let signaling = matches!(p, P::Less | P::LessOrEqual | P::NotLess | P::NotLessOrEqual)
+            != (immediate & PREDICATE_SIGNALING_FLIPPED != 0);
         let order = self.compare(signaling, a, b);
-        match p {
-            P::Equal => order == Some(O::Equal),
-            P::Less => order == Some(O::Less),
-            P::LessOrEqual => matches!(order, Some(O::Less | O::Equal)),
-            P::Unordered => order.is_none(),
-            P::NotEqual => order != Some(O::Equal),
-            P::NotLess => order != Some(O::Less),
-            P::NotLessOrEqual => !matches!(order, Some(O::Less | O::Equal)),
-            P::Ordered => order.is_some(),
-        }
+        let flipped = immediate & PREDICATE_UNORDERED_FLIPPED != 0 && order.is_none();
+        flipped
+            != match p {
+                P::Equal => order == Some(O::Equal),
+                P::Less => order == Some(O::Less),
+                P::LessOrEqual => matches!(order, Some(O::Less | O::Equal)),
+                P::Unordered => order.is_none(),
+                P::NotEqual => order != Some(O::Equal),
+                P::NotLess => order != Some(O::Less),
+                P::NotLessOrEqual => !matches!(order, Some(O::Less | O::Equal)),
+                P::Ordered => order.is_some(),
+            }
     }
 
     fn round_integral<F: Bits>(&mut self, immediate: u8, v: F) -> F {

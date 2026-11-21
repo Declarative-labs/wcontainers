@@ -75,6 +75,19 @@ pub fn xmm(r: Register) -> Option<u8> {
         .then(|| (v - Register::XMM0 as u32) as u8)
 }
 
+/// A ymm register's number (ymm0 to ymm15).
+pub fn ymm(r: Register) -> Option<u8> {
+    let v = r as u32;
+    (Register::YMM0 as u32..=Register::YMM15 as u32)
+        .contains(&v)
+        .then(|| (v - Register::YMM0 as u32) as u8)
+}
+
+/// The vector number of a ymm register's upper half.
+pub fn ymm_high(n: u8) -> u8 {
+    crate::guest::YMM_HIGH_VECTOR + n
+}
+
 /// An MMX register's number (mm0 to mm7).
 pub fn mmx(r: Register) -> Option<u8> {
     let v = r as u32;
@@ -252,6 +265,10 @@ pub fn size_of_memory(size: MemorySize) -> u32 {
         UInt128 | Int128 | Packed128_UInt8 | Packed128_Int8 | Packed128_UInt16
         | Packed128_Int16 | Packed128_UInt32 | Packed128_Int32 | Packed128_UInt64
         | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 => 16,
+        UInt256 | Int256 | Packed256_UInt8 | Packed256_Int8 | Packed256_UInt16
+        | Packed256_Int16 | Packed256_UInt32 | Packed256_Int32 | Packed256_UInt64
+        | Packed256_Int64 | Packed256_UInt128 | Packed256_Float32 | Packed256_Float64
+        | Packed256_Float128 => 2 * crate::XMM_BYTES,
         SegPtr32 | Fword6 => 6,
         SegPtr64 | Fword10 => 10,
         Float80 | Bcd => crate::X87_REGISTER_BITS / u8::BITS,

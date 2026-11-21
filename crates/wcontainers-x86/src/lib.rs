@@ -45,7 +45,11 @@ pub mod x87;
 pub mod claims;
 pub mod cpuid;
 pub mod encoding;
+#[cfg(feature = "translate")]
+mod lanes;
 pub mod offer;
+#[cfg(feature = "translate")]
+mod vex;
 
 pub use offer::{FULL_SPEED, NotBuilt, Offer, V3};
 
@@ -195,6 +199,8 @@ pub struct X86Private {
     /// Not zero when the instruction running alone loaded ss, which holds its trap back one instruction.
     pub step_held: u32,
     pub step_at: u64,
+    /// The destination's value the float hook works on, which the meaning stores before the call.
+    pub float_operand: [u64; 2],
 }
 /// The bits of an x87 slot that hold its register.
 pub const X87_REGISTER_BITS: u32 = 80;
@@ -231,6 +237,8 @@ pub const STEP_HELD: usize =
     <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, step_held);
 pub const STEP_AT: usize =
     <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, step_at);
+pub const FLOAT_OPERAND: usize =
+    <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, float_operand);
 
 /// The rflags bits of the six arithmetic flags, and those of `X86Block::rflags`.
 pub const CF: u64 = 1;

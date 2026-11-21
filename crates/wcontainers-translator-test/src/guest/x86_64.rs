@@ -1260,7 +1260,12 @@ fn general(draw: &mut Draw, width: u8) -> Register {
 
 /// An xmm register of the sixteen legacy SSE names.
 fn xmm(draw: &mut Draw) -> Register {
-    register(Register::XMM0 as u32 + draw.below(16) as u32)
+    register(Register::XMM0 as u32 + draw.below(VECTORS) as u32)
+}
+
+/// A ymm register of the sixteen VEX names.
+fn ymm(draw: &mut Draw) -> Register {
+    register(Register::YMM0 as u32 + draw.below(VECTORS) as u32)
 }
 
 /// An operand of an instruction being built.
@@ -1304,6 +1309,10 @@ fn build(code: Code, ops: &[Operand]) -> Option<Instruction> {
         [R(a), M(b), R(c)] => Instruction::with3(code, a, b, c),
         [M(a), R(b), R(c)] => Instruction::with3(code, a, b, c),
         [M(a), R(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
+        [R(a), R(b), R(c), Unsigned(d)] => Instruction::with4(code, a, b, c, d),
+        [R(a), R(b), M(c), Unsigned(d)] => Instruction::with4(code, a, b, c, d),
+        [R(a), R(b), R(c), R(d)] => Instruction::with4(code, a, b, c, d),
+        [R(a), R(b), M(c), R(d)] => Instruction::with4(code, a, b, c, d),
         _ => return None,
     };
     made.ok()
@@ -1697,7 +1706,14 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                     memory = Some(m);
                     Operand::M(m)
                 }
-                K::xmm_reg | K::xmm_rm => Operand::R(xmm(&mut draw)),
+                K::xmm_reg | K::xmm_rm | K::xmm_vvvv | K::xmm_is4 => Operand::R(xmm(&mut draw)),
+                K::ymm_reg | K::ymm_rm | K::ymm_vvvv | K::ymm_is4 => Operand::R(ymm(&mut draw)),
+                K::ymm_or_mem if draw.chance(IN_REGISTER) => Operand::R(ymm(&mut draw)),
+                K::ymm_or_mem => {
+                    let m = memory_operand(&mut draw, false, address32);
+                    memory = Some(m);
+                    Operand::M(m)
+                }
                 K::st0 => Operand::R(Register::ST0),
                 K::sti_opcode => Operand::R(register(
                     Register::ST0 as u32 + draw.below(X87_REGISTERS) as u32,

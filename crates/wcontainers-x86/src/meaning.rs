@@ -79,6 +79,7 @@ pub fn written(i: &Instruction) -> bool {
         );
     }
     if crate::simd::written(i)
+        || crate::vex::written(i)
         || crate::float::written(i)
         || crate::fpu::written(m)
         || crate::text::written(m)
@@ -131,6 +132,16 @@ pub fn is_string(i: &Instruction) -> bool {
 }
 
 fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
+    if crate::vex::written(i) {
+        crate::vex::emit(e, i, i.iced.mnemonic());
+        e.next();
+        return true;
+    }
+    legacy_meaning(e, i)
+}
+
+/// The meaning of an instruction that is not VEX-encoded, or of a lane's legacy form.
+pub(crate) fn legacy_meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     use Mnemonic::*;
     if !written(i) {
         return false;
