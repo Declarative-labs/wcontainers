@@ -326,10 +326,10 @@ impl GuestTest for X86_64 {
     }
 
     /// Intel documents its transcendental instructions' results as within one unit in the last place, not as
-    /// correctly rounded, which ours are (plan 5.8): a case of one of them is a known failure where the
-    /// reference's result differs from ours by at most one unit, with C1 and the precision flag (and the
-    /// underflow flag where a register holds a denormal; the summary and busy bits where one of those is
-    /// unmasked) as its rounding left them, and in nothing else.
+    /// correctly rounded, which ours are (plan 5.8). A case of one of them is a known failure where, and only
+    /// where, either a register the reference wrote is one unit from ours, with C1 and the precision flag (the
+    /// underflow flag where that register is a denormal; the summary and busy bits where one of those is
+    /// unmasked) as its rounding left them; or every register is ours and only C1 differs.
     fn known_failure(case: &Case, expected: &Outcome, actual: &Outcome) -> Option<&'static str> {
         use wcontainers_x86::x87::{
             BUSY, C1, Extended, PRECISION, REGISTERS, SUMMARY, UNDERFLOW, neighbours,
@@ -348,20 +348,33 @@ impl GuestTest for X86_64 {
             return None;
         }
         let (want, mut taken) = (&expected.state.0, actual.state.0.clone());
+        let with_fsw = |taken: &mut [u128], free: u16| {
+            let free = u128::from(free);
+            taken[FSW] = taken[FSW] & !free | want[FSW] & free;
+        };
+        let mut c1_only = taken.clone();
+        with_fsw(&mut c1_only, C1);
+        if c1_only == *want {
+            return Some(TRANSCENDENTAL_DIRECTION);
+        }
         let mut flags = C1 | PRECISION;
         let denormal = |bits: u128| Extended::from_bits(bits).exponent == 0;
+        let mut apart = false;
         for r in R0..R0 + REGISTERS {
-            if denormal(taken[r]) || denormal(want[r]) {
-                flags |= UNDERFLOW;
-            }
             if neighbours(taken[r], want[r]) {
+                apart = true;
+                if denormal(taken[r]) || denormal(want[r]) {
+                    flags |= UNDERFLOW;
+                }
                 taken[r] = want[r];
             }
         }
-        let unmasked = u128::from(flags) & !want[FCW] & u128::from(PRECISION | UNDERFLOW) != 0;
-        let free = u128::from(flags | if unmasked { SUMMARY | BUSY } else { 0 });
-        taken[FSW] = taken[FSW] & !free | want[FSW] & free;
-        (taken == *want).then_some(TRANSCENDENTAL_ROUNDING)
+        let unmasked = flags & !(want[FCW] as u16) & (PRECISION | UNDERFLOW) != 0;
+        with_fsw(
+            &mut taken,
+            flags | if unmasked { SUMMARY | BUSY } else { 0 },
+        );
+        (apart && taken == *want).then_some(TRANSCENDENTAL_ROUNDING)
     }
 
     fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
@@ -681,6 +694,8 @@ pub fn unwritten_forms() -> Vec<String> {
 
 /// The reason of a transcendental instruction's known failure.
 pub const TRANSCENDENTAL_ROUNDING: &str = "Intel's transcendental result is within one unit in the last place, not correctly rounded (SDM Vol. 1 8.3.10)";
+/// The reason of one whose result is ours but whose C1 is not.
+pub const TRANSCENDENTAL_DIRECTION: &str = "Intel's transcendental approximation lies on the other side of the correctly rounded result, so C1 (rounded up) differs";
 
 /// Why a default code has no form yet: the x87 unit, MMX registers and `fxsave` are milestone X7's (plan 9).
 pub const MILESTONE_X7: &str =

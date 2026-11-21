@@ -9,7 +9,7 @@ use crate::meaning::{checked, each_with};
 use crate::operand::*;
 use crate::x87::{
     Arithmetic, Code, ENVIRONMENT_WORDS, EXCEPTIONS, FOP_SHIFT, Format, NOT_STORED, OPCODE_BITS,
-    Operation, REGISTERS,
+    Operation, REGISTER_MASK, REGISTERS, TOP_SHIFT,
 };
 use crate::{CF, PF, X86_64, ZF};
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
@@ -656,11 +656,62 @@ impl Layout {
     }
 }
 
-/// ST(k)'s 80 bits, whatever its tag, as two locals.
-fn register<E: Emitter<X86_64> + ?Sized>(e: &mut E, k: u8) -> (u32, u32) {
-    let mut c = Code::new(Operation::Register);
-    c.register = k;
-    call(e, c, None, None, None)
+/// For each physical register R(n), `each` with its number and the address in a saved state at `at` of
+/// the slot of ST((n - TOP) mod 8), `stride` bytes a slot, by the TOP the status word holds now: the
+/// registers move in place, without the x87 hook.
+fn by_stack_position<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    at: u32,
+    stride: u64,
+    mut each: impl FnMut(&mut E, u8, u32),
+) {
+    let (top, slot) = (e.local(ValType::I64), e.local(ValType::I64));
+    e.get_control(Control::X87StatusTag);
+    e.sink()
+        .i32_const(TOP_SHIFT.into())
+        .i32_shr_u()
+        .i64_extend_i32_u()
+        .local_set(top);
+    for n in 0..REGISTERS as u8 {
+        e.sink()
+            .i64_const(n.into())
+            .local_get(top)
+            .i64_sub()
+            .i64_const(REGISTER_MASK as i64)
+            .i64_and()
+            .i64_const(stride as i64)
+            .i64_mul()
+            .local_get(at)
+            .i64_add()
+            .local_set(slot);
+        each(e, n, slot);
+    }
+}
+
+/// Store R(n)'s 80 bits at `slot` plus `offset`, its sign and exponent `high` bytes long.
+fn store_register<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    n: u8,
+    slot: u32,
+    offset: u64,
+    high: u32,
+) {
+    let value = e.local(ValType::I64);
+    e.get(mmx_register(n));
+    e.sink().local_set(value);
+    store_at(e, slot, offset, VALUE_LOW, value);
+    e.get_control(Control::X87High(n));
+    e.sink().i64_extend_i32_u().local_set(value);
+    store_at(e, slot, offset + u64::from(VALUE_LOW), high, value);
+}
+
+/// Load R(n)'s 80 bits from `slot` plus `offset`.
+fn load_register<E: Emitter<X86_64> + ?Sized>(e: &mut E, n: u8, slot: u32, offset: u64) {
+    load_at(e, slot, offset, VALUE_LOW);
+    e.set(mmx_register(n));
+    load_at(e, slot, offset + u64::from(VALUE_LOW), VALUE_HIGH);
+    e.sink().i32_wrap_i64();
+    e.set_control(Control::X87High(n));
 }
 
 /// `fnstenv` and `fnsave`: the registers (for `fnsave`) and the environment as they were before the
@@ -674,12 +725,9 @@ fn environment_store<E: Emitter<X86_64> + ?Sized>(
     let layout = Layout::of(i);
     let save = m == Mnemonic::Fnsave;
     if save {
-        for k in 0..REGISTERS as u8 {
-            let (low, high) = register(e, k);
-            let offset = layout.size + u64::from(k) * REGISTER_BYTES;
-            store_at(e, at, offset, VALUE_LOW, low);
-            store_at(e, at, offset + u64::from(VALUE_LOW), VALUE_HIGH, high);
-        }
+        by_stack_position(e, at, REGISTER_BYTES, |e, n, slot| {
+            store_register(e, n, slot, layout.size, VALUE_HIGH)
+        });
     }
     let fip = e.local(ValType::I64);
     e.get_control(Control::X87InstructionPointer);
@@ -770,17 +818,9 @@ fn environment_load<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: 
         Some(fdp),
     );
     if m == Mnemonic::Frstor {
-        for k in 0..REGISTERS as u8 {
-            let offset = layout.size + u64::from(k) * REGISTER_BYTES;
-            let (low, high) = (e.local(ValType::I64), e.local(ValType::I64));
-            load_at(e, at, offset, VALUE_LOW);
-            e.sink().local_set(low);
-            load_at(e, at, offset + u64::from(VALUE_LOW), VALUE_HIGH);
-            e.sink().local_set(high);
-            let mut c = Code::new(Operation::SetRegister);
-            c.register = k;
-            call(e, c, Some(low), Some(high), None);
-        }
+        by_stack_position(e, at, REGISTER_BYTES, |e, n, slot| {
+            load_register(e, n, slot, layout.size)
+        });
     }
 }
 
@@ -860,13 +900,10 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             .i64_const(crate::MXCSR_WRITABLE.into())
             .local_set(value);
         store_at(e, at, IMAGE_MXCSR_MASK, size_of::<u32>() as u32, value);
-        for k in 0..REGISTERS as u8 {
-            let (low, high) = register(e, k);
-            let offset = IMAGE_REGISTERS + u64::from(k) * IMAGE_SLOT;
-            store_at(e, at, offset, VALUE_LOW, low);
-            // The slot's bytes past the 80 bits are zero.
-            store_at(e, at, offset + u64::from(VALUE_LOW), VALUE_LOW, high);
-        }
+        // The slot's bytes past the 80 bits are zero.
+        by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+            store_register(e, n, slot, IMAGE_REGISTERS, VALUE_LOW)
+        });
         for x in 0..crate::guest::XMM_COUNT as u8 {
             e.get_vector(x);
             let v = e.local(ValType::V128);
@@ -904,17 +941,9 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     // MXCSR as restored decides the path; tracking stays as it was (plan 5.8).
     e.sink().local_get(mxcsr).i32_wrap_i64();
     e.set_control(Control::Mxcsr);
-    for k in 0..REGISTERS as u8 {
-        let offset = IMAGE_REGISTERS + u64::from(k) * IMAGE_SLOT;
-        let (low, high) = (e.local(ValType::I64), e.local(ValType::I64));
-        load_at(e, at, offset, VALUE_LOW);
-        e.sink().local_set(low);
-        load_at(e, at, offset + u64::from(VALUE_LOW), VALUE_HIGH);
-        e.sink().local_set(high);
-        let mut c = Code::new(Operation::SetRegister);
-        c.register = k;
-        call(e, c, Some(low), Some(high), None);
-    }
+    by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+        load_register(e, n, slot, IMAGE_REGISTERS)
+    });
     for x in 0..crate::guest::XMM_COUNT as u8 {
         let offset = IMAGE_XMM + u64::from(x) * IMAGE_SLOT;
         e.sink()

@@ -214,6 +214,36 @@ pub(crate) fn arc_tangent(y: Extended, x: Extended) -> Wide {
     })
 }
 
+/// The bits of ln 2, truncated, the reference multiplies an `f2xm1` operand below 2^-68 by (seen on it).
+const TINY_LN_2_BITS: u32 = 66;
+/// The bits of the quotient, truncated, the reference takes as `fpatan`'s value below 2^-40 (seen on it).
+const TINY_QUOTIENT_BITS: u32 = 67;
+
+/// `b`'s top `bits` bits, truncated, exactly.
+fn truncated(b: &BigFloat, bits: u32) -> BigFloat {
+    let (top, exponent, _) = top_bits(b);
+    signed(
+        big(top >> (u128::BITS - bits), exponent - bits as i32),
+        b.is_negative(),
+    )
+}
+
+/// The reference's `f2xm1` of an operand below 2^-68: the operand times ln 2 truncated to 66 bits.
+pub(crate) fn tiny_exponent_minus_one(x: Extended) -> Wide {
+    settled(|p, cc| {
+        let ln_2 = truncated(&cc.ln_2(GUESS_BITS, ROUND), TINY_LN_2_BITS);
+        of_extended(x).mul(&ln_2, p, ROUND)
+    })
+}
+
+/// The reference's `fpatan` of a positive `x` and a quotient below 2^-40: the quotient truncated to 67 bits.
+pub(crate) fn tiny_arc_tangent(y: Extended, x: Extended) -> Wide {
+    settled(|_, _| {
+        let q = of_extended(y).div(&of_extended(x), FIRST_BITS, RoundingMode::ToZero);
+        truncated(&q, TINY_QUOTIENT_BITS)
+    })
+}
+
 /// Whether `|y / x|` is below `2^exponent`.
 pub(crate) fn quotient_below(y: Extended, x: Extended, exponent: i32) -> bool {
     let q = of_extended(y).div(&of_extended(x), FIRST_BITS, ROUND);

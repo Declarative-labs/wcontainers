@@ -52,7 +52,7 @@ pub const CONTROL_AT_START: u16 = crate::FCW_AT_START;
 
 /// The eight registers.
 pub const REGISTERS: usize = Fxsave::ZERO.st.len();
-const REGISTER_MASK: usize = REGISTERS - 1;
+pub(crate) const REGISTER_MASK: usize = REGISTERS - 1;
 
 /// The full tag word's two bits for each register.
 const TAG_VALID: u16 = 0;
@@ -503,10 +503,6 @@ pub enum Operation {
     /// `fprem` (`truncate`) or `fprem1`: ST(0) less a multiple of ST(1), the quotient's low bits in C0, C3
     /// and C1, or C2 when only part of the way.
     PartialRemainder,
-    /// ST(`register`)'s 80 bits, whatever its tag.
-    Register,
-    /// ST(`register`)'s 80 bits from the two arguments, its tag as it is.
-    SetRegister,
     /// `fsin`, `fcos`, `fsincos` (sine in ST(0), then cosine pushed) and `fptan` (tangent, then 1 pushed).
     Sine,
     Cosine,
@@ -546,8 +542,6 @@ impl Operation {
         Operation::StoreEnvironment,
         Operation::Save,
         Operation::LoadEnvironment,
-        Operation::Register,
-        Operation::SetRegister,
         Operation::PartialRemainder,
         Operation::Sine,
         Operation::Cosine,
@@ -1026,15 +1020,6 @@ impl<'a> Unit<'a> {
                 self.area.fdp = self.data;
                 self.summarise();
             }
-            Operation::Register => {
-                let bits = self.get(i).to_bits();
-                return [bits as u64 as i64, (bits >> u64::BITS) as u64 as i64];
-            }
-            Operation::SetRegister => {
-                let p = self.physical(i);
-                let bits = u128::from(a) | u128::from(b as u16) << u64::BITS;
-                self.area.st[p] = bits.to_le_bytes();
-            }
         }
         [0; 2]
     }
@@ -1330,6 +1315,9 @@ impl<'a> Unit<'a> {
                 (Class::Zero, Class::Infinity) if !n.sign => invalid(),
                 (Class::Infinity, Class::Infinity) if n.sign => invalid(),
                 (Class::Zero | Class::Infinity, _) => exact_value(x),
+                // A zero scale leaves ST(0), a denormal too (Intel SDM Vol. 2A, FSCALE's table), a
+                // pseudo-denormal written as the normal it equals (seen on the reference).
+                (_, Class::Zero) => exact_value(Extended::of(x.float())),
                 (_, Class::Infinity) => exact_value(if n.sign {
                     Extended::ZERO.with_sign(x.sign)
                 } else {
@@ -1569,30 +1557,72 @@ pub fn neighbours(a: u128, b: u128) -> bool {
 }
 
 /// Below 2^-68 the reference gives a sine and a cosine rounded to the nearest whatever the rounding control
-/// (the operand, and one), and below 2^-40 an arc tangent of its quotient (seen on the reference).
-const NEAREST_SINE_BELOW: i32 = -68;
-const NEAREST_ARC_TANGENT_BELOW: i32 = -40;
+/// (the operand, and one) with C1 clear, and an `f2xm1` by a product with ln 2 (seen on the reference).
+const TINY_BELOW: i32 = -68;
+/// Below 2^-40 the reference gives an arc tangent by its quotient (seen on the reference).
+const TINY_QUOTIENT_BELOW: i32 = -40;
+
+fn tiny(x: Extended) -> bool {
+    i32::from(x.exponent) - BIAS < TINY_BELOW
+}
 
 /// The control word with the rounding control at the nearest.
 fn to_nearest(fcw: u16) -> u16 {
     fcw & !(FIELD << ROUNDING_SHIFT)
 }
 
-/// The control word a sine or cosine of `x` is rounded by.
-fn trigonometric_control(x: Extended, fcw: u16) -> u16 {
-    if i32::from(x.exponent) - BIAS < NEAREST_SINE_BELOW {
-        to_nearest(fcw)
+/// A sine or cosine of `x`, whose value is `value`.
+fn trigonometric_value(x: Extended, value: Wide, fcw: u16) -> Rounded<Extended> {
+    if tiny(x) {
+        Rounded {
+            up: false,
+            ..rounded_wide(value, to_nearest(fcw))
+        }
     } else {
-        fcw
+        rounded_wide(value, fcw)
     }
 }
 
 fn sine(x: Extended, fcw: u16) -> Rounded<Extended> {
-    rounded_wide(transcendental::sine(x), trigonometric_control(x, fcw))
+    trigonometric_value(x, transcendental::sine(x), fcw)
 }
 
 fn cosine(x: Extended, fcw: u16) -> Rounded<Extended> {
-    rounded_wide(transcendental::cosine(x), trigonometric_control(x, fcw))
+    trigonometric_value(x, transcendental::cosine(x), fcw)
+}
+
+/// A result the reference flags inexact although it is exact: the precision flag, and the underflow flag
+/// where it is a denormal (seen on the reference).
+fn flagged_inexact(r: Rounded<Extended>) -> Rounded<Extended> {
+    let denormal = r.value.is_some_and(|v| v.class() == Class::Denormal);
+    Rounded {
+        exceptions: r.exceptions | PRECISION | if denormal { UNDERFLOW } else { 0 },
+        ..r
+    }
+}
+
+/// `y * k` for `fyl2x` of 2^k or `fyl2xp1` of 2^k - 1, as the reference gives it: flagged inexact, and for a negative `k` taken as
+/// just below the product in magnitude where that is exact (seen on the reference).
+fn power_logarithm(y: Extended, k: i32, fcw: u16) -> Rounded<Extended> {
+    let product = y
+        .wide()
+        .mul_r(Wide::from_i128(k.into()).value, Round::TowardZero);
+    let exact = !product.status.contains(Status::INEXACT);
+    let mut value = odd(product);
+    if k < 0 && exact {
+        let below = value.abs().next_down().value;
+        let below = Wide::from_bits(below.to_bits() | 1);
+        value = if value.is_negative() { -below } else { below };
+    }
+    flagged_inexact(rounded_wide(value, fcw))
+}
+
+/// The exponent of `v` where it is exactly a power of two.
+fn power_of_two(v: X87DoubleExtended) -> Option<i32> {
+    Extended::of(v)
+        .significand
+        .is_power_of_two()
+        .then(|| v.ilogb())
 }
 
 /// The trigonometric instructions take operands below 2^63.
@@ -1610,17 +1640,22 @@ fn signed_infinity(negative: bool) -> Rounded<Extended> {
     exact_value(Extended::INFINITY.with_sign(negative))
 }
 
-/// `f2xm1` of a number: outside -1 to 1 the reference leaves the operand, inexact.
+/// `f2xm1` of a number: outside -1 to 1 the reference leaves the operand, inexact, and flags its exact
+/// results at -1 and 1 inexact.
 fn exponent_minus_one(x: Extended, fcw: u16) -> Rounded<Extended> {
     match x.class() {
         Class::Zero => exact_value(x),
         Class::Infinity if x.sign => exact_value(Extended::ONE.negate()),
         Class::Infinity => exact_value(x),
-        _ if i32::from(x.exponent) >= BIAS && x.with_sign(false) != Extended::ONE => Rounded {
+        _ if x.with_sign(false) == Extended::ONE => {
+            flagged_inexact(rounded_wide(transcendental::exponent_minus_one(x), fcw))
+        }
+        _ if i32::from(x.exponent) >= BIAS => Rounded {
             value: Some(x),
             exceptions: PRECISION,
             up: false,
         },
+        _ if tiny(x) => rounded_wide(transcendental::tiny_exponent_minus_one(x), fcw),
         _ => rounded_wide(transcendental::exponent_minus_one(x), fcw),
     }
 }
@@ -1637,12 +1672,10 @@ fn angle(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
         (Class::Infinity, _) | (_, Class::Zero) => QUARTERS_IN_PI / 2,
         (_, Class::Infinity) if x.sign => QUARTERS_IN_PI,
         (_, Class::Infinity) => return signed_zero(y.sign),
-        _ => {
-            let near_quotient =
-                !x.sign && transcendental::quotient_below(y, x, NEAREST_ARC_TANGENT_BELOW);
-            let control = if near_quotient { to_nearest(fcw) } else { fcw };
-            return rounded_wide(transcendental::arc_tangent(y, x), control);
+        _ if !x.sign && transcendental::quotient_below(y, x, TINY_QUOTIENT_BELOW) => {
+            return flagged_inexact(rounded_wide(transcendental::tiny_arc_tangent(y, x), fcw));
         }
+        _ => return rounded_wide(transcendental::arc_tangent(y, x), fcw),
     };
     rounded_wide(
         transcendental::quarter_pi(if y.sign { -quarters } else { quarters }),
@@ -1673,7 +1706,10 @@ fn logarithm(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
         (Class::Zero, _) => signed_zero(y.sign != below_one),
         (_, Class::Infinity) => signed_infinity(y.sign),
         _ if one => signed_zero(y.sign),
-        _ => rounded_wide(transcendental::logarithm(y, x), fcw),
+        _ => match power_of_two(x.float()) {
+            Some(k) => power_logarithm(y, k, fcw),
+            None => rounded_wide(transcendental::logarithm(y, x), fcw),
+        },
     }
 }
 
@@ -1692,7 +1728,13 @@ fn logarithm_plus_one(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
             exceptions: PRECISION,
             up: false,
         },
-        _ => rounded_wide(transcendental::logarithm_plus_one(y, x), fcw),
+        _ => {
+            let sum = x.float().add_r(Extended::ONE.float(), Round::TowardZero);
+            match power_of_two(sum.value).filter(|_| sum.status == Status::OK) {
+                Some(k) => power_logarithm(y, k, fcw),
+                None => rounded_wide(transcendental::logarithm_plus_one(y, x), fcw),
+            }
+        }
     }
 }
 

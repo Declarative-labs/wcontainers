@@ -1,10 +1,11 @@
 //! The x87 unit's transcendental instructions against correctly rounded values worked out with mpmath at 600
-//! bits (`transcendental.txt`: instruction, rounding control, ST(0), ST(1) and the result, as 80-bit hex), the
+//! bits and more, with the reference's own rules of plan 5.8 (`transcendental.txt`: instruction, rounding
+//! control, ST(0), ST(1), the result, its C1 and precision flags, and for `fsincos` the sine, in hex), the
 //! trigonometric ones with the argument reduced by Intel's 66-bit π.
 
 use wcontainers_x86::Fxsave;
 use wcontainers_x86::x87::{
-    CONTROL_AT_START, Code, Extended, FIELD, Operation, ROUNDING_SHIFT, Unit,
+    C1, CONTROL_AT_START, Code, Extended, FIELD, Operation, PRECISION, ROUNDING_SHIFT, Unit,
 };
 
 const CASES: &str = include_str!("transcendental.txt");
@@ -20,11 +21,13 @@ fn transcendental_results_are_correctly_rounded() {
     let mut failures = Vec::new();
     let mut count = 0;
     for line in CASES.lines() {
-        let [name, mode, x, y, want] = line.split(' ').collect::<Vec<_>>()[..] else {
+        let fields = line.split(' ').collect::<Vec<_>>();
+        let [name, mode, x, y, want, flags, ..] = fields[..] else {
             panic!("a case: {line}");
         };
         let (operation, two, pushed) = match name {
             "fsin" => (Operation::Sine, false, false),
+            "fsincos" => (Operation::SineCosine, false, true),
             "fcos" => (Operation::Cosine, false, false),
             "fptan" => (Operation::Tangent, false, true),
             "f2xm1" => (Operation::ExponentMinusOne, false, false),
@@ -45,10 +48,25 @@ fn transcendental_results_are_correctly_rounded() {
         unit.set(1, hex(y));
         unit.set(0, hex(x));
         unit.run(0, 0);
-        let got = unit.get(u8::from(pushed));
+        // `fptan` leaves the tangent in ST(1), `fsincos` the cosine in ST(0) and the sine in ST(1).
+        let sine_cosine = operation == Operation::SineCosine;
+        let got = unit.get(u8::from(pushed && !sine_cosine));
+        let sine = fields.get(6).map(|s| (unit.get(1), hex(s)));
+        let got_flags = unit.area.fsw & (C1 | PRECISION);
+        let want_flags = u16::from_str_radix(flags, 16).expect("hex");
         count += 1;
-        if got != hex(want) {
-            failures.push(format!("{line}: got {:020x}", got.to_bits()));
+        if got != hex(want)
+            || got_flags != want_flags
+            || sine.is_some_and(|(got, want)| got != want)
+        {
+            failures.push(format!(
+                "{line}: got {:020x} flags {got_flags:03x}{}",
+                got.to_bits(),
+                sine.map_or(String::new(), |(got, _)| format!(
+                    " sine {:020x}",
+                    got.to_bits()
+                ))
+            ));
         }
     }
     assert!(

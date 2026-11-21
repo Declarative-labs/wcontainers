@@ -2207,7 +2207,9 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   24 or 53 bits the result must be rounded once to that many bits while keeping the 15-bit exponent range,
   which `X87DoubleExtended` does not offer. Decision: two more semantics of rustc_apfloat's public
   `ieee::Semantics` trait, defined in `wcontainers-x86` (15 exponent bits, precision 24 and 53), and a wide
-  one (15 exponent bits, precision 66). The operation is done in the wide semantics rounded toward zero, the
+  one (18 exponent bits, precision 66: three bits past the format's 15, so that no product or quotient of
+  80-bit values, nor an `fscale` by up to 2^16, leaves its range before the one rounding that sees the
+  overflow or underflow). The operation is done in the wide semantics rounded toward zero, the
   lowest bit is set when apfloat reports the result inexact (rounding to odd), and that is converted once to
   24 or 53 bits in the program's rounding mode, then widened exactly. Rounding to odd at a precision at least
   two bits wider than the target and then rounding once gives the correctly rounded result (Boldo and
@@ -2284,20 +2286,31 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   round to the nearest). For fsin, fcos, fsincos and fptan the argument is first reduced exactly, `x - k * π66 /
   2` with `k` the nearest integer and π66 π rounded to 66 bits, as Intel's manual describes; from 2^63 on C2 is
   set and nothing else changes. Checked against mpmath (BSD, scratch only) at 600 bits and more:
-  `tests/transcendental.rs` holds 560 such values, every rounding mode, with tiny, huge and exact cases. What the
-  reference showed and the unit follows (probes `x7/probes/trans.c`, and layer 1): a sine or cosine of an
-  operand below 2^-68 is rounded to the nearest in every mode (the operand, and one), as is an arc tangent of a
-  quotient below 2^-40; f2xm1 outside -1 to 1, which the manual leaves undefined, leaves the operand, inexact;
-  fyl2xp1 at -1 and below takes the logarithm as negative for an infinite or zero ST(1) and otherwise leaves
-  ST(0), inexact; in fpatan, fyl2x and fyl2xp1 an invalid operation or a division by zero is met instead of a
-  denormal operand. Intel's results are documented as within one unit in the last place, not as correctly
-  rounded, and on the reference they are not in about one case in a hundred for ordinary operands and more
-  often in the directed modes near the identity. Layer 1 compares them bit for bit; a case of one of these
-  instructions where the reference's result is one unit from ours (or its C1 and precision flag, with the
-  underflow flag where a register holds a denormal and the summary and busy bits where one of these is
-  unmasked, differ from what correct rounding leaves) and nothing else differs is counted and printed as a
-  known failure with that reason, per form, never passed silently (`GuestTest::known_failure`,
-  `layer1::Agreement`). Size, measured 2026-11-17 on the Mac (load 17 to 21) in a scratch cdylib
+  `tests/transcendental.rs` holds 640 such values with their C1 and precision flags, 80 for each of the eight
+  instructions, every rounding mode, with tiny, huge and exact cases. What the
+  reference showed and the unit follows (probes `x7/probes/trans.c` and `x7r3/exact.sh`, models `x7r3/hyp.py`
+  and `x7r3/c1.py`, and layer 1), each a fixed rule seen on every case probed: a sine or cosine of an operand
+  below 2^-68 is rounded to the nearest in every mode (the operand, and one) with C1 clear; `f2xm1` of an
+  operand below 2^-68 is the operand times ln 2 truncated to 66 bits, rounded once in the program's mode (1,500
+  and 400-a-exponent cases, every one equal; correct rounding differs in about one in ten); `fpatan` of a
+  positive x and a quotient below 2^-40 is the quotient truncated to 67 bits, rounded once in the program's
+  mode, flagged inexact (300 cases at each of five exponents and three modes, every one equal); `f2xm1` of -1
+  and 1, and `fyl2x` of 2^k and `fyl2xp1` of 2^k - 1 for k not 0, are flagged inexact although exact, the two
+  logarithms for a negative k taken as just below the exact product in magnitude (so C1 is set to the
+  nearest, and the directed modes toward zero give the next value down, seen on 528 cases); f2xm1 outside -1
+  to 1, which the manual leaves undefined, leaves the operand, inexact; fyl2xp1 at -1 and below takes the
+  logarithm as negative for an infinite or zero ST(1) and otherwise leaves ST(0), inexact; in fpatan, fyl2x
+  and fyl2xp1 an invalid operation or a division by zero is met instead of a denormal operand. Intel's
+  results are documented as within one unit in the last place, not as correctly rounded, and on the
+  reference they are not in a few cases in a hundred for ordinary operands (about one in ten for `f2xm1`).
+  Layer 1 compares them bit for bit. A case of one of these instructions is a known failure, counted and
+  printed per form and reason and never passed silently (`GuestTest::known_failure`, `layer1::Agreement`),
+  only in one of two ways: a register is one unit from ours and nothing else differs but C1 and the precision
+  flag (the underflow flag where that register is a denormal, the summary and busy bits where one of those
+  is unmasked), "Intel's transcendental result is within one unit in the last place"; or every register is
+  ours and only C1 differs, "Intel's approximation lies on the other side of the correctly rounded result".
+  `tests/transcendental.rs` checks the unit's results and its C1 and precision flags against mpmath, so
+  what these two reasons pass is the reference's departure from correct rounding, not ours. Size, measured 2026-11-17 on the Mac (load 17 to 21) in a scratch cdylib
   (`pyro-parked/wcontainers-scratch/x86/x87-crate`, opt-level s, LTO, stripped) using sin, atan, log2,
   exp and add at 128 bits, against the same cdylib without it: 142,688 bytes raw, 40,947 brotli -q 11 more.
   Only the x86 browser build carries it.
@@ -2316,7 +2329,10 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   FXSAVE layout's reserved bytes), so the meaning writes 0xFFFF with one `set_control`, a single store
   into the block, and the x87 hook, the kernel's signal frame and layer 1 read the full 80 bits. The x87
   hook declares the MMX bits in its `registers`, so the emitter writes them back before an x87
-  instruction and loads them after.
+  instruction and loads them after. `fxsave`, `fxrstor`, `fnsave` and `frstor` move the eight registers
+  without the hook: for each physical R(n) the meaning works out the slot of ST((n - TOP) mod 8) in the saved
+  state from the TOP in the block's status word, and moves the MMX register bits and `X87High(n)` there or
+  back, so glibc's lazy-binding trampoline (`fxsave`, `fxrstor`) stays on the fast path and calls no hook.
 
 ### 5.9 The register block
 
