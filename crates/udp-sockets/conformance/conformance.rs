@@ -2504,6 +2504,51 @@ pub fn an_icmp_error_ends_a_wait_for_data<S: UdpSockets>(sockets: S) {
     }
 }
 
+/// An ICMP error that a send read off the host while looking for its own error still ends a wait for data at once.
+pub fn a_wait_sees_an_error_a_send_read_first<S: UdpSockets>(sockets: S) {
+    let closed = closed_port(&sockets, IpVersion::V6);
+    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let wakes = Arc::new(Wakes::default());
+    send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
+    {
+        let mut wait = pin!(sockets.wait_for_events(&sender, READABLE));
+        let events = match poll_with(wait.as_mut(), &wakes) {
+            Poll::Pending => {
+                assert!(wakes.reach(1), "woken by the ICMP error");
+                finished(poll_with(wait, &wakes))
+            }
+            ready => finished(ready),
+        };
+        assert!(events.error_condition, "{events:?}");
+    }
+    let mtu = MaximumTransmissionUnit(u32::from(u16::MAX / 2));
+    let mut fields = ipv6_header(ipv6_route(UdpProtocol::Udp, from, closed));
+    fields.fragment_mtu = Some(mtu);
+    fields.local_fragmentation = LocalFragmentation::Forbidden;
+    fields.path_mtu_discovery = PathMtuDiscovery::Do;
+    let payload = vec![u8::MIN; mtu.0 as usize];
+    assert_eq!(
+        sockets.send_to(
+            &sender,
+            IpHeaderFields::V6(fields),
+            plain_fields(),
+            datagram(&payload)
+        ),
+        Err(SendError::MessageTooLong {
+            maximum_transmission_unit: mtu
+        }),
+    );
+    let events = finished(poll_with(
+        pin!(sockets.wait_for_events(&sender, READABLE)),
+        &wakes,
+    ));
+    assert!(events.error_condition, "{events:?}");
+    let mut into = buffer();
+    let packet = receive_packet(&sockets, &sender, &mut into);
+    let ip = IpSlice::from_slice(&into[..packet.fields.length]).expect("a whole ICMP packet");
+    assert_eq!(ip.payload_ip_number(), IpNumber::IPV6_ICMP);
+}
+
 /// A datagram whose route must stay on its link is not sent through a gateway; one of universe scope is.
 pub fn link_scope_keeps_a_datagram_on_its_link<S: UdpSockets>(sockets: S) {
     let to = SocketAddr::new(IpAddr::V4(BEYOND_A_GATEWAY), u16::MAX);
@@ -2999,6 +3044,7 @@ macro_rules! tests {
             a_dropped_wait_is_withdrawn
             many_waits_each_wake_once
             an_icmp_error_ends_a_wait_for_data
+            a_wait_sees_an_error_a_send_read_first
         );
     };
     (@each $value:expr; $($name:ident)*) => {
