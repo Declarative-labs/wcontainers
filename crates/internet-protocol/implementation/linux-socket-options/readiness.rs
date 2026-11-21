@@ -49,9 +49,7 @@ struct WatchState {
     next: u64,
     /// The calls waiting on the socket; its room is kept, so a wait allocates nothing once it has grown.
     waiters: Vec<Waiter>,
-    /// Whether the socket is in the poller's set, which it joins at the first wait that has to wait.
-    registered: bool,
-    /// The events the one-shot registration is armed for until the poller reports one; none when it is not armed.
+    /// The events of the socket's edge-triggered registration in the poller's set, made while unwoken calls wait.
     armed: Option<PollFlags>,
 }
 
@@ -216,7 +214,6 @@ impl Readiness {
                 held: PollFlags::empty(),
                 next: u64::MIN,
                 waiters: Vec::new(),
-                registered: false,
                 armed: None,
             }),
         });
@@ -264,82 +261,76 @@ impl Shared {
         }
     }
 
-    /// Moves the wakers of the calls whose events the socket now has into `woken`, and arms it again for the rest.
+    /// Moves the wakers of the calls whose events the socket now has into `woken`, and disarms it once none waits
+    /// unwoken.
     fn take_woken(&self, watch: &Watch, woken: &mut Vec<Waker>) {
         let mut state = locked(&watch.state);
-        // A one-shot registration is disarmed once it has reported.
-        state.armed = None;
-        if !state.open || state.waiters.is_empty() {
+        if !state.open || state.armed.is_none() {
             return;
         }
         // SAFETY: the descriptor stays open while the state says so, under its lock.
         let fd = unsafe { BorrowedFd::borrow_raw(watch.fd) };
-        let all = state
-            .waiters
-            .iter()
-            .fold(PollFlags::empty(), |all, waiter| all | waiter.interest);
-        let now = match events_now(fd, all) {
-            Ok(now) => now | state.held,
-            // A socket whose events cannot be read wakes every call, which reads the error itself.
-            Err(_) => PollFlags::all(),
-        };
-        for waiter in &mut state.waiters {
-            if now.intersects(waiter.interest | ALWAYS_REPORTED)
-                && let Some(waker) = waiter.waker.take()
-            {
-                woken.push(waker);
+        if let Some(waiting) = waiting_interest(&state) {
+            let now = match events_now(fd, waiting) {
+                Ok(now) => now | state.held,
+                // A socket whose events cannot be read wakes every call, which reads the error itself.
+                Err(_) => PollFlags::all(),
+            };
+            for waiter in &mut state.waiters {
+                if now.intersects(waiter.interest | ALWAYS_REPORTED)
+                    && let Some(waker) = waiter.waker.take()
+                {
+                    woken.push(waker);
+                }
             }
         }
-        // Calls the poller cannot be armed for are woken to meet the error themselves.
-        if self.arm(watch, &mut state).is_err() {
-            woken.extend(
-                state
-                    .waiters
-                    .iter_mut()
-                    .filter_map(|waiter| waiter.waker.take()),
-            );
+        // An edge-triggered registration reports every change until it is deleted, which a socket whose calls
+        // were all woken no longer needs.
+        if waiting_interest(&state).is_none() {
+            self.disarm(fd, &mut state);
         }
     }
 
-    /// Arms the socket's one-shot registration for the events of the calls that wait unwoken, if any do.
+    /// Registers the socket for the events of the calls that wait unwoken, if any do and it is not already.
     fn arm(&self, watch: &Watch, state: &mut WatchState) -> Result<(), HostError> {
-        let mut waiting = state
-            .waiters
-            .iter()
-            .filter(|waiter| waiter.waker.is_some())
-            .peekable();
-        if waiting.peek().is_none() {
+        let Some(interest) = waiting_interest(state) else {
             return Ok(());
-        }
-        let interest = waiting.fold(PollFlags::empty(), |all, waiter| all | waiter.interest);
+        };
         if state.armed.is_some_and(|armed| armed.contains(interest)) {
             return Ok(());
         }
+        // Edge-triggered, so that a call waiting for an event the poller can only approximate, as POLLRDBAND by
+        // the socket being readable, is looked at again at the socket's next change and not at once forever.
         let event = registration(watch.key, interest);
-        let armed = if state.registered {
+        let armed = if state.armed.is_some() {
             // SAFETY: the descriptor stays open while the state says so, under its lock.
             let fd = unsafe { BorrowedFd::borrow_raw(watch.fd) };
-            self.poller.modify_with_mode(fd, event, PollMode::Oneshot)
+            self.poller.modify_with_mode(fd, event, PollMode::Edge)
         } else {
             // SAFETY: the registration is deleted when the Watched drops, before the descriptor it owns closes.
-            unsafe {
-                self.poller
-                    .add_with_mode(watch.fd, event, PollMode::Oneshot)
-            }
+            unsafe { self.poller.add_with_mode(watch.fd, event, PollMode::Edge) }
         };
         armed.map_err(|error| io_host_error(&error))?;
-        state.registered = true;
         state.armed = Some(interest);
         Ok(())
     }
 
     /// Takes the socket out of the poller's set, so that it reports nothing for a socket no call waits on.
     fn disarm(&self, fd: BorrowedFd<'_>, state: &mut WatchState) {
-        if state.registered && self.poller.delete(fd).is_ok() {
-            state.registered = false;
+        if state.armed.is_some() && self.poller.delete(fd).is_ok() {
+            state.armed = None;
         }
-        state.armed = None;
     }
+}
+
+/// The events the calls waiting unwoken on a socket ask for, or none when no call waits unwoken.
+fn waiting_interest(state: &WatchState) -> Option<PollFlags> {
+    state
+        .waiters
+        .iter()
+        .filter(|waiter| waiter.waker.is_some())
+        .map(|waiter| waiter.interest)
+        .reduce(|all, interest| all | interest)
 }
 
 /// Wakes the calls whose events have come, the one place a waiting call's wake is fired.
@@ -406,8 +397,8 @@ impl WaitForEvents<'_> {
         if let Some(id) = self.id.take() {
             let mut state = locked(&self.watched.watch.state);
             state.waiters.retain(|waiter| waiter.id != id);
-            // The last call gone takes an armed registration with it.
-            if state.waiters.is_empty() && state.armed.is_some() {
+            // The last call waiting unwoken takes the registration with it.
+            if waiting_interest(&state).is_none() {
                 self.watched.shared.disarm(self.watched.fd(), &mut state);
             }
         }
@@ -466,7 +457,7 @@ impl Future for WaitForEvents<'_> {
         if let Some(answer) = this.answer() {
             return Poll::Ready(answer);
         }
-        // Armed after the asking: a level-triggered registration reports an event already there when it is armed.
+        // Armed after the asking: a registration made or changed reports an event already there.
         let armed = {
             let mut state = locked(&this.watched.watch.state);
             this.watched.shared.arm(&this.watched.watch, &mut state)

@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::IoSlice;
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::os::fd::BorrowedFd;
 
@@ -21,6 +22,9 @@ pub const TRANSMIT_TIME_REJECTION_WITHOUT_KEY: &str =
     "linux reports a rejected transmit time with the time, not the key of its send";
 pub const ERROR_OF_NO_REPORT: &str =
     "an error queue entry of an origin the contract has no report for";
+
+/// The most an error queue entry is read of: a whole IP packet.
+const LARGEST_ENTRY: usize = u16::MAX as usize;
 
 /// One `sendmsg` of a payload to a name, or to the connected peer when there is none.
 pub fn send_message(
@@ -54,14 +58,17 @@ impl ErrorEntry {
     /// Reads the next entry of the socket's error queue, `WouldBlock` when it is empty.
     pub fn read(fd: BorrowedFd<'_>, shortfalls: &Shortfalls) -> Result<Self, HostError> {
         let mut control = ControlBuffer::new();
-        let mut data = vec![u8::MIN; usize::from(u16::MAX)];
-        let message = receive::receive(fd, &mut data, &mut control, true)?;
+        // Read on the stack, so that only the entry's own bytes are allocated, and nothing for an empty queue.
+        let mut data = [const { MaybeUninit::<u8>::uninit() }; LARGEST_ENTRY];
+        let message = receive::receive_with_tail(fd, &mut [], &mut data, &mut control, true)?;
         if message.control_truncated {
             shortfalls.count(receive::CONTROL_TRUNCATED);
         }
-        data.truncate(message.length);
+        let length = message.length.min(data.len());
+        // SAFETY: the kernel wrote the first `length` bytes.
+        let data = unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), length) };
         Ok(Self {
-            data,
+            data: data.to_vec(),
             source: message.source,
             control: message.control.to_vec(),
         })
@@ -110,9 +117,7 @@ impl ErrorQueue {
         if unsent_bytes(fd)?.0 != usize::MIN {
             return Ok(false);
         }
-        while let Ok(entry) = ErrorEntry::read(fd, shortfalls) {
-            self.kept.push_back(entry);
-        }
+        self.keep_host_entries(fd, shortfalls);
         let rejected: Vec<u64> = self
             .kept
             .iter()
@@ -123,6 +128,14 @@ impl ErrorQueue {
         self.transmit_times
             .retain(|send| rejected.contains(&send.at));
         Ok(true)
+    }
+
+    /// Reads every entry of the host's error queue into the entries kept, as a send must when it may have taken
+    /// the socket error that tells a receive an ICMP error waits there.
+    pub fn keep_host_entries(&mut self, fd: BorrowedFd<'_>, shortfalls: &Shortfalls) {
+        while let Ok(entry) = ErrorEntry::read(fd, shortfalls) {
+            self.kept.push_back(entry);
+        }
     }
 
     /// What an entry gives, as `error_entry` says, with a transmit time rejection given the key of its send.
