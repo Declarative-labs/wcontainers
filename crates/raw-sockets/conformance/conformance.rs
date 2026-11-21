@@ -1252,10 +1252,18 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
 
 /// A mobility header sent by its type as the route's selector leaves as given, with the checksum Linux writes.
 pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
-    /// A binding refresh request: no next header, no length past eight bytes, type 0, then checksum and reserved.
-    const BINDING_REFRESH_REQUEST: [u8; 8] = [59, 0, 0, 0, 0, 0, 0, 0];
-    /// Where a mobility header keeps its type, after its next header and length.
-    const MOBILITY_HEADER_TYPE: usize = 2;
+    const BINDING_REFRESH: MobilityHeaderType = MobilityHeaderType(0);
+    /// A binding refresh request: no next header, no length past eight bytes, its type, then checksum and reserved.
+    const BINDING_REFRESH_REQUEST: [u8; 8] = [
+        IpNumber::IPV6_NO_NEXT_HEADER.0,
+        0,
+        BINDING_REFRESH.0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
     const CHECKSUM: core::ops::Range<usize> = 4..6;
     ip(NETWORK);
     let socket = opened(&sockets, IpVersion::V6, IpNumber::MOBILITY_HEADER);
@@ -1264,9 +1272,7 @@ pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
         ON_LINK_V6,
         UpperLayer {
             protocol: IpNumber::MOBILITY_HEADER,
-            selector: Some(UpperLayerSelector::MobilityHeader(MobilityHeaderType(
-                BINDING_REFRESH_REQUEST[MOBILITY_HEADER_TYPE],
-            ))),
+            selector: Some(UpperLayerSelector::MobilityHeader(BINDING_REFRESH)),
         },
     );
     send(
