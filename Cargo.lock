@@ -4429,6 +4429,7 @@ dependencies = [
 name = "wcontainers-negative-route-advice-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-abi",
  "wcontainers-negative-route-advice",
 ]
 
@@ -4537,9 +4538,32 @@ name = "wcontainers-route-resolver-conformance"
 version = "0.1.0"
 dependencies = [
  "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-abi",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-route-resolver",
+]
+
+[[package]]
+name = "wcontainers-route-resolver-linux-netlink"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "netlink-packet-core",
+ "netlink-packet-route",
+ "netlink-sys",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-internet-protocol",
+ "wcontainers-internet-protocol-linux-socket-options",
+ "wcontainers-kernel",
+ "wcontainers-route-resolver",
+ "wcontainers-route-resolver-conformance",
 ]
 
 [[package]]
@@ -4549,32 +4573,11 @@ dependencies = [
  "oci-spec",
  "wcontainers-executor",
  "wcontainers-kernel",
- "libc",
- "rustix",
- "wcontainers-abi",
  "wcontainers-system",
 ]
 
 [[package]]
 name = "wcontainers-runtime-conformance"
-[[package]]
-name = "wcontainers-route-resolver-linux-netlink"
-version = "0.1.0"
-dependencies = [
- "etherparse",
- "libc",
- "log",
- "netlink-packet-core",
- "netlink-packet-route",
- "netlink-sys",
- "socket2",
- "wcontainers-abi",
- "wcontainers-internet-protocol",
- "wcontainers-kernel",
- "wcontainers-route-resolver",
- "wcontainers-route-resolver-conformance",
-]
-
 version = "0.1.0"
 dependencies = [
  "wcontainers-executor",
