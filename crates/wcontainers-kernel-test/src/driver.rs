@@ -47,7 +47,7 @@ pub(crate) type Back = crate::standin::StandIn;
 
 /// What runs the guest's instructions behind the kernel: the translator's WebAssembly.
 #[cfg(feature = "runtime")]
-pub(crate) type Back = wcontainers_wasmtime::CpuSide<wcontainers_arm64::Arm64>;
+pub(crate) type Back = wcontainers_executor_wasmtime::CpuSide<wcontainers_arm64::Arm64>;
 
 #[cfg(not(feature = "runtime"))]
 fn back_end(_seed: u64, address_space: u64, wall_clock: bool) -> Back {
@@ -65,7 +65,7 @@ fn back_end(_seed: u64, address_space: u64, wall_clock: bool) -> Back {
 /// container asks.
 #[cfg(feature = "runtime")]
 pub(crate) fn back_end(seed: u64, _address_space: u64, _wall_clock: bool) -> Back {
-    use wcontainers_wasmtime::{Compiler, CpuSide, Optimise};
+    use wcontainers_executor_wasmtime::{Compiler, CpuSide, Optimise};
     static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
         std::sync::OnceLock::new();
     let compiler = COMPILER
@@ -93,8 +93,8 @@ const LOOK_AHEAD_SEED_VARIABLE: &str = "LOOK_AHEAD_SEED";
 /// The look-ahead [`LOOK_AHEAD_VARIABLE`] names; at `bounded` its N is drawn from 1 to the
 /// translator's default bound from the run's seed and [`LOOK_AHEAD_SEED_VARIABLE`], and printed.
 #[cfg(feature = "runtime")]
-fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
-    use wcontainers_wasmtime::LookAhead;
+fn look_ahead(seed: u64) -> wcontainers_executor_wasmtime::LookAhead {
+    use wcontainers_executor_wasmtime::LookAhead;
     match std::env::var(LOOK_AHEAD_VARIABLE).as_deref() {
         Err(_) | Ok("full") => LookAhead::Full,
         Ok("none") => LookAhead::None,
@@ -105,7 +105,7 @@ fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
                 })
             });
             let n = StdRng::seed_from_u64(seed ^ knob ^ LOOK_AHEAD_STREAM)
-                .random_range(1..=wcontainers_wasmtime::BOUND);
+                .random_range(1..=wcontainers_executor_wasmtime::BOUND);
             eprintln!(
                 "look-ahead bounded {n} (run seed {seed}, {LOOK_AHEAD_SEED_VARIABLE} {knob})"
             );
@@ -137,7 +137,7 @@ fn report(cpu: &Back, container: &Container<'_>, took: Duration) {
     );
     let translated = cpu.translated();
     let at_run_time = translated.iter().filter(|t| t.at_run_time).count();
-    use wcontainers_wasmtime::Origin;
+    use wcontainers_executor_wasmtime::Origin;
     let made: Vec<(u64, u64)> = translated
         .iter()
         .filter_map(|t| match t.origin {

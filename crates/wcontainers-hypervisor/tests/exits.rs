@@ -38,6 +38,7 @@ mod macos {
     };
     use wcontainers_arm64::Arm64;
     use wcontainers_arm64::thread_state::STACK_ALIGNMENT;
+    use wcontainers_executor_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
     use wcontainers_hypervisor::{
         Exit as VcpuExit, Host, Hypervisor, Loaded, Memory, Register, VirtualCpu, VirtualMachine,
         boot, link as link_page, routines, translate::Translator,
@@ -46,7 +47,6 @@ mod macos {
     use wcontainers_inside::reason::IDENTIFIERS_RAN_OUT;
     use wcontainers_inside::{routines as inside_routines, translation};
     use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
-    use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
     use zerocopy::{FromBytes, IntoBytes};
 
     use crate::common::{

@@ -48,7 +48,7 @@ fn measured(run: &driver::Run) -> String {
 /// WebAssembly back end, which warns of such a leave once.
 #[cfg(feature = "runtime")]
 fn preempted(run: &driver::Run) -> bool {
-    use wcontainers_wasmtime::reason;
+    use wcontainers_executor_wasmtime::reason;
     run.cpu_warnings
         .iter()
         .any(|w| w.reason == reason::LEFT_ANOTHER_THREAD && w.detail == reason::NOT_A_CALL)

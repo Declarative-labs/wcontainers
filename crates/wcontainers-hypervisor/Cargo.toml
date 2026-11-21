@@ -44,7 +44,7 @@ zerocopy.workspace = true
 wcontainers-translator-test = { path = "../wcontainers-translator-test" }
 proptest = "1.12.0"
 # The exits test's other side: the WebAssembly output's CPU side, run as the runtime's loop runs it.
-wcontainers-wasmtime = { path = "../wcontainers-wasmtime" }
+wcontainers-executor-wasmtime = { path = "../executor/implementation/wasmtime" }
 wcontainers-runtime-single-kernel = { path = "../runtime/implementation/single-kernel" }
 # The kernel test's policy, the same on both sides.
 wcontainers-system-seeded-test-policy = { path = "../system/implementation/seeded-test-policy" }

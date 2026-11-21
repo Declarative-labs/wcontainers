@@ -9,6 +9,7 @@ use std::sync::{Mutex, PoisonError};
 
 use wcontainers_abi::{BackendRequestId, ConnectionId, End, Host, HostError, Warning};
 use wcontainers_arm64::Arm64;
+use wcontainers_executor_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use wcontainers_hypervisor::{
     Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
     link as link_page, routines, translate::Translator,
@@ -19,7 +20,6 @@ use wcontainers_inside::{host, routines as inside_routines, translation};
 use wcontainers_kernel_linux::FileRecord;
 use wcontainers_runtime_single_kernel::{Ending, Kernel, drive};
 use wcontainers_system_seeded_test_policy::{ERROR, TestPolicy, Warned};
-use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use zerocopy::FromZeros;
 
 use crate::common::{MEMORY, ONE_CPU, build, look_ahead, machine, setting};

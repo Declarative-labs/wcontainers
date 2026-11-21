@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-wasmtime"
+name = "wcontainers-executor-wasmtime"
 description = "The WebAssembly executor of the wcontainers runtime: the translator's output run by wasmtime behind the kernel."
 version.workspace = true
 edition.workspace = true
@@ -7,13 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+path = "implementation.rs"
+
+[[bin]]
+name = "wcon"
+path = "bin/wcon.rs"
+
 [dependencies]
 wcontainers-abi.workspace = true
-wcontainers-runtime-single-kernel = { path = "../runtime/implementation/single-kernel" }
+wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel" }
 # The words wcon shares with `docker run`.
-wcontainers-docker = { path = "../wcontainers-docker" }
-wcontainers-translator = { path = "../wcontainers-translator" }
-wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu" }
+wcontainers-docker = { path = "../../../wcontainers-docker" }
+wcontainers-translator = { path = "../../../wcontainers-translator" }
+wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu" }
 wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
 # The hook types the guest interface describes are wasm-encoder's.
 wasm-encoder = "0.263.0"
@@ -24,7 +31,7 @@ gimli = { version = "0.34.0", default-features = false, features = ["read"] }
 rayon = "1.12.0"
 zerocopy.workspace = true
 # The demonstration program's guest and its arguments.
-wcontainers-arm64 = { path = "../wcontainers-arm64" }
+wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
 pico-args = "0.5.0"
 # Writes a cache file whole under a name of its own, then puts it in place.
 tempfile = "3.27.0"

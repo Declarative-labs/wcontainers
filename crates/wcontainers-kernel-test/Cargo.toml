@@ -16,7 +16,7 @@ wcontainers-runtime-single-kernel = { path = "../runtime/implementation/single-k
 wcontainers-docker = { path = "../wcontainers-docker" }
 # The seeded choices of a run, shared with the native back end's inside.
 wcontainers-system-seeded-test-policy = { path = "../system/implementation/seeded-test-policy" }
-wcontainers-wasmtime = { path = "../wcontainers-wasmtime", optional = true }
+wcontainers-executor-wasmtime = { path = "../executor/implementation/wasmtime", optional = true }
 wcontainers-arm64 = { path = "../wcontainers-arm64", optional = true }
 unicorn-engine = "2.1.5"
 memmap2 = "0.9.12"
@@ -34,7 +34,7 @@ coarsetime = "0.1.38"
 [features]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)
 # instead of the stand-in CPU, at the look-ahead `LOOK_AHEAD` names: full (also when unset), none or bounded.
-runtime = ["dep:wcontainers-wasmtime", "dep:wcontainers-arm64"]
+runtime = ["dep:wcontainers-executor-wasmtime", "dep:wcontainers-arm64"]
 
 [lints]
 workspace = true

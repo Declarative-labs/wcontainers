@@ -12,12 +12,14 @@ use std::time::Instant;
 use serde_json::json;
 
 use wcontainers_arm64::Arm64;
+use wcontainers_executor_wasmtime::{
+    BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorConfig, cli,
+};
 use wcontainers_runtime_single_kernel::oci_spec::runtime::Spec;
 use wcontainers_runtime_single_kernel::{
     Container, Ending, GuestMachine, Image, LocalSystem, MASKED_PATHS_FIELD, READONLY_PATHS_FIELD,
     Runtime, RuntimeConfig, Step, base_spec,
 };
-use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorConfig, cli};
 
 const IMAGE: &str = "alpine:3.22";
 const PIPELINE: &str = "cat /etc/os-release | grep ^ID= | tr a-z A-Z; ls /bin | sort -r | head -3; \

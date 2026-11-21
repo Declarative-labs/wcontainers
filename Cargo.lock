@@ -4044,6 +4044,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-wasmtime"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "build-rs",
+ "cargo-lock",
+ "cargo_metadata",
+ "gimli 0.34.0",
+ "libc",
+ "mach2 0.6.0",
+ "object 0.41.0",
+ "pico-args",
+ "rayon",
+ "rustix",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "wasm-encoder 0.263.0",
+ "wasmtime",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-docker",
+ "wcontainers-guest-cpu",
+ "wcontainers-runtime-single-kernel",
+ "wcontainers-translator",
+ "zerocopy",
+]
+
+[[package]]
 name = "wcontainers-gpu"
 version = "0.1.0"
 dependencies = [
@@ -4188,6 +4217,7 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
  "wcontainers-kernel-linux",
@@ -4196,7 +4226,6 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-translator",
  "wcontainers-translator-test",
- "wcontainers-wasmtime",
  "zerocopy",
 ]
 
@@ -4302,10 +4331,10 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-docker",
+ "wcontainers-executor-wasmtime",
  "wcontainers-kernel-linux",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system-seeded-test-policy",
- "wcontainers-wasmtime",
  "zerocopy",
 ]
 
@@ -4607,35 +4636,6 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel-interface",
  "wcontainers-udp-sockets",
-]
-
-[[package]]
-name = "wcontainers-wasmtime"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "build-rs",
- "cargo-lock",
- "cargo_metadata",
- "gimli 0.34.0",
- "libc",
- "mach2 0.6.0",
- "object 0.41.0",
- "pico-args",
- "rayon",
- "rustix",
- "serde_json",
- "tar",
- "tempfile",
- "wasm-encoder 0.263.0",
- "wasmtime",
- "wcontainers-abi",
- "wcontainers-arm64",
- "wcontainers-docker",
- "wcontainers-guest-cpu",
- "wcontainers-runtime-single-kernel",
- "wcontainers-translator",
- "zerocopy",
 ]
 
 [[package]]

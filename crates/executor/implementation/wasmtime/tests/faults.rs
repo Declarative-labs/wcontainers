@@ -5,8 +5,8 @@ use wcontainers_abi::{
     Access, Cpu, Exit, PAGE_SIZE, Permissions, RegisterBlock, Resume, ThreadId, Warning,
 };
 use wcontainers_arm64::Arm64;
+use wcontainers_executor_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
-use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use zerocopy::FromZeros;
 
 use wcontainers_abi::LOWEST_ADDRESS as CODE;
