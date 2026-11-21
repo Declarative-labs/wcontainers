@@ -4,7 +4,9 @@
 use etherparse::IpNumber;
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_icmp_sockets_host::{HostIcmpSockets, IPV6_SOURCE};
+use wcontainers_icmp_sockets_host::{
+    DROPS_ASKED, HostIcmpSockets, IPV6_SOURCE, RECEIVED_FIELDS_NOT_GIVEN,
+};
 use wcontainers_internet_protocol::{
     IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpVersion, Ipv6HeaderFields,
     Ipv6RouteSelectors, LocalFragmentation, MobileAddressPreference, NeighbourConfirmation,
@@ -101,4 +103,37 @@ fn an_ipv6_source_is_refused_and_counted() {
         .map(|reading| (reading.reason, reading.count))
         .collect();
     assert_eq!(counted, [(IPV6_SOURCE, 1)]);
+}
+
+/// Each received packet counts once the fields Linux does not give and the drop count it asks the socket for.
+#[test]
+fn a_received_packet_counts_what_linux_does_not_give() {
+    use wcontainers_icmp_sockets_conformance as suite;
+    suite::enter_network_namespace();
+    let sockets = HostIcmpSockets::new().unwrap();
+    let socket = sockets.open(IpVersion::V4, UserId(u32::MIN)).unwrap();
+    let to = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let message = suite::echo(IpVersion::V4, suite::PAYLOAD);
+    sockets
+        .send_to(
+            &socket,
+            suite::header_to(to, &message),
+            suite::plain_fields(),
+            &message,
+        )
+        .unwrap();
+    let start = std::time::Instant::now();
+    let mut into = suite::buffer();
+    while sockets.receive(&socket, &mut into) == Err(HostError::WouldBlock) {
+        assert!(start.elapsed() < suite::PATIENCE, "no reply");
+        std::thread::yield_now();
+    }
+    let counted: Vec<_> = sockets
+        .counters()
+        .into_iter()
+        .map(|reading| (reading.reason, reading.count))
+        .collect();
+    let mut expected = [(DROPS_ASKED, 1), (RECEIVED_FIELDS_NOT_GIVEN, 1)];
+    expected.sort();
+    assert_eq!(counted, expected);
 }

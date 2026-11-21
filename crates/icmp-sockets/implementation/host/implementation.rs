@@ -2,6 +2,8 @@
 
 use core::cell::RefCell;
 use core::cmp::Ordering;
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
@@ -30,7 +32,40 @@ use shared::{Shortfalls, host_error, io_host_error, set_flag, sock};
 /// ICMP echo sockets of the Linux machine this runs on, its ping sockets, with a count of each refusal by its reason.
 pub struct HostIcmpSockets {
     shortfalls: Shortfalls,
+    fields_not_given: PacketCount,
+    drops_asked: PacketCount,
     readiness: Readiness,
+}
+
+/// A count every received packet adds to without a lock, warned of at its first.
+struct PacketCount {
+    reason: &'static str,
+    count: AtomicU64,
+}
+
+impl PacketCount {
+    const fn new(reason: &'static str) -> Self {
+        Self {
+            reason,
+            count: AtomicU64::new(u64::MIN),
+        }
+    }
+
+    fn add(&self) {
+        if self.count.fetch_add(1, Relaxed) == u64::MIN {
+            eprintln!("warning: {}", self.reason);
+        }
+    }
+
+    fn reading(&self) -> Option<CounterReading> {
+        let count = self.count.load(Relaxed);
+        (count != u64::MIN).then_some(CounterReading {
+            reason: self.reason,
+            detail: 0,
+            count,
+            nanoseconds: 0,
+        })
+    }
 }
 
 pub struct HostIcmpSocket {
@@ -58,8 +93,13 @@ pub const UPPER_LAYER: &str =
     "an upper layer other than the type and code of the message, which linux routes a ping by";
 pub const RECEIVED_FIELDS_NOT_GIVEN: &str = "linux gives a ping socket a packet without its mark, priority or preferred \
      source, and an ipv4 one without its identification and fragment flags: each is written as zero or none";
+pub const DROPS_ASKED: &str = "linux gives a ping socket's packets no drop count, so each receive asks the socket \
+     for its count, one more system call";
 pub const ICMP_ERROR_FIELDS_NOT_GIVEN: &str = "linux gives a ping socket an icmp error without the identification and \
      fragment flags of an ipv4 one or the quoted header's fields but its addresses: each is written as zero";
+
+/// The largest ICMP message an IP packet carries, the limit of its payload length.
+const LARGEST_MESSAGE: usize = u16::MAX as usize;
 
 /// The receive control messages every socket turns on beside the ones socket2 sets, by level.
 const IPV4_RECEIVE_OPTIONS: [u32; 5] = [
@@ -83,13 +123,22 @@ impl HostIcmpSockets {
     pub fn new() -> Result<Self, HostError> {
         Ok(Self {
             shortfalls: Shortfalls::default(),
+            fields_not_given: PacketCount::new(RECEIVED_FIELDS_NOT_GIVEN),
+            drops_asked: PacketCount::new(DROPS_ASKED),
             readiness: Readiness::new()?,
         })
     }
 
-    /// How many times each named reason has made this value refuse or drop something.
+    /// How many times each named reason has made this value refuse, drop, leave out or slow down something.
     pub fn counters(&self) -> Vec<CounterReading> {
-        self.shortfalls.readings()
+        let mut readings = self.shortfalls.readings();
+        readings.extend(
+            [&self.fields_not_given, &self.drops_asked]
+                .into_iter()
+                .filter_map(PacketCount::reading),
+        );
+        readings.sort_by_key(|reading| reading.reason);
+        readings
     }
 
     fn refuse(&self, reason: &'static str) -> SendError {
@@ -346,7 +395,10 @@ impl IcmpSockets for HostIcmpSockets {
             }
         }
         let mut control = ControlBuffer::new();
-        let message = receive::receive(fd, into, &mut control, false)?;
+        // Linux cuts a ping socket's packet to the buffers given and tells only what it copied.
+        let mut tail = [MaybeUninit::<u8>::uninit(); LARGEST_MESSAGE];
+        let tail = &mut tail[..LARGEST_MESSAGE.saturating_sub(into.len())];
+        let message = receive::receive_with_tail(fd, into, tail, &mut control, false)?;
         if message.control_truncated {
             self.shortfalls.count(receive::CONTROL_TRUNCATED);
         }
@@ -376,7 +428,7 @@ impl IcmpSockets for HostIcmpSockets {
             _ => return Err(HostError::Errno(libc::EAFNOSUPPORT)),
         }
         headers.place(into, message.length.min(into.len()));
-        // Linux gives a ping socket no drop count with its packets, so the socket's own count is read.
+        self.drops_asked.add();
         let total = dropped_packets(fd)?;
         let drops = total.wrapping_sub(state.drops);
         state.drops = total;
@@ -385,7 +437,7 @@ impl IcmpSockets for HostIcmpSockets {
         if fields.specific_destination == Some(Ipv4Addr::UNSPECIFIED) {
             fields.specific_destination = None;
         }
-        self.shortfalls.count(RECEIVED_FIELDS_NOT_GIVEN);
+        self.fields_not_given.add();
         Ok(Received::Packet(fields))
     }
 
