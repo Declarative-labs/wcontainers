@@ -334,6 +334,7 @@ enum Alu {
     BitfieldInsert,
     FrexpExp,
     FrexpSig,
+    B2b32,
     Unsupported,
 }
 
@@ -1500,6 +1501,9 @@ enum AluForm {
     Math(MathFunction),
     /// A conversion to the kind, with the value converted.
     Cast(ScalarKind),
+    /// A boolean as NIR's 32-bit one: true as every bit set, the negated conversion to a signed
+    /// integer.
+    Bool32,
     /// A comparison of each component, then all or any of them.
     Reduce(BinaryOperator, RelationalFunction),
     /// The logical not of `Binary`: an unordered float comparison, true where either side is NaN,
@@ -1577,6 +1581,7 @@ fn alu_form(op: Alu) -> Option<(ScalarKind, AluForm)> {
         Alu::B2i32 => (Bool, F::Cast(Sint)),
         // A 32-bit boolean word (OpenGL's default-block booleans) as a boolean: not zero.
         Alu::B2b1 => (Uint, F::Cast(Bool)),
+        Alu::B2b32 => (Bool, F::Bool32),
         Alu::BitCount => (Uint, F::Math(M::CountOneBits)),
         Alu::UfindMsb => (Uint, F::Math(M::FirstLeadingBit)),
         Alu::IfindMsb => (Sint, F::Math(M::FirstLeadingBit)),
@@ -2083,6 +2088,18 @@ impl Builder<'_> {
                         }),
                         to,
                     ),
+                    AluForm::Bool32 => {
+                        let one = self.add(Expression::As {
+                            expr: a,
+                            kind: ScalarKind::Sint,
+                            convert: Some(WIDTH),
+                        });
+                        let all = self.add(Expression::Unary {
+                            op: UnaryOperator::Negate,
+                            expr: one,
+                        });
+                        (all, ScalarKind::Sint)
+                    }
                     AluForm::Reduce(o, fun) | AluForm::NotReduce(o, fun) => {
                         let b = self.src(i, 1, count(1), source_kind)?;
                         let each = self.add(Expression::Binary {

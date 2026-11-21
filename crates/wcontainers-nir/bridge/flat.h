@@ -180,7 +180,7 @@ enum wc_flat_kind {
    X(ball_fequal4) X(bany_fnequal2) X(bany_fnequal3) X(bany_fnequal4) X(ball_iequal2) \
    X(ball_iequal3) X(ball_iequal4) X(bany_inequal2) X(bany_inequal3) X(bany_inequal4) X(fmod) \
    X(frem) X(u2u16) X(u2u32) X(b2b1) X(isign) X(ubitfield_extract) X(ibitfield_extract) \
-   X(bitfield_insert) X(frexp_exp) X(frexp_sig)
+   X(bitfield_insert) X(frexp_exp) X(frexp_sig) X(b2b32)
 
 #define WC_INTRINSICS(X)                                                                           \
    X(LOAD_DEREF) X(STORE_DEREF) X(DECL_REG) X(LOAD_REG) X(STORE_REG) X(VULKAN_RESOURCE_INDEX)    \
