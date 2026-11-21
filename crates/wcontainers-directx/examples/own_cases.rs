@@ -310,6 +310,216 @@ fn main() -> windows::core::Result<()> {
                     support2.OutFormatSupport2,
                     code(support1.map(|_| ()))
                 );
+                let levels =
+                    unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT(format), 4) };
+                println!(
+                    "msq {format} {:#010x} {}",
+                    code(levels.map(|_| ())),
+                    levels.as_ref().copied().unwrap_or(0)
+                );
+            }
+            let mut options2 = D3D11_FEATURE_DATA_D3D11_OPTIONS2::default();
+            let r = unsafe {
+                device.CheckFeatureSupport(
+                    D3D11_FEATURE_D3D11_OPTIONS2,
+                    (&raw mut options2).cast(),
+                    size_of_val(&options2) as u32,
+                )
+            };
+            println!(
+                "options2 {:#010x} typed loads of more formats {}",
+                code(r),
+                options2.TypedUAVLoadAdditionalFormats.as_bool()
+            );
+        }
+        // Gathers, point and linear samples and generated mips of the 32-bit float formats, whose
+        // values the reads give exactly.
+        "float32_reads" => {
+            let sampler = |filter| {
+                let desc = D3D11_SAMPLER_DESC {
+                    Filter: filter,
+                    AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    MaxLOD: f32::MAX,
+                    ..Default::default()
+                };
+                let mut s = None;
+                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
+                s
+            };
+            let (point, linear) = (
+                sampler(D3D11_FILTER_MIN_MAG_MIP_POINT),
+                sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR),
+            );
+            let read = cs("Texture2D<float4> t : register(t0);
+                SamplerState p : register(s0);
+                SamplerState l : register(s1);
+                RWTexture2D<float4> o : register(u0);
+                [numthreads(1, 1, 1)]
+                void main() {
+                    o[uint2(0, 0)] = t.GatherRed(p, float2(0.5, 0.5));
+                    o[uint2(1, 0)] = t.GatherRed(l, float2(0.5, 0.5));
+                    o[uint2(2, 0)] = t.SampleLevel(p, float2(0.3, 0.7), 0);
+                    o[uint2(3, 0)] = t.SampleLevel(l, float2(0.5, 0.5), 0);
+                }");
+            for (name, format, channels) in [
+                ("R32G32B32A32_FLOAT", DXGI_FORMAT_R32G32B32A32_FLOAT, 4),
+                ("R32G32_FLOAT", DXGI_FORMAT_R32G32_FLOAT, 2),
+                ("R32_FLOAT", DXGI_FORMAT_R32_FLOAT, 1),
+            ] {
+                let texel = channels * 4;
+                // Texel (x, y)'s channel c holds (x + 4y + c) / 4 in each level drawn from.
+                let values = |w: u32, h: u32| -> Vec<u8> {
+                    (0..h * w * channels)
+                        .flat_map(|i| {
+                            let (c, x, y) = (i % channels, i / channels % w, i / channels / w);
+                            ((x + 4 * y + c) as f32 * 0.25).to_le_bytes()
+                        })
+                        .collect()
+                };
+                let small = make(
+                    &Tex {
+                        w: 2,
+                        h: 2,
+                        format,
+                        samples: 1,
+                        bind: D3D11_BIND_SHADER_RESOURCE,
+                    },
+                    Some((&values(2, 2), 2 * texel)),
+                )?;
+                let out = make(
+                    &Tex {
+                        w: 4,
+                        h: 1,
+                        format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                        samples: 1,
+                        bind: D3D11_BIND_UNORDERED_ACCESS,
+                    },
+                    None,
+                )?;
+                unsafe {
+                    context.CSSetShader(read.as_ref(), None);
+                    context.CSSetShaderResources(0, Some(&[srv(&small, DXGI_FORMAT_UNKNOWN)]));
+                    context.CSSetSamplers(0, Some(&[point.clone(), linear.clone()]));
+                    let views = [uav(&out)];
+                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
+                    context.Dispatch(1, 1, 1);
+                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+                    context.CSSetShaderResources(0, Some(&[None]));
+                }
+                print(&format!("{name} gathers and samples"), &out, 16);
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: 4,
+                    Height: 4,
+                    MipLevels: 3,
+                    ArraySize: 1,
+                    Format: format,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                    MiscFlags: D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32,
+                    ..Default::default()
+                };
+                let mut chain = None;
+                unsafe { device.CreateTexture2D(&desc, None, Some(&mut chain))? };
+                let chain = chain.unwrap();
+                let mut view = None;
+                unsafe {
+                    context.UpdateSubresource(
+                        &chain,
+                        0,
+                        None,
+                        values(4, 4).as_ptr().cast(),
+                        4 * texel,
+                        0,
+                    );
+                    device.CreateShaderResourceView(&chain, None, Some(&mut view))?;
+                    context.GenerateMips(view.as_ref().unwrap());
+                }
+                for (level, size) in [(1, 2), (2, 1)] {
+                    let mip = make(
+                        &Tex {
+                            w: size,
+                            h: size,
+                            format,
+                            samples: 1,
+                            bind: D3D11_BIND_FLAG(0),
+                        },
+                        None,
+                    )?;
+                    unsafe { context.CopySubresourceRegion(&mip, 0, 0, 0, 0, &chain, level, None) };
+                    print(&format!("{name} generated level {level}"), &mip, texel);
+                }
+            }
+        }
+        // Normalised targets the back end may hold as their integer twins: drawn, read back and
+        // their mips generated.
+        "norm_targets" => {
+            let full = vs(FULL);
+            let shade = ps("float4 main(float4 p : SV_Position) : SV_Target {
+                    return float4(0.2 * (p.x + 0.5), 0.4 * p.y - 0.8, -0.6, 1.0);
+                }");
+            for (name, format, texel) in [
+                ("R8G8B8A8_SNORM", DXGI_FORMAT_R8G8B8A8_SNORM, 4),
+                ("R8G8_SNORM", DXGI_FORMAT_R8G8_SNORM, 2),
+                ("R8_SNORM", DXGI_FORMAT_R8_SNORM, 1),
+                ("R16G16B16A16_UNORM", DXGI_FORMAT_R16G16B16A16_UNORM, 8),
+                ("R16G16B16A16_SNORM", DXGI_FORMAT_R16G16B16A16_SNORM, 8),
+                ("R16G16_UNORM", DXGI_FORMAT_R16G16_UNORM, 4),
+                ("R16G16_SNORM", DXGI_FORMAT_R16G16_SNORM, 4),
+                ("R16_UNORM", DXGI_FORMAT_R16_UNORM, 2),
+                ("R16_SNORM", DXGI_FORMAT_R16_SNORM, 2),
+            ] {
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: 4,
+                    Height: 4,
+                    MipLevels: 3,
+                    ArraySize: 1,
+                    Format: format,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                    MiscFlags: D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32,
+                    ..Default::default()
+                };
+                let mut chain = None;
+                let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut chain)) };
+                println!("{name}: texture {:#010x}", code(r));
+                let Some(chain) = chain else { continue };
+                let mut view = None;
+                unsafe {
+                    context.OMSetRenderTargets(Some(&[rtv(&chain)]), None);
+                    viewport(4, 4);
+                    context.VSSetShader(full.as_ref(), None);
+                    context.PSSetShader(shade.as_ref(), None);
+                    context.Draw(3, 0);
+                    context.OMSetRenderTargets(None, None);
+                    device.CreateShaderResourceView(&chain, None, Some(&mut view))?;
+                    context.GenerateMips(view.as_ref().unwrap());
+                }
+                for (level, size) in [(0, 4), (1, 2), (2, 1)] {
+                    let mip = make(
+                        &Tex {
+                            w: size,
+                            h: size,
+                            format,
+                            samples: 1,
+                            bind: D3D11_BIND_FLAG(0),
+                        },
+                        None,
+                    )?;
+                    unsafe { context.CopySubresourceRegion(&mip, 0, 0, 0, 0, &chain, level, None) };
+                    // Generated levels are filtered.
+                    let what = if level == 0 { "drawn" } else { "filtered" };
+                    print(&format!("{what} {name} level {level}"), &mip, texel);
+                }
             }
         }
         "ms_depth_read" => {
