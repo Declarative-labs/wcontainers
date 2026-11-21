@@ -13,6 +13,7 @@ pub mod libctest;
 pub mod ltp;
 pub mod network;
 pub mod reference;
+pub mod replay;
 pub mod runtimes;
 pub mod standin;
 pub mod streams;

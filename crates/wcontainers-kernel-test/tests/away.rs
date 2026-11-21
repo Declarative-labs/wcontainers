@@ -558,7 +558,11 @@ fn a_signal_the_embedder_sends_to_a_task_away_waits_for_it() {
 
 #[test]
 fn a_socket_wait_with_a_receive_timeout_taken_off_answers_as_a_stop_makes_it_answer() {
-    as_the_reference_runs(Plan::Socket, &["socket", "embedder"], &["socket", "stopping"]);
+    as_the_reference_runs(
+        Plan::Socket,
+        &["socket", "embedder"],
+        &["socket", "stopping"],
+    );
 }
 
 #[test]

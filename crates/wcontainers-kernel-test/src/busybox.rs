@@ -190,6 +190,43 @@ fn run_ours_on(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Ru
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
 }
 
+/// As [`run_ours_on`], keeping a record of what the host gave the kernel, then again on a fresh
+/// kernel and stand-in from that record alone, with another seed and no backend: the outcome, the
+/// files left with the root in memory and every guest memory, as each was dropped and at the end,
+/// must be the same. Gives the first run.
+#[cfg(not(feature = "runtime"))]
+pub fn run_ours_replayed(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Run {
+    let path = on_path(command[0]);
+    let container = container(command, &path, backend);
+    let taped = |seed, tape| {
+        let prepared = driver::Prepared {
+            tape: Some(tape),
+            ..driver::prepare(&container)
+        };
+        driver::run_prepared(prepared, &container, seed, Default::default())
+            .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
+    };
+    let mut recorded = taped(seed, crate::replay::Tape::recording());
+    let tape = recorded.tape.take().expect("a record");
+    let replayed = taped(!seed, tape.replaying());
+    assert_eq!(
+        replayed.outcome, recorded.outcome,
+        "{command:?}: the replay's outcome"
+    );
+    assert!(!recorded.memories.is_empty(), "{command:?}: no memory seen");
+    assert_eq!(
+        replayed.memories, recorded.memories,
+        "{command:?}: the replay's guest memories"
+    );
+    if backend.is_none() {
+        assert_eq!(
+            replayed.files, recorded.files,
+            "{command:?}: the replay's files"
+        );
+    }
+    recorded
+}
+
 /// Runs a command of the reference image (the first argument names it) as the container's first
 /// process in the reference and on our kernel twice, with the root file system in memory and on
 /// the file backend, with `/` as the working directory, and asserts that output, exit status and
@@ -204,6 +241,9 @@ pub fn compare(command: &[&str]) -> driver::Run {
         } else {
             "root in memory"
         };
+        #[cfg(not(feature = "runtime"))]
+        let ours = run_ours_replayed(command, 0, backend);
+        #[cfg(feature = "runtime")]
         let ours = run_ours_on(command, 0, backend);
         let messages: u64 = ours
             .counters

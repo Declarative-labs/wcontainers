@@ -18,6 +18,7 @@ use wcontainers_kernel::{
 use wcontainers_runtime::{Ending, Execution, Outside, Turn};
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
+use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
 use crate::standin::Unsupported;
 use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
@@ -197,6 +198,10 @@ pub struct Run {
     pub outputs_closed: bool,
     /// Whether the kernel closed the input end before the outside did.
     pub input_closed: bool,
+    /// The record of what the host gave, for a run that kept one.
+    pub tape: Option<Tape>,
+    /// What every guest memory held, for a run that kept a record.
+    pub memories: MemoryDigests,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -235,6 +240,8 @@ pub struct TestHost<H = NoHooks> {
     waits: bool,
     /// What the test does at the kernel's hooks.
     hooks: Mutex<H>,
+    /// The record of what this host gives the kernel, kept or answered from.
+    tape: Option<Mutex<Tape>>,
 }
 
 /// What a driven run has done to it at moments drawn from its seed, and where it is.
@@ -290,6 +297,7 @@ impl TestHost {
             injecting: None,
             waits: false,
             hooks: Mutex::new(NoHooks),
+            tape: None,
         }
     }
 
@@ -322,6 +330,7 @@ impl TestHost {
             injecting: self.injecting,
             waits: self.waits,
             hooks: Mutex::new(hooks),
+            tape: self.tape,
         }
     }
 }
@@ -473,8 +482,171 @@ impl System for TestHost<Box<dyn Hooks>> {
     }
 }
 
-impl<H: Send> Host for TestHost<H> {
-    fn monotonic_nanoseconds(&self) -> u64 {
+impl<H> TestHost<H> {
+    /// A host that keeps a record of what it gives the kernel, or answers from one.
+    pub fn taped(mut self, tape: Tape) -> Self {
+        self.tape = Some(Mutex::new(tape));
+        self
+    }
+
+    /// Whether this host keeps a record or answers from one.
+    pub fn taped_run(&self) -> bool {
+        self.tape.is_some()
+    }
+
+    /// Whether this host answers from a record.
+    pub fn replaying(&self) -> bool {
+        self.tape
+            .as_ref()
+            .is_some_and(|tape| lock(tape).is_replaying())
+    }
+
+    /// The next answer of a replay, taken by `take`; none when not replaying.
+    fn replayed<T>(&self, take: impl FnOnce(Entry) -> Result<T, Entry>) -> Option<T> {
+        let tape = self.tape.as_ref()?;
+        let mut tape = lock(tape);
+        if !tape.is_replaying() {
+            return None;
+        }
+        let entry = tape.take();
+        Some(take(entry).unwrap_or_else(|entry| tape.out_of_step(&entry)))
+    }
+
+    /// Keeps what the host gave the kernel, unless the driver's own work asked.
+    fn keep(&self, entry: impl FnOnce() -> Entry) {
+        if let Some(tape) = &self.tape {
+            let mut tape = lock(tape);
+            if !tape.outside {
+                tape.keep(entry());
+            }
+        }
+    }
+
+    /// An answer: from the record when replaying, else as `live` gives it, kept.
+    fn answer<T: Clone>(
+        &self,
+        kept: impl FnOnce(T) -> Entry,
+        take: impl FnOnce(Entry) -> Result<T, Entry>,
+        live: impl FnOnce() -> T,
+    ) -> T {
+        if let Some(value) = self.replayed(take) {
+            return value;
+        }
+        let value = live();
+        self.keep(|| kept(value.clone()));
+        value
+    }
+
+    /// Marks the driver's own work as running or not; what it was.
+    fn set_outside(&self, outside: bool) -> bool {
+        self.tape.as_ref().is_some_and(|tape| {
+            let mut tape = lock(tape);
+            std::mem::replace(&mut tape.outside, outside)
+        })
+    }
+
+    /// Whether the backend owes an answer.
+    pub(crate) fn backend_waiting(&mut self) -> bool {
+        if let Some(waiting) = self.replayed(|entry| match entry {
+            Entry::BackendWaiting(waiting) => Ok(waiting),
+            other => Err(other),
+        }) {
+            return waiting;
+        }
+        let waiting = self
+            .backend()
+            .as_ref()
+            .is_some_and(|backend| backend.waiting());
+        self.keep(|| Entry::BackendWaiting(waiting));
+        waiting
+    }
+
+    /// What the record holds for a run that kept one, which then has no more to keep.
+    pub fn take_tape(&mut self) -> Option<Tape> {
+        self.tape
+            .take()
+            .map(|tape| tape.into_inner().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+impl<H: Send> TestHost<H>
+where
+    Self: System,
+{
+    /// Does what the outside does at one point of the driver loop: in a replay, hands the kernel
+    /// what the record holds up to that point's end; else does it with `live`, keeping its end.
+    fn outside_part<T: Copy>(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        ending: fn(T) -> Entry,
+        ended: fn(&Entry) -> Option<T>,
+        live: impl FnOnce(&mut Self, &mut Kernel, &mut dyn Cpu) -> T,
+    ) -> T {
+        if self.replaying() {
+            let tape = self.tape.as_ref().expect("a record");
+            loop {
+                let entry = lock(tape).take();
+                match entry {
+                    Entry::Event(event) => kernel.event(cpu, self, event.event()),
+                    Entry::Kill(signal) => kernel.kill(cpu, self, signal),
+                    other => match ended(&other) {
+                        Some(value) => return value,
+                        None if other == Entry::Delivered => {}
+                        None => lock(tape).out_of_step(&other),
+                    },
+                }
+            }
+        }
+        let was = self.set_outside(true);
+        let value = live(self, kernel, cpu);
+        self.set_outside(was);
+        if let Some(tape) = &self.tape {
+            lock(tape).keep(ending(value));
+        }
+        value
+    }
+
+    /// Hands the kernel an event from the outside, kept in the record; in a replay, one the
+    /// driver's own work hands must be the one the record holds.
+    pub(crate) fn hand(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
+        self.kept_in_step(Entry::Event(OwnedEvent::of(&event)));
+        let was = self.set_outside(false);
+        kernel.event(cpu, self, event);
+        self.set_outside(was);
+    }
+
+    /// Sends a signal from the outside to the first process, kept in the record.
+    fn kill(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, signal: u32) {
+        self.kept_in_step(Entry::Kill(signal));
+        let was = self.set_outside(false);
+        kernel.kill(cpu, self, signal);
+        self.set_outside(was);
+    }
+
+    /// Keeps what the outside hands the kernel, or in a replay checks it against the record.
+    fn kept_in_step(&self, entry: Entry) {
+        let Some(tape) = &self.tape else {
+            return;
+        };
+        let mut tape = lock(tape);
+        if !tape.is_replaying() {
+            tape.keep(entry);
+            return;
+        }
+        let kept = tape.take();
+        assert_eq!(
+            kept,
+            entry,
+            "the replay went out of step at entry {}",
+            tape.taken()
+        );
+    }
+}
+
+impl<H: Send> TestHost<H> {
+    /// The monotonic clock as this host keeps it.
+    fn monotonic_live(&self) -> u64 {
         match &self.virtual_now {
             Some(now) => {
                 let work = self.kernel_work.swap(0, Ordering::Relaxed);
@@ -483,16 +655,48 @@ impl<H: Send> Host for TestHost<H> {
             None => self.started.elapsed().as_nanos() as u64 + self.skipped,
         }
     }
+}
+
+impl<H: Send> Host for TestHost<H> {
+    fn monotonic_nanoseconds(&self) -> u64 {
+        self.answer(
+            Entry::Monotonic,
+            |entry| match entry {
+                Entry::Monotonic(now) => Ok(now),
+                other => Err(other),
+            },
+            || self.monotonic_live(),
+        )
+    }
 
     fn realtime_nanoseconds(&self) -> u64 {
-        match &self.virtual_now {
-            Some(_) => self.wall_base + self.monotonic_nanoseconds(),
-            None => wall_clock() + self.skipped,
-        }
+        self.answer(
+            Entry::Realtime,
+            |entry| match entry {
+                Entry::Realtime(now) => Ok(now),
+                other => Err(other),
+            },
+            || match &self.virtual_now {
+                Some(_) => self.wall_base + self.monotonic_live(),
+                None => wall_clock() + self.skipped,
+            },
+        )
     }
 
     fn random(&self, into: &mut [u8]) {
-        lock(&self.random).fill_bytes(into);
+        let bytes = self.answer(
+            Entry::Random,
+            |entry| match entry {
+                Entry::Random(bytes) if bytes.len() == into.len() => Ok(bytes),
+                other => Err(other),
+            },
+            || {
+                let mut bytes = vec![0; into.len()];
+                lock(&self.random).fill_bytes(&mut bytes);
+                bytes
+            },
+        );
+        into.copy_from_slice(&bytes);
     }
 
     fn warn(&self, warning: Warning<'_>) {
@@ -517,14 +721,23 @@ impl<H: Send> Host for TestHost<H> {
     }
 
     fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        let mut backend = lock(&self.backend);
-        let backend = backend.as_mut().ok_or(HostError::NotSupported)?;
-        // The answer to a RETRIEVE this host sent in the server's place stays here.
-        if request.0 & RETRIEVED == RETRIEVED {
-            return Ok(());
-        }
-        backend.send(request.0, message);
-        Ok(())
+        self.answer(
+            Entry::BackendSent,
+            |entry| match entry {
+                Entry::BackendSent(result) => Ok(result),
+                other => Err(other),
+            },
+            || {
+                let mut backend = lock(&self.backend);
+                let backend = backend.as_mut().ok_or(HostError::NotSupported)?;
+                // The answer to a RETRIEVE this host sent in the server's place stays here.
+                if request.0 & RETRIEVED == RETRIEVED {
+                    return Ok(());
+                }
+                backend.send(request.0, message);
+                Ok(())
+            },
+        )
     }
 
     fn send_stream(&self, end: End, bytes: &[u8]) {
@@ -546,40 +759,95 @@ impl<H: Send> Host for TestHost<H> {
         port: u16,
         stream: bool,
     ) -> Result<(), HostError> {
-        lock(&self.network).connect(connection.0, address, port, stream)
+        self.answer(
+            Entry::Connected,
+            |entry| match entry {
+                Entry::Connected(result) => Ok(result),
+                other => Err(other),
+            },
+            || lock(&self.network).connect(connection.0, address, port, stream),
+        )
     }
 
     fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        lock(&self.network).send(connection.0, bytes)
+        self.answer(
+            Entry::Sent,
+            |entry| match entry {
+                Entry::Sent(result) => Ok(result),
+                other => Err(other),
+            },
+            || lock(&self.network).send(connection.0, bytes),
+        )
     }
 
     fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        lock(&self.network).receive(connection.0, into)
+        let (result, bytes) = self.answer(
+            |(result, bytes)| Entry::Received(result, bytes),
+            |entry| match entry {
+                Entry::Received(result, bytes) if bytes.len() <= into.len() => Ok((result, bytes)),
+                other => Err(other),
+            },
+            || {
+                let mut bytes = vec![0; into.len()];
+                let result = lock(&self.network).receive(connection.0, &mut bytes);
+                bytes.truncate(*result.as_ref().unwrap_or(&0));
+                (result, bytes)
+            },
+        );
+        into[..bytes.len()].copy_from_slice(&bytes);
+        result
     }
 
     fn finish(&self, connection: ConnectionId) {
-        lock(&self.network).finish(connection.0);
+        if !self.replaying() {
+            lock(&self.network).finish(connection.0);
+        }
     }
 
     fn close(&self, connection: ConnectionId) {
-        lock(&self.network).close(connection.0);
+        if !self.replaying() {
+            lock(&self.network).close(connection.0);
+        }
     }
 
     fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
-        lock(&self.network).look_up(request, name);
-        Ok(())
+        self.answer(
+            Entry::LookedUp,
+            |entry| match entry {
+                Entry::LookedUp(result) => Ok(result),
+                other => Err(other),
+            },
+            || {
+                lock(&self.network).look_up(request, name);
+                Ok(())
+            },
+        )
     }
 
     fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        lock(&self.network).listen(listener.0, port)
+        self.answer(
+            Entry::Listened,
+            |entry| match entry {
+                Entry::Listened(result) => Ok(result),
+                other => Err(other),
+            },
+            || lock(&self.network).listen(listener.0, port),
+        )
     }
 
     fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
-        lock(&self.network).accept(listener.0, connection.0)
+        self.answer(
+            Entry::Accepted,
+            |entry| match entry {
+                Entry::Accepted(result) => Ok(result),
+                other => Err(other),
+            },
+            || lock(&self.network).accept(listener.0, connection.0),
+        )
     }
 }
 
-impl<H> StreamHost for TestHost<H>
+impl<H: Send> StreamHost for TestHost<H>
 where
     Self: System,
 {
@@ -596,6 +864,10 @@ where
             .as_ref()
             .expect("a container with a backend")
             .change(path, bytes);
+    }
+
+    fn hand(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
+        TestHost::hand(self, kernel, cpu, event);
     }
 }
 
@@ -734,6 +1006,8 @@ pub struct Prepared {
     /// Whether the guest's clocks are the machine's and its waits take their time, so a test that
     /// runs for a span of time takes that span, rather than moving only with the work run.
     pub wall_clock: bool,
+    /// A record to keep of what the host gives the kernel, or to answer from in its place.
+    pub tape: Option<Tape>,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -750,6 +1024,7 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         hooks: None,
         ceiling: None,
         wall_clock: false,
+        tape: None,
     }
 }
 
@@ -767,7 +1042,7 @@ pub fn run_prepared(
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
-    let host = if prepared.wall_clock {
+    let mut host = if prepared.wall_clock {
         TestHost {
             waits: true,
             ..TestHost::new(seed)
@@ -775,6 +1050,13 @@ pub fn run_prepared(
     } else {
         TestHost::repeatable(seed)
     };
+    if let Some(tape) = prepared.tape.take() {
+        assert_eq!(
+            injections.saves, 0,
+            "a run that keeps a record is not saved"
+        );
+        host = host.taped(tape);
+    }
     match prepared.hooks.take() {
         None => run_hosted(prepared, host, container, seed, injections),
         Some(hooks) => run_hosted(
@@ -819,12 +1101,19 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     let mut cpu = back_end(seed, container.address_space, wall_clock);
+    #[cfg(not(feature = "runtime"))]
+    let taped = host.tape.is_some();
+    #[cfg(not(feature = "runtime"))]
+    if taped {
+        crate::replay::DigestMemories::keep_digests(&mut cpu);
+    }
     host.injecting = Some(Injecting::new(seed, injections));
     *host.streams() = Streams::new(client);
     host.streams().echo = echo;
     held(&mut host.network).published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some(reference::ROOT_DIRECTORY);
-    if container.backend.is_some() {
+    // A replay has only its record of what the backend answered.
+    if container.backend.is_some() && !host.replaying() {
         let served = match container.root_image {
             _ if !root_on_backend => crate::backend::Served::Empty,
             Some(image) => crate::backend::Served::Image(image),
@@ -878,7 +1167,16 @@ where
     #[cfg(feature = "runtime")]
     report(&cpu, container, started.elapsed());
     let input_closed = host.streams().input_closed_by_kernel();
-    let outputs_closed = streams::finish(&mut kernel, &mut cpu, &mut host);
+    let outputs_closed = host.outside_part(
+        &mut kernel,
+        &mut cpu,
+        Entry::Finished,
+        |entry| match entry {
+            Entry::Finished(closed) => Some(*closed),
+            _ => None,
+        },
+        |host, kernel, cpu| streams::finish(kernel, cpu, host),
+    );
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
@@ -888,6 +1186,22 @@ where
         Some(backend) if root_on_backend => image::records(&backend.files()),
         _ => kernel.root_files(&mut cpu),
     };
+    #[cfg(not(feature = "runtime"))]
+    let memories = if taped {
+        crate::replay::DigestMemories::digests(&mut cpu)
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "runtime")]
+    let memories = Vec::new();
+    let tape = host.take_tape();
+    if let Some(tape) = &tape {
+        assert!(
+            tape.used_up(),
+            "the replay left {} entries of its record",
+            tape.len()
+        );
+    }
     let report = host.injecting().report;
     let saved = host.injecting().saved;
     let turns = host.injecting().turns;
@@ -910,6 +1224,8 @@ where
         broken: streams.broken,
         outputs_closed,
         input_closed,
+        tape,
+        memories,
     };
     Ok(finish(run, report))
 }
@@ -925,22 +1241,12 @@ impl<H> TestHost<H> {
     }
 }
 
-impl<H: BetweenSteps + Send> Outside for TestHost<H>
+impl<H: BetweenSteps + Send> TestHost<H>
 where
     Self: System,
 {
-    /// The run of a copy made at a save, as the process it was copied from gets it.
-    type End = Run;
-
-    fn standard(&self) -> Standard {
-        lock(&self.streams).client.standard()
-    }
-
-    fn started(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
-        streams::begin(kernel, cpu, self);
-    }
-
-    fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
+    /// How the next turn ends, drawn from the seed.
+    fn turn_live(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
         // The seed chooses where in its slice each turn ends, so a run repeats for a seed and
         // threads interleave differently under different seeds.
         let mut limit = slice_nanoseconds.map(|slice| self.schedule.random_range(1..=slice.max(1)));
@@ -957,22 +1263,7 @@ where
         Turn::Counted { limit }
     }
 
-    /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
-    /// nanoseconds for each unit of progress (an instruction on the stand-in; a CPU's speed varies
-    /// with its caches and its load), and between 0.5 and 1.5 microseconds more for the kernel's
-    /// work on what came back, both drawn from the seed. The kernel's part passes after the first
-    /// reading of the clock, which the kernel takes as it is entered. The speed moves the points
-    /// where the scheduler switches threads, so seeds give different interleavings.
-    fn ran(&mut self, progress: u64) {
-        let picoseconds = self.schedule.random_range(INSTRUCTION_PICOSECONDS);
-        let kernel = self.schedule.random_range(TURN_NANOSECONDS);
-        if let Some(now) = &mut self.virtual_now {
-            *now.get_mut() += progress.saturating_mul(picoseconds) / PICOSECONDS_PER_NANOSECOND;
-            *self.kernel_work.get_mut() = kernel;
-        }
-    }
-
-    fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn arrived_live(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
         let turns = {
             let injecting = self.injecting();
             injecting.turns += 1;
@@ -994,21 +1285,17 @@ where
             let injecting = self.injecting();
             injecting.notice_at.remove(0);
             let notice = notice(&mut injecting.notices);
-            kernel.event(cpu, self, Event::BackendNotice { notice: &notice });
+            self.hand(kernel, cpu, Event::BackendNotice { notice: &notice });
         }
         while self.injecting().signal_at.first() == Some(&turns) {
             self.injecting().signal_at.remove(0);
             let signal = self.injecting().signal;
-            kernel.kill(cpu, self, signal);
+            TestHost::kill(self, kernel, cpu, signal);
         }
         self.injecting().at.first() == Some(&turns)
     }
 
-    /// Saves the container where the seed says: a new process holding a copy of this one's memory,
-    /// as a host that saves copies the kernel's memory and every guest memory. The copy goes on with
-    /// a new CPU side made from the saved memories and registers and a new host whose clock reads
-    /// differently, while this process only waits for the copy's run.
-    fn stopped<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
+    fn stopped_live<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
         loop {
             let injecting = self.injecting();
             if injecting.at.first() != Some(&injecting.turns) {
@@ -1048,7 +1335,12 @@ where
         }
     }
 
-    fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+    fn idle_live(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        until_nanoseconds: Option<u64>,
+    ) {
         if held(&mut self.hooks).between_steps(kernel, cpu) {
             return;
         }
@@ -1098,7 +1390,90 @@ where
         } else {
             self.skipped += left;
         }
-        kernel.event(cpu, self, Event::Timer);
+        self.hand(kernel, cpu, Event::Timer);
+    }
+}
+
+impl<H: BetweenSteps + Send> Outside for TestHost<H>
+where
+    Self: System,
+{
+    /// The run of a copy made at a save, as the process it was copied from gets it.
+    type End = Run;
+
+    fn standard(&self) -> Standard {
+        lock(&self.streams).client.standard()
+    }
+
+    fn started(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        self.outside_part(
+            kernel,
+            cpu,
+            |()| Entry::Begun,
+            |entry| (*entry == Entry::Begun).then_some(()),
+            |host, kernel, cpu| streams::begin(kernel, cpu, host),
+        );
+    }
+
+    fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
+        if let Some(turn) = self.replayed(|entry| match entry {
+            Entry::Turn(turn) => Ok(turn),
+            other => Err(other),
+        }) {
+            return turn;
+        }
+        let turn = self.turn_live(slice_nanoseconds);
+        self.keep(|| Entry::Turn(turn));
+        turn
+    }
+
+    /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
+    /// nanoseconds for each unit of progress (an instruction on the stand-in; a CPU's speed varies
+    /// with its caches and its load), and between 0.5 and 1.5 microseconds more for the kernel's
+    /// work on what came back, both drawn from the seed. The kernel's part passes after the first
+    /// reading of the clock, which the kernel takes as it is entered. The speed moves the points
+    /// where the scheduler switches threads, so seeds give different interleavings.
+    fn ran(&mut self, progress: u64) {
+        if self.replaying() {
+            return;
+        }
+        let picoseconds = self.schedule.random_range(INSTRUCTION_PICOSECONDS);
+        let kernel = self.schedule.random_range(TURN_NANOSECONDS);
+        if let Some(now) = &mut self.virtual_now {
+            *now.get_mut() += progress.saturating_mul(picoseconds) / PICOSECONDS_PER_NANOSECOND;
+            *self.kernel_work.get_mut() = kernel;
+        }
+    }
+
+    fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        self.outside_part(
+            kernel,
+            cpu,
+            Entry::Arrived,
+            |entry| match entry {
+                Entry::Arrived(asked) => Some(*asked),
+                _ => None,
+            },
+            |host, kernel, cpu| host.arrived_live(kernel, cpu),
+        )
+    }
+
+    /// Saves the container where the seed says: a new process holding a copy of this one's memory,
+    /// as a host that saves copies the kernel's memory and every guest memory. The copy goes on with
+    /// a new CPU side made from the saved memories and registers and a new host whose clock reads
+    /// differently, while this process only waits for the copy's run.
+    fn stopped<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
+        self.stopped_live(kernel, cpu)
+    }
+
+    fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+        self.outside_part(
+            kernel,
+            cpu,
+            |()| Entry::Idled,
+            |entry| (*entry == Entry::Idled).then_some(()),
+            |host, kernel, cpu| host.idle_live(kernel, cpu, until_nanoseconds),
+        );
     }
 
     fn cpu_warning(&mut self, warning: Warning<'_>) {
@@ -1160,7 +1535,7 @@ where
     }
     let owed = held(&mut host.network).take(wait);
     for event in &owed {
-        event.with(|event| kernel.event(cpu, host, event));
+        event.with(|event| host.hand(kernel, cpu, event));
     }
     !owed.is_empty()
 }
@@ -1266,6 +1641,22 @@ pub(crate) fn deliver<H: Send>(
 ) where
     TestHost<H>: System,
 {
+    host.outside_part(
+        kernel,
+        cpu,
+        |()| Entry::Delivered,
+        |entry| (*entry == Entry::Delivered).then_some(()),
+        |host, kernel, cpu| deliver_live(kernel, cpu, host),
+    );
+}
+
+fn deliver_live<H: Send>(
+    kernel: &mut Kernel,
+    cpu: &mut dyn wcontainers_abi::Cpu,
+    host: &mut TestHost<H>,
+) where
+    TestHost<H>: System,
+{
     let Some(message) = held(&mut host.backend)
         .as_mut()
         .and_then(|backend| backend.next(&mut host.schedule))
@@ -1276,9 +1667,9 @@ pub(crate) fn deliver<H: Send>(
     match message {
         crate::backend::Message::Answer(unique, reply) => {
             let request = BackendRequestId(unique);
-            kernel.event(
+            host.hand(
+                kernel,
                 cpu,
-                host,
                 Event::BackendReply {
                     request,
                     reply: &reply,
@@ -1286,7 +1677,7 @@ pub(crate) fn deliver<H: Send>(
             );
         }
         crate::backend::Message::Notice(notice) => {
-            kernel.event(cpu, host, Event::BackendNotice { notice: &notice });
+            host.hand(kernel, cpu, Event::BackendNotice { notice: &notice });
         }
     }
 }
@@ -1477,5 +1868,8 @@ fn decode(input: &[u8]) -> Run {
         broken,
         outputs_closed,
         input_closed,
+        // A copy made at a save keeps no record.
+        tape: None,
+        memories: Vec::new(),
     }
 }

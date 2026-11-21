@@ -256,6 +256,8 @@ pub trait StreamHost: wcontainers_kernel::System {
     fn choices(&mut self) -> &mut StdRng;
     /// Does [`Step::ChangeServed`].
     fn change_served(&mut self, path: &str, bytes: &[u8]);
+    /// Hands the kernel an event.
+    fn hand(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>);
 }
 
 /// What the client does at the start, which may still be waiting on the backend: credit for all
@@ -272,12 +274,12 @@ pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost)
 fn give(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, end: End, bytes: u64) {
     let given = host.streams().given.entry(end).or_default();
     *given = given.saturating_add(bytes);
-    kernel.event(cpu, host, Event::StreamCredit { end, bytes });
+    host.hand(kernel, cpu, Event::StreamCredit { end, bytes });
 }
 
 fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, end: End) {
     if host.streams().closed_here.insert(end) {
-        kernel.event(cpu, host, Event::StreamClosed { end });
+        host.hand(kernel, cpu, Event::StreamClosed { end });
     }
 }
 
@@ -346,14 +348,14 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
                     streams.sending = None;
                     streams.step += 1;
                 }
-                kernel.event(cpu, host, Event::StreamData { end, bytes: sent });
+                host.hand(kernel, cpu, Event::StreamData { end, bytes: sent });
                 return true;
             }
             Step::Resize { columns, rows } => {
                 streams.step += 1;
-                kernel.event(
+                host.hand(
+                    kernel,
                     cpu,
-                    host,
                     Event::TerminalResized {
                         end: TERMINAL,
                         columns,
@@ -380,7 +382,7 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
             }
             Step::Credit { end, bytes } => {
                 streams.step += 1;
-                kernel.event(cpu, host, Event::StreamCredit { end, bytes });
+                host.hand(kernel, cpu, Event::StreamCredit { end, bytes });
                 acted = true;
             }
         }

@@ -7894,7 +7894,6 @@ restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_above_linu
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_in_gaps_match_reference	"400"
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	program	"syscall"
 restated	crates/wcontainers-kernel-test/tests/filter.rs	str	filters_match_reference	"trap"
-restated	crates/wcontainers-kernel-test/tests/layer1.rs	int	sequences	1000
 restated	crates/wcontainers-kernel-test/tests/limits.rs	str	limits_match_reference	"memory"
 restated	crates/wcontainers-kernel-test/tests/lockwaits.rs	str	lock_waits_match_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/memory.rs	str	memory_matches_reference	"memory"

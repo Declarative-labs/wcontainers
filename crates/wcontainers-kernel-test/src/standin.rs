@@ -18,6 +18,8 @@ use wcontainers_abi::{
     Resume, SharedId, SystemCallRequest, ThreadId,
 };
 
+use crate::replay::{DigestMemories, MemoryDigests, digest_pages};
+
 /// A process's address space on a host with 32 bit memories.
 pub const SPACE_32_BIT: u64 = 1 << 32;
 /// A process's address space on a host with 64 bit memories, at the smallest cap such a host
@@ -90,6 +92,23 @@ struct Thread {
     registers: RegisterBlock,
 }
 
+impl DigestMemories for StandIn {
+    fn keep_digests(&mut self) {
+        self.digests.get_or_insert_default();
+    }
+
+    fn digests(&mut self) -> MemoryDigests {
+        let mut digests = self.digests.clone().unwrap_or_default();
+        let mut left: Vec<MemoryId> = self.memories.keys().copied().collect();
+        left.sort();
+        for memory in left {
+            let digest = self.memories.get_mut(&memory).expect("memory").digest();
+            digests.push((memory, digest));
+        }
+        digests
+    }
+}
+
 /// The stand-in CPU side.
 pub struct StandIn {
     /// Where every memory's address space ends.
@@ -104,6 +123,8 @@ pub struct StandIn {
     pub last_instructions: u64,
     /// Whether the kernel's clock is the machine's, so a slice is also a span of it.
     wall_clock: bool,
+    /// What each memory held as it was dropped, once asked for.
+    digests: Option<MemoryDigests>,
 }
 
 fn prot(permissions: Permissions) -> Prot {
@@ -203,6 +224,37 @@ impl Memory {
         for page in start / PAGE_SIZE..end.div_ceil(PAGE_SIZE) {
             self.touched[(page / 64) as usize] |= 1 << (page % 64);
         }
+    }
+
+    /// A digest of what the memory holds, its shared ranges' pages included.
+    fn digest(&mut self) -> u64 {
+        let mut pages: std::collections::BTreeSet<u64> = self
+            .touched
+            .iter()
+            .enumerate()
+            .flat_map(|(word, bits)| {
+                (0..u64::BITS)
+                    .filter(move |bit| bits & (1 << bit) != 0)
+                    .map(move |bit| word as u64 * u64::from(u64::BITS) + u64::from(bit))
+            })
+            .collect();
+        for (start, (end, _)) in &self.shared {
+            pages.extend(start / PAGE_SIZE..end / PAGE_SIZE);
+        }
+        let mut contents = Vec::new();
+        for page in pages {
+            let mut bytes = vec![0; PAGE_SIZE as usize];
+            self.pieces(page * PAGE_SIZE, PAGE_SIZE, |piece, at| {
+                bytes[at..at + piece.len()].copy_from_slice(piece);
+            })
+            .expect("a page of the memory");
+            contents.push((page * PAGE_SIZE, bytes));
+        }
+        digest_pages(
+            contents
+                .iter()
+                .map(|(address, bytes)| (*address, bytes.as_slice())),
+        )
     }
 
     /// A copy with the same bytes, permissions and shared ranges, on a new unicorn instance.
@@ -408,6 +460,7 @@ impl StandIn {
             last_block: 0,
             last_instructions: 0,
             wall_clock: false,
+            digests: None,
         }
     }
 
@@ -482,6 +535,7 @@ impl StandIn {
             last_block: self.last_block,
             last_instructions: 0,
             wall_clock: self.wall_clock,
+            digests: None,
         }
     }
 
@@ -644,7 +698,11 @@ impl Cpu for StandIn {
     }
 
     fn memory_drop(&mut self, memory: MemoryId) {
-        self.memories.remove(&memory);
+        if let Some(mut dropped) = self.memories.remove(&memory)
+            && let Some(digests) = &mut self.digests
+        {
+            digests.push((memory, dropped.digest()));
+        }
     }
 
     fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {

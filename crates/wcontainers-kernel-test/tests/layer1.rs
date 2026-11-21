@@ -2,7 +2,8 @@
 //! written back. `LAYER1_CASES` sets how many sequences run (default 64) and `LAYER1_SEED` the seed
 //! (default 0); a failure is shrunk and printed with its seed. On the file backend,
 //! `LAYER1_BACKEND_CASES` sets how many (default 32), and on a backend that opens files for the
-//! page cache `LAYER1_CACHED_CASES` (default 32), with the same seed.
+//! page cache `LAYER1_CACHED_CASES` (default 32), with the same seed. `LAYER1_REPLAY_CASES` (default
+//! 64) sets how many of each kind run on our kernel alone, then again from their record alone.
 
 use std::path::Path;
 
@@ -35,13 +36,63 @@ fn sequences_on_cached_backend_match_reference() {
     sequences(knob("LAYER1_CACHED_CASES", 32) as u32, true, true);
 }
 
-fn sequences(cases: u32, backend: bool, cached: bool) {
+/// Sequences in memory, on the backend and on the cached backend, each run on our kernel keeping a
+/// record of what the host gave it, then on a fresh kernel from that record alone: the same values
+/// and the same guest memory.
+#[cfg(not(feature = "runtime"))]
+#[test]
+fn sequences_replay_from_their_record() {
+    let cases = knob("LAYER1_REPLAY_CASES", 64) as u32;
     let seed = knob("LAYER1_SEED", 0);
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
-    let runner = layer1::runner(&out);
-    let program = std::fs::read(&runner).expect("reading the runner");
-    let reference = std::cell::RefCell::new(layer1::Reference::start(&runner, backend, cached));
+    let program = std::fs::read(layer1::runner(&out)).expect("reading the runner");
     let server = std::cell::RefCell::new(None);
+    // No reference: nothing of the runner's is cleared after a call.
+    let none = layer1::SequenceResult {
+        calls: Vec::new(),
+        status: 0,
+        play: None,
+    };
+    for (backend, cached) in [(false, false), (true, false), (true, true)] {
+        let entries = std::cell::Cell::new(0);
+        let result = case_runner(cases, seed).run(&strategy(), |(values, raw)| {
+            let sequence = if backend {
+                layer1::build_on_backend(&values, &raw, cached)
+            } else {
+                layer1::build(&values, &raw)
+            };
+            let (_, kept) =
+                layer1::run_ours_replayed(&sequence, &program, &none, &mut server.borrow_mut());
+            entries.set(entries.get() + kept);
+            Ok(())
+        });
+        eprintln!(
+            "layer 1 replayed{}: {cases} sequences, seed {seed}, {} entries in their records",
+            if cached {
+                " on the cached backend"
+            } else if backend {
+                " on the backend"
+            } else {
+                ""
+            },
+            entries.get()
+        );
+        if let Err(error) = result {
+            panic!("layer 1 replayed (seed {seed}): {error}");
+        }
+    }
+}
+
+/// What a sequence is made from: the arena's values and the calls.
+fn strategy() -> impl Strategy<Value = (Vec<u64>, Vec<(u16, [u64; 6])>)> {
+    (
+        proptest::collection::vec(any::<u64>(), 125),
+        proptest::collection::vec((any::<u16>(), any::<[u64; 6]>()), 1..16),
+    )
+}
+
+/// A runner of `cases` sequences drawn from `seed`.
+fn case_runner(cases: u32, seed: u64) -> TestRunner {
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let config = Config {
@@ -49,17 +100,25 @@ fn sequences(cases: u32, backend: bool, cached: bool) {
         failure_persistence: None,
         max_shrink_iters: 2000,
         // A case that waits costs the reference's 60 s deadline at each step.
-        max_shrink_time: 30 * 60 * 1000,
+        max_shrink_time: u32::try_from(std::time::Duration::from_secs(30 * 60).as_millis())
+            .expect("half an hour in milliseconds"),
         ..Config::default()
     };
-    let mut runner = TestRunner::new_with_rng(
+    TestRunner::new_with_rng(
         config,
         TestRng::from_seed(RngAlgorithm::ChaCha, &seed_bytes),
-    );
-    let strategy = (
-        proptest::collection::vec(any::<u64>(), 125),
-        proptest::collection::vec((any::<u16>(), any::<[u64; 6]>()), 1..16),
-    );
+    )
+}
+
+fn sequences(cases: u32, backend: bool, cached: bool) {
+    let seed = knob("LAYER1_SEED", 0);
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let runner = layer1::runner(&out);
+    let program = std::fs::read(&runner).expect("reading the runner");
+    let reference = std::cell::RefCell::new(layer1::Reference::start(&runner, backend, cached));
+    let server = std::cell::RefCell::new(None);
+    let mut runner = case_runner(cases, seed);
+    let strategy = strategy();
     // How many calls put a random device's bytes somewhere, to show they are reached.
     let random = std::cell::Cell::new(0u64);
     // And how many made or opened the named pipe.

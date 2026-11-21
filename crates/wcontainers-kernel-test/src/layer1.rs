@@ -4502,7 +4502,7 @@ pub fn run_ours_with(
             )
         }));
     }
-    let (result, mut host) = run_ours_on(sequence, runner, theirs, host);
+    let (result, mut host, _) = run_ours_digested(sequence, runner, theirs, host);
     if let Some(mut server) = host.backend().take() {
         // Unmounted, as the reference's runner's mount lets go of everything a sequence looked up.
         server.destroy();
@@ -4512,14 +4512,80 @@ pub fn run_ours_with(
     result
 }
 
-/// The run itself, on `host`, which it gives back.
+/// As [`run_ours_with`], keeping a record of what the host gave the kernel, then again on a fresh
+/// kernel and CPU side from that record alone, with no backend; both runs' results and every
+/// guest memory, as each was dropped and at the end, must be the same. Gives the first run's
+/// result and how many entries its record held.
+#[cfg(not(feature = "runtime"))]
+pub fn run_ours_replayed(
+    sequence: &Sequence,
+    runner: &[u8],
+    theirs: &SequenceResult,
+    backend: &mut Option<crate::backend::Backend>,
+) -> (SequenceResult, usize) {
+    let mut host = TestHost::new(0).taped(crate::replay::Tape::recording());
+    if sequence.backend {
+        *host.backend() = Some(backend.take().unwrap_or_else(|| {
+            crate::backend::Backend::start(
+                &crate::backend::out(),
+                crate::backend::Served::Empty,
+                sequence.cached,
+            )
+        }));
+    }
+    let (recorded, mut host, memories) = run_ours_digested(sequence, runner, theirs, host);
+    if let Some(mut server) = host.backend().take() {
+        server.destroy();
+        server.empty();
+        *backend = Some(server);
+    }
+    let tape = host.take_tape().expect("a record");
+    // Another seed, so nothing of the first run's comes from anywhere but the record.
+    let replaying = TestHost::new(u64::MAX).taped(tape.replaying());
+    let (replayed, mut host, replayed_memories) =
+        run_ours_digested(sequence, runner, theirs, replaying);
+    let left = host.take_tape().expect("a record");
+    assert!(left.used_up(), "the replay left {} entries", left.len());
+    assert_eq!(replayed, recorded, "the replay's results");
+    assert!(!memories.is_empty(), "no memory was seen");
+    assert_eq!(replayed_memories, memories, "the replay's guest memories");
+    (recorded, tape.len())
+}
+
+/// The run itself, on `host`, which it gives back with what every guest memory held when the host
+/// keeps a record.
+fn run_ours_digested(
+    sequence: &Sequence,
+    runner: &[u8],
+    theirs: &SequenceResult,
+    host: TestHost,
+) -> (SequenceResult, TestHost, crate::replay::MemoryDigests) {
+    let mut cpu = layer1_cpu();
+    #[cfg(not(feature = "runtime"))]
+    let taped = host.taped_run();
+    #[cfg(not(feature = "runtime"))]
+    if taped {
+        crate::replay::DigestMemories::keep_digests(&mut cpu);
+    }
+    let (result, host) = run_ours_on(sequence, runner, theirs, host, &mut cpu);
+    #[cfg(not(feature = "runtime"))]
+    let memories = if taped {
+        crate::replay::DigestMemories::digests(&mut cpu)
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "runtime")]
+    let memories = Vec::new();
+    (result, host, memories)
+}
+
 fn run_ours_on(
     sequence: &Sequence,
     runner: &[u8],
     theirs: &SequenceResult,
     mut host: TestHost,
+    cpu: &mut Layer1Cpu,
 ) -> (SequenceResult, TestHost) {
-    let mut cpu = layer1_cpu();
     let mut kernel = Kernel::new();
     let files = [
         File {
@@ -4574,14 +4640,14 @@ fn run_ours_on(
         backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
         standard: crate::streams::StreamClient::default().standard(),
         address_space_bytes: wcontainers_kernel::ARM64_ADDRESS_SPACE_BYTES,
-        memory_bytes: wcontainers_abi::Cpu::address_space(&cpu).end,
+        memory_bytes: wcontainers_abi::Cpu::address_space(cpu).end,
         ceiling: None,
         execution: wcontainers_kernel::ExecutionConfig::default(),
     };
     kernel
-        .start(&mut cpu, &host, &start)
+        .start(cpu, &host, &start)
         .expect("the kernel runs a process serially with exact replay");
-    crate::streams::begin(&mut kernel, &mut cpu, &mut host);
+    crate::streams::begin(&mut kernel, cpu, &mut host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);
     let thread = match kernel.next() {
@@ -4638,7 +4704,7 @@ fn run_ours_on(
                 Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
                 Next::Finished { status } => return Err(status),
                 // An answer the backend owes comes before any time passes.
-                Next::Idle { .. } if host.backend().as_ref().is_some_and(|b| b.waiting()) => {
+                Next::Idle { .. } if host.backend_waiting() => {
                     crate::driver::deliver(kernel, cpu, host);
                 }
                 // Waiting for ever: the runner kills such a sequence at its deadline.
@@ -4661,10 +4727,7 @@ fn run_ours_on(
         number: linux::__NR_mmap,
         arguments: [ARENA, ARENA_SIZE, 3, 0x32, u64::MAX, 0],
     };
-    assert_eq!(
-        call(&mut kernel, &mut cpu, &mut host, setup),
-        Ok(ARENA as i64)
-    );
+    assert_eq!(call(&mut kernel, cpu, &mut host, setup), Ok(ARENA as i64));
     cpu.write(memory, ARENA, &sequence.arena)
         .expect("writing the arena");
     let scratch = Call {
@@ -4672,7 +4735,7 @@ fn run_ours_on(
         arguments: [SCRATCH, SCRATCH_SIZE, 3, 0x32, u64::MAX, 0],
     };
     assert_eq!(
-        call(&mut kernel, &mut cpu, &mut host, scratch),
+        call(&mut kernel, cpu, &mut host, scratch),
         Ok(SCRATCH as i64)
     );
     // An action of SIG_IGN at the scratch area's start, which the zeroing's vectors take later.
@@ -4688,7 +4751,7 @@ fn run_ours_on(
             number: linux::__NR_rt_sigaction,
             arguments: [signal.into(), SCRATCH, 0, 8, 0, 0],
         };
-        assert_eq!(call(&mut kernel, &mut cpu, &mut host, ignore), Ok(0));
+        assert_eq!(call(&mut kernel, cpu, &mut host, ignore), Ok(0));
     }
     // The reference's runner has remade `/dev/null` before every sequence while the container's first
     // one stays held, so it is remade here too, while descriptor 0 holds the first one.
@@ -4712,7 +4775,7 @@ fn run_ours_on(
             number,
             arguments: [linux::AT_FDCWD as u64, null, third, device, 0, 0],
         };
-        assert_eq!(call(&mut kernel, &mut cpu, &mut host, remake), Ok(0));
+        assert_eq!(call(&mut kernel, cpu, &mut host, remake), Ok(0));
     }
     let mut before = vec![0u8; ARENA_SIZE as usize];
     use wcontainers_abi::Cpu;
@@ -4722,7 +4785,7 @@ fn run_ours_on(
         number: linux::__NR_getpid,
         arguments: [0; 6],
     };
-    let pid = call(&mut kernel, &mut cpu, &mut host, own).expect("getpid") as u64;
+    let pid = call(&mut kernel, cpu, &mut host, own).expect("getpid") as u64;
     // The runner's `clear_range`: zeros up to the first page the process cannot write.
     let clear = |kernel: &mut Kernel,
                  cpu: &mut Layer1Cpu,
@@ -4777,11 +4840,11 @@ fn run_ours_on(
                 number: linux::__NR_lseek,
                 arguments: [a, 0, u64::from(linux::SEEK_CUR), 0, 0, 0],
             };
-            call(&mut kernel, &mut cpu, &mut host, position).ok()
+            call(&mut kernel, cpu, &mut host, position).ok()
         } else {
             None
         };
-        let outcome = call(&mut kernel, &mut cpu, &mut host, each);
+        let outcome = call(&mut kernel, cpu, &mut host, each);
         if let Ok(id) = outcome
             && each.number == linux::__NR_shmget
             && id >= 0
@@ -4816,7 +4879,7 @@ fn run_ours_on(
                     0,
                 ],
             };
-            let _ = call(&mut kernel, &mut cpu, &mut host, wait);
+            let _ = call(&mut kernel, cpu, &mut host, wait);
         }
         match outcome {
             Ok(value) => {
@@ -4847,7 +4910,7 @@ fn run_ours_on(
                         _ => {}
                     }
                     for (at, length) in ranges {
-                        clear(&mut kernel, &mut cpu, &mut host, at, length);
+                        clear(&mut kernel, cpu, &mut host, at, length);
                     }
                     // A sendfile's output is zeroed where the bytes went.
                     if let Some(before) = out_before {
@@ -4865,7 +4928,7 @@ fn run_ours_on(
                                     0,
                                 ],
                             };
-                            let put = call(&mut kernel, &mut cpu, &mut host, write).unwrap_or(-1);
+                            let put = call(&mut kernel, cpu, &mut host, write).unwrap_or(-1);
                             if put <= 0 {
                                 break;
                             }
@@ -4894,7 +4957,7 @@ fn run_ours_on(
                     } else {
                         range.length
                     };
-                    clear(&mut kernel, &mut cpu, &mut host, range.at, length);
+                    clear(&mut kernel, cpu, &mut host, range.at, length);
                 }
             }
             Err(status) => {
@@ -4923,7 +4986,7 @@ fn run_ours_on(
         };
         let mut contents = vec![0u8; PAGE_SIZE as usize];
         // A filter of the sequence's may end the process here, as it does the reference's.
-        let readable = match call(&mut kernel, &mut cpu, &mut host, read) {
+        let readable = match call(&mut kernel, cpu, &mut host, read) {
             Ok(value) => value == PAGE_SIZE as i64,
             Err(status) => {
                 return (

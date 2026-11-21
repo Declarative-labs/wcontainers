@@ -8,6 +8,8 @@ use wcontainers_abi::{
     ThreadId,
 };
 
+use crate::replay::{DigestMemories, MemoryDigests, digest_pages};
+
 /// The same address space the stand-in gives, so the kernel lays memory out the same way.
 const ADDRESS_SPACE_END: u64 = 1 << 32;
 
@@ -71,6 +73,24 @@ pub struct BufferCpu {
     last_memory: u32,
     last_thread: u32,
     last_block: u32,
+    /// What each memory held as it was dropped, once asked for.
+    digests: Option<MemoryDigests>,
+}
+
+impl DigestMemories for BufferCpu {
+    fn keep_digests(&mut self) {
+        self.digests.get_or_insert_default();
+    }
+
+    fn digests(&mut self) -> MemoryDigests {
+        let mut digests = self.digests.clone().unwrap_or_default();
+        let mut left: Vec<MemoryId> = self.memories.keys().copied().collect();
+        left.sort();
+        for memory in left {
+            digests.push((memory, self.digest(memory)));
+        }
+        digests
+    }
 }
 
 fn check(address: u64, length: u64) -> Result<(), CpuError> {
@@ -95,6 +115,27 @@ fn each_page(address: u64, length: usize, mut f: impl FnMut(u64, std::ops::Range
 impl BufferCpu {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A digest of what a memory holds, its shared ranges' pages included.
+    fn digest(&mut self, memory: MemoryId) -> u64 {
+        let held = &self.memories[&memory];
+        let mut pages: std::collections::BTreeSet<u64> = held.pages.keys().copied().collect();
+        for (start, (end, _, _)) in &held.shared {
+            pages.extend(*start..*end);
+        }
+        let mut contents = Vec::new();
+        for page in pages {
+            let mut bytes = vec![0; PAGE_SIZE as usize];
+            self.read(memory, page * PAGE_SIZE, &mut bytes)
+                .expect("a page of the memory");
+            contents.push((page * PAGE_SIZE, bytes));
+        }
+        digest_pages(
+            contents
+                .iter()
+                .map(|(address, bytes)| (*address, bytes.as_slice())),
+        )
     }
 
     /// The pages a memory page lives in: the memory's own, or a block's.
@@ -147,6 +188,13 @@ impl Cpu for BufferCpu {
     }
 
     fn memory_drop(&mut self, memory: MemoryId) {
+        if self.digests.is_some() {
+            let digest = self.digest(memory);
+            self.digests
+                .as_mut()
+                .expect("digests kept")
+                .push((memory, digest));
+        }
         self.memories.remove(&memory);
     }
 
