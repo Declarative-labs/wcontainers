@@ -86,7 +86,39 @@ pub(crate) struct GeometryValue {
     pub location: Option<(u32, u32)>,
     pub builtin: Option<u64>,
     pub stream: u32,
+    /// Its type: a scalar or vector, or an array of them one register a row; an input's outermost
+    /// count is its vertices.
     pub ty: Ty,
+}
+
+impl GeometryValue {
+    /// Its counts within one vertex, innermost first.
+    fn within(&self) -> &[u32] {
+        let dims = &self.ty.dims[..];
+        match self.side {
+            Side::Input => dims.split_last().map_or(dims, |(_, rest)| rest),
+            Side::Output => dims,
+        }
+    }
+
+    /// The registers it takes.
+    fn rows(&self) -> u32 {
+        self.within().first().copied().unwrap_or(1)
+    }
+
+    /// The element of one register, or the refusal of an array of arrays.
+    fn row(&self) -> Result<Basic> {
+        match (self.within().len(), &self.ty.members[..]) {
+            (0 | 1, &[member]) => Ok(member),
+            _ => Err(unsupported(crate::refusal::OUTPUT_ARRAY)),
+        }
+    }
+
+    /// The row of this value register `loc` is, if it is one of its registers.
+    fn row_at(&self, loc: u32) -> Option<u32> {
+        let (first, _) = self.location?;
+        loc.checked_sub(first).filter(|&r| r < self.rows())
+    }
 }
 
 /// A stage value the reflection takes, by its index among the [`GeometryValue`]s.
@@ -351,10 +383,12 @@ impl GeometryPass<'_> {
         let mut locations = Vec::new();
         for io in self.values {
             let is_input = io.side == Side::Input;
-            if let (true, Some((loc, _))) = (is_input == input, io.location)
-                && !locations.contains(&loc)
-            {
-                locations.push(loc);
+            if let (true, Some((first, _))) = (is_input == input, io.location) {
+                for loc in first..first + io.rows() {
+                    if !locations.contains(&loc) {
+                        locations.push(loc);
+                    }
+                }
             }
         }
         locations.sort_unstable();
@@ -781,7 +815,7 @@ impl GeometryPass<'_> {
                 let v = &self.values[i];
                 v.side == Side::Output
                     && v.builtin.is_none()
-                    && v.location.is_some_and(|l| l.0 == loc)
+                    && v.row_at(loc).is_some()
                     && v.stream == stream
             })
             .collect();
@@ -791,32 +825,30 @@ impl GeometryPass<'_> {
             let comps = alloc::vec![zero; build::VEC4 as usize];
             return Ok((b.compose(uvec4, comps), ScalarKind::Uint));
         };
-        let first = self.values[first]
-            .ty
-            .basic()
-            .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
+        let first = self.values[first].row()?;
         let s = Lowering::scalar(first.scalar)?;
         let s = if s == Scalar::BOOL { Scalar::U32 } else { s };
         let mut comps = Vec::new();
         for c in 0..build::VEC4 {
-            let found = decls.iter().find(|&&i| {
+            let mut found = None;
+            for &i in &decls {
                 let values = self.values;
                 let io = &values[i];
                 let (_, comp) = io.location.unwrap();
-                let size = io.ty.basic().map_or(1, |b| b.size as u32);
-                (comp..comp + size).contains(&c)
-            });
+                let m = io.row()?;
+                if (comp..comp + m.size as u32).contains(&c) {
+                    found = Some((io, comp, m));
+                    break;
+                }
+            }
             let v = match found {
-                Some(&i) => {
-                    let values = self.values;
-                    let io = &values[i];
-                    let (_, comp) = io.location.unwrap();
-                    let m = io
-                        .ty
-                        .basic()
-                        .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
+                Some((io, comp, m)) => {
                     let p = b.global(io.var);
                     let v = b.load(p);
+                    let v = match (io.ty.dims.is_empty(), io.row_at(loc)) {
+                        (false, Some(row)) => b.field(v, row),
+                        _ => v,
+                    };
                     let v = if m.size > 1 { b.field(v, c - comp) } else { v };
                     let from = Lowering::scalar(m.scalar)?;
                     if from.kind == s.kind {
@@ -891,14 +923,16 @@ impl GeometryPass<'_> {
                 self.reflect(i, Side::Output, None, 0, member, 0, system);
                 continue;
             }
-            let member = io
-                .ty
-                .basic()
-                .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
+            let member = io.row()?;
+            if io.location.is_none() && !io.ty.dims.is_empty() {
+                return Err(unsupported(crate::refusal::BUILT_IN_ARRAY));
+            }
             match (io.location, io.builtin) {
-                (Some((loc, comp)), _) => {
-                    let modes = super::output_modes(&self.variant.output_interpolation, loc);
-                    self.reflect(i, Side::Output, Some(loc), comp, member, modes, None);
+                (Some((first, comp)), _) => {
+                    for loc in first..first + io.rows() {
+                        let modes = super::output_modes(&self.variant.output_interpolation, loc);
+                        self.reflect(i, Side::Output, Some(loc), comp, member, modes, None);
+                    }
                 }
                 (None, Some(builtin::POSITION)) => {
                     let system = Some(SystemValue::Position);
@@ -1367,40 +1401,42 @@ impl GeometryPass<'_> {
                 }
                 _ => return Err(unsupported(crate::refusal::GEOMETRY_INPUT)),
             };
-            // A value per input vertex, from its record's slot.
-            if io.ty.dims[..] != [n] || to == Scalar::BOOL {
+            // A value per input vertex (a row per register where it is an array of rows), from its
+            // record's slots.
+            let rowed = io.within().len() == 1 && location.is_some();
+            if io.ty.dims.last() != Some(&n)
+                || io.within().len() > usize::from(rowed)
+                || to == Scalar::BOOL
+            {
                 return Err(unsupported(crate::refusal::GEOMETRY_INPUT_SHAPE));
             }
-            let (slot, comp) = match location {
-                Some((loc, comp)) => {
-                    let i = inputs.iter().position(|&l| l == loc).unwrap();
-                    (1 + i as u32, comp)
-                }
-                None => (POSITION_SLOT, 0),
-            };
-            for (k, &record) in records.iter().enumerate() {
-                let s = b.u32(slot);
-                let at = b.add(record, s);
-                let raw = record_slot(b, state, at);
-                let v = swizzle(b, raw, comp, member.size)?;
-                let v = if to == Scalar::U32 {
-                    v
-                } else {
-                    b.bitcast(v, to.kind)
+            let (first, comp) = location.unwrap_or((0, 0));
+            for row in 0..io.rows() {
+                let slot = match location {
+                    Some(_) => {
+                        let i = inputs.iter().position(|&l| l == first + row).unwrap();
+                        1 + i as u32
+                    }
+                    None => POSITION_SLOT,
                 };
-                let g = b.global(var);
-                let p = b.field(g, k as u32);
-                b.store(p, v);
+                for (k, &record) in records.iter().enumerate() {
+                    let s = b.u32(slot);
+                    let at = b.add(record, s);
+                    let raw = record_slot(b, state, at);
+                    let v = swizzle(b, raw, comp, member.size)?;
+                    let v = if to == Scalar::U32 {
+                        v
+                    } else {
+                        b.bitcast(v, to.kind)
+                    };
+                    let g = b.global(var);
+                    let p = b.field(g, k as u32);
+                    let p = if rowed { b.field(p, row) } else { p };
+                    b.store(p, v);
+                }
+                let at = location.map(|_| first + row);
+                self.reflect(i, Side::Input, at, comp, member, 0, system);
             }
-            self.reflect(
-                i,
-                Side::Input,
-                location.map(|l| l.0),
-                comp,
-                member,
-                0,
-                system,
-            );
         }
         Ok(())
     }

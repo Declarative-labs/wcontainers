@@ -35,6 +35,9 @@ const RECORD_COMPONENTS: &str = "GeometryReplayComponents";
 const STREAMS_PAST_THE_FIRST: &str = "GeometryReplayStreams";
 /// Stream output of a vertex program whose records do not hold its reflected locations first.
 const STREAMED_LOCATIONS: &str = "StreamOutCaptureLocations";
+/// A replay form holding an array of arrays (a DXIL geometry shader's input arrays of rows, one per
+/// vertex), which GLSL ES 3.00, the language of the back ends the replay serves, cannot declare.
+const ARRAY_OF_ARRAYS: &str = "GeometryReplayArrayOfArrays";
 /// A geometry shader converted without `VariantFlags::GEOMETRY_REPLAY`.
 const NOT_A_REPLAY_FORM: &str = "a geometry shader converted without its replay form";
 /// The format of the records' texture: one four-word record slot a texel.
@@ -222,6 +225,9 @@ impl<B: Backend> GeometryReplay<B> {
         };
         if geometry.modules[0].stage != ShaderStage::Vertex {
             return Err(ConvertError::Malformed(NOT_A_REPLAY_FORM.into()).into());
+        }
+        if nested_array(&geometry.modules[0].module) {
+            return Err(StageError::Unsupported(ARRAY_OF_ARRAYS));
         }
         if !backend
             .caps()
@@ -885,4 +891,16 @@ fn render_program<B: Backend>(
     });
     backend.destroy(Object::Shader(shader));
     program
+}
+
+/// Whether a global variable of `module` is an array of arrays.
+fn nested_array(module: &naga::Module) -> bool {
+    let array = |ty: naga::Handle<naga::Type>| match module.types[ty].inner {
+        naga::TypeInner::Array { base, .. } => Some(base),
+        _ => None,
+    };
+    module
+        .global_variables
+        .iter()
+        .any(|(_, g)| array(g.ty).and_then(array).is_some())
 }

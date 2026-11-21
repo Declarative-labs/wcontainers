@@ -3142,6 +3142,11 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 if addr.code != c::CONSTANT {
                     return Err(malformed("composite index is not a constant".into()));
                 }
+                if let (Some(vector), [index]) = (ir.op(r[0])?.ty.basic(), &addr.lits[..])
+                    && *index >= u64::from(vector.size)
+                {
+                    return Err(unsupported(crate::refusal::COMPONENT_PAST_VECTOR));
+                }
                 let mut indices = addr.lits.iter().map(|&l| l as u32);
                 let mut v = match self.val(b, r[0])? {
                     Val::Tuple(m) => {

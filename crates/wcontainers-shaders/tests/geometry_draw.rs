@@ -469,21 +469,27 @@ fn stream_counts(words: &[u32], stream: usize) -> [u64; 2] {
     [u64::from(words[at]), u64::from(words[at + 1])]
 }
 
-/// Units in the last place a float dxc's build computes may differ by from Direct3D 12's: Direct3D
-/// and the back ends' compilers alike may contract a multiply and an add and divide by a constant's
-/// reciprocal, each its own way (gap A21); the largest measured.
-const CONTRACTED_ULPS: u32 = 4;
+/// Units in the last place of its operands a float dxc's build computes may differ by from Direct3D
+/// 12's: Direct3D and the back ends' compilers alike may contract a multiply and an add and divide
+/// by a constant's reciprocal, each its own way (gap A21), and each rounds at its operands' scale.
+const CONTRACTED_ULPS: f32 = 4.0;
+
+/// The largest magnitude of the operands the tests' floats are made from: positions in the clip
+/// volume, colours and the geometry shaders' constants.
+const OPERAND_MAGNITUDE: f32 = 1.0;
 
 /// Whether `ours` differs from Direct3D's word `theirs` beyond what `route`'s build allows: dxc's
-/// may be [`CONTRACTED_ULPS`] apart where both are normal floats of one sign, which the integers the
-/// tests stream (small, so subnormal as floats) never are.
+/// may be [`CONTRACTED_ULPS`] units in the last place of the larger of the two and
+/// [`OPERAND_MAGNITUDE`] apart, where both are normal floats, which the integers the tests stream
+/// (small, so subnormal as floats) never are. A result smaller than its operands (a difference)
+/// keeps their rounding, so its own last place is no measure of it.
 fn word_apart(route: Route, theirs: &[u8], ours: &[u8]) -> bool {
     let [a, b] = [theirs, ours].map(|w| f32::from_le_bytes(w.try_into().unwrap()));
+    let scale = a.abs().max(b.abs()).max(OPERAND_MAGNITUDE);
     let contracted = route == Route::Dxil
         && a.is_normal()
         && b.is_normal()
-        && a.is_sign_negative() == b.is_sign_negative()
-        && a.to_bits().abs_diff(b.to_bits()) <= CONTRACTED_ULPS;
+        && (a - b).abs() <= CONTRACTED_ULPS * (scale.next_up() - scale);
     theirs != ours && !contracted
 }
 
@@ -1406,6 +1412,10 @@ fn on_both_routes(cases: &[Case]) -> Vec<Case> {
         .collect()
 }
 
+/// Real Direct3D's stream output: each bound buffer's bytes, and each stream's primitives written
+/// and made.
+type StreamedReference = (Vec<Vec<u8>>, Vec<[u64; 2]>);
+
 /// Real Direct3D's stream output of `case` as its route's compiler builds it: fxc's build on
 /// Direct3D 11, dxc's on Direct3D 12.
 fn reference_streamed(
@@ -1415,7 +1425,7 @@ fn reference_streamed(
     indices: &[u8],
     output: (&StreamOutput, &Bound),
     streams: usize,
-) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
+) -> StreamedReference {
     match case.route {
         Route::Dxbc => direct3d_streamed(&gpus.d3d11, case, vertices, indices, output, streams),
         Route::Dxil => direct3d12_streamed(&gpus.d3d12, case, vertices, indices, output, streams),
@@ -1448,10 +1458,10 @@ fn direct3d12_streamed(
     indices: &[u8],
     (so, bound): (&StreamOutput, &Bound),
     streams: usize,
-) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
+) -> StreamedReference {
     use windows::Win32::Graphics::Direct3D12::*;
     let ext = case.route.extension();
-    let vs = bytecode(&format!("vs_geometry.{ext}"));
+    let vs = bytecode(&format!("{}.{ext}", case.vs));
     let gs = (!case.gs.is_empty()).then(|| bytecode(&format!("{}.{ext}", case.gs)));
     let root = gpu
         .root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
@@ -1713,8 +1723,8 @@ fn direct3d_streamed(
     indices: &[u8],
     (so, bound): (&StreamOutput, &Bound),
     streams: usize,
-) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
-    let vs = bytecode("vs_geometry.dxbc");
+) -> StreamedReference {
+    let vs = bytecode(&format!("{}.dxbc", case.vs));
     let elements = [
         d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
         d3d11::element(s!("COLOR"), 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, 0),
@@ -2299,6 +2309,117 @@ const STREAMS_CASES: [Case; 2] = [
     },
 ];
 
+/// The stream output semantic of the position.
+const POSITION_SEMANTIC: &str = "SV_Position";
+
+/// The places within one vertex of buffer `slot` (words from its first) that `so` writes the
+/// position to.
+fn position_words(so: &StreamOutput, slot: u8) -> Vec<usize> {
+    let mut at = 0;
+    let mut words = Vec::new();
+    for e in so.entries.iter().filter(|e| e.slot == slot) {
+        let count = usize::from(e.component_count);
+        if e.semantic.as_deref() == Some(POSITION_SEMANTIC) {
+            words.extend(at..at + count);
+        }
+        at += count;
+    }
+    words
+}
+
+/// Real Direct3D's stream output of a case of `streams` streams, as [`reference_streamed`] gives
+/// it, and the words of it taken from Direct3D 11. Direct3D 12 on the RTX 3080 writes zeros for the
+/// position of a geometry shader of several streams, whichever compiler built it and whichever
+/// stream holds it (gap A22), so for dxc's build each such zero comes from Direct3D 11 running fxc's
+/// build of the same program.
+fn reference_of_streams(
+    gpus: &References,
+    case: &Case,
+    vertices: &[f32],
+    indices: &[u8],
+    (so, bound): (&StreamOutput, &Bound),
+    streams: usize,
+) -> (StreamedReference, usize) {
+    let (mut buffers, statistics) =
+        reference_streamed(gpus, case, vertices, indices, (so, bound), streams);
+    if case.route != Route::Dxil || streams == 1 {
+        return ((buffers, statistics), 0);
+    }
+    let fxc = Case {
+        route: Route::Dxbc,
+        ..*case
+    };
+    let (d3d11, _) = direct3d_streamed(&gpus.d3d11, &fxc, vertices, indices, (so, bound), streams);
+    let word = size_of::<u32>();
+    let slots = (0..STREAM_BUFFERS).filter(|&s| bound.sizes[s].is_some());
+    let mut taken = 0;
+    for ((slot, theirs), d3d11) in slots.zip(&mut buffers).zip(&d3d11) {
+        let places = position_words(so, slot as u8);
+        let stride = so.strides[slot] as usize / word;
+        let start = bound.start[slot] as usize / word;
+        for (w, (x, y)) in theirs
+            .chunks_mut(word)
+            .zip(d3d11.chunks(word))
+            .enumerate()
+            .skip(start)
+        {
+            let position = stride != 0 && places.contains(&((w - start) % stride));
+            if position && x.iter().all(|&byte| byte == 0) && x != y {
+                x.copy_from_slice(y);
+                taken += 1;
+            }
+        }
+    }
+    ((buffers, statistics), taken)
+}
+
+/// Whether ours streamed what Direct3D did in a case of several streams, printing the counts and
+/// every word that differs: every word (by [`word_apart`]) and every count, but for a stream whose
+/// buffers are all unbound only the primitives made. The RTX 3080 counts some of such a stream's
+/// primitives as written (25 of 54, 0 of 84, the same on every seed and on a new device), by no rule
+/// found (gap A15); ours counts none written, as Wine's test_so_statistics_query has Windows do with
+/// nothing bound.
+fn streams_alike(
+    name: &str,
+    case: &Case,
+    (so, bound): (&StreamOutput, &Bound),
+    (reference, statistics): (&[Vec<u8>], &[[u64; 2]]),
+    (streamed, words): (&[Vec<u8>], &[u32]),
+) -> bool {
+    let counts: Vec<[u64; 2]> = (0..statistics.len())
+        .map(|s| stream_counts(words, s))
+        .collect();
+    let apart: Vec<usize> = reference
+        .iter()
+        .zip(streamed)
+        .map(|(a, b)| words_apart(case.route, a, b))
+        .collect();
+    eprintln!(
+        "{name}: direct3d written and made per stream {statistics:?}, ours {counts:?}; \
+         words apart per buffer {apart:?}"
+    );
+    for (b, (a, o)) in reference.iter().zip(streamed).enumerate() {
+        for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
+            if x != y {
+                let x = u32::from_le_bytes(x.try_into().unwrap());
+                let y = u32::from_le_bytes(y.try_into().unwrap());
+                eprintln!("  buffer {b} word {w}: direct3d {x:#010x}, ours {y:#010x}");
+            }
+        }
+    }
+    let unbound = |stream: usize| {
+        so.entries
+            .iter()
+            .filter(|e| usize::from(e.stream) == stream)
+            .all(|e| bound.sizes[usize::from(e.slot)].is_none())
+    };
+    let agree = (0..statistics.len()).all(|s| match unbound(s) {
+        true => counts[s][1] == statistics[s][1] && counts[s][0] == 0,
+        false => counts[s] == statistics[s],
+    });
+    agree && statistics.iter().all(|s| s[1] > 0) && apart.iter().all(|&n| n == 0)
+}
+
 #[test]
 fn streams_past_the_first_match_direct3d() {
     let mut backend = webgpu();
@@ -2321,97 +2442,237 @@ fn streams_past_the_first_match_direct3d() {
                     "seed {seed} {:?} {} from {} x{}, buffers {b}",
                     case.route, case.count, case.first, case.instances
                 );
-                let Ok((indices, (reference, statistics))) = scene(
+                let output = (&so, bound);
+                let Ok((indices, ((reference, statistics), taken))) = scene(
                     case.indexed.is_some(),
                     |attempt| indices(seed, case, attempt),
                     |indices| {
-                        reference_streamed(&gpus, case, &vertices, indices, (&so, bound), STREAMS)
+                        reference_of_streams(&gpus, case, &vertices, indices, output, STREAMS)
                     },
-                    |(_, statistics)| statistics.iter().any(|s| s[0] != 0),
-                    |indices, (reference, statistics)| {
-                        let made = ours(
-                            &mut backend,
-                            case,
-                            &vertices,
-                            indices,
-                            Some((&so, bound)),
-                            None,
-                        );
+                    |((_, statistics), _)| statistics.iter().any(|s| s[0] != 0),
+                    |indices, ((reference, statistics), _)| {
+                        let made = ours(&mut backend, case, &vertices, indices, Some(output), None);
                         streamed_equal(case.route, reference, statistics, &made)
                     },
                 )
                 .map_err(|e| failures.push(format!("{name}: {e}"))) else {
                     continue;
                 };
-                let Made::Streamed(streamed, words) = ours(
-                    &mut backend,
-                    case,
-                    &vertices,
-                    &indices,
-                    Some((&so, bound)),
-                    None,
-                ) else {
+                let Made::Streamed(streamed, words) =
+                    ours(&mut backend, case, &vertices, &indices, Some(output), None)
+                else {
                     unreachable!()
                 };
                 compared += 1;
-                let counts: Vec<[u64; 2]> =
-                    (0..STREAMS).map(|s| stream_counts(&words, s)).collect();
-                let apart: Vec<usize> = reference
-                    .iter()
-                    .zip(&streamed)
-                    .map(|(a, b)| words_apart(case.route, a, b))
-                    .collect();
-                eprintln!(
-                    "{name}: direct3d written and made per stream {statistics:?}, ours {counts:?}; \
-                     words apart per buffer {apart:?}"
+                let alike = streams_alike(
+                    &name,
+                    case,
+                    output,
+                    (&reference, &statistics),
+                    (&streamed, &words),
                 );
-                for (b, (a, o)) in reference.iter().zip(&streamed).enumerate() {
-                    for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
-                        if x != y {
-                            let x = u32::from_le_bytes(x.try_into().unwrap());
-                            let y = u32::from_le_bytes(y.try_into().unwrap());
-                            eprintln!("  buffer {b} word {w}: direct3d {x:#010x}, ours {y:#010x}");
-                        }
-                    }
-                }
-                // A stream whose buffers are all unbound: the RTX 3080 counts some of its
-                // primitives as written (25 of 54, 0 of 84, the same on every seed and on a new
-                // device), by no rule found, so only those it made are compared. Ours counts none
-                // written, as Wine's test_so_statistics_query has Windows do with nothing bound.
-                let unbound = |stream: usize| {
-                    so.entries
-                        .iter()
-                        .filter(|e| usize::from(e.stream) == stream)
-                        .all(|e| bound.sizes[usize::from(e.slot)].is_none())
-                };
-                let agree = (0..STREAMS).all(|s| match unbound(s) {
-                    true => counts[s][1] == statistics[s][1] && counts[s][0] == 0,
-                    false => counts[s] == statistics[s],
-                });
-                let wrote_all = statistics.iter().all(|s| s[1] > 0);
-                // Direct3D 12 writes zeros for stream 0 of dxc's four-stream build, every count and
-                // every other stream's words equal (gap A22): known where only the first buffer is
-                // apart and each of its words apart is a zero of Direct3D's.
-                let first_zeroed = case.route == Route::Dxil
-                    && apart.iter().skip(1).all(|&n| n == 0)
-                    && reference[0]
-                        .chunks(4)
-                        .zip(streamed[0].chunks(4))
-                        .filter(|(x, y)| word_apart(case.route, x, y))
-                        .all(|(x, _)| x.iter().all(|&byte| byte == 0));
-                if !agree || !wrote_all {
+                if !alike {
                     failures.push(name);
-                } else if apart[0] > 0 && first_zeroed {
-                    eprintln!("{name}: known, stream 0 zeros in direct3d 12's buffer");
+                } else if taken > 0 {
+                    eprintln!("{name}: known, {taken} position words from direct3d 11 (A22)");
                     known.push(name);
-                } else if apart.iter().any(|&n| n > 0) {
-                    failures.push(name);
                 }
             }
         }
     }
     eprintln!(
-        "{compared} comparisons, {} failed, {} known (stream 0 zeroed by direct3d 12)",
+        "{compared} comparisons, {} failed, {} known (direct3d 12's zero positions, A22)",
+        failures.len(),
+        known.len()
+    );
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The rows test's declarations: `gs_rows_lines`' every value and row into one buffer; each of
+/// `gs_rows_streams`' streams into its own buffer, every row.
+fn rows_declaration(gs: &str) -> StreamOutput {
+    let entry = |stream, semantic: &str, semantic_index, count, slot| StreamOutputEntry {
+        stream,
+        semantic: Some(semantic.into()),
+        semantic_index,
+        start_component: 0,
+        component_count: count,
+        slot,
+    };
+    match gs {
+        "gs_rows_lines" => StreamOutput {
+            entries: vec![
+                entry(0, POSITION_SEMANTIC, 0, 4, 0),
+                entry(0, "TEXCOORD", 6, 2, 0),
+                entry(0, "TEXCOORD", 7, 2, 0),
+                entry(0, "TEXCOORD", 8, 2, 0),
+                entry(0, "TEXCOORD", 9, 1, 0),
+                entry(0, "TEXCOORD", 10, 1, 0),
+            ],
+            strides: [48, 0, 0, 0],
+        },
+        _ => StreamOutput {
+            entries: vec![
+                entry(0, "TEXCOORD", 0, 2, 0),
+                entry(0, "TEXCOORD", 1, 2, 0),
+                entry(1, POSITION_SEMANTIC, 0, 4, 1),
+                entry(1, "COLOR", 0, 3, 1),
+                entry(1, "COLOR", 1, 3, 1),
+                entry(1, "TEXCOORD", 2, 4, 1),
+                entry(2, "TEXCOORD", 3, 1, 2),
+                entry(2, "TEXCOORD", 4, 1, 2),
+                entry(2, "TEXCOORD", 5, 1, 2),
+            ],
+            strides: [16, 56, 12, 0],
+        },
+    }
+}
+
+/// The rows test's buffers, one a stream: `gs_rows_lines`' appended to and small enough to fill;
+/// `gs_rows_streams`' first small enough to fill, its second appended to.
+fn rows_bound(gs: &str) -> Bound {
+    match gs {
+        "gs_rows_lines" => Bound {
+            sizes: [Some(48 * 16), None, None, None],
+            start: [48, 0, 0, 0],
+        },
+        _ => Bound {
+            sizes: [Some(16 * 10), Some(56 * 40), Some(12 * 40), None],
+            start: [0, 56, 0, 0],
+        },
+    }
+}
+
+/// The rows test's draws: lines from triangles (a list, an indexed strip), points into three streams.
+const ROWS_CASES: [Case; 3] = [
+    Case {
+        vs: "vs_rows",
+        gs: "gs_rows_lines",
+        topology: InputTopology::TriangleList,
+        count: 18,
+        first: 3,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_rows",
+        gs: "gs_rows_lines",
+        topology: InputTopology::TriangleStrip,
+        count: 10,
+        first: 1,
+        instances: 2,
+        first_instance: 1,
+        indexed: Some(2),
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_geometry",
+        gs: "gs_rows_streams",
+        topology: InputTopology::PointList,
+        count: 30,
+        first: 2,
+        instances: 2,
+        first_instance: 0,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+];
+
+/// Whether the replay route refuses a rows case of `streams` streams by name: several streams, and
+/// dxc's build reading input arrays of rows, which its replay form holds as arrays of arrays.
+fn replay_refuses(case: &Case, streams: usize) -> bool {
+    streams > 1 || (case.route == Route::Dxil && case.vs == "vs_rows")
+}
+
+/// Geometry shaders with arrays among their inputs and outputs, one register a row, through the
+/// compute route on WebGPU and the replay route on the WebGL 2 back end (ANGLE), against real
+/// Direct3D: every row of every value streamed out. The replay route refuses some by name
+/// ([`replay_refuses`]).
+#[test]
+fn geometry_shaders_with_rows_stream_as_direct3d_does() {
+    let mut webgpu = webgpu();
+    let mut webgl = webgl();
+    let gpus = references();
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut known = Vec::new();
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &on_both_routes(&ROWS_CASES) {
+            let (so, bound) = (rows_declaration(case.gs), rows_bound(case.gs));
+            let output = (&so, &bound);
+            let streams = so
+                .entries
+                .iter()
+                .map(|e| usize::from(e.stream) + 1)
+                .max()
+                .unwrap();
+            let name = format!(
+                "seed {seed} {:?} {} {:?} {} from {} x{}{}",
+                case.route,
+                case.gs,
+                case.topology,
+                case.count,
+                case.first,
+                case.instances,
+                case.indexed
+                    .map(|b| format!(" indexed, base {b}"))
+                    .unwrap_or_default()
+            );
+            let Ok((indices, ((reference, statistics), taken))) = scene(
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
+                |indices| reference_of_streams(&gpus, case, &vertices, indices, output, streams),
+                |((_, statistics), _)| statistics.iter().any(|s| s[0] != 0),
+                |indices, ((reference, statistics), _)| {
+                    let made = ours(&mut webgpu, case, &vertices, indices, Some(output), None);
+                    streamed_equal(case.route, reference, statistics, &made)
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
+            let Made::Streamed(streamed, words) =
+                ours(&mut webgpu, case, &vertices, &indices, Some(output), None)
+            else {
+                unreachable!()
+            };
+            compared += 1;
+            let reference = (&reference[..], &statistics[..]);
+            if !streams_alike(&name, case, output, reference, (&streamed, &words)) {
+                failures.push(name.clone());
+            } else if taken > 0 {
+                eprintln!("{name}: known, {taken} position words from direct3d 11 (A22)");
+                known.push(name.clone());
+            }
+            let name = format!("{name}, replayed");
+            match ours_replayed(&mut webgl, case, &vertices, &indices, Some(output)) {
+                Err(StageError::Unsupported(reason)) if replay_refuses(case, streams) => {
+                    eprintln!("{name}: refused, {reason}")
+                }
+                Ok(Made::Streamed(streamed, words)) if !replay_refuses(case, streams) => {
+                    compared += 1;
+                    if !streams_alike(&name, case, output, reference, (&streamed, &words)) {
+                        failures.push(name);
+                    }
+                }
+                other => failures.push(format!(
+                    "{name}: neither streamed nor refused by name: {:?}",
+                    other.err()
+                )),
+            }
+        }
+    }
+    eprintln!(
+        "{compared} comparisons, {} failed, {} known (direct3d 12's zero positions, A22)",
         failures.len(),
         known.len()
     );

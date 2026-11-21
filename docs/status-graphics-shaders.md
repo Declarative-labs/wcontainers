@@ -4,94 +4,106 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 The run-by-run record of runs 1 to 63 is in `docs/status-graphics-shaders-history.md` (history; where
 it disagrees with this file, this file holds).
 
-Milestone G6b (gap A6: DXIL geometry, hull and domain shaders): run 67 fixed the third check's
-findings (below) and it is ready for its check again: DXIL geometry, hull and domain shaders convert through the passes
-the DXBC route uses and draw equal to real Direct3D 11 with dxc's builds; the Direct3D 12 rig
-scenes geometry and streamout pass through the Direct3D 12 front, raster and tessellation pass but
-for wireframe lines (the line rule, not the converter's: G6b run 2 in the history file). G6a's check is passed.
+Milestone G6b (gap A6: DXIL geometry, hull and domain shaders): run 68 fixed the fourth check's
+findings (below) and it is ready for its check again. DXIL geometry, hull and domain shaders convert
+through the passes the DXBC route uses, arrays of rows among a geometry shader's values included,
+and draw equal to real Direct3D with dxc's builds. Of the four Direct3D 12 rig scenes that failed
+for A6, two draw equal to real Direct3D 12 (geometry, streamout); raster-fill and tessellation
+differ only in wireframe lines, put down to the line rule of the Direct3D 12 front's back end, not
+the converter (gap A6). So the milestone's "the four scenes draw equal" holds for two of them.
+G6a's check is passed.
 
-## G6b run 3 (run 67): the check's findings
+## G6b run 4 (run 68): the fourth check's findings
 
-Nothing new on the branches merged. Run 66's section is in the history file. Logs in scratch
-`graphics-shaders/g6b3`; GPU figures from the RTX 3080 through the queue (other tracks' jobs
-beside), seeds 1 to 4 (draw5.log at the code committed).
+Merged origin/phase-2-graphics-direct3d-11 (its round 4 run 4; nothing of this crate). Run 67's
+section is in the history file. Logs in scratch `graphics-shaders/g6b4`; GPU figures from the RTX
+3080 through the queue (other tracks' jobs beside).
 
 The check's findings, each:
-- Several streams from a DXIL geometry shader (blocking): dxil-spirv gives each stream's outputs
-  locations past the rows of the streams before it (`build_geometry_stream_row_offsets`), and
-  `element_at` matched signature elements by register alone. Now a signature element carries its
-  stream (`container::Element::stream`, from `OSG5`/`ISG1`/`OSG1`), `element_at` matches it, and
-  `dxil::geometry::finish` takes each output's stream's first row off its location. Test
-  `dxil_geometry_outputs_match_dxbc_on_every_stream` (tests/geometry.rs: every own geometry
-  shader's outputs, stream, semantic, register and location, equal for both builds; fails with the
-  stream ignored, x86-mutants.log). Drawn: the four-stream test with dxc's build, below.
-- Stream output tests with dxc's builds (blocking): `stream_output_matches_direct3d`,
-  `stream_output_after_replay_matches_direct3d` and `streams_past_the_first_match_direct3d` now run
-  every case as fxc and as dxc build it. dxc's builds are compared with real Direct3D 12 running
-  them (`direct3d12_streamed`, new in tests/geometry_draw.rs: the same draw, buffers, starts,
-  strip cuts and statistics queries as the Direct3D 11 reference), fxc's with Direct3D 11 as
-  before. Cause of the 1 to 2 ulp of `gs_cut` established: dxc's DXIL divides by 3 and keeps the
-  lerp's subtract, multiply and add apart, where fxc's DXBC multiplies by 0.333333 and uses `mad`
-  (disassembly, gs_cut-disasm.txt), so fxc's build on Direct3D 11 is no reference for dxc's. Against
-  Direct3D 12 running dxc's builds, the IEEE-strict (`-Gis`) builds differed by 1 to 4 ulp in words
-  made by a multiply and an add (`gs_unplaced`, `gs_cut`; draw3.log): the WGSL keeps them apart
-  (`a + b * c`), the back end's compiler fuses them, and the common form has no way to forbid
-  that (gap A21). The geometry test programs' dxc builds are now made without `-Gis` (compile.cmd,
-  as programs are built; no NaN test among them), and the comparison allows 4 ulp
-  (`CONTRACTED_ULPS`) on dxc's builds' normal floats only (integers are subnormal as floats and
-  stay exact; every count exact). Results: 112 comparisons, 0 failed (WebGPU); 96, 0 failed
-  (replay on ANGLE); four streams: 32, 0 failed, 16 known: Direct3D 12 writes zeros for stream
-  0 of dxc's four-stream build while every count and streams 1 to 3 are word-equal (gap A22). The
-  DXBC cases are as before, all equal.
-- Three behaviours without a failing test (blocking):
-  - Arrays of rows (`dims.reverse` in `staged::ir_ty`): own `tessellation_values.hlsl` (from the
-    check's inputs) hands a hull's `float2 rows[2]` per control point to the domain; without the
-    reverse the own records fail (x86-mutants.log), and the drawn values cases below fail.
-  - `SV_Position` as control point data taken as the position built-in: removed. It only made a
-    DXIL hull's records match a DXBC domain's; a front never pairs the routes, and within a route
-    it changed nothing (the check's m3). Drawn: the values cases carry the position in every
-    control point and pass on both routes without it.
-  - The patch constant function after every control point: the values hull's patch constant
-    function reads output control points 1 to 3, so the drawn cases fail if it runs first (the
-    check's m2 failed the same cases).
-- DXBC hull shaders reading an output control point past the input count (minor, G6a's scope):
-  dxbc-spirv bounded every vertex-indexed load by the input count, a fork phase's `vocp` reads too.
-  Its option `boundCheckShaderIo` is now off (cpp/dxbc.cpp): each stage's inputs are arrays of the
-  declared count here and an index past them is undefined in Direct3D. No corpus verdict changed.
-  Drawn: `stream_output_after_the_domain_stage_matches_direct3d` with the values hulls (3 control
-  points in, 4 out) and `ds_values`, with and without `gs_tess_*`, both builds: 304 comparisons
-  (40 of them these), 0 failed, 14 known (subnormal factors, as before).
-- Raster-fill and the tessellation scene through the Direct3D 12 front (minor): not changed; the
-  isoline cell is lines too, equal on wgpu's Direct3D 12 path (this crate's Direct3D 11
-  comparison) and 36 pixels apart on its Vulkan path (the Direct3D 12 front's library), which fits
-  the line rule being the path's. Not measured further.
-- `GeometryPrimitiveIdAfterDomain` (minor): on the gap list (A20) and in the refusal accounting.
-  Own `gs_values_tess` (instanced, reading its primitive number after the domain stage) converts
-  on both routes (records); the stage helper refuses it by name.
-- A10 and A12 with dxc's builds (minor): the same patterns as fxc's, recorded under A10 and A12.
-- Stale count of the own records (minor): fixed in pass bar item 1.
-- WebAssembly and Chrome on the new WGSL files: the check ran both (all 100 newly converting DXIL
-  files compile in Chrome; the WebAssembly build writes them byte-equal but the A8 list).
+- Arrays among a DXIL geometry shader's values (blocking): the geometry pass refused any value but a
+  scalar or vector (`OutputArray`), so dxc's builds of `float3 c[2] : COLOR0` and `float2 w[3] :
+  TEXCOORD6` were refused where fxc's converted. Now a `GeometryValue` is a scalar or vector or an
+  array of them one register a row (`rows`, `row_at` in src/lower/geometry.rs): each row is a record
+  slot and a reflected output, inputs too (an input's outermost count is its vertices). An array of
+  arrays stays refused by name (`OutputArray`; no file of any corpus has one). The check's
+  `gs_c4_streams` and `gs_c4_lines` convert on both routes with the same outputs (probe,
+  x86-probe3.log). Own `geometry_rows.hlsl` (from the check's inputs): `vs_rows` writes arrays,
+  `gs_rows_lines` reads them (one row picked at run time) and writes `float2 w[3]`,
+  `gs_rows_streams` writes three point streams, an array and the position in the second. Its first
+  stream is not an array: real Direct3D 11 on the RTX 3080 refuses stream output from a geometry
+  shader of several streams whose first stream writes an array (E_OUTOFMEMORY, the debug layer
+  silent; the same shader with that stream flat is taken, and an array in the second stream is;
+  probe2.log). A matter for the Direct3D 11 front's reports, not this crate's.
+  Tests: `dxil_geometry_outputs_match_dxbc_on_every_stream` takes them; new
+  `geometry_shaders_with_rows_stream_as_direct3d_does` (tests/geometry_draw.rs) streams every row of
+  every value out on WebGPU and on the replay route (ANGLE), against Direct3D 11 running fxc's build
+  and Direct3D 12 running dxc's. On the replay route dxc's `gs_rows_lines` is refused by name
+  (`GeometryReplayArrayOfArrays`, src/stage/replay.rs, A5): its input arrays of rows are an array
+  per vertex, an array of arrays, which GLSL ES 3.00 lacks (naga: `MissingFeatures(ARRAY_OF_ARRAYS)`,
+  x86-aoa.log); before the refusal the back end failed those 8 cases unnamed (draw2.log, the
+  test's failure without it). fxc's build replays and streams equal.
+  Seeds 1 to 4 (draw4.log): 32 comparisons, 0 failed, 4 known (A22: dxc's `gs_rows_streams`, its
+  position in stream 1); every word of every row equal on both routes and both back ends; 8 replay
+  refusals of several streams and 8 of arrays of arrays, all by name.
+- A22's cause (minor): taken as the check measured it. Direct3D 12 on the RTX 3080 writes zeros for
+  the position of a geometry shader of several streams, whichever compiler built it and whichever
+  stream holds it. The streams tests now take each such zero from Direct3D 11 running fxc's build of
+  the same program (`reference_of_streams`; only words Direct3D 12 left zero at the position's places
+  of a buffer), so dxc's builds' positions are compared with a real reference, and the known pattern
+  is no longer stream 0's alone.
+  Seeds 1 to 4: 32 comparisons, 0 failed, 16 known, each dxc case 80 to 156 position words taken
+  (draw1-err.log); the check's seeds 8501 to 8516: 128, 0 failed, 64 known (probe1.log).
+- The 4-ulp allowance (minor): see A21. The allowance is now 4 units in the last place of the larger
+  of the two values and 1, the tests' operands' magnitude, where it was 4 ulp of the value: `gs_cut`'s
+  lerp from the centre takes a difference of values near 1.
+  At the check's seeds 8501 to 8516: replay route 384 comparisons, 0 failed; WebGPU 448, 0 failed
+  (probe1.log).
+- The DXBC domain shader returned as an invalid module (minor, before G6b): dxbc-spirv's bug (gap
+  A23, read in its IR); now refused by name (`ComponentPastVector`) with own `ds_rows_gap` in the
+  records. Not fixed: the fix is a line of dxbc-spirv, which this repository does not yet carry
+  patches of; the check's other cases (`ds_c4c`, `ds_m1` to `ds_m6`) still convert.
+- The milestone's claim of the four Direct3D 12 scenes (minor): the top of this file and A6 say two
+  draw equal and why the other two differ. Not rerun.
+- `hull_values_make_the_same_records_on_both_routes`' comment (minor): it now says the records are
+  the same for those programs only (the check's quad hulls give 5 constant locations from fxc's
+  build, 4 from dxc's) and that a front pairs stages of one build.
+- A10's figures at the check's seeds (minor): added under A10. Drawn again at the same seeds at
+  this run's code (probe1.log): the same 8 picture failures and 6 replay failures, case for case.
+
+Mutated copies (not committed; scratch x86-mutants.sh, x86-mutants.log): the outputs reflected for
+the first row only fails `dxil_geometry_outputs_match_dxbc_on_every_stream`; arrays refused again
+fails the own records (`gs_rows_*.dxil` "unsupported OutputArray"); the component guard removed
+fails the own records (`ds_rows_gap.dxbc` "convert invalid").
+On the RTX 3080 (draw2.log, in the job, restored after): every row read as the first
+(`b.field(v, 0)` in `location_vec4`) fails `geometry_shaders_with_rows_stream_as_direct3d_does`,
+32 comparisons, 20 failed.
 
 Runs at the tip:
-- x86 machine (96 processors, load 1 to 8, -j 64): clippy with warnings denied clean; the whole
-  suite with every corpus: every binary passes but gap A16's known failure (x86-suite2.log; the
-  geometry test as committed passed in x86-mutants.log's base).
-- Desktop (RTX 3080): `geometry_draw` 8 passed, `tessellation_draw` 4 passed (draw5.log);
-  Windows clippy (win-clippy.log).
-- Mutated copies (not committed; the commands in x86-mutants.sh): the stream ignored in
-  `element_at` fails `dxil_geometry_outputs_match_dxbc_on_every_stream`; `dims.reverse` removed
-  fails the own records (`hs_values_*.dxil` convert invalid).
-- Literal check (x86 machine, a clone of the tip): passes; this crate's baseline unchanged (530
-  lines), no new literal outside it.
-- Clean-up: the desktop's build folder of this branch and the x86 machine's literal clone and its
-  build folder deleted; no build in the Mac checkout or scratch.
-- Not run this run: the check's seeds 6601 to 6612, the laptop's glslang suite
-  (the new records' GLSL outcomes are the x86 machine's, which has no glslang: they read
-  `absent compute` and a write refusal, neither compiled by glslang).
+- x86 machine (96 processors, load 11 to 17, -j 64): clippy with warnings denied clean; the whole
+  suite with every corpus: every binary passes but gap A16's known failure (x86-suite2.log, at
+  c02bf001's tree; the last commit renames a test's type, Windows only).
+- Laptop (load about 1): the own records with glslang 8.13 (`vs_rows` compiles; laptop-own.log).
+- Desktop (RTX 3080, through the queue): Windows clippy with warnings denied clean; `geometry_draw`
+  9 passed and `tessellation_draw` 4 passed at seeds 1 to 4 (draw4.log, at 048f1e0a); the check's
+  seeds 8501 to 8516 (probe1.log, above) at a0c02830 with this run's test changes, before the
+  replay refusal and the flat first stream of `gs_rows_streams`, which no test drawn there reaches;
+  the rows test was skipped there.
+- Literal check (x86 machine, a clone of c02bf001): passes; this crate's lines in the baseline
+  unchanged (4,826 lines naming its paths, 395 of them under src; run 67's "530" counted otherwise).
+- Not run this run: the laptop's whole glslang suite (only the own records), WebAssembly, Chrome
+  on the new WGSL files.
+- Clean-up: this branch's build folders on the desktop (C:\wc\target\phase-2-graphics-shaders),
+  the laptop (~/wcontainers-graphics/target/phase-2-graphics-shaders) and the x86 machine
+  (/work/target/graphics-shaders, the literal clone and its build folder) deleted; the probes'
+  sources and logs kept in scratch g6b4; no build in the Mac checkout or scratch.
 
 ## New for the owner
 
+- Run 68: a DXIL geometry shader's values may be arrays of rows (`float3 c[2] : COLOR0`), one
+  register a row, as fxc's builds of the same programs. New refusal `ComponentPastVector` (A23): a
+  DXBC program dxbc-spirv addresses past a vector's components, which `convert` returned as an
+  invalid module before. The stream tests take Direct3D 12's zero positions from Direct3D 11 (A22)
+  and allow dxc's builds 4 ulp at the operands' scale (A21). No interface change.
 - Run 67: stream output from a DXIL geometry shader of several streams works (each stream's
   outputs at their own registers and semantics); `container::Element` has the stream. DXBC hull
   shaders' patch constant functions read every output control point (dxbc-spirv's I/O bound check
@@ -349,6 +361,9 @@ The gap list (every item of the pass bar not met):
   (`stage::GeometryReplay`, `SlowPath::GeometryAsReplay`, drawn equal to Direct3D 11 on ANGLE).
   Indexed strips run there since run 54 (listed on the host from their indices read back).
   Not built, each refused by name or absent: strips with adjacency (`GeometryReplayAdjacentStrip`);
+  a replay form holding an array of arrays (`GeometryReplayArrayOfArrays`, since run 68: dxc's
+  build of a geometry shader whose inputs are arrays of rows, one array per vertex, which GLSL ES
+  3.00 cannot declare; fxc's build of the same program replays, its rows separate registers);
   records wider than one capture target
   (`GeometryReplayComponents`, past `capture_components`, 16 slots on WebGL 2's minimum);
   layered geometry (`selects`, built on the same pass-through, not drawn on WebGL 2 yet); stream
@@ -362,11 +377,17 @@ The gap list (every item of the pass bar not met):
   the tessellator needs compute, so tessellation stays absent there). Waits: the Direct3D 11 front
   at feature level 10_0 on WebGL 2 (its geometry shaders and their stream output now run; its
   alpha-antialiased lines remain). Takes: each its route and its drawn test on ANGLE.
-- A6. Closed in G6b (runs 65 and 66): DXIL geometry, hull and domain shaders convert through the
-  passes the DXBC route uses and draw equal to real Direct3D 11 with dxc's builds of every program
-  (`geometry_draw`, `tessellation_draw`); a DXIL pixel shader reads its layer and viewport. What is
-  left of the Direct3D 12 rig scenes (raster-fill, tessellation's wireframe cells) is the line rule
-  of the front's back end, not the converter's (G6b run 2 above). Waits on nothing of this track.
+- A6. Closed in G6b (runs 65, 66 and 68): DXIL geometry, hull and domain shaders convert through the
+  passes the DXBC route uses and draw equal to real Direct3D with dxc's builds of every program
+  (`geometry_draw`, `tessellation_draw`); a DXIL pixel shader reads its layer and viewport. Since
+  run 68 a geometry shader's inputs and outputs may be arrays of rows (`float3 c[2] : COLOR0`, which
+  dxc writes as one signature element of several rows), one register a row, on both routes; an array
+  of arrays among them is refused by name (`OutputArray`, no file of any corpus has one). Of the four
+  Direct3D 12 rig scenes that failed for A6, two (geometry, streamout) draw equal to real Direct3D 12;
+  raster-fill (64 of 16,384 pixels beyond 1) and tessellation (310 of 32,768 beyond 4) differ only in
+  wireframe lines, which this crate's own comparison draws equal on wgpu's Direct3D 12 path and the
+  Direct3D 12 front's library draws apart on its Vulkan path: the line rule of that back end, not the
+  converter's (history, G6b run 2). Not rerun since run 66. Waits on nothing of this track.
 - A7. The stage helper refuses by name: several streams of lines or triangles (`GeometryStreams`,
   which Direct3D does not allow; several streams of points convert since run 49); indexed strips
   and triangle strips with adjacency run since run 50; indirect draws through the stages, the
@@ -463,6 +484,12 @@ The gap list (every item of the pass bar not met):
   all this pattern (31344 `vs_cull` TriangleList indexed 3 of 778, largest 132; 31351 `gs_clip`
   TriangleStrip 8 of 816, largest 81; 31351 `vs_cull` TriangleList 3 of 1,669, largest 68); the
   replay on WebGL 2 failed 31351 `gs_clip` (352 comparisons).
+  The G6b fourth check (seed 8501, 16 cases, at 3afa2f5a; both routes since G6b): 768 comparisons,
+  8 failed, all this pattern on both routes: 8501 `gs_clip` TriangleStrip 14 from 2 (DXBC and DXIL,
+  10 of 571 texels, largest 120), 8503 `vs_cull` TriangleList 30 from 3 x2 DXBC (3 of 1,646, largest
+  45), 8503 `vs_cull` LineList 20 from 0 DXBC (1 of 220, largest 64), 8505 and 8508 `gs_clip`
+  TriangleList 30 from 3 x2 (both routes); the replay on ANGLE, 608 comparisons, 6 failed, the same
+  `gs_clip` cases.
 - A11. `mutated_bytecode_converts_or_fails_without_ending_the_process` (tests/fuzz.rs, ignored by
   default as a long run) fails: signed but malformed bytecode can end the process (G6a run 1,
   fuzz.log: seed 7, case 301, a mutated `blend.vs.dxil`, SIGSEGV; the second check, seed 8128,
@@ -604,14 +631,42 @@ The gap list (every item of the pass bar not met):
   built IEEE-strict (`-Gis`, `precise`) forbids it, which WGSL cannot say. Measured (G6b run 3,
   draw3.log): dxc's `-Gis` builds of `gs_unplaced` and `gs_cut` on Direct3D 12 against ours, 1 to
   4 ulp in words of a multiply and an add; the same programs built without `-Gis`, up to 2 ulp on
-  WebGPU and 4 on the replay route (ANGLE). The stream tests allow 4 ulp on dxc's builds' normal
-  floats (`CONTRACTED_ULPS`). Waits: nobody (no program seen depending on it). Takes: nothing the
-  converter can do in WGSL; a native back end could keep `NoContraction`.
-- A22. Direct3D 12 on the RTX 3080 writes zeros for stream 0 of dxc's build of `gs_streams` (four
-  streams) where ours writes the values; every count and streams 1 to 3 equal
-  (`streams_past_the_first_match_direct3d`, counted as known by that pattern). Cause: not found
-  (not measured whether Direct3D 12 runs fxc's build of it the same way, or WARP). Takes: those two
-  draws, then either our reference corrected or the difference recorded as the driver's.
+  WebGPU and 4 on the replay route (ANGLE) at seeds 1 to 4. The fourth check found 8 ulp on the
+  replay route at its seeds 8501 to 8516 (`gs_cut` strips, 4 of 16 seeds; for example 0.11680809
+  against 0.116808146): `gs_cut`'s lerp from the centre takes a difference of positions near 1, so
+  the result keeps their rounding and its own last place is no measure of it. Since run 68 the
+  allowance on dxc's builds' normal floats is 4 units in the last place of the larger of the two
+  values and 1 (`CONTRACTED_ULPS`, `OPERAND_MAGNITUDE`: the tests' operands are positions in the
+  clip volume, colours and constants of at most about 1), where it was 4 ulp of the value itself.
+  At the check's seeds 8501 to 8516 the stream tests then pass on the replay route (384
+  comparisons, 0 failed) and on WebGPU (448, 0 failed); every DXBC case is exact (g6b4/probe1.log).
+  Waits: nobody (no program seen depending on it). Takes: nothing the converter can do in WGSL; a
+  native back end could keep `NoContraction`.
+- A22. Direct3D 12 on the RTX 3080 writes zeros for the position in the stream output of a
+  geometry shader of several streams, whichever compiler built it and whichever stream holds the
+  position (the fourth check's measurement: Direct3D 12 running fxc's build of `gs_streams` is 80
+  words apart from Direct3D 11 running it, all of them zeros at the position; its own
+  `gs_c4_streams_flat`, the position in stream 1, the same), where ours writes the values and
+  equals Direct3D 11 running fxc's build word for word. Every count and every other word of
+  Direct3D 12's equal ours. So the converter is right and this reference is the odd one. Since run
+  68 the tests of several streams take each such zero from Direct3D 11 running fxc's build of the
+  same program (`reference_of_streams` in tests/geometry_draw.rs: only words Direct3D 12 left zero at
+  the position's places in a buffer, by the declaration and stride) and count the case as known:
+  seeds 1 to 4, 32 comparisons, 0 failed, 16 known (draw1-err.log); the check's seeds 8501 to 8516,
+  128, 0 failed, 64 known (probe1.log). Cause within Direct3D 12 or the driver: not found (WARP's
+  Direct3D 12 not drawn). Waits: nobody (our reference only). Takes: the same draws on WARP; if WARP
+  writes the positions, the difference recorded as the driver's.
+- A23. A DXBC program reading a dynamically indexed range of input registers whose component mask
+  has a gap (own `ds_rows_gap`: `c[1 - k].arr[k + 1].z + c[k].arr[2].x`, fxc declares the range
+  `.xz`) is refused by name (`ComponentPastVector`, src/lower.rs at `COMPOSITE_EXTRACT`); before run
+  68 `convert` returned an invalid module ("Index 2 is out of bounds"), since G6a at least. dxc's
+  build converts. Cause, read in dxbc-spirv's IR (scratch g6b4/probe-ir.txt): the range's load
+  function returns the mask's components packed (`makeVectorType`, two for `.xz`), but
+  `IoMap::computeRegisterAddress` (dxbc/dxbc_io_map.cpp) addresses a component by its distance from
+  the mask's first (`tzcnt`, 2 for `z`), where its own interpolation path counts the mask's bits below
+  it (`popcnt`, 1). Waits: nobody (no corpus or real program seen with it; the fourth check's
+  `ds_c4*`). Takes: that one line in dxbc-spirv (upstream, or a patch carried as naga's are), then
+  the refusal removed and the check's `ds_c4` drawn against Direct3D 11.
 - Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the DXIL route
   for arrays of constant and structured buffers (naga's reader takes such an array as one buffer
   holding an array; refused by name since run 55; typed buffer arrays, bounded or not, convert
@@ -644,7 +699,10 @@ G6a run 5's tip):
   and `DxilDomainShader` 9 gone in run 66: 36 convert, 1 is `DomainWithoutControlPoints`, next to
   A14's `HullWithoutControlPoints`);
   `VertexStorageWrite` 8 (A9); `GeometryPatchInput` 6 (A13; DXBC 5, DXIL 1 since run 65);
-  `HullWithoutControlPoints` 1 and `DomainWithoutControlPoints` 1 (A14); the stage helper's
+  `HullWithoutControlPoints` 1 and `DomainWithoutControlPoints` 1 (A14); `ComponentPastVector` 1
+  (A23, own `ds_rows_gap.dxbc`, since run 68); the stage helper's `GeometryReplayArrayOfArrays` (A5, at
+  `GeometryReplay::new`, not a conversion verdict: dxc's `gs_rows_lines` on the replay route);
+  `OutputArray` 0 (an array of arrays among a geometry shader's values; no file of any corpus); the stage helper's
   `GeometryPrimitiveIdAfterDomain` (A20, at `Stages::tessellated_with`, not a conversion verdict); `GeometryStreams` 1, `PrimitiveId` 2 (a geometry shader
   writing the primitive's number, `primitive-id-2-gs`, DXBC and DXIL) and `CullDistance` 8
   (geometry shaders writing cull distances, `clip-cull-distance-1-18` to `-21-gs`, DXBC and DXIL)
@@ -666,10 +724,10 @@ G6a run 5's tip):
 
 ## Next
 
-1. G6b's independent check (the third check's findings fixed in run 67).
-2. After it, in the order the fronts need it: the NIR track's asks (under "New for the owner"),
-   A4's `combine` (the Direct3D 11 front's blending into integer twins), `ResourceArray` on DXIL,
-   A17, A19, then the rest of the gap list.
+1. G6b's independent check (the fourth check's findings fixed in run 68).
+2. After it, as the fronts need them: the NIR track's asks under "New for the owner", then A4's
+   `combine` (the Direct3D 11 front), A23's line of dxbc-spirv and A8 (both want a way to carry
+   dxbc-spirv patches), A22 on WARP.
 
 ## Asked of other tracks
 
@@ -789,6 +847,11 @@ G6a run 5's tip):
   that a GLSL write refusal of a shader needing only such features is a failure; with the list
   public it would read yours and could not go stale when caps.rs declares another (for example
   `CLIP_DISTANCE`, held back for a Chrome bug).
+- The WebGL 2 track (G6b run 4): GLSL ES 3.00 has no arrays of arrays, and naga's writer refuses
+  them; dxc's build of a geometry shader reading input arrays of rows (own `gs_rows_lines.dxil`
+  with `vs_rows`) has one in its replay form, so the stage helper refuses it by name
+  (`GeometryReplayArrayOfArrays`). If your writer flattened such arrays (an array of arrays as one
+  array, its indices joined), the refusal could go.
 - The WebGL 2 track (G6a run 4): your writer refuses 13 of the games' Godot DXIL pixel shaders with
   "one expression of a texture is sampled through two samplers (not built)"
   (`tests/expected/games-dxil.txt`, the records with that text, for example
