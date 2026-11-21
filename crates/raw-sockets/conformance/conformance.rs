@@ -658,6 +658,7 @@ pub fn ipv4_packets_arrive_whole<S: RawSockets>(sockets: S) {
     assert_eq!(header.protocol(), IpNumber::ICMP);
     assert_eq!(seen(packet).payload, message);
     assert_eq!(fields.interface, index(SELF_LINK));
+    assert_eq!(fields.specific_destination, Some(Ipv4Addr::LOCALHOST));
 }
 
 /// An IPv6 raw socket receives the packets of its protocol with their header and extension headers written in front.

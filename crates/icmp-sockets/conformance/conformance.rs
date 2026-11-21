@@ -585,6 +585,16 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
         IpVersion::V6 => usize::from(ipv6(packet).payload_length()) + etherparse::Ipv6Header::LEN,
     };
     assert_eq!(length, fields.length);
+    // The preferred source of a reply to the packet, which only IPv4 has, if it is told at all.
+    let preferred = match to {
+        IpAddr::V4(address) => Some(address),
+        IpAddr::V6(_) => None,
+    };
+    assert!(
+        fields.specific_destination.is_none() || fields.specific_destination == preferred,
+        "{:?}",
+        fields.specific_destination
+    );
     assert_eq!(fields.interface, index(SELF_LINK));
 }
 

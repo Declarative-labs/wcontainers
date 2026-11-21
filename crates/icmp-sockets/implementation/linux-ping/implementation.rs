@@ -334,9 +334,12 @@ impl IcmpSockets for LinuxPingSockets {
         let total = dropped_packets(fd)?;
         let drops = total.wrapping_sub(state.drops);
         state.drops = total;
-        Ok(Received::Packet(
-            ancillary.packet_fields(headers.len() + message.length, drops),
-        ))
+        let mut fields = ancillary.packet_fields(headers.len() + message.length, drops);
+        // Linux prepares no preferred source for a ping socket and gives the unspecified address in its place.
+        if fields.specific_destination == Some(Ipv4Addr::UNSPECIFIED) {
+            fields.specific_destination = None;
+        }
+        Ok(Received::Packet(fields))
     }
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {

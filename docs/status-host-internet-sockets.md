@@ -45,6 +45,8 @@ runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
   `git update-index --cacheinfo 100644,$(git hash-object -w <file>),Cargo.lock` and commit the index.
 
 ## Results (ARM64 machine, Linux 7.0.0-1018-aws, 96 cores)
+- 20:01 UTC, load 8.4 to 17 (final code): three rounds, each ICMP 37 of 37 (0.61 s), raw 28 of 28 (0.62 s),
+  resolver 28 of 28 (0.02 s), at 12 test threads.
 - 19:55 UTC, load 5.7 to 9.7: three rounds, each ICMP 37 of 37 (0.61 s), raw 27 of 27 (0.62 s; 28 of 28 with the close check added after), resolver 28 of
   28 (0.02 s), at 12 test threads. Generic suites 2 + 3 self-tests pass.
 - Clippy with warnings denied clean for all nine packages (Mac, gnu target, and ARM machine).
@@ -79,7 +81,7 @@ runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
 - Send fields: neighbour confirmation (the gateway's entry confirmed 0 s ago), priority (the third band of a prio
   queue), transmit time (fq holds the packet 300 ms), transmit reports scheduled and software with key, with and
   without the packet.
-- Received fields: interface, software timestamps (none unless set; no hardware one on loopback), drops since
+- Received fields: interface, specific destination (raw IPv4: the address; never another), software timestamps (none unless set; no hardware one on loopback), drops since
   previous (received plus dropped equals sent), whole IPv4 and IPv6 headers with extension headers; ICMP errors
   whole (outer header, ICMP header and checksum, quoted header and identifier or payload).
 - Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol
@@ -101,8 +103,10 @@ runs), I2 ICMP and raw sockets (done in run 1 of I2, 2026-11-21).
   the mobility header type for IPv6 raw, none for other protocols or a packet with its own header), and a raw
   payload under another protocol than the socket's (IPv4; IPv6 unless the socket's is `IPPROTO_RAW`).
 - Ping sockets give no `SO_RXQ_OVFL`, `SO_RCVMARK` or `SO_RCVPRIORITY` (only timestamps): received mark and
-  priority are written as 0, and drops are read from `SO_MEMINFO` at each receive, so drops after a packet was
+  priority are written as 0, the specific destination is none (Linux gives 0.0.0.0, not preparing it), and drops are read from `SO_MEMINFO` at each receive, so drops after a packet was
   queued are told with it rather than with the next packet. The totals are exact (checked).
+- Received largest fragment and link-layer length: filled by the shared code from Linux's messages as for UDP,
+  whose suite checks them; no check of this track makes a fragmented arrival or a hardware report.
 - Multicast all-groups on a ping socket is taken but has no effect to see: a ping socket takes only echo replies.
 - Wireless status reports: refused as in the UDP track (no key). Acknowledgement reports are TCP's only;
   hardware and completion reports need a device with a hardware clock, which the namespace has not.

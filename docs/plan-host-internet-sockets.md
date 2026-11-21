@@ -114,8 +114,7 @@ under another protocol than the socket's (IPv4, or IPv6 unless the socket's is `
 
 Each suite runs every check as root in a network namespace of its own, which the `tests!` macro enters on the
 test's thread before the value is made, with loopback up and (ICMP) every group in the ping range. Checks see
-what went out on a second socket of the namespace: a raw socket for ICMP, another raw socket for raw, and the
-statistics of a dummy link. Header fields (TTL or hop limit, DSCP and ECN, flow label, options, extension
+what leaves a dummy link on a packet socket of the namespace, and its statistics. Header fields (TTL or hop limit, DSCP and ECN, flow label, options, extension
 headers, path MTU modes, local fragmentation and fragment MTU, source, interface, mark, scope, broadcast) are
 checked by what arrives; send fields by what arrives (priority), the neighbour entry (confirmation), a qdisc
 that holds the packet (transmit time) and the error queue (transmit reports with their key, with and without
