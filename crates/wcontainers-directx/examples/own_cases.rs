@@ -304,10 +304,11 @@ fn main() -> windows::core::Result<()> {
                 };
                 let support1 = unsafe { device.CheckFormatSupport(DXGI_FORMAT(format)) };
                 println!(
-                    "format {format} {:#010x} {:#010x} {:#010x}",
+                    "format {format} {:#010x} {:#010x} {:#010x} {:#010x}",
                     code(r),
-                    support1.unwrap_or(0),
-                    support2.OutFormatSupport2
+                    support1.as_ref().copied().unwrap_or(0),
+                    support2.OutFormatSupport2,
+                    code(support1.map(|_| ()))
                 );
             }
         }

@@ -1275,21 +1275,13 @@ impl Device_Impl {
         give(out, Predicate::new(front, self.me()).into())
     }
 
+    /// The first word of a format's support; Direct3D fails a format with none of its uses, also
+    /// where the second word has some (sharing at 10Level9).
     pub(super) fn check_format_support(&self, format: DXGI_FORMAT) -> Result<u32> {
-        self.format_support_words(format).map(|s| s.support1)
-    }
-
-    /// Both words of a format's support; Direct3D's failure for a format the device does not
-    /// support at all.
-    fn format_support_words(
-        &self,
-        format: DXGI_FORMAT,
-    ) -> Result<wcontainers_direct3d_11::FormatSupport> {
-        let s = self.front.borrow().format_support(format.0 as u32);
-        if s.is_empty() {
-            return Err(windows::Win32::Foundation::E_FAIL.into());
+        match self.front.borrow().format_support(format.0 as u32).support1 {
+            0 => Err(windows::Win32::Foundation::E_FAIL.into()),
+            uses => Ok(uses),
         }
-        Ok(s)
     }
 
     /// `CheckMultisampleQualityLevels1`: tiled resources are not reported, so none of their
@@ -1382,7 +1374,11 @@ impl Device_Impl {
         if feature == D3D11_FEATURE_FORMAT_SUPPORT2 {
             let d = unsafe { &mut *data.cast::<D3D11_FEATURE_DATA_FORMAT_SUPPORT2>() };
             // Direct3D fails a format with none of these uses.
-            d.OutFormatSupport2 = self.format_support_words(d.InFormat)?.support2;
+            d.OutFormatSupport2 = self
+                .front
+                .borrow()
+                .format_support(d.InFormat.0 as u32)
+                .support2;
             if d.OutFormatSupport2 == 0 {
                 return Err(windows::Win32::Foundation::E_FAIL.into());
             }

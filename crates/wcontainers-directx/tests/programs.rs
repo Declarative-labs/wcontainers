@@ -504,7 +504,7 @@ fn format_support_compared(
         env,
     );
     assert_eq!(code, 0, "{got}");
-    let words = |l: &str| -> (i32, [i32; 3]) {
+    let words = |l: &str| -> (i32, [i32; 4]) {
         let mut w = l.split(' ').skip(1);
         let format = w.next().unwrap().parse().unwrap();
         let mut hex =
@@ -520,8 +520,8 @@ fn format_support_compared(
     let (want, got) = (formats(&want), formats(&got));
     let mut differing = Vec::new();
     for (w, g) in want.iter().zip(&got) {
-        let (format, [want_code, want1, want2]) = words(w);
-        let (_, [got_code, got1, got2]) = words(g);
+        let (format, [want_code, want1, want2, want_first]) = words(w);
+        let (_, [got_code, got1, got2, got_first]) = words(g);
         if OPTIONAL_FORMATS_ABSENT.contains(&DXGI_FORMAT(format)) {
             assert_eq!((got1, got2), (0, 0), "format {format}");
             continue;
@@ -538,12 +538,15 @@ fn format_support_compared(
             .filter(|s| s.0 == DXGI_FORMAT(format))
             .fold((0, 0), |(a, b), s| (a | s.1, b | s.2));
         // Direct3D fails the second query of a word without bits.
-        let codes_agree = want_code == got_code || got2 == 0 && got_code != 0;
+        // The first query fails exactly where real Direct3D's fails.
+        let codes_agree =
+            (want_code == got_code || got2 == 0 && got_code != 0) && want_first == got_first;
         if claimed != (0, 0) || (diff1, diff2) != named || !codes_agree {
             differing.push(format!(
                 "format {format}: support {want1:#010x} ours {got1:#010x} (differing {diff1:#x}), \
                  support2 {want_code:#x} {want2:#010x} ours {got_code:#x} {got2:#010x} \
-                 (differing {diff2:#x}), absent bits claimed {claimed:x?}"
+                 (differing {diff2:#x}), absent bits claimed {claimed:x?}, first query \
+                 {want_first:#x} ours {got_first:#x}"
             ));
         }
     }
