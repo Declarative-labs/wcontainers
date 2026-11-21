@@ -18,6 +18,9 @@
 //!   address made from it and temporary addresses preferred (connect_takes_its_route_selectors), whose queue
 //!   keeps a schedule of transmit times on the international atomic clock in strict mode and misses every time
 //!   it holds (Linux's etf qdisc with a delta of 0; rejected_transmit_times_are_reported_with_their_keys).
+//!
+//! The checks are of Linux's behaviour on a Linux network, so the suite builds only on Linux.
+#![cfg(target_os = "linux")]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU16;
