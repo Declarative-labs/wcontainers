@@ -339,6 +339,20 @@ The brief's asks:
   umask (`DOCKER_UMASK`) were exported already; the mounts with their options and the read-only
   paths are not yet.
 
+The whole suite at bdf4674f on the ARM64 machine (job kernel/20261120-230854-3849256, 23:08 to
+00:33 UTC, load 1 to 12; scratch kf1/suite-bdf4674f.log, kf1/fail-bdf4674f.txt): fmt and clippy
+with warnings denied clean; 276 passed, 37 failed, 6 ignored. 36 failures are exactly the ARM list
+(k6c14/fail14.txt), each passed in the Mac's part. The 37th changed on purpose with placement:
+embedder `a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory` asserted that a run
+with no ceiling given announces nothing; now the stand-in's own end (4 GiB) is a ceiling below
+the container's 2^48 address space, so that run too is announced once, later (more pieces fit),
+as the item asks. The test now asserts exactly that (1c2f20a2); it passed with embedder's other
+26, processes, layout, memory and loader on the ARM64 machine (00:34 UTC, load 2). The verdicts
+changed by this milestone on purpose: that test, and processes
+`killed_children_end_when_they_next_run_as_on_linux` (new).
+A last whole suite at 1c2f20a2 (job kernel/20261121-003536-281361, log kf1/suite-1c2f20a2.log)
+covers the wait module.
+
 The Mac's part at bdf4674f (scratch kf1/mac.sh, log kf1/mac.log; 15:09 to 15:12 PST, load 8 to
 31, -j 4): layer 1 seeds 9191126 to 9191128 passed (300 sequences, 32 on the backend, 32 on the
 cached backend each); the Mac list (18 test files and 9 single tests) passed, none failed.
@@ -5150,12 +5164,9 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 KF, after its first run (the bar: each item's tests, the whole suite unchanged but where an item
 changes it, the literal check with a smaller baseline):
-1. Read the whole suite at bdf4674f (ARM64 job kernel/20261120-230854-3849256, log
-   scratch kf1/suite-bdf4674f.log, `arm-run --fetch kernel /work/jobs/kernel/<id>/log` if the
-   follower stopped) and the Mac's part (scratch kf1/mac.sh, log kf1/mac.log: layer 1 seeds
-   9191126 to 9191128 and the Mac list passed). Every failure must be on the ARM list
-   (k6c14/fail14.txt) or settled. backend, inet and inotify failed in the ids run
-   (kf1/ids/log, names cut off by the filter): confirm they are the ARM list's.
+1. Read the whole suite at 1c2f20a2 (ARM64 job kernel/20261121-003536-281361, log scratch
+   kf1/suite-1c2f20a2.log, `arm-run --fetch kernel /work/jobs/kernel/<id>/log` if the follower
+   stopped): every failure must be on the ARM list (k6c14/fail14.txt), as at bdf4674f.
 2. The record and replay test: the driver keeps every result the System and the Cpu gave the
    kernel in a run (clock, randomness, backend answers, stream events, the CPU side's exits and
    reads), a second kernel runs from that record alone, and every process's memory is compared
