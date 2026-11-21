@@ -143,7 +143,61 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
 - X8 (AVX, AVX2, FMA, F16C, BMI2, XSAVE): run 1 (2026-11-21) fixed the X7 check's four findings, made what a
   program is told a per-process list of the kernel interface that the translator, `cpuid` and `xgetbv` take
   (every told family switched by it), and built BMI2, `xgetbv` and `xsetbv`; AVX, AVX2, FMA, F16C and `xsave`
-  and `xrstor` are left (see "X8, run 1").
+  and `xrstor` are left (see "X8, run 1"). Run 2 (2026-11-21) built the AVX and AVX2 instructions that work lane
+  by lane (454 of the 667 codes) on the ymm registers' upper halves as registers of their own (see "X8, run 2").
+
+## X8, run 2 (2026-11-21): partly done
+
+Machines: the rented x86-64 machine (96 processors, 5-level paging, load 0 to 11) for builds, lint and quick
+layer 1 runs, the i7-8750H (load 0 to 9, 4 at once) for layer 1 verdicts, the Mac for git and the literal
+check. Logs in scratch `x8r2/`.
+
+Built this run:
+- The upper halves of the ymm registers are registers of the second file (register bits 56 to 71, vector
+  numbers 24 to 39, `operand::ymm_high`), so the translator keeps them in locals and passes them between pieces
+  like the xmm registers.
+- The float hook no longer reads its destination from the block by register number: the meaning stores the
+  destination's value in two private words (`X86Private::float_operand`, `Control::FloatOperand`) on the exact
+  path only, and the hook flushes no xmm register (`registers` none). The fast path is unchanged.
+- `crate::vex`: a VEX instruction that works lane by lane runs, for each 128-bit lane, its legacy SSE form
+  (found at build time from the two codes' names, `build.rs` `lane_forms`, `lanes.rs`) through an emitter
+  `Lane` whose xmm0 to xmm3 are the lane's places: the halves of the ymm registers, a whole xmm register (a
+  shift's count), and a fresh local the lane's result is built in. Results are written after every lane, so
+  a fault leaves the registers as they were; a 256-bit memory operand is checked once for its 32 bytes before
+  the first lane (the lanes then only make the address a data address), and the aligned moves check their
+  alignment to their own size. VEX forms take no alignment otherwise (`Instruction::vex_lane`). 128-bit forms
+  clear the upper half of the register they write; those that write memory, a general register, the flags or
+  xmm0 (`vpcmpestrm`, `vpcmpistrm`, whose upper half they clear) leave their first operand alone. `blendps`,
+  `blendpd`, `shufpd` and `mpsadbw` take the upper lane's immediate bits; VEX compares take five predicate bits
+  (bit 3 flips the answer for an unordered pair, bit 4 swaps signaling and quiet) on both paths. `vzeroupper`
+  and `vzeroall`.
+- Layer 1 draws VEX operands (xmm and ymm in every field, is4 registers, four-operand forms).
+
+Verdicts:
+- The i7-8750H, the 454 forms written this run, 200 cases a form, seed 8203 (`laptop` log `x8r2-l1`): 2 failing,
+  `vdivps` and `vdivpd` on ymm with an unmasked exception: MXCSR lacks the flag the other lane raised, because
+  each lane's exact path stops at its own unmasked exception. A 256-bit instruction must find the exceptions of
+  all eight elements before it computes (Intel SDM Vol. 1 11.5.2); the fix is one exact-path call for both
+  lanes (the hook given both lanes' operands through the private words), not yet built. Left failing.
+- The rented machine, 454 forms at 40 and 60 cases (seeds 8201, 8202): every other difference was 5-level
+  paging's (page fault where the laptop gives general protection or a stack fault).
+- The rented machine, from the tree at 72f0c697 with other tracks' edits: fmt, clippy with warnings denied for the
+  five crates and both browser builds, the unit tests, the test crate's library, `tests/vex.rs`, the told
+  features and hand cases: pass. x86's `--test programs`: 25 passed (462 s); layer 2 x86's default test: pass.
+- The literal check (the Mac): no finding in this track's files; one baseline line of the test crate went
+  (d1e8c7a5).
+
+Left of X8, most important first (213 codes, scratch `x8r2/left2.txt`):
+- One exact-path call for a 256-bit float instruction (the two failing forms above).
+- The forms that cross lanes or have no legacy form: `vmovddup` on ymm, the ymm forms of `vmovmskps`,
+  `vmovmskpd`, `vpmovmskb`, `vptest`, `vtestps`, `vtestpd` (all widths), the conversions between widths
+  (`vcvtps2pd`, `vcvtpd2ps`, `vcvtdq2pd`, `vcvtpd2dq`, `vcvttpd2dq` on ymm), `vpmovsx` and `vpmovzx` to ymm,
+  the broadcasts, `vinsertf128`/`vinserti128`, `vextractf128`/`vextracti128`, `vperm2f128`/`vperm2i128`,
+  `vpermq`, `vpermpd`, `vpermd`, `vpermps`, `vpermilps` and `vpermilpd`, `vpblendd`, the variable shifts
+  (`vpsllvd` and kin), the masked moves (`vmaskmovps`, `vpmaskmovd` and kin), the gathers and the designed
+  gather case with TF.
+- FMA (96 codes), F16C (4), `xsave`/`xrstor` (4), and the rest of run 1's list (the browser runner's offer, the
+  benchmark set for v3, three programs of my own, layer 1 at 1,000 a form for the whole v3 list).
 
 ## X8, run 1 (2026-11-21): partly done
 
