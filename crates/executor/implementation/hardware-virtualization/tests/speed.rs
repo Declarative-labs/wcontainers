@@ -165,8 +165,8 @@ mod speed {
         performance_cycles: Option<u64>,
     }
 
-    /// What [`COUNTS_LINE`] says of an absent count.
-    const ABSENT: &str = "absent";
+    /// What [`COUNTS_LINE`] and the raw pairs' file say of an absent count.
+    const NOT_COUNTED: &str = "null";
 
     #[cfg(target_os = "macos")]
     mod host {
@@ -374,7 +374,7 @@ mod speed {
         println!("{OUTPUT_LINE} {hex}");
         let performance_cycles = counts
             .performance_cycles
-            .map_or_else(|| ABSENT.to_owned(), |cycles| cycles.to_string());
+            .map_or_else(|| NOT_COUNTED.to_owned(), |cycles| cycles.to_string());
         println!(
             "{COUNTS_LINE} {} {} {performance_cycles} {status}",
             counts.cycles, counts.instructions
@@ -709,7 +709,7 @@ mod speed {
             counts: Counts {
                 cycles: number(cycles),
                 instructions: number(instructions),
-                performance_cycles: (performance_cycles != ABSENT)
+                performance_cycles: (performance_cycles != NOT_COUNTED)
                     .then(|| number(performance_cycles)),
             },
             wall_nanoseconds,
@@ -784,9 +784,6 @@ mod speed {
         expected: Option<(i32, String)>,
     }
 
-    /// What the raw pairs' file says of an absent count.
-    const JSON_ABSENT: &str = "null";
-
     fn json(run: &Run) -> String {
         format!(
             "{{\"cycles\":{},\"instructions\":{},\"performance_cycles\":{},\"wall_ns\":{}}}",
@@ -794,7 +791,7 @@ mod speed {
             run.counts.instructions,
             run.counts
                 .performance_cycles
-                .map_or_else(|| JSON_ABSENT.to_owned(), |cycles| cycles.to_string()),
+                .map_or_else(|| NOT_COUNTED.to_owned(), |cycles| cycles.to_string()),
             run.wall_nanoseconds
         )
     }

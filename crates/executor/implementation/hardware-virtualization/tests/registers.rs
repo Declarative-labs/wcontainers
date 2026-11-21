@@ -6,23 +6,23 @@
 //! `WCONTAINERS_REGISTERS_SCALE` sets bench.c's size (0 by default) and `WCONTAINERS_REGISTERS_CALLS` calls.c's
 //! number of calls.
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod common;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 fn main() {
-    macos::main();
+    count::main();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(host_hypervisor))]
 fn main() {
     println!(
         "the register count builds its programs with the speed test's tools; nothing to run on this host"
     );
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(host_hypervisor)]
+mod count {
     use std::cell::RefCell;
     use std::rc::Rc;
 
