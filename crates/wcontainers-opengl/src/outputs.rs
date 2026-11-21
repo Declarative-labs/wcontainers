@@ -284,8 +284,8 @@ const SECOND_SOURCE: u32 = 1;
 /// Adds to the first entry point a second source for blending at location 0 holding `alpha` (f32
 /// bits) in every channel, for a blend block reading the blend constant's colour and its alpha on
 /// a back end with only the first as a factor (`BlendInShader`): the alpha is read as the second
-/// source's. Refused where the program writes any target but the first, which the second source
-/// excludes.
+/// source's. The draw has one target, so the outputs at other locations, which the second source
+/// excludes, are dropped: they reach no target.
 pub fn second_source(module: &mut Module, alpha: u32) -> Result<(), String> {
     let Some(result) = module
         .entry_points
@@ -310,7 +310,8 @@ pub fn second_source(module: &mut Module, alpha: u32) -> Result<(), String> {
         ),
     };
     let mut first = false;
-    for m in &mut members {
+    let mut kept = Vec::new();
+    for (index, m) in members.iter_mut().enumerate() {
         if let Some(naga::Binding::Location {
             location,
             blend_src,
@@ -318,14 +319,17 @@ pub fn second_source(module: &mut Module, alpha: u32) -> Result<(), String> {
         }) = &mut m.binding
         {
             if *location != 0 {
-                return refused(format_args!(
-                    "a second source for a program writing a target past the first"
-                ));
+                continue;
             }
             *blend_src = Some(0);
             first = true;
         }
+        kept.push(index as u32);
     }
+    let mut members: Vec<StructMember> = kept
+        .iter()
+        .map(|&index| members[index as usize].clone())
+        .collect();
     if !first {
         return refused(format_args!(
             "a second source for a program writing no colour"
@@ -353,7 +357,6 @@ pub fn second_source(module: &mut Module, alpha: u32) -> Result<(), String> {
         }),
         offset: 0,
     });
-    let count = members.len() as u32;
     let new_ty = restruct(module, result_ty, members);
     let function = &mut module.entry_points[0].function;
     if let Some(result) = function.result.as_mut() {
@@ -370,8 +373,8 @@ pub fn second_source(module: &mut Module, alpha: u32) -> Result<(), String> {
         let mut components: Vec<Handle<Expression>> = if single {
             vec![value]
         } else {
-            (0..count - 1)
-                .map(|index| {
+            kept.iter()
+                .map(|&index| {
                     exprs.append(
                         Expression::AccessIndex { base: value, index },
                         Span::UNDEFINED,
