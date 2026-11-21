@@ -6,7 +6,9 @@
 use super::staged::{self, Entry, Ids, Interface, Privatise};
 use crate::container::Element;
 use crate::ir::{builtin, primitive};
-use crate::lower::geometry::{CUT, EMIT, Geometry, GeometryPass, GeometryValue, Side};
+use crate::lower::geometry::{
+    CUT, EMIT, Geometry, GeometryPass, GeometryValue, STREAM_PAST_DIRECT3D, Side,
+};
 use crate::{ConvertError, stage};
 use alloc::format;
 use alloc::string::String;
@@ -82,9 +84,13 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertE
             declared.output = p;
         }
     }
+    let within = |stream: u32| match (stream as usize) < stage::STREAMS {
+        true => Ok(stream),
+        false => Err(ConvertError::Malformed(STREAM_PAST_DIRECT3D.into())),
+    };
     for v in &declared.entry.values {
         if v.side == Side::Output {
-            declared.stream_mask |= 1 << v.stream;
+            declared.stream_mask |= 1 << within(v.stream)?;
         }
     }
     // Streams emitted into, which the declarations may leave undecorated.
@@ -93,6 +99,7 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertE
             .entry
             .constant(i[STREAM_OPERAND])
             .ok_or_else(|| ConvertError::Malformed(STREAM_NOT_CONSTANT.into()))
+            .and_then(within)
     };
     let mut at = super::words::HEADER;
     while let Some(i) = staged::instruction(spirv, at) {
@@ -256,4 +263,58 @@ pub(crate) fn finish(
     let extras = pass.entry_point(main)?;
     let placed = staged::place(pass.reflected, |v| values[v].stream, signatures);
     Ok((extras, placed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dxil::words::{self, decorate};
+    use spirv::Decoration;
+
+    /// A stream number past Direct3D's, emitted into or declared, is refused by name before any
+    /// stream mask is made of it: dxc's build of `gs_rows_streams` with its emitted stream's constant,
+    /// then its outputs' stream decorations, set to the mask's width.
+    #[test]
+    fn a_stream_past_direct3d_is_refused_by_name() {
+        let dxil = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/own/gs_rows_streams.dxil"
+        ));
+        let (spirv, _) = super::super::to_spirv(dxil, 0).unwrap();
+        let past = u64::BITS;
+        let mut emitted = Vec::new();
+        let mut decorated = Vec::new();
+        let mut at = words::HEADER;
+        while let Some(i) = staged::instruction(&spirv, at) {
+            match Op::from_u32(staged::opcode(i)) {
+                Some(Op::EmitStreamVertex) => emitted.push(i[STREAM_OPERAND]),
+                Some(Op::Decorate) if i[decorate::DECORATION] == Decoration::Stream as u32 => {
+                    decorated.push(at + decorate::LITERAL)
+                }
+                _ => {}
+            }
+            at += i.len();
+        }
+        assert!(!emitted.is_empty() && !decorated.is_empty());
+        // The constants of the emitted streams.
+        let mut emits = spirv.clone();
+        let mut at = words::HEADER;
+        while let Some(i) = staged::instruction(&spirv, at) {
+            let constant = Op::from_u32(staged::opcode(i)) == Some(Op::Constant);
+            if constant && emitted.contains(&i[words::RESULT_AFTER_TYPE]) {
+                emits[at + staged::CONSTANT_VALUE] = past;
+            }
+            at += i.len();
+        }
+        let mut declares = spirv.clone();
+        for &literal in &decorated {
+            declares[literal] = past;
+        }
+        for mut words in [emits, declares] {
+            match prepare(&mut words) {
+                Err(ConvertError::Malformed(why)) => assert_eq!(why, STREAM_PAST_DIRECT3D),
+                other => panic!("{:?}", other.map(|d| d.map(|d| d.stream_mask))),
+            }
+        }
+    }
 }
