@@ -664,6 +664,93 @@ nearest_level(nir_builder *b, nir_def *lod, nir_def *levels)
    return nir_imin(b, level, nir_iadd_imm(b, levels, -1));
 }
 
+/* Where a gather's footprint starts at a texel: three quarters into it, so that its first texel
+ * is the one wanted however the footprint rounds, and the point stays inside the face. */
+#define WC_GATHER_INTO 0.75f
+
+/* The components of a cube map's direction. */
+#define WC_CUBE_AXES 3
+
+/* Component `component` of the texel of the cube face at direction `dir` a gather's footprint
+ * starts at: its fourth value. */
+static nir_def *
+gather_component(nir_builder *b, nir_tex_instr *tex, nir_def *dir, unsigned component)
+{
+   nir_tex_instr *g = nir_tex_instr_create(b->shader, tex->num_srcs);
+   g->op = nir_texop_tg4;
+   g->sampler_dim = GLSL_SAMPLER_DIM_CUBE;
+   g->dest_type = tex->dest_type;
+   g->coord_components = dir->num_components;
+   g->component = component;
+   g->texture_index = tex->texture_index;
+   g->sampler_index = tex->sampler_index;
+   unsigned n = 0;
+   for (unsigned i = 0; i < tex->num_srcs; i++) {
+      nir_tex_src_type type = tex->src[i].src_type;
+      if (type == nir_tex_src_coord)
+         g->src[n++] = nir_tex_src_for_ssa(type, dir);
+      else if (type == nir_tex_src_texture_deref || type == nir_tex_src_sampler_deref)
+         g->src[n++] = nir_tex_src_for_ssa(type, tex->src[i].src.ssa);
+   }
+   g->num_srcs = n;
+   nir_def_init(&g->instr, &g->def, WC_COMPONENTS, tex->def.bit_size);
+   nir_builder_instr_insert(b, &g->instr);
+   return nir_channel(b, &g->def, WC_COMPONENTS - 1);
+}
+
+/* An integer cube map's sampling at its base level, as OpenGL selects a face and its nearest texel
+ * (clamped to the face's edge): each component gathered at that texel. */
+static nir_def *
+nearest_cube_texel(nir_builder *b, nir_tex_instr *tex, nir_deref_instr *texture)
+{
+   nir_def *coord = nir_trim_vector(b, tex_source(tex, nir_tex_src_coord), WC_CUBE_AXES);
+   nir_def *r[WC_CUBE_AXES], *a[WC_CUBE_AXES], *positive[WC_CUBE_AXES];
+   for (unsigned i = 0; i < WC_CUBE_AXES; i++) {
+      r[i] = nir_channel(b, coord, i);
+      a[i] = nir_fabs(b, r[i]);
+      positive[i] = nir_fge(b, r[i], nir_imm_float(b, 0.0f));
+   }
+   enum { X, Y, Z };
+   nir_def *x_major = nir_iand(b, nir_fge(b, a[X], a[Y]), nir_fge(b, a[X], a[Z]));
+   nir_def *y_major = nir_iand(b, nir_inot(b, x_major), nir_fge(b, a[Y], a[Z]));
+   nir_def *major = nir_bcsel(b, x_major, a[X], nir_bcsel(b, y_major, a[Y], a[Z]));
+   /* OpenGL's face coordinates (its table of cube map faces). */
+   nir_def *sc = nir_bcsel(b, x_major, nir_bcsel(b, positive[X], nir_fneg(b, r[Z]), r[Z]),
+                           nir_bcsel(b, y_major, r[X],
+                                     nir_bcsel(b, positive[Z], r[X], nir_fneg(b, r[X]))));
+   nir_def *tc = nir_bcsel(b, y_major, nir_bcsel(b, positive[Y], r[Z], nir_fneg(b, r[Z])),
+                           nir_fneg(b, r[Y]));
+   nir_def *size = nir_i2f32(b, nir_channel(b, nir_txs(b, .texture_deref = texture,
+                                                       .lod = nir_imm_int(b, 0)), 0));
+   nir_def *last = nir_fadd_imm(b, size, -1.0f);
+   nir_def *face[2];
+   nir_def *st[2] = {sc, tc};
+   for (unsigned i = 0; i < 2; i++) {
+      /* (st / major + 1) / 2 of the face, its texel, and that texel's gathering point as -1..1. */
+      nir_def *unit = nir_fmul_imm(b, nir_fadd_imm(b, nir_fdiv(b, st[i], major), 1.0f), WC_HALF);
+      nir_def *texel = nir_fmin(b, nir_fmax(b, nir_ffloor(b, nir_fmul(b, unit, size)),
+                                            nir_imm_float(b, 0.0f)),
+                                last);
+      nir_def *at = nir_fdiv(b, nir_fadd_imm(b, texel, WC_GATHER_INTO), size);
+      face[i] = nir_fadd_imm(b, nir_fmul_imm(b, at, 2.0f), -1.0f);
+   }
+   nir_def *one = nir_imm_float(b, 1.0f), *minus = nir_imm_float(b, -1.0f);
+   nir_def *s = face[0], *t = face[1];
+   nir_def *dir[WC_CUBE_AXES] = {
+      nir_bcsel(b, x_major, nir_bcsel(b, positive[X], one, minus),
+                nir_bcsel(b, y_major, s, nir_bcsel(b, positive[Z], s, nir_fneg(b, s)))),
+      nir_bcsel(b, y_major, nir_bcsel(b, positive[Y], one, minus), nir_fneg(b, t)),
+      nir_bcsel(b, x_major, nir_bcsel(b, positive[X], nir_fneg(b, s), s),
+                nir_bcsel(b, y_major, nir_bcsel(b, positive[Y], t, nir_fneg(b, t)),
+                          nir_bcsel(b, positive[Z], one, minus))),
+   };
+   nir_def *direction = nir_vec(b, dir, WC_CUBE_AXES);
+   nir_scalar parts[WC_COMPONENTS];
+   for (unsigned c = 0; c < tex->def.num_components; c++)
+      parts[c] = nir_get_scalar(gather_component(b, tex, direction, c), 0);
+   return nir_vec_scalars(b, parts, tex->def.num_components);
+}
+
 static bool
 nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
 {
@@ -675,7 +762,7 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
                   tex->op == nir_texop_txl || tex->op == nir_texop_txd;
    uint32_t unit;
    if (!sampled || tex->is_shadow || (base != nir_type_int && base != nir_type_uint) ||
-       tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE || !texture_unit(tex, &unit))
+       !texture_unit(tex, &unit))
       return false;
    const struct nearest_samplers *s = data;
    const struct wc_nearest_sampler *sampler = NULL;
@@ -687,6 +774,14 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
       return false;
    int deref_at = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
    nir_deref_instr *texture = nir_src_as_deref(tex->src[deref_at].src);
+   if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
+      /* The host loads no cube texel: its gathers read the base level only. */
+      if (tex->is_array || (sampler->mipmapped && sampler->max_lod > WC_HALF))
+         return false;
+      b->cursor = nir_before_instr(&tex->instr);
+      nir_def_replace(&tex->def, nearest_cube_texel(b, tex, texture));
+      return true;
+   }
    unsigned axes = glsl_get_sampler_dim_coordinate_components(tex->sampler_dim);
    b->cursor = nir_before_instr(&tex->instr);
    nir_def *coord = tex_source(tex, nir_tex_src_coord);
@@ -1128,12 +1223,17 @@ wc_nir_uniform_blocks_as_words(nir_shader *nir)
          glsl_type_is_array(var->type) && glsl_without_array(var->type) == var->interface_type;
       uint32_t count = arrayed ? glsl_get_aoa_size(var->type) : 1;
       const struct glsl_type *block = arrayed ? var->interface_type : var->type;
-      /* OpenGL ES's blocks are laid out by std140 (shared and packed ones as it), which the
-       * block's type may not carry as explicit offsets. */
-      uint32_t size = MAX2(glsl_get_explicit_size(block, false), glsl_get_std140_size(block, false));
-      for (uint32_t i = 0; i < count && var->data.binding + i < ARRAY_SIZE(use.bytes); i++) {
-         bytes[var->data.binding + i] = MAX2(bytes[var->data.binding + i], size);
-         blocks = MAX2(blocks, var->data.binding + i + 1);
+      /* The linker's layout, row-major matrices included, which std140's rules on the type
+       * alone would read as column-major. */
+      uint32_t size = glsl_get_explicit_size(block, false);
+      /* The block's index, which the loads name: the linker's, not the binding, which OpenGL
+       * ES 3.0's programs leave at zero for every block. A block no load reaches has none. */
+      if (var->data.driver_location == (unsigned)-1)
+         continue;
+      uint32_t first = var->data.driver_location;
+      for (uint32_t i = 0; i < count && first + i < ARRAY_SIZE(use.bytes); i++) {
+         bytes[first + i] = MAX2(bytes[first + i], size);
+         blocks = MAX2(blocks, first + i + 1);
       }
    }
    wc_nir_buffers_as_words(nir, bytes, blocks);
