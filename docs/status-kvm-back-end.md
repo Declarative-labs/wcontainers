@@ -34,9 +34,11 @@ and hardware-virtualization-inside.
   probe, host_branches, kept, carry, busybox (56 of 56), lib tests (10 and 3) pass; kernel fails at the one known
   assertion. Mac (load 21 to 40, mac-suite-run2.log): registers, floor, exits, interrupts, native, probe (0 forms of 16
   bytes or fewer differ), host_branches, kept, carry, kernel (ran alike to the end), lib tests (12 and 3) pass.
-  Clippy with warnings denied on both crates, on both hosts; the literal check has nothing in these crates (run 2
-  renamed a temporary file of a translate.rs test, "kept" to "stored", which the check took for another crate's
-  constant).
+  Clippy with warnings denied on both crates, on both hosts; the literal check has nothing in this track's files.
+- A mistake of run 2, set right: commit 90e1d39e took the library-swaps track's uncommitted edit of translate.rs
+  (its item L3, tempfile) with it, and 5296c9c4, meant to take it back, committed two other tracks' staged crate
+  renames from the shared index; 93340ae9 takes those back out. translate.rs is again as at cc307a0d, the other
+  tracks' edits and staged renames are as they left them in the checkout. Commits here go by path only.
 
 ## Results (run 1)
 
