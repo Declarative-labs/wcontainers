@@ -564,6 +564,33 @@ pub fn checks_out(message: &[u8], seen: &Seen<'_>) -> bool {
     }
 }
 
+/// Checks that the IP headers given before a packet's payload are those it had on the wire, but for what Linux
+/// does not give of an IPv4 header (the identification and fragment fields), with a checksum over what is given.
+pub fn headers_are_as_on_the_wire(packet: &[u8], on_the_wire: &[u8]) {
+    let headers = packet.len() - seen(packet).payload.len();
+    assert_eq!(headers, on_the_wire.len() - seen(on_the_wire).payload.len());
+    match version_of(seen(packet).source) {
+        IpVersion::V4 => {
+            // Every field but the identification, the fragment flags and offset, and the checksum over them.
+            const NOT_COMPARED: [core::ops::Range<usize>; 2] = [4..8, 10..12];
+            let compared = |header: &[u8]| {
+                let mut header = header[..headers].to_vec();
+                for range in NOT_COMPARED {
+                    header[range].fill(u8::MIN);
+                }
+                header
+            };
+            assert_eq!(compared(packet), compared(on_the_wire));
+            let given = ipv4(packet);
+            assert_eq!(
+                given.header_checksum(),
+                given.to_header().calc_header_checksum()
+            );
+        }
+        IpVersion::V6 => assert_eq!(&packet[..headers], &on_the_wire[..headers]),
+    }
+}
+
 /// An echo request to a local address gets its reply, written whole from its IP header as it was on the wire, with the identifier bound.
 fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     let version = version_of(to);
@@ -590,27 +617,7 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
         seen.protocol == protocol(version) && seen.payload.first() == Some(&reply)
     });
     assert_eq!(packet.len(), on_the_wire.len());
-    let headers = packet.len() - seen.payload.len();
-    match version {
-        IpVersion::V4 => {
-            // Every field but the identification, the fragment flags and offset, and the checksum over them.
-            const NOT_COMPARED: [core::ops::Range<usize>; 2] = [4..8, 10..12];
-            let compared = |header: &[u8]| {
-                let mut header = header[..headers].to_vec();
-                for range in NOT_COMPARED {
-                    header[range].fill(u8::MIN);
-                }
-                header
-            };
-            assert_eq!(compared(packet), compared(&on_the_wire));
-            let given = ipv4(packet);
-            assert_eq!(
-                given.header_checksum(),
-                given.to_header().calc_header_checksum()
-            );
-        }
-        IpVersion::V6 => assert_eq!(&packet[..headers], &on_the_wire[..headers]),
-    }
+    headers_are_as_on_the_wire(packet, &on_the_wire);
     let message = seen.payload;
     assert_eq!((message[0], message[1]), (reply, u8::MIN));
     assert_eq!(identifier_of(message), IDENTIFIER.0.get());
@@ -1341,7 +1348,8 @@ pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// A confirmed send confirms its next hop's neighbour entry, or is refused.
+/// A confirmed send confirms its next hop's neighbour entry; over IPv6, whose ping sockets drop the flag, it may
+/// be refused instead.
 pub fn a_confirmed_send_confirms_the_neighbour<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
     ip(STALE_GATEWAYS);
@@ -1356,13 +1364,15 @@ pub fn a_confirmed_send_confirms_the_neighbour<S: IcmpSockets>(sockets: S) {
             ..plain_fields()
         };
         assert!(seconds_since_confirmed(gateway, DUMMY) > 0);
-        unless_refused(
-            sockets.send_to(&socket, header_to(to, &message), fields, &message),
-            |sent| {
-                sent.expect("the confirmed request is sent");
-                assert_eq!(seconds_since_confirmed(gateway, DUMMY), 0, "{gateway}");
-            },
-        );
+        let sent = sockets.send_to(&socket, header_to(to, &message), fields, &message);
+        let confirmed = |sent: Result<(), SendError>| {
+            sent.expect("the confirmed request is sent");
+            assert_eq!(seconds_since_confirmed(gateway, DUMMY), 0, "{gateway}");
+        };
+        match to {
+            IpAddr::V4(_) => confirmed(sent),
+            IpAddr::V6(_) => unless_refused(sent, confirmed),
+        }
     }
 }
 
@@ -1644,27 +1654,74 @@ pub fn receive_timestamps_come_only_when_set<S: IcmpSockets>(sockets: S) {
     }
 }
 
-/// An ICMP error about a request arrives on its socket, written whole from its IP header and quoting the request.
+/// An ICMP error about a request arrives on its socket, written whole from its IP header as it was on the wire and
+/// quoting the request.
 fn icmp_error_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     ip(NETWORK);
-    {
+    let version = version_of(to);
+    let socket = opened(&sockets, version);
+    sockets
+        .bind_identifier(&socket, identifier(version), IdentifierSharing::Exclusive)
+        .unwrap();
+    let wire = Capture::on(SELF_LINK);
+    let request = provoke_icmp_error(&sockets, &socket, to, Quote::Least);
+    let source = seen(&request).source;
+    let mut into = buffer();
+    let fields = receive_packet(&sockets, &socket, &mut into);
+    let given = &into[..fields.length];
+    let packet = seen(given);
+    assert_eq!(packet.protocol, protocol(version));
+    assert_eq!(packet.destination, source);
+    assert_eq!(&packet.payload[..2], unreachable(version));
+    assert!(checks_out(packet.payload, &packet));
+    let quoted = seen(&packet.payload[ICMP_HEADER..]);
+    assert_eq!((quoted.source, quoted.destination), (source, to));
+    assert_eq!(identifier_of(quoted.payload), identifier(version).0.get());
+    let on_the_wire = wire.next(|packet| is_unreachable(version, packet));
+    assert_eq!(given.len(), on_the_wire.len());
+    headers_are_as_on_the_wire(given, &on_the_wire);
+}
+
+/// Answers whether a packet is the ICMP error of the version that a host or address is unreachable.
+fn is_unreachable(version: IpVersion, packet: &[u8]) -> bool {
+    let seen = seen(packet);
+    seen.protocol == protocol(version) && seen.payload.get(..2) == Some(&unreachable(version)[..])
+}
+
+/// An ICMP error received into a buffer that cuts it in its outer header, its ICMP header or its quoted message
+/// takes its start and tells its whole length.
+pub fn a_short_buffer_keeps_the_start_of_an_icmp_error<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    for (to, header, inner) in [
+        (
+            IpAddr::V4(ON_LINK),
+            etherparse::Ipv4Header::MIN_LEN,
+            etherparse::Ipv4Header::MIN_LEN,
+        ),
+        (
+            IpAddr::V6(ON_LINK_V6),
+            etherparse::Ipv6Header::LEN,
+            etherparse::Ipv6Header::LEN,
+        ),
+    ] {
         let version = version_of(to);
         let socket = opened(&sockets, version);
         sockets
             .bind_identifier(&socket, identifier(version), IdentifierSharing::Exclusive)
             .unwrap();
-        let request = provoke_icmp_error(&sockets, &socket, to);
-        let source = seen(&request).source;
-        let mut into = buffer();
-        let fields = receive_packet(&sockets, &socket, &mut into);
-        let packet = seen(&into[..fields.length]);
-        assert_eq!(packet.protocol, protocol(version));
-        assert_eq!(packet.destination, source);
-        assert_eq!(&packet.payload[..2], unreachable(version));
-        assert!(checks_out(packet.payload, &packet));
-        let quoted = seen(&packet.payload[ICMP_HEADER..]);
-        assert_eq!((quoted.source, quoted.destination), (source, to));
-        assert_eq!(identifier_of(quoted.payload), identifier(version).0.get());
+        provoke_icmp_error(&sockets, &socket, to, Quote::Whole);
+        let mut whole = buffer();
+        let length = receive_packet(&sockets, &socket, &mut whole).length;
+        let whole = &whole[..length];
+        assert!(is_unreachable(version, whole), "{to}: {whole:?}");
+        let in_the_quoted_message = header + ICMP_HEADER + inner + ICMP_HEADER / 2;
+        for short in [header / 2, header + ICMP_HEADER / 2, in_the_quoted_message] {
+            provoke_icmp_error(&sockets, &socket, to, Quote::Whole);
+            let mut into = vec![u8::MIN; short];
+            let fields = receive_packet(&sockets, &socket, &mut into);
+            assert_eq!(fields.length, whole.len(), "{to} into {short}");
+            assert_eq!(&into[..], &whole[..short], "{to} into {short}");
+        }
     }
 }
 
@@ -2210,15 +2267,28 @@ fn unreachable(version: IpVersion) -> [u8; 2] {
     }
 }
 
+/// How much of a packet an ICMP error quotes.
+#[derive(Clone, Copy)]
+enum Quote {
+    /// For IPv4 the header and the first eight bytes after it, the least an IPv4 error quotes; for IPv6 all of it.
+    Least,
+    Whole,
+}
+
 /// Sends an echo request to an address on the dummy link and an ICMP error about it to its source, giving the request.
-fn provoke_icmp_error<S: IcmpSockets>(sockets: &S, socket: &S::Socket, to: IpAddr) -> Vec<u8> {
+fn provoke_icmp_error<S: IcmpSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    to: IpAddr,
+    quote: Quote,
+) -> Vec<u8> {
     let capture = Capture::on(DUMMY);
     ping(sockets, socket, to, PAYLOAD).expect("the request is sent");
     let request = capture.echo_request();
     let version = version_of(to);
-    let quoted_length = match version {
-        IpVersion::V4 => ipv4(&request).slice().len() + ICMP_HEADER,
-        IpVersion::V6 => request.len(),
+    let quoted_length = match (version, quote) {
+        (IpVersion::V4, Quote::Least) => ipv4(&request).slice().len() + ICMP_HEADER,
+        _ => request.len(),
     };
     let mut message = unreachable(version).to_vec();
     message.resize(ICMP_HEADER, u8::MIN);
@@ -2235,7 +2305,7 @@ pub fn an_icmp_error_ends_a_wait_for_data<S: IcmpSockets>(sockets: S) {
         let wakes = Arc::new(Wakes::default());
         let mut wait = pin!(sockets.wait_for_events(&socket, READABLE));
         assert!(poll_with(wait.as_mut(), &wakes).is_pending());
-        provoke_icmp_error(&sockets, &socket, to);
+        provoke_icmp_error(&sockets, &socket, to, Quote::Least);
         assert!(wakes.reach(1), "woken by the ICMP error");
         let events = finished(poll_with(wait.as_mut(), &wakes));
         assert!(events.error_condition, "{events:?}");
@@ -2252,7 +2322,7 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: IcmpSockets>(sockets: S) {
     let to = IpAddr::V6(ON_LINK_V6);
     let socket = opened(&sockets, IpVersion::V6);
     let wakes = Arc::new(Wakes::default());
-    provoke_icmp_error(&sockets, &socket, to);
+    provoke_icmp_error(&sockets, &socket, to, Quote::Least);
     let events = finished_soon(pin!(sockets.wait_for_events(&socket, READABLE)), &wakes);
     assert!(events.error_condition, "{events:?}");
     let message = echo(IpVersion::V6, &vec![u8::MAX; LONG_MESSAGE]);
@@ -2364,6 +2434,7 @@ macro_rules! tests {
             receive_timestamps_come_only_when_set,
             an_icmp_error_arrives_whole_over_ipv4,
             an_icmp_error_arrives_whole_over_ipv6,
+            a_short_buffer_keeps_the_start_of_an_icmp_error,
             pacing_holds_messages_in_the_send_buffer,
             a_full_send_buffer_would_block,
             a_small_receive_buffer_counts_its_drops,

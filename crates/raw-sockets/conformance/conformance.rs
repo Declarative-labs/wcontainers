@@ -30,11 +30,12 @@ use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, IcmpType, IpHeaderFields,
     IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors,
     Ipv6HeaderFields, Ipv6RouteSelectors, LocalFragmentation, MaximumTransmissionUnit, Membership,
-    MobileAddressPreference, MulticastGroup, MulticastMembership, NeighbourConfirmation,
-    PacketMark, PacketPriority, PathMtuDiscovery, Port, Received, ReceivedPacketFields, Report,
-    RouteScope, RouterAlertValue, SendError, SourceAddressCheck, SourceFilter, SourcePreferences,
-    TemporaryAddressPreference, TimestampSource, Timestamping, TransmitEvent,
-    TransmitReportRequest, TransmitStage, TransportPorts, UpperLayer, UpperLayerSelector,
+    MobileAddressPreference, MobilityHeaderType, MulticastGroup, MulticastMembership,
+    NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery, Port, Received,
+    ReceivedPacketFields, Report, RouteScope, RouterAlertValue, SendError, SourceAddressCheck,
+    SourceFilter, SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping,
+    TransmitEvent, TransmitReportRequest, TransmitStage, TransportPorts, UpperLayer,
+    UpperLayerSelector,
 };
 use wcontainers_raw_sockets::{
     ChecksumOffset, HeaderIncludedPacket, MulticastRouting, OutgoingReassembly, RawPacket,
@@ -761,19 +762,105 @@ pub fn receive_with_nothing_queued_would_block<S: RawSockets>(sockets: S) {
     }
 }
 
-/// A buffer shorter than the packet takes its start and the whole length is told.
+/// A buffer that cuts a packet in its IP header, after it or in its payload takes its start and tells its whole
+/// length.
 pub fn a_short_buffer_keeps_the_whole_length<S: RawSockets>(sockets: S) {
-    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
-    send(
-        &sockets,
-        &socket,
-        payload_to(IpAddr::V4(Ipv4Addr::LOCALHOST), EXPERIMENT, PAYLOAD),
-    )
-    .unwrap();
-    let mut into = vec![u8::MIN; Ipv4Header::MIN_LEN];
-    let fields = receive_packet(&sockets, &socket, &mut into);
-    assert_eq!(fields.length, Ipv4Header::MIN_LEN + PAYLOAD.len());
-    assert_eq!(ipv4(&into).protocol(), EXPERIMENT);
+    for (to, header) in [
+        (IpAddr::V4(Ipv4Addr::LOCALHOST), Ipv4Header::MIN_LEN),
+        (IpAddr::V6(Ipv6Addr::LOCALHOST), Ipv6Header::LEN),
+    ] {
+        let socket = opened(&sockets, version_of(to), EXPERIMENT);
+        let sent = || {
+            send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD))
+                .expect("the payload is sent")
+        };
+        // The first is shorter than the payload Linux gives an IPv6 socket.
+        let cuts = [
+            PAYLOAD.len() / 2,
+            header / 2,
+            header,
+            header + PAYLOAD.len() / 2,
+        ];
+        let whole = short_buffers_take_the_start(&sockets, &socket, sent, &cuts);
+        assert_eq!(whole.len(), header + PAYLOAD.len(), "{to}");
+        let seen = seen(&whole);
+        assert_eq!((seen.protocol, seen.payload), (EXPERIMENT, PAYLOAD), "{to}");
+    }
+}
+
+/// Receives what `sent` makes arrive, whole and then into buffers of each length of `cuts`, which must take its
+/// start and tell its whole length. Gives the whole.
+fn short_buffers_take_the_start<S: RawSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    sent: impl Fn(),
+    cuts: &[usize],
+) -> Vec<u8> {
+    sent();
+    let mut whole = buffer();
+    let length = receive_packet(sockets, socket, &mut whole).length;
+    whole.truncate(length);
+    for &short in cuts {
+        sent();
+        let mut into = vec![u8::MIN; short];
+        let fields = receive_packet(sockets, socket, &mut into);
+        assert_eq!(fields.length, whole.len(), "into {short}");
+        let version = version_of(seen(&whole).source);
+        assert_eq!(
+            unnumbered(version, into),
+            unnumbered(version, whole[..short].to_vec()),
+            "into {short}"
+        );
+    }
+    whole
+}
+
+/// The start of a packet without what differs between two sends of it: an IPv4 header's identification and the
+/// checksum over it.
+fn unnumbered(version: IpVersion, mut start: Vec<u8>) -> Vec<u8> {
+    const IPV4_NUMBERED: [core::ops::Range<usize>; 2] = [4..6, 10..12];
+    if version == IpVersion::V4 {
+        for range in IPV4_NUMBERED {
+            let range = range.start.min(start.len())..range.end.min(start.len());
+            start[range].fill(u8::MIN);
+        }
+    }
+    start
+}
+
+/// A packet sent with a mark and a priority arrives at another raw socket of its protocol with them.
+pub fn received_packets_carry_their_mark_and_priority<S: RawSockets>(sockets: S) {
+    const PRIORITY: PacketPriority = PacketPriority(5);
+    for to in [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ] {
+        let receiver = opened(&sockets, version_of(to), EXPERIMENT);
+        let sender = opened(&sockets, version_of(to), EXPERIMENT);
+        let mut packet = payload_to(to, EXPERIMENT, PAYLOAD);
+        if let RawPacket::Payload { header, .. } = &mut packet {
+            match header {
+                IpHeaderFields::V4(header) => header.route.mark = MARK,
+                IpHeaderFields::V6(header) => header.route.mark = MARK,
+            }
+        }
+        let fields = IpSendFields {
+            priority: PRIORITY,
+            ..plain_fields()
+        };
+        sockets
+            .send_to(&sender, packet, fields)
+            .expect("the payload is sent");
+        let fields = receive_packet(&sockets, &receiver, &mut buffer());
+        assert_eq!((fields.mark, fields.priority), (MARK, PRIORITY), "{to}");
+        send(&sockets, &sender, payload_to(to, EXPERIMENT, PAYLOAD)).expect("the payload is sent");
+        let fields = receive_packet(&sockets, &receiver, &mut buffer());
+        assert_eq!(
+            (fields.mark, fields.priority),
+            (PacketMark(u32::MIN), PacketPriority(u32::MIN)),
+            "{to}: a plain send"
+        );
+    }
 }
 
 /// A checksum offset makes Linux write the payload's checksum there, and none leaves it as written.
@@ -1163,6 +1250,51 @@ pub fn payload_routes_take_their_selectors<S: RawSockets>(sockets: S) {
     );
 }
 
+/// A mobility header sent by its type as the route's selector leaves as given, with the checksum Linux writes.
+pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
+    /// A binding refresh request: no next header, no length past eight bytes, type 0, then checksum and reserved.
+    const BINDING_REFRESH_REQUEST: [u8; 8] = [59, 0, 0, 0, 0, 0, 0, 0];
+    /// Where a mobility header keeps its type, after its next header and length.
+    const MOBILITY_HEADER_TYPE: usize = 2;
+    const CHECKSUM: core::ops::Range<usize> = 4..6;
+    ip(NETWORK);
+    let socket = opened(&sockets, IpVersion::V6, IpNumber::MOBILITY_HEADER);
+    let capture = Capture::on(DUMMY);
+    let route = v6_route(
+        ON_LINK_V6,
+        UpperLayer {
+            protocol: IpNumber::MOBILITY_HEADER,
+            selector: Some(UpperLayerSelector::MobilityHeader(MobilityHeaderType(
+                BINDING_REFRESH_REQUEST[MOBILITY_HEADER_TYPE],
+            ))),
+        },
+    );
+    send(
+        &sockets,
+        &socket,
+        RawPacket::Payload {
+            header: IpHeaderFields::V6(v6_header(route)),
+            payload: &BINDING_REFRESH_REQUEST,
+        },
+    )
+    .expect("the mobility header is sent");
+    let sent = capture.next(|packet| seen(packet).protocol == IpNumber::MOBILITY_HEADER);
+    let seen = seen(&sent);
+    let mut without_checksum = seen.payload.to_vec();
+    without_checksum[CHECKSUM].fill(u8::MIN);
+    assert_eq!(without_checksum, BINDING_REFRESH_REQUEST);
+    let (IpAddr::V6(source), IpAddr::V6(destination)) = (seen.source, seen.destination) else {
+        panic!("an IPv6 packet");
+    };
+    let sum = etherparse::checksum::Sum16BitWords::new()
+        .add_16bytes(source.octets())
+        .add_16bytes(destination.octets())
+        .add_4bytes((seen.payload.len() as u32).to_be_bytes())
+        .add_2bytes([u8::MIN, IpNumber::MOBILITY_HEADER.0])
+        .add_slice(seen.payload);
+    assert_eq!(sum.ones_complement(), u16::MIN, "the checksum Linux writes");
+}
+
 /// IPv6 source preferences choose between the link's public address and a temporary one.
 pub fn ipv6_source_preferences_choose_the_source<S: RawSockets>(sockets: S) {
     ip(NETWORK);
@@ -1277,29 +1409,51 @@ pub fn path_mtu_modes_and_too_long_payloads<S: RawSockets>(sockets: S) {
     });
 }
 
-/// An ICMP error about a sent packet arrives whole, quoting the packet's header as Linux kept it or as it was written.
+/// An ICMP error about a sent packet arrives whole, its outer header as on the wire, quoting the packet's header as
+/// Linux kept it or as it was written; a buffer that cuts it in its outer header, its ICMP header or the quoted
+/// packet takes its start.
 pub fn icmp_errors_arrive_whole<S: RawSockets>(sockets: S) {
     ip(NETWORK);
     let capture = Capture::on(DUMMY);
-    let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let v4 = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    let v6 = opened(&sockets, IpVersion::V6, EXPERIMENT);
     let written = ipv4_packet(LOCAL, ON_LINK, EXPERIMENT, &[], false, PAYLOAD);
+    let written_v6 = ipv6_packet(LOCAL_V6, ON_LINK_V6, EXPERIMENT, &[], PAYLOAD);
     let sends = [
-        payload_to(IpAddr::V4(ON_LINK), EXPERIMENT, PAYLOAD),
-        header_included_v4(v4_route(ON_LINK, under(EXPERIMENT)), &written),
+        (&v4, payload_to(IpAddr::V4(ON_LINK), EXPERIMENT, PAYLOAD)),
+        (
+            &v4,
+            header_included_v4(v4_route(ON_LINK, under(EXPERIMENT)), &written),
+        ),
+        (&v6, payload_to(IpAddr::V6(ON_LINK_V6), EXPERIMENT, PAYLOAD)),
+        (
+            &v6,
+            header_included_v6(v6_route(ON_LINK_V6, under(EXPERIMENT)), &written_v6),
+        ),
     ];
-    for packet in sends {
-        send(&sockets, &socket, packet).unwrap();
-        let sent = capture.next(|packet| seen(packet).protocol == EXPERIMENT);
-        let error = send_icmp_error_about(&sent);
+    for (socket, packet) in sends {
+        let wire = Capture::on(SELF_LINK);
+        let provoke = || {
+            send(&sockets, socket, packet.clone()).expect("the packet is sent");
+            send_icmp_error_about(&capture.next(|packet| seen(packet).protocol == EXPERIMENT))
+        };
+        let error = provoke();
+        let sent = seen(&error[etherparse::Icmpv4Header::MIN_LEN..]);
+        let (local, to) = (sent.source, sent.destination);
+        let icmp = match version_of(local) {
+            IpVersion::V4 => IpNumber::ICMP,
+            IpVersion::V6 => IpNumber::IPV6_ICMP,
+        };
         let mut into = buffer();
         let fields = loop {
-            let fields = receive_packet(&sockets, &socket, &mut into);
-            if seen(&into[..fields.length]).protocol == IpNumber::ICMP {
+            let fields = receive_packet(&sockets, socket, &mut into);
+            if seen(&into[..fields.length]).protocol == icmp {
                 break fields;
             }
         };
-        let outer = seen(&into[..fields.length]);
-        assert_eq!(outer.destination, IpAddr::V4(LOCAL));
+        let given = &into[..fields.length];
+        let outer = seen(given);
+        assert_eq!(outer.destination, local);
         assert_eq!(&outer.payload[..2], &error[..2]);
         assert!(wcontainers_icmp_sockets_conformance::checks_out(
             outer.payload,
@@ -1308,9 +1462,33 @@ pub fn icmp_errors_arrive_whole<S: RawSockets>(sockets: S) {
         let inner = seen(&outer.payload[etherparse::Icmpv4Header::MIN_LEN..]);
         assert_eq!(
             (inner.source, inner.destination, inner.protocol),
-            (IpAddr::V4(LOCAL), IpAddr::V4(ON_LINK), EXPERIMENT)
+            (local, to, EXPERIMENT)
         );
-        assert_eq!(&inner.payload[..QUOTED_PAYLOAD], &PAYLOAD[..QUOTED_PAYLOAD]);
+        assert_eq!(inner.payload, &sent.payload[..inner.payload.len()]);
+        let on_the_wire = wire.next(|packet| {
+            let seen = seen(packet);
+            seen.protocol == icmp && seen.payload.get(..2) == Some(&error[..2])
+        });
+        assert_eq!(given.len(), on_the_wire.len(), "{to}");
+        wcontainers_icmp_sockets_conformance::headers_are_as_on_the_wire(given, &on_the_wire);
+        let header = given.len() - outer.payload.len();
+        let inner_header =
+            outer.payload.len() - etherparse::Icmpv4Header::MIN_LEN - inner.payload.len();
+        let in_the_quoted_payload =
+            header + etherparse::Icmpv4Header::MIN_LEN + inner_header + QUOTED_PAYLOAD / 2;
+        // The first is shorter than what Linux gives of the quoted packet, which the rest of the error comes from.
+        for short in [
+            QUOTED_PAYLOAD / 2,
+            header / 2,
+            header + etherparse::Icmpv4Header::MIN_LEN / 2,
+            in_the_quoted_payload,
+        ] {
+            provoke();
+            let mut cut = vec![u8::MIN; short];
+            let fields = receive_packet(&sockets, socket, &mut cut);
+            assert_eq!(fields.length, given.len(), "{to} into {short}");
+            assert_eq!(cut, given[..short], "{to} into {short}");
+        }
     }
 }
 
@@ -1900,6 +2078,7 @@ macro_rules! tests {
             ipv6_packets_arrive_with_their_headers,
             receive_with_nothing_queued_would_block,
             a_short_buffer_keeps_the_whole_length,
+            received_packets_carry_their_mark_and_priority,
             a_checksum_offset_is_written,
             an_ipv4_router_alert_takes_forwarded_packets,
             an_ipv6_router_alert_takes_forwarded_packets,
@@ -1907,6 +2086,7 @@ macro_rules! tests {
             close_gives_up_the_sockets_holdings,
             payload_routes_take_their_selectors,
             ipv6_source_preferences_choose_the_source,
+            a_mobility_header_is_sent_by_its_type,
             path_mtu_modes_and_too_long_payloads,
             icmp_errors_arrive_whole,
             send_fields_are_taken,

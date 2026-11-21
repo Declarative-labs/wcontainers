@@ -183,13 +183,13 @@ impl HostRawSocket {
         }
     }
 
-    /// The ICMP error of an error queue entry, written whole from its IP header.
+    /// The ICMP error of an error queue entry quoting `data`, written whole from its IP header.
     #[allow(clippy::too_many_arguments)]
     fn icmp_error(
         &self,
         header_included: bool,
         into: &mut [u8],
-        copied: usize,
+        data: &[u8],
         ancillary: &Ancillary<'_>,
         error: &libc::sock_extended_err,
         offender: Option<SocketAddr>,
@@ -198,13 +198,13 @@ impl HostRawSocket {
         let local = local_address(self.fd()).ok()?.ip();
         if header_included {
             // Linux gives a socket that writes its headers the quoted packet from its IP header on.
-            shared::icmp_error::write_icmp_error_quoting_header(
-                into, copied, ancillary, error, offender, local,
+            shared::icmp_error::write_whole_icmp_error_quoting_header(
+                into, data, ancillary, error, offender, local,
             )
         } else {
-            shared::icmp_error::write_icmp_error(
+            shared::icmp_error::write_whole_icmp_error(
                 into,
-                copied,
+                data,
                 ancillary,
                 error,
                 offender,
@@ -455,11 +455,11 @@ impl RawSockets for HostRawSockets {
                 &self.shortfalls,
                 &entry,
                 into,
-                |into, copied, ancillary, error, offender| {
+                |into, _, ancillary, error, offender| {
                     let written = socket.icmp_error(
                         header_included,
                         into,
-                        copied,
+                        &entry.data,
                         ancillary,
                         error,
                         offender,

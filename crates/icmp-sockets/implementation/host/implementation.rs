@@ -199,11 +199,11 @@ impl HostIcmpSocket {
         }
     }
 
-    /// The ICMP error of an error queue entry, written whole from its IP header.
+    /// The ICMP error of an error queue entry quoting `data`, written whole from its IP header.
     fn icmp_error(
         &self,
         into: &mut [u8],
-        copied: usize,
+        data: &[u8],
         ancillary: &Ancillary<'_>,
         error: &libc::sock_extended_err,
         offender: Option<SocketAddr>,
@@ -211,9 +211,9 @@ impl HostIcmpSocket {
     ) -> Option<usize> {
         let local = local_address(self.fd()).ok()?.ip();
         // The quoted ICMP header is the start of what Linux gives, so no part of it was taken off.
-        shared::icmp_error::write_icmp_error(
+        shared::icmp_error::write_whole_icmp_error(
             into,
-            copied,
+            data,
             ancillary,
             error,
             offender,
@@ -381,9 +381,15 @@ impl IcmpSockets for HostIcmpSockets {
                 &self.shortfalls,
                 &entry,
                 into,
-                |into, copied, ancillary, error, offender| {
-                    let written =
-                        socket.icmp_error(into, copied, ancillary, error, offender, entry.source);
+                |into, _, ancillary, error, offender| {
+                    let written = socket.icmp_error(
+                        into,
+                        &entry.data,
+                        ancillary,
+                        error,
+                        offender,
+                        entry.source,
+                    );
                     if written.is_some() {
                         self.shortfalls.count(ICMP_ERROR_FIELDS_NOT_GIVEN);
                     }
