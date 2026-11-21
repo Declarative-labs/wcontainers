@@ -1296,10 +1296,12 @@ pub fn a_waived_source_check_sends_from_an_absent_address<S: IcmpSockets>(socket
 /// Makes the dummy link's address the source of temporary addresses, of which Linux makes one at once.
 const TEMPORARY_ADDRESSES: &str = "/proc/sys/net/ipv6/conf/ia/use_tempaddr";
 const MANAGED_TEMPORARY: &str = "address replace fd03::1/64 dev ia nodad mngtmpaddr";
+/// The `use_tempaddr` value that makes temporary addresses but prefers public ones as sources.
+const TEMPORARY_BUT_PUBLIC_PREFERRED: &str = "1";
 
 /// Gives the dummy link a temporary address beside [`LOCAL_V6`] and answers which source each preference takes.
 pub fn sources_by_preference() -> [(TemporaryAddressPreference, Ipv6Addr); 2] {
-    write_setting(TEMPORARY_ADDRESSES, "1");
+    write_setting(TEMPORARY_ADDRESSES, TEMPORARY_BUT_PUBLIC_PREFERRED);
     ip6(MANAGED_TEMPORARY);
     let temporary = wcontainers_route_resolver_conformance::temporary_address(DUMMY);
     [
@@ -1930,18 +1932,20 @@ pub const WRITABLE: PollEvents = PollEvents {
     ..NO_EVENTS
 };
 
-/// The allocations `allocations` counts in `rounds` waits that each have to wait, after as many that warm the
-/// socket: each is made and polled, `arrive` makes its event come, and it is polled to its end and dropped before
-/// `take` takes what came.
+/// How many waits [`wait_allocations`] counts, after as many that warm the socket.
+pub const COUNTED_WAITS: usize = 100;
+
+/// The allocations `allocations` counts in [`COUNTED_WAITS`] waits that each have to wait, after as many that warm
+/// the socket: each is made and polled, `arrive` makes its event come, and it is polled to its end and dropped
+/// before `take` takes what came.
 pub fn wait_allocations<F: Future<Output = Result<PollEvents, HostError>>>(
     mut wait: impl FnMut() -> F,
     mut arrive: impl FnMut(),
     mut take: impl FnMut(),
     allocations: fn() -> usize,
-    rounds: usize,
 ) -> usize {
     let mut counted = usize::MIN;
-    for round in 0..rounds * 2 {
+    for round in 0..COUNTED_WAITS * 2 {
         let wakes = Arc::new(Wakes::default());
         let mut during = usize::MIN;
         let dropping = {
@@ -1961,7 +1965,7 @@ pub fn wait_allocations<F: Future<Output = Result<PollEvents, HostError>>>(
         };
         during += allocations() - dropping;
         take();
-        if round >= rounds {
+        if round >= COUNTED_WAITS {
             counted += during;
         }
     }

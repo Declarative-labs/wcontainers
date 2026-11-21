@@ -12,9 +12,6 @@ use wcontainers_raw_sockets_host::HostRawSockets;
 
 tools::counting_allocator!();
 
-/// How many waits are counted, after as many that warm the socket.
-const WAITS: usize = 100;
-
 /// Waits that have to wait allocate nothing on the waiting thread once the socket's waiter list has grown.
 #[test]
 fn a_wait_allocates_nothing_once_warm() {
@@ -51,7 +48,6 @@ fn a_wait_allocates_nothing_once_warm() {
             ));
         },
         allocations,
-        WAITS,
     );
     assert_eq!(counted, usize::MIN);
 }
