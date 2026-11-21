@@ -496,14 +496,22 @@ fn class_of(verdict: &str) -> String {
 /// written; never a file lacking a directive its needs require.
 fn is_named(verdict: &str) -> bool {
     let (wgsl, glsl) = verdict.split_once(GLSL_PART).unwrap_or((verdict, ""));
-    let wgsl_named = ["ok", UNSUPPORTED.trim(), "spirv-reader"]
-        .contains(&wgsl.split_whitespace().next().unwrap_or(""));
+    let wgsl_named = ["ok", UNSUPPORTED.trim()]
+        .contains(&wgsl.split_whitespace().next().unwrap_or(""))
+        || wgsl.starts_with(READER_UNSUPPORTED);
     let (needed, outcome) = split_needs(glsl);
     let names = || needed.trim().strip_prefix(NEEDS).unwrap_or("").split('|');
     let never_declared = |n: &str| !n.is_empty() && !WEBGL_DECLARABLE.contains(&n);
     let by_directive = |n: &str| DIRECTIVES.iter().any(|(d, _)| *d == n);
+    // glslang's error must cite a form of a need that may be absent there.
+    let cited = |n: &str| {
+        CITED_FORMS
+            .iter()
+            .filter(|(need, _)| *need == n)
+            .any(|(_, forms)| forms.iter().any(|f| outcome.contains(f)))
+    };
     let compile_named = !outcome.starts_with(COMPILE_FAILED)
-        || names().any(|n| never_declared(n) || by_directive(n));
+        || names().any(|n| (never_declared(n) || by_directive(n)) && cited(n));
     let write_named = !outcome.starts_with(WRITE_FAILED) || names().any(never_declared);
     let declared = !outcome.starts_with(UNDECLARED);
     let key_named = outcome
@@ -511,6 +519,38 @@ fn is_named(verdict: &str) -> bool {
         .is_none_or(|refusal| refusal.starts_with(UNSUPPORTED));
     wgsl_named && compile_named && write_named && declared && key_named
 }
+
+/// The naga SPIR-V reader's refusal of what it does not read, as a verdict gives it (any other
+/// reader error is no named outcome).
+const READER_UNSUPPORTED: &str = "spirv-reader unsupported ";
+
+/// Each need `glsl::needs` names whose absence glslang may refuse a file for, with the forms of it
+/// glslang's error cites: a refusal citing none of its record's needs is no named outcome.
+const CITED_FORMS: [(&str, &[&str]); 5] = [
+    (
+        "SAMPLE_SHADING",
+        &[
+            "'gl_Sample",
+            "'gl_NumSamples'",
+            "'sample'",
+            "GL_OES_sample_variables",
+            "GL_OES_shader_multisample_interpolation",
+        ],
+    ),
+    (
+        "MULTISAMPLE_READ",
+        &["'sampler2DMS", "'isampler2DMS", "'usampler2DMS"],
+    ),
+    (
+        "CLIP_DISTANCE",
+        &["GL_ANGLE_clip_cull_distance", "'gl_ClipDistance'"],
+    ),
+    (
+        "CULL_DISTANCE",
+        &["GL_ANGLE_clip_cull_distance", "'gl_CullDistance'"],
+    ),
+    ("PRIMITIVE_INDEX", &["'gl_PrimitiveID'"]),
+];
 
 /// The features `glsl::needs` names that the WebGL 2 back end declares where its context has the
 /// extension (wcontainers-gpu-webgl's caps.rs): a shader needing only these must be written.
@@ -770,11 +810,28 @@ fn a_written_file_without_its_needs_directive_is_not_a_named_outcome() {
             missing.join("|")
         );
         assert!(!is_named(&verdict), "{file}");
-        let compile = format!("ok{GLSL_PART}{NEEDS}SAMPLE_SHADING {COMPILE_FAILED}an error");
+        let compile = format!(
+            "ok{GLSL_PART}{NEEDS}SAMPLE_SHADING {COMPILE_FAILED}'gl_SampleID' : undeclared identifier"
+        );
         assert!(is_named(&compile), "{file}");
-        let core = format!("ok{GLSL_PART}{NEEDS}POINT_SIZE {COMPILE_FAILED}an error");
+        // A refusal citing nothing of the need is another defect.
+        let other = format!("ok{GLSL_PART}{NEEDS}SAMPLE_SHADING {COMPILE_FAILED}an error");
+        assert!(!is_named(&other), "{file}");
+        let core = format!(
+            "ok{GLSL_PART}{NEEDS}POINT_SIZE {COMPILE_FAILED}'gl_SampleID' : undeclared identifier"
+        );
         assert!(!is_named(&core), "{file}");
     }
+}
+
+/// The reader's refusal of what it does not read is named; any other reader error is not.
+#[test]
+fn only_the_readers_unsupported_refusals_are_named() {
+    assert!(is_named(
+        "spirv-reader unsupported instruction ImageQueryLod at Function"
+    ));
+    assert!(!is_named("spirv-reader invalid id 28"));
+    assert!(!is_named("spirv-reader InvalidId(28)"));
 }
 
 #[test]
