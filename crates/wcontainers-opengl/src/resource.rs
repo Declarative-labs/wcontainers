@@ -5,9 +5,9 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, Extent, Format, FormatKind, FormatUse, MapIntent, Object,
-    Origin, ReadSource, STORAGE_WORD, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    WriteMode,
+    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Format, FormatKind, FormatUse,
+    MapIntent, Object, Origin, ReadSource, STORAGE_WORD, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, WriteMode,
 };
 
 use crate::context::Context;
@@ -328,6 +328,7 @@ pub unsafe extern "C" fn buffer_map<B: Backend>(
             &mut words,
         );
         if read.is_err() {
+            crate::context::end_if_lost(&mut *backend);
             return std::ptr::null_mut();
         }
         let from = (offset - start) as usize;
@@ -607,6 +608,7 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
             )
         };
         if done.is_err() {
+            crate::context::end_if_lost(&mut *backend);
             return std::ptr::null_mut();
         }
     }
@@ -624,7 +626,7 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
     reason = "one write of Gallium's, unpacked"
 )]
 fn write_texels<B: Backend>(
-    backend: &mut B,
+    context: &mut Context<B>,
     texture: &B::Texture,
     desc: &TextureDesc,
     level: c_uint,
@@ -634,38 +636,97 @@ fn write_texels<B: Backend>(
     rows_per_layer: u32,
     mode: WriteMode,
 ) {
-    if let Some(texel) = depth_stencil_layout(desc.format) {
-        let (depth, stencil) = split_depth_stencil(desc.format, data);
-        let ratio = (texel / size_of::<u32>()) as u32;
-        let (region, extent) = region_of::<B>(texture, desc, level, area, false);
-        backend.write_texture(
+    let mut write = |stencil: bool, data: &[u8], row_pitch: u32, mode: WriteMode| {
+        let (region, extent) = region_of::<B>(texture, desc, level, area, stencil);
+        write_aspect(
+            context,
+            desc,
             &region,
             extent,
-            &depth,
-            row_pitch / ratio,
+            data,
+            row_pitch,
             rows_per_layer,
             mode,
         );
+    };
+    if let Some(texel) = depth_stencil_layout(desc.format) {
+        let (depth, stencil) = split_depth_stencil(desc.format, data);
+        let ratio = (texel / size_of::<u32>()) as u32;
+        write(false, &depth, row_pitch / ratio, mode);
         let stencil_mode = if mode == WriteMode::Discard {
             WriteMode::NoOverwrite
         } else {
             mode
         };
-        let (region, extent) = region_of::<B>(texture, desc, level, area, true);
-        let stencil_pitch = row_pitch / texel as u32;
-        backend.write_texture(
-            &region,
-            extent,
-            &stencil,
-            stencil_pitch,
-            rows_per_layer,
-            stencil_mode,
-        );
+        write(true, &stencil, row_pitch / texel as u32, stencil_mode);
         return;
     }
-    let stencil = desc.format.kind() == FormatKind::Stencil;
-    let (region, extent) = region_of::<B>(texture, desc, level, area, stencil);
-    backend.write_texture(&region, extent, data, row_pitch, rows_per_layer, mode);
+    write(
+        desc.format.kind() == FormatKind::Stencil,
+        data,
+        row_pitch,
+        mode,
+    );
+}
+
+/// Writes one aspect's texels into a region. Part of a level of depth or stencil goes through a
+/// buffer and the interface's copy from it, which makes every region of those aspects (WebGPU
+/// writes them only whole, and draws such copies).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one write of Gallium's, unpacked"
+)]
+fn write_aspect<B: Backend>(
+    context: &mut Context<B>,
+    desc: &TextureDesc,
+    region: &TextureRegion<'_, B>,
+    extent: Extent,
+    data: &[u8],
+    row_pitch: u32,
+    rows_per_layer: u32,
+    mode: WriteMode,
+) {
+    let screen = context.screen();
+    let mut backend = screen.backend();
+    let whole = region.origin.x == 0
+        && region.origin.y == 0
+        && extent.width == (desc.width >> region.mip).max(1)
+        && extent.height == (desc.height >> region.mip).max(1);
+    let aspect = region.stencil
+        || matches!(
+            desc.format.kind(),
+            FormatKind::Depth | FormatKind::DepthStencil | FormatKind::Stencil
+        );
+    if whole || !aspect {
+        backend.write_texture(region, extent, data, row_pitch, rows_per_layer, mode);
+        return;
+    }
+    outside_pass(context, &mut backend);
+    let mut words = data.to_vec();
+    words.resize(data.len().next_multiple_of(STORAGE_WORD as usize), 0);
+    let staged = match backend.create_buffer(&BufferDesc {
+        size: words.len() as u64,
+        usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        intent: MapIntent::Rarely,
+    }) {
+        Ok(staged) => staged,
+        Err(error) => crate::state::refuse(format_args!(
+            "the buffer part of a depth or stencil level is written from: {error:?}"
+        )),
+    };
+    backend.write_buffer(&staged, 0, &words, WriteMode::Discard);
+    backend.copy_buffer_to_texture(
+        &CopyBufferTexture {
+            buffer: &staged,
+            offset: 0,
+            row_pitch,
+            rows_per_layer,
+        },
+        region,
+        extent,
+    );
+    drop(backend);
+    screen.retire(Object::Buffer(staged));
 }
 
 /// `pipe_context::texture_unmap`: writes what was mapped for writing.
@@ -687,7 +748,7 @@ pub unsafe extern "C" fn texture_unmap<B: Backend>(
             let (rows, stride) = box_layout(resource.base.format(), &transfer.base.box_);
             let (level, area, mode) = (transfer.base.level(), transfer.base.box_, transfer.mode);
             write_texels(
-                &mut *context.screen().backend(),
+                context,
                 texture,
                 desc,
                 level,
@@ -734,7 +795,7 @@ pub unsafe extern "C" fn texture_subdata<B: Backend>(
     // SAFETY: Mesa's bytes cover the box at these pitches.
     let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
     write_texels(
-        &mut *context.screen().backend(),
+        context,
         texture,
         desc,
         level,
