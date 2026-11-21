@@ -275,7 +275,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   abi and the suite names only interface and conformance crates (abi, configurable, executor, internet-protocol,
   kernel, negative-route-advice, tcp-sockets and the two conformance crates); `git diff ae9c53ca HEAD` of the .rs
   files beside the tcp-sockets, internet-protocol, kernel, configurable and negative-route-advice interfaces is
-  empty (abi's and system's changed only in other tracks' commits 564626c0, fd65d351, 4ee5def7).
+  empty (abi's and system's changed only in other tracks' commits 564626c0, fd65d351, 4ee5def7). Again from a clean
+  clone at e040df6a (23:25, load 2.3 to 4.5): clippy clean (9.2 s), 101 passed in 3.49 s.
 - Probe of Linux's answers on a TCP socket (scratch tools/probe_memberships.py, ARM machine 23:05, load 2): as root
   and as uid 1000, `MCAST_JOIN_GROUP` and `MCAST_LEAVE_GROUP` on the loopback interface taken for IPv4 and IPv6, on
   no interface ENODEV; anycast join EADDRNOTAVAIL as root, EPERM as uid 1000; the flow label manager taken as root
