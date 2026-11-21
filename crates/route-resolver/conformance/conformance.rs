@@ -723,7 +723,7 @@ pub fn multicast_route_is_multicast<R: RouteResolver>(resolver: R) {
     );
 }
 
-/// A required source check refuses a source the namespace does not have.
+/// A required source check refuses a source the namespace does not have, with the host's error rather than a refusal.
 pub fn required_source_check_refuses_a_foreign_address<R: RouteResolver>(resolver: R) {
     network();
     let options = Ipv4Options::new();
@@ -731,12 +731,54 @@ pub fn required_source_check_refuses_a_foreign_address<R: RouteResolver>(resolve
         source: Some(A_FOREIGN),
         ..v4(&options, FAR)
     };
-    assert!(resolve4(&resolver, foreign).is_err());
+    let result = resolve4(&resolver, foreign);
+    assert!(matches!(result, Err(HostError::Errno(_))), "{result:?}");
     let foreign = Ipv6RouteSelectors {
         source: Some(A_FOREIGN_V6),
         ..v6(FAR_V6)
     };
-    assert!(resolve6(&resolver, foreign).is_err());
+    let result = resolve6(&resolver, foreign);
+    assert!(matches!(result, Err(HostError::Errno(_))), "{result:?}");
+}
+
+/// The forwarding switches of every link and of da, which make da's subnet-router anycast address a route of its own.
+const FORWARDING_V6: [&str; 2] = [
+    "/proc/sys/net/ipv6/conf/all/forwarding",
+    "/proc/sys/net/ipv6/conf/da/forwarding",
+];
+/// The subnet-router anycast address of da's prefix ([RFC 4291](https://www.rfc-editor.org/rfc/rfc4291#section-2.6.1)).
+const A_SUBNET_ROUTER: Ipv6Addr = Ipv6Addr::new(0xfd01, 0, 0, 0, 0, 0, 0, 0);
+
+/// An anycast route, a kind the contract has no name for, is refused or given as the local delivery Linux makes of it.
+pub fn an_anycast_route_is_not_given_as_another_kind<R: RouteResolver>(resolver: R) {
+    network();
+    for path in FORWARDING_V6 {
+        write_setting(path, 1);
+    }
+    let result = resolve6(&resolver, v6(A_SUBNET_ROUTER));
+    assert!(
+        result
+            .as_ref()
+            .map_or(true, |route| route.kind == RouteKind::Local),
+        "{result:?}"
+    );
+}
+
+/// A link-local destination with no interface takes a route, as a datagram Linux sends to it does (only a connect
+/// needs the interface).
+pub fn a_link_local_destination_without_an_interface_routes<R: RouteResolver>(resolver: R) {
+    const LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    let network = network();
+    let route = resolve6(&resolver, v6(LINK_LOCAL)).expect("a link-local destination resolves");
+    assert_eq!(route.kind, RouteKind::Unicast);
+    assert!(
+        [network.a, network.b].contains(&route.interface),
+        "{route:?}"
+    );
+    assert!(
+        matches!(route.source, IpAddr::V6(source) if source.is_unicast_link_local()),
+        "{route:?}"
+    );
 }
 
 /// A waived source check routes from a source the namespace does not have, keeping it as the source.
@@ -970,17 +1012,50 @@ pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
     number_after(&text, FIELD, FIELD)
 }
 
-/// Source preferences choose among the link's addresses, here only one.
+/// Makes da's address the source of temporary addresses, of which Linux makes one at once.
+const TEMPORARY_ADDRESSES: &str = "/proc/sys/net/ipv6/conf/da/use_tempaddr";
+const MANAGED_TEMPORARY: &str = "address replace fd01::1/64 dev da nodad mngtmpaddr";
+
+/// The temporary address Linux made on the link.
+fn temporary_address(link: &str) -> Ipv6Addr {
+    /// Shows the link's temporary addresses as JSON.
+    const SHOW: [&str; 6] = ["-6", "-j", "address", "show", "temporary", "dev"];
+    const LOCAL: &str = "\"local\":\"";
+    for _ in 0..PATIENT_TRIES {
+        let output = Command::new(IP)
+            .args(SHOW)
+            .arg(link)
+            .output()
+            .expect("ip runs");
+        let text = String::from_utf8(output.stdout).expect("ip writes text");
+        if let Some(start) = text.find(LOCAL) {
+            let rest = &text[start + LOCAL.len()..];
+            let end = rest.find('"').expect("an address ends");
+            return rest[..end].parse().expect("an IPv6 address");
+        }
+        std::thread::sleep(PATIENT_TRY);
+    }
+    panic!("no temporary address on {link}");
+}
+
+/// How often and how long apart a check looks for what Linux makes in the background.
+const PATIENT_TRIES: u32 = 200;
+const PATIENT_TRY: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// A preference for temporary or public addresses chooses between da's address and the temporary one Linux made from it.
 pub fn source_preferences_choose_among_the_link_addresses<R: RouteResolver>(resolver: R) {
     let network = network();
-    for temporary in [
-        TemporaryAddressPreference::Temporary,
-        TemporaryAddressPreference::Public,
+    write_setting(TEMPORARY_ADDRESSES, 1);
+    ip(IPV6, MANAGED_TEMPORARY);
+    let temporary_address = temporary_address(A);
+    for (temporary, source) in [
+        (TemporaryAddressPreference::Temporary, temporary_address),
+        (TemporaryAddressPreference::Public, A_ADDRESS_V6),
     ] {
         let route = Ipv6RouteSelectors {
             source_preferences: SourcePreferences {
                 temporary,
-                mobile: MobileAddressPreference::CareOf,
+                mobile: MobileAddressPreference::Home,
             },
             ..v6(FAR_V6)
         };
@@ -988,7 +1063,8 @@ pub fn source_preferences_choose_among_the_link_addresses<R: RouteResolver>(reso
             let route = route.expect("resolves");
             assert_eq!(
                 (route.interface, route.source),
-                (network.a, IpAddr::V6(A_ADDRESS_V6))
+                (network.a, IpAddr::V6(source)),
+                "{temporary:?}"
             );
         });
     }
@@ -1045,6 +1121,8 @@ macro_rules! tests {
             confirmed_neighbour_is_confirmed,
             source_preferences_choose_among_the_link_addresses,
             other_protocols_route,
+            an_anycast_route_is_not_given_as_another_kind,
+            a_link_local_destination_without_an_interface_routes,
         );
     };
 }

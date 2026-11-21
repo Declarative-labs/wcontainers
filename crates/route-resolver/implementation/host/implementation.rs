@@ -45,14 +45,18 @@ pub struct HostRouteResolver {
 struct RoutingSocket {
     socket: Socket,
     sequence: u32,
+    /// The request being sent and the reply being read, kept so that a lookup allocates no buffer once they have grown.
+    request: Vec<u8>,
+    reply: Vec<u8>,
 }
 
-const LINK_SCOPE: &str = "route lookup: a link-scope IPv4 lookup the routing socket cannot ask for";
-const WAIVED_SOURCE_CHECK: &str = "route lookup: a waived source check for an IPv4 address the host lacks, which the routing socket always checks";
-const SOURCE_PREFERENCES: &str = "route lookup: IPv6 source preferences other than the default, which the routing socket cannot take";
-const UPPER_LAYER_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take (it takes TCP, UDP, ICMP and ICMPv6)";
-const ROUTE_KIND: &str = "route lookup: a route kind the contract has no name for";
-const ENCAPSULATION: &str = "route lookup: the path MTU of an encapsulating route, less a headroom the routing socket does not give";
+pub const LINK_SCOPE: &str =
+    "route lookup: a link-scope IPv4 lookup the routing socket cannot ask for";
+pub const WAIVED_SOURCE_CHECK: &str = "route lookup: a waived source check for an IPv4 address the host lacks, which the routing socket always checks";
+pub const SOURCE_PREFERENCES: &str = "route lookup: IPv6 source preferences other than the default, which the routing socket cannot take";
+pub const UPPER_LAYER_PROTOCOL: &str = "route lookup: an upper-layer protocol the routing socket does not take (it takes TCP, UDP, ICMP and ICMPv6)";
+pub const ROUTE_KIND: &str = "route lookup: a route kind the contract has no name for";
+pub const ENCAPSULATION: &str = "route lookup: the path MTU of an encapsulating route, less a headroom the routing socket does not give";
 
 const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = SourcePreferences {
     temporary: TemporaryAddressPreference::SystemDefault,
@@ -91,6 +95,8 @@ impl HostRouteResolver {
             routing: Mutex::new(RoutingSocket {
                 socket,
                 sequence: u32::MIN,
+                request: Vec::new(),
+                reply: Vec::new(),
             }),
             unset_hop_limit: datagram_socket(IpVersion::V4)?,
             shortfalls: Shortfalls::default(),
@@ -134,13 +140,13 @@ impl HostRouteResolver {
                 .attributes
                 .push(RouteAttribute::Source(RouteAddress::Inet(source)));
         }
-        selectors(
+        self.selectors(
             &mut request,
             route.interface,
             route.mark.0,
             owner,
             route.upper_layer,
-        );
+        )?;
         let found = self.found(&self.exchange_route(request)?, IpAddr::V4(destination))?;
         if found.kind == RouteKind::Broadcast && route.broadcast == BroadcastPermission::Refused {
             return Err(HostError::Errno(libc::EACCES));
@@ -202,13 +208,13 @@ impl HostRouteResolver {
         request
             .attributes
             .push(RouteAttribute::Flowlabel(route.flow_label.value()));
-        selectors(
+        self.selectors(
             &mut request,
             route.interface,
             route.mark.0,
             owner,
             route.upper_layer,
-        );
+        )?;
         let found = self.found(&self.exchange_route(request)?, IpAddr::V6(destination))?;
         let link = self.link(found.interface)?;
         let source = match route.source {
@@ -434,12 +440,25 @@ impl HostRouteResolver {
         header.sequence_number = sequence;
         let mut packet = NetlinkMessage::new(header, NetlinkPayload::from(message));
         packet.finalize();
-        let mut bytes = vec![0; packet.buffer_len()];
-        packet.serialize(&mut bytes);
-        routing.socket.send(&bytes, 0).map_err(io_error)?;
+        let routing = &mut *routing;
+        routing.request.clear();
+        routing.request.resize(packet.buffer_len(), u8::MIN);
+        packet.serialize(&mut routing.request);
+        routing.socket.send(&routing.request, 0).map_err(io_error)?;
         loop {
-            let (bytes, _) = routing.socket.recv_from_full().map_err(io_error)?;
-            let reply = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&bytes)
+            // A peek tells the reply's whole length, so that the buffer grows to take it before it is read.
+            routing.reply.clear();
+            let length = routing
+                .socket
+                .recv(&mut routing.reply, libc::MSG_PEEK | libc::MSG_TRUNC)
+                .map_err(io_error)?;
+            routing.reply.clear();
+            routing.reply.reserve(length);
+            routing
+                .socket
+                .recv(&mut routing.reply, 0)
+                .map_err(io_error)?;
+            let reply = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&routing.reply)
                 .map_err(|_| HostError::Errno(libc::EPROTO))?;
             if reply.header.sequence_number != sequence {
                 continue;
@@ -502,37 +521,42 @@ enum SourceRoute {
     Strict,
 }
 
-/// Adds the selectors both versions share: interface, mark, owner and the upper layer.
-fn selectors(
-    request: &mut RouteMessage,
-    interface: Option<InterfaceIndex>,
-    mark: u32,
-    owner: UserId,
-    upper_layer: UpperLayer,
-) {
-    let attributes = &mut request.attributes;
-    if let Some(interface) = interface {
-        attributes.push(RouteAttribute::Oif(interface.0));
-    }
-    attributes.push(RouteAttribute::Mark(mark));
-    attributes.push(RouteAttribute::Uid(owner.0));
-    attributes.push(RouteAttribute::IpProto(upper_layer.protocol.0));
-    match upper_layer.selector {
-        None => {}
-        Some(UpperLayerSelector::Ports(ports)) => {
-            attributes.push(RouteAttribute::Sport(ports.source.0));
-            attributes.push(RouteAttribute::Dport(ports.destination.0));
+impl HostRouteResolver {
+    /// Adds the selectors both versions share: interface, mark, owner and the upper layer.
+    fn selectors(
+        &self,
+        request: &mut RouteMessage,
+        interface: Option<InterfaceIndex>,
+        mark: u32,
+        owner: UserId,
+        upper_layer: UpperLayer,
+    ) -> Result<(), HostError> {
+        let attributes = &mut request.attributes;
+        if let Some(interface) = interface {
+            attributes.push(RouteAttribute::Oif(interface.0));
         }
-        // The kernel's flow keeps an ICMP type and code, and a mobility header type, where the destination port's bytes are.
-        Some(UpperLayerSelector::Icmp { message_type, code }) => {
-            attributes.push(RouteAttribute::Dport(u16::from_be_bytes([
-                message_type.0,
-                code.0,
-            ])));
+        attributes.push(RouteAttribute::Mark(mark));
+        attributes.push(RouteAttribute::Uid(owner.0));
+        attributes.push(RouteAttribute::IpProto(upper_layer.protocol.0));
+        match upper_layer.selector {
+            None => {}
+            Some(UpperLayerSelector::Ports(ports)) => {
+                attributes.push(RouteAttribute::Sport(ports.source.0));
+                attributes.push(RouteAttribute::Dport(ports.destination.0));
+            }
+            // The kernel's flow keeps an ICMP type and code where the destination port's bytes are.
+            Some(UpperLayerSelector::Icmp { message_type, code }) => {
+                attributes.push(RouteAttribute::Dport(u16::from_be_bytes([
+                    message_type.0,
+                    code.0,
+                ])));
+            }
+            // The routing socket takes no protocol with a mobility header type, which it would read from the same bytes.
+            Some(UpperLayerSelector::MobilityHeader(_)) => {
+                return Err(self.shortfalls.refuse(UPPER_LAYER_PROTOCOL));
+            }
         }
-        Some(UpperLayerSelector::MobilityHeader(kind)) => {
-            attributes.push(RouteAttribute::Dport(u16::from_be_bytes([kind.0, u8::MIN])));
-        }
+        Ok(())
     }
 }
 
