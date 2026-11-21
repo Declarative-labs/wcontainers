@@ -4,68 +4,95 @@ Plan: docs/plan-graphics-container-readers.md. On `main` in the one shared check
 
 ## Where things stand
 
-C1 (one DXBC container reader), run 1, 2026-11-21: done and pushed, ready for its check.
-- One reader: crates/wcontainers-shaders/src/container.rs, now `pub mod container` (f4302b4a). It
-  gives the chunk list (`chunk_list`, `Chunk::tag`, `size`, `contents`, `is_container`,
-  `declared_size`), signature elements of every form (`signature_elements`,
-  `signature_direction`, `Element` with the component type), a program's instructions
-  (`instructions`, `Instruction::operand_indices`), the token fields both fronts read (`token`),
-  dxbc-spirv's opcode table (`dxbc_op`, re-exported) and the one checksum (`checksum`, on md-5's
-  MD5 core with DXBC's own last block). The crate's own reads (shader model, program type, control
-  points, PSV0 fields, signatures for the converters) sit on the same pieces.
-- Direct3D 12 (767eab22): dxbc.rs's chunk lookup, program chunk and instruction walk, and root.rs's
-  RTS0 lookup and checksum are gone; they use the reader. Its declaration scan (views placed by
-  space through the root signature's ranges, unbounded arrays) stays its own on the shared walk.
-  md-5 left its manifest. tests/front.rs's checksum test calls `container::checksum`.
-- The fuzz test (a1b731f1) signs with `container::checksum`; its own MD5 code is gone.
-- Direct3D 11 (dcf9fc21): shader.rs's chunk walk, signature reader and instruction walk are gone;
-  its declaration scan (registers, constant buffers indexed at run time) stays its own on the
-  shared walk and operand reader. Its `SignatureElement` is made from the shared `Element`.
-- Opcode and token constants both fronts defined (DCL_RESOURCE, DCL_UAV_TYPED, the custom data
-  opcode, dimensions, return types, shifts and masks) now come from the reader.
-- literals.baseline: 123 lines of these files gone (7090247d); the check prints no line of the
-  track's files.
-- Lines (wc -l, before and after): container.rs 373 to 653, d3d11 shader.rs 1127 to 1083, d3d12
-  dxbc.rs 452 to 395, root.rs 441 to 406, fuzz.rs 298 to 270. The reader grew by what the fronts
-  needed from it (chunk list with each cut reported, the element iterator, the instruction walk,
-  the token fields, the checksum); the four copies are gone.
+C2 (one DXIL resource-list reader), run 1, 2026-11-21: stopped, as the brief says for a library that
+does not fit. dxil-spirv's module reader makes pipeline creation slower (Measurements), so Direct3D
+12's own resource list reader (crates/wcontainers-direct3d-12/src/dxil.rs, on llvm-bitcode) stays and
+nothing of C2's code is committed. The attempt, which was complete and passed the Direct3D 12 tests,
+is kept as a patch: scratch graphics-container-readers/c2-dxil-spirv-attempt.patch. What it would
+take to go on is under "For the owner".
 
-Nothing of C1 is left. What the independent check should look at is under "Behaviour" below.
+C1 (one DXBC container reader): done in run 1; the findings of its check are settled in this run
+(f51d47ce, e2ee94e9):
+- A signature element's name must end with its NUL inside its chunk, as in dxbc-spirv
+  (`readString` fails at the end of the reader and the signature resets). A name cut by its chunk,
+  or starting at the chunk's end, is refused: the Direct3D 11 front answers E_INVALIDARG and the
+  converters' list ends before the element. Before this the reader took the name up to the chunk's
+  end (`SV_TA` in the check's case B2) or an empty name (B3).
+- Resource dimensions and return types come from dxbc-spirv's `ResourceDim` and `SampledType`
+  (build.rs writes them as `container::dxbc_dimension` and `container::dxbc_sampled`, as it writes
+  the opcodes). The hand-written `token::DIMENSION_*` and `token::RETURN_TYPE_*` are gone; both
+  fronts use the generated ones.
+- The fuzz test's two walks (finding the program by searching every word for `SHEX`, stepping
+  with `token::length`) are gone: it finds the instruction through `container::chunk_list` and
+  `container::instructions` (new `Instruction::bytes` gives its place). Direct3D 12's test module
+  uses `dxbc_op::CUSTOM_DATA` instead of its own 53.
+- Malformed containers are pinned by tests: container.rs `a_name_ends_with_its_nul_inside_its_chunk`,
+  `an_instruction_past_its_program_ends_the_walk_before_its_opcode_is_read`,
+  `a_chunk_list_entry_past_the_container_is_its_last_item`; Direct3D 11 shader.rs
+  `a_signature_element_reaching_past_its_chunk_is_refused`.
+- literals.baseline: the line for d3d12 resource.rs `DIMENSION_BUFFER = 1` (a redefinition only
+  while the container module restated the DXBC dimension) is gone, in its own commit.
+- Lines now (wc -l): container.rs 747, d3d11 shader.rs 1116, d3d12 dxbc.rs 390, root.rs 406, fuzz.rs
+  254; 2913 in all, against 2691 before C1. The four copies are gone; the reader and the new tests
+  are larger than what they replaced (container.rs's tests are 96 of its lines).
+
+Next: nothing of C1. C2 waits on the owner (For the owner).
 
 ## Behaviour
 
-Same outputs for every well-formed container. Measured by a comparison of the old readers (copied
-from the commit before f4302b4a) with the new ones, over 1,690 real containers (the rig's DXBC 79
-and DXIL 72, the shaders crate's own 334, the corpus in scratch graphics/corpus dxbc and dxil, the
-games 972 and godot 69 in scratch graphics-shaders, and two root signatures the d3d12 crate writes)
-and 20,000 seeded mutations of them (seed 1): on all 1,690 unchanged inputs no function differs.
-The checksum, all of Direct3D 12 (typed views and multisampled arrays with and without ranges,
-unbounded arrays, root signature reading with its error texts) and the shaders crate's shader
-model, program type, control points and PSV0 fields agree on every mutated case too.
-
-They differ only on malformed containers, where the old readers disagreed with each other and the
-one reader takes the format's rule (the chunk's own size bounds what is read in it, as Microsoft's
-and dxbc-spirv's parsers read it). Counts are of the 20,000 mutated cases (compare-2.txt):
+C1: same outputs for every well-formed container (the comparison of run 1: 1,690 real containers,
+0 differ). The plan's rule is "same outputs for every well-formed container", narrower than the
+brief's "same inputs, same outputs, same errors"; the owner has to accept it (For the owner). On
+malformed containers the one reader takes the format's rule, the chunk's own size bounding what is
+read in it. Counts of run 1's comparison (seed 1, 20,000 mutated cases; compare-2.txt in scratch):
 - Direct3D 11 signatures (input 589, output 535, writes_layer_or_viewport 439): the old reader read
-  past a chunk's end into the rest of the bytes, took the first element at 8 whatever the chunk
-  header said and read a mask as a whole word. Now an element, its name or the chunk past the
-  chunk's end is refused (E_INVALIDARG, as the old reader refused one past the bytes). Example:
-  `169_ps_code_23.dxbc` cut at 387: old gave `SV_Position`, new refuses. Where a shortened chunk
-  still holds the element, a name is read to the chunk's end (`7600a99b00813253.dxbc` with a chunk
-  size lowered by 7: old `SV_TARGET`, new `SV_TA`), as the converters' reader always did.
+  past a chunk's end into the rest of the bytes. Now an element, its name (with its NUL) or the
+  chunk past the chunk's end is refused with E_INVALIDARG. Example: `169_ps_code_23.dxbc` cut at
+  387: old `SV_Position`, new refused.
 - Direct3D 11 stage, model, declarations (stage 175, check_model 258 of 86,760 calls, typed views
-  27, indexed constants 31, multisampled arrays 31): the program chunk is read within its size, so
-  a program chunk whose size runs past the bytes is refused (`1ea526a5bb636445.dxbc`, byte 556
-  and the size at 284 raised by 3: old `Pixel`, new E_INVALIDARG); a declaration's operands are
-  read within the instruction.
+  27, indexed constants 31, multisampled arrays 31): a program chunk whose size runs past the bytes
+  is refused; a declaration's operands are read within the instruction.
 - The converters' signatures (dxbc_signature 543 of 43,380, ISG1/OSG1 131 of 43,380): an element
-  whose name offset lies past the chunk ends the list; before it was listed with an empty name
-  (`hs_tri_even_cw.dxil` with words at 1136 and 101 replaced: old one element `""`, new none).
-  On DXBC dxbc-spirv reads the same signature first; on DXIL the ISG1 and OSG1 chunks only place
-  system values.
+  whose name lies past its chunk ends the list (before it was listed with an empty name).
+- The converters' control point count: an instruction whose length runs past the program ends the
+  walk before its opcode is read, so a `dcl_input_control_point_count` cut that way gives none
+  (convert then counts 0 control points) where the old walk gave the declared count. Found by C1's
+  check at seed 7 (3 of 201,690); not reachable through `convert`, as dxbc-spirv refuses such a
+  program first ("Invalid instruction length"). Run 1's list missed it.
 - Direct3D 12's program chunk is the first SHEX or SHDR in the chunk list (before: the first SHEX,
-  else the first SHDR); the two differ only for a container holding both, which no compiler
-  writes, and none of the cases above has one.
+  else the first SHDR); they differ only for a container holding both, which no compiler writes.
+Not rerun in this run: the seeded comparison against the old readers after the NUL rule (its
+change is one rule, covered by the new tests; every real name ends inside its chunk, as run 1's
+1,690 unchanged inputs and the corpus tests show).
+
+C2 attempt (not committed): on all 735 real DXIL containers (the rig's 72, the shaders crate's own,
+the corpus 16, games 443, godot 69) the attempt gave the same typed views and multisampled arrays as
+the old reader, once DXIL's -1 for an unbounded range was read as the old reader reads it. On
+mutated containers, signed again, dxil-spirv ends the process (SIGSEGV at case 24 of seed 1,
+`685b1bd13a9db30c.dxil` bit 6 at 3208; also `std::terminate`), where the old reader returns: gap A11
+of the shaders track. In pipeline creation the converter parses the same bytes right after, so the
+process would end there anyway, but the end would come earlier.
+
+## Measurements (Apple M5 Max, 18 cores, shared; load averages at the time)
+
+- C2, the read alone, release build, 735 DXIL inputs, 20 rounds (dxil-compare in scratch), load
+  13 to 18: before, the three reads of a pixel or compute stage, 32 to 38 us per stage; after, one
+  call, 125 to 155 us per stage. At load 30 the same ran 56 and 276 us. Split of the one call (load
+  18, by switching parts off in a throwaway build): checksum about 15 us, dxil-spirv's bitstream
+  decoding (all records, function bodies included) about 85 us, building the module about 55 us.
+  The container checksum in Rust alone: 7.7 us per input (inputs 4,556 KiB in all).
+- C2, pipeline creation with the conversion in the process cache, recording back end, release
+  (pipeline-bench in scratch, built against the Direct3D 12 crate before and after), 20 rounds,
+  run before, after, before, after at load 17 to 20: 59 DXIL compute pipelines, median 76.1 and
+  76.9 us before, 104.5 and 104.0 us after; the rig's DXIL triangle (vertex and pixel), median 77.4
+  and 76.3 us before, 99.5 and 102.8 us after. About 37 % and 30 % slower: the pass bar fails.
+- C2 attempt, Direct3D 12 tests (debug, load about 15): 49 passed (unit 16, cache 1, device 18,
+  front 12, gpu 2).
+- C1 fixes, the three crates' whole suites at f51d47ce's content (load 18 at the start, 15 at the
+  end): 231 passed, 0 failed, 6 ignored (the 227 of run 1 and the 4 new tests). c1fix-suite.log in
+  scratch. Lint with warnings denied: clean. Literal check: no finding in the track's files.
+- Not run: the WebAssembly build of the shaders crate (no wasm32-wasip1 target or wasi-sdk in this
+  Mac's shell); the long seeded fuzz (unchanged inputs to it: the fuzz test's own walks only).
 
 ## How to run
 
@@ -77,67 +104,51 @@ and dxbc-spirv's parsers read it). Counts are of the 20,000 mutated cases (compa
 - The seeded fuzz: `cargo test -p wcontainers-shaders --test fuzz -- --include-ignored`
   (WCONTAINERS_FUZZ_SEED, WCONTAINERS_FUZZ_CASES, WCONTAINERS_FUZZ_FIRST).
 - Literal check: `RAYON_NUM_THREADS=3 nix develop -c cargo run -q -p wcontainers-literals -- check`.
-- The comparison (scratch graphics-container-readers/compare, not in the repository): build with
-  `cargo build --release --manifest-path <scratch>/compare/Cargo.toml` and the same
-  CARGO_TARGET_DIR, run `COMPARE_ROOT=<checkout> COMPARE_CASES=20000 COMPARE_SEED=1
-  COMPARE_EXTRA=<dir>:<dir> target/graphics-container-readers/release/container-compare`. The old
-  readers are in compare/src/old_*.rs. It leaves out the Direct3D 12 scan where a mutated 5.1
-  range is longer than 65,536 (40 cases at seed 1): both old and new list every element (For the
-  owner).
-
-## Measurements (Apple M5 Max, shared; load averages at the time)
-
-- Shaders suite after f4302b4a's code (load about 40): 111 passed, 0 failed, 6 ignored (the three
-  corpora, cache, geometry, the long fuzz). Direct3D 12: 49 passed (unit 16, cache 1, device 18,
-  front 12, gpu 2). Direct3D 11: 66 passed (unit 5, cache 1, front 60), the counts its status
-  gives. The final run of all three at the tip: see "Last run" below.
-- Comparison, 20,000 cases and 1,690 inputs: 0.9 s wall, release build, load 60.
-- Seeded fuzz at its defaults (seed 1, 2,000 cases; load 12 to 29): the three plain tests pass;
-  the long one ends the process at case 98 (`views.ps_level0.dxil`, bytes flipped at 879 and 3078)
-  with `libc++abi: terminating` inside the DXIL converter: gap A11 of the shaders track (dxil-spirv
-  ends the process on such DXIL), known before this change. The case's bytes are signed the same
-  as before (the checksums agree on every case) and the reads before the conversion (program type,
-  PSV0) agree, so it is reached as before. Not run past it.
-- Not run: the WebAssembly build of the shaders crate (no wasm32-wasip1 target or wasi-sdk in this
-  Mac's shell; md-5 is no_std pure Rust and was already built for the fuzz test); the Windows and
-  GPU-rig runs of the fronts (the front tests above run on the recording back end and Metal).
-
-Last run, at the tip (296ddb6e, with this track's commits; load 7 at the start, 75 at the end),
-the three crates' whole suites: 227 passed, 0 failed, 6 ignored (suite-final.log in scratch).
+- C1's comparison (scratch compare): as in run 1, `COMPARE_ROOT=<checkout> COMPARE_CASES=20000
+  COMPARE_SEED=1 COMPARE_EXTRA=<dir>:<dir> target/graphics-container-readers/release/container-compare`.
+- C2's tools, only with the attempt's patch applied: scratch dxil-compare (old reader against
+  `dxil::declared`; COMPARE_ROOT, COMPARE_EXTRA, COMPARE_SEED, COMPARE_CASES, COMPARE_FIRST,
+  COMPARE_ROUNDS) and pipeline-bench/before and /after (`cargo build --release --manifest-path
+  <scratch>/pipeline-bench/<before|after>/Cargo.toml`, run with BENCH_ROOT, BENCH_EXTRA,
+  BENCH_ROUNDS). The "before" bench builds the copy of the Direct3D 12 crate in scratch old-d3d12.
 
 ## Departures from the plan and the brief
 
-- Order: the shaders crate's container.rs went first, as both fronts' changes need the reader
-  public; then Direct3D 12, the fuzz test, Direct3D 11 last.
-- The container.rs commit does more than make the reader public and add the checksum: the
-  fronts' needs (each cut of a chunk list reported, an element iterator that reports a cut
-  element, the instruction walk, the shared token fields and the opcode table) went in with it,
-  as one commit.
-- Outside the track's files, one line each, needed for the reader to be reachable or its checksum
-  used: crates/wcontainers-shaders/src/lib.rs (`pub mod container`), its Cargo.toml (md-5 from
-  dev-dependencies to dependencies), crates/wcontainers-direct3d-12/Cargo.toml (md-5 gone),
-  crates/wcontainers-direct3d-12/tests/front.rs (its checksum test calls the shared one), and one
-  hunk of Cargo.lock.
-- dxbc-spirv does not back the reader: its container and signature classes are C++ behind the
-  converter's boundary, and reaching them from both fronts and the root signature reader would add
-  extern functions and copies for a reader of a few hundred lines.
+- C2 stopped (the brief's rule for a library that does not fit). Example: the rig's DXIL triangle
+  pipeline, made again with its conversion cached, takes 77 us with our reader and 100 us with
+  dxil-spirv's, because dxil-spirv decodes and builds the whole module, function bodies included,
+  where our reader skips every block but the module's constants and metadata.
+- C1's check fixes touched crates/wcontainers-shaders/build.rs (two lines in its list of dxbc-spirv
+  enums), the shaders track's file, so that the dimensions and return types come from dxbc-spirv as
+  the opcodes do; its git status was clean before the edit.
+- From run 1, still true: the container.rs commit (f4302b4a) was not the one small commit the brief
+  asked for, and a Cargo.lock hunk went into a code commit (767eab22). History is not rewritten;
+  this run kept the lock and the baseline in commits of their own.
+- From run 1, still true: outside the track's files, one line each in the shaders crate's lib.rs and
+  Cargo.toml, the Direct3D 12 Cargo.toml and tests/front.rs.
 
 ## Dependencies and licences
 
-No new dependency. md-5 0.11.0 (MIT OR Apache-2.0), already in the tree, is now a normal
-dependency of wcontainers-shaders and no longer one of wcontainers-direct3d-12.
+No new dependency. md-5 0.11.0 (MIT OR Apache-2.0), already in the tree, is a normal dependency of
+wcontainers-shaders. llvm-bitcode 0.4.2 (MIT) stays a dependency of wcontainers-direct3d-12.
 
 ## For the owner
 
-- Behaviour on malformed containers changed as listed under "Behaviour" (the Direct3D 11 front
-  refuses more of them; the converters' reflection drops a signature element whose name lies past
-  its chunk). Example: a pixel shader whose container is cut inside its input signature chunk was
-  accepted by the Direct3D 11 front's signature reader and is now refused with E_INVALIDARG.
+- C2: dxil-spirv's module reader does not meet "pipeline creation not slower": a cached pipeline is
+  made 30 to 37 % slower (Measurements). Ways on, each the owner's call: accept the slowdown
+  (the patch is ready, correct on every real DXIL container); keep our reader (now); or read the
+  list from dxc's `STAT` chunk, which holds the module without function bodies, where a container
+  has one (308 of 735 here): not measured, and a container whose `STAT` and `DXIL` disagree would
+  give a wrong key. Changing dxil-spirv to skip function bodies would be a change to vendored code.
+- Behaviour on malformed containers changed with C1 as listed under "Behaviour"; each kind now has
+  a test. Example: a pixel shader whose container is cut inside its input signature chunk is
+  refused with E_INVALIDARG by the Direct3D 11 front, where it was accepted.
 - crates/wcontainers-shaders/examples/containers.rs (the shaders track's corpus tool) still walks
   a container's header and chunks itself, with its own plausibility rules (at most 64 chunks,
-  alphanumeric tags). Not this track's file; it could use `container::chunk_list`.
-- Not changed, found by the comparison: the Direct3D 12 declaration scan (dxbc.rs
-  `element_slots`) lists every element of a shader model 5.1 range, whose length comes from the
-  bytecode (up to 2^32). A mutated range made one comparison run take 45 GB on this Mac before it
-  was stopped. The shaders crate refuses such a range by name (`BindingsBeyondLimit`); the
-  Direct3D 12 front does not yet. Fixing it changes behaviour, so it was left for its own item.
+  alphanumeric tags). Not this track's file; it could use `container::chunk_list`. With it, "one
+  reader in the tree" holds for shipped code and the tests, not for that example.
+- Not changed, found by run 1's comparison: the Direct3D 12 declaration scans (dxbc.rs
+  `element_slots`, and dxil.rs `Reader::declared` likewise) list every element of a range whose length comes
+  from the bytecode (up to 2^32). The shaders crate refuses such a range by name
+  (`BindingsBeyondLimit`); the Direct3D 12 front does not yet. Fixing it changes behaviour, so it
+  is left for its own item.
