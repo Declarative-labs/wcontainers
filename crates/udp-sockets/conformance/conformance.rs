@@ -3031,6 +3031,32 @@ pub fn a_checksum_of_the_other_protocol_is_refused<S: UdpSockets>(sockets: S) {
     }
 }
 
+/// An ICMP error about a datagram sent waits for a receive however the sends after it answer, as Linux fails the
+/// next send with the error it reports.
+pub fn an_icmp_error_waits_for_a_receive_after_later_sends<S: UdpSockets>(sockets: S) {
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let closed = closed_port(&sockets, version);
+        let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
+        send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
+        let events = finished_soon(pin!(sockets.wait_for_events(&sender, NO_EVENTS)));
+        assert!(events.error_condition, "{version:?}: {events:?}");
+        let later = sockets.send_to(
+            &sender,
+            header(UdpProtocol::Udp, from, closed),
+            plain_fields(),
+            datagram(PAYLOAD),
+        );
+        let mut into = buffer();
+        let packet = receive_packet(&sockets, &sender, &mut into);
+        let ip = IpSlice::from_slice(&into[..packet.fields.length]).expect("a whole ICMP packet");
+        let icmp = match version {
+            IpVersion::V4 => IpNumber::ICMP,
+            IpVersion::V6 => IpNumber::IPV6_ICMP,
+        };
+        assert_eq!(ip.payload_ip_number(), icmp, "{version:?}: after {later:?}");
+    }
+}
+
 /// A send whose header is IPv6 on an IPv4 socket is refused as Linux refuses a destination of another family.
 pub fn a_header_of_another_version_is_refused<S: UdpSockets>(sockets: S) {
     let (socket, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -3558,6 +3584,7 @@ macro_rules! tests {
             a_wait_for_data_or_writing_finishes_when_room_is_made
             a_header_of_another_protocol_is_refused
             a_checksum_of_the_other_protocol_is_refused
+            an_icmp_error_waits_for_a_receive_after_later_sends
         );
     };
     (@each $value:expr; $($name:ident)*) => {
