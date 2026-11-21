@@ -5,11 +5,38 @@ and hardware-virtualization-inside.
 
 ## Where things stand
 
-- V1 (the KVM back end on kvm-ioctls, ARM64), run 1 (2026-11-21): kvm.rs is built and every executor test that
-  runs on the Mac was run on the rented ARM64 machine's KVM, same programs and seeds. All pass except two:
-  - kernel: fails at one assertion, a difference of the host processor, not of KVM (below, "For the owner").
-  - speed: not run on Linux yet; its measurement is macOS's own (below, "Next").
-  The Mac's suite passes with the changes (below, "Results"). Not complete: the two items above remain.
+- V1 (the KVM back end on kvm-ioctls, ARM64), runs 1 and 2 (2026-11-21): kvm.rs is built and every executor test
+  that runs on the Mac now runs on the rented ARM64 machine's KVM too, same programs and seeds. All pass there
+  except two, both from the host processor, not from KVM (below, "For the owner"):
+  - kernel: one assertion, the blocks program's count of memory faults (`dc cvau`).
+  - speed: the compute part of the bar fails on the Neoverse V2 (+24.12% against +21.2%); the system-call part
+    passes; the untranslated run (the virtual machine without translation) costs about 1%.
+  The Mac's suite passes with the changes (below, "Results"). Not complete: both wait on the owner's ruling.
+
+## Results (run 2)
+
+- Run 2 gave the speed test its Linux side (perf events through perf-event2 for the whole process's cycles and
+  instructions, Linux's `ucontext_t` for the plain run's breakpoints, `__clear_cache`, the share on performance cores
+  reported absent) and builds the register count wherever the speed test builds.
+- Speed bar on KVM, the test's own command (`cargo test -p wcontainers-executor-hardware-virtualization --test
+  speed`, 15 pairs, look-ahead 256, seed 1, 2000 resamples; Graviton4, load 1.4 at the start to 4.1 at the end of 96
+  cores, two other tracks' jobs running; log scratch kvm-back-end/speed-bar.log, pairs speed-raw.jsonl):
+  compute part +24.12% [+23.75 .. +24.47], FAILS against +21.2%. System-call part: a call 497.8 ns, the kernel's
+  share 423.5 ns, the back end's 74.3 ns [72.7 .. 79.5], PASSES against 100 ns. Each program, native against plain,
+  cycles (instructions), untranslated cycles: fib +41.6 (+69.6) +1.2, sieve +5.7 (+31.1) +0.1, hash +2.8 (+25.0)
+  +0.2, sort +40.4 (+166.6) +2.3, interpret +36.8 (+85.3) +0.6, matrix +40.9 (+26.4) +7.8, walk +2.0 (+117.0) +0.1,
+  search +32.6 (+21.9) +0.8, calls +23.1 (+162.7) +1.3. The Mac's last bar (docs/status-native.md, N4 run 25):
+  +20.09%, with fib +28.0, sieve +18.5, sort +26.6, interpret +0.2, walk +17.9 (so the cores differ by workload).
+- Short speed run on the Mac after the change (fib and calls, 1 pair, load 67): runs as before, the share on
+  performance cores printed as before.
+- The whole suite again at run 2's code. KVM (Graviton4, load 7 to 24, scratch kvm-back-end/suite-run2.log):
+  registers, floor (21 + 1, 0 failed), exits, interrupts (15309, 0 failed, 176 s), native (32562 words, 0 failing),
+  probe, host_branches, kept, carry, busybox (56 of 56), lib tests (10 and 3) pass; kernel fails at the one known
+  assertion. Mac (load 21 to 40, mac-suite-run2.log): registers, floor, exits, interrupts, native, probe (0 forms of 16
+  bytes or fewer differ), host_branches, kept, carry, kernel (ran alike to the end), lib tests (12 and 3) pass.
+  Clippy with warnings denied on both crates, on both hosts; the literal check has nothing in these crates (run 2
+  renamed a temporary file of a translate.rs test, "kept" to "stored", which the check took for another crate's
+  constant).
 
 ## Results (run 1)
 
@@ -70,6 +97,8 @@ kept, carry, lib tests pass.
   only, for the monitor).
 - arm-gic 0.11.0 (MIT OR Apache-2.0) for the monitor on Linux ARM64 (already the inside's).
 - smccc 0.2.3 (MIT OR Apache-2.0) for the inside's doorbell.
+- perf-event2 0.7.4 (MIT OR Apache-2.0), a dev-dependency on Linux only, for the speed test's counts; it brings
+  perf-event-open-sys2 5.0.6, perf-event-data 0.1.8 and c-enum 0.2.3 (each MIT OR Apache-2.0) and memoffset (MIT).
 
 ## Measurements
 
@@ -92,6 +121,12 @@ kept, carry, lib tests pass.
   when the host page is larger than a guest page; the permission checks are unchanged. On the Mac it asks the same
   as before.
 
+- The speed test on Linux opens its counters at the child's `main`, so its counts leave out the dynamic loader's
+  start, which macOS's `proc_pid_rusage` counts; every side is the same binary, so each side leaves out the same
+  work. The counters count every thread made after them, at every level (the kernel's work for the process and its
+  guest included), and a count that did not run all its enabled time fails the run rather than being scaled.
+- The speed test's children drop the loader's variables of their system: `DYLD_` on macOS, `LD_` on Linux.
+
 ## For the owner
 
 - `dc cvau` at EL0 on a page that allows nothing, or is not mapped, runs on the Neoverse V2 (its kernel's reference
@@ -99,18 +134,22 @@ kept, carry, lib tests pass.
   does. So the kernel test's count of memory faults differs there (8 against 10). Which one the defined machine does
   is yours: routing `dc cvau` (decision 14's way) would make the native output the WebAssembly output's on every host.
   The test is left failing on that machine.
+- The speed bar's compute part fails on the Neoverse V2, +24.12% [+23.75 .. +24.47] against +21.2% (the Mac's last
+  bar +20.09%). It is the translated code on that core, not KVM: the untranslated run in the same machine costs about
+  1% (matrix 7.8%), and the workloads that cost more there are others than on the M5 (interpret +36.8% against
+  +0.2%, fib +41.6% against +28.0%; walk +2.0% against +17.9%). Whether the bar holds for every ARM64 host or for the
+  M5 only is yours; the test is left failing on that machine. Speed is for later, by your priorities of today.
+- The speed test needs `kernel.perf_event_paranoid` at most 1 to count the kernel's work (Ubuntu's default is 4,
+  which refuses every count); I set it to 1 on the rented ARM64 machine with sudo for run 2. It does not survive a
+  new machine: it belongs in cloud/setup-machine.sh, which is the orchestrator's.
 - The behaviour probe says the Neoverse V2 would not pass (9 forms of 16 bytes or fewer differ).
 - To send upstream to kvm-ioctls: a wrapper for KVM_ARM_SET_COUNTER_OFFSET, and KVM_GET_DEVICE_ATTR on a vCPU.
 
 ## Next
 
-- The speed test (tests/speed.rs, still `cfg(target_os = "macos")`) needs a Linux side before it runs on KVM: the
-  whole process's cycles and instructions (macOS `proc_pid_rusage`; on Linux perf events opened at the child's start,
-  counting every thread and the guest), the plain run's breakpoint handler (macOS's `ucontext_t`; Linux's
-  `ucontext_t` has `uc_mcontext.regs` and `pc`), the code made visible after it is written (`sys_icache_invalidate`;
-  on Linux `__clear_cache`), and the share on performance cores, which has no meaning on Graviton (report it absent,
-  never a made-up figure). Then its bar's command on a quiet machine.
-- The kernel test's blocks count on the Neoverse V2 waits on the owner (above).
+- Both remaining failures on the Neoverse V2 (the kernel test's blocks count, the speed bar's compute part) wait on
+  the owner (above). Nothing of V1 is left to build otherwise.
+- Later, for speed: the interrupts test takes 176 s on KVM against 23 s on the Mac (not looked into).
 
 ## How to run
 
@@ -119,3 +158,6 @@ kept, carry, lib tests pass.
   docs/status-native.md "How to run").
 - KVM: `arm-run <checkout> --name kvm-back-end -- '<the same cargo command with -j $ARM_JOBS>'`; prefix the command with
   the loop that removes empty crate folders other tracks leave (see the logs in cloud/logs/kvm-back-end).
+- The speed bar on KVM: first `arm-run --ssh 'sudo sysctl -w kernel.perf_event_paranoid=1'`, then `arm-run ... --
+  'cargo test -j $ARM_JOBS -p wcontainers-executor-hardware-virtualization --test speed'` (knobs as on the Mac;
+  `WCONTAINERS_SPEED_RAW` for the pairs file, under target/ there, fetched with `arm-run --fetch`).
