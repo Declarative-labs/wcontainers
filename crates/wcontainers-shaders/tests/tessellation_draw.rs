@@ -1289,13 +1289,22 @@ fn stage_values_hold_wherever_the_data_ring_wraps() {
         &[D3D_FEATURE_LEVEL_11_0],
     )
     .unwrap();
-    let seed: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
+    let first: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
         .map(|s| s.parse().unwrap())
         .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_TESSELLATION_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
     let bound = 2 * PATCHES * tess::patch_bounds(64.0).1 as usize;
     let mut failures = Vec::new();
     let mut compared = 0;
-    for (i, gs) in [None, Some("gs_tess_tri")].into_iter().enumerate() {
+    let cases = (first..first + seeds).flat_map(|seed| {
+        [None, Some("gs_tess_tri")]
+            .into_iter()
+            .enumerate()
+            .map(move |c| (seed, c))
+    });
+    for (seed, (i, gs)) in cases {
         let (hs, ds, per, points) = ("hs_tri_odd_cw", "ds_tri", 3, 1);
         // Subnormal factors are another matter (the stream test's known cases): flushed here.
         let mut rng = fastrand::Rng::with_seed(seed * 1000 + i as u64);
