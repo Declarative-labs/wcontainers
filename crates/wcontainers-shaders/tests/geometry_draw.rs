@@ -1412,6 +1412,10 @@ fn on_both_routes(cases: &[Case]) -> Vec<Case> {
         .collect()
 }
 
+/// Real Direct3D's stream output: each bound buffer's bytes, and each stream's primitives written
+/// and made.
+type StreamedReference = (Vec<Vec<u8>>, Vec<[u64; 2]>);
+
 /// Real Direct3D's stream output of `case` as its route's compiler builds it: fxc's build on
 /// Direct3D 11, dxc's on Direct3D 12.
 fn reference_streamed(
@@ -1421,7 +1425,7 @@ fn reference_streamed(
     indices: &[u8],
     output: (&StreamOutput, &Bound),
     streams: usize,
-) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
+) -> StreamedReference {
     match case.route {
         Route::Dxbc => direct3d_streamed(&gpus.d3d11, case, vertices, indices, output, streams),
         Route::Dxil => direct3d12_streamed(&gpus.d3d12, case, vertices, indices, output, streams),
@@ -1454,7 +1458,7 @@ fn direct3d12_streamed(
     indices: &[u8],
     (so, bound): (&StreamOutput, &Bound),
     streams: usize,
-) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
+) -> StreamedReference {
     use windows::Win32::Graphics::Direct3D12::*;
     let ext = case.route.extension();
     let vs = bytecode(&format!("{}.{ext}", case.vs));
@@ -1719,7 +1723,7 @@ fn direct3d_streamed(
     indices: &[u8],
     (so, bound): (&StreamOutput, &Bound),
     streams: usize,
-) -> (Vec<Vec<u8>>, Vec<[u64; 2]>) {
+) -> StreamedReference {
     let vs = bytecode(&format!("{}.dxbc", case.vs));
     let elements = [
         d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
@@ -2335,7 +2339,7 @@ fn reference_of_streams(
     indices: &[u8],
     (so, bound): (&StreamOutput, &Bound),
     streams: usize,
-) -> ((Vec<Vec<u8>>, Vec<[u64; 2]>), usize) {
+) -> (StreamedReference, usize) {
     let (mut buffers, statistics) =
         reference_streamed(gpus, case, vertices, indices, (so, bound), streams);
     if case.route != Route::Dxil || streams == 1 {
