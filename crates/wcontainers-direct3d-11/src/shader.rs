@@ -7,6 +7,7 @@ use wcontainers_gpu::{
     SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
     ViewComponent, helper_binding,
 };
+use wcontainers_shaders::container::{self, Chunk, Tag, dxbc_op, token};
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
 use crate::error::{Error, Result, not_implemented};
@@ -15,11 +16,11 @@ use crate::error::{Error, Result, not_implemented};
 /// `SHEX` chunk; an error if the bytes are not such a container.
 pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
     let bad = Error::InvalidArg("not DXBC bytecode");
-    let (_, at) = chunks(bytecode)?
+    let (_, chunk) = chunks(bytecode)?
         .into_iter()
-        .find(|(tag, _)| tag == b"SHDR" || tag == b"SHEX")
+        .find(|(tag, _)| container::is_program(*tag))
         .ok_or(bad)?;
-    match word(bytecode, at + 8)? >> 16 {
+    match program_version(chunk)? >> 16 {
         0 => Ok(SourceStage::Pixel),
         1 => Ok(SourceStage::Vertex),
         2 => Ok(SourceStage::Geometry),
@@ -35,11 +36,11 @@ pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
 pub fn check_model(bytecode: &[u8], level: u32) -> Result<()> {
     let mut version = None;
     let mut aon9 = false;
-    for (tag, at) in chunks(bytecode)? {
-        match &tag {
-            b"SHDR" | b"SHEX" => version = Some(word(bytecode, at + 8)? & 0xff),
-            b"Aon9" => aon9 = true,
-            _ => {}
+    for (tag, chunk) in chunks(bytecode)? {
+        if container::is_program(tag) {
+            version = Some(program_version(chunk)? & 0xff);
+        } else if &tag == b"Aon9" {
+            aon9 = true;
         }
     }
     let version = version.ok_or(Error::InvalidArg("not DXBC bytecode"))?;
@@ -59,30 +60,28 @@ pub fn check_model(bytecode: &[u8], level: u32) -> Result<()> {
     }
 }
 
-/// The word at byte `at` of `bytecode`.
-fn word(bytecode: &[u8], at: usize) -> Result<u32> {
-    bytecode
-        .get(at..)
-        .and_then(|b| b.get(..4))
-        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+/// The version token a program chunk starts with.
+fn program_version(chunk: Chunk) -> Result<u32> {
+    chunk
+        .contents()
+        .and_then(|c| c.first_chunk())
+        .map(|w| u32::from_le_bytes(*w))
         .ok_or(Error::InvalidArg("not DXBC bytecode"))
 }
 
-/// The tags of a DXBC container's chunks and where each starts.
-fn chunks(bytecode: &[u8]) -> Result<Vec<([u8; 4], usize)>> {
-    if bytecode.len() < 32
-        || &bytecode[..4] != b"DXBC"
-        || word(bytecode, 24)? as usize > bytecode.len()
+/// The chunks of a DXBC container with their tags; an error if the bytes are not such a container.
+fn chunks(bytecode: &[u8]) -> Result<Vec<(Tag, Chunk<'_>)>> {
+    let bad = Error::InvalidArg("not DXBC bytecode");
+    if !container::is_container(bytecode)
+        || container::declared_size(bytecode).ok_or(bad)? as usize > bytecode.len()
     {
-        return Err(Error::InvalidArg("not DXBC bytecode"));
+        return Err(bad);
     }
-    (0..word(bytecode, 28)? as usize)
-        .map(|i| {
-            let at = word(bytecode, 32 + 4 * i)? as usize;
-            let tag = bytecode
-                .get(at..at.saturating_add(4))
-                .ok_or(Error::InvalidArg("not DXBC bytecode"))?;
-            Ok((tag.try_into().unwrap(), at))
+    container::chunk_list(bytecode)
+        .map_err(|_| bad)?
+        .map(|chunk| {
+            let chunk = chunk.map_err(|_| bad)?;
+            Ok((chunk.tag().ok_or(bad)?, chunk))
         })
         .collect()
 }
@@ -123,13 +122,13 @@ impl TypedView {
     }
 }
 
-const DCL_RESOURCE: u32 = 88;
-const DCL_CONSTANT_BUFFER: u32 = 89;
+use dxbc_op::{DCL_CONSTANT_BUFFER, DCL_RESOURCE, DCL_UAV_TYPED};
+use token::{
+    DIMENSION_BUFFER, DIMENSION_TEXTURE_2D_MS_ARRAY, RETURN_TYPE_FLOAT, RETURN_TYPE_SINT,
+    RETURN_TYPE_SNORM, RETURN_TYPE_UINT, RETURN_TYPE_UNORM,
+};
 /// A constant buffer declaration's flag (in the dimension's bits) for a buffer indexed at run time.
 const CONSTANT_BUFFER_DYNAMIC_INDEXED: u32 = 1;
-const DCL_UAV_TYPED: u32 = 156;
-const DIMENSION_BUFFER: u32 = 1;
-const DIMENSION_TEXTURE2DMSARRAY: u32 = 9;
 
 /// A texture, typed storage or constant buffer declaration of a DXBC program: its opcode, resource
 /// dimension (a constant buffer's access pattern), register and return type token (zero for a
@@ -144,64 +143,40 @@ struct Declared {
 /// The `dcl_resource`, `dcl_uav_typed` and `dcl_constantbuffer` declarations of a DXBC container's
 /// program, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
-    const CUSTOMDATA: u32 = 53;
     let bad = Error::InvalidArg("malformed DXBC program");
-    let (_, at) = chunks(bytecode)?
+    let (_, chunk) = chunks(bytecode)?
         .into_iter()
-        .find(|(tag, _)| tag == b"SHDR" || tag == b"SHEX")
+        .find(|(tag, _)| container::is_program(*tag))
         .ok_or(bad)?;
-    let words = word(bytecode, at + 4)? as usize / 4;
-    let token = |i: usize| word(bytecode, at + 8 + 4 * i);
+    let program = chunk
+        .contents()
+        .ok_or(Error::InvalidArg("not DXBC bytecode"))?;
     let mut found = Vec::new();
-    // Past the version and length tokens.
-    let mut i = 2;
-    while i < words {
-        let opcode = token(i)?;
-        let length = match opcode & 0x7ff {
-            CUSTOMDATA => token(i + 1)? as usize,
-            _ => (opcode >> 24 & 0x7f) as usize,
-        };
-        if length == 0 || i + length > words {
-            return Err(bad);
-        }
-        if matches!(
-            opcode & 0x7ff,
-            DCL_RESOURCE | DCL_UAV_TYPED | DCL_CONSTANT_BUFFER
-        ) {
-            // The opcode's extended tokens, the operand and its own, its indices (one immediate in
-            // shader model 5.0, two for a constant buffer's register and size; the identifier and
-            // the range's bounds in 5.1), the return type.
-            let mut j = i + 1;
-            let mut extended = opcode >> 31 != 0;
-            while extended {
-                extended = token(j)? >> 31 != 0;
-                j += 1;
-            }
-            let operand = token(j)?;
-            j += 1;
-            let mut extended = operand >> 31 != 0;
-            while extended {
-                extended = token(j)? >> 31 != 0;
-                j += 1;
-            }
-            let indices = (operand >> 20 & 3) as usize;
+    for instruction in container::instructions(program) {
+        let instruction = instruction.map_err(|_| bad)?;
+        let opcode = token::opcode(instruction.opcode_token());
+        if matches!(opcode, DCL_RESOURCE | DCL_UAV_TYPED | DCL_CONSTANT_BUFFER) {
+            // The operand's indices: one immediate in shader model 5.0, two for a constant
+            // buffer's register and size, the identifier and the range's bounds in 5.1; then the
+            // return type.
+            let (at, indices) = instruction.operand_indices().ok_or(bad)?;
+            let word = |i: usize| instruction.word(i).ok_or(bad);
             let register = match indices {
-                1 | 2 => token(j)?,
-                3 => token(j + 1)?,
+                1 | 2 => word(at)?,
+                3 => word(at + 1)?,
                 _ => return Err(bad),
             };
-            let returns = match opcode & 0x7ff {
+            let returns = match opcode {
                 DCL_CONSTANT_BUFFER => 0,
-                _ => token(j + indices)?,
+                _ => word(at + indices as usize)?,
             };
             found.push(Declared {
-                opcode: opcode & 0x7ff,
-                dimension: opcode >> 11 & 0x1f,
+                opcode,
+                dimension: token::resource_dimension(instruction.opcode_token()),
                 register,
                 returns,
             });
         }
-        i += length;
     }
     Ok(found)
 }
@@ -215,10 +190,10 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
             DCL_UAV_TYPED => true,
             _ => continue,
         };
-        let kind = match d.returns & 0xf {
-            1 | 2 | 5 => FormatKind::Float,
-            3 => FormatKind::Sint,
-            4 => FormatKind::Uint,
+        let kind = match token::return_type(d.returns) {
+            RETURN_TYPE_UNORM | RETURN_TYPE_SNORM | RETURN_TYPE_FLOAT => FormatKind::Float,
+            RETURN_TYPE_SINT => FormatKind::Sint,
+            RETURN_TYPE_UINT => FormatKind::Uint,
             _ => return Err(Error::InvalidArg("malformed DXBC program")),
         };
         views.push(TypedView {
@@ -278,7 +253,7 @@ pub fn multisampled_arrays(bytecode: &[u8]) -> Result<u128> {
         .iter()
         .filter(|d| {
             d.opcode == DCL_RESOURCE
-                && d.dimension == DIMENSION_TEXTURE2DMSARRAY
+                && d.dimension == DIMENSION_TEXTURE_2D_MS_ARRAY
                 && d.register < 128
         })
         .fold(0, |m, d| m | 1 << d.register))
@@ -300,65 +275,46 @@ pub struct SignatureElement {
     pub component: u32,
 }
 
+impl From<container::Element> for SignatureElement {
+    fn from(e: container::Element) -> Self {
+        SignatureElement {
+            semantic: e.semantic,
+            index: e.index,
+            register: e.register,
+            system: e.system,
+            mask: e.mask,
+            stream: e.stream,
+            component: e.component,
+        }
+    }
+}
+
 /// The input signature (`ISGN`, or `ISG1` of shader model 5.1) of a DXBC container; empty where it
 /// has none. An error if the bytes are not such a container or the chunk is malformed.
 pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
-    signature(bytecode, &[(*b"ISGN", 24, false), (*b"ISG1", 32, true)])
+    signature(bytecode, true)
 }
 
 /// The output signature (`OSGN`, `OSG5` of geometry shaders with streams, or `OSG1`).
 pub fn output_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
-    signature(
-        bytecode,
-        &[
-            (*b"OSGN", 24, false),
-            (*b"OSG5", 28, true),
-            (*b"OSG1", 32, true),
-        ],
-    )
+    signature(bytecode, false)
 }
 
-/// The first chunk of `tags` (tag, bytes per element, whether each starts with its stream).
-fn signature(bytecode: &[u8], tags: &[([u8; 4], usize, bool)]) -> Result<Vec<SignatureElement>> {
+/// The first input (`input`) or output signature chunk's elements.
+fn signature(bytecode: &[u8], input: bool) -> Result<Vec<SignatureElement>> {
     let bad = Error::InvalidArg("not DXBC bytecode");
-    let word = |at: usize| -> Result<u32> {
-        bytecode
-            .get(at..)
-            .and_then(|b| b.get(..4))
-            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-            .ok_or(bad)
-    };
-    if bytecode.len() < 32 || &bytecode[..4] != b"DXBC" {
+    if !container::is_container(bytecode) {
         return Err(bad);
     }
-    for i in 0..word(28)? as usize {
-        let at = word(32 + 4 * i)? as usize;
-        let tag = bytecode.get(at..).and_then(|b| b.get(..4)).ok_or(bad)?;
-        let Some(&(_, stride, streams)) = tags.iter().find(|t| t.0 == tag) else {
+    for chunk in container::chunk_list(bytecode).map_err(|_| bad)? {
+        let chunk = chunk.map_err(|_| bad)?;
+        let tag = chunk.tag().ok_or(bad)?;
+        if container::signature_direction(tag) != Some(input) {
             continue;
-        };
-        let first = if streams { 4 } else { 0 };
-        let data = at + 8;
-        let mut elements = Vec::new();
-        for e in 0..word(data)? as usize {
-            let start = data + 8 + e * stride;
-            let base = start + first;
-            let name_at = data + word(base)? as usize;
-            let name = bytecode
-                .get(name_at..)
-                .and_then(|b| b.split(|&c| c == 0).next())
-                .ok_or(bad)?;
-            elements.push(SignatureElement {
-                semantic: String::from_utf8_lossy(name).into_owned(),
-                index: word(base + 4)?,
-                system: word(base + 8)?,
-                component: word(base + 12)?,
-                register: word(base + 16)?,
-                mask: word(base + 20)? as u8,
-                stream: if streams { word(start)? } else { 0 },
-            });
         }
-        return Ok(elements);
+        return container::signature_elements(chunk.contents().ok_or(bad)?, tag)
+            .map(|e| e.map(SignatureElement::from).map_err(|_| bad))
+            .collect();
     }
     Ok(Vec::new())
 }
