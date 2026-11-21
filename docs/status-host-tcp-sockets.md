@@ -46,6 +46,10 @@ readings, repair, authentication, multipath state, the privileged settings, ICMP
   ignored fails peek_at_an_offset_skips_bytes; push doing nothing fails more_to_come_holds_data_until_pushed
   and push_ignoring_neither_keeps_the_cork. `cargo tree` of every interface crate this track uses shows no
   implementation; `git diff` of every interface.rs and data file since 4308b9f7 is empty.
+- Again from a clean clone of main at 23c46b24 (job host-tcp-sockets-verify/20261121-183028, load 2.0 to
+  4.1): 43 passed, the four broken copies each failed as above. Main's committed Cargo.lock did not parse
+  there (a `[[package]]` without its name, from commit 8eaca3b6 of another track), so the clone used the
+  checkout's working lock: tell whoever owns that commit; this track did not edit the shared lock.
 - Which check fails when a method breaks: connect (every check; connect_settings_apply_to_the_synchronize for
   its settings, exit_node_chooses_a_port_outside_the_reserved for bindings, fast_open_* for fast open), listen
   and accept (every check; connect_and_accept_name_both_ends and accept_cuts_* for their fields), send and
