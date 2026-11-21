@@ -902,8 +902,11 @@ struct word_blocks {
    uint32_t storages;
 };
 
+/* A block's variable: its words, read only unless written. A block reached by atomics has a type
+ * of its own, whose words the route makes atomic, so that the other blocks' stay plain. */
 static nir_variable *
-word_block(nir_shader *nir, nir_variable_mode mode, uint32_t binding, uint32_t bytes, bool writable)
+word_block(nir_shader *nir, nir_variable_mode mode, uint32_t binding, uint32_t bytes, bool writable,
+           bool atomic)
 {
    const struct glsl_type *words;
    if (mode == nir_var_mem_ubo) {
@@ -914,8 +917,8 @@ word_block(nir_shader *nir, nir_variable_mode mode, uint32_t binding, uint32_t b
       words = glsl_array_type(glsl_uint_type(), 0, WC_WORD_BYTES);
    }
    const struct glsl_struct_field field = {.type = words, .name = "words", .location = -1};
-   const struct glsl_type *block =
-      glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false, field.name);
+   const struct glsl_type *block = glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
+                                                       atomic ? "atomic_words" : field.name);
    nir_variable *var = nir_variable_create(nir, mode, block, NULL);
    var->interface_type = block;
    var->data.binding = binding;
@@ -976,6 +979,7 @@ struct storage_use {
    uint32_t blocks;
    BITSET_DECLARE(reached, PIPE_MAX_SHADER_BUFFERS);
    BITSET_DECLARE(written, PIPE_MAX_SHADER_BUFFERS);
+   BITSET_DECLARE(atomic, PIPE_MAX_SHADER_BUFFERS);
 };
 
 static bool
@@ -992,6 +996,8 @@ note_storage(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    BITSET_SET(use->reached, index);
    if (writes)
       BITSET_SET(use->written, index);
+   if (intr->intrinsic == nir_intrinsic_ssbo_atomic || intr->intrinsic == nir_intrinsic_ssbo_atomic_swap)
+      BITSET_SET(use->atomic, index);
    return false;
 }
 
@@ -1126,11 +1132,12 @@ wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t
    nir_foreach_variable_with_modes_safe(var, nir, nir_var_mem_ubo | nir_var_mem_ssbo)
       exec_node_remove(&var->node);
    for (uint32_t i = 0; i < uniforms; i++)
-      vars[i] = word_block(nir, nir_var_mem_ubo, i, uniform_bytes[i], false);
+      vars[i] = word_block(nir, nir_var_mem_ubo, i, uniform_bytes[i], false, false);
    for (uint32_t j = 0; j < use.blocks; j++) {
       if (BITSET_TEST(use.reached, j))
          vars[uniforms + j] =
-            word_block(nir, nir_var_mem_ssbo, storage_base + j, 0, BITSET_TEST(use.written, j));
+            word_block(nir, nir_var_mem_ssbo, storage_base + j, 0, BITSET_TEST(use.written, j),
+                       BITSET_TEST(use.atomic, j));
    }
    const struct word_blocks blocks = {
       .uniform = vars,
