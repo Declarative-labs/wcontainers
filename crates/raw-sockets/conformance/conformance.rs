@@ -44,6 +44,8 @@ use wcontainers_route_resolver_conformance::seconds_since_confirmed;
 
 #[doc(hidden)]
 pub use wcontainers_configurable_conformance as configurable_suite;
+/// The ICMP suite, whose wait and allocation tools serve raw sockets too.
+pub use wcontainers_icmp_sockets_conformance as icmp_suite;
 
 /// Moves the calling thread into a new network namespace, with loopback up, which needs `CAP_SYS_ADMIN`.
 pub fn enter_network_namespace() {
@@ -66,7 +68,7 @@ const BRIEF_LINK: [&str; 3] = ["-br", "link", "show"];
 /// The network namespace of the calling thread.
 const THREAD_NAMESPACE: &str = "/proc/thread-self/ns/net";
 /// A protocol number for experiments, which nothing else of the namespace sends or takes.
-const EXPERIMENT: IpNumber = IpNumber::EXPERIMENTAL_AND_TESTING_0;
+pub const EXPERIMENT: IpNumber = IpNumber::EXPERIMENTAL_AND_TESTING_0;
 /// The other protocol number for experiments.
 const OTHER_EXPERIMENT: IpNumber = IpNumber::EXPERIMENTAL_AND_TESTING_1;
 /// Type 253 only, as a rule takes it.
@@ -179,7 +181,7 @@ fn header_to(destination: IpAddr, protocol: IpNumber) -> IpHeaderFields<'static>
     }
 }
 
-fn payload_to<'a>(destination: IpAddr, protocol: IpNumber, payload: &'a [u8]) -> RawPacket<'a> {
+pub fn payload_to<'a>(destination: IpAddr, protocol: IpNumber, payload: &'a [u8]) -> RawPacket<'a> {
     RawPacket::Payload {
         header: header_to(destination, protocol),
         payload,

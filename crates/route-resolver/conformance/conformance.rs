@@ -1016,10 +1016,18 @@ pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
 const TEMPORARY_ADDRESSES: &str = "/proc/sys/net/ipv6/conf/da/use_tempaddr";
 const MANAGED_TEMPORARY: &str = "address replace fd01::1/64 dev da nodad mngtmpaddr";
 
-/// The temporary address Linux made on the link.
+/// The temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
 pub fn temporary_address(link: &str) -> Ipv6Addr {
-    /// Shows the link's temporary addresses as JSON.
-    const SHOW: [&str; 6] = ["-6", "-j", "address", "show", "temporary", "dev"];
+    /// Shows the link's temporary addresses that are no longer tentative, as JSON.
+    const SHOW: [&str; 7] = [
+        "-6",
+        "-j",
+        "address",
+        "show",
+        "temporary",
+        "-tentative",
+        "dev",
+    ];
     const LOCAL: &str = "\"local\":\"";
     for _ in 0..PATIENT_TRIES {
         let output = Command::new(IP)

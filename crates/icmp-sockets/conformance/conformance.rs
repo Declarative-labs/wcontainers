@@ -1930,6 +1930,90 @@ pub const WRITABLE: PollEvents = PollEvents {
     ..NO_EVENTS
 };
 
+/// The allocations `allocations` counts in `rounds` waits that each have to wait, after as many that warm the
+/// socket: each is made and polled, `arrive` makes its event come, and it is polled to its end and dropped before
+/// `take` takes what came.
+pub fn wait_allocations<F: Future<Output = Result<PollEvents, HostError>>>(
+    mut wait: impl FnMut() -> F,
+    mut arrive: impl FnMut(),
+    mut take: impl FnMut(),
+    allocations: fn() -> usize,
+    rounds: usize,
+) -> usize {
+    let mut counted = usize::MIN;
+    for round in 0..rounds * 2 {
+        let wakes = Arc::new(Wakes::default());
+        let mut during = usize::MIN;
+        let dropping = {
+            let before = allocations();
+            let mut call = pin!(wait());
+            assert!(
+                poll_with(call.as_mut(), &wakes).is_pending(),
+                "the wait has to wait"
+            );
+            during += allocations() - before;
+            arrive();
+            assert!(wakes.reach(1), "the wait is woken");
+            let before = allocations();
+            assert!(finished(poll_with(call.as_mut(), &wakes)).data_to_read);
+            during += allocations() - before;
+            allocations()
+        };
+        during += allocations() - dropping;
+        take();
+        if round >= rounds {
+            counted += during;
+        }
+    }
+    counted
+}
+
+/// Makes the test binary's allocator the system's, counting each thread's allocations, which `allocations()` reads.
+#[macro_export]
+macro_rules! counting_allocator {
+    () => {
+        struct Counting;
+
+        std::thread_local! {
+            static ALLOCATIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(usize::MIN) };
+        }
+
+        // SAFETY: every call is passed on to the system's allocator unchanged.
+        unsafe impl std::alloc::GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+                ALLOCATIONS.with(|count| count.set(count.get() + 1));
+                // SAFETY: as the caller of alloc promised.
+                unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
+            }
+
+            unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+                // SAFETY: as the caller of dealloc promised.
+                unsafe { std::alloc::GlobalAlloc::dealloc(&std::alloc::System, pointer, layout) }
+            }
+
+            unsafe fn realloc(
+                &self,
+                pointer: *mut u8,
+                layout: std::alloc::Layout,
+                size: usize,
+            ) -> *mut u8 {
+                ALLOCATIONS.with(|count| count.set(count.get() + 1));
+                // SAFETY: as the caller of realloc promised.
+                unsafe {
+                    std::alloc::GlobalAlloc::realloc(&std::alloc::System, pointer, layout, size)
+                }
+            }
+        }
+
+        #[global_allocator]
+        static COUNTING: Counting = Counting;
+
+        fn allocations() -> usize {
+            ALLOCATIONS.with(core::cell::Cell::get)
+        }
+    };
+}
+
 /// How many sockets a check waits on at once, and how many more waits it makes on the first of them.
 pub const WAITED_SOCKETS: usize = 32;
 pub const WAITS_ON_ONE: usize = 3;
