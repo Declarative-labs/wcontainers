@@ -2,7 +2,7 @@
 
 use core::mem::{offset_of, size_of};
 use std::net::{IpAddr, Ipv6Addr};
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd, BorrowedFd};
 
 use libc::c_int;
 use linux_raw_sys::net as uapi;
@@ -12,7 +12,7 @@ use wcontainers_internet_protocol::{
 };
 
 use crate::datagram::addresses::{in6_addr, storage, zeroed};
-use crate::{set_bytes, set_option};
+use crate::{host_error, last_host_error, set_bytes, set_option};
 
 /// The anycast addresses a socket joined, which Linux counts per join and cannot be asked back.
 #[derive(Default)]
@@ -42,7 +42,47 @@ impl AnycastMemberships {
     }
 }
 
-/// Joins a group and writes its whole source filter, or leaves it.
+/// The interface Linux joins a group on when none is given, found by joining it on a socket of its own and
+/// leaving it on each interface until one holds it.
+fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
+    let family = match group {
+        IpAddr::V4(_) => rustix::net::AddressFamily::INET,
+        IpAddr::V6(_) => rustix::net::AddressFamily::INET6,
+    };
+    let probe = rustix::net::socket_with(
+        family,
+        rustix::net::SocketType::DGRAM,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .map_err(host_error)?;
+    let mut request = zeroed::<uapi::group_req>();
+    request.gr_group = storage(group);
+    set_option(probe.as_fd(), level, uapi::MCAST_JOIN_GROUP, &request)?;
+    // SAFETY: if_nameindex gives an array ended by an entry of index 0, or null, freed below.
+    let interfaces = unsafe { libc::if_nameindex() };
+    if interfaces.is_null() {
+        return Err(last_host_error());
+    }
+    let mut chosen = Err(HostError::Errno(libc::EADDRNOTAVAIL));
+    // SAFETY: the array is read up to its ending entry and freed once.
+    unsafe {
+        let mut entry = interfaces;
+        while (*entry).if_index != u32::MIN {
+            request.gr_interface = (*entry).if_index;
+            if set_option(probe.as_fd(), level, uapi::MCAST_LEAVE_GROUP, &request).is_ok() {
+                chosen = Ok((*entry).if_index);
+                break;
+            }
+            entry = entry.add(1);
+        }
+        libc::if_freenameindex(interfaces);
+    }
+    chosen
+}
+
+/// Joins a group and writes its whole source filter, or leaves it. Linux writes a filter only for a membership
+/// named by its interface, so a join on no interface given is made on the one Linux would choose.
 pub fn set_multicast_group<A: Copy>(
     fd: BorrowedFd<'_>,
     level: u32,
@@ -50,12 +90,11 @@ pub fn set_multicast_group<A: Copy>(
     setting: &MulticastGroup<'_, A>,
     address: impl Fn(&A) -> IpAddr,
 ) -> Result<(), HostError> {
-    let interface = setting.interface.map_or(u32::MIN, |index| index.0);
     let mut request = zeroed::<uapi::group_req>();
-    request.gr_interface = interface;
     request.gr_group = storage(group);
     let filter = match setting.membership {
         MulticastMembership::Left => {
+            request.gr_interface = setting.interface.map_or(u32::MIN, |index| index.0);
             return match set_option(fd, level, uapi::MCAST_LEAVE_GROUP, &request) {
                 Err(HostError::Errno(libc::EADDRNOTAVAIL)) => Ok(()),
                 other => other,
@@ -63,6 +102,11 @@ pub fn set_multicast_group<A: Copy>(
         }
         MulticastMembership::Joined(filter) => filter,
     };
+    let interface = match setting.interface {
+        Some(index) => index.0,
+        None => chosen_interface(level, group)?,
+    };
+    request.gr_interface = interface;
     match set_option(fd, level, uapi::MCAST_JOIN_GROUP, &request) {
         Ok(()) | Err(HostError::Errno(libc::EADDRINUSE)) => {}
         Err(error) => return Err(error),

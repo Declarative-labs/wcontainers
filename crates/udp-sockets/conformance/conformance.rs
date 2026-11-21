@@ -1,7 +1,8 @@
 //! The tests every implementation of wcontainers-udp-sockets runs, written against its traits alone.
 //!
 //! Each check talks over the loopback addresses only, with ports the kernel chooses. A network a check needs
-//! beyond loopback (none so far) is the caller's to provide.
+//! beyond loopback is the caller's to provide: ipv6_memberships_take_their_datagrams needs one interface other
+//! than loopback that takes IPv6 multicast, on a network of its own.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU16;
@@ -36,6 +37,9 @@ const PATIENCE: Duration = Duration::from_secs(1);
 
 /// ff0e, the first group of an IPv6 multicast address of global scope.
 const GLOBAL_MULTICAST: u16 = 0xff0e;
+
+/// fe80, the first group of an IPv6 link-local address.
+const LINK_LOCAL: u16 = 0xfe80;
 
 const PAYLOAD: &[u8] = b"a datagram over loopback";
 const FROM_A_STRANGER: &[u8] = b"from a stranger";
@@ -1488,30 +1492,30 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// An IPv6 multicast member takes the group's datagrams with all-groups off, and an anycast address joined on
-/// the loopback interface is reachable until left.
+/// An IPv6 multicast member takes the group's datagrams with all-groups off, joined on the interface the route
+/// chooses or on one given, and a link-local anycast address joined on that interface is reachable.
+///
+/// Needs an interface with IPv6 multicast besides loopback: Linux never takes an IPv6 multicast datagram over
+/// its loopback interface, drops a looped one whose source is the loopback address, and lets a host join only
+/// an anycast address in a prefix of the interface.
 pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
-    let interface = loopback_interface(&sockets);
-    let group = Ipv6Addr::new(
-        GLOBAL_MULTICAST,
-        u16::MIN,
-        u16::MIN,
-        u16::MIN,
-        u16::MIN,
-        u16::MIN,
-        u16::MIN,
-        u16::MAX,
-    );
+    let group = |last| {
+        Ipv6Addr::new(
+            GLOBAL_MULTICAST,
+            u16::MIN,
+            u16::MIN,
+            u16::MIN,
+            u16::MIN,
+            u16::MIN,
+            u16::MIN,
+            last,
+        )
+    };
+    let unspecified = binding(IpAddr::V6(Ipv6Addr::UNSPECIFIED), u16::MIN);
     let receiver = sockets
         .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
         .unwrap();
-    let port = sockets
-        .bind(
-            &receiver,
-            binding(IpAddr::V6(Ipv6Addr::UNSPECIFIED), u16::MIN),
-        )
-        .unwrap()
-        .port();
+    let port = sockets.bind(&receiver, unspecified).unwrap().port();
     set(
         &sockets,
         &receiver,
@@ -1520,39 +1524,56 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
             enabled: false,
         }),
     );
-    let joined = MulticastGroup {
-        group,
-        interface: Some(interface),
-        membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
-    };
-    set(
-        &sockets,
-        &receiver,
-        UdpSocketSetting::Ip(IpSocketSetting::MulticastV6(joined)),
-    );
-    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let sender = sockets
+        .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let from = sockets.bind(&sender, unspecified).unwrap();
     set(
         &sockets,
         &sender,
         UdpSocketSetting::Ip(IpSocketSetting::MulticastLoopback(true)),
     );
-    let to = SocketAddr::new(IpAddr::V6(group), port);
-    let mut route = ipv6_route(UdpProtocol::Udp, from, to);
-    route.interface = Some(interface);
-    sockets
-        .send_to(
-            &sender,
-            IpHeaderFields::V6(ipv6_header(route.clone())),
-            plain_fields(),
-            datagram(PAYLOAD),
-        )
-        .unwrap();
     let mut into = buffer();
-    let packet = receive_packet(&sockets, &receiver, &mut into);
-    assert_eq!(seen(&into[..packet.fields.length]).destination, to);
-    // fd00::1, a unique local address of no network the host has.
-    let unique_local = u128::from(u8::MAX - 2) << (u128::BITS - u8::BITS);
-    let anycast = Ipv6Addr::from_bits(unique_local | Ipv6Addr::LOCALHOST.to_bits());
+    let mut take = |group, interface| {
+        let joined = MulticastGroup {
+            group,
+            interface,
+            membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
+        };
+        set(
+            &sockets,
+            &receiver,
+            UdpSocketSetting::Ip(IpSocketSetting::MulticastV6(joined)),
+        );
+        let to = SocketAddr::new(IpAddr::V6(group), port);
+        let mut route = ipv6_route(UdpProtocol::Udp, from, to);
+        route.interface = interface;
+        sockets
+            .send_to(
+                &sender,
+                IpHeaderFields::V6(ipv6_header(route)),
+                plain_fields(),
+                datagram(PAYLOAD),
+            )
+            .unwrap();
+        let packet = receive_packet(&sockets, &receiver, &mut into);
+        let arrived = seen(&into[..packet.fields.length]);
+        assert_eq!((arrived.destination, arrived.payload), (to, PAYLOAD));
+        packet.fields.interface
+    };
+    let interface = take(group(u16::MAX), None);
+    assert_eq!(take(group(u16::MAX - 1), Some(interface)), interface);
+    // fe80::ffff, a link-local address, in the prefix of every interface with IPv6.
+    let anycast = Ipv6Addr::new(
+        LINK_LOCAL,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MAX,
+    );
     let member = |membership| AnycastAddress {
         address: anycast,
         interface: Some(interface),
@@ -1569,7 +1590,7 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     sockets
         .send_to(
             &sender,
-            IpHeaderFields::V6(ipv6_header(route.clone())),
+            IpHeaderFields::V6(ipv6_header(route)),
             plain_fields(),
             datagram(PAYLOAD),
         )

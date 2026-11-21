@@ -34,7 +34,7 @@ wcontainers-udp-sockets-conformance = { path = "../../conformance" }
 wcontainers-kernel = { path = "../../../kernel" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# The network namespace and loopback interface of each test.
+# The network namespace of each test.
 libc = "0.2.191"
 
 [lints]

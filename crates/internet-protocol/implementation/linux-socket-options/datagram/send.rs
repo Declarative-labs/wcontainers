@@ -204,7 +204,8 @@ impl SendState {
                 let class = (route.dscp.value() << IP_DSCP_SHIFT) | route.ecn.value();
                 sticky.ensure_int(fd, Slot::TrafficClass, c_int::from(class))?;
                 let interface = route.interface.map_or(u32::MIN, |index| index.0);
-                sticky.ensure_int(fd, Slot::Ipv6UnicastInterface, interface as c_int)?;
+                // Linux takes this index in network byte order, as it takes IP_UNICAST_IF's.
+                sticky.ensure_int(fd, Slot::Ipv6UnicastInterface, interface.to_be() as c_int)?;
                 sticky.ensure(fd, Slot::Mark, &route.mark.0)?;
                 sticky.ensure(fd, Slot::AddressPreferences, &address_preferences(route))?;
                 sticky.ensure_bytes(
