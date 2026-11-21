@@ -199,6 +199,8 @@ struct Chain {
     changes: usize,
     arrived: bool,
     allowed: Vec<Allowed>,
+    /// The last change of the file on the chain.
+    last: Option<String>,
 }
 
 const ATTRIBUTES: &str = "remove every attribute of this file from .gitattributes (and .git/info/attributes): attributes can hide its history";
@@ -709,6 +711,7 @@ impl Walker<'_> {
             changes: changes.len(),
             arrived,
             allowed,
+            last: changes.last().map(|c| c.commit.clone()),
         })
     }
 
@@ -748,8 +751,9 @@ impl Walker<'_> {
             .collect())
     }
 
-    /// The lines of `added` that are not a line of `removed` under a path the change renamed: a moved
-    /// file keeps its lines. A moved line that had grown is still growth, under its new path.
+    /// The lines of `added` that are not a line of `removed` under a path renamed between `from` (the
+    /// file's change before) and `to`: a moved file keeps its lines. A moved line that had grown is still
+    /// growth, under its new path.
     fn unmoved(
         &mut self,
         from: &str,
@@ -803,13 +807,16 @@ impl Walker<'_> {
                 .iter()
                 .map(|(c, why, _)| format!("{} {why}", short(c))),
         );
+        // Files renamed since the file's change before, so that a move and the lines that follow it
+        // may be two commits.
+        let mut previous: Option<&String> = None;
         for change in &changes {
             let allowed = chain.allowed.iter().find(|(c, ..)| *c == change.commit);
             let exempt = allowed.is_some();
             if let Some((_, diff)) = diffs.iter().find(|(c, _)| *c == change.commit) {
-                let added = match change.parents.first() {
-                    Some(first) => {
-                        self.unmoved(first, Some(&change.commit), &diff.added, &diff.removed)?
+                let added = match previous.or(change.parents.first()) {
+                    Some(from) => {
+                        self.unmoved(from, Some(&change.commit), &diff.added, &diff.removed)?
                     }
                     None => diff.added.clone(),
                 };
@@ -841,6 +848,7 @@ impl Walker<'_> {
                 };
                 self.chain(other, base.as_deref())?;
             }
+            previous = Some(&change.commit);
         }
         Ok(chain)
     }
@@ -942,7 +950,10 @@ pub fn read(
         .filter(|k| !from_merge.contains_key(k))
         .collect();
     let added = match head {
-        true => walker.unmoved(HEAD, None, &added, &multiset_minus(&committed, working))?,
+        true => {
+            let from = chain.last.as_deref().unwrap_or(HEAD);
+            walker.unmoved(from, None, &added, &multiset_minus(&committed, working))?
+        }
         false => added,
     };
     if fresh || (chain.arrived && chain.changes == 1) {

@@ -1337,6 +1337,26 @@ mod moves_and_accepted {
     }
 
     #[test]
+    fn the_lines_may_follow_their_file_in_a_later_commit() {
+        let root = started("moved-then-repathed");
+        git(&root, &["mv", LIB, MOVED]);
+        replace(
+            &root,
+            "crates/a/Cargo.toml",
+            "\"a\"\n",
+            "\"a\"\n[lib]\npath = \"moved.rs\"\n",
+        );
+        commit_all(&root, "moved the library");
+        commit_all(&root, "something else");
+        set_baseline(&root, &repathed(&baseline(&root)));
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+        commit_all(&root, "the lines follow");
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+    }
+
+    #[test]
     fn a_line_under_a_path_no_file_was_renamed_to_is_growth() {
         let root = started("moved-line-only");
         append(&root, MOVED, CODE);
