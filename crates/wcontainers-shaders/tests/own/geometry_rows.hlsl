@@ -70,8 +70,11 @@ void gs_rows_lines(triangle RowsIn t[3], uint primitive : SV_PrimitiveID,
     }
 }
 
+// Not an array: Direct3D 11 on the RTX 3080 refuses stream output (E_OUTOFMEMORY) from a geometry
+// shader of several streams whose first stream writes an array.
 struct RowsPair {
-    float2 a[2] : TEXCOORD0;
+    float2 a : TEXCOORD0;
+    float2 b : TEXCOORD1;
 };
 
 struct RowsPlaced {
@@ -86,8 +89,8 @@ struct RowsLast {
     nointerpolation int z : TEXCOORD5;
 };
 
-// Each point written to three streams as its vertex number picks, arrays in the first two, the
-// position in the second.
+// Each point written to three streams as its vertex number picks, an array and the position in
+// the second.
 [maxvertexcount(8)]
 void gs_rows_streams(point GsIn p[1], uint primitive : SV_PrimitiveID,
                      inout PointStream<RowsPair> s0, inout PointStream<RowsPlaced> s1,
@@ -95,8 +98,8 @@ void gs_rows_streams(point GsIn p[1], uint primitive : SV_PrimitiveID,
     uint v = p[0].ids.x;
     if (v % 2 == 0) {
         RowsPair o;
-        o.a[0] = p[0].position.xy;
-        o.a[1] = float2(v, primitive);
+        o.a = p[0].position.xy;
+        o.b = float2(v, primitive);
         s0.Append(o);
     }
     for (uint i = 0; i < v % 3; i++) {
