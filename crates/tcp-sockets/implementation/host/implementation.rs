@@ -1704,7 +1704,8 @@ mod tests {
         }
     }
 
-    const WAITS: usize = 100;
+    /// The cycles each allocation check measures, after one to warm up.
+    const MEASURED_CYCLES: usize = 100;
 
     /// How long a wait may take to be woken once its data is sent.
     const DEADLINE: Duration = Duration::from_secs(10);
@@ -1822,7 +1823,7 @@ mod tests {
         };
         cycle();
         let before = allocations();
-        for _ in 0..WAITS {
+        for _ in 0..MEASURED_CYCLES {
             cycle();
         }
         assert_eq!(allocations() - before, 0);
@@ -1863,7 +1864,7 @@ mod tests {
         };
         cycle();
         let before = allocations();
-        for _ in 0..WAITS {
+        for _ in 0..MEASURED_CYCLES {
             cycle();
         }
         assert_eq!(allocations() - before, 0);
