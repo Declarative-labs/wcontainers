@@ -90,7 +90,7 @@ pub struct Start<'a> {
 pub struct StartOptions<'a> {
     /// The first process's user id, real, effective, saved and file system alike (`docker run
     /// --user`).
-    pub user: u32,
+    pub user: wcontainers_kernel::UserId,
     /// Its group id, likewise.
     pub group: u32,
     /// Its file mode creation mask.
@@ -179,7 +179,7 @@ pub enum Seccomp<'a> {
 impl Default for StartOptions<'_> {
     fn default() -> Self {
         Self {
-            user: ROOT_UID,
+            user: wcontainers_kernel::UserId(ROOT_UID),
             group: ROOT_GID,
             umask: DOCKER_UMASK,
             limits: &crate::process::DOCKER_LIMITS,
@@ -1015,7 +1015,7 @@ impl Kernel {
         }
 
         let credentials = Credentials::container_root(start.groups.to_vec())
-            .with_ids(start.options.user, start.options.group)
+            .with_ids(start.options.user.0, start.options.group)
             .without_new_privileges(start.options.no_new_privileges)
             .with_capabilities(start.options.capabilities);
         let pid = match credentials.as_ref().map_err(|error| *error) {

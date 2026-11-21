@@ -179,7 +179,7 @@ pub fn try_ours_with(
     let path = on_path(command[0]);
     let container = container(command, &path, None);
     let prepared = driver::Prepared {
-        groups: image::user_groups(container.files, options.user, options.group),
+        groups: image::user_groups(container.files, options.user.0, options.group),
         options,
         ..driver::prepare(&container)
     };

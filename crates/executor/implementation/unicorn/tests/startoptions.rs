@@ -120,7 +120,7 @@ fn a_user_with_limits_without_new_privileges_matches_reference() {
     ];
     let umask = 0o027;
     let options = StartOptions {
-        user,
+        user: wcontainers_kernel::UserId(user),
         group,
         umask,
         limits: limits(&[(RLIMIT_NOFILE, nofile_soft, nofile_hard)]),
