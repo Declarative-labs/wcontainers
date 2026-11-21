@@ -112,6 +112,11 @@ const CHOICE_FIRST: Port = Port(41000);
 const RESERVED_LAST: Port = Port(41010);
 const CHOICE_LAST: Port = Port(41020);
 
+/// The same above Linux's default local port range, which ends at 60999.
+const HIGH_CHOICE_FIRST: Port = Port(61000);
+const HIGH_RESERVED_LAST: Port = Port(61010);
+const HIGH_CHOICE_LAST: Port = Port(61020);
+
 const FAST_OPEN_QUEUE: Option<NonZeroU32> = NonZeroU32::new(8);
 
 /// A time, a count and a size every setting of their kind accepts.
@@ -1014,58 +1019,56 @@ pub fn requested_port_is_bound<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(listening.listener);
 }
 
+/// The exit node's port comes from its range outside the reserved part, also where the range lies above the host's own.
 pub fn exit_node_chooses_a_port_outside_the_reserved<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
-    let first = CHOICE_FIRST;
-    let last = CHOICE_LAST;
-    let reserved = [PortRange {
-        first,
-        last: RESERVED_LAST,
-    }];
-    let choice = PortChoice {
-        range: PortRange { first, last },
-        reserved: &reserved,
-    };
-    let binding = LocalBinding {
-        address: ipv4_any(),
-        port: LocalPort::ChosenByExitNode(choice),
-    };
-    let connected = sockets
-        .connect(
-            TcpProtocol::Tcp,
-            OWNER,
-            binding,
-            local,
-            &[],
-            TcpFastOpen::Off,
-        )
-        .expect("connect");
-    let port = connected.local.port();
-    assert!(
-        (RESERVED_LAST.0 + 1..=CHOICE_LAST.0).contains(&port),
-        "port {port}"
-    );
-    let server = accept(&sockets, &listener);
-    sockets.close(server, TcpClose::Orderly);
-    sockets.close(connected.connection, TcpClose::Orderly);
-    let listening = sockets
-        .listen(
-            TcpProtocol::Tcp,
-            OWNER,
-            LocalBinding {
-                address: ipv4_loopback(),
-                port: LocalPort::ChosenByExitNode(choice),
-            },
-            BACKLOG,
-            &[],
-        )
-        .expect("listen");
-    let port = listening.local.port();
-    assert!(
-        (RESERVED_LAST.0 + 1..=CHOICE_LAST.0).contains(&port),
-        "port {port}"
-    );
-    sockets.stop_listening(listening.listener);
+    for (first, reserved_last, last) in [
+        (CHOICE_FIRST, RESERVED_LAST, CHOICE_LAST),
+        (HIGH_CHOICE_FIRST, HIGH_RESERVED_LAST, HIGH_CHOICE_LAST),
+    ] {
+        let reserved = [PortRange {
+            first,
+            last: reserved_last,
+        }];
+        let choice = PortChoice {
+            range: PortRange { first, last },
+            reserved: &reserved,
+        };
+        let allowed = reserved_last.0 + 1..=last.0;
+        let connected = sockets
+            .connect(
+                TcpProtocol::Tcp,
+                OWNER,
+                LocalBinding {
+                    address: ipv4_any(),
+                    port: LocalPort::ChosenByExitNode(choice),
+                },
+                local,
+                &[],
+                TcpFastOpen::Off,
+            )
+            .expect("connect");
+        let port = connected.local.port();
+        assert!(allowed.contains(&port), "port {port}");
+        let server = accept(&sockets, &listener);
+        sockets.close(server, TcpClose::Orderly);
+        sockets.close(connected.connection, TcpClose::Orderly);
+        let listening = sockets
+            .listen(
+                TcpProtocol::Tcp,
+                OWNER,
+                LocalBinding {
+                    address: ipv4_loopback(),
+                    port: LocalPort::ChosenByExitNode(choice),
+                },
+                BACKLOG,
+                &[],
+            )
+            .expect("listen");
+        let port = listening.local.port();
+        assert!(allowed.contains(&port), "port {port}");
+        sockets.stop_listening(listening.listener);
+    }
     sockets.stop_listening(listener);
 }
 

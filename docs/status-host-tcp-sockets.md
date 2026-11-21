@@ -65,6 +65,10 @@ readings, repair, authentication, multipath state, the privileged settings).
     checked by window_probe_is_answered_and_changes_no_setting.
   - `TCP_QUICKACK`'s value 2 is the named `QUICK_ACKNOWLEDGEMENT_THEN_DELAYING` (Linux names none); the suite's
     BPF return comes from libc's `BPF_RET | BPF_K`.
+  - A port the exit node chooses is now bound at once, for connections too, through the shared
+    `bind_chosen_by_exit_node`: Linux ignores a socket's `IP_LOCAL_PORT_RANGE` outside the host's own range (the
+    UDP track's finding), so a range above 60999 gave a port outside it. exit_node_chooses_a_port_outside_the_reserved
+    now also takes a range of 61000 to 61020.
   - The host's interface addresses are read with nix's `getifaddrs` instead of unsafe libc. It still runs once per
     IPv4 accept (counted, warned): Linux gives no arrival interface for a TCP SYN.
 - Which check fails when a method or setting breaks, each one run as a broken copy by mutants.sh (results under
@@ -140,6 +144,8 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Run 3: the plan said `SCM_TS_OPT_ID` carries a send's report key; Linux refuses it on TCP, so the key is kept by
   the kernel's byte offset (plan corrected). The plan's suite gained the wire checks above and the refused settings
   in the set-twice lists (plan corrected).
+- Run 3: connections no longer choose their exit-node port at connect (which let one port serve several peers);
+  they bind it at once like listeners, one path that keeps to ranges outside the host's own.
 - Run 3: the suite's body is Linux only (it was empty of Linux-only calls before): the wire checks need the host's
   packet socket.
 

@@ -40,6 +40,8 @@ mutant fast-open-data-ignored "$implementation" 'let flags = SendFlags::from_bit
     'let flags = SendFlags::from_bits_retain(0)'
 mutant setting-Timestamping-noop "$implementation" '            TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {' \
     'TcpSetting::Ip(IpSocketSetting::Timestamping(_)) => Ok(()), TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {'
+mutant exit-node-port-by-kernel-only "$implementation" 'options::bind_chosen_by_exit_node(socket, address, &choice, &self.shortfalls)' \
+    'options::in_port_ranges(socket, Some(&choice), || rustix::net::bind(socket, &SocketAddr::new(address, 0)).map_err(host_error))'
 # Each setting doing nothing, one at a time.
 for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::ReceiveBuffer(..))' \
     'Ip(IpSocketSetting::MaximumPacingRate(..))' \

@@ -18,7 +18,7 @@ use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, BytesPerSecond, DropCount, HopLimit, InterfaceIndex, IpSocketSetting, IpVersion,
-    LocalBinding, PacketMark, PacketPriority, PtpHardwareClockIndex, ReceiveTimestamps,
+    LocalBinding, LocalPort, PacketMark, PacketPriority, PtpHardwareClockIndex, ReceiveTimestamps,
     ReceivedPacketFields, Report, TransmitEvent, TransmitReport, TransmitReportKey,
     TransmitReportRequest, WirelessAcknowledgement,
 };
@@ -769,6 +769,20 @@ impl<'a> Configurable<LinuxHostTcpListener, TcpListenerSetting<'a>> for LinuxHos
     }
 }
 
+impl LinuxHostTcpSockets {
+    /// Binds the socket as the binding asks, taking a port the exit node chooses at once: Linux chooses only inside
+    /// the host's own port range, so the shared crate tries the rest of a range port by port.
+    fn bind(&self, socket: BorrowedFd<'_>, local: &LocalBinding<'_>) -> Result<(), HostError> {
+        match local.port {
+            LocalPort::ChosenByExitNode(choice) => {
+                let address = options::bind_address(socket, &local.address)?;
+                options::bind_chosen_by_exit_node(socket, address, &choice, &self.shortfalls)
+            }
+            _ => bind(socket, local, false).map(drop),
+        }
+    }
+}
+
 impl NegativeRouteAdvice<LinuxHostTcpConnection> for LinuxHostTcpSockets {
     fn give_negative_route_advice(
         &self,
@@ -805,7 +819,7 @@ impl TcpConnections for LinuxHostTcpSockets {
             self.configure(&connection, setting.clone())?;
         }
         let socket = connection.socket.as_fd();
-        let choice = bind(socket, &local, false)?;
+        self.bind(socket, &local)?;
         let peer = peer_for(family, peer);
         let in_progress = |outcome: Result<usize, HostError>| match outcome {
             Err(HostError::Errno(libc::EINPROGRESS)) => Ok(None),
@@ -816,12 +830,11 @@ impl TcpConnections for LinuxHostTcpSockets {
                 if fast_open == TcpFastOpen::UntilFirstSend {
                     set_flag(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_CONNECT, true)?;
                 }
-                let outcome =
-                    in_progress(options::in_port_ranges(socket, choice.as_ref(), || {
-                        rustix::net::connect(socket, &peer)
-                            .map(|()| 0)
-                            .map_err(host_error)
-                    }))?;
+                let outcome = in_progress(
+                    rustix::net::connect(socket, &peer)
+                        .map(|()| 0)
+                        .map_err(host_error),
+                )?;
                 match outcome {
                     None => TcpConnectStart::SynchronizeSent {
                         fast_open_data_taken: ByteCount(0),
@@ -836,9 +849,9 @@ impl TcpConnections for LinuxHostTcpSockets {
                 let flags = SendFlags::from_bits_retain(libc::MSG_FASTOPEN as u32)
                     | SendFlags::NOSIGNAL
                     | SendFlags::DONTWAIT;
-                let taken = in_progress(options::in_port_ranges(socket, choice.as_ref(), || {
-                    rustix::net::sendto(socket, data, flags, &peer).map_err(host_error)
-                }))?;
+                let taken = in_progress(
+                    rustix::net::sendto(socket, data, flags, &peer).map_err(host_error),
+                )?;
                 TcpConnectStart::SynchronizeSent {
                     fast_open_data_taken: ByteCount(taken.unwrap_or(0)),
                 }
@@ -1281,7 +1294,7 @@ impl TcpListeners for LinuxHostTcpSockets {
         for setting in others {
             self.configure(&listener, setting.clone())?;
         }
-        bind(socket, &local, true)?;
+        self.bind(socket, &local)?;
         rustix::net::listen(socket, i32::try_from(backlog.0).unwrap_or(i32::MAX))
             .map_err(host_error)?;
         // A backlog among the settings is listening again with it.
