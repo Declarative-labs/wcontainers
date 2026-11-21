@@ -193,6 +193,9 @@ pub unsafe extern "system" fn D3D10CreateDevice1(
 /// d3d10_1.h's `D3D10_1_SDK_VERSION`, which the windows crate does not carry.
 const D3D10_1_SDK_VERSION: u32 = 0x20;
 
+/// Warned when a Direct3D 10 device is asked of a driver other than the hardware one.
+const NOT_HARDWARE_10: &str = "D3D10CreateDevice with a software, reference, WARP or null driver";
+
 type CreateDevice10 =
     unsafe extern "system" fn(*mut c_void, i32, HMODULE, u32, u32, *mut *mut c_void) -> HRESULT;
 type CreateDevice101 = unsafe extern "system" fn(
@@ -223,7 +226,7 @@ unsafe fn create10(
         return windows::Win32::Foundation::E_INVALIDARG;
     }
     if driver_type != D3D10_DRIVER_TYPE_HARDWARE.0 {
-        super::warn_once("D3D10CreateDevice with a software, reference, WARP or null driver");
+        super::warn_once(NOT_HARDWARE_10);
         return DXGI_ERROR_UNSUPPORTED;
     }
     if flags & D3D10_CREATE_DEVICE_DEBUG.0 as u32 != 0 {

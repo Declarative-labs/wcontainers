@@ -489,6 +489,12 @@ const KNOWN_LEVELS: [windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL; 11] 
     ]
 };
 
+/// Warned when a device is asked of a driver other than the hardware one.
+const NOT_HARDWARE: &str = "D3D11CreateDevice with a software, reference, WARP or null driver";
+
+/// Warned when a device is asked to have a video device, which is not served.
+const NO_VIDEO: &str = "D3D11CreateDevice with D3D11_CREATE_DEVICE_VIDEO_SUPPORT";
+
 /// `D3D11CreateDevice` for the program.
 ///
 /// # Safety
@@ -530,7 +536,7 @@ unsafe fn create_for_program(
         return E_INVALIDARG;
     }
     if adapter.is_null() && driver_type != D3D_DRIVER_TYPE_HARDWARE.0 {
-        warn_once("D3D11CreateDevice with a software, reference, WARP or null driver");
+        warn_once(NOT_HARDWARE);
         return DXGI_ERROR_UNSUPPORTED;
     }
     if flags & windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_DEBUG.0 != 0 {
@@ -539,7 +545,7 @@ unsafe fn create_for_program(
     // No video device is served, so a device that must have one is refused as Direct3D refuses it
     // on an adapter without video.
     if flags & windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_VIDEO_SUPPORT.0 != 0 {
-        warn_once("D3D11CreateDevice with D3D11_CREATE_DEVICE_VIDEO_SUPPORT");
+        warn_once(NO_VIDEO);
         return DXGI_ERROR_UNSUPPORTED;
     }
     // No list is Direct3D's default list; an empty one names no level to make.
