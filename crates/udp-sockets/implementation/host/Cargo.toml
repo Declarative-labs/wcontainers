@@ -21,11 +21,13 @@ wcontainers-udp-sockets = { path = "../.." }
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 etherparse.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# Connecting and binding, the socket's buffer sizes and its socket addresses.
+[target.'cfg(unix)'.dependencies]
+# Opening, binding and connecting sockets, the settings it covers and the socket's addresses.
 socket2 = { version = "0.6.5", features = ["all"] }
-# Socket types, and the connect to no address that socket2 does not make.
-rustix = { version = "1.1.6", features = ["net"] }
+# Socket types, the connect to no address that socket2 does not make, and the process's user.
+rustix = { version = "1.1.6", features = ["net", "process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 # The Linux uapi constants and structures of sockets.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 # setsockopt, getsockopt, sendmsg, recvmsg and their control messages, and what linux-raw-sys lacks.
