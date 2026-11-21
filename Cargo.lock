@@ -4200,6 +4200,7 @@ dependencies = [
  "build-rs",
  "cargo-lock",
  "cargo_metadata",
+ "flate2",
  "gimli 0.34.0",
  "libc",
  "mach2 0.6.0",
@@ -4208,6 +4209,7 @@ dependencies = [
  "rayon",
  "rustix",
  "serde_json",
+ "sha2",
  "tar",
  "tempfile",
  "wasm-encoder 0.263.0",
@@ -4219,6 +4221,7 @@ dependencies = [
  "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
  "zerocopy",
+ "zstd",
 ]
 
 [[package]]

@@ -281,6 +281,92 @@ fn a_pipeline_from_the_oci_image_matches_the_reference() {
     assert_eq!(outcome, reference(PIPELINE));
 }
 
+/// The twin of the image in `layout` whose layers are zstd: an image layout holding its linux/arm64
+/// manifest and configuration, and its layers' tars as libzstd compresses them.
+fn zstd_twin(layout: &Path) -> PathBuf {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read;
+    use wcontainers_runtime_single_kernel::oci_spec::image::{
+        Descriptor, Digest, ImageIndex, ImageManifest, MediaType, Os,
+    };
+    let twin = layout.with_file_name("zstd-layout");
+    let _ = std::fs::remove_dir_all(&twin);
+    let blobs = twin.join("blobs").join("sha256");
+    std::fs::create_dir_all(&blobs).unwrap();
+    let read_blob = |descriptor: &Descriptor| {
+        let digest = descriptor.digest();
+        std::fs::read(layout.join("blobs").join("sha256").join(digest.digest())).unwrap()
+    };
+    let write_blob = |media_type: MediaType, bytes: &[u8]| {
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        std::fs::write(blobs.join(&digest), bytes).unwrap();
+        let digest: Digest = format!("sha256:{digest}").parse().unwrap();
+        Descriptor::new(media_type, bytes.len() as u64, digest)
+    };
+    let mut index = ImageIndex::from_file(layout.join("index.json")).unwrap();
+    let found = index
+        .manifests()
+        .iter()
+        .find(|descriptor| {
+            descriptor.platform().as_ref().is_some_and(|platform| {
+                *platform.os() == Os::Linux && platform.architecture().to_string() == "arm64"
+            })
+        })
+        .unwrap()
+        .clone();
+    let mut manifest = ImageManifest::from_reader(read_blob(&found).as_slice()).unwrap();
+    let config = manifest.config();
+    write_blob(config.media_type().clone(), &read_blob(config));
+    let layers = manifest
+        .layers()
+        .iter()
+        .map(|layer| {
+            assert_eq!(*layer.media_type(), MediaType::ImageLayerGzip);
+            let mut tar = Vec::new();
+            flate2::read::GzDecoder::new(read_blob(layer).as_slice())
+                .read_to_end(&mut tar)
+                .unwrap();
+            let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
+            encoder.include_checksum(true).unwrap();
+            std::io::Write::write_all(&mut encoder, &tar).unwrap();
+            write_blob(MediaType::ImageLayerZstd, &encoder.finish().unwrap())
+        })
+        .collect();
+    manifest.set_layers(layers);
+    let mut descriptor = write_blob(
+        MediaType::ImageManifest,
+        manifest.to_string().unwrap().as_bytes(),
+    );
+    descriptor.set_platform(found.platform().clone());
+    index.set_manifests(vec![descriptor]);
+    index.to_file(twin.join("index.json")).unwrap();
+    std::fs::copy(layout.join("oci-layout"), twin.join("oci-layout")).unwrap();
+    twin
+}
+
+/// Every file of the image's directories: its name, kind, mode, owner, size and time, then the
+/// contents of every regular file.
+const EVERY_FILE: &str = "cd / && D='bin etc home lib media mnt opt root run sbin srv tmp usr var'; \
+     find $D -exec stat -c '%n %F %a %u %g %s %Y %N' {} + | sort; \
+     find $D -type f -exec md5sum {} + | sort";
+
+/// The image's zstd twin runs as the image does: the pipeline, and what every file holds.
+#[test]
+fn the_zstd_twin_of_the_oci_image_runs_as_the_image() {
+    let (layout, _) = images();
+    let gzip = Image::oci(layout, "arm64").unwrap();
+    let zstd = Image::oci(&zstd_twin(layout), "arm64").unwrap();
+    let run = |image: &Image, command| {
+        let spec = with_args(image.spec().unwrap(), &["sh", "-c", command]);
+        ours(&spec, image, None).0
+    };
+    let files = run(&gzip, EVERY_FILE);
+    assert_eq!((files.exit_code, files.stderr.as_str()), (0, ""));
+    assert!(files.stdout.contains("bin/busybox"));
+    assert_eq!(run(&zstd, EVERY_FILE), files);
+    assert_eq!(run(&zstd, PIPELINE), reference(PIPELINE));
+}
+
 #[test]
 fn a_pipeline_from_a_plain_tar_matches_the_reference() {
     let (_, files) = images();
