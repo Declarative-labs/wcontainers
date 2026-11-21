@@ -220,6 +220,13 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Run 7, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 22:33, load 1.9 to 2.7: clippy with warnings
   denied clean (tcp host, suite); 98 passed, 0 failed, three runs, each 3.4 s (94 suite checks and four of the
   implementation's own).
+- Run 7 independent check from a clean clone of main at e7bf5cbd (job host-tcp-sockets-clean, 22:34 to 22:35, load
+  1.8 to 4.5; log clean-check-run7.log in scratch): build folder emptied, clippy with warnings denied clean (9.5 s),
+  98 passed in 3.46 s; `cargo tree` of tcp-sockets, internet-protocol, configurable, negative-route-advice, kernel,
+  abi and the suite shows no implementation crate; `git diff ae9c53ca e7bf5cbd` of the .rs files beside the
+  tcp-sockets, internet-protocol, kernel, configurable and negative-route-advice interfaces is empty (abi's and
+  system's changed only in other tracks' commits 564626c0, fd65d351, 4ee5def7). Literal check: no finding in this
+  track's files.
 - Run 7 broken copies (mutants.sh, 22:28 to 22:30, load 2 to 5; log mutants-run-7.log in scratch), each failed:
   multipath-save-syn-refusal-skipped, link-header-kept-as-network, link-header-not-saved,
   link-header-given-by-accept, saved-synchronize-not-kept, saved-synchronize-off-ignored,
