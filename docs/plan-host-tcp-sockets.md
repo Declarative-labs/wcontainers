@@ -36,14 +36,17 @@
   immediate success under `TCP_FASTOPEN_CONNECT` is `DeferredUntilFirstSend`.
 - listen: the same socket and bind, `TCP_SAVE_SYN` always (accept owes the SYN's IP header), the settings,
   `listen(backlog)`. The `Backlog` setting is `listen` again.
-- accept: `accept4` non-blocking; the SYN's header from `TCP_SAVED_SYN`, cut to the buffer; its fields from
-  that header and what the accepted socket reports.
+- accept: `accept4` non-blocking; the SYN's header from `TCP_SAVED_SYN`, cut to the buffer, its IP header found
+  after the link header when the listener saves that too (`TCP_SAVE_SYN` 2); its fields from that header and what
+  the accepted socket reports, the arrival interface from `IP_PKTOPTIONS` or `IPV6_2292PKTOPTIONS` (the listener
+  keeps `IP_PKTINFO` and `IPV6_RECVPKTINFO` on), and from the host's addresses for multipath.
 - send: socket2's `send_with_flags`, or its `sendmsg` when the send asks for transmit reports, with `MSG_NOSIGNAL`
   and `MSG_OOB`, `MSG_MORE`, `MSG_EOR` from the request; transmit reports as an `SO_TIMESTAMPING` control message
   (written by the shared crate's `datagram::send::Control`) with the request's record flags, the socket's own option flags (`OPT_ID`,
   `OPT_TSONLY`, `OPT_STATS`) kept on by the implementation; Linux refuses `SCM_TS_OPT_ID` on TCP, so the guest's key
   is kept by the byte offset the kernel reports for the send.
-- receive: socket2's `recv_with_flags`, or, when timestamps or unread-byte reports are on, the shared crate's
+- receive: under the connection's lock (a peek at an offset sets the socket-wide `SO_PEEK_OFF` for its call),
+  socket2's `recv_with_flags`, or, when timestamps or unread-byte reports are on, the shared crate's
   `receive_message` (libc's `recvmsg`, since socket2's `RecvFlags` gives no `MSG_CTRUNC`), with `MSG_PEEK` (and
   `SO_PEEK_OFF` for an offset), `MSG_OOB`; timestamps from the control messages, walked in place without allocating;
   `unread_after` from `TCP_CM_INQ`.
@@ -83,12 +86,14 @@
 - Settings that need CAP_NET_ADMIN or CAP_NET_RAW (mark, repair, transparent addresses, priorities above six)
   answer Linux's own EPERM when the host lacks it.
 - Fields of `ReceivedPacketFields` that Linux never reports for a SYN (its IPv4 arrival interface, its
-  timestamps): taken from what the accepted socket reports, each counted under a named reason.
+  timestamps, and everything of a multipath SYN): taken from what the accepted socket reports, each counted under
+  a named reason.
 
 ## Milestones
 - T1: connect (settings, fast open), listen, accept, send, receive with their requests, shut_down, close,
-  stop_listening, the error queue, the settings that need no privilege, the action methods; the suite for
-  them, passing on the Linux machine over loopback.
+  stop_listening, the error queue, the settings that need no privilege (among them `RecordsLastReceivedHeader`, the
+  `IP_PKTINFO`-family and `IPV6_RECV*` records, and `SaveSynchronize` from the link header), the action methods;
+  the suite for them, passing on the Linux machine over loopback.
 - T2: read_state and read_listener_state with every query; repair, timestamps, authentication (MD5 and AO),
   multipath; the privileged settings, run as root in a network namespace.
 

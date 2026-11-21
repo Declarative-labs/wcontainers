@@ -39,6 +39,41 @@ readings, repair, authentication, multipath state, the privileged settings).
 - Still refused there with a counted reason: multicast and anycast memberships, a fixed IPv6 flow label. The
   UDP track needs them more: add them there.
 
+## Done in run 7 (2026-11-21): the independent check of run 6 answered
+- `RecordsLastReceivedHeader` is honoured: Requested turns on `IP_PKTINFO`, `IP_RECVTTL`, `IP_RECVTOS` (whose records
+  `IP_PKTOPTIONS` gives a TCP socket) and, on IPv6 sockets, `IPV6_RECVPKTINFO`, `IPV6_RECVHOPLIMIT`,
+  `IPV6_RECVTCLASS`, `IPV6_RECVHOPOPTS`, `IPV6_RECVDSTOPTS`, `IPV6_RECVRTHDR` (whose records `IPV6_2292PKTOPTIONS`
+  gives from the last packet that came in order); NotRequested turns them off. Measured as uid 1000 on the ARM
+  machine: each is taken without privilege. A listener with it keeps it for the connections it accepts (accept
+  no longer turns off their packet information then). The suite takes both values at connect and on established
+  IPv4 and IPv6 connections, and on IPv4 and IPv6 listeners (listener_settings_set_twice_equal_set_once demands
+  success). Its effect shows only through `TcpQuery::LastReceivedHeader`, which is read_state (T2).
+- `SaveSynchronize(FromLinkHeader)` is honoured: the listener's `TCP_SAVE_SYN` is 2 (measured as uid 1000: taken
+  without privilege; on loopback the saved headers start with a 14-byte Ethernet header). Accept finds where the
+  IP header starts (the first place an IP header from the peer to the local address holds a TCP header between
+  their ports that ends the headers, by etherparse's lax slices; counted when none is found) and gives the IP
+  header from there whichever way the SYN was saved; `TakeSavedSynchronize` then gives the link header too.
+  saved_synchronize_is_taken_once covers link, link then network, link then off; it also checks that accept's
+  header is the SYN's IPv4 header from 127.0.0.1 to 127.0.0.1.
+- Reading a saved SYN again into 64 KiB when it is longer than the first room is a counted slow path
+  (`LONG_SAVED_SYNCHRONIZE`); the first room now holds an Ethernet header too.
+- Peeks at an offset no longer disturb other receives: every receive holds the connection's `receiving` lock, since
+  `SO_PEEK_OFF` is the socket's for the call (an uncontended lock beside a system call; Linux takes the socket's
+  own lock for each receive anyway). Checked by the implementation's own peeks_from_two_threads_each_start_where_asked
+  (two threads, 20 000 peeks each, one at offset 5 and one at 0, every one exact); it fails without the lock.
+- New wait checks: wait_for_urgent_data_finishes_when_it_arrives (exceptional_condition, `POLLPRI`) and
+  wait_for_the_peers_shutdown_finishes_when_it_comes (peer_shut_down_writing, `POLLRDHUP`, with no hang-up); each
+  fails when the shared readiness does not register its bit (the checker's broken copy and one for `RDHUP`).
+- An IPv4 SYN's arrival interface is now the one Linux keeps for the connection, read from `IP_PKTOPTIONS` (the
+  listener has `IP_PKTINFO` on; measured: an accepted socket reports interface 1 for 127.0.0.1, and a dual-stack
+  listener's IPv4-mapped connection too): Linux records there the interface of the segment that completed the
+  handshake (`tcp_v4_syn_recv_sock`: `mc_index = inet_iif(skb)`), the SYN's own only for fast open, and that is
+  counted (`ARRIVAL_INTERFACE_OF_THE_HANDSHAKE`). The host's addresses (`getifaddrs`, cached until a netlink notice
+  of an address change) now serve only multipath connections, which have no packet options. No check on one host
+  tells the two apart: a SYN to an address a dummy interface holds is reported on that interface by both
+  (measured, interface 2).
+- Broken copies: 106 (mutants.sh); the new ones and the three mended ones are under Measurements.
+
 ## Done in run 6 (2026-11-21): the independent check of run 5 answered
 - Multipath is checked on the wire (multipath_is_negotiated_when_both_ends_ask, which replaces
   multipath_connections_carry_bytes): the capture marks segments with the MPTCP option (kind 30, which etherparse
@@ -142,10 +177,11 @@ readings, repair, authentication, multipath state, the privileged settings).
     `bind_chosen_by_exit_node`: Linux ignores a socket's `IP_LOCAL_PORT_RANGE` outside the host's own range (the
     UDP track's finding), so a range above 60999 gave a port outside it. exit_node_chooses_a_port_outside_the_reserved
     now also takes a range of 61000 to 61020.
-  - The host's interface addresses are read with nix's `getifaddrs` instead of unsafe libc. It still runs once per
-    IPv4 accept (counted, warned): Linux gives no arrival interface for a TCP SYN.
+  - The host's interface addresses are read with nix's `getifaddrs` instead of unsafe libc, cached until a netlink
+    notice of an address change; since run 7 only multipath accepts use them (see run 7).
 - wait_for_events: wait_for_events_finishes_when_data_arrives, wait_for_events_answers_at_once_when_ready,
   dropping_a_wait_cancels_it, many_waits_each_wake_once, wait_for_room_finishes_when_the_peer_reads,
+  wait_for_urgent_data_finishes_when_it_arrives, wait_for_the_peers_shutdown_finishes_when_it_comes,
   wait_ends_with_the_errors_always_reported. wait_for_listener_events: listener_wait_finishes_when_a_connection_comes,
   dropping_a_listener_wait_cancels_it.
 - Which check fails when a method or setting breaks, each one run as a broken copy by mutants.sh (results under
@@ -161,7 +197,8 @@ readings, repair, authentication, multipath state, the privileged settings).
   timestamp_clock_set_in_repair_mode_stamps_segments and timestamp_clock_in_the_other_unit_counts_in_it_or_is_refused
   (the listener's: only its refusal, see For the owner). set_authentication_counters and the listener's:
   authentication_counters_are_set_only_where_authentication_is. read_listener_state: listener_state_reads_a_listener.
-  read_state: saved_synchronize_is_taken_once (TakeSavedSynchronize only; the rest is T2).
+  read_state: saved_synchronize_is_taken_once (TakeSavedSynchronize only; the rest is T2). receive's lock: the
+  implementation's own peeks_from_two_threads_each_start_where_asked.
   give_negative_route_advice: negative_route_advice_picks_a_new_flow. Settings: send and receive buffers, buffer
   locks, low waters (send_settings_*, receive_settings_*); window clamp (window_clamp_bounds_the_synchronize_window);
   pacing rate, transmit delay (their checks); hop limit, traffic class, path MTU discovery, flow label
@@ -175,12 +212,24 @@ readings, repair, authentication, multipath state, the privileged settings).
   multicast loopback and all-groups (no effect on TCP traffic), packet priority and mark (not on the wire),
   unicast interface, route scope, source preferences, bound interface, incoming processor (one interface, no
   read-back before T2), IPv4 options and IPv6 extension headers, a fixed flow label, the IPv6 variants of traffic
-  class and path MTU discovery, `SaveSynchronize` Off (shows only in `TakeSavedSynchronize`, T2). Refused with a
-  counted reason and checked to answer the same twice: `RecordsLastReceivedHeader`,
-  `SaveSynchronize(FromLinkHeader)`. T2 settings (authentication, repair queues, options and windows) are not in
-  T1.
+  class and path MTU discovery, `RecordsLastReceivedHeader` (shows only in `TcpQuery::LastReceivedHeader`, T2).
+  `SaveSynchronize` with all three values is checked through `TakeSavedSynchronize` (saved_synchronize_is_taken_once).
+  T2 settings (authentication, repair queues, options and windows) are not in T1.
 
 ## Measurements
+- Run 7, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 22:33, load 1.9 to 2.7: clippy with warnings
+  denied clean (tcp host, suite); 98 passed, 0 failed, three runs, each 3.4 s (94 suite checks and four of the
+  implementation's own).
+- Run 7 broken copies (mutants.sh, 22:28 to 22:30, load 2 to 5; log mutants-run-7.log in scratch), each failed:
+  multipath-save-syn-refusal-skipped, link-header-kept-as-network, link-header-not-saved,
+  link-header-given-by-accept, saved-synchronize-not-kept, saved-synchronize-off-ignored,
+  saved-synchronize-taken-twice (saved_synchronize_is_taken_once); records-refused (both connection setting checks
+  and the listener's); receive-unlocked (peeks_from_two_threads_each_start_where_asked);
+  urgent-wait-unregistered (wait_for_urgent_data_finishes_when_it_arrives); peer-shutdown-unregistered
+  (wait_for_the_peers_shutdown_finishes_when_it_comes); quoted-addresses-swapped
+  (icmp_error_reaches_a_synchronizing_connection_over_ipv4; its text follows another track's uncommitted edit of
+  icmp_error.rs). Not caught, as said above: `RecordsLastReceivedHeader` doing nothing (no read before T2) and the
+  IPv4 arrival interface taken from the host's addresses instead.
 - Run 6, ARM machine (Graviton4, Linux 7.0.0-1018-aws), 2026-11-21 21:59 to 22:04, load 4 to 16: clippy with
   warnings denied clean (tcp host, suite, shared crate); 95 passed, 0 failed, five runs, each 3.4 s (92 suite checks
   and three of the implementation's own). Literal check (22:03): no finding in this track's files.
@@ -250,7 +299,7 @@ readings, repair, authentication, multipath state, the privileged settings).
   `cloud/arm-run <checkout> --name host-tcp-sockets -- crates/tcp-sockets/implementation/host/run-conformance.sh`
   (`RUST_TEST_THREADS=12` before it keeps to the machine's share).
 - Broken copies: the same with `crates/tcp-sockets/implementation/host/mutants.sh [names]` (about 20 s a
-  copy, 99 copies; names pick some). Whether every copy's text is still there once: scratch
+  copy, 106 copies; names pick some). Whether every copy's text is still there once: scratch
   tools/check_mutants.sh <checkout> (on the Mac, no build).
 - Lint for Linux on the ARM machine: `cloud/arm-run <checkout> --name host-tcp-sockets -- 'cargo clippy -j
   $ARM_JOBS --no-deps --tests -p wcontainers-tcp-sockets-host -p wcontainers-tcp-sockets-conformance --
@@ -272,9 +321,12 @@ readings, repair, authentication, multipath state, the privileged settings).
 
 ## Next (T2)
 - read_state and read_listener_state (every query), authentication (MD5, AO, counters), repair options, queues
-  and windows, `RecordsLastReceivedHeader`, `SaveSynchronize(FromLinkHeader)` and what a guest's own saving
-  means for `TakeSavedSynchronize`: counted refusals now.
-- With read_state, give the settings listed above as unobservable a check of their effect.
+  and windows: counted refusals now.
+- With read_state, give the settings listed above as unobservable a check of their effect, first
+  `RecordsLastReceivedHeader` through `TcpQuery::LastReceivedHeader`.
+- authentication_counters_are_set_only_where_authentication_is and listener_state_reads_a_listener still pass on
+  any NotSupported answer (conformance.rs, `assert_eq!(error, HostError::NotSupported)`): once T2 answers them, make
+  both demand the real answer on Linux.
 
 ## Departures from the plan
 - Run 4: the plan's "the contract waits for nothing" is gone with the async ruling: the two waits are the shared
@@ -323,10 +375,13 @@ readings, repair, authentication, multipath state, the privileged settings).
   through a host process running as uid 1000 can only be answered EPERM (the host cannot make a socket owned
   by another user without CAP_SETUID), so on an unprivileged host every guest connect fails. The suite
   therefore runs as root.
-- `TcpAccepted::synchronize` asks for fields Linux never reports for a SYN: for IPv4 the arrival interface
-  (example: a SYN to 127.0.0.1 gives no interface anywhere; the implementation takes the interface holding
-  the local address and counts it), and the SYN's own mark, priority and timestamps (it gives the accepted
-  socket's mark and priority and no timestamps).
+- `TcpAccepted::synchronize` asks for fields Linux never reports for a SYN: for IPv4 the arrival interface (Linux
+  keeps that of the segment that completed the handshake, given in its place and counted), and the SYN's own mark,
+  priority and timestamps (it gives the accepted socket's mark and priority and no timestamps).
+- A multipath accept has no SYN to give: Linux has no `TCP_SAVED_SYN` (nor packet options) on MPTCP sockets, so
+  `synchronize_header` is empty and `synchronize.length` is 0, counted (`NO_SAVED_SYNCHRONIZE`), with the interface
+  taken from the host's addresses (counted). Example: a multipath client to a multipath listener on 127.0.0.1 is
+  accepted with length 0. The contract has no way to say the SYN is unknown (an `Option` would).
 - `TransmitReport::interface` is required, but Linux names an interface in a report only when the socket has
   `IP_PKTINFO` on: otherwise the implementation gives index 0, Linux's own "none".
 - `TcpTransmitStatistics::received_hop_limit` is required, but Linux gives `TCP_NLA_TTL` only in a report an
