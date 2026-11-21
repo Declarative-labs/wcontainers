@@ -2309,6 +2309,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-negative-route-advice"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+]
+
+[[package]]
+name = "wcontainers-negative-route-advice-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-negative-route-advice",
+]
+
+[[package]]
 name = "wcontainers-random-source"
 version = "0.1.0"
 
@@ -2413,6 +2427,7 @@ dependencies = [
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-kernel-interface",
+ "wcontainers-negative-route-advice",
 ]
 
 [[package]]
@@ -2465,6 +2480,7 @@ dependencies = [
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-kernel-interface",
+ "wcontainers-negative-route-advice",
 ]
 
 [[package]]

@@ -150,7 +150,7 @@ pub struct UpperLayer {
     pub selector: Option<UpperLayerSelector>,
 }
 
-/// The check that a route's source address is one the exit node has, which [`IP_TRANSPARENT`](https://man7.org/linux/man-pages/man2/IP_TRANSPARENT.2const.html) and `IP_HDRINCL` waive.
+/// The check that the source address a route is looked up with is one the exit node has, which [`IP_TRANSPARENT`](https://man7.org/linux/man-pages/man2/IP_TRANSPARENT.2const.html) waives, as [`IP_HDRINCL`](https://man7.org/linux/man-pages/man2/IP_HDRINCL.2const.html) also does for IPv4 and [`IP_FREEBIND`](https://man7.org/linux/man-pages/man2/IP_FREEBIND.2const.html) or the `net.ipv6.ip_nonlocal_bind` sysctl also do for IPv6.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceAddressCheck {
     Required,
@@ -347,8 +347,7 @@ pub enum IpSocketSetting<'a> {
     ReceiveBuffer(ByteCount),
     Timestamping(Timestamping),
     MulticastLoopback(bool),
-    MulticastAllGroups(bool),
-    NegativeRouteAdvice,
+    MulticastAllGroups { version: IpVersion, enabled: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,9 +456,19 @@ pub enum FlowLabelChoice {
 /// A field a connected socket's stack gives every packet it sends, set once for all of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IpPacketSetting<'a> {
-    HopLimit(Option<HopLimit>),
-    TrafficClass { dscp: IpDscp, ecn: IpEcn },
-    PathMtuDiscovery(PathMtuDiscovery),
+    HopLimit {
+        version: IpVersion,
+        limit: Option<HopLimit>,
+    },
+    TrafficClass {
+        version: IpVersion,
+        dscp: IpDscp,
+        ecn: IpEcn,
+    },
+    PathMtuDiscovery {
+        version: IpVersion,
+        mode: PathMtuDiscovery,
+    },
     Ipv4Options(&'a Ipv4Options),
     HopByHopOptions(Option<Ipv6RawExtHeaderSlice<'a>>),
     RoutingDestinationOptions(Option<Ipv6RawExtHeaderSlice<'a>>),

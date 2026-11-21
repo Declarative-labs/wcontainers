@@ -96,7 +96,6 @@ pub struct TcpAuthenticationOptions {
     pub requested_next: Option<TcpAuthenticationKeyIdentifier>,
     pub requirement: TcpAuthenticationRequirement,
     pub icmp_errors: TcpAuthenticationIcmpErrors,
-    pub counters: Option<TcpAuthenticationCounters>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

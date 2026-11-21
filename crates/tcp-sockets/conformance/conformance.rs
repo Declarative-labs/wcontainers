@@ -7,11 +7,15 @@ use wcontainers_internet_protocol::{
     TransmitReportKey, TransmitReportRequest,
 };
 use wcontainers_kernel_interface::UserId;
-use wcontainers_tcp_sockets::settings::{TcpListenerSetting, TcpSetting};
+use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
+use wcontainers_tcp_sockets::repair::{TcpTimestamp, TcpTimestampClock, TcpTimestampUnit};
+use wcontainers_tcp_sockets::settings::{
+    SegmentCount, TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting,
+};
 use wcontainers_tcp_sockets::state::{TcpListenerQuery, TcpQuery};
 use wcontainers_tcp_sockets::{
-    ListenBacklog, TcpClose, TcpContinuation, TcpFastOpen, TcpProtocol, TcpReceiveRequest,
-    TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
+    ListenBacklog, TcpClose, TcpContinuation, TcpFastOpen, TcpProtocol, TcpPushOverride,
+    TcpReceiveRequest, TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
 
 /// Calls each method of `TcpSockets` as a placeholder that fails until the real checks are written.
@@ -38,6 +42,17 @@ pub fn call_tcp_sockets_methods<S: TcpSockets>(sockets: S) {
         },
         transmit_statistics: Report::NotRequested,
     };
+    let counters = TcpAuthenticationCounters {
+        verified: SegmentCount(u64::MIN),
+        failed: SegmentCount(u64::MIN),
+        key_not_found: SegmentCount(u64::MIN),
+        signature_missing: SegmentCount(u64::MIN),
+        icmp_errors_ignored: SegmentCount(u64::MIN),
+    };
+    let clock = TcpTimestampClock {
+        value: TcpTimestamp(u32::MIN),
+        unit: TcpTimestampUnit::Milliseconds,
+    };
     if let Ok(connected) =
         sockets.connect(TcpProtocol::Tcp, owner, local, peer, &[], TcpFastOpen::Off)
     {
@@ -50,6 +65,14 @@ pub fn call_tcp_sockets_methods<S: TcpSockets>(sockets: S) {
         let _ = sockets.receive(&connection, TcpReceiveRequest::Read, &mut []);
         let _ = sockets.take_error_queue_entry(&connection, &mut []);
         let _ = sockets.read_state(&connection, TcpQuery::Information);
+        let _ = sockets.push_queued_data(&connection, TcpPushOverride::Neither);
+        let _ = sockets.send_delayed_acknowledgement(&connection, TcpQuickAcknowledgement::On);
+        let _ = sockets.rearm_keep_alive_timer(&connection);
+        let _ = sockets.discard_error_queue_entries(&connection);
+        let _ = sockets.send_window_probe(&connection);
+        let _ = sockets.set_timestamp_clock(&connection, clock);
+        let _ = sockets.set_authentication_counters(&connection, counters);
+        let _ = sockets.give_negative_route_advice(&connection);
         let _ = sockets.shut_down(&connection, TcpShutdown::Write);
         sockets.close(connection, TcpClose::Orderly);
     }
@@ -65,6 +88,8 @@ pub fn call_tcp_sockets_methods<S: TcpSockets>(sockets: S) {
             sockets.close(accepted.connection, TcpClose::Orderly);
         }
         let _ = sockets.read_listener_state(&listener, TcpListenerQuery::Information);
+        let _ = sockets.set_listener_authentication_counters(&listener, counters);
+        let _ = sockets.set_listener_timestamp_clock(&listener, clock);
         sockets.stop_listening(listener);
     }
     todo!("this is a placeholder: the real checks of TcpSockets are not written yet");

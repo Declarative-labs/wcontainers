@@ -2,17 +2,16 @@ use core::num::NonZeroU32;
 use core::time::Duration;
 
 use wcontainers_internet_protocol::{
-    ByteCount, HopLimit, IpPacketSetting, IpSocketSetting, PortSetting, Report, SocketFilter,
+    ByteCount, HopLimit, IpPacketSetting, IpSocketSetting, IpVersion, PortSetting, Report,
+    SocketFilter,
 };
 
 use crate::ListenBacklog;
 use crate::authentication::{
-    TcpAuthenticationKeyAddition, TcpAuthenticationKeyRemoval, TcpAuthenticationOptions,
-    TcpAuthenticationRepair, TcpMd5KeyChange,
+    TcpAuthenticationCounters, TcpAuthenticationKeyAddition, TcpAuthenticationKeyRemoval,
+    TcpAuthenticationOptions, TcpAuthenticationRepair, TcpMd5KeyChange,
 };
-use crate::repair::{
-    TcpRepair, TcpRepairOption, TcpRepairQueue, TcpRepairWindow, TcpTimestampClock,
-};
+use crate::repair::{TcpRepair, TcpRepairOption, TcpRepairQueue, TcpRepairWindow};
 
 /// The length in bytes of one TCP Fast Open key, [`TCP_FASTOPEN_KEY_LENGTH`](https://github.com/torvalds/linux/blob/v6.18/include/net/tcp.h#L2038).
 pub const FAST_OPEN_KEY_LENGTH: usize = 16;
@@ -38,7 +37,7 @@ pub struct SegmentCount(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpSequenceNumber(pub u32);
 
-/// A setting of one TCP socket, one [`setsockopt`](https://man7.org/linux/man-pages/man2/setsockopt.2.html) of it, applied with the effect Linux gives each time it is set.
+/// A setting of one TCP socket, the state that one [`setsockopt`](https://man7.org/linux/man-pages/man2/setsockopt.2.html) of it leaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TcpSetting<'a> {
     Ip(IpSocketSetting<'a>),
@@ -48,9 +47,15 @@ pub enum TcpSetting<'a> {
     ReceiveLowWater(ByteCount),
     Filter(Option<SocketFilter<'a>>),
     TransmitRehash(TransmitRehash),
-    MinimumHopLimit(Option<HopLimit>),
+    MinimumHopLimit {
+        version: IpVersion,
+        minimum: Option<HopLimit>,
+    },
     RecordsLastReceivedHeader(Report),
-    IcmpErrorReports(Report),
+    IcmpErrorReports {
+        version: IpVersion,
+        reports: Report,
+    },
     KeepAlive(bool),
     KeepAliveIdle(Duration),
     KeepAliveInterval(Duration),
@@ -78,12 +83,13 @@ pub enum TcpSetting<'a> {
     AddAuthenticationKey(TcpAuthenticationKeyAddition<'a>),
     RemoveAuthenticationKey(TcpAuthenticationKeyRemoval),
     AuthenticationOptions(TcpAuthenticationOptions),
+    /// The [TCP Authentication Option](https://www.rfc-editor.org/rfc/rfc5925) counters the socket counts on from when it connects or listens, which can be set only before it does.
+    InitialAuthenticationCounters(TcpAuthenticationCounters),
     Repair(TcpRepair),
     RepairQueue(TcpRepairQueue),
     QueueSequence(TcpSequenceNumber),
     RepairOptions(&'a [TcpRepairOption]),
     RepairWindow(TcpRepairWindow),
-    Timestamp(TcpTimestampClock),
     AuthenticationRepair(TcpAuthenticationRepair),
 }
 
@@ -119,12 +125,11 @@ pub enum TransmitRehash {
     Enabled,
 }
 
-/// A [`TCP_QUICKACK`](https://man7.org/linux/man-pages/man7/tcp.7.html) value, `Once` being an even value other than zero.
+/// A [`TCP_QUICKACK`](https://man7.org/linux/man-pages/man7/tcp.7.html) mode, which the connection's own acknowledging later switches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpQuickAcknowledgement {
     Off,
     On,
-    Once,
 }
 
 /// A [`TCP_LINGER2`](https://man7.org/linux/man-pages/man7/tcp.7.html) value.

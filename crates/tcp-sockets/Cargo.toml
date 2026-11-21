@@ -11,3 +11,4 @@ wcontainers-abi.workspace = true
 wcontainers-configurable = { path = "../configurable" }
 wcontainers-internet-protocol = { path = "../internet-protocol" }
 wcontainers-kernel-interface = { path = "../kernel-interface" }
+wcontainers-negative-route-advice = { path = "../negative-route-advice" }

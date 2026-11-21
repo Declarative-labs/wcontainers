@@ -14,14 +14,19 @@ use wcontainers_internet_protocol::{
     ByteCount, LocalBinding, ReceiveTimestamps, ReceivedPacketFields, Report, TransmitReportRequest,
 };
 use wcontainers_kernel_interface::UserId;
+use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
-use crate::settings::{TcpListenerSetting, TcpSetting};
+use crate::authentication::TcpAuthenticationCounters;
+use crate::repair::TcpTimestampClock;
+use crate::settings::{TcpListenerSetting, TcpQuickAcknowledgement, TcpSetting};
 use crate::state::{TcpErrorQueueEntry, TcpListenerQuery, TcpQuery, TcpReading};
 
 /// Sockets for [TCP](https://man7.org/linux/man-pages/man7/tcp.7.html) connections.
 pub trait TcpSockets: TcpConnections + TcpListeners {}
 
-pub trait TcpConnections: for<'a> Configurable<Self::Connection, TcpSetting<'a>> {
+pub trait TcpConnections:
+    for<'a> Configurable<Self::Connection, TcpSetting<'a>> + NegativeRouteAdvice<Self::Connection>
+{
     type Connection: Ord;
 
     fn connect(
@@ -62,6 +67,34 @@ pub trait TcpConnections: for<'a> Configurable<Self::Connection, TcpSetting<'a>>
         directions: TcpShutdown,
     ) -> Result<(), HostError>;
     fn close(&self, connection: Self::Connection, manner: TcpClose);
+    /// Sends now what of the connection's queued data its windows, its cork and [Nagle's algorithm](https://man7.org/linux/man-pages/man7/tcp.7.html) allow, the cork and Nagle's algorithm not counting when the push ignores them and staying ignored for that data until more is queued.
+    fn push_queued_data(
+        &self,
+        connection: &Self::Connection,
+        ignoring: TcpPushOverride,
+    ) -> Result<(), HostError>;
+    /// Sends an acknowledgement that the connection, established or in CLOSE-WAIT, has scheduled and is delaying, at once if its receive buffer is empty and otherwise when a read empties it while the mode is on, and, only if one was scheduled, then puts the connection in the given mode.
+    fn send_delayed_acknowledgement(
+        &self,
+        connection: &Self::Connection,
+        afterwards: TcpQuickAcknowledgement,
+    ) -> Result<(), HostError>;
+    /// Times the connection's next keep-alive probe at its keep-alive idle time after the later of the last data and the last acknowledgement it received, at once if that time is past, when keep-alive is on.
+    fn rearm_keep_alive_timer(&self, connection: &Self::Connection) -> Result<(), HostError>;
+    fn discard_error_queue_entries(&self, connection: &Self::Connection) -> Result<(), HostError>;
+    /// Sends the established connection's peer a segment and takes the peer's window from the answer.
+    fn send_window_probe(&self, connection: &Self::Connection) -> Result<(), HostError>;
+    /// Makes the TCP timestamp clock of the connection, which must be in repair mode, read the given value now and count in the given unit.
+    fn set_timestamp_clock(
+        &self,
+        connection: &Self::Connection,
+        reading: TcpTimestampClock,
+    ) -> Result<(), HostError>;
+    fn set_authentication_counters(
+        &self,
+        connection: &Self::Connection,
+        values: TcpAuthenticationCounters,
+    ) -> Result<(), HostError>;
 }
 
 pub trait TcpListeners:
@@ -87,6 +120,17 @@ pub trait TcpListeners:
         listener: &Self::Listener,
         query: TcpListenerQuery<'a>,
     ) -> Result<TcpReading<'a>, HostError>;
+    fn set_listener_authentication_counters(
+        &self,
+        listener: &Self::Listener,
+        values: TcpAuthenticationCounters,
+    ) -> Result<(), HostError>;
+    /// Makes the TCP timestamp clock of the listener, which must be in repair mode, read the given value now and count in the given unit.
+    fn set_listener_timestamp_clock(
+        &self,
+        listener: &Self::Listener,
+        reading: TcpTimestampClock,
+    ) -> Result<(), HostError>;
     fn stop_listening(&self, listener: Self::Listener);
 }
 
@@ -164,6 +208,13 @@ pub struct TcpSendRequest {
     pub record: TcpRecordBoundary,
     pub transmit_reports: TransmitReportRequest,
     pub transmit_statistics: Report,
+}
+
+/// The limits a push ignores for the data already queued: neither, or both the cork and [Nagle's algorithm](https://man7.org/linux/man-pages/man7/tcp.7.html), as setting `TCP_NODELAY` does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpPushOverride {
+    Neither,
+    CorkAndNagle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

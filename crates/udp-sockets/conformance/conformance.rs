@@ -77,6 +77,8 @@ pub fn call_udp_sockets_methods<S: UdpSockets>(sockets: S) {
         let _ = sockets.send_to(&socket, header, fields, datagram);
         let _ = sockets.receive(&socket, &mut []);
         let _ = sockets.count_unsent_bytes(&socket);
+        let _ = sockets.read_incoming_processor(&socket);
+        let _ = sockets.give_negative_route_advice(&socket);
         sockets.close(socket);
     }
     todo!("this is a placeholder: the real checks of UdpSockets are not written yet");

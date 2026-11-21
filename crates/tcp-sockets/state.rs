@@ -56,6 +56,7 @@ pub enum TcpListenerQuery<'a> {
     Information,
     CongestionControl(&'a mut [u8]),
     Tuned,
+    Timestamp,
     Authentication,
     AuthenticationKey(TcpAuthenticationKeyIdentity),
     IncomingProcessor,

@@ -7,12 +7,15 @@ use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, LocalBinding, PortSetting,
-    ReceivedPacketFields, RouteSelectors, SendError, TransmitReport,
+    ProcessorIndex, ReceivedPacketFields, RouteSelectors, SendError, TransmitReport,
 };
 use wcontainers_kernel_interface::UserId;
+use wcontainers_negative_route_advice::NegativeRouteAdvice;
 
 /// Sockets for [UDP](https://man7.org/linux/man-pages/man7/udp.7.html) and [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagrams.
-pub trait UdpSockets: for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>> {
+pub trait UdpSockets:
+    for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>> + NegativeRouteAdvice<Self::Socket>
+{
     type Socket: Ord;
 
     fn open(
@@ -42,6 +45,11 @@ pub trait UdpSockets: for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>> {
     fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError>;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
+    /// Returns the socket's incoming processor, the one set or, once the socket is connected, the one that last took in a packet for it.
+    fn read_incoming_processor(
+        &self,
+        socket: &Self::Socket,
+    ) -> Result<Option<ProcessorIndex>, HostError>;
     fn close(&self, socket: Self::Socket);
 }
 
