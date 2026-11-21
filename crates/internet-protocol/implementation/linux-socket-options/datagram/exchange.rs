@@ -7,7 +7,10 @@ use std::os::fd::{AsRawFd, BorrowedFd};
 use libc::c_int;
 use linux_raw_sys::net as uapi;
 use wcontainers_abi::HostError;
-use wcontainers_internet_protocol::{ByteCount, MaximumTransmissionUnit, Received, SendError};
+use wcontainers_internet_protocol::{
+    ByteCount, InterfaceIndex, MaximumTransmissionUnit, Received, SendError, TransmitEvent,
+    TransmitReport, TransmitReportKey, TransmitTimeError,
+};
 
 use crate::Shortfalls;
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
@@ -83,13 +86,115 @@ impl ErrorEntry {
     }
 }
 
-/// The entries of one socket's error queue that a send read while it looked for its own, kept for receives.
+/// The entries of one socket's error queue that a send read while it looked for its own, kept for receives, and
+/// the sends that asked for transmit time errors, which Linux reports by the time and not the key.
 #[derive(Default)]
 pub struct ErrorQueue {
     kept: VecDeque<ErrorEntry>,
+    transmit_times: VecDeque<TransmitTimeSend>,
+}
+
+/// A send that asked for transmit time errors: the time it gave, in nanoseconds of its clock, and its key.
+struct TransmitTimeSend {
+    at: u64,
+    key: TransmitReportKey,
+    packet: bool,
+}
+
+/// The transmit time of a rejection, which Linux splits between the error's data and information.
+fn rejected_time(error: &libc::sock_extended_err) -> u64 {
+    (u64::from(error.ee_data) << u32::BITS) | u64::from(error.ee_info)
 }
 
 impl ErrorQueue {
+    /// Whether entries a send read wait here for receives.
+    pub fn holds_entries(&self) -> bool {
+        !self.kept.is_empty()
+    }
+
+    /// Notes a send that asked for transmit time errors, so that a rejection of its time gives its key.
+    pub fn expect_transmit_time_errors(&mut self, at: u64, key: TransmitReportKey, packet: bool) {
+        self.transmit_times
+            .push_back(TransmitTimeSend { at, key, packet });
+    }
+
+    /// Whether the host holds none of the socket's sends; if so, every report or rejection of one is on the error
+    /// queue, which this reads into the entries kept, and the sends noted without a rejection there are forgotten.
+    pub fn settle(
+        &mut self,
+        fd: BorrowedFd<'_>,
+        shortfalls: &Shortfalls,
+    ) -> Result<bool, HostError> {
+        if unsent_bytes(fd)?.0 != usize::MIN {
+            return Ok(false);
+        }
+        while let Ok(entry) = ErrorEntry::read(fd, shortfalls) {
+            self.kept.push_back(entry);
+        }
+        let rejected: Vec<u64> = self
+            .kept
+            .iter()
+            .filter_map(|entry| Ancillary::parse(&entry.control).error)
+            .filter(|(error, _)| error.ee_origin == receive::SO_EE_ORIGIN_TXTIME)
+            .map(|(error, _)| rejected_time(&error))
+            .collect();
+        self.transmit_times
+            .retain(|send| rejected.contains(&send.at));
+        Ok(true)
+    }
+
+    /// What an entry gives, as `error_entry` says, with a transmit time rejection given the key of its send.
+    pub fn received(
+        &mut self,
+        shortfalls: &Shortfalls,
+        entry: &ErrorEntry,
+        into: &mut [u8],
+        write_icmp_error: impl FnOnce(
+            &mut [u8],
+            usize,
+            &Ancillary<'_>,
+            &libc::sock_extended_err,
+            Option<SocketAddr>,
+        ) -> Option<usize>,
+    ) -> Option<Received> {
+        let ancillary = Ancillary::parse(&entry.control);
+        let Some((error, _)) = ancillary
+            .error
+            .filter(|(error, _)| error.ee_origin == receive::SO_EE_ORIGIN_TXTIME)
+        else {
+            return error_entry(shortfalls, entry, into, write_icmp_error);
+        };
+        let at = rejected_time(&error);
+        let Some(send) = self
+            .transmit_times
+            .iter()
+            .position(|send| send.at == at)
+            .and_then(|position| self.transmit_times.remove(position))
+        else {
+            shortfalls.count(TRANSMIT_TIME_REJECTION_WITHOUT_KEY);
+            return None;
+        };
+        let reason = match error.ee_code {
+            receive::SO_EE_CODE_TXTIME_INVALID_PARAM => TransmitTimeError::InvalidParameter,
+            receive::SO_EE_CODE_TXTIME_MISSED => TransmitTimeError::Missed,
+            _ => {
+                shortfalls.count(ERROR_OF_NO_REPORT);
+                return None;
+            }
+        };
+        let packet = send.packet.then(|| {
+            let copied = entry.data.len().min(into.len());
+            into[..copied].copy_from_slice(&entry.data[..copied]);
+            ByteCount(entry.data.len())
+        });
+        Some(Received::TransmitReport(TransmitReport {
+            key: send.key,
+            interface: InterfaceIndex(ancillary.interface.unwrap_or(u32::MIN)),
+            event: TransmitEvent::TransmitTimeRejected(reason),
+            packet_length: packet,
+        }))
+    }
+
     /// The error of a send Linux refused as too long: the MTU of the local error it queued, else `EMSGSIZE`.
     pub fn message_too_long(&mut self, fd: BorrowedFd<'_>, shortfalls: &Shortfalls) -> SendError {
         loop {

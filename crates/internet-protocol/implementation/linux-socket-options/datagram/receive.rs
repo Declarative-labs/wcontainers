@@ -48,6 +48,9 @@ const RECEIVE_CONTROL: usize = space(size_of::<uapi::in_pktinfo>())
 
 /// `SO_EE_ORIGIN_TXTIME` of `linux/errqueue.h`, which neither libc nor linux-raw-sys carries.
 pub const SO_EE_ORIGIN_TXTIME: u8 = 6;
+/// `SO_EE_CODE_TXTIME_INVALID_PARAM` and `SO_EE_CODE_TXTIME_MISSED` of `linux/errqueue.h`, which neither carries.
+pub const SO_EE_CODE_TXTIME_INVALID_PARAM: u8 = 1;
+pub const SO_EE_CODE_TXTIME_MISSED: u8 = 2;
 
 /// The control messages of one receive, in words so that they are aligned as `cmsghdr` needs.
 pub struct ControlBuffer([usize; RECEIVE_CONTROL.div_ceil(size_of::<usize>())]);
@@ -78,16 +81,33 @@ pub fn receive<'a>(
     control: &'a mut ControlBuffer,
     error_queue: bool,
 ) -> Result<Message<'a>, HostError> {
+    receive_with_tail(fd, into, &mut [], control, error_queue)
+}
+
+/// One `recvmsg` into `into` and, for what does not fit there, on into `tail`.
+pub fn receive_with_tail<'a>(
+    fd: BorrowedFd<'_>,
+    into: &mut [u8],
+    tail: &mut [MaybeUninit<u8>],
+    control: &'a mut ControlBuffer,
+    error_queue: bool,
+) -> Result<Message<'a>, HostError> {
     let mut name = MaybeUninit::<SocketAddrStorage>::zeroed();
-    let mut vector = libc::iovec {
-        iov_base: into.as_mut_ptr().cast(),
-        iov_len: into.len(),
-    };
+    let mut vectors = [
+        libc::iovec {
+            iov_base: into.as_mut_ptr().cast(),
+            iov_len: into.len(),
+        },
+        libc::iovec {
+            iov_base: tail.as_mut_ptr().cast(),
+            iov_len: tail.len(),
+        },
+    ];
     let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
     header.msg_name = name.as_mut_ptr().cast();
     header.msg_namelen = size_of::<SocketAddrStorage>() as socklen_t;
-    header.msg_iov = &mut vector;
-    header.msg_iovlen = 1;
+    header.msg_iov = vectors.as_mut_ptr();
+    header.msg_iovlen = vectors.len() as _;
     header.msg_control = control.0.as_mut_ptr().cast();
     header.msg_controllen = RECEIVE_CONTROL as _;
     let flags = libc::MSG_DONTWAIT
@@ -425,7 +445,7 @@ pub fn udp_checksum(
     protocol: IpNumber,
     length: usize,
     header: &[u8],
-    payload: &[u8],
+    payload: &[&[u8]],
 ) -> u16 {
     let mut sum = match (source, destination) {
         (IpAddr::V4(source), IpAddr::V4(destination)) => Sum16BitWords::new()
@@ -438,10 +458,26 @@ pub fn udp_checksum(
     sum = sum
         .add_2bytes([u8::MIN, protocol.0])
         .add_4bytes((length as u32).to_be_bytes());
-    sum.add_slice(header)
-        .add_slice(payload)
-        .to_ones_complement_with_no_zero()
-        .to_be()
+    sum = sum.add_slice(header);
+    // A part of odd length leaves its last byte to pair with the first of the next.
+    let mut carried = None;
+    for part in payload {
+        let mut part = *part;
+        if let Some(first) = carried {
+            let Some((&second, rest)) = part.split_first() else {
+                continue;
+            };
+            sum = sum.add_2bytes([first, second]);
+            part = rest;
+        }
+        let (words, last) = part.split_at(part.len() - part.len() % size_of::<u16>());
+        sum = sum.add_slice(words);
+        carried = last.first().copied();
+    }
+    if let Some(last) = carried {
+        sum = sum.add_slice(&[last]);
+    }
+    sum.to_ones_complement_with_no_zero().to_be()
 }
 
 fn mapped(address: IpAddr) -> Ipv6Addr {
