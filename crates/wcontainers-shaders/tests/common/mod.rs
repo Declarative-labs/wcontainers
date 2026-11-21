@@ -269,6 +269,10 @@ pub struct Reference {
     pub unbound: bool,
     /// The target cleared to zero instead of [`CLEAR`].
     pub cleared_to_zero: bool,
+    /// The target cleared to this instead of [`CLEAR`].
+    pub clear: Option<[f32; 4]>,
+    /// The blend constant.
+    pub blend_factor: [f32; 4],
     /// Drawn without a pixel shader.
     pub no_pixel_shader: bool,
 }
@@ -469,9 +473,11 @@ pub fn direct3d_11(
         c.PSSetShaderResources(0, Some(&views));
         c.PSSetSamplers(0, Some(&[Some(sampler)]));
         c.RSSetState(&raster);
-        c.OMSetBlendState(blend.as_ref(), Some(&[0.0; 4]), !0);
+        c.OMSetBlendState(blend.as_ref(), Some(&reference.blend_factor), !0);
         c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        if format == Format::Rgba32Uint || reference.cleared_to_zero {
+        if let Some(clear) = reference.clear {
+            c.ClearRenderTargetView(&rtv, &clear);
+        } else if format == Format::Rgba32Uint || reference.cleared_to_zero {
             c.ClearRenderTargetView(&rtv, &[0.0; 4]);
         } else {
             c.ClearRenderTargetView(&rtv, &CLEAR);
@@ -758,6 +764,9 @@ pub struct Setup {
     /// Drawn as a pipeline without a pixel shader: the pixel program is the built-in one for
     /// `ps_key` (`builtin::pixel_program_for_variant`), writing no colour.
     pub no_pixel_shader: bool,
+    /// Texels of a copy of target 0 before the draw, rows tightly packed, bound at
+    /// [`wcontainers_gpu::TARGET_COPY_BINDING`] for a pixel program combining with it.
+    pub target_copy: Option<Vec<u8>>,
 }
 
 /// `texels` (Rgba8Unorm) with each texel's components mapped by `map`.
@@ -796,6 +805,7 @@ impl Setup {
             layers: 0,
             texel_map: None,
             no_pixel_shader: false,
+            target_copy: None,
         }
     }
 }
@@ -1357,6 +1367,41 @@ pub fn ours<B: Backend + 'static>(
                 },
                 writable: false,
             },
+        });
+    }
+    let copy = setup.target_copy.as_ref().map(|texels| {
+        let (texture, view) = texture(
+            b,
+            draw.format,
+            draw.size,
+            TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+        );
+        b.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: draw.size,
+                height: draw.size,
+                depth_or_layers: 1,
+            },
+            texels,
+            texels.len() as u32 / draw.size,
+            draw.size,
+            WriteMode::Ordered,
+        )
+        .unwrap();
+        (texture, view)
+    });
+    if let Some((_, view)) = &copy {
+        helper_entries.push(BindingEntry {
+            binding: wcontainers_gpu::TARGET_COPY_BINDING,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(view),
         });
     }
     let helper_set =

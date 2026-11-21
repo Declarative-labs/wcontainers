@@ -344,9 +344,7 @@ pub enum HelperValue {
     /// texture copies) and the view's element count, two u32. Elements at or past the count read zero in the format's components
     /// and the defaults in the others, as an element of a vertex stream does, and take no writes.
     TexelBufferView { set: u32, binding: u32 },
-    /// How the program combines target n with its old value: color and alpha source and destination
-    /// factors and operations, the write mask and the logic operation as u32 codes (eight u32), then the
-    /// draw's blend constant (four f32).
+    /// How the program combines target n with its old value, laid out as [`TargetCombineValue`].
     TargetCombine { target: u8 },
     /// The early tests the program runs itself: depth compare, front and back stencil compare (u32
     /// codes of [`crate::CompareFn`], zero for a test that is off), stencil reference and read mask
@@ -527,6 +525,57 @@ pub enum TexelBufferRoute {
     /// [`HelperValue::TexelBufferView`] and its format from [`VariantKey::texel_formats`]
     /// ([`crate::SlowPath::TexelBufferAsTexture`]). Typed buffers at texture slots only.
     Texture,
+}
+
+/// The value of [`HelperValue::TargetCombine`]: each half's source factor, destination factor and
+/// operation, the write mask and the logic operation as their discriminants, then the blend constant.
+/// Blending off is `One`, `Zero`, `Add` on both halves; no logic operation is [`LogicOp::Copy`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TargetCombineValue {
+    pub color: [u32; 3],
+    pub alpha: [u32; 3],
+    pub writes: u32,
+    pub logic_op: u32,
+    pub constant: [f32; 4],
+}
+
+impl TargetCombineValue {
+    pub fn new(
+        target: &crate::RenderTargetBlend,
+        logic_op: Option<crate::LogicOp>,
+        constant: [f32; 4],
+    ) -> TargetCombineValue {
+        use crate::{BlendComponent, BlendFactor, BlendOp};
+        let off = BlendComponent {
+            src: BlendFactor::One,
+            dst: BlendFactor::Zero,
+            op: BlendOp::Add,
+        };
+        let (color, alpha) = target.blend.unwrap_or((off, off));
+        let codes = |c: BlendComponent| [c.src as u32, c.dst as u32, c.op as u32];
+        TargetCombineValue {
+            color: codes(color),
+            alpha: codes(alpha),
+            writes: u32::from(target.writes.bits()),
+            logic_op: logic_op.unwrap_or(crate::LogicOp::Copy) as u32,
+            constant,
+        }
+    }
+
+    /// The value as the helper block holds it, little-endian.
+    pub fn bytes(&self) -> Vec<u8> {
+        let words = self
+            .color
+            .iter()
+            .chain(&self.alpha)
+            .chain([&self.writes, &self.logic_op]);
+        words
+            .copied()
+            .chain(self.constant.map(f32::to_bits))
+            .flat_map(u32::to_le_bytes)
+            .collect()
+    }
 }
 
 /// A color target the program writes itself: encoded into the guest's format where the texture is
@@ -741,6 +790,39 @@ mod tests {
             );
         }
         assert_eq!(SlotKind::Counter.slots(), SlotKind::Storage.slots());
+    }
+
+    /// A target's combine value is laid out in the helper block as its type is.
+    #[test]
+    fn target_combine_values_are_written_as_laid_out() {
+        let target = crate::RenderTargetBlend {
+            blend: None,
+            writes: crate::ColorWrites::R | crate::ColorWrites::A,
+        };
+        let value = TargetCombineValue::new(&target, None, [0.5; 4]);
+        let bytes = value.bytes();
+        assert_eq!(bytes.len(), core::mem::size_of::<TargetCombineValue>());
+        let word = |offset: usize| {
+            u32::from_le_bytes(
+                bytes[offset..][..core::mem::size_of::<u32>()]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        use core::mem::offset_of;
+        assert_eq!(word(offset_of!(TargetCombineValue, writes)), value.writes);
+        assert_eq!(
+            word(offset_of!(TargetCombineValue, logic_op)),
+            crate::LogicOp::Copy as u32
+        );
+        assert_eq!(
+            word(offset_of!(TargetCombineValue, alpha)),
+            crate::BlendFactor::One as u32
+        );
+        assert_eq!(
+            word(offset_of!(TargetCombineValue, constant)),
+            0.5f32.to_bits()
+        );
     }
 
     /// Every binding of the helper set, each a single one or a range from its base (the clamped

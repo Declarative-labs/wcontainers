@@ -483,11 +483,50 @@ fn targets_of_another_type_take_the_outputs_bits() {
         ),
         (
             target(Format::Rgba32Float, true),
-            wcontainers_shaders::refusal::BLEND_IN_SHADER,
+            wcontainers_shaders::refusal::SAMPLE_COUNT,
+        ),
+        (
+            VariantKey {
+                samples: 4,
+                ..target(Format::R16Unorm, true)
+            },
+            wcontainers_shaders::refusal::BLEND_IN_SHADER_MULTISAMPLED,
         ),
     ] {
         let got = convert(Source::Dxbc(&code[0]), &key, None).map(|_| ());
         assert_eq!(got, Err(ConvertError::Unsupported(name)));
+    }
+    // Combined with the old value: the copy at its binding and the codes in the helper block, on
+    // both routes, written as GLSL ES too.
+    for (format, kind) in [
+        (Format::R16Unorm, ScalarKind::Uint),
+        (Format::Rgba16Snorm, ScalarKind::Sint),
+        (Format::Rgba32Float, ScalarKind::Float),
+    ] {
+        let key = VariantKey {
+            samples: 1,
+            ..target(format, true)
+        };
+        for c in both(&code, &key) {
+            assert_eq!(scalar(&c), [kind], "{format:?}");
+            assert!(
+                c.reflection
+                    .helpers
+                    .iter()
+                    .any(|h| h.value == HelperValue::TargetCombine { target: 0 }),
+                "{format:?}"
+            );
+            let copy = c.modules[0].module.global_variables.iter().any(|(_, g)| {
+                g.binding
+                    == Some(naga::ResourceBinding {
+                        group: wcontainers_gpu::HELPER_SET,
+                        binding: wcontainers_gpu::TARGET_COPY_BINDING,
+                    })
+            });
+            assert!(copy, "{format:?}");
+            let text = wgsl(&c);
+            glsl(&c).unwrap_or_else(|e| panic!("{format:?}: {e}\n{text}"));
+        }
     }
     let vs = own_pair("vs_transform");
     let got = convert(

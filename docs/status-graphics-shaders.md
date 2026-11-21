@@ -14,6 +14,32 @@ streamout); raster-fill and tessellation still differ, only in cells drawn as li
 and is not shown).
 G6a's check is passed.
 
+## Paused 2026-11-20 for the reorganization
+
+The owner paused every track to bring all branches onto one line and move the crates into the
+interface-first layout. This track was stopped mid-run, while building gap A4's
+`TargetInShader::combine` (a target blended, or put through a logic operation, with its old value
+in the program). That unfinished work is committed as it stood, in the commit after 4a377b19 on
+this branch; it is not finished and nothing below records it as done.
+
+What the commit holds: `combine.wgsl` (blend factors, operations, logic operations) imported into
+the pixel program by `src/variant/targets.rs`, which reads the old value from the copy at
+`TARGET_COPY_BINDING` and the codes from `HelperValue::TargetCombine`; the interface's
+`TargetCombineValue` (in `crates/wcontainers-gpu/src/reflect.rs`, the helper value's layout, not
+yet listed under "Interface changes"); the refusal `BlendInShader` replaced by
+`BlendInShaderMultisampled` (combining is single-sample only for now); and the draw test's
+helpers given a target copy, a clear value and a blend constant, with no draw test using them yet.
+
+Measured on the Mac at the pause: `cargo check -p wcontainers-shaders -p wcontainers-gpu
+--all-targets` builds, and `cargo test -p wcontainers-shaders -p wcontainers-gpu` passes (corpus
+tests ignored; `targets_of_another_type_take_the_outputs_bits` and
+`target_combine_values_are_written_as_laid_out` pass). Not run: the literal check, clippy, glslang
+over the corpora, and every Windows GPU draw comparison (the desktop and the rented machines are
+not used in this job), so whether the combined output draws equal to Direct3D is unknown.
+Still to do when the track resumes: a draw test against Direct3D 11 for blending and logic
+operations, the interface entry for `TargetCombineValue`, gap A4's `combine` entry in the gap list below (it still says "not built"), and the
+multisampled case.
+
 ## G6b run 5 (run 69): the fifth check's findings
 
 Merged origin/phase-2-graphics-direct3d-11 (its round 4 run 5; nothing of this crate). Run 68's
