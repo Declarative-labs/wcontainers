@@ -123,9 +123,56 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   software behind its hook, `fxsave` and `fxrstor`, the environment and state instructions, `fprem` and
   `fprem1`, every MMX instruction and MMX's conversions; every x87 and MMX form but the eight transcendental
   ones (494 forms) passes layer 1 at 1,000 cases a form on the i7-8750H with 0 failing, and the long double C
-  program matches Linux at every look-ahead in wasmtime and Chrome (see "X7, run 1"). Not done: `fsin`, `fcos`,
-  `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x` and `fyl2xp1` (still illegal instruction, counted, and left
-  out of layer 1 as X7's).
+  program matches Linux at every look-ahead in wasmtime and Chrome (see "X7, run 1"). Run 2 (2026-11-21) wrote
+  the eight transcendental instructions (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`,
+  `fyl2xp1`), layer 1's count of the reference's known failures, and the long double program's transcendental
+  part (see "X7, run 2").
+
+## X7, run 2 (2026-11-21)
+
+Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws, load 0 to 5 with my jobs) for lint, the
+x86 tests and layer 1 while building; the i7-8750H for probes and layer 1's verdict; the rented ARM64 machine
+for ARM64's tests; the Mac for git, formatting and the literal check. Logs and probes in scratch `x7/`.
+
+What was built (plan 5.8, "The transcendental instructions", has the design and the reference's rules):
+- `crate::transcendental`: each value worked out with astro-float-num at 192 bits and more, the argument of the
+  trigonometric ones reduced exactly by π rounded to 66 bits, rounded to odd at 66 bits, then rounded once by
+  the unit in the program's rounding mode. In the unit: `fsin`, `fcos`, `fsincos`, `fptan` (C2 from 2^63 on,
+  the stack checks of the two that push), `f2xm1`, and `fpatan`, `fyl2x`, `fyl2xp1` with their manual tables.
+  `fsqrt`'s root shares the conversions (`root::of_extended`).
+- The reference's own rules found by probes on the i7-8750H (scratch `x7/probes/trans.c`, with the mpmath
+  model `model.py`) and by layer 1, each with a comment where it is built: a sine or cosine below 2^-68 and an
+  arc tangent of a quotient below 2^-40 are rounded to the nearest in every mode; `f2xm1` outside -1 to 1
+  leaves the operand, inexact; `fyl2xp1` at -1 and below takes the logarithm as negative for an infinite or zero
+  ST(1), else leaves ST(0), inexact; an invalid operation or a division by zero comes instead of a denormal
+  operand in the three two-operand ones.
+- `tests/transcendental.rs` (x86 crate): 560 correctly rounded values from mpmath 1.3.0 (BSD-3, scratch only,
+  `x7/probes/gen.py`, seed 7101, 16 a mode and instruction and 4 tiny or exact ones), every rounding mode.
+  Pass.
+- Layer 1 counts known failures (`GuestTest::known_failure`, `layer1::Agreement`): for these eight
+  instructions only, a case where the reference's result is one unit from ours, or its C1 and precision flag
+  (the underflow flag where a register holds a denormal, the summary and busy bits where one of them is
+  unmasked) differ from correct rounding's, and nothing else differs. Each run prints the count per form with
+  the reason ("Intel's transcendental result is within one unit in the last place, not correctly rounded");
+  a hand case must agree exactly.
+- `long_double.c` now also runs musl's `expl`, `exp2l`, `logl`, `log2l`, `log1pl`, `atanl`, `atan2l`, `sinl`,
+  `cosl` and inline `fsin`, `fcos`, `fptan`, `fsincos` on eight values, printed to 16 digits (one unit of 64
+  bits does not reach them; the reason is in the program).
+
+Measured:
+- Layer 1 on the rented x86-64 machine (Sapphire Rapids), the eight forms, seeds 9808, 9810, 9811 and 9812 at
+  2,000 cases a form, 8 at once (about 35 s a seed): 0 failing; known failures 599, 631, 567 and 590 of 16,000
+  (per form at seed 9812: F2xm1 56, Fcos 205, Fpatan 11, Fptan 12, Fsin 201, Fsincos 77, Fyl2x 7, Fyl2xp1 21).
+  Fsin and Fcos count most because layer 1 draws many operands near the edges, where the directed modes
+  differ. Seeds 9801 to 9807 found the rules above (each fixed, then rerun).
+- LAYER1_VERDICT
+- `long_double_matches_linux_x86_64` (every optimisation level; none, full for speed and size): pass, rented
+  machine. `long_double_matches_linux_in_chrome_x86_64` (none, full and bounded 256, speed and size): pass.
+- SUITE_RESULT
+- ARM_RESULT
+- The literal check (the Mac): exits 0; no baseline line added.
+- Not measured: the time of one transcendental instruction (a counted slow path, "x87 floating point in
+  software"); the 560 unit cases take 1.1 s in the test profile, most of it the tiny operands.
 
 ## X7, run 1 (2026-11-21)
 
@@ -3747,6 +3794,11 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
+- X7 run 2: the transcendental instructions follow the reference where it is not correctly rounded in a way
+  that is a rule rather than a last-unit error (a tiny sine, cosine or arc tangent rounded to the nearest in
+  every mode), so that their underflow flag matches where the correctly rounded result would cross into the
+  denormals; plan 5.8 said "rounded once in the program's rounding mode". Their remaining one-unit
+  differences are layer 1 known failures, as the plan says. Plan 5.8 now describes what was built.
 - X7 run 1: `fsqrt`'s root takes astro-float's square root to the nearest at 128 bits as a guess and settles
   the truncated 66 bits by exact squares, where plan 5.8 said "rounded toward zero": astro-float has no
   directed rounding (every mode it has rounds to the nearest). The dependency is `astro-float-num`, the crate

@@ -1482,12 +1482,11 @@ impl<'a> Unit<'a> {
                 if class == Class::Denormal && !self.raise(DENORMAL) {
                     return;
                 }
-                let round = |w| round_register(w, fcw, Precision::Extended);
                 match operation {
                     Operation::Sine => both(sine(x, fcw)),
                     Operation::Cosine => both(cosine(x, fcw)),
                     Operation::Tangent => (
-                        round(transcendental::tangent(x)),
+                        rounded_wide(transcendental::tangent(x), fcw),
                         exact_value(Extended::ONE),
                     ),
                     _ => (sine(x, fcw), cosine(x, fcw)),

@@ -2275,14 +2275,29 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   `Semantics` definitions and the rounding to odd. Both are checked against the reference in layer 1, as
   SoftFloat would have to be. The owner is told (status file).
 - **The transcendental instructions** (fsin, fcos, fsincos, fptan, fpatan, f2xm1, fyl2x, fyl2xp1)
-  are worked out with the `astro-float` crate (0.9.6, MIT; builds for wasm32-unknown-unknown with the
-  standard library, which the browser's cdylib has; measured below), at 128 bits, then rounded once to
-  64 bits in the program's rounding mode. For fsin, fcos, fsincos and fptan the argument is first reduced
-  the way Intel's manual describes for these instructions (a 66-bit approximation of π; expected from the
-  manual's description, confirmed against the reference at X7). Intel's own results are documented as
-  within one unit in the last place, not as correctly rounded, so layer 1 compares them bit for bit and
-  any case where the reference's result is not the correctly rounded one is recorded as a known failure
-  with the reason, never masked. Size, measured 2026-11-17 on the Mac (load 17 to 21) in a scratch cdylib
+  are worked out with the `astro-float` crate (astro-float-num 0.3.7, MIT; builds for wasm32-unknown-unknown with
+  the standard library, which the browser's cdylib has; measured below) in `crate::transcendental`: the exact
+  value at a working precision of 192 bits, doubled until the bits below the wide semantics' 66 (but for eight
+  guard bits) are neither all zero nor all one, or taken as it is when astro-float says it is exact (a
+  logarithm of a power of two), is rounded to odd at 66 bits and then rounded once by the unit as for the
+  other operations, so the result is correctly rounded in every rounding mode (astro-float's own modes all
+  round to the nearest). For fsin, fcos, fsincos and fptan the argument is first reduced exactly, `x - k * π66 /
+  2` with `k` the nearest integer and π66 π rounded to 66 bits, as Intel's manual describes; from 2^63 on C2 is
+  set and nothing else changes. Checked against mpmath (BSD, scratch only) at 600 bits and more:
+  `tests/transcendental.rs` holds 560 such values, every rounding mode, with tiny, huge and exact cases. What the
+  reference showed and the unit follows (probes `x7/probes/trans.c`, and layer 1): a sine or cosine of an
+  operand below 2^-68 is rounded to the nearest in every mode (the operand, and one), as is an arc tangent of a
+  quotient below 2^-40; f2xm1 outside -1 to 1, which the manual leaves undefined, leaves the operand, inexact;
+  fyl2xp1 at -1 and below takes the logarithm as negative for an infinite or zero ST(1) and otherwise leaves
+  ST(0), inexact; in fpatan, fyl2x and fyl2xp1 an invalid operation or a division by zero is met instead of a
+  denormal operand. Intel's results are documented as within one unit in the last place, not as correctly
+  rounded, and on the reference they are not in about one case in a hundred for ordinary operands and more
+  often in the directed modes near the identity. Layer 1 compares them bit for bit; a case of one of these
+  instructions where the reference's result is one unit from ours (or its C1 and precision flag, with the
+  underflow flag where a register holds a denormal and the summary and busy bits where one of these is
+  unmasked, differ from what correct rounding leaves) and nothing else differs is counted and printed as a
+  known failure with that reason, per form, never passed silently (`GuestTest::known_failure`,
+  `layer1::Agreement`). Size, measured 2026-11-17 on the Mac (load 17 to 21) in a scratch cdylib
   (`pyro-parked/wcontainers-scratch/x86/x87-crate`, opt-level s, LTO, stripped) using sin, atan, log2,
   exp and add at 128 bits, against the same cdylib without it: 142,688 bytes raw, 40,947 brotli -q 11 more.
   Only the x86 browser build carries it.
