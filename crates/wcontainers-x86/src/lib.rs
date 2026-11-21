@@ -50,6 +50,7 @@ mod lanes;
 pub mod offer;
 #[cfg(feature = "translate")]
 mod vex;
+mod wide;
 
 pub use offer::{FULL_SPEED, NotBuilt, Offer, V3};
 
@@ -201,6 +202,8 @@ pub struct X86Private {
     pub step_at: u64,
     /// The destination's value the float hook works on, which the meaning stores before the call.
     pub float_operand: [u64; 2],
+    /// The MXCSR flags the low lane of a 256-bit instruction raised, which its high lane's call adds to its own.
+    pub float_low_lane_flags: u64,
 }
 /// The bits of an x87 slot that hold its register.
 pub const X87_REGISTER_BITS: u32 = 80;
@@ -239,6 +242,8 @@ pub const STEP_AT: usize =
     <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, step_at);
 pub const FLOAT_OPERAND: usize =
     <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, float_operand);
+pub const FLOAT_LOW_LANE_FLAGS: usize =
+    <X86_64 as Personality>::BLOCK_SIZE + core::mem::offset_of!(X86Private, float_low_lane_flags);
 
 /// The rflags bits of the six arithmetic flags, and those of `X86Block::rflags`.
 pub const CF: u64 = 1;

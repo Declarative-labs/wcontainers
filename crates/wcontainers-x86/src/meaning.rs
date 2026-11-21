@@ -80,6 +80,7 @@ pub fn written(i: &Instruction) -> bool {
     }
     if crate::simd::written(i)
         || crate::vex::written(i)
+        || crate::wide::written(i)
         || crate::float::written(i)
         || crate::fpu::written(m)
         || crate::text::written(m)
@@ -134,6 +135,11 @@ pub fn is_string(i: &Instruction) -> bool {
 fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     if crate::vex::written(i) {
         crate::vex::emit(e, i, i.iced.mnemonic());
+        e.next();
+        return true;
+    }
+    if crate::wide::written(i) {
+        crate::wide::emit(e, i, i.iced.mnemonic());
         e.next();
         return true;
     }

@@ -116,6 +116,10 @@ pub fn written(m: Mnemonic) -> bool {
             | Fxsave64
             | Fxrstor
             | Fxrstor64
+            | Xsave
+            | Xsave64
+            | Xrstor
+            | Xrstor64
     )
 }
 
@@ -314,7 +318,7 @@ pub(crate) fn state_probe(i: &Instruction) -> Option<Option<u32>> {
     use Mnemonic::*;
     match i.iced.mnemonic() {
         Fnstenv | Fnsave | Fldenv | Frstor => Some(Some(Layout::of(i).word)),
-        Fxsave | Fxsave64 | Fxrstor | Fxrstor64 => Some(None),
+        Fxsave | Fxsave64 | Fxrstor | Fxrstor64 | Xsave | Xsave64 | Xrstor | Xrstor64 => Some(None),
         _ => None,
     }
 }
@@ -359,7 +363,10 @@ fn check_ends<E: Emitter<X86_64> + ?Sized>(
 pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     use Mnemonic::*;
     let ins = &i.iced;
-    if matches!(m, Fxsave | Fxsave64 | Fxrstor | Fxrstor64) {
+    if matches!(
+        m,
+        Fxsave | Fxsave64 | Fxrstor | Fxrstor64 | Xsave | Xsave64 | Xrstor | Xrstor64
+    ) {
         image(e, i, m);
         return;
     }
@@ -837,14 +844,45 @@ const IMAGE_SLOT: u64 = size_of::<[u8; 16]>() as u64;
 const HEADER_KEPT: i64 =
     !((u8::MAX as i64) << (core::mem::offset_of!(crate::Fxsave, reserved0) as u32 * u8::BITS));
 
+/// The XSAVE header's XSTATE_BV after the legacy area, and the header's bytes after it that the standard form
+/// of `xrstor` requires to be zero (XCOMP_BV and the next eight; Intel SDM Vol. 1 13.8.1).
+const XSTATE_BV: u64 = size_of::<crate::Fxsave>() as u64;
+const XSAVE_HEADER_ZERO: [u64; 2] = [
+    XSTATE_BV + size_of::<u64>() as u64,
+    XSTATE_BV + 2 * size_of::<u64>() as u64,
+];
+/// The alignment an XSAVE area needs.
+const XSAVE_ALIGNMENT: i64 = 64;
+
+/// The bytes of an `xsave` or `xrstor` area: the largest the state components built here take.
+pub(crate) fn xsave_area_bytes() -> u32 {
+    use crate::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
+    crate::cpuid::xsave_bytes(XSAVE_X87 | XSAVE_SSE | XSAVE_AVX)
+}
+
+/// Whether the instruction is `xsave` or `xrstor`.
+pub(crate) fn is_xstate(m: Mnemonic) -> bool {
+    matches!(
+        m,
+        Mnemonic::Xsave | Mnemonic::Xsave64 | Mnemonic::Xrstor | Mnemonic::Xrstor64
+    )
+}
+
 /// `fxsave` and `fxrstor`: the x87, MXCSR and xmm state to and from a 16-byte aligned image; without REX.W
-/// the pointers are 32 bits and their selectors zero. Neither waits for a pending exception.
+/// the pointers are 32 bits and their selectors zero. Neither waits for a pending exception. `xsave` and
+/// `xrstor` do the same to a 64-byte aligned area for the state components edx:eax and XCR0 both name
+/// (`xstate`).
 fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     // A non-canonical first byte faults first, then a misaligned address, then a non-canonical last byte,
     // then the pages (scratch `x7/probes/fxsave_order.c`).
     let at = address(e, i);
     let kind = memory_use(i).expect("a memory operand");
-    let bytes = memory_bytes(i);
+    let xstate = is_xstate(m);
+    let bytes = if xstate {
+        xsave_area_bytes()
+    } else {
+        memory_bytes(i)
+    };
     let last = e.local(ValType::I64);
     e.sink()
         .local_get(at)
@@ -865,10 +903,29 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
         e.sink().end();
     };
     not_canonical(e, at);
-    crate::simd::aligned16(e, at);
+    if xstate {
+        e.sink()
+            .local_get(at)
+            .i64_const(XSAVE_ALIGNMENT - 1)
+            .i64_and()
+            .i64_const(0)
+            .i64_ne()
+            .if_(BlockType::Empty);
+        e.trap(Trap::GeneralProtection);
+        e.sink().end();
+    } else {
+        crate::simd::aligned16(e, at);
+    }
     not_canonical(e, last);
-    check_ends(e, i, at, memory_bytes(i), check_kind(kind), None);
-    let wide = matches!(m, Mnemonic::Fxsave64 | Mnemonic::Fxrstor64);
+    check_ends(e, i, at, bytes, check_kind(kind), None);
+    let wide = matches!(
+        m,
+        Mnemonic::Fxsave64 | Mnemonic::Fxrstor64 | Mnemonic::Xsave64 | Mnemonic::Xrstor64
+    );
+    if xstate {
+        xstate_image(e, at, m, wide);
+        return;
+    }
     let pointer_bytes = if wide {
         VALUE_LOW
     } else {
@@ -950,5 +1007,219 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             .local_get(at)
             .v128_load(MemArg { offset, ..memory() });
         e.set_vector(x);
+    }
+}
+
+/// `xsave` and `xrstor` after their checks: the components RFBM (edx:eax with XCR0) names. `xsave` writes each
+/// and sets their bits in XSTATE_BV, by design: Intel lets a processor report a component in use when it is
+/// in its initial configuration, and which ones the reference reports depends on what ran before (plan
+/// 5.10). `xrstor` loads each component XSTATE_BV names and puts the others in their initial configuration,
+/// MXCSR from the area with SSE or AVX; a header the standard form refuses or a reserved MXCSR bit is general
+/// protection, before anything changes.
+fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wide: bool) {
+    use crate::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
+    let enabled = crate::cpuid::enabled_state(e.offer());
+    let (rfbm, value) = (e.local(ValType::I64), e.local(ValType::I64));
+    e.get(RAX);
+    e.sink().i64_const(enabled.into()).i64_and().local_set(rfbm);
+    let names = |e: &mut E, set: u32, components: u32| {
+        e.sink()
+            .local_get(set)
+            .i64_const(components.into())
+            .i64_and()
+            .i64_const(0)
+            .i64_ne();
+    };
+    let pointer_bytes = if wide {
+        VALUE_LOW
+    } else {
+        size_of::<u32>() as u32
+    };
+    if matches!(m, Mnemonic::Xsave | Mnemonic::Xsave64) {
+        names(e, rfbm, XSAVE_X87);
+        e.sink().if_(BlockType::Empty);
+        e.get_control(Control::X87Header);
+        e.sink().local_set(value);
+        store_at(e, at, 0, VALUE_LOW, value);
+        for (control, offset) in [
+            (Control::X87InstructionPointer, IMAGE_POINTER),
+            (Control::X87DataPointer, IMAGE_DATA),
+        ] {
+            e.get_control(control);
+            if !wide {
+                e.sink().i64_const(u32::MAX.into()).i64_and();
+            }
+            e.sink().local_set(value);
+            store_at(e, at, offset, VALUE_LOW, value);
+        }
+        by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+            store_register(e, n, slot, IMAGE_REGISTERS, VALUE_LOW)
+        });
+        e.sink().end();
+        names(e, rfbm, XSAVE_SSE | XSAVE_AVX);
+        e.sink().if_(BlockType::Empty);
+        crate::float::read_mxcsr(e, value);
+        store_at(e, at, IMAGE_MXCSR, size_of::<u32>() as u32, value);
+        e.sink()
+            .i64_const(crate::MXCSR_WRITABLE.into())
+            .local_set(value);
+        store_at(e, at, IMAGE_MXCSR_MASK, size_of::<u32>() as u32, value);
+        e.sink().end();
+        for (component, offset, high) in [
+            (XSAVE_SSE, IMAGE_XMM, false),
+            (XSAVE_AVX, u64::from(crate::cpuid::AVX_STATE_OFFSET), true),
+        ] {
+            names(e, rfbm, component);
+            e.sink().if_(BlockType::Empty);
+            for x in 0..crate::guest::XMM_COUNT as u8 {
+                e.get_vector(if high { crate::operand::ymm_high(x) } else { x });
+                let v = e.local(ValType::V128);
+                e.sink()
+                    .local_set(v)
+                    .local_get(at)
+                    .local_get(v)
+                    .v128_store(MemArg {
+                        offset: offset + u64::from(x) * IMAGE_SLOT,
+                        ..memory()
+                    });
+            }
+            e.sink().end();
+        }
+        load_at(e, at, XSTATE_BV, VALUE_LOW);
+        e.sink().local_get(rfbm).i64_or().local_set(value);
+        store_at(e, at, XSTATE_BV, VALUE_LOW, value);
+        return;
+    }
+    // The checks, before anything changes.
+    let (bv, mxcsr) = (e.local(ValType::I64), e.local(ValType::I64));
+    load_at(e, at, XSTATE_BV, VALUE_LOW);
+    e.sink()
+        .local_tee(bv)
+        .i64_const(!i64::from(enabled))
+        .i64_and();
+    for offset in XSAVE_HEADER_ZERO {
+        load_at(e, at, offset, VALUE_LOW);
+        e.sink().i64_or();
+    }
+    e.sink().i64_const(0).i64_ne();
+    load_at(e, at, IMAGE_MXCSR, size_of::<u32>() as u32);
+    e.sink()
+        .local_tee(mxcsr)
+        .i64_const(!i64::from(crate::MXCSR_WRITABLE))
+        .i64_and()
+        .i64_const(0)
+        .i64_ne();
+    names(e, rfbm, XSAVE_SSE | XSAVE_AVX);
+    e.sink().i32_and().i32_or().if_(BlockType::Empty);
+    e.trap(Trap::GeneralProtection);
+    e.sink().end();
+    // Whether each component is named, and whether it is loaded or put in its initial configuration.
+    let components = [XSAVE_X87, XSAVE_SSE, XSAVE_AVX];
+    let named = components.map(|_| e.local(ValType::I32));
+    let loaded = components.map(|_| e.local(ValType::I32));
+    for (n, component) in components.into_iter().enumerate() {
+        names(e, rfbm, component);
+        e.sink().local_set(named[n]);
+        names(e, bv, component);
+        e.sink().local_set(loaded[n]);
+    }
+    let [x87, sse, avx] = [0, 1, 2];
+    // The area's value where the component is loaded, its initial one where not, the current one where it is
+    // not named.
+    let choose = |e: &mut E,
+                  n: usize,
+                  load: &dyn Fn(&mut E),
+                  initial: &dyn Fn(&mut E),
+                  current: &dyn Fn(&mut E)| {
+        load(e);
+        initial(e);
+        e.sink().local_get(loaded[n]).select();
+        current(e);
+        e.sink().local_get(named[n]).select();
+    };
+    choose(
+        e,
+        x87,
+        &|e| {
+            load_at(e, at, 0, VALUE_LOW);
+            e.sink().i64_const(HEADER_KEPT).i64_and();
+        },
+        &|e| {
+            e.sink().i64_const(crate::FCW_AT_START.into());
+        },
+        &|e| e.get_control(Control::X87Header),
+    );
+    e.set_control(Control::X87Header);
+    for (control, offset) in [
+        (Control::X87InstructionPointer, IMAGE_POINTER),
+        (Control::X87DataPointer, IMAGE_DATA),
+    ] {
+        choose(
+            e,
+            x87,
+            &|e| load_at(e, at, offset, pointer_bytes),
+            &|e| {
+                e.sink().i64_const(0);
+            },
+            &|e| e.get_control(control),
+        );
+        e.set_control(control);
+    }
+    by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+        choose(
+            e,
+            x87,
+            &|e| load_at(e, slot, IMAGE_REGISTERS, VALUE_LOW),
+            &|e| {
+                e.sink().i64_const(0);
+            },
+            &|e| e.get(mmx_register(n)),
+        );
+        e.set(mmx_register(n));
+        choose(
+            e,
+            x87,
+            &|e| {
+                load_at(e, slot, IMAGE_REGISTERS + u64::from(VALUE_LOW), VALUE_HIGH);
+                e.sink().i32_wrap_i64();
+            },
+            &|e| {
+                e.sink().i32_const(0);
+            },
+            &|e| e.get_control(Control::X87High(n)),
+        );
+        e.set_control(Control::X87High(n));
+    });
+    // MXCSR as restored decides the path; tracking stays as it was (plan 5.8).
+    e.sink().local_get(mxcsr).i32_wrap_i64();
+    e.get_control(Control::Mxcsr);
+    names(e, rfbm, XSAVE_SSE | XSAVE_AVX);
+    e.sink().select();
+    e.set_control(Control::Mxcsr);
+    for x in 0..crate::guest::XMM_COUNT as u8 {
+        for (n, offset, vector) in [
+            (sse, IMAGE_XMM, x),
+            (
+                avx,
+                u64::from(crate::cpuid::AVX_STATE_OFFSET),
+                crate::operand::ymm_high(x),
+            ),
+        ] {
+            let offset = offset + u64::from(x) * IMAGE_SLOT;
+            choose(
+                e,
+                n,
+                &|e| {
+                    e.sink()
+                        .local_get(at)
+                        .v128_load(MemArg { offset, ..memory() });
+                },
+                &|e| {
+                    e.sink().v128_const(0);
+                },
+                &|e| e.get_vector(vector),
+            );
+            e.set_vector(vector);
+        }
     }
 }

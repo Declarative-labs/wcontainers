@@ -394,7 +394,7 @@ const HALF: u8 = (XMM_BYTES / 2) as u8;
 pub(crate) const BYTE: u32 = size_of::<u8>() as u32;
 pub(crate) const WORD: u32 = size_of::<u16>() as u32;
 pub(crate) const DWORD: u32 = size_of::<u32>() as u32;
-const QWORD: u32 = size_of::<u64>() as u32;
+pub(crate) const QWORD: u32 = size_of::<u64>() as u32;
 /// `insertps`'s immediate: the source element (register form), the target element, the zero mask below.
 const INSERTPS_SOURCE_SHIFT: u8 = 6;
 const INSERTPS_TARGET_SHIFT: u8 = 4;
@@ -530,7 +530,10 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     let mem = memory_use(i).map(|kind| {
         let at = address(e, i);
         let bytes = memory_bytes(i);
-        if bytes == XMM_BYTES && !i.vex_lane && !matches!(m, Movups | Movupd | Movdqu | Lddqu) {
+        if bytes == XMM_BYTES
+            && i.vex_lane.is_none()
+            && !matches!(m, Movups | Movupd | Movdqu | Lddqu)
+        {
             aligned16(e, at);
         }
         e.check(at, bytes, check_kind(kind), 0);

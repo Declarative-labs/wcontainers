@@ -2,6 +2,7 @@
 //! legacy SSE form on the lane's halves of the registers, through `Lane`; the others are written here.
 
 use crate::decode::{Instruction, lane_form};
+use crate::exact::Part;
 use crate::guest::{Control, Hook, Reason, Trap};
 use crate::lanes::*;
 use crate::operand::*;
@@ -274,12 +275,55 @@ fn lane_instruction(
     if vector(0) && !reads_first(ins.mnemonic()) {
         start = Some(place(if kind == LANE_IN_ORDER { 0 } else { 1 }));
     }
+    let part = match (wide(i), lane) {
+        (false, _) => Part::Whole,
+        (true, 0) => Part::LowLane,
+        (true, _) => Part::HighLane,
+    };
     let form = Instruction {
         iced: form,
-        vex_lane: true,
+        vex_lane: Some(part),
         ..*i
     };
     Some((form, slots, start))
+}
+
+/// Run the legacy form `code` (`legacy xmm1, xmm2`) on the vectors in locals `a`, its destination's value,
+/// which becomes its result, and `b`, as `part` of the VEX instruction `i`.
+pub(crate) fn run_legacy<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    code: iced_x86::Code,
+    part: Part,
+    a: u32,
+    b: u32,
+) {
+    let mut form = i.iced;
+    form.set_code(code);
+    for (k, slot) in [DESTINATION_SLOT, DESTINATION_SLOT + 1]
+        .into_iter()
+        .enumerate()
+    {
+        form.set_op_kind(k as u32, OpKind::Register);
+        form.set_op_register(k as u32, SLOT_REGISTERS[slot]);
+    }
+    let form = Instruction {
+        iced: form,
+        vex_lane: Some(part),
+        ..*i
+    };
+    let mut slots = [Place::Vector(0); LANE_SLOTS];
+    slots[DESTINATION_SLOT] = Place::Local(a);
+    slots[DESTINATION_SLOT + 1] = Place::Local(b);
+    let mut lane = Lane {
+        e,
+        slots,
+        checked: true,
+    };
+    assert!(
+        crate::meaning::legacy_meaning(&mut lane, &form),
+        "a written legacy form"
+    );
 }
 
 /// Whether the instruction is one of these with its meaning written.

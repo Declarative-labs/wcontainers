@@ -264,7 +264,7 @@ pub fn size_of_memory(size: MemorySize) -> u32 {
         | Packed64_Float32 => 8,
         UInt128 | Int128 | Packed128_UInt8 | Packed128_Int8 | Packed128_UInt16
         | Packed128_Int16 | Packed128_UInt32 | Packed128_Int32 | Packed128_UInt64
-        | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 => 16,
+        | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 | Float128 => 16,
         UInt256 | Int256 | Packed256_UInt8 | Packed256_Int8 | Packed256_UInt16
         | Packed256_Int16 | Packed256_UInt32 | Packed256_Int32 | Packed256_UInt64
         | Packed256_Int64 | Packed256_UInt128 | Packed256_Float32 | Packed256_Float64
@@ -316,12 +316,12 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
             0,
             Fld | Fild | Fbld | Fadd | Fiadd | Fsub | Fisub | Fsubr | Fisubr | Fmul | Fimul | Fdiv
             | Fidiv | Fdivr | Fidivr | Fcom | Fcomp | Ficom | Ficomp | Fldcw | Fldenv | Frstor
-            | Fxrstor | Fxrstor64,
+            | Fxrstor | Fxrstor64 | Xrstor | Xrstor64,
         ) => AccessKind::Read,
         (
             0,
             Fst | Fstp | Fist | Fistp | Fisttp | Fbstp | Fnstcw | Fnstsw | Fnstenv | Fnsave
-            | Fxsave | Fxsave64,
+            | Fxsave | Fxsave64 | Xsave | Xsave64,
         ) => AccessKind::Write,
         (0, _) => AccessKind::ReadWrite,
         (_, Xchg) => AccessKind::ReadWrite,

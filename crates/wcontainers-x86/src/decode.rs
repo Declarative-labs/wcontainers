@@ -27,9 +27,9 @@ pub struct Instruction {
     pub too_long: bool,
     /// For an x87 instruction, its opcode as FOP keeps it: the escape byte's low three bits, then ModRM.
     pub x87_opcode: u16,
-    /// A 128-bit lane of a VEX instruction run as its legacy form (`crate::vex`): its memory operand needs no
-    /// alignment and is already checked when the instruction is 256 bits wide.
-    pub vex_lane: bool,
+    /// A 128-bit lane of a VEX instruction run as its legacy form (`crate::vex`), and which lane of a 256-bit one
+    /// it is: its memory operand needs no alignment and is already checked when the instruction is 256 bits wide.
+    pub vex_lane: Option<crate::exact::Part>,
 }
 
 /// `wait`'s opcode.
@@ -112,7 +112,7 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
             operand_size_prefix,
             too_long,
             x87_opcode,
-            vex_lane: false,
+            vex_lane: None,
         },
         length,
     ))

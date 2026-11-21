@@ -506,7 +506,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     let mem = memory_use(i).map(|kind| {
         let at = address(e, i);
         let bytes = memory_bytes(i);
-        if bytes == XMM_BYTES && !i.vex_lane {
+        if bytes == XMM_BYTES && i.vex_lane.is_none() {
             crate::simd::aligned16(e, at);
         }
         e.check(at, bytes, check_kind(kind), 0);
@@ -611,7 +611,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         // A legacy compare takes three bits of its predicate, a VEX one five.
         count if count > 2 && op == Operation::Compare => {
             ins.immediate8()
-                & if i.vex_lane {
+                & if i.vex_lane.is_some() {
                     crate::exact::VEX_PREDICATES
                 } else {
                     PREDICATE_MASK
@@ -631,7 +631,8 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     if e.float_mode() {
         e.sink().if_(BlockType::Empty);
         transition(e);
-        exact(e, encode(op, double, scalar, immediate), a, b, r);
+        let part = i.vex_lane.unwrap_or(crate::exact::Part::Whole);
+        exact(e, encode(op, double, scalar, immediate, part), a, b, r);
         e.sink().else_();
         transition(e);
         fast(e, op, double, scalar, immediate, a, b, r);

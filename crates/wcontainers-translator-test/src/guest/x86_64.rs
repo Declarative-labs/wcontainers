@@ -568,6 +568,9 @@ impl GuestTest for X86_64 {
             Code::Rdtsc | Code::Rdtscp => Some(TIME_STAMP_BY_DESIGN),
             Code::Cpuid => Some(CPUID_BY_DESIGN),
             Code::Xgetbv => Some(XGETBV_BY_DESIGN),
+            Code::Xsave_mem | Code::Xsave64_mem | Code::Xrstor_mem | Code::Xrstor64_mem => {
+                Some(XSTATE_BY_DESIGN)
+            }
             Code::Sgdt_m1664 | Code::Sidt_m1664 => Some(TABLES_BY_DESIGN),
             code if code.cpuid_features().contains(&iced_x86::CpuidFeature::VMX) => {
                 Some(VMX_BY_HOST)
@@ -1378,6 +1381,10 @@ const OVERLAPPED: u64 = 8;
 const CPUID_BY_DESIGN: &str = "cpuid: the claims and designed leaves, not the CPU's";
 /// Why layer 1 leaves out `xgetbv`.
 const XGETBV_BY_DESIGN: &str = "xgetbv: the state the program's list enables, not the CPU's";
+/// Why layer 1 leaves out `xsave` and `xrstor`: the reference enables MPX's components too, and reports in
+/// XSTATE_BV which components it saw in use, where ours reports every one it saves (plan 5.10); the x87, SSE and
+/// AVX state they move is compared by a program (`programs/x86_64/xstate.c`).
+const XSTATE_BY_DESIGN: &str = "xsave and xrstor: XCR0 and XSTATE_BV by design";
 /// Why layer 1 leaves out `sgdt` and `sidt`.
 const TABLES_BY_DESIGN: &str = "sgdt and sidt: designed answers, not the kernel's addresses";
 /// Why layer 1 leaves out the VMX instructions (plan 5.2).

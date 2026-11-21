@@ -7,9 +7,9 @@ use crate::host::Host;
 use crate::meaning::is_string;
 use crate::operand::*;
 use crate::{
-    FLAGS_WORD, FLOAT_EXCEPTION, FLOAT_OPERAND, FS_BASE, FXSAVE, GS_BASE, MXCSR, MXCSR_AT_START,
-    MXCSR_MODE, MXCSR_TRACKING, RFLAGS, STEP, STEP_AT, STEP_HELD, TF, X86_64, X86Block, XMM,
-    XMM_BYTES, YMM_HIGH,
+    FLAGS_WORD, FLOAT_EXCEPTION, FLOAT_LOW_LANE_FLAGS, FLOAT_OPERAND, FS_BASE, FXSAVE, GS_BASE,
+    MXCSR, MXCSR_AT_START, MXCSR_MODE, MXCSR_TRACKING, RFLAGS, STEP, STEP_AT, STEP_HELD, TF,
+    X86_64, X86Block, XMM, XMM_BYTES, YMM_HIGH,
 };
 use core::ops::Range;
 use iced_x86::{Mnemonic, OpKind, Register};
@@ -103,7 +103,7 @@ pub enum Reason {
 /// The thread state the float hook works on: MXCSR in the block to the end of the private words.
 const FLOAT_STATE: StateBytes = StateBytes {
     at: MXCSR as u16,
-    len: (FLOAT_OPERAND + size_of::<[u64; 2]>() - MXCSR) as u16,
+    len: (FLOAT_LOW_LANE_FLAGS + size_of::<u64>() - MXCSR) as u16,
 };
 
 /// The thread state the x87 hook works on: the FXSAVE area.
@@ -485,7 +485,16 @@ impl Guest for X86_64 {
         let operand = word(FLOAT_OPERAND);
         let a = &state[operand.start..operand.start + size_of::<u128>()];
         let a = u128::from_le_bytes(a.try_into().unwrap());
-        let (result, exception) = crate::exact::run(code, a, wide(args[1], args[2]), &mut mxcsr);
+        let low_lane = word(FLOAT_LOW_LANE_FLAGS);
+        let mut low_lane_flags = u32::from_le_bytes(state[low_lane.clone()].try_into().unwrap());
+        let (result, exception) = crate::exact::run(
+            code,
+            a,
+            wide(args[1], args[2]),
+            &mut mxcsr,
+            &mut low_lane_flags,
+        );
+        state[low_lane].copy_from_slice(&low_lane_flags.to_le_bytes());
         state[word(MXCSR)].copy_from_slice(&mxcsr.to_le_bytes());
         state[word(FLOAT_EXCEPTION)].copy_from_slice(&exception.to_le_bytes());
         HookDone {
@@ -887,6 +896,13 @@ impl Guest for X86_64 {
                     None => [Some(push), None],
                 }
             }
+            m if crate::fpu::is_xstate(m) => [
+                explicit.map(|access| MemoryAccess {
+                    bytes: AccessBytes::Fixed(crate::fpu::xsave_area_bytes() as u16),
+                    ..access
+                }),
+                None,
+            ],
             Leave => [
                 Some(through(RBP, 0, stack_bytes(i), AccessKind::Read)),
                 None,

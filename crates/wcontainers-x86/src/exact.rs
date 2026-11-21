@@ -80,7 +80,19 @@ const OPERATIONS: [Operation; 22] = {
 /// immediate in the third byte.
 const DOUBLE: i32 = 1 << u8::BITS;
 const SCALAR: i32 = DOUBLE << 1;
+/// The low and the high lane of a 256-bit instruction: the low lane's flags wait for the high lane's call,
+/// which finds the exceptions of all its elements together (Intel SDM Vol. 1 11.5.2).
+const LOW_LANE: i32 = SCALAR << 1;
+const HIGH_LANE: i32 = LOW_LANE << 1;
 const IMMEDIATE_SHIFT: u32 = 2 * u8::BITS;
+
+/// Which part of an instruction one call of the hook does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Whole,
+    LowLane,
+    HighLane,
+}
 
 /// The comparison predicates of `cmpps` (Intel SDM Vol. 2 CMPPS, table 3-8), in the order of their numbers.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,17 +145,24 @@ pub(crate) const DOT_PRODUCT_SHIFT: u32 = u8::BITS / 2;
 /// The exceptions found before the computation, which keep it from being done when one is unmasked.
 const BEFORE: u32 = MXCSR_INVALID | MXCSR_DENORMAL | MXCSR_DIVIDE_BY_ZERO;
 
-pub fn encode(operation: Operation, double: bool, scalar: bool, immediate: u8) -> i32 {
+pub fn encode(operation: Operation, double: bool, scalar: bool, immediate: u8, part: Part) -> i32 {
     operation as i32
         | if double { DOUBLE } else { 0 }
         | if scalar { SCALAR } else { 0 }
+        | match part {
+            Part::Whole => 0,
+            Part::LowLane => LOW_LANE,
+            Part::HighLane => HIGH_LANE,
+        }
         | i32::from(immediate) << IMMEDIATE_SHIFT
 }
 
 /// Run one instruction on `a` (the destination's value) and `b` (the source's) with MXCSR as it is, adding
 /// the flags raised. The result; or, for an unmasked exception, `a` unchanged and MXCSR's raised unmasked
-/// flags, from which the kernel works out the `si_code` as Linux does (0 for none).
-pub fn run(code: i32, a: u128, b: u128, mxcsr: &mut u32) -> (u128, u32) {
+/// flags, from which the kernel works out the `si_code` as Linux does (0 for none). The low lane of a 256-bit
+/// instruction leaves MXCSR alone and puts its flags in `low_lane_flags`, which the high lane's call adds to
+/// its own; an unmasked exception is then the high lane's, before either lane is written.
+pub fn run(code: i32, a: u128, b: u128, mxcsr: &mut u32, low_lane_flags: &mut u32) -> (u128, u32) {
     let operation = OPERATIONS[(code & i32::from(u8::MAX)) as usize];
     let immediate = (code >> IMMEDIATE_SHIFT) as u8;
     let scalar = code & SCALAR != 0;
@@ -156,8 +175,15 @@ pub fn run(code: i32, a: u128, b: u128, mxcsr: &mut u32) -> (u128, u32) {
     } else {
         x.instruction::<Single, Double>(operation, scalar, immediate, a, b)
     };
+    if code & LOW_LANE != 0 {
+        *low_lane_flags = x.flags;
+        return (result, 0);
+    }
     let masks = *mxcsr >> MXCSR_MASK_SHIFT;
     let mut flags = x.flags;
+    if code & HIGH_LANE != 0 {
+        flags |= core::mem::take(low_lane_flags);
+    }
     // A dot product's steps each filtered their own (`Context::step`).
     if operation != Operation::DotProduct && flags & BEFORE & !masks != 0 {
         flags &= BEFORE;
