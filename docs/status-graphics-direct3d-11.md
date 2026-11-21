@@ -5,7 +5,7 @@ branch is merged into it). Plan: docs/phase-2-graphics.md, milestone G4 (section
 This file keeps the current state only; each earlier run's record (what it did, its measurements,
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
-round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main run 1 (2026-11-21).
+round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 and 2 (2026-11-21).
 
 ## Where things stand
 
@@ -36,53 +36,23 @@ Main run 1 (2026-11-21, about 09:40 to 12:00 Pacific), the first run on main:
   NIR crate (the branches met on main), fixed through the interface (Interface changes).
 - The bar rerun on main (Measurements): everything as at round 4 run 6.
 
-Round 4, run 6 (2026-11-20, about 18:30 to 21:30 Pacific), the tenth check's findings:
-- Merged origin/phase-2-graphics-shaders (its g6b run 4); no conflict. No other branch had news.
-- Comparisons through colour views (blocking): `SampleCmp`, `SampleCmpLevelZero` and `GatherCmp`
-  through views of `R32_FLOAT` and `R16_UNORM` colour textures, which Microsoft's 11_0 table
-  requires and which removed the device (WebGPU compares only depth views), are served: a
-  program's slot read as a depth texture with a colour view bound reads a depth texture of the same
-  bits (`Depth32Float`, `Depth16Unorm`) in the view's shape, made at the first such draw and copied
-  from the view's texels before each use (`View::compared`, `ReinterpretCopy`; into float depth the
-  back end copies by a draw, `DepthWrittenByDraw`). A comparison through a colour view of any
-  other format (which Direct3D claims for none) is refused by name. New listed case
-  `compare_colour` (compute and pixel shaders, point and linear comparison filters, gathers with
-  comparison, texels changed between uses), with 16-bit norm on and off: both match real Direct3D line by line (real Direct3D's results mix
-  passes and failures, logs/r6c.log).
-- Feature levels 9_1 to 9_3 (blocking): `CheckFormatSupport` reports only what the 10Level9
-  tables give (`format::LEVEL9_SUPPORT`, the runtime's answers on the RTX 3080, which agree with
-  Microsoft's 9_1 and 9_3 tables but for video formats; Microsoft has no 9_2 table), intersected
-  with what ours serves. Creation follows the same table (`check_level9_texture`: dimension, each
-  binding, mips, mip generation, samples, CPU access; multisampled textures are never read by
-  shaders there) and refuses viewed and stream output buffers, all as `E_INVALIDARG`. The old
-  three partial 9_x lists are gone. New tests compare every bit at 9_1, 9_2 and 9_3 and a list of
-  creations line by line: all three levels match (logs/r6g.log). Sharing below 10_0 is served
-  as the RTX 3080 serves it (measured, logs/r6e.log): `SHAREABLE` for the 17 formats it reports,
-  and shared textures of those it makes (`format::level9_shared`; `R32_FLOAT` made though not
-  reported, `R8G8B8A8_UNORM` refused though reported).
-- Depth clears outside 0 to 1 (minor): `ClearDepthStencilView` drops the whole call for such a
-  depth (NaN and the infinities among them), as the RTX 3080 does; `ClearView` of a depth view
-  limits normalised depth to 0 to 1 (NaN as 0) and refuses by name float depth outside that range
-  (`CLEAR_VIEW_FLOAT_DEPTH_OUTSIDE_RANGE`), which the RTX 3080 stores as given and WebGPU's depth
-  clears and draws cannot write (Gap list). New listed case `depth_clears`: matches real Direct3D (logs/r6g.log).
-- `GenerateMips` of an integer view (minor): neither side claims `MIP_AUTOGEN` there and Direct3D
-  defines no result; the RTX 3080 fills the levels by a rule of its driver's (measured in the
-  check's probe: 8-bit formats as their unorm twins' truncated box average, 32-bit components
-  averaged as floats, 16-bit ones neither). Ours now warns once by name and leaves the levels
-  (Differences from the RTX 3080); not copied from one driver's behaviour.
-- The extended-range display (minor): the Gap list now says that it is a shortfall of 11_0 under
-  both readings of Microsoft's pages (the overview marks it required at 11_0, optional at 10_x),
-  and why 11_0 is still reported (for the owner).
-- Building ahead (minor): unchanged, still no hit (What comes next 3).
-- test_generate_mips' count corrected to 410 checks, as real Direct3D's; this file cut from 1,296
-  lines to about 680 lines.
-- The first format query now fails where the first word has no uses though the second has
-  (sharing at 9_x; Wine's test_format_support found it at 9_1 to 9_3, 8 checks), and the format
-  support tests compare the first query's result too.
-- The bar rerun (Measurements): lint of both builds clean; library com 15 (1 ignored), programs 55
-  (3 ignored); the WebGL 2 build's 10_0 cases 5 pass, 1 ignored; front 60, unit 5, cache 1; Wine
-  d3d11 151 of 166 and d3d10core 110 of 111, the same tests as before; scenes 135 pass; the bar's
-  three programs match; building ahead unchanged; sizes and load times measured.
+Main run 2 (2026-11-21, from about 12:15 Pacific), the sixth check's findings:
+- Video support (blocking): `D3D11CreateDevice` with `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` now
+  answers `DXGI_ERROR_UNSUPPORTED`, warned, and hands nothing out, as Direct3D answers on an adapter
+  without video (Wine's test_video_support accepts that answer for an adapter, and expects it of
+  WARP made directly). The invalid-argument checks of adapter and driver type still come first, as
+  Wine's test asks. Before, the device was made without a video device and Wine's test crashed on
+  the null video device. Test: com.rs `device_creation_answers_as_direct3d`
+  (the new refusal, nothing handed out). Wine: see Wine's Direct3D 11 tests below.
+- The other findings: the extended-range level question is for the owner (For the owner); the
+  constant buffers' counts wait on the WebGPU track; the three ignored programs keep their causes;
+  the E_NOTIMPL list now names plain 2D `B4G4R4A4_UNORM` render targets; the 9_x sharing note says
+  measured for the sRGB twin and names the driver's contradiction ours copies (For the owner).
+- Another track (the shaders track, by its commits) edits this track's src/shader.rs in the shared
+  checkout: it committed dcf9fc21 (the shared container reader) and has further uncommitted edits
+  to it that need uncommitted shaders-crate code. This track leaves the file alone; the rig copy
+  now sends committed trees only (How to run), so this run built dcf9fc21's shader.rs.
+- Literals: 19 lines of this track cut from the baseline (Literals).
 
 ## Wine's Direct3D 11 tests through ours
 
@@ -169,7 +139,10 @@ behind one of these:
 - Debug devices (`D3D11_CREATE_DEVICE_DEBUG` fails) and the 11_1 device: test_device_interfaces.
 - Min/max filtering (`D3D11_OPTIONS1.MinMaxFiltering` FALSE): test_filter_minmax.
 - Video (`QueryInterface` for `ID3D11VideoDevice` and `ID3D11VideoContext` answers
-  `E_NOINTERFACE`): test_immediate_context, test_video_support, test_h264_decoder.
+  `E_NOINTERFACE`, and `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` is refused with
+  `DXGI_ERROR_UNSUPPORTED`): test_immediate_context (1 check, the video context),
+  test_video_support (1 check of 49: the hardware device with video support, which real Direct3D
+  makes; real Direct3D runs 51 there; no crash since main run 2), test_h264_decoder.
 - Mapping default buffers (`D3D11_OPTIONS1.MapOnDefaultBuffers` FALSE, plan section 9):
   test_resource_access (6 checks at 11_0) and the 11_1 device.
 - A vertex shader's layer and viewport (`D3D11_OPTIONS3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer`
@@ -285,7 +258,8 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
   levels and warns once; the RTX 3080's driver fills them by its own rule (Where things stand).
 - Creation refusals answered `E_NOTIMPL` where the RTX 3080 answers `E_INVALIDARG` (both fail;
   only the code and the warning differ): render target views and mip generation of 1D, 3D and
-  array textures of the R32G32B32 formats and `B4G4R4A4_UNORM`; 1D, 3D, array and cube-array
+  array textures of the R32G32B32 formats; textures of `B4G4R4A4_UNORM` bound as render targets
+  of every dimension, plain 2D included (fifth check's probe12 b5); 1D, 3D, array and cube-array
   textures of `R1_UNORM` and of the video formats ours holds no texture of; shared textures of
   P016 and NV11; typed buffer views of `R1_UNORM`, the extended-range format and the video
   formats. 22 formats differ so in the eighth check's probe (probe8/out). Needs Microsoft's
@@ -338,8 +312,10 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
   typed buffers (10_0 and up), `A8_UNORM` storage views (11_0).
 - Below 10_0, as the RTX 3080 answers: only the 10Level9 table's bits; no buffers, comparisons,
   gathers or storage; `SHAREABLE` for the 17 formats the RTX 3080 reports it for, and shared
-  textures made of them but `R8G8B8A8_UNORM` (refused there, measured) and its sRGB twin
-  (inferred, not measured).
+  textures made of them but `R8G8B8A8_UNORM` and its sRGB twin (both refused there, measured in
+  check-r15's probe11 share9). This copies the RTX 3080's own contradiction at 9_x: those two
+  are reported shareable and then refused, and `R32_FLOAT` is made though not reported. Ours
+  follows the measured answers rather than its own rule; for the owner (Departures).
 - Below 11_0: sharing is claimed from 10_0 and the second query answers it alone; gathers at 10_1
   only for formats of a red channel alone, uncompressed, one aspect of depth, NV12 and YUY2;
   multisampled depth is not read at 10_0.
@@ -607,12 +583,23 @@ listed case of section 12 has its test against real Direct3D.
 - The feature level is 11_0 at most.
 - The adapter reports zero for its memory sizes (the infrastructure crate's rule).
 - `D3D11CreateDevice` with an adapter uses ours whatever is passed; the debug flag answers
-  `DXGI_ERROR_SDK_COMPONENT_MISSING`; software, WARP, reference and null drivers
-  `DXGI_ERROR_UNSUPPORTED`.
+  `DXGI_ERROR_SDK_COMPONENT_MISSING`; software, WARP, reference and null drivers, and
+  `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` (no video device is served), `DXGI_ERROR_UNSUPPORTED`.
 - `D3D11_OPTIONS.ClearView` is TRUE: target, depth and storage views, whole or by rectangles;
   storage rectangles through the shaders crate's storage clear program; 3D target rectangles copied
   into each slice from a cleared slice.
 - The library draws through wgpu on Direct3D 12 only.
+
+## For the owner
+
+- The reported level: 11_0 is reported without the extended-range display, which Microsoft's
+  overview requires at 11_0 and leaves optional at 10_1; the truthful level under section 9 would
+  be 10_1, which takes away shader model 5 (Gap list, "Why 11_0 is still reported"). The WebGL 2
+  build's 10_0 likewise lacks the 10_0 abilities its Gap list item names. Yours to decide.
+- Sharing at 9_x copies the RTX 3080's own contradiction: `R8G8B8A8_UNORM` and its sRGB twin are
+  reported shareable and refused when made, and `R32_FLOAT` is made though not reported
+  (`format::level9_shared`, measured). The other choice is to report only what ours makes, which
+  would then differ from the reference. Yours to decide.
 
 ## Interface changes
 
@@ -706,6 +693,12 @@ Earlier runs' measurements are in this file's git history.
 
 ## Literals
 
+- Main run 2 (2026-11-21): 19 lines of this track cut from the baseline, the library's messages of
+  what it does not serve named once (`CLASS_LINKAGE`, `NO_COMPUTE`, `NO_TESSELLATION`,
+  `LOGIC_OPERATIONS`, `FULLSCREEN` and others in device.rs and swapchain.rs, and the device
+  makers' `NOT_HARDWARE`, `NOT_HARDWARE_10`, `NO_VIDEO`); the new video refusal adds no line.
+  Left in the baseline: wcontainers-direct3d-11 432 lines (499 at main run 1; the rest went with
+  the shared container reader, 7090247d), wcontainers-directx 210 (229).
 - Main run 1 (2026-11-21): the check at main 10d3fd72 exits 1 with 50 lines to act on, none this
   track's but the cube faces' redefinition, which came from two branches meeting on main: the
   front now imports `wcontainers_gpu::CUBE_FACES` (Interface changes); the NIR crate's copy is
