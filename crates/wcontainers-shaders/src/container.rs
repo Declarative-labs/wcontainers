@@ -663,13 +663,16 @@ pub enum DxilShape {
     Other,
 }
 
+/// The range size [`DxilView::count`] gives a range without one.
+pub const RANGE_WITHOUT_SIZE: u32 = crate::ir::view_range::UNBOUNDED;
+
 /// A shader resource view or unordered access view of a DXIL module's resource list
 /// (`dx.resources`; `DXIL.rst`, "Resources").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DxilView {
     pub shape: DxilShape,
     pub space: u32,
-    /// Its range's first register and size (`u32::MAX` for a range without one).
+    /// Its range's first register and size ([`RANGE_WITHOUT_SIZE`] for a range without one).
     pub register: u32,
     pub count: u32,
     /// The kind of value its elements hold, where its extended properties give their type.
@@ -845,20 +848,102 @@ mod tests {
         ];
         assert_eq!(shapes(&read.storage), storage);
         let mut cache = Cache::default();
-        let (first, appended) = dxil_views_cached(&mut cache, code);
+        let (first, appended) = dxil_views_cached(&mut cache, code).unwrap();
         assert_eq!((first.as_ref(), appended.is_empty()), (Some(&read), false));
         assert_eq!(
-            dxil_views_cached(&mut cache, code),
+            dxil_views_cached(&mut cache, code).unwrap(),
             (Some(read.clone()), Vec::new())
         );
         let (mut loaded, _) = Cache::load(cache.bytes().to_vec()).unwrap();
         assert_eq!(
-            dxil_views_cached(&mut loaded, code),
+            dxil_views_cached(&mut loaded, code).unwrap(),
             (Some(read), Vec::new())
         );
         // A container without a module is recorded as declaring none.
         let dxbc = include_bytes!("../tests/own/cs_images.dxbc");
-        assert_eq!(dxil_views_cached(&mut loaded, dxbc).0, None);
-        assert_eq!(dxil_views_cached(&mut loaded, dxbc), (None, Vec::new()));
+        assert_eq!(dxil_views_cached(&mut loaded, dxbc).unwrap().0, None);
+        assert_eq!(
+            dxil_views_cached(&mut loaded, dxbc).unwrap(),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
+    fn a_views_record_that_does_not_decode_is_malformed() {
+        use crate::cache::{Cache, Kind, dxil_views_cached, views_key};
+        let code = include_bytes!("../tests/own/cs_texels.dxil");
+        let mut cache = Cache::default();
+        assert!(
+            !cache
+                .insert(Kind::Views, views_key(code), &[u8::MAX])
+                .is_empty()
+        );
+        assert!(matches!(
+            dxil_views_cached(&mut cache, code),
+            Err(crate::ConvertError::Malformed(_))
+        ));
+    }
+
+    /// The checksum dxc writes where it does not sign a container.
+    const BYPASS: Checksum = [1; size_of::<Checksum>()];
+
+    /// `code` with `digest` as its checksum.
+    fn with_digest(code: &[u8], digest: Checksum) -> Vec<u8> {
+        let mut c = code.to_vec();
+        c[offset_of!(Header, digest)..][..size_of::<Checksum>()].copy_from_slice(&digest);
+        c
+    }
+
+    #[test]
+    fn a_module_s_views_are_read_with_its_checksum_or_the_bypass_value_only() {
+        // compute.hlsl's cs_images: four storage textures, signed by the validator.
+        let code = include_bytes!("../tests/own/cs_images.dxil");
+        assert_eq!(with_digest(code, checksum(code)), code);
+        let read = dxil_views(code).unwrap();
+        assert_eq!(read.storage.as_ref().map(Vec::len), Some(4));
+        assert_eq!(dxil_views(&with_digest(code, BYPASS)), Some(read));
+        assert_eq!(dxil_views(&with_digest(code, Checksum::default())), None);
+        let mut unsigned = checksum(code);
+        unsigned[0] ^= 1;
+        assert_eq!(dxil_views(&with_digest(code, unsigned)), None);
+    }
+
+    #[test]
+    fn modules_read_in_turn_each_give_their_own_lists() {
+        use crate::{Source, cache::encode, convert};
+        use wcontainers_gpu::VariantKey;
+        let codes: [&[u8]; 7] = [
+            include_bytes!("../tests/own/cs_images.dxil"),
+            include_bytes!("../tests/own/cs_texels.dxil"),
+            include_bytes!("../tests/own/cs_image_array.dxil"),
+            include_bytes!("../tests/own/cs_view_kinds.dxil"),
+            include_bytes!("../tests/own/cs_typed_array.dxil"),
+            include_bytes!("../tests/own/ps_msarray.dxil"),
+            include_bytes!("../tests/own/cs_atomics.dxil"),
+        ];
+        let alone: Vec<_> = codes.iter().map(|c| dxil_views(c)).collect();
+        assert!(alone.iter().all(Option::is_some));
+        // Each read after every other, more modules than a thread keeps parsed.
+        for round in 0..2 {
+            for (i, code) in codes.iter().enumerate().rev() {
+                assert_eq!(dxil_views(code), alone[i], "round {round}, module {i}");
+                assert_eq!(dxil_views(codes[0]), alone[0], "round {round}, after {i}");
+            }
+        }
+        // A conversion, which reads its module's declared registers, made after other modules'
+        // views and after its own.
+        // cs_atomics: five storage buffers, three with counters, converted with the default key.
+        let (&code, others) = codes.split_last().unwrap();
+        let converted =
+            || encode(&convert(Source::Dxil(code), &VariantKey::default(), None).unwrap());
+        dxil_views(code);
+        let first = converted();
+        for other in others {
+            dxil_views(other);
+        }
+        assert_eq!(converted(), first);
+        dxil_views(code);
+        dxil_views(others[0]);
+        assert_eq!(converted(), first);
     }
 }

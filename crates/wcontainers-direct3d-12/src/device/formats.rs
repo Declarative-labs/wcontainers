@@ -532,3 +532,57 @@ impl<B: Backend> Device<B> {
         Ok((program?, Helpers::of(&ps)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A root signature with no parameters.
+    fn empty_root() -> RootSignatureDesc {
+        RootSignatureDesc {
+            version: 1,
+            parameters: Vec::new(),
+            samplers: Vec::new(),
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn a_dxil_stage_s_typed_views_give_its_key_and_its_storage_texture_slots() {
+        // compute.hlsl's cs_images: RWTexture2D<float4> u0, RWTexture2D<float> u1,
+        // RWTexture2DArray<uint4> u2, RWTexture2D<int2> u3.
+        let code = include_bytes!("../../../wcontainers-shaders/tests/own/cs_images.dxil");
+        let route = TexelBufferRoute::Storage;
+        let (key, through) = typed_key(code, route, &empty_root(), bind::ALL);
+        let storage = [
+            Format::R32Float,
+            Format::R32Float,
+            Format::R32Uint,
+            Format::R32Sint,
+        ];
+        let storage: Vec<_> = (0..).zip(storage).collect();
+        assert_eq!(key.storage_formats, storage);
+        assert_eq!(
+            (key.texel_formats.len(), key.texel_buffers, through),
+            (0, TexelBufferRoute::Native, 0b1111)
+        );
+        // texels.hlsl's cs_texels: Buffer<float4> t0, Buffer<uint4> t1, Buffer<int4> t2,
+        // Buffer<float2> t3, RWBuffer<float4> u0, RWBuffer<uint> u1 and a structured buffer at u2.
+        let code = include_bytes!("../../../wcontainers-shaders/tests/own/cs_texels.dxil");
+        let (key, through) = typed_key(code, route, &empty_root(), bind::ALL);
+        let texel = [
+            Format::R32Float,
+            Format::R32Uint,
+            Format::R32Sint,
+            Format::R32Float,
+        ];
+        assert_eq!(key.texel_formats, (0..).zip(texel).collect::<Vec<_>>());
+        let storage = [(0, Format::R32Float), (1, Format::R32Uint)];
+        assert_eq!(key.storage_formats, storage);
+        assert_eq!((key.texel_buffers, through), (route, 0));
+        // msarray.hlsl's ps_msarray: Texture2DMSArray<float4> t0, converted reading one layer.
+        let code = include_bytes!("../../../wcontainers-shaders/tests/own/ps_msarray.dxil");
+        let (key, _) = typed_key(code, route, &empty_root(), bind::PIXEL);
+        assert_eq!(key.texture_layers, [(0, 1)]);
+    }
+}

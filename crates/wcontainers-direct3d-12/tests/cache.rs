@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use record::Recorder;
 use wcontainers_direct3d_12::{Device, cache};
-use wcontainers_shaders::cache::{Cache, Kind};
+use wcontainers_shaders::cache::{Cache, Kind, views_key};
 
 /// A file the test reads back: the bytes appended.
 #[derive(Clone, Default)]
@@ -62,4 +62,14 @@ fn pipelines_take_shaders_converted_before_in_the_process_and_in_the_last_run() 
     triangle::pipeline(&mut device, triangle::VS).unwrap();
     assert_eq!(cache::counts(), (0, converted));
     assert!(file.0.lock().unwrap().is_empty());
+
+    // A file whose record of the vertex shader's views does not decode: they are read from the
+    // module again, counted, and the pipeline made as before.
+    let mut damaged = Cache::default();
+    let record = damaged.insert(Kind::Views, views_key(triangle::VS), &[u8::MAX]);
+    assert!(!record.is_empty());
+    cache::open(damaged, Box::new(File::default()));
+    let mut device = Device::new(Recorder::new());
+    triangle::pipeline(&mut device, triangle::VS).unwrap();
+    assert_eq!(cache::views_reread(), 1);
 }

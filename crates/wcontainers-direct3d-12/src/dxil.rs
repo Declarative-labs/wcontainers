@@ -4,10 +4,7 @@
 
 use crate::dxbc::{Kind, TypedView};
 use wcontainers_gpu::ScalarKind;
-use wcontainers_shaders::container::{DxilShape, DxilView, DxilViews};
-
-/// The range size DXIL gives an unbounded range.
-const UNBOUNDED: u32 = u32::MAX;
+use wcontainers_shaders::container::{DxilShape, DxilView, DxilViews, RANGE_WITHOUT_SIZE};
 
 /// The (space, register) places of each of a list's views' elements, and every place of the list
 /// sorted for the slots; `None` where a range runs past the last register.
@@ -17,7 +14,10 @@ fn places(list: &[DxilView]) -> Option<(Vec<Vec<(u32, u32)>>, Vec<(u32, u32)>)> 
     let mut places = Vec::with_capacity(list.len());
     for v in list {
         // An unbounded range is one place: the converter refuses such arrays.
-        let count = if v.count == UNBOUNDED { 1 } else { v.count };
+        let count = match v.count {
+            RANGE_WITHOUT_SIZE => 1,
+            count => count,
+        };
         let elements: Vec<(u32, u32)> = (0..count)
             .map(|i| Some((v.space, v.register.checked_add(i)?)))
             .collect::<Option<_>>()?;

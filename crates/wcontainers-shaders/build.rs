@@ -92,6 +92,7 @@ const BOUNDARY_ENUMS: &[HeaderEnum] = &[
     ("boundary.h", "ViewWord", "view_word", "usize"),
     ("boundary.h", "ViewShape", "view_shape", "u32"),
     ("boundary.h", "ViewValue", "view_value", "u32"),
+    ("boundary.h", "ViewRange", "view_range", "u32"),
 ];
 
 const DXIL_SPIRV: &[&str] = &[

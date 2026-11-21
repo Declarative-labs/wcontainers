@@ -56,6 +56,11 @@ enum class ViewShape : uint32_t {
   eOther,
 };
 
+// The range size a view's `eRangeSize` word gives a range without one (DXIL writes -1).
+enum class ViewRange : uint32_t {
+  eUnbounded = 0xffffffffu,
+};
+
 // The kind of value a view's elements hold, from the element type (`DXIL::ComponentType`) its extended
 // properties give; none where they give none or one of no such kind.
 enum class ViewValue : uint32_t {

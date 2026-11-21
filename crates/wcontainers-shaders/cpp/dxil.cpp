@@ -235,47 +235,59 @@ enum ResourceOperand : unsigned {
 };
 
 // The range size DXIL gives an unbounded range.
-constexpr uint32_t UNBOUNDED = UINT32_MAX;
+constexpr uint32_t UNBOUNDED = uint32_t(wcs::ViewRange::eUnbounded);
 
-// The module the resource list readers parsed last on this thread, with the container it came from:
-// a stage's views, declared registers and constant buffer sizes are read from one parse of it.
+// A module the resource list readers parsed, with the container it came from.
 struct Parsed {
   std::vector<uint8_t> container;
   bool dxbc_binary = false;
   std::unique_ptr<dxil_spv::LLVMBCParser> bitcode;
 };
-thread_local Parsed last;
+// The modules parsed last on this thread, the latest first, one for each stage a graphics pipeline
+// has (vertex, hull, domain, geometry, pixel): each stage's views, declared registers and constant
+// buffer sizes are read from one parse of its module, in whatever order the stages are read.
+constexpr size_t REMEMBERED = 5;
+thread_local std::vector<Parsed> remembered;
 
 // The module of a container's `DXIL` chunk, or of its DXBC program where `dxbc` allows one; null with
 // the reason in `error` where there is none or it does not parse. Valid until the next call.
 dxil_spv::LLVMBCParser* parse(const uint8_t* data, size_t size, bool dxbc, char** error) {
-  if (!(last.bitcode && last.container.size() == size && std::memcmp(last.container.data(), data, size) == 0)) {
-    last = Parsed();
+  auto found = std::find_if(remembered.begin(), remembered.end(), [&](const Parsed& p) {
+    return p.container.size() == size && std::memcmp(p.container.data(), data, size) == 0;
+  });
+  if (found == remembered.end()) {
+    // dxil-spirv's and dxbc-spirv's reasons go into `error`, not to stderr.
+    std::string first;
+    LogScope scope(&first);
+    wcs::ErrorLog dxbc_log;
+    auto refused = [&](const char* reason) -> dxil_spv::LLVMBCParser* {
+      *error = wcs::copy(!first.empty() ? first : !dxbc_log.first.empty() ? dxbc_log.first : reason);
+      return nullptr;
+    };
     dxil_spv::DXILContainerParser container;
-    if (!container.parse_container(data, size, false)) {
-      *error = wcs::copy("the DXIL did not parse");
-      return nullptr;
-    }
-    auto bitcode = std::make_unique<dxil_spv::LLVMBCParser>();
-    bool dxbc_binary = container.is_dxbc_binary();
-    if (dxbc_binary && !dxbc) {
-      *error = wcs::copy("not a DXIL container");
-      return nullptr;
-    }
-    if (!(dxbc_binary ? bitcode->parseDXBCBinary(data, size)
-                      : bitcode->parse(container.get_blob().data(), container.get_blob().size()))) {
-      *error = wcs::copy("the DXIL did not parse");
-      return nullptr;
-    }
-    last.container.assign(data, data + size);
-    last.dxbc_binary = dxbc_binary;
-    last.bitcode = std::move(bitcode);
+    if (!container.parse_container(data, size, false))
+      return refused("the DXIL did not parse");
+    Parsed parsed;
+    parsed.dxbc_binary = container.is_dxbc_binary();
+    if (parsed.dxbc_binary && !dxbc)
+      return refused("not a DXIL container");
+    parsed.bitcode = std::make_unique<dxil_spv::LLVMBCParser>();
+    if (!(parsed.dxbc_binary ? parsed.bitcode->parseDXBCBinary(data, size)
+                             : parsed.bitcode->parse(container.get_blob().data(), container.get_blob().size())))
+      return refused("the DXIL did not parse");
+    parsed.container.assign(data, data + size);
+    if (remembered.size() == REMEMBERED)
+      remembered.pop_back();
+    found = remembered.insert(remembered.begin(), std::move(parsed));
+  } else {
+    std::rotate(remembered.begin(), found, found + 1);
+    found = remembered.begin();
   }
-  if (last.dxbc_binary && !dxbc) {
+  if (found->dxbc_binary && !dxbc) {
     *error = wcs::copy("not a DXIL container");
     return nullptr;
   }
-  return last.bitcode.get();
+  return found->bitcode.get();
 }
 
 // The node of the module's resource list (`dx.resources`) holding its lists, or null where it has none.
@@ -378,9 +390,14 @@ wcs::ViewValue value(int64_t type) {
 // The number of the two view lists the module's resource list holds (both where it has none), then for
 // every view of them its `ViewWord`s. A container whose checksum does not match is not read.
 int views(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
-  if (!signed_or_bypassed(data, size)) {
-    *error = wcs::copy("the container's checksum does not match its bytes");
-    return 1;
+  {
+    // dxbc-spirv's container reader reports into this, not to stderr.
+    wcs::ErrorLog container;
+    if (!signed_or_bypassed(data, size)) {
+      *error = wcs::copy(container.first.empty() ? "the container's checksum does not match its bytes"
+                                                 : container.first);
+      return 1;
+    }
   }
   auto* bitcode = parse(data, size, false, error);
   if (!bitcode)

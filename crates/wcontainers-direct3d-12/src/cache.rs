@@ -19,6 +19,8 @@ struct Store {
     /// Conversions made and taken from the cache.
     converted: u64,
     decoded: u64,
+    /// Modules whose views were read again as their record did not decode.
+    views_reread: u64,
 }
 
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
@@ -35,6 +37,7 @@ pub fn open(cache: Cache, out: Box<dyn Write + Send>) {
         out: Some(out),
         converted: 0,
         decoded: 0,
+        views_reread: 0,
     });
 }
 
@@ -45,8 +48,16 @@ fn opened(g: &mut Option<Store>) -> &mut Store {
         out: None,
         converted: 0,
         decoded: 0,
+        views_reread: 0,
     })
 }
+
+/// The warning given once the cache file cannot be appended to, before the host's reason.
+const APPEND_REFUSED: &str = "wcontainers direct3d 12: the cache file cannot be appended to";
+/// The warning given for a module whose views' record in the cache does not decode, before the
+/// reason; its views are read from the module again.
+const VIEWS_UNDECODED: &str =
+    "wcontainers direct3d 12: a views record of the cache does not decode";
 
 impl Store {
     /// Appends `appended` to the file, keeping the cache in memory only once it cannot be.
@@ -54,9 +65,7 @@ impl Store {
         if let Some(out) = &mut self.out
             && let Err(e) = out.write_all(appended).and_then(|()| out.flush())
         {
-            eprintln!(
-                "wcontainers direct3d 12: the cache file cannot be appended to ({e}); kept in memory"
-            );
+            eprintln!("{APPEND_REFUSED} ({e}); kept in memory");
             self.out = None;
         }
     }
@@ -77,15 +86,30 @@ pub(crate) fn convert(source: Source<'_>, variant: &VariantKey) -> Result<Conver
 }
 
 /// The views `code`'s DXIL module declares, from the cache where it holds them: each module is
-/// read once, however many pipelines and stages use it.
+/// read once, however many pipelines and stages use it. Where its record does not decode, the
+/// module is read again each time (counted in [`views_reread`], with a warning).
 pub(crate) fn dxil_views(code: &[u8]) -> Option<DxilViews> {
     let mut g = store();
     let s = opened(&mut g);
-    let (views, appended) = file::dxil_views_cached(&mut s.cache, code);
-    if !appended.is_empty() {
-        s.append(&appended);
+    match file::dxil_views_cached(&mut s.cache, code) {
+        Ok((views, appended)) => {
+            if !appended.is_empty() {
+                s.append(&appended);
+            }
+            views
+        }
+        Err(e) => {
+            s.views_reread += 1;
+            eprintln!("{VIEWS_UNDECODED} ({e:?}); read again");
+            wcontainers_shaders::container::dxil_views(code)
+        }
     }
-    views
+}
+
+/// How many times the process read a module's views again as the cache's record of them did not
+/// decode.
+pub fn views_reread() -> u64 {
+    store().as_ref().map_or(0, |s| s.views_reread)
 }
 
 /// How many shaders the process converted and how many it took from the cache.

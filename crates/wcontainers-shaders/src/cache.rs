@@ -380,19 +380,22 @@ pub fn views_key(container: &[u8]) -> [u8; KEY_BYTES] {
 }
 
 /// [`crate::container::dxil_views`] through the cache: a recorded reading is decoded, anything else
-/// read and recorded. Returns the bytes appended to the file, if any, beside the result.
-pub fn dxil_views_cached(cache: &mut Cache, container: &[u8]) -> (Option<DxilViews>, Vec<u8>) {
+/// read and recorded. Returns the bytes appended to the file, if any, beside the result; a record
+/// that does not decode is `ConvertError::Malformed`, as in [`convert_cached`].
+pub fn dxil_views_cached(
+    cache: &mut Cache,
+    container: &[u8],
+) -> Result<(Option<DxilViews>, Vec<u8>), ConvertError> {
     let key = views_key(container);
-    if let Some(views) = cache
-        .get(Kind::Views, &key)
-        .and_then(|record| postcard::from_bytes(record).ok())
-    {
-        return (views, Vec::new());
+    if let Some(record) = cache.get(Kind::Views, &key) {
+        let views = postcard::from_bytes(record)
+            .map_err(|e| ConvertError::Malformed(alloc::format!("cache record: {e}")))?;
+        return Ok((views, Vec::new()));
     }
     let views = crate::container::dxil_views(container);
     let record = postcard::to_allocvec(&views).expect("a view list serialises");
     let appended = cache.insert(Kind::Views, key, &record).to_vec();
-    (views, appended)
+    Ok((views, appended))
 }
 
 /// Records a state combination a program was drawn with, in the front's own terms (its blocks, the
