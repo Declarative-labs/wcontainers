@@ -1,3 +1,5 @@
+code	crates/abi/registers.rs	int	RegisterBlock	31
+code	crates/abi/registers.rs	int	RegisterBlock	32
 code	crates/kernel-interface/arm64_features.rs	int	PartNum::new	12	accepted: a number in the reviewed kernel interface, which the move may not edit; the owner decides it when kernel adopts it
 code	crates/kernel-interface/arm64_features.rs	int	Revision::new	4	accepted: a number in the reviewed kernel interface, which the move may not edit; the owner decides it when kernel adopts it
 code	crates/kernel-interface/arm64_features.rs	int	UnlistedImplementer::new	0x41	accepted: a number in the reviewed kernel interface, which the move may not edit; the owner decides it when kernel adopts it
@@ -18,8 +20,6 @@ code	crates/kernel-interface/x86_64_features.rs	int	ProcessorSignature::new	0xF	
 code	crates/kernel-interface/x86_64_features.rs	int	ProcessorSignature::new	0xFF	accepted: a number in the reviewed kernel interface, which the move may not edit; the owner decides it when kernel adopts it
 code	crates/kernel-interface/x86_64_features.rs	int	ProcessorSignature::new	4	accepted: a number in the reviewed kernel interface, which the move may not edit; the owner decides it when kernel adopts it
 code	crates/kernel-interface/x86_64_features.rs	int	ProcessorSignature::new	4	accepted: a number in the reviewed kernel interface, which the move may not edit; the owner decides it when kernel adopts it
-code	crates/wcontainers-abi/src/registers.rs	int	RegisterBlock	31
-code	crates/wcontainers-abi/src/registers.rs	int	RegisterBlock	32
 code	crates/wcontainers-arm64/src/decode.rs	int	address	12
 code	crates/wcontainers-arm64/src/decode.rs	int	address	13
 code	crates/wcontainers-arm64/src/decode.rs	int	address	16
@@ -22911,7 +22911,7 @@ redefinition	third_party/naga/src/ir/mod.rs	int	RayFlag::TERMINATE_ON_FIRST_HIT	
 redefinition	third_party/naga/src/valid/analyzer.rs	int	GlobalUse::READ	GlobalUse::READ = 1
 redefinition	third_party/naga/src/valid/analyzer.rs	int	GlobalUse::WRITE	GlobalUse::WRITE = 2
 redefinition	third_party/naga/src/valid/mod.rs	int	ShaderStages::VERTEX	ShaderStages::VERTEX = 1
-restated	crates/wcontainers-abi/src/registers.rs	int	tests::layout_is_fixed	256
+restated	crates/abi/registers.rs	int	tests::layout_is_fixed	256
 restated	crates/wcontainers-direct3d-11/tests/front.rs	float	a_depth_bias_clamp_the_back_end_lacks_is_added_by_the_pixel_program	16_777_215.0
 restated	crates/wcontainers-direct3d-11/tests/front.rs	float	quads_scene	256.0
 restated	crates/wcontainers-direct3d-11/tests/front.rs	float	topology_scene	256.0
