@@ -1,8 +1,57 @@
 # Status: host internet sockets
 
 Plan: docs/plan-host-internet-sockets.md. Milestones: I1 route resolver and the two generic suites (done), I2 ICMP
-and raw sockets (redone in run 1 after the reorganization and the async ruling of 2026-11-21; run 2 answered
-the independent check's findings, below). Nothing of this track is in progress.
+and raw sockets (redone in run 1 after the reorganization and the async ruling of 2026-11-21; runs 2 and 3
+answered the independent checks' findings, below). Nothing of this track is in progress.
+
+## I2 run 3: the independent check's findings, each
+- Raw received mark and priority checked by nothing (blocking): new raw check
+  received_packets_carry_their_mark_and_priority (IPv4 and IPv6 loopback: mark 7 and priority 5 arrive, a plain
+  send then 0 and 0). The verifier's broken copy (`SO_RCVMARK`, `SO_RCVPRIORITY` not turned on) fails it.
+- ICMP neighbour confirmation accepted a refusal over IPv4 (blocking): only IPv6 may refuse now (Linux's IPv6 ping
+  sockets drop the flag; IPv4's honour it). The verifier's broken copy fails a_confirmed_send_confirms_the_neighbour.
+- No mobility header send (blocking): new raw check a_mobility_header_is_sent_by_its_type (an IPv6 raw socket of
+  protocol 135 sends a binding refresh request with its type as selector; it leaves as given with the checksum
+  Linux writes at offset 4). The broken copy that drops the mobility selector fails it.
+- ICMP error cut inside its ICMP header got zeros (minor): the shared `icmp_error` now writes the ICMP header and
+  its checksum into the headers before placing them, so any cut holds the right start, for every socket kind
+  (UDP and TCP keep their calls). The ICMP and raw sockets also write the error from all of the entry's data
+  (new `write_whole_icmp_error` and `write_whole_icmp_error_quoting_header`): with only what fit in the buffer, a
+  buffer shorter than the quoted data told a length too short and a wrong checksum. New ICMP check
+  a_short_buffer_keeps_the_start_of_an_icmp_error (an error quoting the whole request, cut in the outer header,
+  the ICMP header and the quoted message, IPv4 and IPv6, each cut equal to the start of the whole error); the raw
+  icmp_errors_arrive_whole cuts the same ways, and once shorter than the quoted data.
+- IPv4 error's outer header fields unchecked (minor): both suites now compare the error's outer IP header with the
+  one on loopback's wire (all but the IPv4 identification and fragment fields, which Linux does not give, and the
+  checksum over them, which must hold). The broken copies with the IPv4 TTL or the raw IPv6 hop limit flipped fail.
+- Raw suite had no IPv6 short buffer or ICMP error (minor): a_short_buffer_keeps_the_whole_length now cuts IPv4 and
+  IPv6 packets (shorter than the payload, in the header, at its end, in the payload; each cut equal to the start of
+  the whole but for the IPv4 identification and checksum, which differ per send); icmp_errors_arrive_whole sends
+  IPv6 payloads and IPv6 packets with their own header too. Broken copies that tell or give an IPv6 length cut to
+  the buffer fail it.
+- Three vectors per IPv6 send (minor): gone; the shared `send.rs` hands the sticky options the header slices.
+- The shared readiness's rewrite (edge-triggered, d2c4f3ad, the UDP track's) is committed: the wait checks and the
+  allocation tests were run again on it (see Results).
+
+## Independent check, run 3 (22:34 to 22:38 UTC, load 2.1 to 4.5, `independent-check-i2d.sh`)
+- Clean build in a fresh target folder; clippy with warnings denied clean on the nine packages; three rounds, each
+  ICMP 47 of 47, raw 40 of 40, resolver 31 of 31, Configurable 2 of 2, NegativeRouteAdvice 3 of 3 and the four crate
+  tests (34 s with the build).
+- 43 broken copies, each caught: the 31 of runs 1 and 2 (same checks as before) and the 12 of run 3: received
+  mark and priority not turned on (received_packets_carry_their_mark_and_priority), IPv4 confirmation refused
+  (a_confirmed_send_confirms_the_neighbour), mobility selector dropped (a_mobility_header_is_sent_by_its_type), the
+  shared error writing zeros into a buffer that cuts its headers (ICMP a_short_buffer_keeps_the_start_of_an_icmp_error,
+  raw icmp_errors_arrive_whole), an ICMP, a raw and a raw header-quoting error written from the cut data alone
+  (the same checks), the ICMP IPv4 error's TTL flipped (an_icmp_error_arrives_whole_over_ipv4), the raw IPv6 error's
+  hop limit flipped (icmp_errors_arrive_whole), a raw IPv6 length told or given cut to the buffer (both
+  a_short_buffer_keeps_the_whole_length).
+- cargo tree (normal, build and dev edges) of the 15 interface crates and 13 conformance crates against the 17
+  implementation crates: none named (control: the raw implementation's tree names itself and the shared crate).
+- The UDP suite (75 and 5) and the TCP suite (98) pass with this run's shared crate changes.
+- Reviewed files: none of the 32 files (every interface.rs and the data files beside them) differs since run 2's
+  0033b9a1 or in the working tree.
+- Literal check (after `cargo fetch` there): no finding in this track's files (8 in all; two are the UDP suite's
+  copies of WAITED_SOCKETS and WAITS_ON_ONE).
 
 ## I2 run 2: the independent check's findings, each
 - IPv6 source preferences checked by nothing (blocking): both suites now give the dummy link a temporary
@@ -48,6 +97,7 @@ the independent check's findings, below). Nothing of this track is in progress.
   `flake-hunt.sh`): 40 rounds at load 5 to 16, no wait check failed (one failure, the temporary address one
   above). Then 150 rounds of each suite, 21:52 to 22:00 UTC, load 2.4 to 26.2 (a peak from other tracks at
   21:58): no failure of any check. So 190 rounds here, none of the wait checks failed.
+- Run 3: 60 more rounds of both suites on the edge-triggered readiness, no failure (250 rounds in all).
 - Left as it is: no fault found to fix, and the check's patience (2 s for one local ICMP error) was not raised,
   since raising it would only hide a lost wake. If it fails again, flake-hunt.sh keeps the panic's text, which
   names the step (no capture, no wake, no error event, or the receive).
@@ -133,8 +183,9 @@ the independent check's findings, below). Nothing of this track is in progress.
   - `lint-and-suites.sh`: clippy with warnings denied on the nine packages, then the ICMP, raw and resolver
     suites and the generic self-tests (`ROUNDS=3` before it for three rounds, `FILTER=<name>` to filter).
   - `independent-check-i2b.sh`: clean build with clippy, three rounds, 24 broken copies, cargo tree.
-  - `findings-run2.sh`: the broken copies for run 2's findings (source preferences, ICMP tail, drop count, IPv6
-    traffic class, waiter room).
+  - `independent-check-i2d.sh`: clean build with clippy, three rounds, the 43 broken copies of runs 1 to 3, cargo
+    tree, then the UDP and TCP suites (the shared crate is theirs too).
+  - `findings-run2.sh`, `findings-run3.sh`: the broken copies of each run's findings alone.
   - `flake-hunt.sh`: both suites side by side, `ROUNDS` times (default 20), `FILTER` to pick checks, each
     failure's text printed.
   - `readiness-fix.sh`: the wait checks twenty times, then the UDP and TCP suites.
@@ -147,6 +198,11 @@ the independent check's findings, below). Nothing of this track is in progress.
   `git reset -q -- <those paths> Cargo.lock` in the shared index.
 
 ## Results (ARM64 machine, Linux 7.0.0-1018-aws, 96 cores, 12 test threads)
+- Run 3, 22:38 UTC, load 2.7 to 3.2, final code: three rounds, each ICMP 47 of 47 (0.61 s), raw 40 of 40 (2.87 s),
+  resolver 31 of 31, Configurable 2 of 2, NegativeRouteAdvice 3 of 3 and the four crate tests; clippy clean.
+- Run 3, on the edge-triggered readiness (d2c4f3ad), 22:31 to 22:35 UTC, load 1.5 to 3.3: 60 rounds of both whole
+  suites side by side at 6 test threads each (`flake-hunt.sh`), no failure; the two allocation tests 20 times each,
+  all pass (no allocation over 100 waits).
 - Run 2, 22:02 UTC, load 5.5 to 5.8, final code: three rounds, each ICMP 46 of 46 (0.61 s), raw 38 of 38
   (2.87 s), resolver 31 of 31, Configurable 2 of 2, NegativeRouteAdvice 3 of 3, and the four crate tests
   (two counter tests, two allocation tests) pass; clippy with warnings denied clean.
@@ -183,13 +239,14 @@ the independent check's findings, below). Nothing of this track is in progress.
 ## Which check fails when a method breaks
 - IcmpSockets: open (every check; owner: owner_selects_the_route), bind_identifier
   (identifiers_are_shared_only_when_both_ask, the_request_carries_the_bound_identifier), send_to (every sending
-  check; each header and send field its own, below), receive (echo reply, ICMP error, short buffer, would block,
+  check; each header and send field its own, below), receive (echo reply, ICMP error, short buffer of a reply or
+  an error, would block,
   transmit report and rejection, drops checks), count_unsent_bytes (pacing_holds_messages_in_the_send_buffer),
   wait_for_events (the six wait checks), close (close_frees_the_identifier), configure (each setting's check and
   Configurable's suite).
 - RawSockets: open (every check, open_takes_each_version_and_protocol), send_to (payload, header included,
-  reassembly, route selector, path MTU, send field checks), receive (arrival, short buffer, would block, ICMP
-  error, router alert checks), count_unsent_bytes (ip_settings_are_taken), wait_for_events (the six wait checks),
+  reassembly, route selector, mobility header, path MTU, send field checks), receive (arrival, mark and
+  priority, short buffer, would block, ICMP error, router alert checks), count_unsent_bytes (ip_settings_are_taken), wait_for_events (the six wait checks),
   close (close_gives_up_the_sockets_holdings), configure (checksum, router alert, multicast routing, IP and
   multicast settings, Configurable's suite).
 - RouteResolver::resolve_route: all 30 suite checks, each selector its own (see the I1 broken copies above and in
@@ -204,10 +261,12 @@ the independent check's findings, below). Nothing of this track is in progress.
 - Send fields: neighbour confirmation, priority (third band of a prio queue), transmit time (fq holds 300 ms;
   rejected times reported with their keys), transmit reports scheduled and software with key, with and without
   the packet.
-- Received fields: interface, specific destination, software timestamps, drops since previous, whole IPv4 and
-  IPv6 headers with extension headers (raw IPv6 traffic class checked), the whole length when the buffer cuts
-  the packet in its header or after; ICMP errors whole.
-- Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark;
+- Received fields: interface, specific destination, software timestamps, drops since previous, mark and priority
+  (raw), whole IPv4 and IPv6 headers with extension headers (raw IPv6 traffic class checked), the whole length and
+  the start when the buffer cuts the packet anywhere; ICMP errors whole, their outer header as on the wire, and
+  their start and whole length when cut.
+- Raw only: a packet with its own header leaves byte for byte; its route takes the flow's protocol and mark; a
+  mobility header is sent by its type;
   withdrawn reassembly; checksum offset; IPv4 and IPv6 router alerts with isolation; multicast routing.
 - Settings: multicast membership and loopback, IPv4 all-groups, anycast, pacing rate, send and receive buffer,
   timestamping. Every setting kind also passes Configurable's suite.
@@ -238,9 +297,11 @@ the independent check's findings, below). Nothing of this track is in progress.
   public ones; import them from wcontainers-icmp-sockets-conformance, or say which crate should own them.
 - TCP: your FLOW_LABEL 0x12345 restates the resolver suite's LABEL, and "lo" its SELF_LINK; say if you want
   LABEL public at the top of the resolver suite.
-- UDP (owner of `datagram::exchange`): every receive of ours, and yours, first reads the error queue through
-  `ErrorEntry::read`, which zeroes a new 64 KiB vector and makes a `recvmsg` even when the queue is empty. Not
-  measured; a buffer kept per socket, or a look at the socket's error condition first, would spare it.
+- UDP and TCP, new in I2 run 3: `icmp_error::write_icmp_error` now writes the ICMP header (with its checksum)
+  before placing the headers, so a buffer that cuts an error inside its ICMP header holds the right bytes; your
+  calls are unchanged. When the buffer is shorter than the data Linux gave, an error written from the `copied`
+  bytes alone has a short length and a wrong checksum (and UDP's quoted UDP length is `copied` too):
+  `write_whole_icmp_error(into, &entry.data, ...)` writes it from all of the entry. ICMP and raw use it.
 - The ICMP suite's `counting_allocator!` and `wait_allocations` count a waiting call's allocations for any
   socket kind.
 - The ICMP suite exports its wait tools (`Wakes`, `poll_with`, `finished`, `finished_soon`, `only_asked_for`,

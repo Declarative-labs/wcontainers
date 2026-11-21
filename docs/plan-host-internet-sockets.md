@@ -90,8 +90,8 @@ Both are built on the shared crate's datagram half (`SendState` for header and s
 packets and reports), which this milestone adds there for all three datagram tracks.
 
 Both wait on the shared crate's `readiness` (polling 3.11.0 over epoll, which the UDP track added: one epoll
-set and one thread per value, a socket registered one-shot only while a call waits on it and deleted before its
-descriptor closes, a waiting call that allocates nothing once its socket's waiter list has grown and withdraws
+set and one thread per value, a socket registered edge-triggered only while a call waits on it and deleted before
+its descriptor closes, a waiting call that allocates nothing once its socket's waiter list has grown and withdraws
 itself when dropped). Error queue entries a send reads off the host while it looks for its own are held as an
 error condition in that readiness until a receive takes them. The basic calls and the options socket2 covers
 (socket, bind, `SO_REUSEADDR`, `IP_RECVTOS`, `IPV6_RECVTCLASS`, `IPV6_RECVHOPLIMIT`, `IP_HDRINCL`,
@@ -104,8 +104,8 @@ sockets (`SOCK_DGRAM` with `IPPROTO_ICMP` or `IPPROTO_ICMPV6`), which need the c
 `net.ipv4.ping_group_range`. open is the socket, owned by the given user (filesystem user while it is made);
 bind_identifier is `SO_REUSEADDR` as asked and a bind to the identifier as port; send_to writes the header and
 send fields as the UDP track does, then one `sendmsg` of the message (Linux puts the identifier in it and
-computes the checksum); receive gives an error queue entry first (an ICMP error whole from its IP header, or a
-transmit report), else an echo reply with its IP header written in front (from the sender, `IP_PKTINFO`, the
+computes the checksum); receive gives an error queue entry first (an ICMP error whole from its IP header, written from all
+of the entry so that a buffer that cuts it holds its start and the whole length, or a transmit report), else an echo reply with its IP header written in front (from the sender, `IP_PKTINFO`, the
 TTL, TOS and options messages; IPv6 with its extension headers), read with a tail buffer behind the caller's
 because Linux cuts a ping socket's packet to the buffers given and tells only what it copied, and its drop count
 asked of `SO_MEMINFO` (counted, one more system call per packet); count_unsent_bytes is `SO_MEMINFO`'s
@@ -140,7 +140,10 @@ headers, path MTU modes, local fragmentation and fragment MTU, source, interface
 checked by what arrives; send fields by what arrives (priority), the neighbour entry (confirmation), a qdisc
 that holds the packet (transmit time) and the error queue (transmit reports with their key, with and without
 the packet), and an etf schedule that misses every time (rejected transmit times with their keys). ICMP errors
-come from a raw ICMP socket of the namespace, quoting what left the dummy link. Settings by their effect;
+come from a raw ICMP socket of the namespace, quoting what left the dummy link; their outer header must be the
+one on loopback's wire, and a buffer that cuts one in its outer header, ICMP header or quoted packet must hold
+its start (IPv4 and IPv6, both suites). A raw packet sent with a mark and priority arrives with them; a mobility
+header is sent by its type. Settings by their effect;
 Configurable's own suite runs on a setting of each socket kind. Waits are polled by hand with a waker that
 counts its wakes: a wait for data is pending until the reply or packet arrives and is then woken once; a wait for
 writing finishes at its first poll; a dropped wait gives up its waker and is not woken; 35 waits on 32 sockets
