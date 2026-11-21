@@ -22528,7 +22528,6 @@ redefinition	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw::SI
 redefinition	crates/wcontainers-direct3d-12/src/device/bind.rs	int	VERTEX	VERTEX = 1
 redefinition	crates/wcontainers-direct3d-12/src/list.rs	int	DSV_READ_ONLY_DEPTH	DSV_READ_ONLY_DEPTH = 1
 redefinition	crates/wcontainers-direct3d-12/src/list.rs	int	DSV_READ_ONLY_STENCIL	DSV_READ_ONLY_STENCIL = 2
-redefinition	crates/wcontainers-direct3d-12/src/resource.rs	int	DIMENSION_BUFFER	DIMENSION_BUFFER = 1
 redefinition	crates/wcontainers-direct3d-12/tests/support/triangle.rs	int	RGBA8	RGBA8 = 28
 redefinition	crates/wcontainers-direct3d-12/tests/support/triangle.rs	int	SIZE	SIZE = 256
 redefinition	crates/wcontainers-directx-graphics-infrastructure/src/format.rs	int	dxgi::R16G16B16A16_FLOAT	R16G16B16A16_FLOAT = 10
