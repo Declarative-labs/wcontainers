@@ -64,9 +64,11 @@ pub struct FloatStatus {
 impl FloatStatus {
     /// The rule at every entry into the inside (docs/native.md section 3.4): when the flags are kept or the
     /// mode is not the default the thread takes the hardware's, else it keeps its own and the hardware's QC.
+    /// Only FPSR's own bits are taken: some processors keep what a write puts in the others (Neoverse V2 keeps
+    /// those above QC), which read as zero by the architecture.
     pub fn enter(&mut self, hardware: u32) {
         if self.kept() {
-            self.fpsr = hardware;
+            self.fpsr = hardware & FPSR_BITS;
         } else {
             self.fpsr |= hardware & QC;
         }
@@ -77,9 +79,9 @@ impl FloatStatus {
         self.tracking || self.fpcr != DEFAULT_MODE
     }
 
-    /// Takes the hardware's status whole.
+    /// Takes the hardware's status, its own bits only.
     fn take(&mut self, fpsr: u32, fpcr: u32) {
-        self.fpsr = fpsr;
+        self.fpsr = fpsr & FPSR_BITS;
         self.fpcr = fpcr & FPCR_BITS;
     }
 }

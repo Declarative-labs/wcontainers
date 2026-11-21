@@ -5,8 +5,34 @@ and hardware-virtualization-inside.
 
 ## Where things stand
 
-- V1 (the KVM back end on kvm-ioctls, ARM64), run 1 (2026-11-21): kvm.rs is written and runs the floor test on the rented
-  ARM64 machine's KVM. Partly done: see "Next".
+- V1 (the KVM back end on kvm-ioctls, ARM64), run 1 (2026-11-21): kvm.rs is built and every executor test that
+  runs on the Mac was run on the rented ARM64 machine's KVM, same programs and seeds. All pass except two:
+  - kernel: fails at one assertion, a difference of the host processor, not of KVM (below, "For the owner").
+  - speed: not run on Linux yet; its measurement is macOS's own (below, "Next").
+  The Mac's suite passes with the changes (below, "Results"). Not complete: the two items above remain.
+
+## Results (run 1)
+
+KVM, rented ARM64 machine (Graviton4, Neoverse V2, Linux 7.0.0-1018-aws, 4 KiB pages), at the commits of run 1:
+- floor: 21 cases and 1 measurement, 0 failed (with the AdjacentPages change below).
+- exits: 4 programs, 0 failed, both modes.
+- interrupts: 15309 forced interrupts over 18 functions (34 cases, seed 0x14057b7ef767814f), 3 look-aheads, 0 failed.
+- native: 1215 forms, 16 drawn cases each (the default; 32562 words in all, seed 0x2545f4914f6cdd1d), 0 failing, after
+  the FPSR change below; before it, MSR FPSR failed (word 0xd51b442a: float b0000083, expected 83).
+- probe: passes as a test; its verdict for this host: 9 forms of 16 bytes or fewer differ, "this host would not pass"
+  (15 larger ones differ, the Mac 44 larger and 0 smaller). A measurement of the processor, for the owner.
+- host_branches: 34 cases over 36 variants, 0 with differing guest paths. kept, carry, the monitor's and the inside's
+  lib tests (10 and 3): pass.
+- busybox: 56 commands gave the reference's output, exit code and files (seed 0x6b65726e); the reference is that
+  machine's Docker.
+- kernel: fails at "blocks: memory fault counted alike" (8 natively, 10 on the WebAssembly side). With that one
+  assertion turned off in the machine's copy only (a diagnostic, never committed), everything after it passes: blocks
+  gives that machine's reference's output and exit code, mappings too, and the stops at every counted event are
+  alike across look-aheads with the Mac's hashes (bench 177072 stops, 10937141521840235265; calls 3004,
+  18260131204484228776; jumptables 5484, 17339527552300285948).
+Mac (Hypervisor.framework, M5 Max, load 17 to 102): floor 21 + 1, 0 failed; exits; interrupts 15309, 0 failed; native
+16 cases a form (32562 words, after the FPSR change), 0 failing; probe 0 forms of 16 bytes or fewer differ (44 larger, as before); kernel ran alike to the end; host_branches,
+kept, carry, lib tests pass.
 
 ## What V1 built
 
@@ -47,25 +73,44 @@ and hardware-virtualization-inside.
 
 ## Measurements
 
-- Floor test, KVM, rented ARM64 machine (Graviton4, Linux 7.0.0-1018-aws, load 10 to 11 of 96 cores), first run:
-  doorbell round trip 1592 ns (1000 round trips); 300 stops from another thread, decision to exit: min 2861 ns, median
-  3080, 90th 3387, 99th 4270, max 48515; timer interrupt after its deadline median 711 ns, max 3502; raised interrupt to
-  the inside median 3545 ns, max 8821. Hypervisor.framework on the Mac with the new doorbell (load 16 to 29): round trip
-  905 ns, stops median 1042 ns.
+- Floor test, KVM (load 7 to 11 of 96 cores): doorbell round trip 1592 and 1539 ns (two runs, 1000 round trips each);
+  300 stops from another thread, decision to exit: median 3080 and 3147 ns, 99th 4270 and 5131, max 48515 and 19216;
+  timer interrupt after its deadline median 711 and 707 ns; raised interrupt to the inside median 3545 and 3378 ns.
+  Hypervisor.framework on the Mac with the new doorbell (load 16 to 29): round trip 905 ns, stops median 1042 ns.
+- interrupts took 176 s on KVM (load 11) against 23 s on the Mac (load 20 to 29): not looked into; every register the
+  runner reads or writes is one KVM_GET/SET_ONE_REG call there. Speed is for later.
+- native 16 cases a form 34 s, busybox 45 s, kernel 49 s on KVM.
 
 ## Departures from the plan
+
+- FPSR: the inside's thread status kept FPSR whole; on the Neoverse V2 a write keeps the bits above QC, which the
+  architecture reads as zero, so the native output gave b0000083 where the WebAssembly output gives 83. The inside now
+  keeps only FPSR's own bits (`FPSR_BITS`) when it takes the hardware's status (stop.rs); on the M5 that is the same.
 
 - The floor's AdjacentPages case asked that two adjacent guest pages lie in one host page, which a 4 KiB host page
   never allows (the ARM64 machine has 4 KiB pages, the Mac 16 KiB). It now asks that they share a host page exactly
   when the host page is larger than a guest page; the permission checks are unchanged. On the Mac it asks the same
   as before.
 
+## For the owner
+
+- `dc cvau` at EL0 on a page that allows nothing, or is not mapped, runs on the Neoverse V2 (its kernel's reference
+  agrees: the blocks program gives the reference's output natively), and faults on the M5, as the WebAssembly output
+  does. So the kernel test's count of memory faults differs there (8 against 10). Which one the defined machine does
+  is yours: routing `dc cvau` (decision 14's way) would make the native output the WebAssembly output's on every host.
+  The test is left failing on that machine.
+- The behaviour probe says the Neoverse V2 would not pass (9 forms of 16 bytes or fewer differ).
+- To send upstream to kvm-ioctls: a wrapper for KVM_ARM_SET_COUNTER_OFFSET, and KVM_GET_DEVICE_ATTR on a vCPU.
+
 ## Next
 
-- Run the other tests on KVM: exits, interrupts, probe, native (the bar's case count), kernel, busybox, host_branches,
-  kept, carry, the lib tests; and the whole suite on the Mac again.
-- The speed test is macOS's own (cycles from `proc_pid_rusage`, the plain run's breakpoints by macOS's signal context):
-  it needs a Linux side (perf events) before it can run on KVM.
+- The speed test (tests/speed.rs, still `cfg(target_os = "macos")`) needs a Linux side before it runs on KVM: the
+  whole process's cycles and instructions (macOS `proc_pid_rusage`; on Linux perf events opened at the child's start,
+  counting every thread and the guest), the plain run's breakpoint handler (macOS's `ucontext_t`; Linux's
+  `ucontext_t` has `uc_mcontext.regs` and `pc`), the code made visible after it is written (`sys_icache_invalidate`;
+  on Linux `__clear_cache`), and the share on performance cores, which has no meaning on Graviton (report it absent,
+  never a made-up figure). Then its bar's command on a quiet machine.
+- The kernel test's blocks count on the Neoverse V2 waits on the owner (above).
 
 ## How to run
 
