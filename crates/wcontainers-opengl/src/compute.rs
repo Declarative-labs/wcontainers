@@ -7,6 +7,7 @@ use crate::draw::{self, ShaderId, Variant};
 use crate::gallium::*;
 use crate::resource::Resource;
 use crate::state::{Stage, refuse, refused};
+use crate::view::Images;
 
 /// `pipe_context::launch_grid`.
 pub unsafe extern "C" fn launch_grid<B: Backend>(
@@ -51,7 +52,12 @@ fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Resu
         programs.compute.insert(key.clone(), program);
     }
     let built = programs.built_for(backend, shader, &variant)?;
-    let mut images = Vec::new();
+    // Outside a pass, where images bound through a twin are copied.
+    context
+        .tracker
+        .close(backend)
+        .map_err(|e| format!("closing the pass for a dispatch: {e:?}"))?;
+    let mut images = Images::default();
     let sets = draw::binding_sets(
         backend,
         &context.stages,
@@ -61,10 +67,6 @@ fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Resu
         StageSet::COMPUTE,
         &mut images,
     )?;
-    context
-        .tracker
-        .close(backend)
-        .map_err(|e| format!("closing the pass for a dispatch: {e:?}"))?;
     let groups = if info.indirect.is_null() {
         DispatchGroups::Direct(info.grid)
     } else {
@@ -86,9 +88,7 @@ fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Resu
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));
     }
-    for view in images {
-        backend.destroy(Object::TextureView(view));
-    }
+    images.finish(backend);
     result.map_err(|e| format!("a dispatch: {e:?}"))?;
     end_if_lost(backend);
     Ok(())

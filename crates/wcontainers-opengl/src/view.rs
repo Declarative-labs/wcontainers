@@ -4,8 +4,9 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, Extent, FormatKind, Object, Origin, TextureDimension, TextureRegion, TextureViewDesc,
-    ViewDimension,
+    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, FormatKind, MapIntent, Object,
+    Origin, STORAGE_WORD, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    TextureViewDesc, ViewDimension,
 };
 
 use naga::VectorSize;
@@ -113,27 +114,104 @@ pub unsafe extern "C" fn sampler_view_release(_: *mut pipe_context, view: *mut p
     unsafe { release(view) };
 }
 
-/// The interface's view of an image a program binds: one layer, or the layers it names (a cube's
-/// as a 2D array of its faces, which is how the common form holds a storage cube).
+/// A texture of an image's own format that the image is bound through, where the texture it
+/// names is of another format of the same texel size (`ReinterpretCopy`): copied into before the
+/// work and, for an image the program writes, back after it, through `buffer`.
+struct Twin<B: Backend> {
+    texture: B::Texture,
+    buffer: B::Buffer,
+    source: B::Texture,
+    mip: u32,
+    layer: u32,
+    extent: Extent,
+    row_pitch: u32,
+    writable: bool,
+}
+
+/// The views a binding of images made for one draw or dispatch, and the twins they were bound
+/// through; given back by [`Images::finish`] after the work.
+pub struct Images<B: Backend> {
+    pub views: Vec<B::TextureView>,
+    twins: Vec<Twin<B>>,
+}
+
+impl<B: Backend> Default for Images<B> {
+    fn default() -> Self {
+        Images {
+            views: Vec::new(),
+            twins: Vec::new(),
+        }
+    }
+}
+
+impl<B: Backend> Images<B> {
+    /// Copies each twin the program wrote back into its texture, then destroys what was made.
+    pub fn finish(self, backend: &mut B) {
+        for view in self.views {
+            backend.destroy(Object::TextureView(view));
+        }
+        for twin in self.twins {
+            if twin.writable {
+                twin.copy(backend, false);
+            }
+            backend.destroy(Object::Texture(twin.texture));
+            backend.destroy(Object::Buffer(twin.buffer));
+        }
+    }
+}
+
+impl<B: Backend> Twin<B> {
+    /// Moves the texels between the twin and its source: into the twin, or back from it.
+    fn copy(&self, backend: &mut B, into: bool) {
+        let region = |texture, mip, layer| TextureRegion {
+            texture,
+            mip,
+            layer,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let (from, to) = if into {
+            (
+                region(&self.source, self.mip, self.layer),
+                region(&self.texture, 0, 0),
+            )
+        } else {
+            (
+                region(&self.texture, 0, 0),
+                region(&self.source, self.mip, self.layer),
+            )
+        };
+        let rows = CopyBufferTexture {
+            buffer: &self.buffer,
+            offset: 0,
+            row_pitch: self.row_pitch,
+            rows_per_layer: self.extent.height,
+        };
+        backend.copy_texture_to_buffer(&from, &rows, self.extent);
+        backend.copy_buffer_to_texture(&rows, &to, self.extent);
+    }
+}
+
+/// The interface's view of an image a program binds, kept in `images`: one layer, or the layers
+/// it names (a cube's as a 2D array of its faces, which is how the common form holds a storage
+/// cube). An image of another format than its texture's, of the same texel size, is bound
+/// through a twin of its format. Outside a pass: a twin is copied into at once.
 pub fn image_view<B: Backend>(
     backend: &mut B,
     image: &pipe_image_view,
-) -> Result<B::TextureView, String> {
+    images: &mut Images<B>,
+) -> Result<usize, String> {
     // SAFETY: an image's resource is live while it is bound.
     let resource = unsafe { Resource::<B>::of(image.resource) };
     let (texture, desc) = resource
         .texture()
         .ok_or("an image of a buffer (the screen reports none)")?;
     let format = crate::format::format(image.format).ok_or("an image format the device lacks")?;
-    if format != desc.format {
-        return Err(format!(
-            "an image in {format:?} of a texture in {:?}, which the host does not reinterpret",
-            desc.format
-        ));
-    }
     // SAFETY: the image of a texture holds its texture range.
     let range = unsafe { image.u.tex };
     let three_d = desc.dimension == TextureDimension::D3;
+    let mip = range.level();
+    let size = |n: u32| (n >> mip).max(1);
     let (dimension, base_layer, layer_count) = if range.single_layer_view {
         if three_d {
             return Err("one slice of a 3D texture as a 2D image".to_owned());
@@ -152,20 +230,83 @@ pub fn image_view<B: Backend>(
         };
         (dimension, range.first_layer(), layers)
     };
-    backend
+    let (viewed, base_mip, base_layer) = if format == desc.format {
+        (texture.clone(), mip, base_layer)
+    } else {
+        let (width, _, bytes) = format.block();
+        let (their_width, _, theirs) = desc.format.block();
+        if bytes != theirs || width != 1 || their_width != 1 {
+            return Err(format!(
+                "an image in {format:?} of a texture in {:?}, of another texel size",
+                desc.format
+            ));
+        }
+        backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        let extent = Extent {
+            width: size(desc.width),
+            height: size(desc.height),
+            depth_or_layers: if three_d {
+                size(desc.depth_or_layers)
+            } else {
+                layer_count
+            },
+        };
+        let row_pitch = extent.width * bytes;
+        let twin = backend
+            .create_texture(&TextureDesc {
+                dimension: desc.dimension,
+                format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: extent.depth_or_layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .map_err(|e| format!("an image's twin: {e:?}"))?;
+        let buffer = backend
+            .create_buffer(&BufferDesc {
+                size: (u64::from(row_pitch)
+                    * u64::from(extent.height)
+                    * u64::from(extent.depth_or_layers))
+                .next_multiple_of(STORAGE_WORD),
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })
+            .map_err(|e| format!("an image's copy: {e:?}"))?;
+        let twin = Twin {
+            texture: twin,
+            buffer,
+            source: texture.clone(),
+            mip,
+            layer: if three_d { 0 } else { base_layer },
+            extent,
+            row_pitch,
+            writable: u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0,
+        };
+        twin.copy(backend, true);
+        let viewed = twin.texture.clone();
+        images.twins.push(twin);
+        (viewed, 0, 0)
+    };
+    let view = backend
         .create_view(
-            texture,
+            &viewed,
             &TextureViewDesc {
                 format,
                 dimension,
-                base_mip: range.level(),
+                base_mip,
                 mip_count: 1,
                 base_layer,
                 layer_count,
                 stencil: false,
             },
         )
-        .map_err(|e| format!("an image's view: {e:?}"))
+        .map_err(|e| format!("an image's view: {e:?}"))?;
+    images.views.push(view);
+    Ok(images.views.len() - 1)
 }
 
 /// The interface's view of a Gallium sampler view, or why there is none; with `cube_faces`, a

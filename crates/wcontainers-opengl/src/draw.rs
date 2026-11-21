@@ -23,7 +23,7 @@ use crate::gallium::*;
 use crate::resource::Resource;
 use crate::screen::Screen;
 use crate::state::{self, Shader, Stage, refuse, refused};
-use crate::view::{IDENTITY, View};
+use crate::view::{IDENTITY, Images, View};
 use crate::{indices, outputs, query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
@@ -641,8 +641,8 @@ fn helper_block<B: Backend>(
 
 /// Binds every resource the programs read, one set a stage, as the route's reflection numbers
 /// them, with the streams the vertex program fetches itself and its helper constants; the vertex
-/// program's visible to `vertex_visible`. The views made for images go to `made`, to destroy
-/// after the work that binds them.
+/// program's visible to `vertex_visible`. What images are bound through goes to `made`, to
+/// finish after the work that binds them (outside a pass: an image may be copied at once).
 pub(crate) fn binding_sets<B: Backend>(
     backend: &mut B,
     stages: &state::Stages<B>,
@@ -650,7 +650,7 @@ pub(crate) fn binding_sets<B: Backend>(
     pulled: &[Pulled<'_, B>],
     first_instance: u32,
     vertex_visible: StageSet,
-    made: &mut Vec<B::TextureView>,
+    made: &mut Images<B>,
 ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], String> {
     let mut sets = [const { None }; MAX_BINDING_SETS];
     let limits = &backend.caps().limits;
@@ -676,7 +676,7 @@ pub(crate) fn binding_sets<B: Backend>(
             Stage::Fragment => StageSet::FRAGMENT,
             Stage::Compute => StageSet::COMPUTE,
         };
-        let images = image_views(backend, bound, built)?;
+        let images = image_views(backend, bound, built, made)?;
         // Uniform blocks the program reads that the frontend handed as bytes go through the
         // ring first, each grown to the block's declared size.
         let mut copies: Vec<Vec<u8>> = Vec::new();
@@ -820,13 +820,13 @@ pub(crate) fn binding_sets<B: Backend>(
                     storage_buffer(bound, b.register - PIPE_MAX_SHADER_IMAGES, largest_storage)?
                 }
                 SlotKind::Storage => {
-                    let (_, view, writable) = images
+                    let &(_, index, writable) = images
                         .iter()
                         .find(|(unit, ..)| *unit == b.register)
                         .ok_or("an image the program reads is not bound")?;
                     BindingResource::StorageTexture {
-                        view,
-                        writable: *writable,
+                        view: &made.views[index],
+                        writable,
                     }
                 }
                 SlotKind::Counter => {
@@ -854,8 +854,6 @@ pub(crate) fn binding_sets<B: Backend>(
                     .map_err(|e| format!("{e:?}"))?,
             );
         }
-        drop(entries);
-        made.extend(images.into_iter().map(|(_, view, _)| view));
     }
     Ok(sets)
 }
@@ -890,12 +888,14 @@ fn storage_buffer<'a, B: Backend>(
     })
 }
 
-/// A view of each image the program binds, by its unit, with whether the program may write it.
+/// A view in `made` of each image the program binds, by its unit, with whether the program may
+/// write it.
 fn image_views<B: Backend>(
     backend: &mut B,
     bound: &state::StageState<B>,
     built: &Built<B>,
-) -> Result<Vec<(u32, B::TextureView, bool)>, String> {
+    made: &mut Images<B>,
+) -> Result<Vec<(u32, usize, bool)>, String> {
     let mut views = Vec::new();
     for b in built.bindings.iter().filter(|b| {
         b.added.is_none() && b.kind == SlotKind::Storage && b.register < PIPE_MAX_SHADER_IMAGES
@@ -905,9 +905,9 @@ fn image_views<B: Backend>(
             .get(b.register as usize)
             .filter(|image| !image.resource.is_null())
             .ok_or("an image the program reads is not bound")?;
-        let view = crate::view::image_view(backend, image)?;
+        let index = crate::view::image_view(backend, image, made)?;
         let writable = u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0;
-        views.push((b.register, view, writable));
+        views.push((b.register, index, writable));
     }
     Ok(views)
 }
@@ -1143,7 +1143,7 @@ fn draw<B: Backend>(
         );
     }
     let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &pulled)?;
-    let mut images = Vec::new();
+    let mut images = Images::default();
     let sets = binding_sets(
         backend,
         &context.stages,
@@ -1283,9 +1283,7 @@ fn draw<B: Backend>(
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));
     }
-    for view in images {
-        backend.destroy(Object::TextureView(view));
-    }
+    images.finish(backend);
     Ok(())
 }
 
@@ -1400,7 +1398,7 @@ fn stream_out<B: Backend>(
     let made = programs.streamed.contains_key(&key);
     let built = programs.built_for(backend, vs, &variant)?;
     let fetched = fetched_streams(elements, &context.bound.vertex_buffers, &locations)?;
-    let mut images = Vec::new();
+    let mut images = Images::default();
     let sets = binding_sets(
         backend,
         &context.stages,
@@ -1456,9 +1454,7 @@ fn stream_out<B: Backend>(
     for set in sets.into_iter().flatten() {
         backend.destroy(Object::BindingSet(set));
     }
-    for view in images {
-        backend.destroy(Object::TextureView(view));
-    }
+    images.finish(backend);
     Ok(())
 }
 
