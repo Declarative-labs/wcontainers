@@ -292,6 +292,18 @@ fn on_wall(timeout: Timeout) -> bool {
     matches!(timeout, Timeout::Absolute { realtime: true, .. })
 }
 
+/// A monotonic time the caller gave, on the machine's clock (`timens_ktime_to_host`); a wall clock
+/// time is the same in every namespace.
+fn namespace_to_machine(kernel: &Kernel, at: u64, realtime: bool) -> u64 {
+    if realtime {
+        return at;
+    }
+    at.saturating_add_signed(-crate::TimeOffsets::of(
+        kernel.time_offsets,
+        CLOCK_MONOTONIC,
+    ))
+}
+
 /// The call's deadline on the kernel's monotonic clock, set at its first run.
 fn deadline(cx: &mut Context<'_>, timeout: Timeout, slack: u64) -> Option<u64> {
     let now = cx.monotonic();
@@ -344,7 +356,10 @@ pub(super) fn futex(
                 at: time,
                 realtime: true,
             },
-            _ => Timeout::Absolute { at: time, realtime },
+            _ => Timeout::Absolute {
+                at: namespace_to_machine(kernel, time, realtime),
+                realtime,
+            },
         };
     }
     // `do_futex`.
@@ -1362,7 +1377,10 @@ fn futex2_timeout(
         _ => return Err(Errno::EINVAL),
     };
     let at = read_timespec(kernel, cx, tid, timeout)?;
-    Ok(Timeout::Absolute { at, realtime })
+    Ok(Timeout::Absolute {
+        at: namespace_to_machine(kernel, at, realtime),
+        realtime,
+    })
 }
 
 /// `futex_wake(uaddr, mask, nr, flags)`.

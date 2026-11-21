@@ -1604,6 +1604,13 @@ fn write_proc(
         }
         // `timerslack_ns_write`: a number in base 10; 0 gives back the slack the thread was born
         // with; a real-time thread keeps its own.
+        // `proc_timens_set_offset`: the power over the namespace's user namespace, then the
+        // namespace no task has entered; every container's time namespace has the container in it.
+        Writing::TimensOffsets => Err(if kernel.credentials(tid).has(CAP_SYS_TIME) {
+            Errno::EACCES
+        } else {
+            Errno::EPERM
+        }),
         Writing::TimerslackNs => {
             let bytes = guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
             let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {

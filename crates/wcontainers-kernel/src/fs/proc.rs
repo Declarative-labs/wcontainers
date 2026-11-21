@@ -65,6 +65,7 @@ pub(crate) struct View<'a> {
     pub masked: &'a [(&'static [u8], Node)],
     pub counters: &'a crate::counters::Counters,
     pub docker_profile: bool,
+    pub time_offsets: Option<crate::TimeOffsets>,
 }
 
 /// The attributes of an entry outside the process directories after a change. Linux keeps them: the
@@ -159,6 +160,8 @@ pub(crate) enum ProcessFile {
     OomScore,
     OomScoreAdj,
     TimerslackNs,
+    /// `timens_offsets`: the offsets of the process's time namespace for its children.
+    TimensOffsets,
     /// `personality`: the task's execution domain and flags.
     Personality,
     Maps,
@@ -246,9 +249,22 @@ pub(crate) enum Namespace {
     Cgroup,
     Time,
     TimeForChildren,
+    /// The container's own time namespace, made at its start with its offsets.
+    ContainerTime,
+    ContainerTimeForChildren,
 }
 
 impl Namespace {
+    /// The namespace a process of the container is in for this kind: its own time namespace
+    /// when the container has one.
+    fn of_container(self, view: &View<'_>) -> Self {
+        match (self, view.time_offsets.is_some()) {
+            (Namespace::Time, true) => Namespace::ContainerTime,
+            (Namespace::TimeForChildren, true) => Namespace::ContainerTimeForChildren,
+            (other, _) => other,
+        }
+    }
+
     const ALL: [Namespace; 10] = [
         Namespace::Net,
         Namespace::Uts,
@@ -272,8 +288,10 @@ impl Namespace {
             Namespace::User => b"user",
             Namespace::Mnt => b"mnt",
             Namespace::Cgroup => b"cgroup",
-            Namespace::Time => b"time",
-            Namespace::TimeForChildren => b"time_for_children",
+            Namespace::Time | Namespace::ContainerTime => b"time",
+            Namespace::TimeForChildren | Namespace::ContainerTimeForChildren => {
+                b"time_for_children"
+            }
         }
     }
 
@@ -281,7 +299,7 @@ impl Namespace {
     fn kind(self) -> &'static str {
         match self {
             Namespace::PidForChildren => "pid",
-            Namespace::TimeForChildren => "time",
+            Namespace::TimeForChildren | Namespace::ContainerTimeForChildren => "time",
             other => core::str::from_utf8(other.name()).unwrap_or_default(),
         }
     }
@@ -299,6 +317,10 @@ impl Namespace {
             Namespace::Pid | Namespace::PidForChildren => 0xF000_0103,
             Namespace::Net => 0xF000_0105,
             Namespace::Cgroup => 0xF000_0106,
+            // Made after the others.
+            Namespace::ContainerTime | Namespace::ContainerTimeForChildren => {
+                Namespace::Cgroup.ino() + 1
+            }
         }
     }
 
@@ -312,7 +334,10 @@ impl Namespace {
             Namespace::User => CLONE_NEWUSER,
             Namespace::Mnt => CLONE_NEWNS,
             Namespace::Cgroup => CLONE_NEWCGROUP,
-            Namespace::Time | Namespace::TimeForChildren => CLONE_NEWTIME,
+            Namespace::Time
+            | Namespace::TimeForChildren
+            | Namespace::ContainerTime
+            | Namespace::ContainerTimeForChildren => CLONE_NEWTIME,
         }
     }
 
@@ -341,6 +366,7 @@ const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"stat", ProcessFile::Stat),
     (b"statm", ProcessFile::Statm),
     (b"status", ProcessFile::Status),
+    (b"timens_offsets", ProcessFile::TimensOffsets),
     (b"timerslack_ns", ProcessFile::TimerslackNs),
 ];
 
@@ -372,6 +398,12 @@ fn value_line(out: &mut String, value: impl core::fmt::Display) {
     out.push_str(&alloc::string::ToString::to_string(&value));
     out.push(PROC_LINE_END);
 }
+
+/// The clocks a time namespace moves, as `timens_offsets` names them, and the widths of its
+/// columns (`show_offset`'s `%-10s %10lld %9ld`).
+pub(crate) const TIME_NAMESPACE_CLOCKS: [&str; 2] = ["monotonic", "boottime"];
+const TIMENS_WIDTHS: [usize; 3] = [10, 10, 9];
+const TIMENS_PAD: char = ' ';
 
 /// `/proc`'s files of the layout's randomization.
 const RANDOMIZE_VA_SPACE: &str = "sys/kernel/randomize_va_space";
@@ -699,6 +731,8 @@ pub(crate) enum Writing {
     OomScoreAdj(bool),
     /// `timerslack_ns_write`: the process's first thread's timer slack.
     TimerslackNs,
+    /// `proc_timens_offsets_write`: offsets for a time namespace no task has entered yet.
+    TimensOffsets,
     /// A sysctl's own write; `/proc/sys` is mounted read-only, so no file is open for it.
     Sysctl,
     /// `EIO`, as `pde_write` for an entry with no write of its own.
@@ -830,6 +864,7 @@ impl Entry {
             Entry::ProcessFile(_, ProcessFile::OomScoreAdj) => Writing::OomScoreAdj(false),
             Entry::ProcessFile(_, ProcessFile::OomAdj) => Writing::OomScoreAdj(true),
             Entry::ProcessFile(_, ProcessFile::TimerslackNs) => Writing::TimerslackNs,
+            Entry::ProcessFile(_, ProcessFile::TimensOffsets) => Writing::TimensOffsets,
             Entry::ProcessFile(_, ProcessFile::Mem) => Writing::Memory,
             Entry::ProcessFile(_, file) if file.is_attr() => Writing::Attr,
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
@@ -877,7 +912,8 @@ impl Entry {
                 ProcessFile::Comm
                 | ProcessFile::CoredumpFilter
                 | ProcessFile::OomAdj
-                | ProcessFile::OomScoreAdj,
+                | ProcessFile::OomScoreAdj
+                | ProcessFile::TimensOffsets,
             ) => S_IFREG | 0o644,
             Entry::ProcessFile(_, ProcessFile::TimerslackNs) => S_IFREG | 0o666,
             Entry::ProcessFile(
@@ -1399,12 +1435,14 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 out.push((name.to_vec(), child, position));
             };
             for (name, file) in PROCESS_FILES {
-                // A thread's own directory has no coredump_filter or timerslack_ns
-                // (`tid_base_stuff`).
+                // A thread's own directory has no coredump_filter, timens_offsets or
+                // timerslack_ns (`tid_base_stuff`).
                 if task.own
                     && matches!(
                         file,
-                        ProcessFile::CoredumpFilter | ProcessFile::TimerslackNs
+                        ProcessFile::CoredumpFilter
+                            | ProcessFile::TimensOffsets
+                            | ProcessFile::TimerslackNs
                     )
                 {
                     continue;
@@ -1465,7 +1503,7 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
             for (index, namespace) in Namespace::ALL.into_iter().enumerate() {
                 out.push((
                     namespace.name().to_vec(),
-                    Entry::Namespace(*task, namespace),
+                    Entry::Namespace(*task, namespace.of_container(view)),
                     index as u64 + 2,
                 ));
             }
@@ -2132,6 +2170,43 @@ fn process_file(
             let thread = threads.get(&task.tid).ok_or(Errno::ESRCH)?;
             out.push_str(&full_hex(thread.personality.into(), u32::BITS));
             out.push(PROC_LINE_END);
+        }
+        // `proc_timens_show_offsets`.
+        ProcessFile::TimensOffsets => {
+            let zero = crate::linux::general::__kernel_timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            let offsets = source.view.time_offsets;
+            for (name, offset) in [
+                (
+                    TIME_NAMESPACE_CLOCKS[0],
+                    offsets.map_or(zero, |o| o.monotonic),
+                ),
+                (
+                    TIME_NAMESPACE_CLOCKS[1],
+                    offsets.map_or(zero, |o| o.boottime),
+                ),
+            ] {
+                let columns = [
+                    String::from(name),
+                    alloc::string::ToString::to_string(&offset.tv_sec),
+                    alloc::string::ToString::to_string(&offset.tv_nsec),
+                ];
+                // The name left-aligned, the numbers right-aligned, a space between.
+                for (index, (text, width)) in columns.iter().zip(TIMENS_WIDTHS).enumerate() {
+                    let pad = core::iter::repeat_n(TIMENS_PAD, width.saturating_sub(text.len()));
+                    if index == 0 {
+                        out.push_str(text);
+                        out.extend(pad);
+                    } else {
+                        out.push(TIMENS_PAD);
+                        out.extend(pad);
+                        out.push_str(text);
+                    }
+                }
+                out.push(PROC_LINE_END);
+            }
         }
         ProcessFile::TimerslackNs => {
             let (processes, threads) = (source.view.processes, source.view.threads);

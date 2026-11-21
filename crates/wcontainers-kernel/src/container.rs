@@ -6,7 +6,7 @@ use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Cpu, End, PAGE_SIZE, Resume};
+use wcontainers_abi::{Cpu, End, NANOSECONDS_PER_SECOND, PAGE_SIZE, Resume};
 
 use crate::counters::reason;
 use crate::credentials::{CapabilitySets, Credentials, DOCKER_CAPABILITY_SETS, ROOT_GID, ROOT_UID};
@@ -118,6 +118,51 @@ pub struct StartOptions<'a> {
     pub sysctls: &'a [(&'a str, &'a str)],
     /// Which of Docker's default mounts it has.
     pub mounts: &'a [DockerMount],
+    /// A time namespace of its own with these offsets (`timeOffsets`); none keeps the machine's.
+    pub time_offsets: Option<TimeOffsets>,
+}
+
+/// How far a time namespace's monotonic and boot time clocks are from the machine's
+/// (`/proc/<pid>/timens_offsets`).
+#[derive(Clone, Copy, Debug)]
+pub struct TimeOffsets {
+    pub monotonic: __kernel_timespec,
+    pub boottime: __kernel_timespec,
+}
+
+impl TimeOffsets {
+    /// The offset, in nanoseconds, of the clock `clock` (none for the others).
+    pub(crate) fn of(offsets: Option<Self>, clock: u32) -> i64 {
+        let Some(offsets) = offsets else {
+            return 0;
+        };
+        let offset = match clock {
+            CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW | CLOCK_MONOTONIC_COARSE => offsets.monotonic,
+            CLOCK_BOOTTIME | CLOCK_BOOTTIME_ALARM => offsets.boottime,
+            _ => return 0,
+        };
+        offset.tv_sec.saturating_mul(NANOSECONDS_PER_SECOND as i64) + offset.tv_nsec
+    }
+
+    /// `proc_timens_set_offset`'s checks of each offset against its clock reading `now`:
+    /// nanoseconds below a second, and the clock's time with it from 0 to half of `KTIME_MAX`'s
+    /// seconds.
+    fn check(offset: __kernel_timespec, now: u64) -> Result<(), Errno> {
+        let most = i64::MAX / NANOSECONDS_PER_SECOND as i64;
+        if !(0..NANOSECONDS_PER_SECOND as i64).contains(&offset.tv_nsec) {
+            return Err(Errno::EINVAL);
+        }
+        if !(-most..=most).contains(&offset.tv_sec) {
+            return Err(Errno::ERANGE);
+        }
+        let seconds = (now / NANOSECONDS_PER_SECOND) as i64 + offset.tv_sec;
+        let carried = (now % NANOSECONDS_PER_SECOND) as i64 + offset.tv_nsec;
+        let seconds = seconds + carried / NANOSECONDS_PER_SECOND as i64;
+        if !(0..=most / 2).contains(&seconds) {
+            return Err(Errno::ERANGE);
+        }
+        Ok(())
+    }
 }
 
 /// What answers a container's calls before Linux does.
@@ -148,6 +193,7 @@ impl Default for StartOptions<'_> {
             personality: 0,
             sysctls: &[],
             mounts: &DOCKER_MOUNTS,
+            time_offsets: None,
         }
     }
 }
@@ -903,6 +949,7 @@ impl Kernel {
             masked: &self.files.proc_masked,
             counters: &self.counters,
             docker_profile: self.docker_profile,
+            time_offsets: self.time_offsets,
         };
         let walk = fs::Walk {
             root: &self.files.root,
@@ -1111,6 +1158,12 @@ impl Kernel {
                 detail,
                 answer,
             ));
+        }
+        if let Some(offsets) = options.time_offsets {
+            let now = cx.monotonic();
+            TimeOffsets::check(offsets.monotonic, now)?;
+            TimeOffsets::check(offsets.boottime, now)?;
+            self.time_offsets = Some(offsets);
         }
         if let Some(attributes) = &options.scheduler {
             crate::syscall::set_own_schedule(self, pid, attributes)?;
@@ -1706,6 +1759,7 @@ impl Kernel {
             masked: &self.files.proc_masked,
             counters: &self.counters,
             docker_profile: self.docker_profile,
+            time_offsets: self.time_offsets,
         };
         let proc_root = fs::proc::root(&view);
         if has(PROC_MOUNT) {

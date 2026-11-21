@@ -978,7 +978,7 @@ pub(super) fn proc_contents(
             .counters
             .count(cx.host, reason::PROC_FIELDS_NOT_TRACKED, detail);
     }
-    let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic);
+    let uptime = boot_time(kernel, cx);
     let mut fresh = [0u8; 16];
     cx.host.random(&mut fresh);
     let memory_in_use = kernel.memory_in_use();
@@ -3178,4 +3178,13 @@ fn flock_typed(
     let pid = kernel.threads[&tid].process;
     inode.flocks.push((own, exclusive, pid));
     Ok(Some(0))
+}
+
+/// The boot time clock since the machine started, in the container's time namespace
+/// (`timens_add_boottime`), as `/proc/uptime` and `sysinfo` give it.
+pub(super) fn boot_time(kernel: &Kernel, cx: &mut Context<'_>) -> u64 {
+    let offset = crate::TimeOffsets::of(kernel.time_offsets, CLOCK_BOOTTIME);
+    cx.monotonic()
+        .saturating_sub(kernel.boot_monotonic)
+        .saturating_add_signed(offset)
 }

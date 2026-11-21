@@ -7,8 +7,13 @@
 use core::mem::offset_of;
 use std::path::Path;
 
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
+
 use linux_raw_sys::general::RLIMIT_NOFILE;
-use wcontainers_kernel::linux::general::{__NR_mkdirat, CAP_CHOWN, CAP_NET_ADMIN, SCHED_NORMAL};
+use wcontainers_kernel::linux::general::{
+    __NR_mkdirat, __kernel_timespec, CAP_CHOWN, CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_TIME,
+    SCHED_NORMAL,
+};
 use wcontainers_kernel::linux::ptrace::{
     AUDIT_ARCH_AARCH64, BPF_ABS, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_RET, BPF_W,
     SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_PROCESS, seccomp_data, sock_filter,
@@ -17,7 +22,7 @@ use wcontainers_kernel::{
     ADDR_NO_RANDOMIZE, CGROUP_MOUNT, CapabilitySets, DEV_MOUNT, DEVPTS_MOUNT, DOCKER_CAPABILITIES,
     DOCKER_LIMITS, DOCKER_MOUNTS, DOCKER_UMASK, DockerMount, Errno, IOPRIO_CLASS_BE,
     IOPRIO_CLASS_SHIFT, MQUEUE_MOUNT, PROC_MOUNT, SHM_MOUNT, SYS_MOUNT, Seccomp, StartOptions,
-    sched_attr,
+    TimeOffsets, sched_attr,
 };
 use wcontainers_kernel_test::assert_same_output_with;
 use wcontainers_kernel_test::busybox::{run_ours_with, try_ours_with};
@@ -324,7 +329,7 @@ fn ipc_sysctls_match_reference() {
         sysctls: &IPC_SYSCTLS,
         ..Default::default()
     };
-    assert_same_output_with(&out, "sysctlipc", options, &docker_options);
+    assert_same_output_with(&out, "sysctlipc", options, &docker_options, &[]);
 }
 
 #[test]
@@ -464,6 +469,72 @@ fn mounts_this_kernel_cannot_leave_out_fail_the_start() {
         assert!(
             matches!(ours, Err(Failure::Start(Errno::EINVAL))),
             "{mounts:?}"
+        );
+    }
+}
+
+/// Docker has no option for a time namespace: the reference's guest makes one with these offsets
+/// before it shows anything, with the powers and without the filter that needs; ours starts in
+/// one with the same, as runc starts a container with `timeOffsets`.
+#[test]
+fn time_offsets_match_reference() {
+    let (monotonic, boottime) = (1234, 200_000);
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let offset = |seconds| __kernel_timespec {
+        tv_sec: seconds,
+        tv_nsec: 0,
+    };
+    let options = StartOptions {
+        capabilities: docker_sets(DOCKER_CAPABILITIES | 1 << CAP_SYS_ADMIN | 1 << CAP_SYS_TIME),
+        seccomp: Seccomp::Unconfined,
+        time_offsets: Some(TimeOffsets {
+            monotonic: offset(monotonic),
+            boottime: offset(boottime),
+        }),
+        ..Default::default()
+    };
+    let docker_options = [
+        docker::CAP_ADD_OPTION,
+        "SYS_ADMIN",
+        docker::CAP_ADD_OPTION,
+        "SYS_TIME",
+        docker::SECURITY_OPTION,
+        docker::SECCOMP_UNCONFINED,
+    ];
+    let (monotonic, boottime) = (monotonic.to_string(), boottime.to_string());
+    assert_same_output_with(
+        &out,
+        "timens",
+        options,
+        &docker_options,
+        &["unshare", &monotonic, &boottime],
+    );
+}
+
+#[test]
+fn time_offsets_out_of_range_fail_the_start() {
+    let past_a_second = __kernel_timespec {
+        tv_sec: 0,
+        tv_nsec: NANOSECONDS_PER_SECOND as i64,
+    };
+    let before_boot = __kernel_timespec {
+        tv_sec: i64::MIN / 2,
+        tv_nsec: 0,
+    };
+    for (offset, error) in [(past_a_second, Errno::EINVAL), (before_boot, Errno::ERANGE)] {
+        let ours = try_ours_with(
+            &["true"],
+            StartOptions {
+                time_offsets: Some(TimeOffsets {
+                    monotonic: offset,
+                    boottime: offset,
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(ours, Err(Failure::Start(given)) if given == error),
+            "{offset:?}"
         );
     }
 }

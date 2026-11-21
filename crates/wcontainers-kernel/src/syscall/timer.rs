@@ -752,7 +752,14 @@ fn expiry(
             (clock_now + i128::from(value) - i128::from(cx.host.realtime_nanoseconds()))
                 .min(i128::from(u64::MAX))
         }
-        _ => i128::from(value),
+        // `timens_ktime_to_host`: the namespace's time on the machine's clock.
+        _ => {
+            i128::from(value)
+                - i128::from(crate::TimeOffsets::of(
+                    kernel.time_offsets,
+                    timer.clock_id as u32,
+                ))
+        }
     }
 }
 

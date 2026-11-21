@@ -53,7 +53,7 @@ pub use container::{
     Attributes, DEV_MOUNT, DEVPTS_MOUNT, DEVPTS_PATH, DOCKER_DOMAIN_NAME, DOCKER_MASKED_PATHS,
     DOCKER_MOUNTS, DOCKER_READ_ONLY_PATHS, DOCKER_UMASK, DockerMount, EXIT_NOT_FOUND,
     EXIT_NOT_RUNNABLE, EXIT_START_FAILED, FileRecord, MQUEUE_MOUNT, NULL_PATH, NewFile, PROC_MOUNT,
-    SHM_MOUNT, SYS_MOUNT, Seccomp, Start, StartOptions,
+    SHM_MOUNT, SYS_MOUNT, Seccomp, Start, StartOptions, TimeOffsets,
 };
 pub use counters::reason;
 pub use credentials::{
@@ -314,6 +314,8 @@ pub struct Kernel {
     domainname: Vec<u8>,
     /// Whether Docker's default seccomp profile answers every call before the threads' filters.
     docker_profile: bool,
+    /// The offsets of the container's own time namespace, when it has one.
+    time_offsets: Option<TimeOffsets>,
     /// The wall clock time and the monotonic clock when the container started.
     boot: Time,
     boot_monotonic: u64,
@@ -444,6 +446,7 @@ impl Kernel {
             hostname: Vec::new(),
             domainname: container::DOCKER_DOMAIN_NAME.to_vec(),
             docker_profile: true,
+            time_offsets: None,
             boot: Time::default(),
             boot_monotonic: 0,
             boot_id: [0; 16],
@@ -851,6 +854,7 @@ impl Kernel {
             masked: &self.files.proc_masked,
             counters: &self.counters,
             docker_profile: self.docker_profile,
+            time_offsets: self.time_offsets,
         };
         let walk = fs::Walk {
             root: &context.root,

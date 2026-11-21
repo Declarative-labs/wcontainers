@@ -180,12 +180,13 @@ pub fn assert_same_output_on_wall_clock(out: &Path, name: &str) -> driver::Run {
 }
 
 /// As [`assert_same_output`], with ours started with `options` and the reference made with
-/// `docker_options`, which give the same.
+/// `docker_options` and given `reference_arguments`, which give the same.
 pub fn assert_same_output_with(
     out: &Path,
     name: &str,
     options: wcontainers_kernel::StartOptions<'static>,
     docker_options: &[&str],
+    reference_arguments: &[&str],
 ) -> driver::Run {
     let program = guest::build(name, &[], out);
     let path = reference::in_guest_directory(program.file_name().expect("program has a name"));
@@ -199,7 +200,10 @@ pub fn assert_same_output_with(
         &[],
         |prepared| prepared.options = options,
     );
-    assert_same(ours, &reference::run_with(&program, &[], docker_options))
+    assert_same(
+        ours,
+        &reference::run_with(&program, reference_arguments, docker_options),
+    )
 }
 
 /// Checks that both runs printed the same lines and ended the same way; returns ours.

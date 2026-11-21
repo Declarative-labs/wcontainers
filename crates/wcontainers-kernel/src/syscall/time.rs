@@ -101,7 +101,9 @@ fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<
         | CLOCK_MONOTONIC_RAW
         | CLOCK_MONOTONIC_COARSE
         | CLOCK_BOOTTIME
-        | CLOCK_BOOTTIME_ALARM => cx.monotonic(),
+        | CLOCK_BOOTTIME_ALARM => cx
+            .monotonic()
+            .wrapping_add_signed(crate::TimeOffsets::of(kernel.time_offsets, clock as u32)),
         CLOCK_PROCESS_CPUTIME_ID => cpu_time(kernel, cx, tid),
         CLOCK_THREAD_CPUTIME_ID => kernel.threads[&tid].runtime,
         _ => return Err(Errno::EINVAL),
@@ -459,7 +461,7 @@ pub(super) fn clock_nanosleep(
         let clock_now = if realtime {
             cx.host.realtime_nanoseconds()
         } else {
-            now
+            now.wrapping_add_signed(crate::TimeOffsets::of(kernel.time_offsets, id))
         };
         now.saturating_add(duration.saturating_sub(clock_now))
     } else {

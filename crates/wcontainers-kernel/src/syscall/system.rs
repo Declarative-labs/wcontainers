@@ -105,7 +105,7 @@ pub(super) fn sysinfo(
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
-    let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic) / NANOSECONDS_PER_SECOND;
+    let uptime = super::files::boot_time(kernel, cx) / NANOSECONDS_PER_SECOND;
     let memory = kernel.machine.memory_bytes;
     let (in_use, shared) = kernel.memory_in_use();
     kernel
