@@ -7,7 +7,7 @@ use std::io::IoSlice;
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
@@ -71,19 +71,38 @@ const STATISTICS_ATTRIBUTES: usize = uapi::TCP_NLA_REHASH as usize + 1;
 /// The interface index Linux gives when a report names no interface.
 const NO_INTERFACE: InterfaceIndex = InterfaceIndex(0);
 
-/// The room `TCP_SAVED_SYN` is first read with: the largest IPv4 and TCP headers.
-const SAVED_SYNCHRONIZE_ROOM: usize =
-    etherparse::Ipv4Header::MAX_LEN + etherparse::TcpHeader::MAX_LEN;
+/// The room `TCP_SAVED_SYN` is first read with: the largest IPv4 and TCP headers after an Ethernet header.
+const SAVED_SYNCHRONIZE_ROOM: usize = etherparse::Ethernet2Header::LEN
+    + etherparse::Ipv4Header::MAX_LEN
+    + etherparse::TcpHeader::MAX_LEN;
+
+/// `TCP_SAVE_SYN`'s values, which Linux names none: off, from the network header, from the link header.
+const SAVE_NONE: c_int = 0;
+const SAVE_FROM_NETWORK_HEADER: c_int = 1;
+const SAVE_FROM_LINK_HEADER: c_int = 2;
+
+/// The options whose records `IP_PKTOPTIONS` gives a TCP socket: packet information, TTL and TOS.
+const IPV4_RECORDS: [u32; 3] = [uapi::IP_PKTINFO, uapi::IP_RECVTTL, uapi::IP_RECVTOS];
+
+/// The options whose records `IPV6_2292PKTOPTIONS` gives a TCP socket from the last packet that came in order.
+const IPV6_RECORDS: [u32; 6] = [
+    uapi::IPV6_RECVPKTINFO,
+    uapi::IPV6_RECVHOPLIMIT,
+    uapi::IPV6_RECVTCLASS,
+    uapi::IPV6_RECVHOPOPTS,
+    uapi::IPV6_RECVDSTOPTS,
+    uapi::IPV6_RECVRTHDR,
+];
 
 /// The reasons the host could not honour a request, each counted by [`Shortfalls`].
-const NO_LAST_RECEIVED_HEADER: &str =
-    "the last received header of a TCP socket is not mapped to the host yet";
 const NO_AUTHENTICATION: &str = "TCP authentication is not mapped to the host yet";
 const NO_REPAIR_OPTIONS: &str = "TCP repair options and windows are not mapped to the host yet";
 const NO_SAVED_SYNCHRONIZE: &str = "the host kept no SYN headers for an accepted connection";
 const ARRIVAL_INTERFACE_BY_ADDRESS: &str = "the SYN's arrival interface is taken as the host interface whose address or prefix holds the local address";
 const SYNCHRONIZE_FIELDS_OF_THE_SOCKET: &str = "Linux reports no priority, timestamps or drops for a SYN, and its mark only as the accepted socket's: the accepted socket's mark and priority are given, with no timestamps or drops";
-const NO_LINK_HEADERS: &str = "saving the link headers of SYNs is not mapped to the host yet";
+const LONG_SAVED_SYNCHRONIZE: &str = "a SYN's saved headers were longer than the room accept first reads them into, and were read again into a larger one";
+const NO_NETWORK_HEADER: &str =
+    "no IP header from the peer to the local address was found in a SYN's saved headers";
 const PACKET_OR_STATISTICS: &str =
     "Linux gives a TCP socket's transmit reports either the packet or statistics, never both";
 const NO_OTHER_ERROR_ENTRIES: &str = "error queue entries other than ICMP errors, transmit timestamps and wireless status have no TCP counterpart";
@@ -275,6 +294,8 @@ pub struct HostTcpConnection {
     reports: Mutex<TransmitReports>,
     /// The SYN's headers, kept when the listener was asked to save them, until they are taken.
     saved_synchronize: Mutex<Option<Vec<u8>>>,
+    /// Held by every receive, since a peek at an offset sets the socket-wide `SO_PEEK_OFF` for its call.
+    receiving: Mutex<()>,
 }
 
 pub struct HostTcpListener {
@@ -283,8 +304,11 @@ pub struct HostTcpListener {
     protocol: TcpProtocol,
     receive_timestamping: AtomicU32,
     bound_clock: Mutex<Option<PtpHardwareClockIndex>>,
-    /// The guest's `TCP_SAVE_SYN`: whether accepted connections keep their SYN's headers to be taken.
-    saves_synchronize: AtomicBool,
+    /// The guest's `TCP_SAVE_SYN` value: whether accepted connections keep their SYN's headers to be taken, and from
+    /// which header.
+    saves_synchronize: AtomicI32,
+    /// Whether the guest asked the listener's sockets to record the last header they received.
+    records_last_received: AtomicBool,
 }
 
 macro_rules! ordered_by_descriptor {
@@ -324,6 +348,7 @@ impl HostTcpConnection {
             reports_armed: AtomicBool::new(false),
             reports: Mutex::default(),
             saved_synchronize: Mutex::default(),
+            receiving: Mutex::default(),
         }
     }
 
@@ -451,6 +476,24 @@ fn interface_addresses() -> Vec<HeldAddress> {
             })
         })
         .collect()
+}
+
+/// Where the SYN's IP header starts in the headers `TCP_SAVED_SYN` gave: the first place an IP header from the peer to
+/// the local address holds a TCP header between their ports that ends the headers.
+fn network_header_start(saved: &[u8], local: SocketAddr, peer: SocketAddr) -> Option<usize> {
+    (0..saved.len()).find(|&start| {
+        etherparse::LaxIpSlice::from_slice(&saved[start..]).is_ok_and(|(ip, _)| {
+            let payload = ip.payload();
+            ip.source_addr().to_canonical() == peer.ip().to_canonical()
+                && ip.destination_addr().to_canonical() == local.ip().to_canonical()
+                && payload.ip_number == IpNumber::TCP
+                && etherparse::TcpSlice::from_slice(payload.payload).is_ok_and(|tcp| {
+                    tcp.source_port() == peer.port()
+                        && tcp.destination_port() == local.port()
+                        && tcp.payload().is_empty()
+                })
+        })
+    })
 }
 
 /// The room `IPV6_2292PKTOPTIONS` gives the SYN's packet information in: one control message, padded.
@@ -710,7 +753,18 @@ impl HostTcpSockets {
                     }
                 }
             }
-            TcpSetting::RecordsLastReceivedHeader(_) => refuse(NO_LAST_RECEIVED_HEADER),
+            TcpSetting::RecordsLastReceivedHeader(report) => {
+                let on = report == Report::Requested;
+                for option in IPV4_RECORDS {
+                    set_flag(socket, uapi::SOL_IP, option, on)?;
+                }
+                if family == IpVersion::V6 {
+                    for option in IPV6_RECORDS {
+                        set_flag(socket, uapi::SOL_IPV6, option, on)?;
+                    }
+                }
+                Ok(())
+            }
             TcpSetting::IcmpErrorReports { version, reports } => {
                 let on = reports == Report::Requested;
                 match version {
@@ -843,6 +897,7 @@ impl HostTcpSockets {
             Ok(length) => Ok(&room[..length]),
             // Too small a buffer: the headers stay saved and can be read with room for any.
             Err(HostError::Errno(libc::EINVAL)) => {
+                self.shortfalls.count(LONG_SAVED_SYNCHRONIZE);
                 *large = vec![0; usize::from(u16::MAX)];
                 let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, large)?;
                 Ok(&large[..length])
@@ -851,8 +906,13 @@ impl HostTcpSockets {
         }
     }
 
-    /// The interface an IPv6 SYN came in on, from the packet information the listener's `IPV6_RECVPKTINFO` kept.
-    fn ipv6_arrival_interface(&self, socket: BorrowedFd<'_>) -> Option<InterfaceIndex> {
+    /// The interface an IPv6 SYN came in on, from the packet information the listener's `IPV6_RECVPKTINFO` kept,
+    /// which the accepted connection goes on recording only when the guest asked for its records.
+    fn ipv6_arrival_interface(
+        &self,
+        socket: BorrowedFd<'_>,
+        records: bool,
+    ) -> Option<InterfaceIndex> {
         let mut control = PacketOptions {
             _aligned: [],
             bytes: [0; PACKET_OPTIONS_ROOM],
@@ -864,8 +924,9 @@ impl HostTcpSockets {
             &mut control.bytes,
         )
         .ok()?;
-        // The accepted connection keeps no packet information for what arrives later.
-        set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, false).ok()?;
+        if !records {
+            set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, false).ok()?;
+        }
         Ancillary::parse(&control.bytes[..length])
             .interface
             .map(InterfaceIndex)
@@ -876,6 +937,7 @@ impl HostTcpSockets {
         socket: BorrowedFd<'_>,
         header: &[u8],
         local: SocketAddr,
+        records: bool,
     ) -> Result<ReceivedPacketFields, HostError> {
         let length = if let Ok(ipv4) = etherparse::Ipv4HeaderSlice::from_slice(header) {
             usize::from(ipv4.total_len())
@@ -891,7 +953,7 @@ impl HostTcpSockets {
             IpAddr::V6(_) => None,
         };
         let interface = match local {
-            IpAddr::V6(_) => self.ipv6_arrival_interface(socket),
+            IpAddr::V6(_) => self.ipv6_arrival_interface(socket, records),
             IpAddr::V4(_) => None,
         }
         .or_else(|| {
@@ -1017,6 +1079,22 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = timestamping.bound_clock;
                 Ok(())
             }
+            TcpListenerSetting::Socket(TcpSetting::RecordsLastReceivedHeader(report)) => {
+                self.configure_socket(
+                    socket,
+                    listener.family,
+                    &TcpSetting::RecordsLastReceivedHeader(report),
+                    0,
+                )?;
+                // An IPv6 SYN's packet information still comes with each accepted connection, for its arrival interface.
+                if listener.protocol == TcpProtocol::Tcp && listener.family == IpVersion::V6 {
+                    set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_RECVPKTINFO, true)?;
+                }
+                listener
+                    .records_last_received
+                    .store(report == Report::Requested, Ordering::Relaxed);
+                Ok(())
+            }
             TcpListenerSetting::Socket(setting) => {
                 self.configure_socket(socket, listener.family, &setting, 0)
             }
@@ -1036,20 +1114,21 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 }
                 options::set_bytes(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_KEY, &bytes)
             }
-            // Every TCP listener saves its SYNs' network headers, which accept gives; the setting decides whether
-            // the accepted connections keep them to be taken.
-            TcpListenerSetting::SaveSynchronize(
-                save @ (TcpSavedSynchronize::Off | TcpSavedSynchronize::FromNetworkHeader),
-            ) => {
-                let on = save == TcpSavedSynchronize::FromNetworkHeader;
-                if listener.protocol == TcpProtocol::Multipath {
-                    set_flag(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, on)?;
-                }
-                listener.saves_synchronize.store(on, Ordering::Relaxed);
+            // Every TCP listener saves at least its SYNs' network headers, which accept gives; the setting decides
+            // whether the link header is saved too and whether the accepted connections keep them to be taken.
+            TcpListenerSetting::SaveSynchronize(save) => {
+                let value = match save {
+                    TcpSavedSynchronize::Off => SAVE_NONE,
+                    TcpSavedSynchronize::FromNetworkHeader => SAVE_FROM_NETWORK_HEADER,
+                    TcpSavedSynchronize::FromLinkHeader => SAVE_FROM_LINK_HEADER,
+                };
+                let saved = match listener.protocol {
+                    TcpProtocol::Tcp => value.max(SAVE_FROM_NETWORK_HEADER),
+                    TcpProtocol::Multipath => value,
+                };
+                set_int(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, saved)?;
+                listener.saves_synchronize.store(value, Ordering::Relaxed);
                 Ok(())
-            }
-            TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromLinkHeader) => {
-                Err(self.shortfalls.refuse(NO_LINK_HEADERS))
             }
             TcpListenerSetting::FlowLabelReflection(on) => {
                 // SAFETY: in6_flowlabel_req is plain data.
@@ -1238,6 +1317,7 @@ impl TcpConnections for HostTcpSockets {
         request: TcpReceiveRequest,
         into: &mut [u8],
     ) -> Result<TcpReceived, HostError> {
+        let _receiving = locked(&connection.receiving);
         let socket = connection.socket.fd();
         let mut flags = libc::MSG_DONTWAIT;
         let mut offset = 0;
@@ -1540,7 +1620,8 @@ impl TcpListeners for HostTcpSockets {
             protocol,
             receive_timestamping: AtomicU32::new(0),
             bound_clock: Mutex::new(None),
-            saves_synchronize: AtomicBool::new(false),
+            saves_synchronize: AtomicI32::new(SAVE_NONE),
+            records_last_received: AtomicBool::new(false),
         };
         let socket = listener.socket.fd();
         // Multipath sockets have no TCP_SAVE_SYN.
@@ -1596,12 +1677,27 @@ impl TcpListeners for HostTcpSockets {
             TcpProtocol::Tcp => self.take_saved_synchronize(socket, &mut room, &mut large)?,
             TcpProtocol::Multipath => &[],
         };
-        if listener.saves_synchronize.load(Ordering::Relaxed) && !saved.is_empty() {
-            *locked(&connection.saved_synchronize) = Some(saved.to_vec());
+        // The headers may start with the link header, as the listener saved them when the SYN came.
+        let network = if saved.is_empty() {
+            saved
+        } else if let Some(start) = network_header_start(saved, local, peer) {
+            &saved[start..]
+        } else {
+            self.shortfalls.count(NO_NETWORK_HEADER);
+            &[]
+        };
+        let kept = match listener.saves_synchronize.load(Ordering::Relaxed) {
+            SAVE_NONE => None,
+            SAVE_FROM_NETWORK_HEADER => Some(network),
+            _ => Some(saved),
+        };
+        if let Some(kept) = kept.filter(|kept| !kept.is_empty()) {
+            *locked(&connection.saved_synchronize) = Some(kept.to_vec());
         }
-        let synchronize = self.synchronize_fields(socket, saved, local)?;
-        let length = saved.len().min(synchronize_header.len());
-        synchronize_header[..length].copy_from_slice(&saved[..length]);
+        let records = listener.records_last_received.load(Ordering::Relaxed);
+        let synchronize = self.synchronize_fields(socket, network, local, records)?;
+        let length = network.len().min(synchronize_header.len());
+        synchronize_header[..length].copy_from_slice(&network[..length]);
         Ok(TcpAccepted {
             connection,
             peer,
@@ -1868,6 +1964,47 @@ mod tests {
             cycle();
         }
         assert_eq!(allocations() - before, 0);
+    }
+
+    /// The peeks of each thread in the two-thread peek check.
+    const PEEK_ROUNDS: usize = 20_000;
+
+    /// Peeks at an offset on one thread leave a plain peek on another starting at the first unread byte.
+    #[test]
+    fn peeks_from_two_threads_each_start_where_asked() {
+        let sockets = HostTcpSockets::new().expect("readiness");
+        let (_listener, client, server) = connected(&sockets);
+        let message = b"two threads";
+        let offset = message.len() / 2;
+        sockets.send(&client, plain(), message).expect("send");
+        let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
+        wait(&sockets, &server, events(true, false), &waker);
+        let peek = |from: usize| {
+            let mut buffer = [0; 16];
+            sockets
+                .receive(
+                    &server,
+                    TcpReceiveRequest::Peek {
+                        offset: ByteCount(from),
+                    },
+                    &mut buffer,
+                )
+                .map(|got| buffer[..got.length.0].to_vec())
+        };
+        let start = std::time::Instant::now();
+        while peek(0).map_or(true, |bytes| bytes != message) {
+            assert!(start.elapsed() < DEADLINE, "the message never arrived");
+            std::thread::yield_now();
+        }
+        std::thread::scope(|scope| {
+            for from in [offset, 0] {
+                scope.spawn(move || {
+                    for _ in 0..PEEK_ROUNDS {
+                        assert_eq!(peek(from), Ok(message[from..].to_vec()), "peek at {from}");
+                    }
+                });
+            }
+        });
     }
 
     /// Discarding a transmit report that carries its packet counts no packet cut to a buffer.

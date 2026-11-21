@@ -19,7 +19,7 @@ mutant push-does-nothing "$implementation" 'let no_delay = socket.tcp_nodelay().
     'return Ok(()); #[allow(unreachable_code)] let no_delay = socket.tcp_nodelay().map_err(io_host_error)?;'
 mutant icmp-errors-refused "$implementation" 'libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6 => {' \
     'libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6 if false => {'
-mutant quoted-addresses-swapped "$icmp_error" 'let inner = ipv4_header(us, destination,' 'let inner = ipv4_header(destination, us,'
+mutant quoted-addresses-swapped "$icmp_error" '&ipv4_header(us, destination,' '&ipv4_header(destination, us,'
 mutant report-packet-dropped "$implementation" 'report.packet_length = Some(ByteCount(message.length));' 'report.packet_length = None;'
 mutant statistics-dropped "$implementation" '.then(|| transmit_statistics(data))' \
     '.then(|| { let _ = data; None::<TcpTransmitStatistics> })'
@@ -40,8 +40,20 @@ mutant multipath-is-tcp "$implementation" 'TcpProtocol::Multipath => ipproto::MP
 mutant tcp-is-multipath "$implementation" 'TcpProtocol::Tcp => ipproto::TCP,' 'TcpProtocol::Tcp => ipproto::MPTCP,'
 mutant shutdown-both-is-write "$implementation" 'TcpShutdown::ReadAndWrite => std::net::Shutdown::Both,' \
     'TcpShutdown::ReadAndWrite => std::net::Shutdown::Write,'
-mutant multipath-save-syn-refusal-skipped "$implementation" 'if listener.protocol == TcpProtocol::Multipath {' \
-    'if listener.protocol == TcpProtocol::Multipath && false {'
+mutant multipath-save-syn-refusal-skipped "$implementation" 'set_int(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, saved)?;' \
+    'let _ = set_int(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, saved);'
+mutant link-header-kept-as-network "$implementation" 'SAVE_FROM_NETWORK_HEADER => Some(network),' \
+    'SAVE_FROM_NETWORK_HEADER | SAVE_FROM_LINK_HEADER => Some(network),'
+mutant link-header-not-saved "$implementation" 'TcpSavedSynchronize::FromLinkHeader => SAVE_FROM_LINK_HEADER,' \
+    'TcpSavedSynchronize::FromLinkHeader => SAVE_FROM_NETWORK_HEADER,'
+mutant link-header-given-by-accept "$implementation" '            &saved[start..]' '            { let _ = start; saved }'
+mutant records-refused "$implementation" 'let on = report == Report::Requested;
+                for option in IPV4_RECORDS {' 'let on = report == Report::Requested; if on { return Err(HostError::NotSupported); }
+                for option in IPV4_RECORDS {'
+mutant receive-unlocked "$implementation" 'let _receiving = locked(&connection.receiving);' 'let _receiving = ();'
+mutant urgent-wait-unregistered "$readiness" 'event.set_priority(interest.contains(PollFlags::PRI));' 'event.set_priority(false);'
+mutant peer-shutdown-unregistered "$readiness" $'    .union(PollFlags::RDHUP)\n    .union(PollFlags::from_bits_retain(' \
+    $'    .union(PollFlags::from_bits_retain('
 mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(connection, &mut scratch) {' \
     'match self.take_error_queue_entry(connection, &mut scratch).map(|entry| (entry, false)) {'
 mutant authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION))\n    }\n}' \
@@ -77,9 +89,9 @@ mutant stats-rate-limit-swapped "$implementation" 'TCP_NLA_DELIVERY_RATE_APP_LMT
 mutant delayed-ack-mode-even-unscheduled "$implementation" 'let wanted = if scheduled {' 'let wanted = if scheduled || true {'
 mutant accept-drops-listener-timestamping "$implementation" 'listener.receive_timestamping.load(Ordering::Relaxed),' '0,'
 mutant saved-synchronize-not-kept "$implementation" \
-    'if listener.saves_synchronize.load(Ordering::Relaxed) && !saved.is_empty() {' 'if false {'
-mutant saved-synchronize-off-ignored "$implementation" 'listener.saves_synchronize.store(on, Ordering::Relaxed);' \
-    'listener.saves_synchronize.store(on || listener.saves_synchronize.load(Ordering::Relaxed), Ordering::Relaxed);'
+    'if let Some(kept) = kept.filter(|kept| !kept.is_empty()) {' 'if let Some(kept) = kept.filter(|_| false) {'
+mutant saved-synchronize-off-ignored "$implementation" 'listener.saves_synchronize.store(value, Ordering::Relaxed);' \
+    'listener.saves_synchronize.store(value.max(listener.saves_synchronize.load(Ordering::Relaxed)), Ordering::Relaxed);'
 mutant saved-synchronize-taken-twice "$implementation" '*saved = None;' ';'
 mutant wait-finishes-at-once "$implementation" 'connection.socket.wait_for_events(interest).await' 'Ok(interest)'
 mutant wait-never-finishes "$implementation" 'connection.socket.wait_for_events(interest).await' 'std::future::pending().await'

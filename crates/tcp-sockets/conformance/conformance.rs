@@ -3450,14 +3450,23 @@ pub fn listener_timestamping_reaches_the_connections_it_accepts<S: TcpSockets>(s
     close(&sockets, pair);
 }
 
-/// A listener asked to save SYNs leaves each accepted connection its SYN's headers, kept while the buffer is too small
-/// for them and then taken once; a listener not asked, or asked to stop, leaves none. A multipath listener may refuse
-/// to save them, and then leaves none either.
+/// A listener asked to save SYNs leaves each accepted connection its SYN's headers, from the IP header or from the
+/// link header before it as asked, kept while the buffer is too small for them and then taken once; a listener not
+/// asked, or asked to stop, leaves none. Accept gives the IP header whichever is saved. A multipath listener may
+/// refuse to save them, and then leaves none either.
 pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
     let save = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromNetworkHeader);
     let stop = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::Off);
+    let link = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromLinkHeader);
     for protocol in [TcpProtocol::Tcp, TcpProtocol::Multipath] {
-        for settings in [vec![], vec![save.clone()], vec![save.clone(), stop.clone()]] {
+        for settings in [
+            vec![],
+            vec![save.clone()],
+            vec![save.clone(), stop.clone()],
+            vec![link.clone()],
+            vec![link.clone(), save.clone()],
+            vec![link.clone(), stop.clone()],
+        ] {
             let listening = sockets
                 .listen(
                     protocol,
@@ -3467,10 +3476,14 @@ pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
                     &[],
                 )
                 .expect("listen");
-            let mut saved = false;
+            let mut saving = TcpSavedSynchronize::Off;
             for setting in &settings {
                 match sockets.configure(&listening.listener, setting.clone()) {
-                    Ok(()) => saved = *setting == save,
+                    Ok(()) => {
+                        if let TcpListenerSetting::SaveSynchronize(asked) = setting {
+                            saving = *asked;
+                        }
+                    }
                     Err(error) => assert!(
                         protocol == TcpProtocol::Multipath,
                         "{protocol:?} {setting:?}: {error:?}"
@@ -3489,31 +3502,44 @@ pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
                 .expect("connect");
             let accepted = accept_with_header(&sockets, &listening.listener, HEADER_ROOM);
             let header = &accepted.synchronize_header;
+            if protocol == TcpProtocol::Tcp {
+                let ip = Ipv4HeaderSlice::from_slice(header).expect("the SYN's IP header");
+                assert_eq!(
+                    (ip.source_addr(), ip.destination_addr()),
+                    (Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST),
+                    "{settings:?}"
+                );
+            }
             let mut small = [0; CUT_HEADER];
             let mut room = [0; HEADER_ROOM];
-            if saved {
-                assert_eq!(
-                    sockets.read_state(
-                        &accepted.connection,
-                        TcpQuery::TakeSavedSynchronize(&mut small)
-                    ),
-                    Ok(TcpReading::SavedSynchronize(
-                        TcpSavedSynchronizeHeader::Kept {
-                            length: ByteCount(header.len())
-                        }
-                    )),
-                    "{protocol:?}"
-                );
-                assert_eq!(
-                    sockets.read_state(
-                        &accepted.connection,
-                        TcpQuery::TakeSavedSynchronize(&mut room)
-                    ),
-                    Ok(TcpReading::SavedSynchronize(
-                        TcpSavedSynchronizeHeader::Taken(header)
-                    )),
-                    "{protocol:?}"
-                );
+            if saving != TcpSavedSynchronize::Off {
+                let length = match sockets.read_state(
+                    &accepted.connection,
+                    TcpQuery::TakeSavedSynchronize(&mut small),
+                ) {
+                    Ok(TcpReading::SavedSynchronize(TcpSavedSynchronizeHeader::Kept {
+                        length,
+                    })) => length,
+                    other => panic!("{protocol:?} {settings:?}: {other:?}"),
+                };
+                let taken = match sockets.read_state(
+                    &accepted.connection,
+                    TcpQuery::TakeSavedSynchronize(&mut room),
+                ) {
+                    Ok(TcpReading::SavedSynchronize(TcpSavedSynchronizeHeader::Taken(taken))) => {
+                        taken.to_vec()
+                    }
+                    other => panic!("{protocol:?} {settings:?}: {other:?}"),
+                };
+                assert_eq!(length, ByteCount(taken.len()), "{settings:?}");
+                if saving == TcpSavedSynchronize::FromLinkHeader {
+                    assert!(
+                        taken.len() > header.len() && taken.ends_with(header),
+                        "{settings:?}: {taken:?} does not end with {header:?}"
+                    );
+                } else {
+                    assert_eq!(&taken, header, "{settings:?}");
+                }
             }
             assert_eq!(
                 sockets.read_state(
@@ -3757,6 +3783,8 @@ fn connection_settings(options: &Ipv4Options, interface: InterfaceIndex) -> Vec<
         TcpSetting::NotSentLowWater(None),
         TcpSetting::FastOpenWithoutCookie(true),
         TcpSetting::UnreadByteReports(Report::Requested),
+        TcpSetting::RecordsLastReceivedHeader(Report::Requested),
+        TcpSetting::RecordsLastReceivedHeader(Report::NotRequested),
     ]
 }
 
@@ -3811,11 +3839,14 @@ fn ipv6_connection_settings(interface: InterfaceIndex) -> Vec<TcpSetting<'static
             version: IpVersion::V6,
             reports: Report::Requested,
         },
+        TcpSetting::RecordsLastReceivedHeader(Report::Requested),
+        TcpSetting::RecordsLastReceivedHeader(Report::NotRequested),
     ]
 }
 
-/// Each setting given to connect once and twice, then set once and twice on the established connections: the
-/// outcomes agree and the connections carry bytes.
+/// Each setting given to connect once and twice, where each must be taken, then set once and twice on the established
+/// connections: the outcomes agree (Linux takes some settings only before a connection starts) and the connections
+/// carry bytes.
 fn settings_set_twice_equal_set_once<S: TcpSockets>(
     sockets: &S,
     address: BindAddress,
@@ -3894,8 +3925,23 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
         ),
         (
             TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromLinkHeader),
-            false,
+            true,
             ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::Socket(TcpSetting::RecordsLastReceivedHeader(Report::Requested)),
+            true,
+            ipv4_loopback(),
+        ),
+        (
+            TcpListenerSetting::Socket(TcpSetting::RecordsLastReceivedHeader(Report::Requested)),
+            true,
+            ipv6_loopback(),
+        ),
+        (
+            TcpListenerSetting::Socket(TcpSetting::RecordsLastReceivedHeader(Report::NotRequested)),
+            true,
+            ipv6_loopback(),
         ),
         (
             TcpListenerSetting::FlowLabelReflection(true),
@@ -3973,7 +4019,6 @@ pub fn listener_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
 pub fn refusable_connection_settings_set_twice_equal_set_once<S: TcpSockets>(sockets: S) {
     let interface = loopback_interface();
     let ipv4 = [
-        TcpSetting::RecordsLastReceivedHeader(Report::Requested),
         TcpSetting::Packet(IpPacketSetting::Mark(MARK)),
         TcpSetting::Port(PortSetting::GroupFilter(Some(SocketFilter(&ACCEPT_ALL)))),
         TcpSetting::Port(PortSetting::GroupFilter(None)),
@@ -4325,6 +4370,68 @@ pub fn wait_ends_with_the_errors_always_reported<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(pair.listener);
 }
 
+/// A wait on the server for one event finishes when the client's act brings it, and not before, and gives that event.
+fn wait_finishes_when_the_peer_acts<S: TcpSockets>(
+    sockets: &S,
+    interest: PollEvents,
+    act: impl FnOnce(&S, &S::Connection),
+    given: impl Fn(&PollEvents) -> bool,
+) {
+    let pair = pair(sockets);
+    let (counter, waker) = counting_waker();
+    {
+        let mut wait = pin!(sockets.wait_for_events(&pair.server, interest));
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+        assert!(
+            !woken_within(&counter, 1, SETTLE),
+            "woken before the peer acted"
+        );
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+        act(sockets, &pair.client);
+        assert!(
+            woken_within(&counter, 1, DEADLINE),
+            "not woken when the peer acted"
+        );
+        let events = finish(wait, &counter, &waker).expect("wait");
+        assert!(given(&events), "{events:?}");
+        assert!(
+            !events.data_to_read,
+            "an event not asked for was given: {events:?}"
+        );
+    }
+    close(sockets, pair);
+}
+
+/// A wait for an exceptional condition finishes when urgent data arrives.
+pub fn wait_for_urgent_data_finishes_when_it_arrives<S: TcpSockets>(sockets: S) {
+    wait_finishes_when_the_peer_acts(
+        &sockets,
+        PollEvents {
+            exceptional_condition: true,
+            ..NO_EVENTS
+        },
+        |sockets, client| send_all(sockets, client, urgent(), URGENT),
+        |events| events.exceptional_condition,
+    );
+}
+
+/// A wait for the peer to shut down writing finishes when it does, with no hang-up while this end still writes.
+pub fn wait_for_the_peers_shutdown_finishes_when_it_comes<S: TcpSockets>(sockets: S) {
+    wait_finishes_when_the_peer_acts(
+        &sockets,
+        PollEvents {
+            peer_shut_down_writing: true,
+            ..NO_EVENTS
+        },
+        |sockets, client| {
+            sockets
+                .shut_down(client, TcpShutdown::Write)
+                .expect("shut down");
+        },
+        |events| events.peer_shut_down_writing && !events.hang_up,
+    );
+}
+
 /// A listener's wait finishes when a connection comes to be accepted, and not before.
 pub fn listener_wait_finishes_when_a_connection_comes<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
@@ -4401,6 +4508,8 @@ macro_rules! tests {
             dropping_a_wait_cancels_it,
             many_waits_each_wake_once,
             wait_for_room_finishes_when_the_peer_reads,
+            wait_for_urgent_data_finishes_when_it_arrives,
+            wait_for_the_peers_shutdown_finishes_when_it_comes,
             wait_ends_with_the_errors_always_reported,
             listener_wait_finishes_when_a_connection_comes,
             dropping_a_listener_wait_cancels_it,
