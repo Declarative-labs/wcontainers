@@ -6219,7 +6219,6 @@ code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
 code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
 code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
 code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	4
-code	crates/wcontainers-direct3d-12/src/cache.rs	str	Store::append	"wcontainers direct3d 12: the cache file cannot be appended to ({e}); kept in memory"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::convert_any	b"DXIL"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::convert_stage	b"DXIL"
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::pipeline_root	b"RTS0"
