@@ -31,8 +31,25 @@ mutant rearm-noop "$implementation" 'let idle = get_int(socket, uapi::SOL_TCP, u
 mutant window-probe-noop "$implementation" 'let sharing = SockRef::from(&socket)' \
     'return Ok(()); #[allow(unreachable_code)] let sharing = SockRef::from(&socket)'
 mutant window-probe-clears-sharing "$implementation" '} else if sharing {' '} else if sharing && false {'
-mutant clock-always-refused "$implementation" 'let unit = u32::from(reading.unit == TcpTimestampUnit::Microseconds);' \
-    'let _ = (socket, reading); return Err(HostError::Errno(libc::EPERM)); #[allow(unreachable_code)] let unit = u32::from(reading.unit == TcpTimestampUnit::Microseconds);'
+mutant clock-always-refused "$implementation" 'let information: uapi::tcp_info =' \
+    'let _ = (socket, reading); return Err(HostError::Errno(libc::EPERM)); #[allow(unreachable_code)] let information: uapi::tcp_info ='
+mutant clock-unit-ignored "$implementation" 'if microseconds != (reading.unit == TcpTimestampUnit::Microseconds) {' 'if false {'
+mutant clock-microseconds-as-milliseconds "$implementation" 'let value = reading.value.0 & !1 | u32::from(microseconds);' \
+    'let value = reading.value.0 & !1 | u32::from(microseconds); if microseconds { return Ok(()); }'
+mutant multipath-is-tcp "$implementation" 'TcpProtocol::Multipath => ipproto::MPTCP,' 'TcpProtocol::Multipath => ipproto::TCP,'
+mutant tcp-is-multipath "$implementation" 'TcpProtocol::Tcp => ipproto::TCP,' 'TcpProtocol::Tcp => ipproto::MPTCP,'
+mutant shutdown-both-is-write "$implementation" 'TcpShutdown::ReadAndWrite => std::net::Shutdown::Both,' \
+    'TcpShutdown::ReadAndWrite => std::net::Shutdown::Write,'
+mutant multipath-save-syn-refusal-skipped "$implementation" 'if listener.protocol == TcpProtocol::Multipath {' \
+    'if listener.protocol == TcpProtocol::Multipath && false {'
+mutant discard-counts-cuts "$implementation" 'match self.next_error_queue_entry(connection, &mut scratch) {' \
+    'match self.take_error_queue_entry(connection, &mut scratch).map(|entry| (entry, false)) {'
+mutant authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION))\n    }\n}' \
+    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION); Ok(())\n    }\n}'
+mutant listener-authentication-counters-fake "$implementation" $'        Err(self.shortfalls.refuse(NO_AUTHENTICATION))\n    }\n\n    fn set_listener_timestamp_clock' \
+    $'        let _ = self.shortfalls.refuse(NO_AUTHENTICATION); Ok(())\n    }\n\n    fn set_listener_timestamp_clock'
+mutant listener-state-fake "$implementation" '        Err(self.shortfalls.refuse(NO_LISTENER_STATE))' \
+    '        let _ = self.shortfalls.refuse(NO_LISTENER_STATE); Ok(TcpReading::IncomingProcessor(None))'
 mutant push-neither-noop "$implementation" 'let corked = socket.tcp_cork().map_err(io_host_error)?;' \
     'return Ok(()); #[allow(unreachable_code)] let corked = socket.tcp_cork().map_err(io_host_error)?;'
 mutant record-end-ignored "$implementation" 'flags |= libc::MSG_EOR;' ';'
