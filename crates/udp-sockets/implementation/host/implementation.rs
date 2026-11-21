@@ -9,7 +9,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use etherparse::{IpNumber, UdpHeader};
 use libc::c_int;
 use linux_raw_sys::net as uapi;
-use rustix::net::{SocketType, sockopt};
+use rustix::net::SocketType;
+use socket2::SockAddr;
 use wcontainers_abi::{CounterReading, HostError};
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
@@ -37,7 +38,8 @@ use shared::datagram::sticky::{Slot, UDP_LITE_RECEIVE_COVERAGE};
 use shared::icmp_error::write_icmp_error;
 use shared::readiness::{NO_EVENTS, Readiness, Watched};
 use shared::{
-    Shortfalls, get_option, host_error as from_errno, last_host_error, set_flag, set_int,
+    Shortfalls, get_option, host_error as from_errno, io_host_error, last_host_error, set_flag,
+    set_int, sock,
 };
 
 /// UDP and UDP-Lite sockets of the Linux machine this runs on, with a count of each refusal by its reason.
@@ -216,7 +218,7 @@ impl HostUdpSocket {
             let address = source
                 .unwrap_or_else(|| datagram_send::unspecified_like(unmapped(*destination).ip()));
             let address = for_family(SocketAddr::new(address, port), self.ipv6);
-            rustix::net::bind(self.fd(), &address).map_err(from_errno)?;
+            shared::bind_to(self.fd(), address).map_err(from_errno)?;
             state.local = Some(local_address(self.fd())?);
         } else if port != u16::MIN && port != local.port() {
             return Err(sockets.refuse(SOURCE_PORT_NOT_THE_SOCKETS));
@@ -355,6 +357,12 @@ impl HostUdpSocket {
     }
 }
 
+fn connect(fd: BorrowedFd<'_>, peer: SocketAddr) -> Result<(), HostError> {
+    sock(&fd)
+        .connect(&SockAddr::from(peer))
+        .map_err(|error| io_host_error(&error))
+}
+
 /// Writes the options of the socket's permission to use addresses it does not have, which sends may have changed.
 fn apply_nonlocal(
     fd: BorrowedFd<'_>,
@@ -438,7 +446,7 @@ impl UdpSockets for HostUdpSockets {
                 shared::bind_chosen_by_exit_node(fd, address, &choice, &self.shortfalls)?;
             }
             LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => {
-                rustix::net::bind(fd, &SocketAddr::new(address, port.0)).map_err(from_errno)?;
+                shared::bind_to(fd, SocketAddr::new(address, port.0)).map_err(from_errno)?;
             }
         }
         let bound = local_address(fd)?;
@@ -468,19 +476,18 @@ impl UdpSockets for HostUdpSockets {
         if source.is_some_and(|source| !bound.is_unspecified() && source != bound) {
             return Err(self.refuse(SOURCE_NOT_THE_BOUND_ADDRESS));
         }
-        rustix::net::connect(fd, &destination).map_err(from_errno)?;
+        connect(fd, destination)?;
         let local = local_address(fd)?;
         if let Some(source) = source
             && unmapped(local).ip() != source
         {
             // Back to the peer it had, or to none; a port the kernel chose and Linux gave up is taken again.
             match state.peer {
-                Some(peer) => rustix::net::connect(fd, &peer),
-                None => rustix::net::connect_unspec(fd),
+                Some(peer) => connect(fd, peer)?,
+                None => rustix::net::connect_unspec(fd).map_err(from_errno)?,
             }
-            .map_err(from_errno)?;
             if local_address(fd)?.port() != before.port() {
-                rustix::net::bind(fd, &before).map_err(from_errno)?;
+                shared::bind_to(fd, before).map_err(from_errno)?;
             }
             state.local = Some(local_address(fd)?);
             return Err(self.refuse(SOURCE_NOT_THE_BOUND_ADDRESS));
@@ -736,17 +743,13 @@ impl<'a> Configurable<HostUdpSocket, UdpSocketSetting<'a>> for HostUdpSockets {
                     &self.shortfalls,
                 )?;
                 let (kept, reason) = match setting {
-                    IpSocketSetting::SendBuffer(_) => (
-                        sockopt::socket_send_buffer_size(fd),
-                        SEND_BUFFER_CUT_BY_THE_HOST,
-                    ),
-                    _ => (
-                        sockopt::socket_recv_buffer_size(fd),
-                        RECEIVE_BUFFER_CUT_BY_THE_HOST,
-                    ),
+                    IpSocketSetting::SendBuffer(_) => {
+                        (sock(&fd).send_buffer_size(), SEND_BUFFER_CUT_BY_THE_HOST)
+                    }
+                    _ => (sock(&fd).recv_buffer_size(), RECEIVE_BUFFER_CUT_BY_THE_HOST),
                 };
                 // Linux keeps twice the size asked for, or twice its own limit when that is less.
-                if kept.map_err(from_errno)? < bytes.0.saturating_add(bytes.0) {
+                if kept.map_err(|error| io_host_error(&error))? < bytes.0.saturating_add(bytes.0) {
                     self.count(reason);
                 }
                 Ok(())
@@ -803,7 +806,7 @@ impl NegativeRouteAdvice<HostUdpSocket> for HostUdpSockets {
         // Linux has no call for it: connecting again drops the cached route and takes a new flow hash.
         let peer = socket.state.borrow().peer;
         match peer {
-            Some(peer) => rustix::net::connect(socket.fd(), &peer).map_err(from_errno),
+            Some(peer) => connect(socket.fd(), peer),
             None => Ok(()),
         }
     }
