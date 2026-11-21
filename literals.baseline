@@ -6709,7 +6709,6 @@ code	crates/wcontainers-directx/src/com/convert.rs	int	srv_back	6
 code	crates/wcontainers-directx/src/com/convert.rs	str	dsv	"depth-stencil views of an unknown dimension"
 code	crates/wcontainers-directx/src/com/convert.rs	str	rtv	"render target views of buffers"
 code	crates/wcontainers-directx/src/com/convert.rs	str	srv	"shader resource views of an unknown dimension"
-code	crates/wcontainers-directx/src/com/d3d10core.rs	str	create10	"D3D10CreateDevice with a software, reference, WARP or null driver"
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	3
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	4
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_blend_state1	"logic operations"
@@ -6792,7 +6791,6 @@ code	crates/wcontainers-directx/src/com/generated.rs	str	<Texture3D_Impl as IDXG
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Texture3D_Impl as IDXGISurface_Impl>::Unmap	"IDXGISurface::Unmap"
 code	crates/wcontainers-directx/src/com/mod.rs	str	<Call<'_> as Drop>::drop	"wcontainers direct3d 11: slow path taken: {w}"
 code	crates/wcontainers-directx/src/com/mod.rs	str	D3D11On12CreateDevice	"D3D11On12CreateDevice"
-code	crates/wcontainers-directx/src/com/mod.rs	str	create_for_program	"D3D11CreateDevice with a software, reference, WARP or null driver"
 code	crates/wcontainers-directx/src/com/mod.rs	str	hresult	"wcontainers direct3d 11: invalid: {why}"
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::new	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::new	4
