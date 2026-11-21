@@ -22,7 +22,9 @@ Every figure here comes from runs at 277a2891, the tip of `main` when this run's
 the committed tip, not the shared tree (How to run, first item). Logs in scratch
 `graphics-shaders/g6a-r71`. Between them another track committed to this crate (f4302b4a: the
 container reader made public, `wcontainers_shaders::container`, with the DXBC checksum; a1b731f1:
-the fuzz test signing with it); the figures at 277a2891 include those commits.
+the fuzz test signing with it); the figures at 277a2891 include those commits. Its later commit
+f51d47ce (the container reader's dimensions and return types, a refusal of an unended name) came
+after these runs and is not covered by them.
 
 What this run changed besides this file and the history file: the corpus test (tests/corpus.rs,
 31efb075 and 632d6039). Nothing else of the crate.
