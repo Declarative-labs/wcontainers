@@ -392,6 +392,13 @@ impl SwapChain_Impl {
         let Some(chain) = chain.as_mut() else {
             return DXGI_ERROR_INVALID_CALL;
         };
+        // A swap chain without a waitable object paces by its device's frame latency.
+        if self.latency_object.is_none()
+            && let Ok(device) = self.device.cast_object_ref::<Device>()
+            && chain.set_max_latency(device.frame_latency()).is_err()
+        {
+            return DXGI_ERROR_INVALID_CALL;
+        }
         match self.front.borrow_mut().present(chain, sync_interval) {
             Ok(retired) => {
                 if let (Some(o), 1..) = (&self.latency_object, retired) {

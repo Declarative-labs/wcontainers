@@ -1332,6 +1332,12 @@ impl Device_Impl {
         if format == DXGI_FORMAT_R1_UNORM || !matches!(format.0, 0..=LAST_OF_DIRECT3D_11) {
             return Err(E_INVALIDARG.into());
         }
+        // BC6H's and BC7's formats come with 11_0 (measured at 10_0 on the RTX 3080).
+        if self.front.borrow().feature_level() < desc::level::L11_0
+            && format::from_11_0(format.0 as u32)
+        {
+            return Err(E_INVALIDARG.into());
+        }
         if samples == 0 || samples > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT {
             return Err(windows::Win32::Foundation::E_FAIL.into());
         }
@@ -1428,6 +1434,14 @@ impl Device_Impl {
             D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS if self.compute() => unsafe {
                 (*data.cast::<D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS>())
                     .ComputeShaders_Plus_RawAndStructuredBuffers_Via_Shader_4_x = true.into();
+            },
+            // Typed storage loads of Microsoft's set of further formats, as their own words say.
+            D3D11_FEATURE_D3D11_OPTIONS2 => unsafe {
+                (*data.cast::<D3D11_FEATURE_DATA_D3D11_OPTIONS2>()).TypedUAVLoadAdditionalFormats =
+                    self.front
+                        .borrow()
+                        .typed_storage_loads_of_more_formats()
+                        .into();
             },
             D3D11_FEATURE_D3D9_SIMPLE_INSTANCING_SUPPORT => unsafe {
                 (*data.cast::<D3D11_FEATURE_DATA_D3D9_SIMPLE_INSTANCING_SUPPORT>())
@@ -1596,8 +1610,8 @@ impl Device_Impl {
         }
     }
 
-    /// DXGI's frame latency, kept and reported; presents queue at most wgpu's two frames whatever
-    /// it is.
+    /// DXGI's frame latency, which presents of the device's swap chains without a waitable object
+    /// keep.
     pub(super) fn set_maximum_frame_latency(&self, n: u32) -> Result<()> {
         if n > MAX_FRAME_LATENCY {
             return Err(windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.into());
@@ -1608,6 +1622,14 @@ impl Device_Impl {
 
     pub(super) fn get_maximum_frame_latency(&self) -> Result<u32> {
         Ok(self.frame_latency.get())
+    }
+
+    /// The frames a present of the device's swap chains queues at most (0 asks DXGI's default).
+    pub(super) fn frame_latency(&self) -> u32 {
+        match self.frame_latency.get() {
+            0 => DEFAULT_FRAME_LATENCY,
+            n => n,
+        }
     }
 
     pub(super) fn set_exception_mode(&self, flags: u32) -> Result<()> {

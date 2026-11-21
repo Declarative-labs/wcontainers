@@ -483,7 +483,14 @@ impl<B: Backend> Device<B> {
             };
         }
         let mut s = wcontainers_directx_graphics_infrastructure::format_support(caps, dxgi);
-        let as_integer = format::texture_format(dxgi).and_then(|f| self.held_as_integer(f));
+        let as_integer = format::texture_format(dxgi).and_then(|f| self.held_as_integer(f, false));
+        // Textures drawn into a format the back end samples but does not draw into are held as
+        // its integer twin, so they are targets (never blended, `BlendInShader` is not built).
+        if as_integer.is_none()
+            && format::texture_format(dxgi).is_some_and(|f| self.held_as_integer(f, true).is_some())
+        {
+            s.support1 |= RENDER_TARGET;
+        }
         if let Some(twin) = as_integer.and_then(format::dxgi_of) {
             // Held as its integer twin: what the twin serves, sampled, gathered and its mips
             // generated through decoding, never blended (`BlendInShader` is not built), and not
@@ -577,6 +584,12 @@ impl<B: Backend> Device<B> {
         remove(
             level < level::L10_0,
             BUFFER | SO_BUFFER | SHADER_SAMPLE_COMPARISON,
+        );
+        // A partial sample mask has no route without the back end's mask (`SampleMaskInShader`
+        // is not built), so no multisampling is reported there (plan section 9).
+        remove(
+            !caps.has(Features::SAMPLE_MASK),
+            MULTISAMPLE_RENDERTARGET | MULTISAMPLE_LOAD | MULTISAMPLE_RESOLVE,
         );
         // Multisampled depth is read from 10_1.
         remove(
@@ -673,7 +686,8 @@ impl<B: Backend> Device<B> {
     }
 
     /// What `CheckMultisampleQualityLevels` answers: one level for a single sample of a format
-    /// textures can have, and for a count the back end draws that format with; none otherwise.
+    /// textures can have, and for a count the back end draws that format with where a sample mask
+    /// has a route; none otherwise.
     pub fn multisample_quality_levels(&self, dxgi: u32, samples: u32) -> u32 {
         if samples == 1 {
             // Direct3D answers one level for a single sample of `UNKNOWN` too (measured).
@@ -682,12 +696,23 @@ impl<B: Backend> Device<B> {
                     || self.format_support(dxgi).support1 & crate::desc::support::TEXTURE2D != 0,
             );
         }
+        if !self.backend.caps().has(Features::SAMPLE_MASK) {
+            return 0;
+        }
         let format = format::texture_format(dxgi).or_else(|| {
             format::is_typeless(dxgi)
                 .then(|| format::storage_format(dxgi, false).ok())
                 .flatten()
         });
         u32::from(format.is_some_and(|f| self.takes_samples(f, samples)))
+    }
+
+    /// `D3D11_OPTIONS2.TypedUAVLoadAdditionalFormats`: whether every format of Microsoft's set
+    /// of further typed storage loads claims them (they are supported as a set).
+    pub fn typed_storage_loads_of_more_formats(&self) -> bool {
+        format::TYPED_LOADS_AS_A_SET
+            .iter()
+            .all(|&f| self.format_support(f).support2 & crate::desc::support2::UAV_TYPED_LOAD != 0)
     }
 
     /// Why the device is removed, if it is, polling the back end first (plan section 4.10).
@@ -958,13 +983,19 @@ impl<B: Backend> Device<B> {
         self.backend.caps().limits.storage_buffers_per_stage == 0
     }
 
-    /// The integer twin a texture of normalised `format` is held as where the back end lacks the
-    /// format and samples the twin (`NormAsInteger`): programs decode its loads and encode their
-    /// outputs.
-    pub(crate) fn held_as_integer(&self, format: Format) -> Option<Format> {
+    /// The integer twin a texture of normalised `format` is held as (`NormAsInteger`): where the
+    /// back end lacks the format, or, for a texture drawn into (`drawn`), where it does not draw
+    /// into the format but draws into the twin. Programs decode its loads and encode their outputs.
+    pub(crate) fn held_as_integer(&self, format: Format, drawn: bool) -> Option<Format> {
         let formats = &self.backend.caps().formats;
+        let own = formats.get(format);
         format.integer_twin().filter(|&twin| {
-            formats.get(format).is_empty() && formats.get(twin).contains(FormatUse::SAMPLE)
+            let held = formats.get(twin);
+            held.contains(FormatUse::SAMPLE)
+                && (own.is_empty()
+                    || drawn
+                        && !own.contains(FormatUse::RENDER)
+                        && held.contains(FormatUse::RENDER))
         })
     }
 
@@ -1220,7 +1251,8 @@ impl<B: Backend> Device<B> {
             self.check_level9_texture(d, mips, cube)?;
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
-        let format = self.held_as_integer(format).unwrap_or(format);
+        let drawn = d.bind_flags & bind::RENDER_TARGET != 0;
+        let format = self.held_as_integer(format, drawn).unwrap_or(format);
         // A count and quality the device reports no level for is invalid, as in Direct3D. The
         // standard pattern is the back end's own; the centred one it cannot place. A single
         // sample has quality 0; whether its format serves the bindings is checked below.
@@ -1793,7 +1825,8 @@ impl<B: Backend> Device<B> {
             }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
-        let (format, decoded) = match self.held_as_integer(format) {
+        let on_twin = format.integer_twin() == Some(texture.format);
+        let (format, decoded) = match self.held_as_integer(format, on_twin) {
             Some(twin) => (twin, Some(format)),
             None => (format, None),
         };

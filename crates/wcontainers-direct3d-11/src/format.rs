@@ -261,6 +261,8 @@ pub fn storage_viewed(dxgi: u32) -> bool {
             dxgi,
             dxgi::R32G32B32_TYPELESS
                 ..=dxgi::R32G32B32_SINT
+                    | dxgi::D32_FLOAT
+                    | dxgi::D16_UNORM
                     | dxgi::B5G6R5_UNORM
                     | dxgi::B5G5R5A1_UNORM
                     | dxgi::B4G4R4A4_UNORM
@@ -274,6 +276,26 @@ pub fn storage_viewed(dxgi: u32) -> bool {
 pub fn no_storage_form(format: Format) -> bool {
     format == Format::A8Unorm
 }
+
+/// The formats Microsoft's typed storage loads page lists as supported as a set, which
+/// `D3D11_OPTIONS2.TypedUAVLoadAdditionalFormats` answers for.
+pub const TYPED_LOADS_AS_A_SET: [u32; 15] = [
+    dxgi::R32G32B32A32_FLOAT,
+    dxgi::R32G32B32A32_UINT,
+    dxgi::R32G32B32A32_SINT,
+    dxgi::R16G16B16A16_FLOAT,
+    dxgi::R16G16B16A16_UINT,
+    dxgi::R16G16B16A16_SINT,
+    dxgi::R8G8B8A8_UNORM,
+    dxgi::R8G8B8A8_UINT,
+    dxgi::R8G8B8A8_SINT,
+    dxgi::R16_FLOAT,
+    dxgi::R16_UINT,
+    dxgi::R16_SINT,
+    dxgi::R8_UNORM,
+    dxgi::R8_UINT,
+    dxgi::R8_SINT,
+];
 
 /// Whether DXGI format `dxgi` is one of BC6H's and BC7's, which come with feature level 11_0.
 pub fn from_11_0(dxgi: u32) -> bool {

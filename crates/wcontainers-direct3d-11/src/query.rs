@@ -643,24 +643,24 @@ impl<B: Backend> Device<B> {
     }
 
     /// Before a draw in an open pass: opens a stretch if a predicate runs and none is open. A pass
-    /// whose set has no slot left ends, and the draw opens the next on a fresh set.
+    /// whose set has no slot left, or that began without one, ends, and the draw opens the next on
+    /// a fresh set (`QuerySetSplitPass`).
     pub(crate) fn open_stretch(&mut self) -> bool {
         if self.queries.running.is_empty() || self.queries.stretch.is_some() {
             return true;
         }
-        let Some(pass_set) = &self.queries.pass_set else {
-            return false;
-        };
-        match &mut self.queries.set {
-            Some((set, next)) if Rc::ptr_eq(set, pass_set) && *next < SET_SLOTS => {
-                let slot = *next;
-                *next += 1;
-                self.backend.begin_query(slot);
-                self.queries.stretch = Some(slot);
-                true
-            }
-            _ => false,
+        if let (Some(pass_set), Some((set, next))) = (&self.queries.pass_set, &mut self.queries.set)
+            && Rc::ptr_eq(set, pass_set)
+            && *next < SET_SLOTS
+        {
+            let slot = *next;
+            *next += 1;
+            self.backend.begin_query(slot);
+            self.queries.stretch = Some(slot);
+            return true;
         }
+        self.backend.slow_paths().hit(SlowPath::QuerySetSplitPass);
+        false
     }
 
     /// Closes the open stretch, giving it to every predicate running. `segmented` says the program
