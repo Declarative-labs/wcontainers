@@ -2,7 +2,7 @@
 
 Host implementations, on Linux, of RouteResolver, IcmpSockets and RawSockets, and the conformance suites of
 those three and of the generic Configurable and NegativeRouteAdvice. Milestones: I1 the route resolver and the
-two generic suites; I2 ICMP sockets; I3 raw sockets.
+two generic suites; I2 ICMP and raw sockets.
 
 ## I1: the route resolver
 
@@ -73,3 +73,51 @@ address without permission is `EACCES`; a source the namespace lacks is refused 
 Configurable's suite takes `(implementor, handle, setting)` and checks that setting the same value twice
 gives the same answer as once. NegativeRouteAdvice's takes `(implementor, handle)` and checks that advice
 is taken, and taken again. The socket suites make these tuples and check the effects they can see.
+
+## I2: ICMP and raw sockets
+
+Both are built on the shared crate's datagram half (`SendState` for header and send fields, `Ancillary` and
+`Headers` for what arrives, memberships), plus `datagram::exchange` (one `sendmsg`, the error queue read as
+packets and reports), which this milestone adds there for all three datagram tracks.
+
+`crates/icmp-sockets/implementation/linux-ping`, package `wcontainers-icmp-sockets-linux-ping`: Linux ping
+sockets (`SOCK_DGRAM` with `IPPROTO_ICMP` or `IPPROTO_ICMPV6`), which need the caller's group inside
+`net.ipv4.ping_group_range`. open is the socket, owned by the given user (filesystem user while it is made);
+bind_identifier is `SO_REUSEADDR` as asked and a bind to the identifier as port; send_to writes the header and
+send fields as the UDP track does, then one `sendmsg` of the message (Linux puts the identifier in it and
+computes the checksum); receive gives an error queue entry first (an ICMP error whole from its IP header, or a
+transmit report), else an echo reply with its IP header written in front (from the sender, `IP_PKTINFO`, the
+TTL, TOS and options messages; IPv6 with its extension headers); count_unsent_bytes is `SO_MEMINFO`'s
+`SK_MEMINFO_WMEM_ALLOC`, which is what `SIOCOUTQ` gives a UDP socket (ping sockets take no ioctl); close drops
+the descriptor.
+
+Refused with a counter and a warning, by what Linux's ping sockets do (net/ipv6/ping.c): for IPv6 a source
+address (the socket's bound one is used), extension headers and a routing header (dropped), and neighbour
+confirmation (the flags are not passed on). For both, an upper-layer selector other than the type and code
+of the message, which Linux routes by.
+
+`crates/raw-sockets/implementation/linux-host`, package `wcontainers-raw-sockets-linux-host`: `SOCK_RAW`
+sockets of the given protocol (root or `CAP_NET_RAW`). A payload is sent with `IP_HDRINCL`/`IPV6_HDRINCL` off
+and the header fields as for ICMP; a packet with its own header with it on, its route selectors as options
+and `IP_PKTINFO`, the flow's protocol as `IP_PROTOCOL` (IPv4) or the address's port (IPv6), and reassembly as
+`IP_NODEFRAG`. Both are kept per socket and written only when a send wants the other value. receive gives the
+error queue first (ICMP errors whole; a socket that wrote its headers gets the quoted packet from its IP header
+on), else the packet: IPv4 as Linux gives it, IPv6 with its header and extension headers written in front.
+Settings: the IP ones as for ICMP; checksum `IPV6_CHECKSUM` (offset, or -1 for none); router alert
+`IP_ROUTER_ALERT`, or `IPV6_ROUTER_ALERT_ISOLATE` and `IPV6_ROUTER_ALERT`; multicast routing `MRT_INIT` and
+`MRT_DONE` (`MRT6_*` for IPv6). Linux takes the last two only once per socket, so the socket keeps what it
+has and changes it only to another value. count_unsent_bytes as for ICMP.
+
+Refused: an upper-layer selector other than what Linux routes the send by (the message's ICMP type and code,
+the mobility header type for IPv6, none for other protocols or a packet with its own header), and a payload
+under another protocol than the socket's (IPv4, or IPv6 unless the socket's is `IPPROTO_RAW`).
+
+Each suite runs every check as root in a network namespace of its own, which the `tests!` macro enters on the
+test's thread before the value is made, with loopback up and (ICMP) every group in the ping range. Checks see
+what went out on a second socket of the namespace: a raw socket for ICMP, another raw socket for raw, and the
+statistics of a dummy link. Header fields (TTL or hop limit, DSCP and ECN, flow label, options, extension
+headers, path MTU modes, local fragmentation and fragment MTU, source, interface, mark, scope, broadcast) are
+checked by what arrives; send fields by what arrives (priority), the neighbour entry (confirmation), a qdisc
+that holds the packet (transmit time) and the error queue (transmit reports with their key, with and without
+the packet). ICMP errors come from a route that is unreachable or an MTU smaller than the packet. Settings by
+their effect; Configurable's own suite runs on a setting of each socket kind.

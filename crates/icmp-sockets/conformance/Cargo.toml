@@ -8,7 +8,18 @@ publish = false
 path = "conformance.rs"
 
 [dependencies]
+wcontainers-abi.workspace = true
+wcontainers-configurable = { path = "../../configurable" }
+wcontainers-configurable-conformance = { path = "../../configurable/conformance" }
 wcontainers-icmp-sockets = { path = ".." }
 wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
+# The network namespace tools of the route resolver suite: iproute2, link and neighbour statistics.
+wcontainers-route-resolver-conformance = { path = "../../route-resolver/conformance" }
 etherparse.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The packet socket that sees what leaves a link, and the errno values of Linux.
+libc = "0.2.191"
+# The network namespace of each check.
+rustix = { version = "1.1.6", features = ["net", "thread", "time"] }

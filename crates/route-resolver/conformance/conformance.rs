@@ -29,7 +29,8 @@ pub fn enter_network_namespace() {
         .expect("a new network namespace needs root");
 }
 
-const IP: &str = "ip";
+/// The iproute2 tool every check builds its network with, which the other socket suites take from here too.
+pub const IP: &str = "ip";
 const A: &str = "da";
 const B: &str = "db";
 const A_MTU: u32 = 1400;
@@ -112,10 +113,10 @@ fn network() -> Network {
 }
 
 /// Reads the commands from the input.
-const BATCH: [&str; 2] = ["-batch", "-"];
+pub const BATCH: [&str; 2] = ["-batch", "-"];
 /// IPv4 is the family of a rule with no address.
 const IPV4: &[&str] = &[];
-const IPV6: &[&str] = &["-6"];
+pub const IPV6: &[&str] = &["-6"];
 
 fn v4(options: &Ipv4Options, destination: Ipv4Addr) -> Ipv4RouteSelectors<'_> {
     Ipv4RouteSelectors {
@@ -206,9 +207,31 @@ pub fn loopback_route_is_local<R: RouteResolver>(resolver: R) {
     assert_eq!(route.source, IpAddr::V6(Ipv6Addr::LOCALHOST));
 }
 
+/// The namespace's default IPv4 TTL.
+const DEFAULT_TTL: &str = "/proc/sys/net/ipv4/ip_default_ttl";
+/// The packet count of a statistics object in iproute2's JSON.
+pub const PACKETS: &str = "\"packets\":";
+
+/// The number after `field` in a tool's JSON output, after the first `after` in it.
+pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
+    let start = text
+        .find(after)
+        .unwrap_or_else(|| panic!("no {after}: {text}"));
+    let rest = &text[start..];
+    let at = rest
+        .find(field)
+        .unwrap_or_else(|| panic!("no {field}: {text}"))
+        + field.len();
+    rest[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|_| panic!("{text}"))
+}
+
 /// A route through a gateway gives the link's interface, its address as the source, its MTU and the namespace's TTL.
 pub fn ipv4_route_gives_link_source_and_sizes<R: RouteResolver>(resolver: R) {
-    const DEFAULT_TTL: &str = "/proc/sys/net/ipv4/ip_default_ttl";
     const TTL: HopLimit = HopLimit(77);
     let network = network();
     write_setting(DEFAULT_TTL, TTL.0);
@@ -758,15 +781,16 @@ fn waived_source_check<R: RouteResolver>(resolver: &R, network: &Network) {
     });
 }
 
+/// The length of a source route option of one address: its type, length and pointer, and the address.
+const SOURCE_ROUTE_LENGTH: u8 = 7;
+
 /// A loose source route is looked up to its first hop.
 pub fn loose_source_route_goes_to_its_first_hop<R: RouteResolver>(resolver: R) {
     let network = network();
     let [a, b, c, d] = B_GATEWAY.octets();
-    /// The option's type, length and pointer, and one address.
-    const OPTION_LENGTH: u8 = 7;
     let options = Ipv4Options::from([
         libc::IPOPT_LSRR,
-        OPTION_LENGTH,
+        SOURCE_ROUTE_LENGTH,
         libc::IPOPT_MINOFF,
         a,
         b,
@@ -786,11 +810,9 @@ pub fn strict_source_route_takes_only_a_first_hop_on_the_link<R: RouteResolver>(
     let network = network();
     let strict = |first_hop: Ipv4Addr| {
         let [a, b, c, d] = first_hop.octets();
-        /// The option's type, length and pointer, and one address.
-        const OPTION_LENGTH: u8 = 7;
         Ipv4Options::from([
             libc::IPOPT_SSRR,
-            OPTION_LENGTH,
+            SOURCE_ROUTE_LENGTH,
             libc::IPOPT_MINOFF,
             a,
             b,
@@ -905,11 +927,11 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
         let sent = packets_sent(A);
         let unconfirmed =
             resolver.resolve_route(route.clone(), ROOT, NeighbourConfirmation::Unconfirmed);
-        let age = seconds_since_confirmed(gateway);
+        let age = seconds_since_confirmed(gateway, A);
         assert!(age > 0, "{gateway} was confirmed {age} seconds ago");
         let confirmed = resolver.resolve_route(route, ROOT, NeighbourConfirmation::Confirmed);
         assert_eq!(confirmed, unconfirmed);
-        assert_eq!(seconds_since_confirmed(gateway), 0, "{gateway}");
+        assert_eq!(seconds_since_confirmed(gateway, A), 0, "{gateway}");
         assert_eq!(
             packets_sent(A),
             sent,
@@ -919,54 +941,33 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
 }
 
 /// The number of packets a link has sent, from its statistics.
-fn packets_sent(link: &str) -> u64 {
+pub fn packets_sent(link: &str) -> u64 {
     /// Shows the link with its statistics, as JSON.
     const SHOW: [&str; 5] = ["-s", "-j", "link", "show", "dev"];
     const TRANSMITTED: &str = "\"tx\":{";
-    const PACKETS: &str = "\"packets\":";
     let output = Command::new(IP)
         .args(SHOW)
         .arg(link)
         .output()
         .expect("ip runs");
     let text = String::from_utf8(output.stdout).expect("ip writes text");
-    let transmitted = text
-        .find(TRANSMITTED)
-        .unwrap_or_else(|| panic!("no statistics: {text}"));
-    let start = text[transmitted..]
-        .find(PACKETS)
-        .unwrap_or_else(|| panic!("no packet count: {text}"))
-        + transmitted
-        + PACKETS.len();
-    let digits: String = text[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().unwrap_or_else(|_| panic!("{text}"))
+    number_after(&text, TRANSMITTED, PACKETS)
 }
 
-/// How long ago the neighbour entry of da for the address was confirmed, in whole seconds.
-fn seconds_since_confirmed(address: IpAddr) -> u64 {
+/// How long ago the link's neighbour entry for the address was confirmed, in whole seconds.
+pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
     const FIELD: &str = "\"confirmed\":";
     /// Shows the neighbour entries with their times, as JSON.
     const SHOW: [&str; 4] = ["-s", "-j", "neigh", "show"];
-    const DEVICE: [&str; 2] = ["dev", A];
+    const DEVICE: &str = "dev";
     let output = Command::new(IP)
         .args(SHOW)
         .arg(address.to_string())
-        .args(DEVICE)
+        .args([DEVICE, link])
         .output()
         .expect("ip runs");
     let text = String::from_utf8(output.stdout).expect("ip writes text");
-    let start = text
-        .find(FIELD)
-        .unwrap_or_else(|| panic!("no neighbour entry: {text}"))
-        + FIELD.len();
-    let digits: String = text[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().unwrap_or_else(|_| panic!("{text}"))
+    number_after(&text, FIELD, FIELD)
 }
 
 /// Source preferences choose among the link's addresses, here only one.

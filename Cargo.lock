@@ -1839,6 +1839,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 
 [[package]]
+name = "kvm-bindings"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3819cba3d5b448587dbed4b186fb61b0a8d02c5eb88846c9463aa514afe61a8"
+dependencies = [
+ "vmm-sys-util",
+]
+
+[[package]]
+name = "kvm-ioctls"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7a59b7ac62625a405112180b56a99acb4498e1d18f5a7c0cd0916c79a076b0a"
+dependencies = [
+ "bitflags 2.13.2",
+ "kvm-bindings",
+ "libc",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1996,6 +2017,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2117,6 +2147,19 @@ dependencies = [
  "bytes",
  "libc",
  "log",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -3632,6 +3675,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vmm-sys-util"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "506c62fdf617a5176827c2f9afbcf1be155b03a9b4bf9617a60dbc07e3a1642f"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4048,7 +4101,6 @@ dependencies = [
  "bytemuck",
  "half",
  "llvm-bitcode",
- "md-5",
  "naga",
  "png",
  "pollster",
@@ -4116,9 +4168,12 @@ dependencies = [
  "aarch64-cpu",
  "applevisor",
  "applevisor-sys",
+ "arm-gic",
  "blake3",
  "cc",
  "fastrand",
+ "kvm-bindings",
+ "kvm-ioctls",
  "libc",
  "linux-raw-sys",
  "object 0.37.3",
@@ -4126,6 +4181,7 @@ dependencies = [
  "proptest",
  "serde",
  "unicorn-engine",
+ "vmm-sys-util",
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-executor-hardware-virtualization-inside",
@@ -4365,8 +4421,31 @@ name = "wcontainers-icmp-sockets-conformance"
 version = "0.1.0"
 dependencies = [
  "etherparse",
+ "libc",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-configurable-conformance",
  "wcontainers-icmp-sockets",
  "wcontainers-internet-protocol",
+ "wcontainers-kernel",
+ "wcontainers-route-resolver-conformance",
+]
+
+[[package]]
+name = "wcontainers-icmp-sockets-linux-ping"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-icmp-sockets",
+ "wcontainers-icmp-sockets-conformance",
+ "wcontainers-internet-protocol",
+ "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
 ]
 
@@ -4460,7 +4539,6 @@ dependencies = [
  "cc",
  "glam",
  "glow 0.18.0",
- "wcontainers-abi",
  "khronos-egl",
  "libloading",
  "naga",
@@ -4540,6 +4618,23 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-raw-sockets",
+]
+
+[[package]]
+name = "wcontainers-raw-sockets-linux-host"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-internet-protocol-linux-socket-options",
+ "wcontainers-kernel",
+ "wcontainers-raw-sockets",
+ "wcontainers-raw-sockets-conformance",
 ]
 
 [[package]]
@@ -4702,9 +4797,37 @@ dependencies = [
 name = "wcontainers-tcp-sockets-conformance"
 version = "0.1.0"
 dependencies = [
+ "etherparse",
+ "libc",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-negative-route-advice",
+ "wcontainers-negative-route-advice-conformance",
  "wcontainers-tcp-sockets",
+]
+
+[[package]]
+name = "wcontainers-tcp-sockets-linux-host"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "libc",
+ "linux-raw-sys",
+ "netlink-packet-core",
+ "nix",
+ "rustix",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-internet-protocol-linux-socket-options",
+ "wcontainers-kernel",
+ "wcontainers-negative-route-advice",
+ "wcontainers-tcp-sockets",
+ "wcontainers-tcp-sockets-conformance",
 ]
 
 [[package]]
