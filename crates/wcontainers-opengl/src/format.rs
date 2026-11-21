@@ -251,8 +251,11 @@ pub fn supported(
         _ => false,
     };
     let storage = bindings & PIPE_BIND_SHADER_IMAGE == 0 || sampled == 1;
+    // The host's multisampled textures are single 2D layers.
+    let layers = sampled == 1 || target == PIPE_TEXTURE_2D;
     left == 0
         && storage
+        && layers
         && dimension
         && caps.get(ours).contains(needed)
         && sampled == storage_samples.max(1)

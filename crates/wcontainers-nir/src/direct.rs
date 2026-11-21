@@ -1049,7 +1049,9 @@ impl Builder<'_> {
         }
         let mut access = StorageAccess::empty();
         access.set(StorageAccess::LOAD, var.readable != 0);
-        access.set(StorageAccess::STORE, var.writable != 0);
+        // An image only measured is declared written, which every storage format takes (a
+        // storage image is read or written in the common form).
+        access.set(StorageAccess::STORE, var.writable != 0 || var.readable == 0);
         let (dim, arrayed) = storage_dimension(t)?;
         let format = if var.format == Format::None {
             let first = var
