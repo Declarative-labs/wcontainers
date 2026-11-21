@@ -668,7 +668,12 @@ impl HostUdpSockets {
                 state.errors_first |= state.errors.holds_entries();
                 Err(error)
             }
-            Err(error) => Err(SendError::Host(error)),
+            // Linux fails a send with the socket error an ICMP error set, which a receive would have looked for.
+            Err(HostError::WouldBlock) => Err(SendError::Host(HostError::WouldBlock)),
+            Err(error) => {
+                state.errors.keep_host_entries(fd, &self.shortfalls);
+                Err(SendError::Host(error))
+            }
         }
     }
 
@@ -679,9 +684,9 @@ impl HostUdpSockets {
         into: &mut [u8],
     ) -> Result<UdpReceived, HostError> {
         let fd = socket.fd();
-        // Reports a send asked for come before the datagrams that arrive after them.
-        if state.errors_first {
-            let settled = state.errors.settle(fd, &self.shortfalls)?;
+        // Reports a send asked for, and entries a send took off the host, come before the datagrams after them.
+        if state.errors_first || state.errors.holds_entries() {
+            let settled = !state.errors_first || state.errors.settle(fd, &self.shortfalls)?;
             match socket.take_error_entry(self, state, into) {
                 Err(HostError::WouldBlock) => state.errors_first = !settled,
                 taken => return taken,
@@ -701,7 +706,9 @@ impl HostUdpSockets {
                     unsafe { core::slice::from_raw_parts(tail.as_ptr().cast::<u8>(), beyond) };
                 socket.datagram(state, into, tail, &message)
             }
-            // A pending socket error signals an ICMP error; a send may have taken that signal first.
+            // Linux sets the socket error with every ICMP error it queues, and answers it before would-block, so
+            // the error queue is read only then; a send that takes that error keeps the queue's entries.
+            Err(HostError::WouldBlock) => Err(HostError::WouldBlock),
             Err(error) => match socket.take_error_entry(self, state, into) {
                 Err(HostError::WouldBlock) => Err(error),
                 taken => taken,

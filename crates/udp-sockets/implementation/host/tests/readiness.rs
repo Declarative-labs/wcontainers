@@ -2,6 +2,7 @@
 #![cfg(target_os = "linux")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::pin::pin;
@@ -23,10 +24,21 @@ struct Counting;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
+thread_local! {
+    /// The allocations of this thread alone, which the test harness's other threads do not add to.
+    static ALLOCATIONS_HERE: Cell<usize> = const { Cell::new(0) };
+}
+
+fn count_allocation() {
+    ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+    // A thread being torn down has no count left, and none is wanted of it.
+    let _ = ALLOCATIONS_HERE.try_with(|count| count.set(count.get() + 1));
+}
+
 // SAFETY: every call is passed on to the system's allocator unchanged.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        count_allocation();
         // SAFETY: as the caller of alloc promised.
         unsafe { System.alloc(layout) }
     }
@@ -37,7 +49,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        count_allocation();
         // SAFETY: as the caller of realloc promised.
         unsafe { System.realloc(pointer, layout, size) }
     }
@@ -60,6 +72,12 @@ const PATIENCE: Duration = Duration::from_secs(1);
 
 /// How long the watcher is given to show a wake it was sent.
 const SETTLE: Duration = Duration::from_millis(50);
+
+/// How long a wait is left waiting for an event its socket lacks.
+const LACKING: Duration = Duration::from_millis(300);
+
+/// The most processor time the watcher may take over that time: a few looks, far from running throughout.
+const LOOKING: Duration = Duration::from_millis(15);
 
 const PAYLOAD: &[u8] = b"a datagram waited for";
 
@@ -96,23 +114,43 @@ impl Wakes {
     }
 }
 
+/// The folders under /proc of this process's watcher threads.
+fn watchers() -> impl Iterator<Item = std::path::PathBuf> {
+    std::fs::read_dir("/proc/self/task")
+        .expect("this process's threads")
+        .map(|task| task.expect("a thread").path())
+        .filter(|task| {
+            std::fs::read_to_string(task.join("comm")).is_ok_and(|name| name.trim_end() == WATCHER)
+        })
+}
+
 /// The voluntary context switches of this process's watcher threads, which count their wakes.
 fn watcher_wakes() -> u64 {
-    let mut wakes = 0;
-    for task in std::fs::read_dir("/proc/self/task").expect("this process's threads") {
-        let task = task.expect("a thread").path();
-        let name = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
-        if name.trim_end() != WATCHER {
-            continue;
-        }
-        let status = std::fs::read_to_string(task.join("status")).expect("its status");
-        wakes += status
-            .lines()
-            .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:"))
-            .and_then(|count| count.trim().parse::<u64>().ok())
-            .expect("its context switches");
-    }
-    wakes
+    watchers()
+        .map(|task| {
+            let status = std::fs::read_to_string(task.join("status")).expect("its status");
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:"))
+                .and_then(|count| count.trim().parse::<u64>().ok())
+                .expect("its context switches")
+        })
+        .sum()
+}
+
+/// The processor time this process's watcher threads have run, the first count of their `schedstat`.
+fn watcher_time() -> Duration {
+    watchers()
+        .map(|task| {
+            let schedstat = std::fs::read_to_string(task.join("schedstat")).expect("its schedstat");
+            schedstat
+                .split_whitespace()
+                .next()
+                .and_then(|nanoseconds| nanoseconds.parse::<u64>().ok())
+                .map(Duration::from_nanos)
+                .expect("its time on a processor")
+        })
+        .sum()
 }
 
 /// A host socket on loopback with a plain socket that sends to it.
@@ -223,4 +261,60 @@ fn a_wait_allocates_nothing_once_warm() {
     }
     let allocated = ALLOCATIONS.load(Ordering::Relaxed) - before;
     assert_eq!(allocated, 0, "allocations over {DATAGRAMS} waits");
+}
+
+/// A wait for an event the poller can only approximate, priority band data by the socket being readable, costs
+/// the watcher a look at each change of the socket and does not keep it running while the socket has data.
+#[test]
+fn a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still() {
+    let _alone = ALONE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
+    let (socket, sender) = pair(&sockets);
+    let wakes = Arc::new(Wakes::default());
+    let mut readable = pin!(sockets.wait_for_events(&socket, READABLE));
+    assert!(poll_with(readable.as_mut(), &wakes).is_pending());
+    sender.send(PAYLOAD).expect("send");
+    assert!(wakes.reach(1), "woken by the datagram");
+    let lacking = PollEvents {
+        priority_band_data_to_read: true,
+        peer_shut_down_writing: true,
+        ..NO_EVENTS
+    };
+    let before = watcher_time();
+    let mut wait = pin!(sockets.wait_for_events(&socket, lacking));
+    assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+    std::thread::sleep(LACKING);
+    let taken = watcher_time() - before;
+    assert!(taken < LOOKING, "the watcher ran {taken:?} of {LACKING:?}");
+    assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+    assert_eq!(*wakes.count.lock().expect("the wakes"), 1);
+}
+
+/// A receive with nothing queued allocates nothing.
+#[test]
+fn a_receive_that_would_block_allocates_nothing() {
+    let _alone = ALONE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
+    let (socket, _sender) = pair(&sockets);
+    let mut into = vec![u8::MIN; usize::from(u16::MAX)];
+    assert_eq!(
+        sockets.receive(&socket, &mut into),
+        Err(HostError::WouldBlock)
+    );
+    let before = ALLOCATIONS_HERE.with(Cell::get);
+    for _ in 0..DATAGRAMS {
+        assert_eq!(
+            sockets.receive(&socket, &mut into),
+            Err(HostError::WouldBlock)
+        );
+    }
+    let allocated = ALLOCATIONS_HERE.with(Cell::get) - before;
+    assert_eq!(
+        allocated, 0,
+        "allocations over {DATAGRAMS} receives that would block"
+    );
 }

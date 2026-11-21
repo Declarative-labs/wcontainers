@@ -8,23 +8,24 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options};
+use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
-    BindAddress, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
-    IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, LocalBinding, LocalPort,
+    BindAddress, BroadcastPermission, ByteCount, BytesPerSecond, IpHeaderFields, IpSendFields,
+    IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, LocalBinding, LocalPort,
     NeighbourConfirmation, PacketMark, PacketPriority, PathMtuDiscovery, Port, Report, RouteScope,
-    SourceAddressCheck, TransmitReportKey, TransmitReportRequest, TransportPorts, UpperLayer,
-    UpperLayerSelector,
+    SendError, SourceAddressCheck, TransmitReportKey, TransmitReportRequest, TransportPorts,
+    UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_udp_sockets::{
     UdpChecksum, UdpDatagram, UdpProtocol, UdpReceived, UdpSocketSetting, UdpSockets,
 };
 use wcontainers_udp_sockets_host::{
-    HostUdpSockets, RECEIVE_BUFFER_CUT_BY_THE_HOST, SEND_BUFFER_CUT_BY_THE_HOST,
+    HostUdpSocket, HostUdpSockets, RECEIVE_BUFFER_CUT_BY_THE_HOST, SEND_BUFFER_CUT_BY_THE_HOST,
 };
 
 /// How many networks the tests of one run can take, all made before any test opens a socket.
@@ -207,11 +208,8 @@ fn a_buffer_the_host_cuts_is_counted() {
     );
 }
 
-/// A send's report comes before a datagram that arrived after it: this implementation reads the host's error
-/// queue first while a send's reports may wait there.
-#[test]
-fn a_report_comes_before_a_datagram_that_arrived_after_it() {
-    let sockets = isolated();
+/// A socket bound to IPv4 loopback on a port the kernel chooses, and its address.
+fn on_loopback(sockets: &HostUdpSockets) -> (HostUdpSocket, SocketAddr) {
     let socket = sockets
         .open(IpVersion::V4, UdpProtocol::Udp, UserId(u32::MIN))
         .unwrap();
@@ -224,8 +222,12 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
             },
         )
         .unwrap();
-    let options = Ipv4Options::new();
-    let header = IpHeaderFields::V4(Ipv4HeaderFields {
+    (socket, address)
+}
+
+/// The header of a datagram a socket on IPv4 loopback sends to its own port.
+fn to_itself(options: &Ipv4Options, address: SocketAddr) -> IpHeaderFields<'_> {
+    IpHeaderFields::V4(Ipv4HeaderFields {
         route: Ipv4RouteSelectors {
             destination: Ipv4Addr::LOCALHOST,
             source: None,
@@ -236,7 +238,7 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
             mark: PacketMark(u32::MIN),
             scope: RouteScope::Universe,
             broadcast: BroadcastPermission::Refused,
-            options: &options,
+            options,
             upper_layer: UpperLayer {
                 protocol: IpNumber::UDP,
                 selector: Some(UpperLayerSelector::Ports(TransportPorts {
@@ -247,30 +249,52 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
         },
         time_to_live: None,
         path_mtu_discovery: PathMtuDiscovery::Want,
-    });
-    let key = TransmitReportKey(u32::from(u16::MAX));
-    let fields = IpSendFields {
+    })
+}
+
+fn reports(key: TransmitReportKey, software: Report) -> IpSendFields {
+    IpSendFields {
         neighbour: NeighbourConfirmation::Unconfirmed,
         priority: PacketPriority(u32::MIN),
         transmit_time: None,
         transmit_reports: TransmitReportRequest {
             key,
             scheduled: Report::NotRequested,
-            software: Report::Requested,
+            software,
             hardware: Report::NotRequested,
             acknowledgement: Report::NotRequested,
             completion: Report::NotRequested,
             wireless_status: Report::NotRequested,
             packet: Report::NotRequested,
         },
-    };
-    let datagram = UdpDatagram {
+    }
+}
+
+fn computed(payload: &[u8]) -> UdpDatagram<'_> {
+    UdpDatagram {
         checksum: UdpChecksum::Computed,
         segment_size: None,
-        payload: b"to itself",
-    };
+        payload,
+    }
+}
+
+/// A send's report comes before a datagram that arrived after it: this implementation reads the host's error
+/// queue first while a send's reports may wait there.
+#[test]
+fn a_report_comes_before_a_datagram_that_arrived_after_it() {
+    let sockets = isolated();
+    let (socket, address) = on_loopback(&sockets);
+    let options = Ipv4Options::new();
+    let key = TransmitReportKey(u32::from(u16::MAX));
     // Over loopback the report is queued as the datagram leaves, before it arrives back on the same socket.
-    sockets.send_to(&socket, header, fields, datagram).unwrap();
+    sockets
+        .send_to(
+            &socket,
+            to_itself(&options, address),
+            reports(key, Report::Requested),
+            computed(b"to itself"),
+        )
+        .unwrap();
     let mut into = vec![u8::MIN; usize::from(u16::MAX)];
     match sockets.receive(&socket, &mut into) {
         Ok(UdpReceived::TransmitReport(report)) => assert_eq!(report.key, key),
@@ -280,4 +304,50 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
         sockets.receive(&socket, &mut into),
         Ok(UdpReceived::Packet(_))
     ));
+}
+
+/// The send buffer size the full buffer check gives, of which Linux keeps twice.
+const SEND_BUFFER: usize = 16384;
+
+/// The payload of each paced datagram, and the most memory Linux keeps one in: its payload, headers and buffer.
+const PACED_LENGTH: usize = 1000;
+const PACED_DATAGRAM_ROOM: usize = 4 * PACED_LENGTH;
+
+/// A full send buffer counts unsent the memory Linux's `SIOCOUTQ` gives a UDP socket: at least the twice the size
+/// given that Linux keeps, and less than one datagram more.
+#[test]
+fn a_full_send_buffer_counts_the_memory_linux_counts() {
+    let sockets = isolated();
+    let (socket, address) = on_loopback(&sockets);
+    for setting in [
+        IpSocketSetting::SendBuffer(ByteCount(SEND_BUFFER)),
+        // A quarter of a second for each datagram after the first, so that the buffer fills.
+        IpSocketSetting::MaximumPacingRate(Some(BytesPerSecond(4 * PACED_LENGTH as u64))),
+    ] {
+        sockets
+            .configure(&socket, UdpSocketSetting::Ip(setting))
+            .unwrap();
+    }
+    let options = Ipv4Options::new();
+    let payload = [u8::MAX; PACED_LENGTH];
+    let sent = (0..=SEND_BUFFER)
+        .take_while(|_| {
+            match sockets.send_to(
+                &socket,
+                to_itself(&options, address),
+                reports(TransmitReportKey(u32::MIN), Report::NotRequested),
+                computed(&payload),
+            ) {
+                Ok(()) => true,
+                Err(SendError::Host(HostError::WouldBlock)) => false,
+                Err(error) => panic!("send: {error:?}"),
+            }
+        })
+        .count();
+    let unsent = sockets.count_unsent_bytes(&socket).unwrap().0;
+    let kept = SEND_BUFFER * 2;
+    assert!(
+        (kept..kept + PACED_DATAGRAM_ROOM).contains(&unsent),
+        "{unsent} bytes unsent after {sent} datagrams"
+    );
 }

@@ -30,7 +30,9 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use etherparse::checksum::Sum16BitWords;
-use etherparse::{IpDscp, IpEcn, IpNumber, IpSlice, Ipv4Options, Ipv6FlowLabel, UdpHeaderSlice};
+use etherparse::{
+    IpDscp, IpEcn, IpNumber, IpSlice, Ipv4Options, Ipv6FlowLabel, UdpHeader, UdpHeaderSlice,
+};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AddressSharing, AnycastAddress, BindAddress, BroadcastPermission, ByteCount, BytesPerSecond,
@@ -2362,6 +2364,55 @@ const WRITABLE: PollEvents = PollEvents {
     ..NO_EVENTS
 };
 
+/// Every poll event, asked for by a check of all the events a socket has.
+const EVERY_EVENT: PollEvents = PollEvents {
+    data_to_read: true,
+    exceptional_condition: true,
+    writing_possible: true,
+    error_condition: true,
+    hang_up: true,
+    descriptor_not_open: true,
+    normal_data_to_read: true,
+    priority_band_data_to_read: true,
+    normal_data_writable: true,
+    priority_data_writable: true,
+    message_available: true,
+    peer_shut_down_writing: true,
+};
+
+/// The events of a UDP socket with room to send and nothing to read, as Linux's poll gives them.
+const ROOM_TO_SEND: PollEvents = PollEvents {
+    writing_possible: true,
+    normal_data_writable: true,
+    priority_data_writable: true,
+    ..NO_EVENTS
+};
+
+/// The events no UDP socket has, for it cannot be shut down, has no priority band or urgent data and takes no
+/// message: each wait for one of them waits on.
+const NEVER_ON_UDP: [PollEvents; 5] = [
+    PollEvents {
+        exceptional_condition: true,
+        ..NO_EVENTS
+    },
+    PollEvents {
+        hang_up: true,
+        ..NO_EVENTS
+    },
+    PollEvents {
+        priority_band_data_to_read: true,
+        ..NO_EVENTS
+    },
+    PollEvents {
+        message_available: true,
+        ..NO_EVENTS
+    },
+    PollEvents {
+        peer_shut_down_writing: true,
+        ..NO_EVENTS
+    },
+];
+
 /// How many sockets a check waits on at once, and how many more waits it makes on the first of them.
 const WAITED_SOCKETS: usize = 32;
 const WAITS_ON_ONE: usize = 3;
@@ -2415,6 +2466,20 @@ fn finished(poll: Poll<Result<PollEvents, HostError>>) -> PollEvents {
     match poll {
         Poll::Ready(events) => events.expect("wait for events"),
         Poll::Pending => panic!("the wait did not finish"),
+    }
+}
+
+/// The events of a wait polled until it finishes, within the patience of a check.
+fn finished_soon<F: Future<Output = Result<PollEvents, HostError>>>(
+    mut call: Pin<&mut F>,
+) -> PollEvents {
+    let wakes = Arc::new(Wakes::default());
+    match poll_with(call.as_mut(), &wakes) {
+        Poll::Pending => {
+            assert!(wakes.reach(1), "the wait finished");
+            finished(poll_with(call, &wakes))
+        }
+        ready => finished(ready),
     }
 }
 
@@ -2681,6 +2746,99 @@ pub fn a_wait_for_no_event_ends_on_an_error<S: UdpSockets>(sockets: S) {
     );
 }
 
+/// A wait for every event gives exactly the events the socket has: room to send, then data to read, then an error.
+pub fn a_wait_gives_the_events_the_socket_has_and_no_others<S: UdpSockets>(sockets: S) {
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let (receiver, to) = bound(&sockets, version, UdpProtocol::Udp);
+        let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
+        let every =
+            |socket: &S::Socket| finished_soon(pin!(sockets.wait_for_events(socket, EVERY_EVENT)));
+        assert_eq!(
+            every(&receiver),
+            ROOM_TO_SEND,
+            "{version:?}: nothing to read"
+        );
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+        finished_soon(pin!(sockets.wait_for_events(&receiver, READABLE)));
+        let readable = PollEvents {
+            data_to_read: true,
+            normal_data_to_read: true,
+            ..ROOM_TO_SEND
+        };
+        assert_eq!(every(&receiver), readable, "{version:?}: a datagram queued");
+        let closed = closed_port(&sockets, version);
+        send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
+        finished_soon(pin!(sockets.wait_for_events(&sender, NO_EVENTS)));
+        let failed = PollEvents {
+            error_condition: true,
+            ..ROOM_TO_SEND
+        };
+        assert_eq!(every(&sender), failed, "{version:?}: an ICMP error queued");
+    }
+}
+
+/// A wait for one event alone finishes when the socket has it, and gives only it.
+pub fn a_wait_for_one_event_gives_that_event_alone<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Lite);
+    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Lite);
+    for writable in [
+        PollEvents {
+            normal_data_writable: true,
+            ..NO_EVENTS
+        },
+        PollEvents {
+            priority_data_writable: true,
+            ..NO_EVENTS
+        },
+    ] {
+        let wakes = Arc::new(Wakes::default());
+        let events = finished(poll_with(
+            pin!(sockets.wait_for_events(&receiver, writable)),
+            &wakes,
+        ));
+        assert_eq!(events, writable);
+    }
+    let normal_data = PollEvents {
+        normal_data_to_read: true,
+        ..NO_EVENTS
+    };
+    let wakes = Arc::new(Wakes::default());
+    let mut wait = pin!(sockets.wait_for_events(&receiver, normal_data));
+    assert!(poll_with(wait.as_mut(), &wakes).is_pending());
+    std::thread::sleep(SILENCE);
+    assert_eq!(wakes.count(), 0, "woken with nothing to read");
+    send(&sockets, &sender, UdpProtocol::Lite, from, to, PAYLOAD);
+    assert!(wakes.reach(1), "woken when the datagram arrives");
+    assert_eq!(finished(poll_with(wait, &wakes)), normal_data);
+}
+
+/// A wait for an event no UDP socket has waits on, unwoken, while the socket has data to read and room to send.
+pub fn a_wait_for_an_event_udp_never_has_waits_on<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
+    finished_soon(pin!(sockets.wait_for_events(&receiver, READABLE)));
+    let mut waits: Vec<_> = NEVER_ON_UDP
+        .iter()
+        .map(|interest| {
+            (
+                Box::pin(sockets.wait_for_events(&receiver, *interest)),
+                Arc::new(Wakes::default()),
+            )
+        })
+        .collect();
+    for (wait, wakes) in &mut waits {
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    std::thread::sleep(SILENCE);
+    for ((wait, wakes), interest) in waits.iter_mut().zip(NEVER_ON_UDP) {
+        assert_eq!(wakes.count(), 0, "a wait for {interest:?} woken");
+        assert!(poll_with(wait.as_mut(), wakes).is_pending());
+    }
+    drop(waits);
+    assert!(arrives(&sockets, &receiver), "the datagram stays queued");
+}
+
 /// The send buffer size the checks of a full send buffer give, of which Linux keeps twice.
 const SEND_BUFFER: usize = 16384;
 
@@ -2739,8 +2897,9 @@ fn slowly_paced<S: UdpSockets>(
     (sender, from, receiver, to)
 }
 
-/// A send buffer filled until a send would block holds unsent at least the size Linux keeps, twice the size
-/// given, and less than one datagram more.
+/// A send buffer filled until a send would block counts unsent at least the payload of the datagrams it holds,
+/// every one but the first two, which may have left, and less than the most it can hold: twice the size given,
+/// as Linux keeps, and one datagram more.
 pub fn a_full_send_buffer_counts_its_unsent_bytes<S: UdpSockets>(sockets: S) {
     for version in [IpVersion::V4, IpVersion::V6] {
         let (sender, from, _receiver, to) = slowly_paced(&sockets, version, SEND_BUFFER);
@@ -2750,9 +2909,9 @@ pub fn a_full_send_buffer_counts_its_unsent_bytes<S: UdpSockets>(sockets: S) {
             .count_unsent_bytes(&sender)
             .expect("count the unsent bytes")
             .0;
-        let kept = SEND_BUFFER * 2;
+        let held = sent.saturating_sub(2) * PACED_LENGTH;
         assert!(
-            (kept..kept + PACED_DATAGRAM_ROOM).contains(&unsent),
+            (held..SEND_BUFFER * 2 + PACED_DATAGRAM_ROOM).contains(&unsent),
             "{version:?}: {unsent} bytes unsent after {sent} datagrams"
         );
     }
@@ -2791,6 +2950,85 @@ pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) 
         ),
         Ok(())
     );
+}
+
+/// A wait for data or writing on a full send buffer, made while a wait for data alone waits, finishes when room
+/// is made, and the wait for data waits on.
+pub fn a_wait_for_data_or_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) {
+    let (sender, from, _receiver, to) = slowly_paced(&sockets, IpVersion::V6, usize::MIN);
+    let payload = vec![u8::MAX; PACED_LENGTH];
+    fill_send_buffer(&sockets, &sender, from, to, &payload);
+    let reading = Arc::new(Wakes::default());
+    let mut read = pin!(sockets.wait_for_events(&sender, READABLE));
+    assert!(poll_with(read.as_mut(), &reading).is_pending());
+    let wakes = Arc::new(Wakes::default());
+    let either = PollEvents {
+        data_to_read: true,
+        writing_possible: true,
+        ..NO_EVENTS
+    };
+    let mut wait = pin!(sockets.wait_for_events(&sender, either));
+    assert!(
+        poll_with(wait.as_mut(), &wakes).is_pending(),
+        "writable with a full send buffer"
+    );
+    assert!(
+        wakes.reach_within(1, ROOM_PATIENCE),
+        "woken when room is made"
+    );
+    assert_eq!(finished(poll_with(wait, &wakes)), WRITABLE);
+    assert_eq!(reading.count(), 0, "the wait for data woken with no data");
+    assert!(poll_with(read, &reading).is_pending());
+}
+
+/// A send whose header's upper layer is another protocol than the socket's is refused, and sends nothing.
+pub fn a_header_of_another_protocol_is_refused<S: UdpSockets>(sockets: S) {
+    for (protocol, other) in [
+        (UdpProtocol::Udp, UdpProtocol::Lite),
+        (UdpProtocol::Lite, UdpProtocol::Udp),
+    ] {
+        let (socket, from) = bound(&sockets, IpVersion::V4, protocol);
+        let (receiver, to) = bound(&sockets, IpVersion::V4, protocol);
+        let sent = sockets.send_to(
+            &socket,
+            header(other, from, to),
+            plain_fields(),
+            datagram(PAYLOAD),
+        );
+        assert!(sent.is_err(), "{protocol:?} sent as {other:?}");
+        assert!(
+            !arrives(&sockets, &receiver),
+            "{protocol:?} sent as {other:?}"
+        );
+    }
+}
+
+/// A checksum only the other protocol has, UDP-Lite's partial coverage on UDP or no checksum on UDP-Lite, is
+/// refused, and sends nothing.
+pub fn a_checksum_of_the_other_protocol_is_refused<S: UdpSockets>(sockets: S) {
+    let header_alone = NonZeroU16::new(UdpHeader::LEN_U16).expect("a coverage");
+    let coverage = ChecksumCoverage(header_alone);
+    for (protocol, checksum) in [
+        (UdpProtocol::Udp, UdpChecksum::Partial(coverage)),
+        (UdpProtocol::Lite, UdpChecksum::Omitted),
+    ] {
+        let (socket, from) = bound(&sockets, IpVersion::V6, protocol);
+        let (receiver, to) = bound(&sockets, IpVersion::V6, protocol);
+        let sent = sockets.send_to(
+            &socket,
+            header(protocol, from, to),
+            plain_fields(),
+            UdpDatagram {
+                checksum,
+                ..datagram(PAYLOAD)
+            },
+        );
+        assert!(sent.is_err(), "{protocol:?} with {checksum:?}");
+        assert!(
+            !arrives(&sockets, &receiver),
+            "{protocol:?} with {checksum:?}"
+        );
+    }
 }
 
 /// A send whose header is IPv6 on an IPv4 socket is refused as Linux refuses a destination of another family.
@@ -3314,6 +3552,12 @@ macro_rules! tests {
             a_full_send_buffer_counts_its_unsent_bytes
             a_wait_for_writing_finishes_when_room_is_made
             a_header_of_another_version_is_refused
+            a_wait_gives_the_events_the_socket_has_and_no_others
+            a_wait_for_one_event_gives_that_event_alone
+            a_wait_for_an_event_udp_never_has_waits_on
+            a_wait_for_data_or_writing_finishes_when_room_is_made
+            a_header_of_another_protocol_is_refused
+            a_checksum_of_the_other_protocol_is_refused
         );
     };
     (@each $value:expr; $($name:ident)*) => {
