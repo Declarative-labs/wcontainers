@@ -1451,12 +1451,15 @@ wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the 
   fixed program, a `mov r, [rip + d]` that reads a word of the blob could be followed through the link
   address the same way. Not built: the ruling was about immediates.
 
-- X6 run 3, a question for the owner: x86 programs built for a fixed address (most static x86-64 binaries)
-  take a function's address as an absolute immediate, so at full look-ahead `main` and everything only
-  reached through such an address are translated when first reached, at bounded look-ahead. The fix is to
-  give the translator the address the blob is linked at (from the ELF) as an input, which also enters the
-  translation cache key; it changes the translator's interface and the runtime's call of it. Not built;
-  plan 3.4 "Known limit". ARM64 does not meet it.
+- X6 run 3's question on fixed-address programs is answered: the owner ruled it, X6f built it (plan 3.4,
+  "Absolute addresses"). What stays open is the runtime track's adoption (the first entry above): the shipped
+  executor (`crates/executor/implementation/wasmtime/implementation.rs`, `compiled(&code.bytes, (code.hash,
+  None), ...)`) always passes no link address, so in a real container a fixed x86 program's `main` is still
+  translated only when first reached, and no test drives the cache key's `link_address` with `Some`.
+- For the owner (X7, run 4): the reviewed kernel interface `crates/kernel/interface.rs` fails clippy's
+  `type_complexity` at lines 40 and 93, so a lint of the wasmtime executor with its dependencies (`cargo clippy
+  -p wcontainers-executor-wasmtime -- -D warnings`) exits 101 for a file only the owner may edit. This track's
+  lint now runs with `--no-deps`, which lints exactly the packages named.
 
 - X5 run 7: another difference between the two x86-64 machines. Sapphire Rapids runs `movbe` with both 66
   and REX.W (`66 48 0F 38 F0/F1`) as the 64-bit form; the i7-8750H gives illegal instruction. We follow the

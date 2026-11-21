@@ -1153,7 +1153,11 @@ bytes apart) through `before`.
   (`main_is_in_the_full_translation_x86_64`). Still not found by either CPU's walk: addresses held only in
   data, such as a C++ vtable or an entry of the global offset table (rustc's x86 start code and, as far as
   seen, ARM64's position independent start code take `main` from it), and code reached at run time is
-  translated with no link address (bounded look-ahead follows no built address).
+  translated with no link address (bounded look-ahead follows no built address). Measured at X6f (the rented
+  x86-64 machine, wasmtime and Chrome alike): the fixed hello world at -O0 with the link address still makes 22
+  translations at run time at full look-ahead, and the X6f check's computed-goto program at -O2 26 (48 without
+  the link address); the label table a computed goto copies from read-only data is one such case of addresses
+  held only in data.
 
 Switches (T9, T10). `jump_table` gets the jump's offset, the blob and `before`, a way to walk the function's
 own instructions back from the jump. ARM64 reads its window backwards from the blob exactly as today (so its
