@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-tcp-sockets-linux-host"
+name = "wcontainers-tcp-sockets-host"
 description = "TCP and MPTCP connections and listeners made of the Linux sockets of the machine it runs on."
 version.workspace = true
 edition.workspace = true

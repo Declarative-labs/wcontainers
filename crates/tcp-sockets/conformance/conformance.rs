@@ -1,7 +1,8 @@
 //! The tests every implementation of wcontainers-tcp-sockets runs, written against its traits alone.
 //!
 //! Each check makes its own listener on a loopback address with a port the kernel chooses, so the checks run side by
-//! side. Nothing in the contract waits, so an answer of `WouldBlock` is tried again until [`DEADLINE`].
+//! side. Calls other than the waits answer at once, so an answer of `WouldBlock` is tried again until [`DEADLINE`]; the
+//! waits are polled by hand with a waker that counts its wakes.
 //!
 //! The checks watch the wire through the host's packet and raw sockets, so they run as root on a Linux host, in a
 //! network namespace of their own whose loopback is up with the `fq` queueing discipline (which honours a transmit
@@ -12,11 +13,15 @@
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU32;
+use core::pin::{Pin, pin};
+use core::task::{Context, Poll, Waker};
 use core::time::Duration;
+use std::future::Future;
 use std::os::fd::OwnedFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
+use std::task::Wake;
+use std::thread::{JoinHandle, Thread};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use etherparse::{
@@ -38,6 +43,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno;
+use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_tcp_sockets::repair::{
     TcpRepair, TcpTimestamp, TcpTimestampClock, TcpTimestampUnit,
 };
@@ -1498,6 +1504,32 @@ pub fn software_transmit_report_names_the_send<S: TcpSockets>(sockets: S) {
         sockets.take_error_queue_entry(&pair.client, &mut buffer),
         Err(HostError::WouldBlock)
     );
+    close(&sockets, pair);
+}
+
+/// Sends that ask for no report, between two that do, leave each report naming its own send.
+pub fn reports_name_their_sends_among_plain_ones<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let reported = |key| TcpSendRequest {
+        transmit_reports: TransmitReportRequest {
+            key,
+            software: Report::Requested,
+            ..no_reports()
+        },
+        ..plain()
+    };
+    let keys = [KEY, TransmitReportKey(KEY.0 + 1)];
+    for key in keys {
+        send_all(&sockets, &pair.client, reported(key), MESSAGE);
+        send_all(&sockets, &pair.client, plain(), MESSAGE);
+    }
+    for key in keys {
+        let TcpErrorQueueEntry::TransmitReport { report, .. } = take_entry(&sockets, &pair.client)
+        else {
+            panic!("not a transmit report");
+        };
+        assert_eq!(report.key, key);
+    }
     close(&sockets, pair);
 }
 
@@ -3824,11 +3856,337 @@ pub fn negative_route_advice_contract_holds<S: TcpSockets>(sockets: S) {
     wcontainers_negative_route_advice_conformance::advice_is_taken_again((sockets, pair.client));
 }
 
+/// A waker that counts its wakes and unparks the thread that made it.
+struct CountingWaker {
+    wakes: AtomicUsize,
+    thread: Thread,
+}
+
+impl Wake for CountingWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wakes.fetch_add(1, Ordering::SeqCst);
+        self.thread.unpark();
+    }
+}
+
+fn counting_waker() -> (Arc<CountingWaker>, Waker) {
+    let counter = Arc::new(CountingWaker {
+        wakes: AtomicUsize::new(0),
+        thread: std::thread::current(),
+    });
+    (Arc::clone(&counter), Waker::from(counter))
+}
+
+fn wakes(counter: &CountingWaker) -> usize {
+    counter.wakes.load(Ordering::SeqCst)
+}
+
+fn poll_once<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(waker))
+}
+
+/// Parks until the waker has been woken the given number of times, or the time is up.
+fn woken_within(counter: &CountingWaker, times: usize, within: Duration) -> bool {
+    let start = Instant::now();
+    while wakes(counter) < times {
+        let left = within.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::park_timeout(left);
+    }
+    true
+}
+
+/// Polls a wait each time it is woken until it finishes, within the deadline.
+fn finish<F: Future>(mut future: Pin<&mut F>, counter: &CountingWaker, waker: &Waker) -> F::Output {
+    let start = Instant::now();
+    loop {
+        let seen = wakes(counter);
+        if let Poll::Ready(output) = poll_once(future.as_mut(), waker) {
+            return output;
+        }
+        assert!(
+            woken_within(counter, seen + 1, DEADLINE.saturating_sub(start.elapsed())),
+            "the wait was not woken within the deadline"
+        );
+    }
+}
+
+const NO_EVENTS: PollEvents = PollEvents {
+    data_to_read: false,
+    exceptional_condition: false,
+    writing_possible: false,
+    error_condition: false,
+    hang_up: false,
+    descriptor_not_open: false,
+    normal_data_to_read: false,
+    priority_band_data_to_read: false,
+    normal_data_writable: false,
+    priority_data_writable: false,
+    message_available: false,
+    peer_shut_down_writing: false,
+};
+
+const READABLE: PollEvents = PollEvents {
+    data_to_read: true,
+    ..NO_EVENTS
+};
+
+const WRITABLE: PollEvents = PollEvents {
+    writing_possible: true,
+    ..NO_EVENTS
+};
+
+/// How many connections the check of many waits watches at once.
+const WATCHED_CONNECTIONS: usize = 16;
+
+/// A wait for data finishes once data arrives and not before, and gives the events the connection has.
+pub fn wait_for_events_finishes_when_data_arrives<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let (counter, waker) = counting_waker();
+    {
+        let mut wait = pin!(sockets.wait_for_events(&pair.server, READABLE));
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+        assert!(
+            !woken_within(&counter, 1, SETTLE),
+            "woken before anything arrived"
+        );
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+        send_all(&sockets, &pair.client, plain(), MESSAGE);
+        let events = finish(wait, &counter, &waker).expect("wait for data");
+        assert!(events.data_to_read);
+        assert!(!events.writing_possible, "an event not asked for was given");
+    }
+    assert_eq!(
+        receive_up_to(&sockets, &pair.server, MESSAGE.len()),
+        MESSAGE
+    );
+    close(&sockets, pair);
+}
+
+/// A wait for an event the connection has already finishes at its first poll, without a wake.
+pub fn wait_for_events_answers_at_once_when_ready<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let (counter, waker) = counting_waker();
+    let interest = PollEvents {
+        normal_data_writable: true,
+        ..WRITABLE
+    };
+    let Poll::Ready(events) = poll_once(
+        pin!(sockets.wait_for_events(&pair.client, interest)),
+        &waker,
+    ) else {
+        panic!("a connection with room to send had to wait");
+    };
+    let events = events.expect("wait for room");
+    assert!(events.writing_possible && events.normal_data_writable);
+    assert!(!events.data_to_read);
+    assert_eq!(wakes(&counter), 0);
+    close(&sockets, pair);
+}
+
+/// A dropped wait is woken by nothing that comes after, and a new wait then finishes at once.
+pub fn dropping_a_wait_cancels_it<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let (counter, waker) = counting_waker();
+    {
+        let mut wait = pin!(sockets.wait_for_events(&pair.server, READABLE));
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+    }
+    send_all(&sockets, &pair.client, plain(), MESSAGE);
+    assert!(
+        !woken_within(&counter, 1, SETTLE),
+        "a dropped wait was woken"
+    );
+    let again = poll_once(
+        pin!(sockets.wait_for_events(&pair.server, READABLE)),
+        &waker,
+    );
+    assert!(matches!(again, Poll::Ready(Ok(events)) if events.data_to_read));
+    close(&sockets, pair);
+}
+
+/// Waits on many connections, two on each, are each woken once when their own connection's data comes.
+pub fn many_waits_each_wake_once<S: TcpSockets>(sockets: S) {
+    let pairs: Vec<_> = (0..WATCHED_CONNECTIONS).map(|_| pair(&sockets)).collect();
+    let mut waits: Vec<_> = pairs
+        .iter()
+        .flat_map(|pair| [&pair.server, &pair.server])
+        .map(|connection| {
+            let (counter, waker) = counting_waker();
+            (
+                Box::pin(sockets.wait_for_events(connection, READABLE)),
+                counter,
+                waker,
+            )
+        })
+        .collect();
+    for (wait, _, waker) in &mut waits {
+        assert!(poll_once(wait.as_mut(), waker).is_pending());
+    }
+    // Every other connection gets data; the rest stay silent.
+    for pair in pairs.iter().step_by(2) {
+        send_all(&sockets, &pair.client, plain(), MESSAGE);
+    }
+    for (index, (wait, counter, waker)) in waits.iter_mut().enumerate() {
+        let fed = (index / 2) % 2 == 0;
+        if fed {
+            assert!(
+                woken_within(counter, 1, DEADLINE),
+                "wait {index} was not woken"
+            );
+            let events = poll_once(wait.as_mut(), waker);
+            assert!(matches!(events, Poll::Ready(Ok(events)) if events.data_to_read));
+        }
+    }
+    std::thread::sleep(SETTLE);
+    for (index, (_, counter, _)) in waits.iter().enumerate() {
+        let fed = (index / 2) % 2 == 0;
+        assert_eq!(wakes(counter), usize::from(fed), "wait {index}");
+    }
+    drop(waits);
+    for pair in pairs {
+        close(&sockets, pair);
+    }
+}
+
+/// A wait for room to send finishes when the peer has read enough of what fills the connection.
+pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let chunk = vec![0; SETTING_BYTES];
+    let start = Instant::now();
+    loop {
+        match sockets.send(&pair.client, plain(), &chunk) {
+            Ok(_) => assert!(start.elapsed() < DEADLINE, "the connection never filled"),
+            Err(HostError::WouldBlock) => break,
+            Err(error) => panic!("send: {error:?}"),
+        }
+    }
+    let (counter, waker) = counting_waker();
+    {
+        let mut wait = pin!(sockets.wait_for_events(&pair.client, WRITABLE));
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+        assert!(
+            !woken_within(&counter, 1, SETTLE),
+            "woken while the connection was full"
+        );
+        let mut sink = vec![0; SETTING_BYTES];
+        while wakes(&counter) == 0 {
+            assert!(
+                start.elapsed() < DEADLINE,
+                "never woken while the peer read"
+            );
+            match sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut sink) {
+                Ok(_) | Err(HostError::WouldBlock) => {}
+                Err(error) => panic!("receive: {error:?}"),
+            }
+        }
+        let events = finish(wait, &counter, &waker).expect("wait for room");
+        assert!(events.writing_possible);
+    }
+    close(&sockets, pair);
+}
+
+/// A reset ends a wait for an event that never comes, with the error and hang-up that are always reported.
+pub fn wait_ends_with_the_errors_always_reported<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let (counter, waker) = counting_waker();
+    let interest = PollEvents {
+        exceptional_condition: true,
+        ..NO_EVENTS
+    };
+    {
+        let mut wait = pin!(sockets.wait_for_events(&pair.client, interest));
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+        sockets.close(pair.server, TcpClose::Abort);
+        let events = finish(wait, &counter, &waker).expect("wait across the reset");
+        assert!(events.error_condition || events.hang_up, "{events:?}");
+        assert!(!events.exceptional_condition);
+    }
+    sockets.close(pair.client, TcpClose::Orderly);
+    sockets.stop_listening(pair.listener);
+}
+
+/// A listener's wait finishes when a connection comes to be accepted, and not before.
+pub fn listener_wait_finishes_when_a_connection_comes<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let (counter, waker) = counting_waker();
+    let mut wait = Box::pin(sockets.wait_for_listener_events(&listener, READABLE));
+    assert!(poll_once(wait.as_mut(), &waker).is_pending());
+    assert!(
+        !woken_within(&counter, 1, SETTLE),
+        "woken before a connection came"
+    );
+    let client = sockets
+        .connect(
+            TcpProtocol::Tcp,
+            OWNER,
+            bind_any_port(ipv4_any()),
+            local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .expect("connect")
+        .connection;
+    let events = finish(wait.as_mut(), &counter, &waker).expect("wait for a connection");
+    drop(wait);
+    assert!(events.data_to_read);
+    let mut header = [0; 0];
+    let accepted = sockets
+        .accept(&listener, &mut header)
+        .expect("accept once woken");
+    sockets.close(accepted.connection, TcpClose::Orderly);
+    sockets.close(client, TcpClose::Orderly);
+    sockets.stop_listening(listener);
+}
+
+/// A dropped listener's wait is woken by no connection that comes after.
+pub fn dropping_a_listener_wait_cancels_it<S: TcpSockets>(sockets: S) {
+    let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
+    let (counter, waker) = counting_waker();
+    {
+        let mut wait = pin!(sockets.wait_for_listener_events(&listener, READABLE));
+        assert!(poll_once(wait.as_mut(), &waker).is_pending());
+    }
+    let client = sockets
+        .connect(
+            TcpProtocol::Tcp,
+            OWNER,
+            bind_any_port(ipv4_any()),
+            local,
+            &[],
+            TcpFastOpen::Off,
+        )
+        .expect("connect")
+        .connection;
+    assert!(
+        !woken_within(&counter, 1, SETTLE),
+        "a dropped wait was woken"
+    );
+    let server = accept(&sockets, &listener);
+    sockets.close(server, TcpClose::Orderly);
+    sockets.close(client, TcpClose::Orderly);
+    sockets.stop_listening(listener);
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
         $crate::tests!(@each $value;
+            wait_for_events_finishes_when_data_arrives,
+            wait_for_events_answers_at_once_when_ready,
+            dropping_a_wait_cancels_it,
+            many_waits_each_wake_once,
+            wait_for_room_finishes_when_the_peer_reads,
+            wait_ends_with_the_errors_always_reported,
+            listener_wait_finishes_when_a_connection_comes,
+            dropping_a_listener_wait_cancels_it,
             connect_and_accept_name_both_ends,
             accept_cuts_the_synchronize_header_to_the_buffer,
             connect_settings_apply_to_the_synchronize,
@@ -3857,6 +4215,7 @@ macro_rules! tests {
             unread_byte_reports_count_what_is_left,
             receive_software_timestamps_when_asked,
             software_transmit_report_names_the_send,
+            reports_name_their_sends_among_plain_ones,
             acknowledgement_report_follows_the_peers_acknowledgement,
             discarding_empties_the_error_queue,
             empty_error_queue_would_block,

@@ -24,11 +24,13 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options::datagram::receive::Ancillary;
 use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_error;
+use wcontainers_internet_protocol_linux_socket_options::readiness::{Readiness, Watched};
 use wcontainers_internet_protocol_linux_socket_options::{
     self as options, ControlBuffer, Shortfalls, bind, family_of, get_int, host_error, open_socket,
     peer_for, set_flag, set_int, set_option, socket_address,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 use wcontainers_negative_route_advice::NegativeRouteAdvice;
 use wcontainers_tcp_sockets::authentication::TcpAuthenticationCounters;
 use wcontainers_tcp_sockets::repair::{
@@ -92,15 +94,19 @@ const ABORT_CLOSED_IN_ORDER: &str = "an abort closed in order: the host refused 
 const NO_LISTENER_STATE: &str = "reading a TCP listener's state is not mapped to the host yet";
 
 /// Linux's TCP sockets as the exit node's TCP connections and listeners.
-#[derive(Debug, Default)]
-pub struct LinuxHostTcpSockets {
+pub struct HostTcpSockets {
     shortfalls: Shortfalls,
     interfaces: InterfaceAddresses,
+    readiness: Readiness,
 }
 
-impl LinuxHostTcpSockets {
-    pub fn new() -> Self {
-        Self::default()
+impl HostTcpSockets {
+    pub fn new() -> Result<Self, HostError> {
+        Ok(Self {
+            shortfalls: Shortfalls::default(),
+            interfaces: InterfaceAddresses::default(),
+            readiness: Readiness::new()?,
+        })
     }
 
     /// The requests answered as unsupported so far, by reason.
@@ -130,9 +136,8 @@ struct ReportedSend {
     statistics: bool,
 }
 
-#[derive(Debug)]
-pub struct LinuxHostTcpConnection {
-    socket: OwnedFd,
+pub struct HostTcpConnection {
+    socket: Watched,
     family: IpVersion,
     /// The local and peer addresses, kept for the ICMP errors that come after the connection is gone.
     addresses: OnceLock<(SocketAddr, SocketAddr)>,
@@ -145,9 +150,8 @@ pub struct LinuxHostTcpConnection {
     saved_synchronize: Mutex<Option<Vec<u8>>>,
 }
 
-#[derive(Debug)]
-pub struct LinuxHostTcpListener {
-    socket: OwnedFd,
+pub struct HostTcpListener {
+    socket: Watched,
     family: IpVersion,
     protocol: TcpProtocol,
     receive_timestamping: AtomicU32,
@@ -160,7 +164,7 @@ macro_rules! ordered_by_descriptor {
     ($type:ty) => {
         impl PartialEq for $type {
             fn eq(&self, other: &Self) -> bool {
-                self.socket.as_raw_fd() == other.socket.as_raw_fd()
+                self.socket.fd().as_raw_fd() == other.socket.fd().as_raw_fd()
             }
         }
         impl Eq for $type {}
@@ -171,16 +175,19 @@ macro_rules! ordered_by_descriptor {
         }
         impl Ord for $type {
             fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-                self.socket.as_raw_fd().cmp(&other.socket.as_raw_fd())
+                self.socket
+                    .fd()
+                    .as_raw_fd()
+                    .cmp(&other.socket.fd().as_raw_fd())
             }
         }
     };
 }
-ordered_by_descriptor!(LinuxHostTcpConnection);
-ordered_by_descriptor!(LinuxHostTcpListener);
+ordered_by_descriptor!(HostTcpConnection);
+ordered_by_descriptor!(HostTcpListener);
 
-impl LinuxHostTcpConnection {
-    fn new(socket: OwnedFd, family: IpVersion, receive_timestamping: u32) -> Self {
+impl HostTcpConnection {
+    fn new(socket: Watched, family: IpVersion, receive_timestamping: u32) -> Self {
         Self {
             socket,
             family,
@@ -513,7 +520,7 @@ fn transmit_statistics(data: &[u8]) -> Option<TcpTransmitStatistics> {
     })
 }
 
-impl LinuxHostTcpSockets {
+impl HostTcpSockets {
     fn configure_socket(
         &self,
         socket: BorrowedFd<'_>,
@@ -784,7 +791,7 @@ impl LinuxHostTcpSockets {
     /// Arms a connection's transmit reports with the packet or statistics a send asks for.
     fn arm_reports(
         &self,
-        connection: &LinuxHostTcpConnection,
+        connection: &HostTcpConnection,
         reports: &mut TransmitReports,
         packet: bool,
         statistics: bool,
@@ -804,7 +811,7 @@ impl LinuxHostTcpSockets {
         }
         if flags != reports.flags {
             options::set_timestamping(
-                connection.socket.as_fd(),
+                connection.socket.fd(),
                 connection.receive_timestamping.load(Ordering::Relaxed) | flags,
                 reports.bound_clock,
             )?;
@@ -818,13 +825,13 @@ impl LinuxHostTcpSockets {
     }
 }
 
-impl<'a> Configurable<LinuxHostTcpConnection, TcpSetting<'a>> for LinuxHostTcpSockets {
+impl<'a> Configurable<HostTcpConnection, TcpSetting<'a>> for HostTcpSockets {
     fn configure(
         &self,
-        connection: &LinuxHostTcpConnection,
+        connection: &HostTcpConnection,
         setting: TcpSetting<'a>,
     ) -> Result<(), HostError> {
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         match setting {
             TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {
                 let mut reports = connection.reports();
@@ -852,13 +859,13 @@ impl<'a> Configurable<LinuxHostTcpConnection, TcpSetting<'a>> for LinuxHostTcpSo
     }
 }
 
-impl<'a> Configurable<LinuxHostTcpListener, TcpListenerSetting<'a>> for LinuxHostTcpSockets {
+impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSockets {
     fn configure(
         &self,
-        listener: &LinuxHostTcpListener,
+        listener: &HostTcpListener,
         setting: TcpListenerSetting<'a>,
     ) -> Result<(), HostError> {
-        let socket = listener.socket.as_fd();
+        let socket = listener.socket.fd();
         match setting {
             TcpListenerSetting::Socket(TcpSetting::Ip(IpSocketSetting::Timestamping(
                 timestamping,
@@ -928,7 +935,7 @@ impl<'a> Configurable<LinuxHostTcpListener, TcpListenerSetting<'a>> for LinuxHos
     }
 }
 
-impl LinuxHostTcpSockets {
+impl HostTcpSockets {
     /// Binds the socket as the binding asks, taking a port the exit node chooses at once: Linux chooses only inside
     /// the host's own port range, so the shared crate tries the rest of a range port by port.
     fn bind(&self, socket: BorrowedFd<'_>, local: &LocalBinding<'_>) -> Result<(), HostError> {
@@ -942,13 +949,10 @@ impl LinuxHostTcpSockets {
     }
 }
 
-impl NegativeRouteAdvice<LinuxHostTcpConnection> for LinuxHostTcpSockets {
-    fn give_negative_route_advice(
-        &self,
-        connection: &LinuxHostTcpConnection,
-    ) -> Result<(), HostError> {
+impl NegativeRouteAdvice<HostTcpConnection> for HostTcpSockets {
+    fn give_negative_route_advice(&self, connection: &HostTcpConnection) -> Result<(), HostError> {
         set_flag(
-            connection.socket.as_fd(),
+            connection.socket.fd(),
             uapi::SOL_SOCKET,
             uapi::SO_CNX_ADVICE,
             true,
@@ -956,8 +960,8 @@ impl NegativeRouteAdvice<LinuxHostTcpConnection> for LinuxHostTcpSockets {
     }
 }
 
-impl TcpConnections for LinuxHostTcpSockets {
-    type Connection = LinuxHostTcpConnection;
+impl TcpConnections for HostTcpSockets {
+    type Connection = HostTcpConnection;
 
     fn connect(
         &self,
@@ -969,15 +973,20 @@ impl TcpConnections for LinuxHostTcpSockets {
         fast_open: TcpFastOpen<'_>,
     ) -> Result<TcpConnected<Self::Connection>, HostError> {
         let family = family_of(&local.address);
-        let connection = LinuxHostTcpConnection::new(
-            open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
+        let connection = HostTcpConnection::new(
+            self.readiness.watch(open_socket(
+                family,
+                SocketType::STREAM,
+                protocol_of(protocol),
+                owner,
+            )?)?,
             family,
             0,
         );
         for setting in settings {
             self.configure(&connection, setting.clone())?;
         }
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         self.bind(socket, &local)?;
         let peer = peer_for(family, peer);
         let in_progress = |outcome: Result<usize, HostError>| match outcome {
@@ -1031,7 +1040,7 @@ impl TcpConnections for LinuxHostTcpSockets {
         request: TcpSendRequest,
         bytes: &[u8],
     ) -> Result<ByteCount, HostError> {
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         let mut flags = libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT;
         if request.urgency == TcpUrgency::Urgent {
             flags |= libc::MSG_OOB;
@@ -1091,7 +1100,7 @@ impl TcpConnections for LinuxHostTcpSockets {
         request: TcpReceiveRequest,
         into: &mut [u8],
     ) -> Result<TcpReceived, HostError> {
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         let mut flags = libc::MSG_DONTWAIT;
         let mut offset = 0;
         match request {
@@ -1168,7 +1177,7 @@ impl TcpConnections for LinuxHostTcpSockets {
     ) -> Result<TcpErrorQueueEntry, HostError> {
         let mut control = ControlBuffer::default();
         let message = options::receive_message(
-            connection.socket.as_fd(),
+            connection.socket.fd(),
             into,
             libc::MSG_ERRQUEUE | libc::MSG_DONTWAIT,
             &mut control,
@@ -1318,14 +1327,21 @@ impl TcpConnections for LinuxHostTcpSockets {
             TcpShutdown::Write => Shutdown::Write,
             TcpShutdown::ReadAndWrite => Shutdown::Both,
         };
-        rustix::net::shutdown(connection.socket.as_fd(), how).map_err(host_error)
+        rustix::net::shutdown(connection.socket.fd(), how).map_err(host_error)
+    }
+
+    async fn wait_for_events(
+        &self,
+        connection: &Self::Connection,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError> {
+        connection.socket.wait_for_events(interest).await
     }
 
     fn close(&self, connection: Self::Connection, manner: TcpClose) {
         if manner == TcpClose::Abort {
             // A linger of zero makes the close send a reset; a failure leaves the orderly close.
-            if sockopt::set_socket_linger(connection.socket.as_fd(), Some(Duration::ZERO)).is_err()
-            {
+            if sockopt::set_socket_linger(connection.socket.fd(), Some(Duration::ZERO)).is_err() {
                 self.shortfalls.count(ABORT_CLOSED_IN_ORDER);
             }
         }
@@ -1337,7 +1353,7 @@ impl TcpConnections for LinuxHostTcpSockets {
         connection: &Self::Connection,
         ignoring: TcpPushOverride,
     ) -> Result<(), HostError> {
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         match ignoring {
             // Turning no-delay on pushes past the cork and Nagle's algorithm; it is then put back.
             TcpPushOverride::CorkAndNagle => {
@@ -1361,7 +1377,7 @@ impl TcpConnections for LinuxHostTcpSockets {
         connection: &Self::Connection,
         afterwards: TcpQuickAcknowledgement,
     ) -> Result<(), HostError> {
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         let before = sockopt::tcp_quickack(socket).map_err(host_error)?;
         // Quick mode off afterwards is the sign that one was scheduled.
         set_int(
@@ -1385,7 +1401,7 @@ impl TcpConnections for LinuxHostTcpSockets {
 
     fn rearm_keep_alive_timer(&self, connection: &Self::Connection) -> Result<(), HostError> {
         // Writing the idle time re-times the probe from the last data or acknowledgement received.
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         let idle = get_int(socket, uapi::SOL_TCP, uapi::TCP_KEEPIDLE)?;
         set_int(socket, uapi::SOL_TCP, uapi::TCP_KEEPIDLE, idle)
     }
@@ -1404,7 +1420,7 @@ impl TcpConnections for LinuxHostTcpSockets {
     fn send_window_probe(&self, connection: &Self::Connection) -> Result<(), HostError> {
         // Leaving repair mode with TCP_REPAIR_OFF sends a window probe; it also clears address sharing and the
         // repair mode itself, which are put back as they were.
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         let sharing = sockopt::socket_reuseaddr(socket).map_err(host_error)?;
         let repair = |value: u32| set_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR, value as c_int);
         let repairing = get_int(socket, uapi::SOL_TCP, uapi::TCP_REPAIR)? != 0;
@@ -1429,7 +1445,7 @@ impl TcpConnections for LinuxHostTcpSockets {
         connection: &Self::Connection,
         reading: TcpTimestampClock,
     ) -> Result<(), HostError> {
-        set_timestamp_clock(connection.socket.as_fd(), reading)
+        set_timestamp_clock(connection.socket.fd(), reading)
     }
 
     fn set_authentication_counters(
@@ -1450,8 +1466,8 @@ fn set_timestamp_clock(
     set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)
 }
 
-impl TcpListeners for LinuxHostTcpSockets {
-    type Listener = LinuxHostTcpListener;
+impl TcpListeners for HostTcpSockets {
+    type Listener = HostTcpListener;
 
     fn listen(
         &self,
@@ -1462,15 +1478,20 @@ impl TcpListeners for LinuxHostTcpSockets {
         settings: &[TcpListenerSetting<'_>],
     ) -> Result<TcpListening<Self::Listener>, HostError> {
         let family = family_of(&local.address);
-        let listener = LinuxHostTcpListener {
-            socket: open_socket(family, SocketType::STREAM, protocol_of(protocol), owner)?,
+        let listener = HostTcpListener {
+            socket: self.readiness.watch(open_socket(
+                family,
+                SocketType::STREAM,
+                protocol_of(protocol),
+                owner,
+            )?)?,
             family,
             protocol,
             receive_timestamping: AtomicU32::new(0),
             bound_clock: Mutex::new(None),
             saves_synchronize: AtomicBool::new(false),
         };
-        let socket = listener.socket.as_fd();
+        let socket = listener.socket.fd();
         // Multipath sockets have no TCP_SAVE_SYN.
         if protocol == TcpProtocol::Tcp {
             set_flag(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, true)?;
@@ -1502,12 +1523,12 @@ impl TcpListeners for LinuxHostTcpSockets {
         synchronize_header: &'a mut [u8],
     ) -> Result<TcpAccepted<'a, Self::Connection>, HostError> {
         let socket = rustix::net::accept_with(
-            listener.socket.as_fd(),
+            listener.socket.fd(),
             SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
         )
         .map_err(host_error)?;
-        let connection = LinuxHostTcpConnection::new(
-            socket,
+        let connection = HostTcpConnection::new(
+            self.readiness.watch(socket)?,
             listener.family,
             listener.receive_timestamping.load(Ordering::Relaxed),
         );
@@ -1515,7 +1536,7 @@ impl TcpListeners for LinuxHostTcpSockets {
         if bound_clock.is_some() {
             connection.reports().bound_clock = bound_clock;
         }
-        let socket = connection.socket.as_fd();
+        let socket = connection.socket.fd();
         let peer = socket_address(
             rustix::net::getpeername(socket)
                 .map_err(host_error)?
@@ -1565,7 +1586,15 @@ impl TcpListeners for LinuxHostTcpSockets {
         listener: &Self::Listener,
         reading: TcpTimestampClock,
     ) -> Result<(), HostError> {
-        set_timestamp_clock(listener.socket.as_fd(), reading)
+        set_timestamp_clock(listener.socket.fd(), reading)
+    }
+
+    async fn wait_for_listener_events(
+        &self,
+        listener: &Self::Listener,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError> {
+        listener.socket.wait_for_events(interest).await
     }
 
     fn stop_listening(&self, listener: Self::Listener) {
@@ -1573,9 +1602,146 @@ impl TcpListeners for LinuxHostTcpSockets {
     }
 }
 
-impl TcpSockets for LinuxHostTcpSockets {}
+impl TcpSockets for HostTcpSockets {}
 
 #[cfg(test)]
 mod tests {
-    wcontainers_tcp_sockets_conformance::tests!(super::LinuxHostTcpSockets::new());
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+    use std::net::Ipv4Addr;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::{Context, Wake, Waker};
+    use std::thread::Thread;
+
+    use wcontainers_internet_protocol::{BindAddress, Port};
+
+    use super::*;
+
+    wcontainers_tcp_sockets_conformance::tests!(
+        super::HostTcpSockets::new().expect("the host's readiness mechanism starts")
+    );
+
+    /// The system's allocator, counting the allocations each thread makes.
+    struct Counting;
+
+    thread_local! {
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    // SAFETY: every call goes straight to the system's allocator.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            ALLOCATIONS.with(|count| count.set(count.get() + 1));
+            // SAFETY: as the caller promised.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            // SAFETY: as the caller promised.
+            unsafe { System.dealloc(pointer, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Counting = Counting;
+
+    fn allocations() -> usize {
+        ALLOCATIONS.with(Cell::get)
+    }
+
+    struct Unparking(Thread);
+
+    impl Wake for Unparking {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    const WAITS: usize = 100;
+
+    /// Once a connection has waited, its waits that have to wait allocate nothing on the waiting thread.
+    #[test]
+    fn a_wait_allocates_nothing_once_warm() {
+        let sockets = HostTcpSockets::new().expect("readiness");
+        let loopback = LocalBinding {
+            address: BindAddress::V4(Ipv4Addr::LOCALHOST),
+            port: LocalPort::Requested(Port(0)),
+        };
+        let listening = sockets
+            .listen(TcpProtocol::Tcp, UserId(0), loopback, ListenBacklog(1), &[])
+            .expect("listen");
+        let client = sockets
+            .connect(
+                TcpProtocol::Tcp,
+                UserId(0),
+                loopback,
+                listening.local,
+                &[],
+                TcpFastOpen::Off,
+            )
+            .expect("connect")
+            .connection;
+        let mut header = [0; 0];
+        let server = loop {
+            match sockets.accept(&listening.listener, &mut header) {
+                Ok(accepted) => break accepted.connection,
+                Err(HostError::WouldBlock) => std::thread::yield_now(),
+                Err(error) => panic!("accept: {error:?}"),
+            }
+        };
+        let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
+        let interest = PollEvents {
+            data_to_read: true,
+            exceptional_condition: false,
+            writing_possible: false,
+            error_condition: false,
+            hang_up: false,
+            descriptor_not_open: false,
+            normal_data_to_read: false,
+            priority_band_data_to_read: false,
+            normal_data_writable: false,
+            priority_data_writable: false,
+            message_available: false,
+            peer_shut_down_writing: false,
+        };
+        let plain = TcpSendRequest {
+            urgency: TcpUrgency::Normal,
+            continuation: TcpContinuation::Push,
+            record: TcpRecordBoundary::Open,
+            transmit_reports: TransmitReportRequest {
+                key: TransmitReportKey(0),
+                scheduled: Report::NotRequested,
+                software: Report::NotRequested,
+                hardware: Report::NotRequested,
+                acknowledgement: Report::NotRequested,
+                completion: Report::NotRequested,
+                wireless_status: Report::NotRequested,
+                packet: Report::NotRequested,
+            },
+            transmit_statistics: Report::NotRequested,
+        };
+        let mut byte = [0; 1];
+        let mut cycle = || {
+            let mut wait = pin!(sockets.wait_for_events(&server, interest));
+            let mut context = Context::from_waker(&waker);
+            assert!(wait.as_mut().poll(&mut context).is_pending());
+            sockets.send(&client, plain, &byte).expect("send");
+            while wait.as_mut().poll(&mut context).is_pending() {
+                std::thread::park();
+            }
+            sockets
+                .receive(&server, TcpReceiveRequest::Read, &mut byte)
+                .expect("receive");
+        };
+        cycle();
+        let before = allocations();
+        for _ in 0..WAITS {
+            cycle();
+        }
+        assert_eq!(allocations() - before, 0);
+        let counted = Box::new(0_u8);
+        assert_eq!(allocations() - before, 1, "the allocator counts");
+        drop(counted);
+    }
 }

@@ -2,10 +2,10 @@
 # Breaks the Linux host implementation in copies of the checkout, one way each, and runs the conformance suite
 # on every copy: each must fail, and the checks that fail are printed. The copies live under the build folder.
 # Arguments, if any, are the names of the mutants to run; without them every mutant runs.
-# Run from the checkout on a Linux machine with sudo: crates/tcp-sockets/implementation/linux-host/mutants.sh
+# Run from the checkout on a Linux machine with sudo: crates/tcp-sockets/implementation/host/mutants.sh
 set -uo pipefail
 checkout=$(cd "$(dirname "$0")/../../../.." && pwd)
-implementation=crates/tcp-sockets/implementation/linux-host/implementation.rs
+implementation=crates/tcp-sockets/implementation/host/implementation.rs
 icmp_error=crates/internet-protocol/implementation/linux-socket-options/icmp_error.rs
 mutants=${CARGO_TARGET_DIR:-$checkout/target}/mutants
 names=() files=() from=() to=()
@@ -42,6 +42,28 @@ mutant setting-Timestamping-noop "$implementation" '            TcpSetting::Ip(I
     'TcpSetting::Ip(IpSocketSetting::Timestamping(_)) => Ok(()), TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)) => {'
 mutant exit-node-port-by-kernel-only "$implementation" 'options::bind_chosen_by_exit_node(socket, address, &choice, &self.shortfalls)' \
     'options::in_port_ranges(socket, Some(&choice), || rustix::net::bind(socket, &SocketAddr::new(address, 0)).map_err(host_error))'
+mutant accept-interface-none "$implementation" 'self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET);' \
+    'self.shortfalls.count(SYNCHRONIZE_FIELDS_OF_THE_SOCKET); let interface = { let _ = interface; NO_INTERFACE };'
+mutant accept-interface-exact-address-only "$implementation" '.or_else(|| table.iter().find(|held| held.holds(address)))' ''
+mutant accept-no-specific-destination "$implementation" 'IpAddr::V4(address) => Some(address),' 'IpAddr::V4(_) => None,'
+mutant accept-mark-zero "$implementation" 'mark: PacketMark(options::get_option(' 'mark: PacketMark(u32::MIN & options::get_option::<u32>('
+mutant connect-repair-as-synchronize-sent "$implementation" 'Some(_) => TcpConnectStart::EstablishedForRepair,' \
+    'Some(_) => TcpConnectStart::SynchronizeSent { fast_open_data_taken: ByteCount(0) },'
+mutant stats-smoothed-is-minimum "$implementation" 'smoothed_round_trip_time: microseconds(uapi::TCP_NLA_SRTT as usize)?,' \
+    'smoothed_round_trip_time: microseconds(uapi::TCP_NLA_MIN_RTT as usize)?,'
+mutant stats-busy-is-receive-window-limited "$implementation" 'busy: microseconds(uapi::TCP_NLA_BUSY as usize)?,' \
+    'busy: microseconds(uapi::TCP_NLA_RWND_LIMITED as usize)?,'
+mutant stats-hop-limit-of-another "$implementation" 'at(uapi::TCP_NLA_TTL as usize)' 'at(uapi::TCP_NLA_REHASH as usize)'
+mutant stats-rate-limit-swapped "$implementation" 'TCP_NLA_DELIVERY_RATE_APP_LMT as usize)? == 0 {' \
+    'TCP_NLA_DELIVERY_RATE_APP_LMT as usize)? != 0 {'
+mutant delayed-ack-mode-even-unscheduled "$implementation" 'let wanted = if scheduled {' 'let wanted = if scheduled || true {'
+mutant accept-drops-listener-timestamping "$implementation" 'listener.receive_timestamping.load(Ordering::Relaxed),' '0,'
+mutant saved-synchronize-not-kept "$implementation" \
+    'if listener.saves_synchronize.load(Ordering::Relaxed) && !saved.is_empty() {' 'if false {'
+mutant saved-synchronize-off-ignored "$implementation" 'listener.saves_synchronize.store(on, Ordering::Relaxed);' \
+    'listener.saves_synchronize.store(on || listener.saves_synchronize.load(Ordering::Relaxed), Ordering::Relaxed);'
+mutant saved-synchronize-taken-twice "$implementation" '*saved = None;' ';'
+mutant plain-sends-uncounted-once-armed "$implementation" '&& !connection.reports_armed.load(Ordering::Relaxed)' ''
 # Each setting doing nothing, one at a time.
 for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::ReceiveBuffer(..))' \
     'Ip(IpSocketSetting::MaximumPacingRate(..))' \
@@ -49,6 +71,10 @@ for pattern in 'Ip(IpSocketSetting::SendBuffer(..))' 'Ip(IpSocketSetting::Receiv
     'Packet(wcontainers_internet_protocol::IpPacketSetting::TrafficClass { .. })' \
     'Packet(wcontainers_internet_protocol::IpPacketSetting::PathMtuDiscovery { .. })' \
     'Packet(wcontainers_internet_protocol::IpPacketSetting::FlowLabel(..))' \
+    'Packet(wcontainers_internet_protocol::IpPacketSetting::Ipv4Options(..))' \
+    'Packet(wcontainers_internet_protocol::IpPacketSetting::HopByHopOptions(..))' \
+    'Packet(wcontainers_internet_protocol::IpPacketSetting::DestinationOptions(..))' \
+    'Packet(wcontainers_internet_protocol::IpPacketSetting::Mark(..))' \
     'Port(wcontainers_internet_protocol::PortSetting::AddressSharing(..))' \
     'Port(wcontainers_internet_protocol::PortSetting::PortSharing(..))' \
     'Port(wcontainers_internet_protocol::PortSetting::NonlocalAddresses(..))' \
@@ -85,7 +111,7 @@ open(path, "w").write(text.replace(old, new))' "$copy/${files[$index]}" "${from[
         echo "$name: the text to break is not there exactly once"; status=1; continue
     fi
     echo "== $name"
-    output=$(CARGO_TARGET_DIR=$mutants/target "$copy/crates/tcp-sockets/implementation/linux-host/run-conformance.sh" 2>&1)
+    output=$(CARGO_TARGET_DIR=$mutants/target "$copy/crates/tcp-sockets/implementation/host/run-conformance.sh" 2>&1)
     grep -E '^test .* FAILED$|^test result|^error' <<<"$output"
     grep -q '^test result: FAILED' <<<"$output" || { echo "$name: the suite did not fail"; status=1; }
     rm -rf "$copy"
