@@ -1316,7 +1316,7 @@ web:x:2:
     }
 
     /// Seeded random streams of several frames, with and without checksums and sizes, skippable
-    /// frames between them, decode as libzstd decodes them. `ZSTD_SEED` (0 if unset) and
+    /// frames between them and after the last, decode as libzstd decodes them. `ZSTD_SEED` (0 if unset) and
     /// `ZSTD_CASES` (100 if unset) choose them.
     #[test]
     fn zstd_streams_decode_as_libzstd_decodes_them() {
@@ -1352,6 +1352,10 @@ web:x:2:
                 std::io::Write::write_all(&mut encoder, &data).unwrap();
                 stream.extend(encoder.finish().unwrap());
                 expected.extend(data);
+            }
+            // zstd:chunked layers end with skippable frames.
+            for _ in 0..next(3) {
+                stream.extend(skippable(next(16) as u32, next(4000) as u32));
             }
             let piece = 1 + next(99_991) as usize;
             assert_eq!(
