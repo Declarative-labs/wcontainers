@@ -30,7 +30,26 @@ run are not in it):
   `results/g9r9/full/g9r9-a.log`, dEQP-GLES3's runner logs in `results/g9r9/full/gles3-main/logs`.
 - A second whole run at cd5162cf (every fix of this run) was started at 16:31 (scratch
   `logs/g9r9-b.log`, results on the desktop in `C:\wc\graphics-nir\cts\results\wcontainers`);
-  @@SECOND@@
+  it ran 16:34:12 to about 16:59 (same machine and queue). Its table, the run's best:
+  - dEQP-GLES2: Pass 16,828, Warn 6, Fail 57, Crash 139, Skip 135: 16,834 of 17,030, 98.85%.
+  - dEQP-GLES3: Pass 40,960, Warn 183, Fail 2,317, Crash 775, Skip 533: 41,143 of 44,235,
+    93.01%.
+  - KHR-GLES2: 438 of 438, 100.00%. KHR-GLES3: Pass 5,939, Fail 146, Crash 182, Skip 231: 5,939
+    of 6,267, 94.77%.
+  - Over the four: 64,354 of 67,970 run, 94.68%. No Flake. Results in scratch
+    `results/g9r9/second/<list>/results.csv`, output `results/g9r9/second/g9r9-b.log`.
+  - Gained against the first: ubo.random 130 and ubo's nested structs about 100 (Crash to Pass),
+    shaders.derivate 108 and fbo.msaa 50 (the resolve), texture.filtering 96 and dEQP-GLES2's 84
+    (the 0.25 maximum), fragment_ops.blend 48 (the second source).
+  - REGRESSIONS, not yet explained (cases that passed in the first and fail in the second):
+    shaders.random 210, texture.wrap 94, texture.filtering 60, texture.format 40,
+    shaders.constant_expressions 35 (Pass to Fail), ubo.single_basic_type 72 (Pass to Crash).
+    Suspects, by what each touches: the uniform block sizing (`wc_nir_uniform_blocks_as_words`
+    now runs `wc_optimize` before it notes the loads, and sizes blocks by std140, which can make
+    a block declared larger than the buffer bound, a refusal of `ConstantBufferGrown`: likely the
+    72 crashes), the sampler's 0.25 maximum for samplers without mipmaps (texture.wrap,
+    filtering, format), `b2b32`. First thing next run: run each regressed group alone
+    (`-Include`) and bisect these three commits (bc5c0da1, 15cbc920, cd5162cf).
 
 Older runs, for comparison: run 7 dEQP-GLES2 97.84%, KHR-GLES2 97.46%; run 8 only 1% shards.
 Run 8's whole-list job did run (15:31) but on a build with two faults this run found, so its
@@ -81,7 +100,10 @@ Done this run (each from the failing cases' logs):
 - The literal check: from 47 findings to 9 (Literal check).
 
 What is left, in order:
-1. Read the second run (above) and put its table here.
+1. The second run's regressions (above): bisect bc5c0da1, 15cbc920 and cd5162cf with the
+   regressed groups alone, fix, and run the four lists again. 39974b13 (the second source drops
+   the outputs at other locations: dEQP-GLES2's 93 blend crashes, "a second source for a program
+   writing a target past the first", 186 logs) is built after both runs and not yet measured.
 2. Transform feedback: about 600 Fails in dEQP-GLES3's transform_feedback groups (basic_types,
    array, array_element, random, interpolation) and 22 "a streamed value that is neither at a
    location nor the position": to read case by case (scratch `results/g9r9/full/gles3-main/logs`
