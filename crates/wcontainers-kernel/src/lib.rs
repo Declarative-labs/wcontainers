@@ -48,11 +48,11 @@ use alloc::vec::Vec;
 use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Next};
 
 pub use container::{
-    Attributes, DEVPTS_PATH, DOCKER_UMASK, EXIT_NOT_FOUND, EXIT_NOT_RUNNABLE, EXIT_START_FAILED,
-    FileRecord, NULL_PATH, NewFile, Start,
+    Attributes, DEVPTS_PATH, DOCKER_DOMAIN_NAME, DOCKER_UMASK, EXIT_NOT_FOUND, EXIT_NOT_RUNNABLE,
+    EXIT_START_FAILED, FileRecord, NULL_PATH, NewFile, Start, StartOptions,
 };
 pub use counters::reason;
-pub use credentials::DOCKER_DEFAULT as DOCKER_CAPABILITIES;
+pub use credentials::{DOCKER_DEFAULT as DOCKER_CAPABILITIES, ROOT_GID, ROOT_UID};
 pub use ends::Standard;
 pub use errno::Errno;
 pub use memory::PLACEMENT_TIERS;
@@ -432,7 +432,7 @@ impl Kernel {
                 lowest_tier_top: 0,
             },
             hostname: Vec::new(),
-            domainname: b"(none)".to_vec(),
+            domainname: container::DOCKER_DOMAIN_NAME.to_vec(),
             boot: Time::default(),
             boot_monotonic: 0,
             boot_id: [0; 16],

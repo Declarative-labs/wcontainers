@@ -1008,6 +1008,8 @@ pub struct Prepared {
     pub wall_clock: bool,
     /// A record to keep of what the host gives the kernel, or to answer from in its place.
     pub tape: Option<Tape>,
+    /// What the container's configuration sets beyond its program.
+    pub options: wcontainers_kernel::StartOptions<'static>,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -1025,6 +1027,7 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         ceiling: None,
         wall_clock: false,
         tape: None,
+        options: Default::default(),
     }
 }
 
@@ -1086,6 +1089,7 @@ where
         client,
         ceiling,
         wall_clock,
+        options,
         ..
     } = prepared;
     #[cfg(feature = "runtime")]
@@ -1148,6 +1152,7 @@ where
         memory_bytes: cpu.address_space().end,
         ceiling,
         execution: ExecutionConfig::default(),
+        options,
     };
     #[cfg(feature = "runtime")]
     let started = Instant::now();

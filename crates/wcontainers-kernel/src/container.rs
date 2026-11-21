@@ -20,7 +20,7 @@ use crate::fs::{
 use crate::linux::general::*;
 use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RDONLY, ST_RELATIME};
 use crate::loader::Image;
-use crate::process::{Pid, Process, SIGNALS, Thread, Tid, docker_limits};
+use crate::process::{Pid, Process, SIGNALS, Thread, Tid, limits_from};
 use crate::{Context, Errno, Kernel};
 
 /// The permission bits, owner and time of a file added before the container starts.
@@ -79,10 +79,51 @@ pub struct Start<'a> {
     pub ceiling: Option<u64>,
     /// How the first process is run.
     pub execution: crate::ExecutionConfig,
+    /// What the container's configuration sets beyond its program.
+    pub options: StartOptions<'a>,
+}
+
+/// What a container's configuration may set at its start beyond its program; the default is a
+/// default Docker container's.
+#[derive(Clone, Copy, Debug)]
+pub struct StartOptions<'a> {
+    /// The first process's user id, real, effective, saved and file system alike (`docker run
+    /// --user`).
+    pub user: u32,
+    /// Its group id, likewise.
+    pub group: u32,
+    /// Its file mode creation mask.
+    pub umask: u32,
+    /// Its resource limits that are not unlimited: resource, soft limit, hard limit.
+    pub limits: &'a [(u32, u64, u64)],
+    /// Whether no exec may give it more privileges (`--security-opt no-new-privileges`).
+    pub no_new_privileges: bool,
+    /// Its `oom_score_adj` (`--oom-score-adj`), also the least it may set without
+    /// CAP_SYS_RESOURCE, as a write by the container's root before the program leaves it.
+    pub oom_score_adj: i16,
+    /// The container's NIS domain name (`--domainname`).
+    pub domain_name: &'a [u8],
+}
+
+impl Default for StartOptions<'_> {
+    fn default() -> Self {
+        Self {
+            user: ROOT_UID,
+            group: ROOT_GID,
+            umask: DOCKER_UMASK,
+            limits: &crate::process::DOCKER_LIMITS,
+            no_new_privileges: false,
+            oom_score_adj: 0,
+            domain_name: DOCKER_DOMAIN_NAME,
+        }
+    }
 }
 
 /// The file mode creation mask a default Docker container's first process starts with.
 pub const DOCKER_UMASK: u32 = 0o022;
+
+/// The NIS domain name of a container given none, as Linux names an unset one.
+pub const DOCKER_DOMAIN_NAME: &[u8] = b"(none)";
 
 /// Where the first process's descriptor 0 opens when it has no input.
 pub const NULL_PATH: &str = "/dev/null";
@@ -760,6 +801,7 @@ impl Kernel {
             .min(space);
         self.machine.lowest_tier_top = crate::memory::first_tier_top(self.ceiling);
         self.hostname = start.hostname.to_vec();
+        self.domainname = start.options.domain_name.to_vec();
         for (end, sends) in start.standard.ends() {
             self.ends.name(end, sends);
         }
@@ -777,7 +819,9 @@ impl Kernel {
             }
         };
         let root = self.files.root.clone();
-        let credentials = Credentials::container_root(start.groups.to_vec());
+        let credentials = Credentials::container_root(start.groups.to_vec())
+            .with_ids(start.options.user, start.options.group)
+            .without_new_privileges(start.options.no_new_privileges);
         let process = Process {
             pid,
             parent: 0,
@@ -791,7 +835,7 @@ impl Kernel {
                 self.map_notes.clone(),
             ))),
             threads: vec![pid],
-            limits: docker_limits(),
+            limits: limits_from(start.options.limits),
             executable: (root.clone(), Vec::new()),
             starting_stack: Default::default(),
             child_subreaper: false,
@@ -820,8 +864,8 @@ impl Kernel {
             self_exec_id: 0,
             // What Docker's first process inherits (measured).
             coredump_filter: 0x23,
-            oom_score_adj: 0,
-            oom_score_adj_min: 0,
+            oom_score_adj: start.options.oom_score_adj,
+            oom_score_adj_min: start.options.oom_score_adj,
             terminal: None,
             terminal_old_group: None,
             actions: Rc::new(core::cell::RefCell::new(
@@ -839,7 +883,7 @@ impl Kernel {
         let fs = Rc::new(core::cell::RefCell::new(crate::process::FsContext {
             root: root.clone(),
             cwd: root.clone(),
-            umask: DOCKER_UMASK,
+            umask: start.options.umask,
         }));
         let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs, credentials);
         self.threads.insert(pid, thread);

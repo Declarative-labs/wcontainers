@@ -162,6 +162,22 @@ pub fn run_ours_hooked(
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
 }
 
+/// As [`run_ours`], with what the container's configuration sets beyond its program.
+pub fn run_ours_with(
+    command: &[&str],
+    options: wcontainers_kernel::StartOptions<'static>,
+) -> driver::Run {
+    let path = on_path(command[0]);
+    let container = container(command, &path, None);
+    let prepared = driver::Prepared {
+        groups: image::user_groups(container.files, options.user, options.group),
+        options,
+        ..driver::prepare(&container)
+    };
+    driver::run_prepared(prepared, &container, 0, Default::default())
+        .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
+}
+
 /// A container running a command of the reference image found at `path`.
 fn container<'a>(
     command: &'a [&'a str],

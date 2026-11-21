@@ -4643,6 +4643,7 @@ fn run_ours_on(
         memory_bytes: wcontainers_abi::Cpu::address_space(cpu).end,
         ceiling: None,
         execution: wcontainers_kernel::ExecutionConfig::default(),
+        options: wcontainers_kernel::StartOptions::default(),
     };
     kernel
         .start(cpu, &host, &start)

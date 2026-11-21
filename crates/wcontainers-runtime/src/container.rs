@@ -130,6 +130,7 @@ impl<B: BackEnd> Runtime<B> {
                     memory_bytes,
                     ceiling: None,
                     execution: wcontainers_kernel::ExecutionConfig::default(),
+                    options: wcontainers_kernel::StartOptions::default(),
                 },
             )
             .expect("the kernel runs a process serially with exact replay");

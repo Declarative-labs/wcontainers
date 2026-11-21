@@ -5,7 +5,19 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use wcontainers_kernel::{Attributes, Kernel, NewFile};
+use wcontainers_kernel::{Attributes, Kernel, NewFile, ROOT_GID, ROOT_UID};
+
+/// The image's user and group databases, and how their lines are made: fields apart, a group's
+/// members apart, and where a line keeps its id, a group line its members, and how many fields a
+/// group line has.
+const PASSWD_PATH: &str = "etc/passwd";
+const GROUP_PATH: &str = "etc/group";
+const FIELD_SEPARATOR: char = ':';
+const MEMBER_SEPARATOR: char = ',';
+const NAME_FIELD: usize = 0;
+const ID_FIELD: usize = 2;
+const MEMBERS_FIELD: usize = 3;
+const GROUP_FIELDS: usize = MEMBERS_FIELD + 1;
 
 /// One file of an image.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -357,17 +369,38 @@ pub fn host_directory(directory: &Path, at: &str) -> Vec<File> {
 /// The supplementary groups Docker gives root in an image: root's own group, then every group of the
 /// image's `/etc/group` that lists root, in file order.
 pub fn root_groups(files: &[File]) -> Vec<u32> {
-    let mut groups = vec![0];
-    let group_file = files.iter().find(|file| file.path == "etc/group");
-    if let Some(File {
-        kind: Kind::Regular(contents),
-        ..
-    }) = group_file
-    {
-        for line in String::from_utf8_lossy(contents).lines() {
-            let fields: Vec<&str> = line.split(':').collect();
-            if fields.len() == 4 && fields[3].split(',').any(|member| member == "root") {
-                groups.push(fields[2].parse().expect("a group number"));
+    user_groups(files, ROOT_UID, ROOT_GID)
+}
+
+/// The supplementary groups Docker gives a user and group in an image: the group, then every group
+/// of the image's `/etc/group` that lists the user's name in `/etc/passwd`, in file order.
+pub fn user_groups(files: &[File], user: u32, group: u32) -> Vec<u32> {
+    let lines = |path: &str| -> Vec<Vec<String>> {
+        match files.iter().find(|file| file.path == path) {
+            Some(File {
+                kind: Kind::Regular(contents),
+                ..
+            }) => String::from_utf8_lossy(contents)
+                .lines()
+                .map(|line| line.split(FIELD_SEPARATOR).map(str::to_string).collect())
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let user = user.to_string();
+    let name = lines(PASSWD_PATH)
+        .into_iter()
+        .find(|fields| fields.get(ID_FIELD) == Some(&user))
+        .map(|fields| fields[NAME_FIELD].clone());
+    let mut groups = vec![group];
+    if let Some(name) = name {
+        for fields in lines(GROUP_PATH) {
+            if fields.len() == GROUP_FIELDS
+                && fields[MEMBERS_FIELD]
+                    .split(MEMBER_SEPARATOR)
+                    .any(|member| *member == name)
+            {
+                groups.push(fields[ID_FIELD].parse().expect("a group number"));
             }
         }
     }

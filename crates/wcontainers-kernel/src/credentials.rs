@@ -7,8 +7,8 @@ use crate::linux_extra::{SECBIT_KEEP_CAPS, SECBIT_NO_SETUID_FIXUP, SECBIT_NOROOT
 
 /// The container's root user and group (`GLOBAL_ROOT_UID`, `GLOBAL_ROOT_GID`), which own what the
 /// runtime makes for it.
-pub(crate) const ROOT_UID: u32 = 0;
-pub(crate) const ROOT_GID: u32 = 0;
+pub const ROOT_UID: u32 = 0;
+pub const ROOT_GID: u32 = 0;
 
 pub(crate) const CAP_CHOWN: u32 = general::CAP_CHOWN;
 pub(crate) const CAP_DAC_OVERRIDE: u32 = general::CAP_DAC_OVERRIDE;
@@ -100,6 +100,29 @@ impl Credentials {
             securebits: 0,
             no_new_privileges: false,
             serial: 0,
+        }
+    }
+
+    /// The same credentials with every user id `user` and every group id `group`.
+    pub fn with_ids(self, user: u32, group: u32) -> Self {
+        Self {
+            uid: user,
+            euid: user,
+            suid: user,
+            fsuid: user,
+            gid: group,
+            egid: group,
+            sgid: group,
+            fsgid: group,
+            ..self
+        }
+    }
+
+    /// The same credentials, set never to gain privileges through exec if `set`.
+    pub fn without_new_privileges(self, set: bool) -> Self {
+        Self {
+            no_new_privileges: self.no_new_privileges || set,
+            ..self
         }
     }
 

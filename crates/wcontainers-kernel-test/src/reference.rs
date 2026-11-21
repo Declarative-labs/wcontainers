@@ -64,6 +64,22 @@ pub mod docker {
     pub const TERMINAL: &str = "-t";
     /// Publishes a container port.
     pub const PUBLISH_OPTION: &str = "--publish";
+    /// The first process's user and group, as `user:group`.
+    pub const USER_OPTION: &str = "--user";
+    /// A resource limit, as `name=soft:hard`.
+    pub const ULIMIT_OPTION: &str = "--ulimit";
+    /// Between a resource limit's name and its values.
+    pub const ULIMIT_SEPARATOR: &str = "=";
+    /// The open files limit's name.
+    pub const ULIMIT_NOFILE: &str = "nofile";
+    /// A security option.
+    pub const SECURITY_OPTION: &str = "--security-opt";
+    /// The security option that sets no_new_privs.
+    pub const NO_NEW_PRIVILEGES: &str = "no-new-privileges";
+    /// The NIS domain name option.
+    pub const DOMAIN_NAME_OPTION: &str = "--domainname";
+    /// The first process's `oom_score_adj` option.
+    pub const OOM_SCORE_ADJ_OPTION: &str = "--oom-score-adj";
 }
 
 /// Between the parts of a container's name.
@@ -205,6 +221,34 @@ fn run_beside(
         .expect("running docker");
     beside();
     let output = output.wait_with_output().expect("docker ran");
+    let exit_code = output.status.code().expect("docker exited normally");
+    assert_docker_ran(exit_code, &output.stderr);
+    Outcome {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code,
+    }
+}
+
+/// Runs a command of the image (by its name in the image's PATH) as the first process of a
+/// container made with `options` besides the default ones, and returns what it did.
+pub fn run_command_with(options: &[&str], command: &[&str]) -> Outcome {
+    let name = container_name(REFERENCE_CONTAINERS);
+    let output = Command::new(docker::CLIENT)
+        .args([docker::START_CONTAINER, docker::REMOVE_ON_EXIT])
+        .args([
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::NAME_OPTION,
+            &name,
+        ])
+        .args([docker::HOSTNAME_OPTION, HOSTNAME])
+        .args(options)
+        .arg(IMAGE)
+        .args(command)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("running docker");
     let exit_code = output.status.code().expect("docker exited normally");
     assert_docker_ran(exit_code, &output.stderr);
     Outcome {

@@ -1689,8 +1689,6 @@ code	crates/wcontainers-kernel-test/src/guest.rs	str	build	"{name}.{unique}.o"
 code	crates/wcontainers-kernel-test/src/guest.rs	str	build	"{}-{:?}"
 code	crates/wcontainers-kernel-test/src/guest.rs	str	source_directory	"guest"
 code	crates/wcontainers-kernel-test/src/image.rs	char	from_tar	'/'
-code	crates/wcontainers-kernel-test/src/image.rs	char	root_groups	','
-code	crates/wcontainers-kernel-test/src/image.rs	char	root_groups	':'
 code	crates/wcontainers-kernel-test/src/image.rs	int	as_started	0o644
 code	crates/wcontainers-kernel-test/src/image.rs	int	as_started	3
 code	crates/wcontainers-kernel-test/src/image.rs	int	from_tar	0o7777
@@ -1707,8 +1705,6 @@ code	crates/wcontainers-kernel-test/src/image.rs	int	records	0xff
 code	crates/wcontainers-kernel-test/src/image.rs	int	records	0xff
 code	crates/wcontainers-kernel-test/src/image.rs	int	records	12
 code	crates/wcontainers-kernel-test/src/image.rs	int	records	8
-code	crates/wcontainers-kernel-test/src/image.rs	int	root_groups	3
-code	crates/wcontainers-kernel-test/src/image.rs	int	root_groups	4
 code	crates/wcontainers-kernel-test/src/image.rs	str	add_files	"/{}"
 code	crates/wcontainers-kernel-test/src/image.rs	str	as_started	"etc/hostname"
 code	crates/wcontainers-kernel-test/src/image.rs	str	as_started	"etc/hosts"
@@ -1729,8 +1725,6 @@ code	crates/wcontainers-kernel-test/src/image.rs	str	reference_image	"export"
 code	crates/wcontainers-kernel-test/src/image.rs	str	reference_image	"linux/arm64"
 code	crates/wcontainers-kernel-test/src/image.rs	str	reference_image	"rm"
 code	crates/wcontainers-kernel-test/src/image.rs	str	reference_image	"wc-kernel-export-{}"
-code	crates/wcontainers-kernel-test/src/image.rs	str	root_groups	"etc/group"
-code	crates/wcontainers-kernel-test/src/image.rs	str	root_groups	"root"
 code	crates/wcontainers-kernel-test/src/image.rs	str	to_tar	"./"
 code	crates/wcontainers-kernel-test/src/image.rs	str	to_tar	"./{target}"
 code	crates/wcontainers-kernel-test/src/image.rs	str	to_tar	"./{}"
@@ -4298,7 +4292,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	str	state	"sleeping"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	state	"stopped"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	state	"zombie"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	uuid	"{byte:02x}"
-code	crates/wcontainers-kernel/src/lib.rs	bytestr	Kernel::new	b"(none)"
 code	crates/wcontainers-kernel/src/lib.rs	int	Files	16
 code	crates/wcontainers-kernel/src/lib.rs	int	Kernel	16
 code	crates/wcontainers-kernel/src/lib.rs	int	Kernel::new	16

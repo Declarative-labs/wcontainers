@@ -43,15 +43,21 @@ pub const DOCKER_LIMITS: [(u32, u64, u64); 7] = {
     ]
 };
 
-/// The resource limits a default Docker container's first process starts with.
-pub(crate) fn docker_limits() -> [Limit; LIMITS] {
+/// Resource limits that are unlimited but for those given: resource, soft limit, hard limit; one
+/// past Linux's resources is left out.
+pub(crate) fn limits_from(given: &[(u32, u64, u64)]) -> [Limit; LIMITS] {
     let unlimited = Limit {
         current: crate::linux::general::RLIM_INFINITY as u64,
         maximum: crate::linux::general::RLIM_INFINITY as u64,
     };
     let mut limits = [unlimited; LIMITS];
-    for (resource, current, maximum) in DOCKER_LIMITS {
-        limits[resource as usize] = Limit { current, maximum };
+    for (resource, current, maximum) in given {
+        if let Some(limit) = limits.get_mut(*resource as usize) {
+            *limit = Limit {
+                current: *current,
+                maximum: *maximum,
+            };
+        }
     }
     limits
 }
