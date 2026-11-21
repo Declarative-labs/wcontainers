@@ -1,17 +1,17 @@
 #![no_std]
 #![allow(unused_variables)]
+#![allow(async_fn_in_trait)]
 
-use core::ops::{ControlFlow, Range};
+use core::ops::{ControlFlow, Deref, Range};
 
-use domain::base::{Name, Question};
+use domain::base::{Message, Name, Question};
 use wcontainers_abi::{HostError, SystemCallRequest};
 use wcontainers_clock::Clock;
 use wcontainers_executor::Executor;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_kernel::signal_information::SignalInformation;
+use wcontainers_kernel::signal_information::{PollEvents, SignalInformation};
 use wcontainers_kernel::{
-    AccessKind, DomainResolutionId, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse,
-    TaskId,
+    AccessKind, MemoryObject, ProcessOf, ProcessorFeatures, SystemCallResponse, TaskId,
 };
 use wcontainers_random_source::RandomSource;
 use wcontainers_raw_sockets::RawSockets;
@@ -167,8 +167,14 @@ pub trait TaskIdAllocator {
 pub trait StreamTransport {
     type Endpoint: Ord;
 
-    fn send_stream(&self, peer: &Self::Endpoint, bytes: &[u8]);
-    fn accept_stream_bytes(&self, peer: &Self::Endpoint, byte_count: u64);
+    fn send_stream(&self, peer: &Self::Endpoint, bytes: &[u8]) -> Result<usize, HostError>;
+    fn receive_stream(&self, peer: &Self::Endpoint, into: &mut [u8]) -> Result<usize, HostError>;
+    /// Waits until the stream has one of the events asked for, and returns the events it has.
+    async fn wait_for_stream_events(
+        &self,
+        peer: &Self::Endpoint,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError>;
     fn close_stream(&self, peer: &Self::Endpoint);
 }
 
@@ -180,14 +186,17 @@ pub trait FallbackObserver {
 }
 
 pub trait FuseServer {
-    fn send_request(&self, request: &[u8]) -> Result<(), HostError>;
+    type Reply: Deref<Target = [u8]>;
+
+    async fn send_request(&self, request: &[u8]) -> Result<Self::Reply, HostError>;
 }
 
 /// A [DNS resolver](https://man7.org/linux/man-pages/man5/resolv.conf.5.html).
 pub trait DomainNameResolver {
-    fn resolve_domain(
+    type Answer: Deref<Target = Message<[u8]>>;
+
+    async fn resolve_domain(
         &self,
-        resolution: DomainResolutionId,
         question: Question<&Name<[u8]>>,
-    ) -> Result<(), HostError>;
+    ) -> Result<Self::Answer, HostError>;
 }

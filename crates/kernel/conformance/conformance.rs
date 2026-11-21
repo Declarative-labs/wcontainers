@@ -1,7 +1,7 @@
 //! The tests every implementation of wcontainers-kernel runs, written against its traits alone.
 
+use wcontainers_kernel::Kernel;
 use wcontainers_kernel::TaskId;
-use wcontainers_kernel::{FuseClient, Kernel};
 
 /// The process the kernel placeholder asks for.
 const PLACEHOLDER_PROCESS: TaskId = TaskId(u32::MIN);
@@ -23,12 +23,6 @@ pub fn call_kernel_process_methods<K: Kernel>(mut kernel: K) {
     todo!("this is a placeholder: the real checks of Kernel are not written yet");
 }
 
-/// Calls each method of `FuseClient` as a placeholder that fails until the real checks are written.
-pub fn call_fuse_client_methods<F: FuseClient>(mut client: F) {
-    client.receive_reply(&[]);
-    todo!("this is a placeholder: the real checks of FuseClient are not written yet");
-}
-
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -46,11 +40,6 @@ macro_rules! tests {
         #[test]
         fn call_kernel_process_methods() {
             $crate::call_kernel_process_methods($value);
-        }
-
-        #[test]
-        fn call_fuse_client_methods() {
-            $crate::call_fuse_client_methods($value);
         }
     };
 }

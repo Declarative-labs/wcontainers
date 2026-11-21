@@ -2,7 +2,6 @@
 
 use domain::base::iana::{Class, Rtype};
 use domain::base::{Name, Question};
-use wcontainers_kernel::DomainResolutionId;
 use wcontainers_kernel::TaskId;
 use wcontainers_system::{DomainNameResolver, FuseServer, TaskIdAllocator};
 
@@ -33,7 +32,7 @@ pub fn call_fuse_server_methods<F: FuseServer>(server: F) {
 /// Calls each method of `DomainNameResolver` as a placeholder that fails until the real checks are written.
 pub fn call_domain_name_resolver_methods<R: DomainNameResolver>(resolver: R) {
     let question = Question::new(Name::root_slice(), Rtype::A, Class::IN);
-    let _ = resolver.resolve_domain(DomainResolutionId(u64::MIN), question);
+    let _ = resolver.resolve_domain(question);
     todo!("this is a placeholder: the real checks of DomainNameResolver are not written yet");
 }
 

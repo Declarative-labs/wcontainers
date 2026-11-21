@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(async_fn_in_trait)]
 
 use core::num::NonZeroU16;
 
@@ -8,6 +9,7 @@ use wcontainers_internet_protocol::{
     ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Received, SendError,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 
 /// Sockets for [ICMP](https://man7.org/linux/man-pages/man7/icmp.7.html) echo requests and replies.
 pub trait IcmpSockets: for<'a> Configurable<Self::Socket, IpSocketSetting<'a>> {
@@ -30,6 +32,12 @@ pub trait IcmpSockets: for<'a> Configurable<Self::Socket, IpSocketSetting<'a>> {
     fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<Received, HostError>;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
+    /// Waits until the socket has one of the events asked for, and returns the events it has.
+    async fn wait_for_events(
+        &self,
+        socket: &Self::Socket,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError>;
     fn close(&self, socket: Self::Socket);
 }
 

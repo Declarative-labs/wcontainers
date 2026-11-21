@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(async_fn_in_trait)]
 
 use etherparse::IpNumber;
 use wcontainers_abi::HostError;
@@ -8,6 +9,7 @@ use wcontainers_internet_protocol::{
     Ipv6RouteSelectors, Received, RouterAlertValue, SendError,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_kernel::signal_information::PollEvents;
 
 /// Sockets for [raw](https://man7.org/linux/man-pages/man7/raw.7.html) IP packets.
 pub trait RawSockets: for<'a> Configurable<Self::Socket, RawSocketSetting<'a>> {
@@ -28,6 +30,12 @@ pub trait RawSockets: for<'a> Configurable<Self::Socket, RawSocketSetting<'a>> {
     fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<Received, HostError>;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
+    /// Waits until the socket has one of the events asked for, and returns the events it has.
+    async fn wait_for_events(
+        &self,
+        socket: &Self::Socket,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError>;
     fn close(&self, socket: Self::Socket);
 }
 

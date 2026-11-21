@@ -22,7 +22,7 @@ use wcontainers_abi::{CpuError, MemoryId};
 use wcontainers_executor::{Executor, PerThreadWatch};
 use x86_64_features::X86_64Features;
 
-pub trait Kernel: ProcessController + FuseClient {}
+pub trait Kernel: ProcessController {}
 
 /// The owner of processes, which suspends and resumes their tasks and their contexts.
 pub trait ProcessController {
@@ -51,10 +51,6 @@ pub trait ProcessController {
         &mut self,
         tasks: impl IntoIterator<Item = Self::SuspendedTask>,
     ) -> impl Iterator<Item = Self::SuspendedTask>;
-}
-
-pub trait FuseClient {
-    fn receive_reply(&mut self, reply: &[u8]);
 }
 
 /// A handle to one process of a kernel.
@@ -207,9 +203,6 @@ pub struct SystemVSegmentId(pub i32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AnonymousMemoryId(pub u64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct DomainResolutionId(pub u64);
 
 /// The processor a program is told it has: what it reads when it asks the processor to identify itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
