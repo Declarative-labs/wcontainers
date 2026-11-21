@@ -1023,15 +1023,18 @@ fn restated(all: &mut [Finding], index: &ValueIndex, test_copies: &HashSet<(Stri
             continue;
         };
         // A test restates what its crate can name. A constant restates another crate's: the upstream
-        // one, or between unrelated crates the one more crates depend on, else the one that sorts
-        // first. Two names in one crate are left apart: a default equal to a maximum is two facts.
+        // one, or between unrelated crates the one more crates depend on, else the one whose package
+        // name sorts first (its folder when it has none), so that moving a crate's folder does not
+        // change which copy is reported. Two names in one crate are left apart: a default equal to a
+        // maximum is two facts.
         let crates = index.crates;
         let wanted = |c: Closeness, d: &ConstDef| match (f.list, c) {
             (List::Test, _) => matches!(c, Closeness::Upstream | Closeness::SameCrate),
             (_, Closeness::Upstream) => true,
             (_, Closeness::Elsewhere) => {
                 crates.owns(&d.crate_dir, &f.crate_dir)
-                    || (!crates.owns(&f.crate_dir, &d.crate_dir) && d.crate_dir < f.crate_dir)
+                    || (!crates.owns(&f.crate_dir, &d.crate_dir)
+                        && crates.sort_name(&d.crate_dir) < crates.sort_name(&f.crate_dir))
             }
             (_, Closeness::SameCrate | Closeness::Reachable) => false,
         };

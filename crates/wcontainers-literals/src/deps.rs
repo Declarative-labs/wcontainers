@@ -167,6 +167,12 @@ impl Crates {
         self.reach.get(dir).map_or(usize::default(), BTreeSet::len)
     }
 
+    /// What orders two crates neither of which owns the other: the package name, which a move of the
+    /// folder keeps, else the folder.
+    pub fn sort_name<'a>(&'a self, dir: &'a str) -> &'a str {
+        self.package(dir).unwrap_or(dir)
+    }
+
     /// The crate's package name.
     pub fn package(&self, dir: &str) -> Option<&str> {
         self.names.get(dir).map(String::as_str)
