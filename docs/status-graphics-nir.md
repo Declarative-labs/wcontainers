@@ -783,6 +783,21 @@ None.
 
 ## Requests to other tracks
 
+- Shaders track (G9 run 12, the one item between G9 and its bar): a public entry point for the
+  stage helper's geometry and tessellation forms taken from a naga module, as `lower/geometry.rs`
+  and `lower/hull.rs` already make them for the DXBC and DXIL routes (`pub(crate)` today, and fed
+  from dxbc-spirv's IR). The NIR route would hand over the program as a naga module whose entry
+  point calls placeholder emit and cut functions (geometry) or writes its patch values (hull),
+  with its declarations (input and output primitive, most vertices, instances, streams; control
+  points, domain, partitioning) and its stage values, and take back the `Converted` that
+  `stage::Stages::new` and `Stages::tessellated` read. Without it OpenGL ES 3.2 and desktop
+  OpenGL 3.2 and later cannot be reported (both require geometry shaders; 4.0 and ES 3.2
+  tessellation), so KHR-GLES32 (1,405 cases), KHR-GL33 (9,886) and KHR-GL46 (19,714) run nothing
+  and the bar's 92.9% cannot be met: with every other case of the six lists that start passing,
+  the measure would be at most 88.5% (86,617 of 97,908). Writing the layout's numbers again in
+  this track (the helper's bindings and value words are `pub(crate)` there) would define them
+  twice, which the literal rule forbids.
+
 - WebGPU back end (G9 run 11, a finding): its format caps give `STORAGE_WRITE` (from wgpu's
   `STORAGE_WRITE_ONLY`) for `Depth16Unorm` and `Depth32Float` on the RTX 3080, and a texture of
   those formats made with `TextureUsage::STORAGE` loses the device at its first use ("device lost:

@@ -582,6 +582,10 @@ struct Builder<'a> {
     /// only on atomic types.
     atomic_fields: Vec<(u32, u32)>,
     atomic_vars: Vec<u32>,
+    /// Of those, the ones a signed minimum or maximum reaches, whose words are signed: naga's
+    /// atomics take the operation's signedness from the word's type.
+    signed_atomic_fields: Vec<(u32, u32)>,
+    signed_atomic_vars: Vec<u32>,
     /// The samples `demote_samples` has left, ANDed into the sample mask output on return.
     kept_samples: Option<Handle<LocalVariable>>,
     /// What only the shaders crate's rewrites make fit for the common form.
@@ -668,6 +672,8 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         builtins: Vec::new(),
         atomic_fields: Vec::new(),
         atomic_vars: Vec::new(),
+        signed_atomic_fields: Vec::new(),
+        signed_atomic_vars: Vec::new(),
         kept_samples: None,
         rewrites: Rewrites::default(),
     };
@@ -900,7 +906,8 @@ impl Builder<'_> {
                         )));
                     }
                     let ty = if self.atomic_fields.contains(&(index, i)) {
-                        self.atomic_ty(field.ty)?
+                        let signed = self.signed_atomic_fields.contains(&(index, i));
+                        self.atomic_ty(field.ty, signed)?
                     } else {
                         self.ty(field.ty)?
                     };
@@ -965,13 +972,20 @@ impl Builder<'_> {
         })
     }
 
-    /// The atomic form of a flat scalar type, or of an array of them.
-    fn atomic_ty(&mut self, index: u32) -> Result<Handle<Type>, ConvertError> {
+    /// The atomic form of a flat scalar type, or of an array of them; of a word, `signed` makes it
+    /// a signed one.
+    fn atomic_ty(&mut self, index: u32, signed: bool) -> Result<Handle<Type>, ConvertError> {
         let t = self.types[index as usize];
         match t.kind {
-            TypeKind::Scalar => Ok(self.add_type(TypeInner::Atomic(scalar_of(t.scalar)?))),
+            TypeKind::Scalar => {
+                let scalar = match scalar_of(t.scalar)? {
+                    Scalar::U32 if signed => Scalar::I32,
+                    scalar => scalar,
+                };
+                Ok(self.add_type(TypeInner::Atomic(scalar)))
+            }
             TypeKind::Array => {
-                let base = self.atomic_ty(t.element)?;
+                let base = self.atomic_ty(t.element, signed)?;
                 let stride = self.element_stride(base, t.stride)?;
                 Ok(self.add_type(TypeInner::Array {
                     base,
@@ -1000,6 +1014,10 @@ impl Builder<'_> {
                 )
         });
         for atomic in atomics {
+            let signed = matches!(
+                atomic_op(atomic.value[VectorSize::MAX - 1]),
+                Atomic::Imin | Atomic::Imax
+            );
             let mut at = derefs.get(&atomic.src[0].def).copied();
             while let Some(d) = at {
                 match deref_kind(d.op) {
@@ -1007,11 +1025,17 @@ impl Builder<'_> {
                     Deref::Struct => {
                         if let Some(parent) = derefs.get(&d.src[0].def) {
                             self.atomic_fields.push((parent.ty, d.value[0]));
+                            if signed {
+                                self.signed_atomic_fields.push((parent.ty, d.value[0]));
+                            }
                         }
                         break;
                     }
                     Deref::Var => {
                         self.atomic_vars.push(d.value[0]);
+                        if signed {
+                            self.signed_atomic_vars.push(d.value[0]);
+                        }
                         break;
                     }
                     Deref::Cast => break,
@@ -1257,9 +1281,15 @@ impl Builder<'_> {
                     let space = match var.mode {
                         VarMode::UniformBuffer => AddressSpace::Uniform,
                         VarMode::StorageBuffer => {
-                            // The common form has no write-only buffers: one is read-write.
+                            // The common form has no write-only buffers: one is read-write. So
+                            // is every buffer of a compute program, where WebGPU allows it: the
+                            // API may bind one buffer at a read-only and a written block of one
+                            // dispatch, which WebGPU refuses unless both are read-write.
                             let mut access = StorageAccess::LOAD;
-                            access.set(StorageAccess::STORE, var.writable != 0);
+                            access.set(
+                                StorageAccess::STORE,
+                                var.writable != 0 || self.stage == ShaderStage::Compute,
+                            );
                             AddressSpace::Storage { access }
                         }
                         VarMode::Immediate => AddressSpace::Immediate,
@@ -1285,7 +1315,10 @@ impl Builder<'_> {
                         .atomic_vars
                         .contains(&u32::try_from(index).expect("few"))
                     {
-                        self.atomic_ty(var.ty)?
+                        let signed = self
+                            .signed_atomic_vars
+                            .contains(&u32::try_from(index).expect("few"));
+                        self.atomic_ty(var.ty, signed)?
                     } else {
                         let block = self.ty(var.ty)?;
                         let t = self.types[var.ty as usize];
