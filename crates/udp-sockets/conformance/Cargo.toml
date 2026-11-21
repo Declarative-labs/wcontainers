@@ -13,5 +13,5 @@ wcontainers-internet-protocol = { path = "../../internet-protocol" }
 wcontainers-kernel = { path = "../../kernel" }
 etherparse.workspace = true
 wcontainers-abi.workspace = true
-# The errno values and group addresses of Linux, which the contract's errors and checks use, on every platform.
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "net", "no_std"] }
+# The errno values, group addresses and classic BPF opcodes of Linux, which the contract's errors and checks use.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "if_tun", "net", "no_std"] }

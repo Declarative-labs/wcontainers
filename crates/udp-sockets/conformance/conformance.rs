@@ -10,15 +10,17 @@ use std::time::{Duration, Instant};
 use etherparse::{IpDscp, IpEcn, IpNumber, IpSlice, Ipv4Options, Ipv6FlowLabel, UdpHeaderSlice};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    AddressSharing, BindAddress, BroadcastPermission, ByteCount, InterfaceIndex, IpHeaderFields,
-    IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6Families,
+    AddressSharing, AnycastAddress, BindAddress, BroadcastPermission, ByteCount, FilterInstruction,
+    FilterJump, FilterOperand, FilterOperation, InterfaceIndex, IpHeaderFields, IpSendFields,
+    IpSocketSetting, IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, Ipv6Families,
     Ipv6HeaderFields, Ipv6RouteSelectors, LocalBinding, LocalFragmentation, LocalPort,
-    MaximumTransmissionUnit, MobileAddressPreference, MulticastGroup, MulticastMembership,
-    NeighbourConfirmation, NonlocalAddresses, PacketMark, PacketPriority, PathMtuDiscovery, Port,
-    PortChoice, PortRange, PortSetting, PortSharing, ProcessorIndex, Report, RouteScope,
-    RouteSelectors, SendError, SourceAddressCheck, SourceFilter, SourcePreferences,
-    TemporaryAddressPreference, TimestampSource, Timestamping, TransmitEvent, TransmitReportKey,
-    TransmitReportRequest, TransmitStage, TransportPorts, UpperLayer, UpperLayerSelector,
+    MaximumTransmissionUnit, Membership, MobileAddressPreference, MulticastGroup,
+    MulticastMembership, NeighbourConfirmation, NonlocalAddresses, PacketMark, PacketPriority,
+    PathMtuDiscovery, Port, PortChoice, PortRange, PortSetting, PortSharing, ProcessorIndex,
+    Report, RouteScope, RouteSelectors, SendError, SocketFilter, SourceAddressCheck, SourceFilter,
+    SourcePreferences, TemporaryAddressPreference, TimestampSource, Timestamping, TransmitEvent,
+    TransmitReportKey, TransmitReportRequest, TransmitStage, TransportPorts, UpperLayer,
+    UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_udp_sockets::{
@@ -31,6 +33,9 @@ const OWNER: UserId = UserId(u32::MIN);
 
 /// How long a check waits for a datagram sent over loopback.
 const PATIENCE: Duration = Duration::from_secs(1);
+
+/// ff0e, the first group of an IPv6 multicast address of global scope.
+const GLOBAL_MULTICAST: u16 = 0xff0e;
 
 const PAYLOAD: &[u8] = b"a datagram over loopback";
 const FROM_A_STRANGER: &[u8] = b"from a stranger";
@@ -1302,6 +1307,282 @@ pub fn ipv6_options_arrive_in_the_header<S: UdpSockets>(sockets: S) {
     }
 }
 
+/// A datagram to the loopback network's broadcast address is refused without permission and arrives with it.
+pub fn broadcast_needs_its_permission<S: UdpSockets>(sockets: S) {
+    let receiver = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let port = sockets
+        .bind(
+            &receiver,
+            binding(IpAddr::V4(Ipv4Addr::UNSPECIFIED), u16::MIN),
+        )
+        .unwrap()
+        .port();
+    // 127.255.255.255, the broadcast address of the loopback network 127.0.0.0/8.
+    let broadcast = Ipv4Addr::from_bits(Ipv4Addr::LOCALHOST.to_bits() | (u32::MAX >> u8::BITS));
+    let to = SocketAddr::new(IpAddr::V4(broadcast), port);
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let refused = sockets.send_to(
+        &sender,
+        header(UdpProtocol::Udp, from, to),
+        plain_fields(),
+        datagram(PAYLOAD),
+    );
+    assert_eq!(
+        refused,
+        Err(SendError::Host(HostError::Errno(
+            linux_raw_sys::errno::EACCES as i32
+        )))
+    );
+    let mut route = ipv4_route(UdpProtocol::Udp, from, to);
+    route.broadcast = BroadcastPermission::Allowed;
+    sockets
+        .send_to(
+            &sender,
+            ipv4_header(route),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    let mut into = buffer();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert_eq!(seen(&into[..packet.fields.length]).destination, to);
+}
+
+/// Every mode of path MTU discovery sends, over IPv4 and IPv6.
+pub fn every_path_mtu_discovery_mode_sends<S: UdpSockets>(sockets: S) {
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let (receiver, to) = bound(&sockets, version, UdpProtocol::Udp);
+        let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
+        let mut into = buffer();
+        for mode in [
+            PathMtuDiscovery::Dont,
+            PathMtuDiscovery::Want,
+            PathMtuDiscovery::Do,
+            PathMtuDiscovery::Probe,
+            PathMtuDiscovery::Interface,
+            PathMtuDiscovery::Omit,
+        ] {
+            let header = match header(UdpProtocol::Udp, from, to) {
+                IpHeaderFields::V4(mut header) => {
+                    header.path_mtu_discovery = mode;
+                    IpHeaderFields::V4(header)
+                }
+                IpHeaderFields::V6(mut header) => {
+                    header.path_mtu_discovery = mode;
+                    IpHeaderFields::V6(header)
+                }
+            };
+            sockets
+                .send_to(&sender, header, plain_fields(), datagram(PAYLOAD))
+                .unwrap();
+            let packet = receive_packet(&sockets, &receiver, &mut into);
+            assert_eq!(seen(&into[..packet.fields.length]).payload, PAYLOAD);
+        }
+    }
+}
+
+/// A source the host lacks may be sent from only with the source check waived on a transparent socket, and
+/// IPv6 source preferences are taken.
+pub fn a_waived_source_check_sends_from_an_absent_address<S: UdpSockets>(sockets: S) {
+    let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let sender = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    set(
+        &sockets,
+        &sender,
+        UdpSocketSetting::Port(PortSetting::NonlocalAddresses(
+            NonlocalAddresses::Transparent,
+        )),
+    );
+    let absent = !Ipv4Addr::LOCALHOST;
+    let from = sockets
+        .bind(&sender, binding(IpAddr::V4(absent), u16::MIN))
+        .unwrap();
+    let mut route = ipv4_route(UdpProtocol::Udp, from, to);
+    route.source = Some(absent);
+    route.source_address_check = SourceAddressCheck::Waived;
+    sockets
+        .send_to(
+            &sender,
+            ipv4_header(route),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    let mut into = buffer();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert_eq!(seen(&into[..packet.fields.length]).source, from);
+    let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    let mut route = ipv6_route(UdpProtocol::Udp, from, to);
+    route.source_preferences = SourcePreferences {
+        temporary: TemporaryAddressPreference::Public,
+        mobile: MobileAddressPreference::CareOf,
+    };
+    sockets
+        .send_to(
+            &sender,
+            IpHeaderFields::V6(ipv6_header(route)),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert_eq!(seen(&into[..packet.fields.length]).source, from);
+}
+
+/// A port group's filter chooses the socket each datagram reaches: here always the second.
+pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
+    let program = [FilterInstruction {
+        operation: FilterOperation(
+            (linux_raw_sys::if_tun::BPF_RET | linux_raw_sys::if_tun::BPF_K) as u16,
+        ),
+        jump_if_true: FilterJump(u8::MIN),
+        jump_if_false: FilterJump(u8::MIN),
+        operand: FilterOperand(1),
+    }];
+    let first = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    set(
+        &sockets,
+        &first,
+        UdpSocketSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
+    );
+    let address = sockets
+        .bind(&first, binding(loopback(IpVersion::V4), u16::MIN))
+        .unwrap();
+    let second = sockets
+        .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    set(
+        &sockets,
+        &second,
+        UdpSocketSetting::Port(PortSetting::PortSharing(PortSharing::Shared)),
+    );
+    sockets
+        .bind(&second, binding(address.ip(), address.port()))
+        .unwrap();
+    set(
+        &sockets,
+        &first,
+        UdpSocketSetting::Port(PortSetting::GroupFilter(Some(SocketFilter(&program)))),
+    );
+    let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
+    let mut into = buffer();
+    for _ in SEGMENTS {
+        send(&sockets, &sender, UdpProtocol::Udp, from, address, PAYLOAD);
+        receive_packet(&sockets, &second, &mut into);
+    }
+    assert_eq!(
+        sockets.receive(&first, &mut into),
+        Err(HostError::WouldBlock)
+    );
+    set(
+        &sockets,
+        &first,
+        UdpSocketSetting::Port(PortSetting::GroupFilter(None)),
+    );
+}
+
+/// An IPv6 multicast member takes the group's datagrams with all-groups off, and an anycast address joined on
+/// the loopback interface is reachable until left.
+pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
+    let interface = loopback_interface(&sockets);
+    let group = Ipv6Addr::new(
+        GLOBAL_MULTICAST,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MIN,
+        u16::MAX,
+    );
+    let receiver = sockets
+        .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
+        .unwrap();
+    let port = sockets
+        .bind(
+            &receiver,
+            binding(IpAddr::V6(Ipv6Addr::UNSPECIFIED), u16::MIN),
+        )
+        .unwrap()
+        .port();
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Ip(IpSocketSetting::MulticastAllGroups {
+            version: IpVersion::V6,
+            enabled: false,
+        }),
+    );
+    let joined = MulticastGroup {
+        group,
+        interface: Some(interface),
+        membership: MulticastMembership::Joined(SourceFilter::Exclude(&[])),
+    };
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Ip(IpSocketSetting::MulticastV6(joined)),
+    );
+    let (sender, from) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
+    set(
+        &sockets,
+        &sender,
+        UdpSocketSetting::Ip(IpSocketSetting::MulticastLoopback(true)),
+    );
+    let to = SocketAddr::new(IpAddr::V6(group), port);
+    let mut route = ipv6_route(UdpProtocol::Udp, from, to);
+    route.interface = Some(interface);
+    sockets
+        .send_to(
+            &sender,
+            IpHeaderFields::V6(ipv6_header(route.clone())),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    let mut into = buffer();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert_eq!(seen(&into[..packet.fields.length]).destination, to);
+    // fd00::1, a unique local address of no network the host has.
+    let unique_local = u128::from(u8::MAX - 2) << (u128::BITS - u8::BITS);
+    let anycast = Ipv6Addr::from_bits(unique_local | Ipv6Addr::LOCALHOST.to_bits());
+    let member = |membership| AnycastAddress {
+        address: anycast,
+        interface: Some(interface),
+        membership,
+    };
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Ip(IpSocketSetting::Anycast(member(Membership::Joined))),
+    );
+    let to = SocketAddr::new(IpAddr::V6(anycast), port);
+    let mut route = ipv6_route(UdpProtocol::Udp, from, to);
+    route.interface = Some(interface);
+    sockets
+        .send_to(
+            &sender,
+            IpHeaderFields::V6(ipv6_header(route.clone())),
+            plain_fields(),
+            datagram(PAYLOAD),
+        )
+        .unwrap();
+    let packet = receive_packet(&sockets, &receiver, &mut into);
+    assert_eq!(seen(&into[..packet.fields.length]).destination, to);
+    set(
+        &sockets,
+        &receiver,
+        UdpSocketSetting::Ip(IpSocketSetting::Anycast(member(Membership::Left))),
+    );
+}
+
 /// Closing a socket frees its port for another.
 pub fn close_frees_the_port<S: UdpSockets>(sockets: S) {
     let address = closed_port(&sockets, IpVersion::V6);
@@ -1348,6 +1629,11 @@ macro_rules! tests {
             negative_route_advice_keeps_a_socket_sending
             send_fields_reach_the_receiver
             ipv6_options_arrive_in_the_header
+            broadcast_needs_its_permission
+            every_path_mtu_discovery_mode_sends
+            a_waived_source_check_sends_from_an_absent_address
+            a_group_filter_chooses_the_socket
+            ipv6_memberships_take_their_datagrams
             close_frees_the_port
         );
     };

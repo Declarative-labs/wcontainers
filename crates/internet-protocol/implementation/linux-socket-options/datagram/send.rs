@@ -248,9 +248,17 @@ impl SendState {
             IpHeaderFields::V4(header) => {
                 let destination =
                     self.apply_route(fd, &RouteSelectors::V4(header.route), port, ipv6_socket)?;
-                if let Some(source) = header.route.source {
+                // The interface also goes here: a multicast send takes it from this, not from IP_UNICAST_IF.
+                if header.route.source.is_some() || header.route.interface.is_some() {
                     let mut information = zeroed::<uapi::in_pktinfo>();
-                    information.ipi_spec_dst = in_addr(source);
+                    information.ipi_spec_dst = in_addr(
+                        header
+                            .route
+                            .source
+                            .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+                    );
+                    information.ipi_ifindex =
+                        header.route.interface.map_or(u32::MIN, |index| index.0) as c_int;
                     control.push(uapi::SOL_IP, uapi::IP_PKTINFO, &information);
                 }
                 if let Some(limit) = header.time_to_live {
@@ -268,9 +276,16 @@ impl SendState {
                     port,
                     ipv6_socket,
                 )?;
-                if let Some(source) = header.route.source {
+                if header.route.source.is_some() || header.route.interface.is_some() {
                     let mut information = zeroed::<uapi::in6_pktinfo>();
-                    information.ipi6_addr = in6_addr(source);
+                    information.ipi6_addr = in6_addr(
+                        header
+                            .route
+                            .source
+                            .unwrap_or(std::net::Ipv6Addr::UNSPECIFIED),
+                    );
+                    information.ipi6_ifindex =
+                        header.route.interface.map_or(u32::MIN, |index| index.0) as c_int;
                     control.push(uapi::SOL_IPV6, uapi::IPV6_PKTINFO, &information);
                 }
                 if let Some(limit) = header.hop_limit {

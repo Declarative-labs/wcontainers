@@ -21,13 +21,21 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - The ICMP track can use all of these for `send_to` and `receive`. The TCP track's `set_ip_socket_setting` still
   refuses multicast and anycast; it could call `datagram::memberships` instead.
 
-## Milestone U1: done
+## Milestone U1: nearly done (one check fails, see Known failure)
 - Crate `crates/udp-sockets/implementation/linux-host` (package `wcontainers-udp-sockets-linux-host`, type
   `LinuxHostUdpSockets`, socket `LinuxHostUdpSocket`), body `cfg(target_os = "linux")`. Methods as the plan maps
   them. Refusals counted per reason (`counters()`), warned once on standard error.
-- Suite `crates/udp-sockets/conformance/conformance.rs`: 30 checks against the traits alone (see the file), every
+- Suite `crates/udp-sockets/conformance/conformance.rs`: 35 checks against the traits alone (see the file), every
   setting set twice before its effect is checked.
-- Last full run (see Measurements): 30 of 30 pass on the ARM64 machine.
+- Last full run (see Measurements): 34 of 35 pass on the ARM64 machine.
+
+## Known failure
+- `ipv6_memberships_take_their_datagrams`: the send from a socket bound to ::1 to the IPv6 multicast group
+  (ff0e::ffff, also tried ff02::ffff) with the loopback interface given answers `EADDRNOTAVAIL` (99), so the
+  IPv6 multicast and anycast parts are not yet seen to work. Not yet found whether the implementation (the
+  interface now also goes in `IPV6_PKTINFO`; `IPV6_UNICAST_IF` is set too) or the check's network (loopback
+  only, no link-local address on lo) is at fault. Next: try the sender bound to `::`, then `IPV6_MULTICAST_IF`
+  for a multicast destination, comparing with a plain C or Python sender on the machine.
 
 ## How to run
 - On the ARM64 machine (root, each test in a network namespace of its own thread with only loopback, up):
@@ -39,8 +47,8 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - No random tests: every check is a fixed scenario.
 
 ## Measurements
-- 2026-11-21, ARM64 machine (96 cores), job host-udp-sockets: the 30 checks take 0.51 s wall at 12 test
-  threads; the machine's load was 20 to 30 with other tracks' jobs.
+- 2026-11-21, ARM64 machine (96 cores), job host-udp-sockets: the 30 checks took 0.51 s wall at 12 test
+  threads at a load of 20 to 30 (other tracks' jobs); the 35 checks took 0.51 s at a load of 6.1 to 6.8.
 
 ## Honoured, and how each is checked
 - open (both versions, both protocols), bind (kernel port, a taken port, exit node's choice around a reserved
@@ -56,6 +64,9 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
   coverage against the receiver's minimum; segment size.
 - Received fields checked: interface, specific destination, mark, priority, software timestamps, drops since
   previous (exactly the number dropped), segment size.
+- Also checked: broadcast refused without permission (`EACCES`) and delivered with it; every path MTU discovery
+  mode sends (IPv4 and IPv6); a waived source check on a transparent socket sends from an address the host
+  lacks; IPv6 source preferences; the port group's filter choosing the second socket, and detached.
 - Settings checked by their effect: address and port sharing, nonlocal addresses (refused and bindable), bound
   interface (and a nonexistent one refused), incoming processor, IPv4 multicast join and leave with multicast
   loopback and all-groups off, receive buffer, timestamping, receive coalescing, zero checksum receipt, minimum
@@ -63,9 +74,9 @@ Plan: docs/plan-host-udp-sockets.md. Branch: main, checkout /Users/thomaseaton/D
 - ICMP errors on the error queue as whole ICMP packets (port unreachable, IPv4 and IPv6, quoting the datagram).
 
 ## Implemented but not yet checked by the suite (next run)
-- IPv6 multicast, anycast, the group filter, transparent nonlocal addresses, multicast all-groups for IPv6,
-  routing header, routing destination options, source address check waived, broadcast permission, source
-  preferences, path MTU discovery modes other than do, hardware timestamps and a bound clock (loopback has no
+- IPv6 multicast and anycast (their check fails, above), multicast all-groups for IPv6 (inside that check),
+  routing header and routing destination options (Linux takes only routing header types it knows), hardware
+  timestamps and a bound clock (loopback has no
   hardware clock: Linux answers what it answers), acknowledgement and completion reports (Linux makes none for
   UDP), the owner as another user (`setfsuid` around `socket`; checkable through /proc/net/udp's uid), pacing
   (needs an fq qdisc the suite cannot set up).
