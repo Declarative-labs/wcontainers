@@ -467,12 +467,17 @@ pub fn set_packet_setting(
         }
         IpPacketSetting::UnicastInterface(interface) => {
             let index = interface.map_or(0, |interface| interface.0);
+            // Both versions take the index in network byte order.
             match family {
-                // IPv4 takes the index in network byte order.
                 IpVersion::V4 => {
                     set_option(socket, uapi::SOL_IP, uapi::IP_UNICAST_IF, &index.to_be())
                 }
-                IpVersion::V6 => set_option(socket, uapi::SOL_IPV6, uapi::IPV6_UNICAST_IF, &index),
+                IpVersion::V6 => set_option(
+                    socket,
+                    uapi::SOL_IPV6,
+                    uapi::IPV6_UNICAST_IF,
+                    &index.to_be(),
+                ),
             }
         }
         IpPacketSetting::RouteScope(scope) => set_flag(
