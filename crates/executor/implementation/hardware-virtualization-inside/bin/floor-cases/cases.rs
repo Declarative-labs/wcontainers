@@ -580,10 +580,12 @@ impl Cases {
             Ok(frame)
         });
         let same_host_page = frame / host_page == (frame + PAGE_SIZE) / host_page;
+        // A host page of one guest page holds no two of them; a larger one must hold both frames of the block.
+        let shared_where_possible = same_host_page == (host_page > PAGE_SIZE);
         let wrote_first = run(&space, store, first, MARK_A);
         let wrote_second = run(&space, store, second, MARK_B);
         let read_second = run(&space, load, second, 0);
-        let passed = same_host_page
+        let passed = shared_where_possible
             && called(&wrote_first, 0)
             && refused(&wrote_second, second, true)
             && called(&read_second, 0);

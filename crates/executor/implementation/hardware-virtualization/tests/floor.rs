@@ -6,26 +6,26 @@
 //! The stop test is seeded: `WCONTAINERS_FLOOR_STOPS` sets how many stops it makes and
 //! `WCONTAINERS_FLOOR_SEED` (decimal, or hexadecimal after `0x`) the seed of the waits between them.
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 #[path = "../../hardware-virtualization-inside/bin/floor-cases/protocol.rs"]
 mod protocol;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod common;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 fn main() {
-    macos::main();
+    hosted::main();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(host_hypervisor))]
 fn main() {
-    println!("the floor test needs Hypervisor.framework; nothing to run on this host");
+    println!("the floor test needs a hypervisor this crate drives; nothing to run on this host");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 #[allow(deprecated)] // libc's Mach clock calls, which the test uses to time stops
-mod macos {
+mod hosted {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -441,11 +441,14 @@ mod macos {
         );
     }
 
+    /// The host's counter, which the guest's counts from less the counter offset.
+    #[cfg(target_os = "macos")]
     fn now() -> u64 {
         // SAFETY: a plain clock read.
         unsafe { libc::mach_absolute_time() }
     }
 
+    #[cfg(target_os = "macos")]
     fn ticks_to_nanos(ticks: u64) -> f64 {
         let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
         // SAFETY: fills the struct.
@@ -453,6 +456,7 @@ mod macos {
         ticks as f64 * f64::from(info.numer) / f64::from(info.denom)
     }
 
+    #[cfg(target_os = "macos")]
     fn footprint() -> u64 {
         // SAFETY: a zeroed plain struct the call fills.
         let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
@@ -462,5 +466,32 @@ mod macos {
         };
         assert_eq!(done, 0, "proc_pid_rusage");
         info.ri_phys_footprint
+    }
+
+    /// The host's counter, which the guest's counts from less the counter offset.
+    #[cfg(target_os = "linux")]
+    fn now() -> u64 {
+        use aarch64_cpu::registers::{CNTVCT_EL0, Read};
+        CNTVCT_EL0.get()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ticks_to_nanos(ticks: u64) -> f64 {
+        use aarch64_cpu::registers::{CNTFRQ_EL0, Read};
+        let second = Duration::from_secs(1).as_nanos() as f64;
+        ticks as f64 * second / CNTFRQ_EL0.get() as f64
+    }
+
+    /// The process's resident bytes: the second figure of /proc/self/statm, in pages.
+    #[cfg(target_os = "linux")]
+    fn footprint() -> u64 {
+        const STATM: &str = "/proc/self/statm";
+        let text = std::fs::read_to_string(STATM).expect("the process's memory figures");
+        let resident: u64 = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|pages| pages.parse().ok())
+            .expect("the resident pages");
+        resident * common::page_size()
     }
 }

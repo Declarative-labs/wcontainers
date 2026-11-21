@@ -36,6 +36,8 @@ aarch64-cpu = "12.0.0"
 arm-sysregs = { version = "0.5.2", features = ["el1"] }
 # The interrupt controller.
 arm-gic = "0.11.0"
+# The doorbell's hypervisor call.
+smccc = "0.2.3"
 safe-mmio = "0.4.0"
 # Locks shared by the virtual CPUs.
 spin = { version = "0.10.0", default-features = false, features = ["spin_mutex", "lock_api"] }

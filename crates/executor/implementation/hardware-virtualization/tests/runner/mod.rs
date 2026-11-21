@@ -14,7 +14,7 @@ pub mod functions;
 use aarch64_cpu::registers::{ESR_EL1, MDSCR_EL1, SPSR_EL1};
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
 use wcontainers_arm64::carry::{LINK, PAGE, RegisterPage, TAG_LOW, WITHHELD, call_word};
-use wcontainers_arm64::encode::{self, form};
+use wcontainers_arm64::encode::{self, field, form};
 use wcontainers_arm64::thread_state::{Exclusive, untag_address};
 use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, decode};
 use wcontainers_executor_hardware_virtualization::{
@@ -23,7 +23,9 @@ use wcontainers_executor_hardware_virtualization::{
 use wcontainers_executor_hardware_virtualization_inside::layout::{
     Region as Area, TOP_LEVEL, VECTOR_BYTES, VECTOR_TABLE_BYTES, level_span,
 };
-use wcontainers_executor_hardware_virtualization_inside::link::{self, Fatal, Start};
+use wcontainers_executor_hardware_virtualization_inside::link::{
+    self, DOORBELL_FUNCTION, Fatal, Start,
+};
 use wcontainers_executor_hardware_virtualization_inside::stop::{self, FloatStatus, Interrupted};
 use wcontainers_executor_hardware_virtualization_inside::syndrome::{
     ALIGNMENT_FAULT, FAULT_STATUS,
@@ -54,8 +56,12 @@ const PIECES: u64 = Area::Code.base() + level_span(TOP_LEVEL + 1);
 const REGISTER_PAGE: u64 = Area::Threads.base();
 /// The gate's words: call the monitor, return to the guest's level, return to the caller.
 const GATE_CALL: u64 = GATE + GATE_OFFSET;
-const GATE_RETURN_TO_GUEST: u64 = GATE_CALL + Arm64::MAX_LENGTH;
-const GATE_BACK: u64 = GATE_RETURN_TO_GUEST + Arm64::MAX_LENGTH;
+fn gate_return_to_guest() -> u64 {
+    GATE_CALL + monitor_call_bytes()
+}
+fn gate_back() -> u64 {
+    gate_return_to_guest() + Arm64::MAX_LENGTH
+}
 /// The vectors are in four groups (current level with SP_EL0, with SP_ELx, lower level in AArch64, in
 /// AArch32) of four kinds (synchronous, interrupt, fast interrupt, system error).
 const VECTOR_KINDS: u64 = 4;
@@ -201,20 +207,63 @@ fn regions() -> Vec<Region> {
 
 /// The gate's region: vectors that each call the monitor, then the gate.
 fn gate_words() -> Vec<u32> {
-    let call = encode::exception(form::HVC, MONITOR_CALL);
-    let mut words = vec![0u32; (VECTOR_TABLE_BYTES / Arm64::MAX_LENGTH) as usize];
-    words.fill(call);
+    let call = monitor_call();
+    let mut words = Vec::new();
+    for _ in 0..VECTOR_TABLE_BYTES / VECTOR_BYTES {
+        let mut vector = vec![0u32; (VECTOR_BYTES / Arm64::MAX_LENGTH) as usize];
+        vector[..call.len()].copy_from_slice(&call);
+        words.extend(vector);
+    }
+    words.extend(call);
     words.extend([
-        call,
         encode::exception_return(),
         encode::branch_register(form::RET, LINK),
     ]);
     words
 }
 
-/// The immediate of the vectors' calls to the monitor. Not 0: Hypervisor.framework answers an `hvc #0` whose
-/// x0 reads as an SMCCC fast call itself (with "not supported" in x0) and never exits.
-const MONITOR_CALL: u16 = 1;
+/// The register the monitor call keeps x0 in.
+const KEPT_X0: Register = Register::InsideThread;
+
+/// The general register the monitor call gives the doorbell's function number in.
+const DOORBELL_REGISTER: u8 = 0;
+
+/// The immediate of the doorbell's `hvc`, as the inside's floor rings it.
+const DOORBELL_IMMEDIATE: u16 = 0;
+
+/// A call to the monitor: x0 kept in [`KEPT_X0`] (TPIDR_EL1: op0 3, op1 0, CRn 13, CRm 0, op2 4), then the
+/// doorbell.
+fn monitor_call() -> Vec<u32> {
+    let keep = encode::word(
+        form::MSR,
+        &[
+            ("o0", 1),
+            (field::OP1, 0),
+            (field::CRN, 13),
+            (field::CRM, 0),
+            (field::OP2, 4),
+            (field::RT, DOORBELL_REGISTER.into()),
+        ],
+    )
+    .expect("the move fits its fields");
+    let mut words = vec![keep];
+    words.extend(encode::move_constant(
+        DOORBELL_REGISTER,
+        DOORBELL_FUNCTION.into(),
+    ));
+    words.push(encode::exception(form::HVC, DOORBELL_IMMEDIATE));
+    words
+}
+
+/// Bytes of a call to the monitor: where it resumes after one.
+fn monitor_call_bytes() -> u64 {
+    monitor_call().len() as u64 * Arm64::MAX_LENGTH
+}
+
+/// The guest's or the inside's x0 at a monitor call, from where the call kept it.
+fn kept_x0(cpu: &impl VirtualCpu) -> u64 {
+    cpu.get(KEPT_X0).expect("the kept x0")
+}
 
 impl Runner {
     /// Boots the program and serves it until it asks for its first run.
@@ -359,11 +408,12 @@ impl Runner {
             other => panic!("expected the gate, got {other:?}"),
         }
         let pc = self.cpu.get(Register::Pc).expect("pc");
-        assert_eq!(pc, GATE_RETURN_TO_GUEST, "the gate called the monitor");
+        assert_eq!(pc, gate_return_to_guest(), "the gate called the monitor");
         let mut x = [0; GENERAL];
         for (n, value) in x.iter_mut().enumerate() {
             *value = self.cpu.get(Register::X(n as u8)).expect("x");
         }
+        x[usize::from(DOORBELL_REGISTER)] = kept_x0(&self.cpu);
         let mut v = [0; VECTORS];
         for (n, value) in v.iter_mut().enumerate() {
             *value = self.cpu.vector(n as u8).expect("v");
@@ -393,7 +443,7 @@ impl Runner {
             (Register::FloatControl, inside.fpcr),
             (Register::DebugControl, 0),
             (Register::Pstate, inside.state),
-            (Register::Pc, GATE_BACK),
+            (Register::Pc, gate_back()),
         ] {
             self.cpu
                 .set(register, value)
@@ -427,7 +477,7 @@ impl Runner {
             (Register::ExceptionLink, hardware.pc),
             (Register::SavedState, state),
             (Register::DebugControl, debug),
-            (Register::Pc, GATE_RETURN_TO_GUEST),
+            (Register::Pc, gate_return_to_guest()),
         ] {
             self.cpu.set(register, value).expect("the guest's register");
         }
@@ -439,7 +489,7 @@ impl Runner {
         let get = |r| self.cpu.get(r).expect("a register");
         assert_eq!(
             pc,
-            LOWER_SYNCHRONOUS + Arm64::MAX_LENGTH,
+            LOWER_SYNCHRONOUS + monitor_call_bytes(),
             "a synchronous exception from the guest's level: ESR {:#x} ELR {:#x} FAR {:#x}",
             get(Register::Syndrome),
             get(Register::ExceptionLink),
@@ -449,6 +499,7 @@ impl Runner {
         for (n, value) in x.iter_mut().enumerate() {
             *value = get(Register::X(n as u8));
         }
+        x[usize::from(DOORBELL_REGISTER)] = kept_x0(&self.cpu);
         let mut v = [0; VECTORS];
         for (n, value) in v.iter_mut().enumerate() {
             *value = self.cpu.vector(n as u8).expect("v");

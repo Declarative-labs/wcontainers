@@ -9,6 +9,7 @@ use std::process::Command;
 use wcontainers_executor_hardware_virtualization::{
     Host, Hypervisor, Loaded, Memory, VirtualMachine, load,
 };
+use wcontainers_executor_hardware_virtualization_inside::build_environment::AARCH64;
 use wcontainers_executor_hardware_virtualization_inside::layout::MEMORY_BASE;
 use wcontainers_executor_hardware_virtualization_inside::link::Start;
 use wcontainers_translator::{BOUND, LookAhead};
@@ -29,7 +30,7 @@ const INSIDE: &str = "wcontainers-executor-hardware-virtualization-inside";
 const INSIDE_FOLDER: &str = "hardware-virtualization-inside";
 
 /// The bare-metal target of each host architecture the programs are built for.
-const TARGETS: &[(&str, &str)] = &[("aarch64", "aarch64-unknown-none-softfloat")];
+const TARGETS: &[(&str, &str)] = &[(AARCH64, "aarch64-unknown-none-softfloat")];
 
 /// The cargo profile the programs are built with.
 const PROFILE: &str = wcontainers_translator_test::reference::RELEASE;
@@ -80,9 +81,14 @@ pub fn look_ahead() -> LookAhead {
     }
 }
 
+/// KVM needs no signature: nothing to do.
+#[cfg(not(target_os = "macos"))]
+pub fn be_signed() {}
+
 /// Hypervisor.framework refuses a binary without the hypervisor entitlement, which cargo's test binaries
 /// lack: unless this is already the signed copy, the test signs a copy of itself ad hoc with the entitlement,
 /// runs that, and exits as it did.
+#[cfg(target_os = "macos")]
 pub fn be_signed() {
     if std::env::var_os(SIGNED).is_some() {
         return;
@@ -151,7 +157,7 @@ pub fn machine(
     memory: u64,
     cpus: u64,
 ) -> (<Host as Hypervisor>::VirtualMachine, Memory, Loaded, Start) {
-    let machine = Host::machine().expect("making the machine");
+    let machine = Host::machine(cpus).expect("making the machine");
     let reserved = Memory::reserve(memory).expect("reserving memory");
     machine
         .map(

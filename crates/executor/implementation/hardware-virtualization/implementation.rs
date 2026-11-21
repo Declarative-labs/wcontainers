@@ -19,12 +19,16 @@ use wcontainers_guest_cpu::Guest;
 
 #[cfg(target_os = "macos")]
 pub mod hvf;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub mod kvm;
 pub mod routines;
 pub mod translate;
 
 /// The host's hypervisor.
 #[cfg(target_os = "macos")]
 pub type Host = hvf::HypervisorFramework;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub type Host = kvm::KernelVirtualMachine;
 
 /// What went wrong.
 #[derive(Debug)]
@@ -91,6 +95,8 @@ pub enum Register {
     FloatStatus,
     /// FPCR.
     FloatControl,
+    /// TPIDR_EL1: the inside's thread register.
+    InsideThread,
 }
 
 /// The interrupt numbers of a machine.
@@ -103,8 +109,8 @@ pub struct Interrupts {
 /// A way of making hardware virtual machines.
 pub trait Hypervisor {
     type VirtualMachine: VirtualMachine;
-    /// Makes the process's one virtual machine.
-    fn machine() -> Result<Self::VirtualMachine>;
+    /// Makes the process's one virtual machine, which has `cpus` virtual CPUs at most.
+    fn machine(cpus: u64) -> Result<Self::VirtualMachine>;
 }
 
 /// One hardware virtual machine on the host.

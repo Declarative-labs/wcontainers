@@ -10,28 +10,30 @@
 //!
 //! Knobs: `WCONTAINERS_PROBE_WORDS` words drawn per form, `WCONTAINERS_PROBE_SEED`.
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod common;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 #[path = "../../hardware-virtualization-inside/bin/native-cases/protocol.rs"]
 mod protocol;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod runner;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 fn main() {
-    macos::main();
+    hosted::main();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(host_hypervisor))]
 fn main() {
-    println!("the behaviour probe needs Hypervisor.framework; nothing to run on this host");
+    println!(
+        "the behaviour probe needs a hypervisor this crate drives; nothing to run on this host"
+    );
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(host_hypervisor)]
+mod hosted {
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 

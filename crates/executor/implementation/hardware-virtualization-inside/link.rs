@@ -6,6 +6,17 @@ use alloc::vec::Vec;
 use wcontainers_abi::PAGE_SIZE;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
+/// The bit of an SMCCC function number where its owner starts.
+const SMCCC_OWNER_SHIFT: u32 = 24;
+
+/// SMCCC's owner of OEM service calls, which neither hypervisor defines a call of.
+const SMCCC_OWNER_OEM: u32 = 3;
+
+/// The doorbell: an `hvc #0` with this SMCCC function number in w0, a yielding 32-bit call. KVM forwards to the
+/// monitor only the functions its filter names, and answers every other `hvc` itself; Hypervisor.framework
+/// answers a fast call itself.
+pub const DOORBELL_FUNCTION: u32 = SMCCC_OWNER_OEM << SMCCC_OWNER_SHIFT;
+
 /// What the monitor tells a virtual CPU when it starts it, in memory the monitor wrote. Its inside address is
 /// in x0 at entry.
 #[repr(C)]

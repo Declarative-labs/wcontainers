@@ -10,28 +10,30 @@
 //! every stop is the same at every look-ahead. Each case runs from seeded starting states (flags, thread
 //! pointer, vectors, data area). It runs itself as a copy signed with the hypervisor entitlement.
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod common;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 #[path = "../../hardware-virtualization-inside/bin/native-cases/protocol.rs"]
 mod protocol;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod runner;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 fn main() {
-    macos::main();
+    hosted::main();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(host_hypervisor))]
 fn main() {
-    println!("the interrupt test needs Hypervisor.framework; nothing to run on this host");
+    println!(
+        "the interrupt test needs a hypervisor this crate drives; nothing to run on this host"
+    );
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(host_hypervisor)]
+mod hosted {
     use std::time::Instant;
 
     use wcontainers_arm64::{Arm64, decode};

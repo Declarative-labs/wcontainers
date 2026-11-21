@@ -56,7 +56,8 @@ fn code(code: i32) -> Result<()> {
 impl Hypervisor for HypervisorFramework {
     type VirtualMachine = HvfVirtualMachine;
 
-    fn machine() -> Result<HvfVirtualMachine> {
+    /// The framework makes virtual CPUs at any time, so the count bounds nothing here.
+    fn machine(_cpus: u64) -> Result<HvfVirtualMachine> {
         let config = VirtualMachineConfig::new();
         let mut gic = GicConfig::new();
         check(gic.set_distributor_base(GIC_DISTRIBUTOR))?;
@@ -209,6 +210,7 @@ fn which(register: Register) -> Which {
         Register::ThreadPointer => Which::System(SysReg::TPIDR_EL0),
         Register::FloatStatus => Which::General(Reg::FPSR),
         Register::FloatControl => Which::General(Reg::FPCR),
+        Register::InsideThread => Which::System(SysReg::TPIDR_EL1),
     }
 }
 

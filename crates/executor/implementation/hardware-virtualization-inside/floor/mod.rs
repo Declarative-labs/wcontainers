@@ -30,7 +30,7 @@ pub use tables::{Frames, Full, Table, space_full};
 use crate::layout::{
     ATTRIBUTE_NORMAL, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS, MEMORY_BASE, Region, linear,
 };
-use crate::link::{Fatal, LINK_BYTES, Link, Message, Print, Start};
+use crate::link::{DOORBELL_FUNCTION, Fatal, LINK_BYTES, Link, Message, Print, Start};
 
 /// Guest-physical frames, shared by every virtual CPU.
 pub static FRAMES: Mutex<Option<Frames>> = Mutex::new(None);
@@ -103,8 +103,8 @@ fn doorbell() {
     ASKED.fetch_add(1, Ordering::Relaxed);
     LAST_REQUEST.store(link_page().head.request, Ordering::Relaxed);
     barrier::dsb(SY);
-    // SAFETY: the monitor answers in the link page and resumes at the next instruction.
-    unsafe { asm!("hvc #0", options(nostack)) };
+    // The monitor answers in the link page and resumes at the next instruction.
+    smccc::hvc32(DOORBELL_FUNCTION, Default::default());
 }
 
 /// Text built in the link page and sent with one request.

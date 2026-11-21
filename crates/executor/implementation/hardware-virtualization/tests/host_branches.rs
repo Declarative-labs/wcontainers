@@ -10,28 +10,30 @@
 //! `WCONTAINERS_BRANCHES_SEED` and `WCONTAINERS_BRANCHES_STARTS` set the starting states' seed and how many are
 //! drawn per case.
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod common;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 #[path = "../../hardware-virtualization-inside/bin/native-cases/protocol.rs"]
 mod protocol;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 mod runner;
 
-#[cfg(target_os = "macos")]
+#[cfg(host_hypervisor)]
 fn main() {
-    macos::main();
+    hosted::main();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(host_hypervisor))]
 fn main() {
-    println!("the host branch tally needs Hypervisor.framework; nothing to run on this host");
+    println!(
+        "the host branch tally needs a hypervisor this crate drives; nothing to run on this host"
+    );
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(host_hypervisor)]
+mod hosted {
     use std::collections::BTreeMap;
     use std::time::Instant;
 

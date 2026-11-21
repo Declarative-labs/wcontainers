@@ -32,6 +32,14 @@ serde = { version = "1.0.229", default-features = false, features = ["derive", "
 applevisor = "1.0.0"
 applevisor-sys = "1.0.0"
 
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+# KVM's calls and structures, and the raw calls kvm-ioctls does not wrap.
+kvm-ioctls = "0.25.1"
+kvm-bindings = "0.14.2"
+vmm-sys-util = "0.15.0"
+# The first interrupt number the host raises.
+arm-gic = "0.11.0"
+
 [build-dependencies]
 # The names of the build environment.
 wcontainers-executor-hardware-virtualization-inside = { path = "../hardware-virtualization-inside" }
