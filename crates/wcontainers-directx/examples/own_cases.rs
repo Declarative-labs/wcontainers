@@ -312,11 +312,8 @@ fn main() -> windows::core::Result<()> {
                 );
                 let levels =
                     unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT(format), 4) };
-                println!(
-                    "msq {format} {:#010x} {}",
-                    code(levels.map(|_| ())),
-                    levels.as_ref().copied().unwrap_or(0)
-                );
+                let count = levels.as_ref().copied().unwrap_or(0);
+                println!("msq {format} {:#010x} {count}", code(levels.map(|_| ())));
             }
             let mut options2 = D3D11_FEATURE_DATA_D3D11_OPTIONS2::default();
             let r = unsafe {
