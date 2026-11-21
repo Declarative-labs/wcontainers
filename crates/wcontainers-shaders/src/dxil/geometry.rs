@@ -273,7 +273,8 @@ mod tests {
 
     /// A stream number past Direct3D's, emitted into or declared, is refused by name before any
     /// stream mask is made of it: dxc's build of `gs_rows_streams` with its emitted stream's constant,
-    /// then its outputs' stream decorations, set to the mask's width.
+    /// then its outputs' stream decorations, set to the first stream past Direct3D's and to the
+    /// mask's width.
     #[test]
     fn a_stream_past_direct3d_is_refused_by_name() {
         let dxil = include_bytes!(concat!(
@@ -281,7 +282,6 @@ mod tests {
             "/tests/own/gs_rows_streams.dxil"
         ));
         let (spirv, _) = super::super::to_spirv(dxil, 0).unwrap();
-        let past = u64::BITS;
         let mut emitted = Vec::new();
         let mut decorated = Vec::new();
         let mut at = words::HEADER;
@@ -296,24 +296,26 @@ mod tests {
             at += i.len();
         }
         assert!(!emitted.is_empty() && !decorated.is_empty());
-        // The constants of the emitted streams.
-        let mut emits = spirv.clone();
-        let mut at = words::HEADER;
-        while let Some(i) = staged::instruction(&spirv, at) {
-            let constant = Op::from_u32(staged::opcode(i)) == Some(Op::Constant);
-            if constant && emitted.contains(&i[words::RESULT_AFTER_TYPE]) {
-                emits[at + staged::CONSTANT_VALUE] = past;
+        for past in [stage::STREAMS as u32, u64::BITS] {
+            // The constants of the emitted streams.
+            let mut emits = spirv.clone();
+            let mut at = words::HEADER;
+            while let Some(i) = staged::instruction(&spirv, at) {
+                let constant = Op::from_u32(staged::opcode(i)) == Some(Op::Constant);
+                if constant && emitted.contains(&i[words::RESULT_AFTER_TYPE]) {
+                    emits[at + staged::CONSTANT_VALUE] = past;
+                }
+                at += i.len();
             }
-            at += i.len();
-        }
-        let mut declares = spirv.clone();
-        for &literal in &decorated {
-            declares[literal] = past;
-        }
-        for mut words in [emits, declares] {
-            match prepare(&mut words) {
-                Err(ConvertError::Malformed(why)) => assert_eq!(why, STREAM_PAST_DIRECT3D),
-                other => panic!("{:?}", other.map(|d| d.map(|d| d.stream_mask))),
+            let mut declares = spirv.clone();
+            for &literal in &decorated {
+                declares[literal] = past;
+            }
+            for mut words in [emits, declares] {
+                match prepare(&mut words) {
+                    Err(ConvertError::Malformed(why)) => assert_eq!(why, STREAM_PAST_DIRECT3D),
+                    other => panic!("{past}: {:?}", other.map(|d| d.map(|d| d.stream_mask))),
+                }
             }
         }
     }

@@ -1975,7 +1975,6 @@ pub(super) fn words_as_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
-/// A storage binding of the first `size` bytes of `buffer`, for the helper's compute programs.
 /// Writes a stage's values into the data ring, for a set made before the ring's next write.
 fn ring_values<B: Backend>(backend: &mut B, bytes: &[u8]) -> Result<(B::Buffer, u64), GpuError> {
     let align = backend.caps().limits.min_uniform_offset_alignment;
@@ -1997,6 +1996,7 @@ fn values_entry<'a, B: Backend>(at: &'a (B::Buffer, u64), bytes: &[u8]) -> Bindi
     }
 }
 
+/// A storage binding of the first `size` bytes of `buffer`, for the helper's compute programs.
 fn storage<B: Backend>(
     binding: u32,
     buffer: &B::Buffer,
