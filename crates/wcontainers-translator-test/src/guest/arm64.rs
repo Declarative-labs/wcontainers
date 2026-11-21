@@ -250,6 +250,10 @@ impl GuestTest for Arm64 {
         u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
     }
 
+    fn known_failure(_: &Case, _: &Outcome, _: &Outcome) -> Option<&'static str> {
+        None
+    }
+
     fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
         unknown_after_fault(case, expected, actual);
         // Without the flags kept and with FPCR zero, the cumulative exception flags are not kept: FPSR keeps

@@ -214,6 +214,13 @@ pub(crate) fn arc_tangent(y: Extended, x: Extended) -> Wide {
     })
 }
 
+/// Whether `|y / x|` is below `2^exponent`.
+pub(crate) fn quotient_below(y: Extended, x: Extended, exponent: i32) -> bool {
+    let q = of_extended(y).div(&of_extended(x), FIRST_BITS, ROUND);
+    // `0.1… * 2^e` is below `2^exponent` for `e` up to `exponent`.
+    q.exponent().is_some_and(|e| e <= exponent)
+}
+
 /// `n * π / 4`, as `fpatan` gives for its infinite and zero operands.
 pub(crate) fn quarter_pi(n: i32) -> Wide {
     settled(|p, cc| {

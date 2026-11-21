@@ -325,6 +325,45 @@ impl GuestTest for X86_64 {
         u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
     }
 
+    /// Intel documents its transcendental instructions' results as within one unit in the last place, not as
+    /// correctly rounded, which ours are (plan 5.8): a case of one of them is a known failure where the
+    /// reference's result differs from ours by at most one unit, with C1 and the precision flag (and the
+    /// underflow flag where a register holds a denormal; the summary and busy bits where one of those is
+    /// unmasked) as its rounding left them, and in nothing else.
+    fn known_failure(case: &Case, expected: &Outcome, actual: &Outcome) -> Option<&'static str> {
+        use wcontainers_x86::x87::{
+            BUSY, C1, Extended, PRECISION, REGISTERS, SUMMARY, UNDERFLOW, neighbours,
+        };
+        let instruction = Decoder::with_ip(
+            wcontainers_x86::MODE_BITS,
+            case.code.code(),
+            CODE,
+            DecoderOptions::NONE,
+        )
+        .decode();
+        if !wcontainers_x86::x87::transcendental(instruction.mnemonic())
+            || expected.stop != actual.stop
+            || expected.changed != actual.changed
+        {
+            return None;
+        }
+        let (want, mut taken) = (&expected.state.0, actual.state.0.clone());
+        let mut flags = C1 | PRECISION;
+        let denormal = |bits: u128| Extended::from_bits(bits).exponent == 0;
+        for r in R0..R0 + REGISTERS {
+            if denormal(taken[r]) || denormal(want[r]) {
+                flags |= UNDERFLOW;
+            }
+            if neighbours(taken[r], want[r]) {
+                taken[r] = want[r];
+            }
+        }
+        let unmasked = u128::from(flags) & !want[FCW] & u128::from(PRECISION | UNDERFLOW) != 0;
+        let free = u128::from(flags | if unmasked { SUMMARY | BUSY } else { 0 });
+        taken[FSW] = taken[FSW] & !free | want[FSW] & free;
+        (taken == *want).then_some(TRANSCENDENTAL_ROUNDING)
+    }
+
     fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
         // RF is in the frame of every fault, and the runner's own trap flag in r11 after `syscall`.
         expected.state.0[RFLAGS] &= !RF;
@@ -639,6 +678,9 @@ pub fn unwritten_forms() -> Vec<String> {
         .map(|form| form.name.clone())
         .collect()
 }
+
+/// The reason of a transcendental instruction's known failure.
+pub const TRANSCENDENTAL_ROUNDING: &str = "Intel's transcendental result is within one unit in the last place, not correctly rounded (SDM Vol. 1 8.3.10)";
 
 /// Why a default code has no form yet: the x87 unit, MMX registers and `fxsave` are milestone X7's (plan 9).
 pub const MILESTONE_X7: &str =

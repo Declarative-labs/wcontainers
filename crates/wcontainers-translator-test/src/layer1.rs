@@ -229,8 +229,16 @@ pub fn on_reference<G: GuestTest>(reference: &mut Reference, case: &Case) -> Out
     }
 }
 
+/// How the two sides of a case agreed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Agreement {
+    Same,
+    /// They differ where the reference is known to fail, for this reason.
+    KnownFailure(&'static str),
+}
+
 /// Compare one case on both sides; describe the difference if there is one.
-pub fn compare<G: GuestTest>(reference: &mut Reference, case: &Case) -> Result<(), String> {
+pub fn compare<G: GuestTest>(reference: &mut Reference, case: &Case) -> Result<Agreement, String> {
     compare_outcome::<G>(reference, case, translated::<G>(case))
 }
 
@@ -239,11 +247,14 @@ pub fn compare_outcome<G: GuestTest>(
     reference: &mut Reference,
     case: &Case,
     actual: Outcome,
-) -> Result<(), String> {
+) -> Result<Agreement, String> {
     let mut expected = on_reference::<G>(reference, case);
     G::reconcile(case, &mut expected, &actual);
     if expected == actual {
-        return Ok(());
+        return Ok(Agreement::Same);
+    }
+    if let Some(reason) = G::known_failure(case, &expected, &actual) {
+        return Ok(Agreement::KnownFailure(reason));
     }
     let mut report = format!(
         "code {:02x?} ({})\n  reference: {:?}\n  translated: {:?}\n",

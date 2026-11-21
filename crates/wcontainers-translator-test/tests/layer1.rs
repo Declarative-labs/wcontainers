@@ -15,8 +15,8 @@ use wcontainers_arm64::Arm64;
 use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
-    compare, compare_outcome, on_reference, translated, translated_in_chrome, translated_on,
-    translated_with,
+    Agreement, compare, compare_outcome, on_reference, translated, translated_in_chrome,
+    translated_on, translated_with,
 };
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_x86::X86_64;
@@ -55,10 +55,14 @@ fn sample_matches_the_cpu_in_chrome<G: GuestTest>() {
     let outcomes = translated_in_chrome::<G>(&all);
     let mut reference = Reference::start(&G::REFERENCE);
     let mut failures = Vec::new();
+    let mut known = Known::default();
     for ((name, case), outcome) in sample.iter().zip(outcomes) {
-        if let Err(error) = compare_outcome::<G>(&mut reference, case, outcome) {
-            eprintln!("{name} in Chrome: {error}");
-            failures.push(name.clone());
+        match compare_outcome::<G>(&mut reference, case, outcome) {
+            Err(error) => {
+                eprintln!("{name} in Chrome: {error}");
+                failures.push(name.clone());
+            }
+            Ok(agreement) => known.add(name, agreement),
         }
     }
     eprintln!(
@@ -66,17 +70,41 @@ fn sample_matches_the_cpu_in_chrome<G: GuestTest>() {
         sample.len(),
         failures.len()
     );
+    known.report("layer 1 in Chrome");
     assert!(failures.is_empty());
+}
+
+/// The known failures of the reference met, counted by form and reason.
+#[derive(Default)]
+struct Known(BTreeMap<(String, &'static str), u64>);
+
+impl Known {
+    fn add(&mut self, form: &str, agreement: Agreement) {
+        if let Agreement::KnownFailure(reason) = agreement {
+            *self.0.entry((form.to_string(), reason)).or_default() += 1;
+        }
+    }
+
+    /// One line for each form and reason, and the total.
+    fn report(&self, what: &str) {
+        for ((form, reason), n) in &self.0 {
+            eprintln!("{what}: {form}: {n} known failures: {reason}");
+        }
+        eprintln!(
+            "{what}: {} known failures in all",
+            self.0.values().sum::<u64>()
+        );
+    }
 }
 
 /// Runs `count` cases of each form chosen by `WC_LAYER1_FORMS`, `WC_LAYER1_JOBS` forms at once, each case
 /// through `check` with a reference runner of its own; prints the summary, its first words `layer 1` and
-/// `list`, and returns the failing forms' names, sorted.
+/// `list`, and the known failures met, and returns the failing forms' names, sorted.
 fn run_forms<G: GuestTest>(
     forms: &[G::Form],
     count: u32,
     list: &str,
-    check: impl Fn(&mut Reference, &G::Form, &Case) -> Result<(), String> + Sync,
+    check: impl Fn(&mut Reference, &G::Form, &Case) -> Result<Agreement, String> + Sync,
 ) -> Vec<String> {
     let seed = setting("WC_LAYER1_SEED", 1);
     let jobs = setting("WC_LAYER1_JOBS", 1).max(1);
@@ -91,6 +119,7 @@ fn run_forms<G: GuestTest>(
         })
         .collect();
     let failures = Mutex::new(Vec::new());
+    let known = Mutex::new(Known::default());
     // Reference runners not in use; a form takes one, or starts one when none is free.
     let free = Mutex::new(Vec::new());
     at_once(jobs, chosen.len() as u64, |i| {
@@ -103,7 +132,10 @@ fn run_forms<G: GuestTest>(
         config.max_global_rejects = REJECTS_PER_CASE * count;
         let mut runner = generator(seed, name, config);
         let result = runner.run(&G::cases(form), |case| {
-            check(&mut reference.borrow_mut(), form, &case).map_err(TestCaseError::fail)
+            let agreement =
+                check(&mut reference.borrow_mut(), form, &case).map_err(TestCaseError::fail)?;
+            known.lock().unwrap().add(name, agreement);
+            Ok(())
         });
         free.lock().unwrap().push(reference.into_inner());
         if let Err(error) = result {
@@ -129,6 +161,10 @@ fn run_forms<G: GuestTest>(
     if !groups.is_empty() {
         eprintln!("layer 1 failing by group: {groups:?}");
     }
+    known
+        .into_inner()
+        .unwrap()
+        .report(&format!("layer 1{list}"));
     failures
 }
 
@@ -180,7 +216,7 @@ fn unoffered_forms_are_illegal<G: GuestTest>() {
                     .entry(G::form_name(form).to_string())
                     .or_default() += 1;
             }
-            Ok(())
+            Ok(Agreement::Same)
         },
     );
     eprintln!(
@@ -203,8 +239,9 @@ fn hand_cases_do_what_they_must<G: GuestTest>() {
     for designed in &all {
         let name = designed.name;
         if designed.compared {
-            compare::<G>(&mut reference, &designed.case)
+            let agreement = compare::<G>(&mut reference, &designed.case)
                 .unwrap_or_else(|report| panic!("{name}: {report}"));
+            assert_eq!(agreement, Agreement::Same, "{name}");
         }
         let (outcome, machine) = translated_on::<G>(&designed.case, |_| {});
         if let Some(tracking) = designed.tracking {
@@ -246,10 +283,17 @@ fn bytes_in_no_form_stop_as_on_the_cpu<G: GuestTest>() {
     let mut runner =
         TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
     let reference = RefCell::new(Reference::start(&G::REFERENCE));
+    let known = RefCell::new(Known::default());
     let result = runner.run(&G::no_form(seed), |case| {
-        compare::<G>(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)
+        let agreement =
+            compare::<G>(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)?;
+        known
+            .borrow_mut()
+            .add(&G::disassemble(case.code.code()), agreement);
+        Ok(())
     });
     eprintln!("layer 1: {count} cases in no form, seed {seed}");
+    known.borrow().report("layer 1, no form");
     result.unwrap();
 }
 

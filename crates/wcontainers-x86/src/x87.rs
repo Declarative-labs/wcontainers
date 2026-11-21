@@ -1484,15 +1484,13 @@ impl<'a> Unit<'a> {
                 }
                 let round = |w| round_register(w, fcw, Precision::Extended);
                 match operation {
-                    Operation::Cosine => both(round(transcendental::cosine(x))),
+                    Operation::Sine => both(sine(x, fcw)),
+                    Operation::Cosine => both(cosine(x, fcw)),
                     Operation::Tangent => (
                         round(transcendental::tangent(x)),
                         exact_value(Extended::ONE),
                     ),
-                    _ => (
-                        round(transcendental::sine(x)),
-                        round(transcendental::cosine(x)),
-                    ),
+                    _ => (sine(x, fcw), cosine(x, fcw)),
                 }
             }
         };
@@ -1532,18 +1530,70 @@ impl<'a> Unit<'a> {
         let rounded = if let Some(r) = special_pair(x, y) {
             r
         } else {
-            let denormal = x.class() == Class::Denormal || y.class() == Class::Denormal;
-            if !self.raise(if denormal { DENORMAL } else { 0 }) {
-                return;
-            }
-            match self.code.operation {
+            let rounded = match self.code.operation {
                 Operation::ArcTangent => angle(y, x, fcw),
                 Operation::Logarithm => logarithm(y, x, fcw),
                 _ => logarithm_plus_one(y, x, fcw),
+            };
+            // An invalid operation or a division by zero is met instead of a denormal operand (seen on the
+            // reference).
+            let denormal = x.class() == Class::Denormal || y.class() == Class::Denormal;
+            let first = rounded.exceptions & (INVALID | DIVIDE_BY_ZERO) != 0;
+            if !first && !self.raise(if denormal { DENORMAL } else { 0 }) {
+                return;
             }
+            rounded
         };
         self.deliver(1, rounded);
     }
+}
+
+/// The transcendental instructions, whose results Intel documents as within one unit in the last place.
+pub fn transcendental(m: iced_x86::Mnemonic) -> bool {
+    use iced_x86::Mnemonic::*;
+    matches!(
+        m,
+        Fsin | Fcos | Fsincos | Fptan | Fpatan | F2xm1 | Fyl2x | Fyl2xp1
+    )
+}
+
+/// Whether two 80-bit values are finite and neighbours, one the next value up from the other.
+pub fn neighbours(a: u128, b: u128) -> bool {
+    let (a, b) = (Extended::from_bits(a), Extended::from_bits(b));
+    let finite = |v: Extended| matches!(v.class(), Class::Zero | Class::Denormal | Class::Normal);
+    if !finite(a) || !finite(b) {
+        return false;
+    }
+    let (a, b) = (a.float(), b.float());
+    let up = |v: X87DoubleExtended| v.next_up().value.to_bits();
+    up(a) == b.to_bits() || up(b) == a.to_bits()
+}
+
+/// Below 2^-68 the reference gives a sine and a cosine rounded to the nearest whatever the rounding control
+/// (the operand, and one), and below 2^-40 an arc tangent of its quotient (seen on the reference).
+const NEAREST_SINE_BELOW: i32 = -68;
+const NEAREST_ARC_TANGENT_BELOW: i32 = -40;
+
+/// The control word with the rounding control at the nearest.
+fn to_nearest(fcw: u16) -> u16 {
+    fcw & !(FIELD << ROUNDING_SHIFT)
+}
+
+/// The control word a sine or cosine of `x` is rounded by.
+fn trigonometric_control(x: Extended, fcw: u16) -> u16 {
+    if i32::from(x.exponent) - BIAS < NEAREST_SINE_BELOW {
+        to_nearest(fcw)
+    } else {
+        fcw
+    }
+}
+
+fn sine(x: Extended, fcw: u16) -> Rounded<Extended> {
+    rounded_wide(transcendental::sine(x), trigonometric_control(x, fcw))
+}
+
+fn cosine(x: Extended, fcw: u16) -> Rounded<Extended> {
+    rounded_wide(transcendental::cosine(x), trigonometric_control(x, fcw))
 }
 
 /// The trigonometric instructions take operands below 2^63.
@@ -1588,7 +1638,12 @@ fn angle(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
         (Class::Infinity, _) | (_, Class::Zero) => QUARTERS_IN_PI / 2,
         (_, Class::Infinity) if x.sign => QUARTERS_IN_PI,
         (_, Class::Infinity) => return signed_zero(y.sign),
-        _ => return rounded_wide(transcendental::arc_tangent(y, x), fcw),
+        _ => {
+            let near_quotient =
+                !x.sign && transcendental::quotient_below(y, x, NEAREST_ARC_TANGENT_BELOW);
+            let control = if near_quotient { to_nearest(fcw) } else { fcw };
+            return rounded_wide(transcendental::arc_tangent(y, x), control);
+        }
     };
     rounded_wide(
         transcendental::quarter_pi(if y.sign { -quarters } else { quarters }),
@@ -1624,20 +1679,20 @@ fn logarithm(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
 }
 
 /// `fyl2xp1` (Intel SDM Vol. 2A, FYL2XP1's table); at -1 and below, which the manual leaves undefined, the
-/// reference leaves ST(0), inexact.
+/// reference takes the logarithm as negative for an infinite or zero ST(1), else leaves ST(0), inexact.
 fn logarithm_plus_one(y: Extended, x: Extended, fcw: u16) -> Rounded<Extended> {
     let (yc, xc) = (y.class(), x.class());
     match (yc, xc) {
         (_, Class::Infinity) if x.sign => invalid(),
         (Class::Zero, Class::Infinity) | (Class::Infinity, Class::Zero) => invalid(),
         (_, Class::Infinity) => signed_infinity(y.sign),
+        (_, Class::Zero) | (Class::Zero, _) => signed_zero(y.sign != x.sign),
+        (Class::Infinity, _) => signed_infinity(y.sign != x.sign),
         _ if x.sign && i32::from(x.exponent) >= BIAS => Rounded {
             value: Some(x),
             exceptions: PRECISION,
             up: false,
         },
-        (_, Class::Zero) | (Class::Zero, _) => signed_zero(y.sign != x.sign),
-        (Class::Infinity, _) => signed_infinity(y.sign != x.sign),
         _ => rounded_wide(transcendental::logarithm_plus_one(y, x), fcw),
     }
 }

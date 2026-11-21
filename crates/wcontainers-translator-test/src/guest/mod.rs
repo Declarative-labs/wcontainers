@@ -84,6 +84,9 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     /// Make the reference's outcome what the translated one must equal: take over what the architecture
     /// leaves open (registers and memory after a faulting access), and the float flags not kept.
     fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome);
+    /// Why the reference's outcome, reconciled, differing from the translated one is a known failure of the
+    /// reference CPU (where it is documented not to give the exact result), or none.
+    fn known_failure(case: &Case, expected: &Outcome, actual: &Outcome) -> Option<&'static str>;
     /// A reference signal as a generic stop, given where the instruction was and its length.
     fn reference_stop(signal: &Signal, length: u8) -> Stop;
     /// The `si_code` Linux gives the breakpoint trap whose detail is `detail`.
