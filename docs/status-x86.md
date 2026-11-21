@@ -126,7 +126,59 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   program matches Linux at every look-ahead in wasmtime and Chrome (see "X7, run 1"). Run 2 (2026-11-21) wrote
   the eight transcendental instructions (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`,
   `fyl2xp1`), layer 1's count of the reference's known failures, and the long double program's transcendental
-  part (see "X7, run 2").
+  part (see "X7, run 2"). Run 3 (2026-11-21) fixed what the independent check of X7 found: layer 1's known
+  failures passed cases that were fixed rules of the reference, under a false reason; `fscale` by zero;
+  `fxsave` and `fxrstor` called the hook 16 times; and four smaller ones (see "X7, run 3").
+
+## X7, run 3 (2026-11-21)
+
+Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws, load 0 to 43 with my jobs) for lint, the
+x86 crate's tests, layer 1 while building and the program tests; the i7-8750H (load 0 to 2.1 before my jobs)
+for probes and layer 1's verdict; the Mac for git, formatting and the literal check. Scratch `x7r3/`.
+
+The check's findings:
+- [blocking] Layer 1's known failures. Probes on the i7-8750H showed each group the check named is a fixed rule
+  of the reference, now built in the unit (`crate::x87`, `crate::transcendental`, each with its comment) and
+  written into plan 5.8:
+  - a sine or cosine below 2^-68 leaves C1 clear (it was rounded to the nearest already);
+  - `f2xm1` below 2^-68 is the operand times ln 2 truncated to 66 bits, rounded once in the program's mode
+    (scratch `x7r3/hyp.py` against the probe: 1,500 cases in two modes and 400 at each of exponents -69 to
+    -71 and -16382 in two modes, every one equal; correct rounding differs in about one in ten; from -68 up
+    neither model holds, so there it stays correctly rounded);
+  - `fpatan` of a positive x and a quotient below 2^-40 is the quotient truncated to 67 bits, rounded once in
+    the program's mode, flagged inexact (300 cases at quotient exponents -45, -41 and -100, three modes, every
+    one equal; at -16300 too). This replaces run 2's "rounded to the nearest in every mode", which held only
+    where the quotient was exact;
+  - `f2xm1` of -1 and 1, `fyl2x` of 2^k and `fyl2xp1` of 2^k - 1 (k not 0) are flagged inexact although exact;
+    for a negative k the two logarithms are taken as just below the product in magnitude, so C1 is set to the
+    nearest and the modes toward zero give the next value down (scratch `x7r3/exact.sh`: 528 cases, every
+    mode; `fyl2x` of 1 stays exact).
+  `known_failure` now passes a case only in two ways, each with its own reason: a register is one unit from
+  ours and nothing else differs but C1 and the precision flag (the underflow flag only where that register is
+  a denormal, which also answers the check's minor finding on the underflow flag; the summary and busy bits
+  where one of those is unmasked), "within one unit in the last place"; or every register is ours and only C1
+  differs, "Intel's approximation lies on the other side of the correctly rounded result". The second is true
+  by what C1 means, and `tests/transcendental.rs` now checks our C1 and precision flag against mpmath, so
+  neither reason can hide an error of ours. Measured (rented machine, the 8 forms and `fscale`, 3,000 a form):
+  seed 70708, the check's seed, 0 failing and 71 known failures (the check counted 923 there), 22 of them C1
+  only; seed 70712, 0 failing and 52 (14 C1 only). The i7-8750H at seed 70708 gives the same 71, form by form.
+- [minor] `fscale` by +0 or -0 leaves ST(0), a denormal with only the denormal flag (Intel's table); a
+  pseudo-denormal is written as the normal it equals (found at seed 70708 on both machines, fixed). The
+  check's case, seed 70712 at 3,000: passes on the rented machine (the laptop's verdict below).
+- [minor] `fxsave`, `fxrstor`, `fnsave` and `frstor` move the eight registers inline: for each physical R(n)
+  the meaning works out ST((n - TOP) mod 8)'s slot from the TOP in the block and moves the MMX register bit and
+  `X87High(n)`; the hook's `Register` and `SetRegister` operations are gone. `fxsave` and `fxrstor` call no
+  hook now (MXCSR's flags read while not kept still counts as before, plan 5.8), so glibc's lazy-binding
+  trampoline gets no x87 warning.
+- [minor] Plan 5.8 now says the wide semantics has 18 exponent bits and why; listed under Departures.
+- [minor] `tests/transcendental.txt`: 640 values, 80 for each of the eight instructions (`fsincos` checks
+  both results), each with the C1 and precision flags expected, from scratch `x7r3/gen2.py` (mpmath 1.3.0, seed
+  7101, the reference's rules above applied where they hold). Pass (1.0 s).
+- [minor] Literal baseline lines of the track's crates, after this run (the Mac, the check exits 0, marks 0):
+  `literals.baseline` 8,794 lines, of them wcontainers-x86 117, wcontainers-guest-cpu 28,
+  wcontainers-translator-test 2,007, wcontainers-translator 72; none added this run (8,794 at run 2's end).
+
+Measured: see the lines above, and below as the runs end.
 
 ## X7, run 2 (2026-11-21)
 
@@ -163,8 +215,10 @@ Measured:
 - Layer 1 on the rented x86-64 machine (Sapphire Rapids), the eight forms, seeds 9808, 9810, 9811 and 9812 at
   2,000 cases a form, 8 at once (about 35 s a seed): 0 failing; known failures 599, 631, 567 and 590 of 16,000
   (per form at seed 9812: F2xm1 56, Fcos 205, Fpatan 11, Fptan 12, Fsin 201, Fsincos 77, Fyl2x 7, Fyl2xp1 21).
-  Fsin and Fcos count most because layer 1 draws many operands near the edges, where the directed modes
-  differ. Seeds 9801 to 9807 found the rules above (each fixed, then rerun).
+  (Corrected at run 3: the reason given here, operands near the edges in the directed modes, was wrong. The
+  independent check found that about 89% of these were cases with the reference's result, differing only in
+  C1 or the precision flag by three fixed rules of the reference the unit did not follow, which run 3
+  builds; see "X7, run 3".) Seeds 9801 to 9807 found the rules above (each fixed, then rerun).
 - The verdict, the i7-8750H (load 1 to 3.7 with another track's job beside it, 4 at once, the tree at 5aff8eed):
   every x87 and MMX form and every other form whose name holds "mm", 715 forms, 1,000 cases a form, seed 9821:
   0 failing (1,932 s); 305 known failures: F2xm1 33, Fcos 117, Fpatan 11, Fptan 8, Fsin 96, Fsincos 27, Fyl2x 1,
@@ -3337,8 +3391,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X7 run 3: the test data now comes from scratch `x7r3/gen2.py <mpmath dir> 7101 16` (adds `fsincos`, the
+  flags and the reference's rules). On the laptop, in `~/wcontainers-x86/x7`: `exact.sh` (the exact results),
+  `trans ... | python3 -I c1.py mpmath-1.3.0 <op>` (C1 against the true direction) and `... | python3 -I hyp.py
+  mpmath-1.3.0 <op> <n|d|u|z>` (the tiny-operand models); copies in scratch `x7r3/`.
 - X7 run 2: the transcendental values against mpmath, `cargo test -p wcontainers-x86 --test transcendental`
-  (its data from scratch `x7/probes/gen.py <mpmath dir> <seed> <count>`, mpmath 1.3.0's sources in
+  (its data first from scratch `x7/probes/gen.py <mpmath dir> <seed> <count>`, mpmath 1.3.0's sources in
   `x7/dl-mpmath`); the reference's results for given operands, scratch `x7/probes/trans.c` (`trans <op>
   <count> <seed> <fcw hex> <class>` or `... hex <st0> [<st1>]`) with `model.py` comparing them to mpmath. Layer 1
   prints "known failures" per form with their reason at the end of every run.
@@ -3826,6 +3884,12 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   every mode), so that their underflow flag matches where the correctly rounded result would cross into the
   denormals; plan 5.8 said "rounded once in the program's rounding mode". Their remaining one-unit
   differences are layer 1 known failures, as the plan says. Plan 5.8 now describes what was built.
+- X7 run 3: the wide semantics has 18 exponent bits, not the plan's 15 (built so at run 1, said in its notes
+  but not here until the check found it): with 15, a product, a quotient or an `fscale` of 80-bit values could
+  leave the range before the one rounding that must see its overflow or underflow. Plan 5.8 now says 18. The
+  transcendental instructions now follow four more fixed rules of the reference where it is not correctly
+  rounded (tiny `f2xm1` and `fpatan`, exact results flagged inexact; plan 5.8), and `fxsave`, `fxrstor`,
+  `fnsave` and `frstor` move the registers inline rather than through the hook (plan 5.8 now says so).
 - X7 run 1: `fsqrt`'s root takes astro-float's square root to the nearest at 128 bits as a guess and settles
   the truncated 66 bits by exact squares, where plan 5.8 said "rounded toward zero": astro-float has no
   directed rounding (every mode it has rounds to the nearest). The dependency is `astro-float-num`, the crate
