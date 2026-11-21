@@ -22239,7 +22239,6 @@ code	third_party/wgpu/src/util/texture_blitter.rs	str	TextureBlitterBuilder<'a>:
 code	third_party/wgpu/src/util/texture_blitter.rs	str	TextureBlitterBuilder<'a>::build	"wgpu::util::TextureBlitter::sampler"
 policy	generated	crates/kernel/implementation/linux/linux/auxvec.rs
 policy	generated	crates/kernel/implementation/linux/linux/elf_uapi.rs
-policy	generated	crates/kernel/implementation/linux/linux/errno.rs
 policy	generated	crates/kernel/implementation/linux/linux/general.rs
 policy	generated	crates/kernel/implementation/linux/linux/if_arp.rs
 policy	generated	crates/kernel/implementation/linux/linux/ioctl.rs
@@ -22382,13 +22381,6 @@ policy	generated	third_party/wgpu/src/backend/webgpu/webgpu_sys/mod.rs
 redefinition	crates/executor/implementation/unicorn/backend/src/main.rs	int	PORT	PORT = 9000
 redefinition	crates/executor/implementation/unicorn/layer1.rs	int	MAX_RW_COUNT	MAX_RW_COUNT = 2147479552
 redefinition	crates/executor/implementation/unicorn/layer1.rs	int	linux_extra_ipc::IPC_NOWAIT	IPC_NOWAIT = 2048
-redefinition	crates/executor/implementation/unicorn/network.rs	int	EADDRINUSE	EADDRINUSE = 98
-redefinition	crates/executor/implementation/unicorn/network.rs	int	ECONNABORTED	ECONNABORTED = 103
-redefinition	crates/executor/implementation/unicorn/network.rs	int	ECONNREFUSED	ECONNREFUSED = 111
-redefinition	crates/executor/implementation/unicorn/network.rs	int	EHOSTUNREACH	EHOSTUNREACH = 113
-redefinition	crates/executor/implementation/unicorn/network.rs	int	ENETUNREACH	ENETUNREACH = 101
-redefinition	crates/executor/implementation/unicorn/network.rs	int	ENOENT	ENOENT = 2
-redefinition	crates/executor/implementation/unicorn/network.rs	int	ETIMEDOUT	ETIMEDOUT = 110
 redefinition	crates/executor/implementation/unicorn/standin.rs	int	copy_touched::CHUNK	CHUNK = 4096
 redefinition	crates/executor/implementation/unicorn/tests/java.rs	int	ESR_EC_DABT_LOW	ESR_EC_DABT_LOW = 36
 redefinition	crates/executor/implementation/unicorn/tests/java.rs	int	ESR_EC_SHIFT	ESR_EC_SHIFT = 26
@@ -22540,10 +22532,6 @@ redefinition	crates/kernel/implementation/linux/credentials.rs	int	CAP_SETUID	CA
 redefinition	crates/kernel/implementation/linux/credentials.rs	int	CAP_SYS_ADMIN	CAP_SYS_ADMIN = 21
 redefinition	crates/kernel/implementation/linux/credentials.rs	int	CAP_SYS_CHROOT	CAP_SYS_CHROOT = 18
 redefinition	crates/kernel/implementation/linux/credentials.rs	int	CAP_SYS_RAWIO	CAP_SYS_RAWIO = 17
-redefinition	crates/kernel/implementation/linux/linux_extra.rs	int	ERESTARTNOHAND	ERESTARTNOHAND = 514	accepted: defined in the reviewed kernel interface; the copy here goes when kernel adopts it
-redefinition	crates/kernel/implementation/linux/linux_extra.rs	int	ERESTARTNOINTR	ERESTARTNOINTR = 513	accepted: defined in the reviewed kernel interface; the copy here goes when kernel adopts it
-redefinition	crates/kernel/implementation/linux/linux_extra.rs	int	ERESTARTSYS	ERESTARTSYS = 512	accepted: defined in the reviewed kernel interface; the copy here goes when kernel adopts it
-redefinition	crates/kernel/implementation/linux/linux_extra.rs	int	ERESTART_RESTARTBLOCK	ERESTART_RESTARTBLOCK = 516	accepted: defined in the reviewed kernel interface; the copy here goes when kernel adopts it
 redefinition	crates/kernel/implementation/linux/linux_extra.rs	int	SIGNALS	SIGNALS = 64
 redefinition	crates/kernel/implementation/linux/process.rs	int	SIGNALS	SIGNALS = 64
 redefinition	crates/kernel/implementation/linux/syscall/futex.rs	int	ROBUST_LIST_LIMIT	ROBUST_LIST_LIMIT = 2048
