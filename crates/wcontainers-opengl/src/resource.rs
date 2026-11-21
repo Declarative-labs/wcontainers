@@ -137,8 +137,12 @@ fn texture_desc<B: Backend>(screen: &Screen<B>, template: &pipe_resource) -> Opt
     if uses.intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL) {
         usage |= TextureUsage::RENDER;
     }
-    // OpenGL binds any texture as an image later (st/mesa names no image binding at creation).
-    if uses.contains(FormatUse::STORAGE_WRITE) && template.nr_samples <= 1 {
+    // OpenGL binds any colour texture as an image later (st/mesa names no image binding at
+    // creation). Depth formats are never images, whatever their caps say.
+    if uses.contains(FormatUse::STORAGE_WRITE)
+        && !format.is_depth_stencil()
+        && template.nr_samples <= 1
+    {
         usage |= TextureUsage::STORAGE;
     }
     let target = template.target();

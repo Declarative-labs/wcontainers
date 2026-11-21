@@ -897,11 +897,9 @@ fn image_views<B: Backend>(
     built: &Built<B>,
 ) -> Result<Vec<(u32, B::TextureView, bool)>, String> {
     let mut views = Vec::new();
-    for b in built
-        .bindings
-        .iter()
-        .filter(|b| b.kind == SlotKind::Storage && b.register < PIPE_MAX_SHADER_IMAGES)
-    {
+    for b in built.bindings.iter().filter(|b| {
+        b.added.is_none() && b.kind == SlotKind::Storage && b.register < PIPE_MAX_SHADER_IMAGES
+    }) {
         let image = bound
             .images
             .get(b.register as usize)
