@@ -1144,6 +1144,15 @@ impl Guest for X86_64 {
             // manual: implementation dependent); ldmxcsr refuses MXCSR's bit 17, which AMD's misaligned
             // SSE mode takes.
             Dpps | Dppd | Maskmovdqu | Ldmxcsr => true,
+            // The x87 unit's corners are the reference's: the condition codes the manual leaves undefined,
+            // `fprem`'s quotient bits a step (implementation dependent), the last-instruction pointers and
+            // the selectors the CPU deprecates, which `fnstenv`, `fnsave` and `fxsave` store; `maskmovq` as
+            // `maskmovdqu`, and the x87 side an MMX store leaves when it faults.
+            m if crate::fpu::written(m) => true,
+            Maskmovq => true,
+            _ if crate::simd::is_mmx(i) && memory_use(i).is_some_and(|k| k != AccessKind::Read) => {
+                true
+            }
             // While MXCSR's flags are not kept, these store them as last written, not as the CPU raised them.
             Stmxcsr | Vstmxcsr | Fxsave | Fxsave64 | Xsave | Xsave64 | Xsavec | Xsavec64
             | Xsaveopt | Xsaveopt64 => true,
