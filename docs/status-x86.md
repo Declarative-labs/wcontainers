@@ -4284,6 +4284,14 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Departures from the plan
 
+- X8 run 3: `xsave` and `xrstor` check an area of 832 bytes (x87, SSE and AVX state) for every list that has
+  XSAVE, also one without AVX, whose CPU would touch 576; no list built today has XSAVE without AVX. iced gives
+  their memory operand no size, so the size is the crate's (`fpu::xsave_area_bytes`), in their accesses too.
+  `xsave` reports every component it saves as in use in XSTATE_BV (allowed by Intel; the reference reports
+  what it saw), so layer 1 leaves the four out and a program compares the state they move.
+- X8 run 3: `Guest::offer_from_key` has a default body in the guest interface (the default offer's key only),
+  so that the ARM64 crate, which another track is editing, needs no change.
+
 - X8 run 1: the plan's "AVX setting" (one container setting, part of the cache key) is, by the owner's ruling,
   the per-process list of the kernel interface (`X86_64Features`) given with every translation; every told
   family, not only the v3 ones, is switched by it, and a list with a feature that has no meanings is refused by
