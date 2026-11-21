@@ -136,7 +136,10 @@ Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime`
   `fyl2xp1`), layer 1's count of the reference's known failures, and the long double program's transcendental
   part (see "X7, run 2"). Run 3 (2026-11-21) fixed what the independent check of X7 found: layer 1's known
   failures passed cases that were fixed rules of the reference, under a false reason; `fscale` by zero;
-  `fxsave` and `fxrstor` called the hook 16 times; and four smaller ones (see "X7, run 3").
+  `fxsave` and `fxrstor` called the hook 16 times; and four smaller ones (see "X7, run 3"). Run 4 (2026-11-21,
+  X7 dispatched again after the reorganization) fixed the four findings of the X6f check on main, added an MMX
+  program and an x87 state program compared with Linux at every look-ahead in wasmtime and Chrome, and verified
+  X7's bar on main from a clean build (see "X7, run 4").
 
 ## X6f, run 2 (2026-11-21)
 
@@ -169,7 +172,58 @@ scratch `x6f2/`.
   every cargo command (the workspace's `crates/*` glob); it was gone by 09:58. My copies on the rented machines
   drop such an empty folder before building (`x6f2/verify.sh`, `x6f/suite.sh`); the checkout was not touched.
 
-## X7, run 3 (2026-11-21)
+## X7, run 4 (2026-11-21)
+
+X7 dispatched again after the reorganization, with the X6f check's four findings. X7's code is all on main (merged
+by f89b6659); since run 3 other tracks' merges changed the translator (the progress count, the native output)
+and the test crate, so this run verified X7's bar on main from a clean build. Machines: the rented x86-64 machine
+(96 processors, kernel 7.0.0-1018-aws, still 5-level paging, load 0.3 to 36 during my jobs), the i7-8750H (load
+3 to 7, another track's C++ build beside mine), the rented ARM64 machine, the Mac (load 3 to 10) for git and the
+literal check. Logs in scratch `x7r4/`.
+
+The X6f check's findings:
+- [minor] The stale X6 run 3 question under "For the orchestrator" now says it is answered and what stays open.
+- [minor] The executor's `None` link address: recorded under "For the orchestrator" for the runtime track (the
+  executor's line, and that no test drives the key with `Some`).
+- [minor] The lint reaching the reviewed kernel interface: the track's lint now runs `cargo clippy --no-deps`
+  (scratch `x7r4/verify.sh`); the two `type_complexity` errors in `crates/kernel/interface.rs` are under "For
+  the orchestrator", for the owner.
+- [minor] Plan 3.4 now gives the measured run-time translations left with the link address (hello at -O0: 22;
+  the check's computed-goto program at -O2: 26, 48 without the address).
+
+Added: two programs of what X7 adds, each compared with Linux at every optimisation level, in wasmtime at none,
+full and bounded 256 (speed and size) with registers and memory against none, and in Chrome every way
+(`mmx_and_x87_state_match_linux_x86_64`, `mmx_and_x87_state_match_linux_in_chrome_x86_64`):
+- `programs/x86_64/mmx.c`: every MMX arithmetic, compare, logic, pack, unpack and shift instruction from a
+  register and from memory over 100 operand pairs, the SSE and SSSE3 forms on MMX registers (`pshufw`,
+  `palignr`, `pinsrw`, `pextrw`, `pmovmskb`, `pshufb`, the horizontal adds, `pmaddubsw`, `pmulhrsw`, the sign
+  and absolute ones), `movq2dq`, `movdq2q`, the packed conversions, `maskmovq`, `movntq`, and the x87 side:
+  tags and TOP after an MMX instruction and after `emms`, MMX register 3 seen through `fxsave`, an x87 load
+  into the full stack MMX leaves. Inline assembly, since clang now lowers MMX intrinsics to SSE.
+- `programs/x86_64/x87_state.c`: precision control (the reserved setting too) by rounding control, `fxam`'s
+  classes (pseudo-NaN, pseudo-denormal, unnormal, empty), `fcomi`, `fucomi`, `fcom`, `ftst`, `fcmovb` over
+  every pair, integer stores of each width in each mode, `fisttp`, `fbstp`/`fbld`, `frndint`, `fscale`,
+  `fxtract`, `fprem` and `fprem1` through their partial remainders (249 passes for 1e4000 by 0.7), the seven
+  constants in each mode, every masked exception and both stack faults, `fnstenv`/`fldenv`,
+  `fnsave`/`frstor`, `fxsave`/`fxrstor` with a changed TOP and tag byte, and `fxch`, `fincstp`, `fdecstp`,
+  `ffree`.
+Both matched on the first run, at every level and look-ahead.
+
+Measured:
+- Rented x86-64 machine, a new build folder (`--name x7r4`, clean), main at d6cdc8d9 with other tracks'
+  uncommitted edits in the copy (`x7r4/verify.log`, 714 s in all): `cargo fmt --check` of the five crates;
+  clippy `--no-deps` with warnings denied for them and the wasmtime executor, all targets; the browser crate's
+  wasm32 clippy for both guests: pass. Unit tests of the translator, guest-cpu, x86 (the 640 transcendental
+  values among them) and arm64 crates and the test crate's library: pass. `--test programs --test checks
+  --test smoke -- x86_64`: 25 + 2 + 6 passed, 0 failed (437 s; `long_double` and the new test among them).
+  Chrome, `long_double` and the new test every way: pass. Layer 2 x86, seed 9853, 10,000 programs, all on the
+  CPU, 96 at once: 0 failing (120 s; 3,461 faulted, 1,118 left to an address at full, 23,741 stacks lost,
+  23,624 pieces forgotten).
+- Rented ARM64 machine (`x7r4/arm.log`): ARM64's programs, output, browser, layer 2, valid and checks tests: all
+  pass (430 s).
+- The literal check (the Mac, `x7r4/literals.log`) exits 1, with no finding in this track's crates: its six
+  new findings are in OpenGL and NIR. Baseline lines of the track's crates, unchanged since X6f run 2: x86
+  134, guest-cpu 26, the test crate 1,746, the translator 8 (the C programs are not scanned).
 
 Machines: the rented x86-64 machine (96 cores, kernel 7.0.0-1018-aws, load 0 to 43 with my jobs) for lint, the
 x86 crate's tests, layer 1 while building and the program tests; the i7-8750H (load 0 to 2.1 before my jobs)
@@ -3451,8 +3505,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   copy (a diagnostic, never committed) or read the 5-level paging answers by hand; the verdict is the
   laptop's, through `x5/run5/laptop-bg.sh <name> 'ARM_JOBS=4 ~/wcontainers-x86/x7/l1-x87.sh 1000 <seed>'`.
   The long double program: `--test programs long_double_matches_linux_x86_64` and `--test browser
-  long_double_matches_linux_in_chrome_x86_64`. The reference probes: scratch `x7/probes/*.c`, built with gcc on
-  the laptop.
+  long_double_matches_linux_in_chrome_x86_64`, and the same for `mmx_and_x87_state` (X7 run 4). The reference
+  probes: scratch `x7/probes/*.c`, built with gcc on the laptop. X7 run 4's whole check in one command:
+  `x86-run <checkout> --name <new name> -- "$(cat <scratch>/x7r4/verify.sh)"`; layer 1's verdict on the laptop:
+  `<scratch>/x7r4/laptop-bg.sh <name> 'ARM_JOBS=4 ~/wcontainers-x86/x7/l1-x87.sh 1000 <seed>'` (this copy of
+  `laptop-bg.sh` reads the one checkout and puts `scratch_x87.rs` and `l1-x87.sh` in place).
 
 - X6f (on the rented x86-64 machine): `cargo test -p wcontainers-translator-test --test programs --
   main_is_in_the_full_translation` (both guests; translation only, no reference), and the X6 programs below,
