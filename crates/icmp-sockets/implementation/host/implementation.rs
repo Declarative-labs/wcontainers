@@ -22,7 +22,9 @@ use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal_information::PollEvents;
 
 use shared::datagram::addresses::local_address;
-use shared::datagram::exchange::{ErrorQueue, dropped_packets, send_message, unsent_bytes};
+use shared::datagram::exchange::{
+    ErrorQueue, dropped_packets, receive_in_order, reports_requested, send_message, unsent_bytes,
+};
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
 use shared::datagram::receive::{self, Ancillary, ControlBuffer, Headers};
 use shared::datagram::send::{Control, Refusal, SendState};
@@ -353,30 +355,73 @@ impl IcmpSockets for HostIcmpSockets {
             // Forgetting the sends that can no longer be rejected is tried again at the next such send.
             let _ = state.errors.settle(fd, &self.shortfalls);
             socket.note_kept_entries(state);
+            state.errors.read_first();
         }
         match sent {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if reports_requested(&fields.transmit_reports) {
+                    state.errors.read_first();
+                }
+                Ok(())
+            }
             Err(HostError::Errno(libc::EMSGSIZE)) => {
                 let error = state.errors.message_too_long(fd, &self.shortfalls);
                 socket.note_kept_entries(state);
                 Err(error)
             }
-            Err(error) => Err(SendError::Host(error)),
+            Err(HostError::WouldBlock) => Err(SendError::Host(HostError::WouldBlock)),
+            // Linux may fail a send with the socket error an ICMP error set, which a receive looks for.
+            Err(error) => {
+                state.errors.keep_host_entries(fd, &self.shortfalls);
+                socket.note_kept_entries(state);
+                Err(SendError::Host(error))
+            }
         }
     }
 
     fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<Received, HostError> {
-        let fd = socket.fd();
         let mut state = socket.state.borrow_mut();
-        let state = &mut *state;
+        receive_in_order(
+            socket.fd(),
+            &mut *state,
+            &self.shortfalls,
+            into,
+            |state| &mut state.errors,
+            |state, into| self.take_error_entry(socket, state, into),
+            |state, into| self.receive_packet(socket, state, into),
+        )
+    }
+
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
+        unsent_bytes(socket.fd())
+    }
+
+    async fn wait_for_events(
+        &self,
+        socket: &Self::Socket,
+        interest: PollEvents,
+    ) -> Result<PollEvents, HostError> {
+        socket.watched.wait_for_events(interest).await
+    }
+
+    fn close(&self, socket: Self::Socket) {
+        drop(socket);
+    }
+}
+
+impl HostIcmpSockets {
+    /// The next ICMP error or transmit report of the error queue, kept entries first, past entries that give none.
+    fn take_error_entry(
+        &self,
+        socket: &HostIcmpSocket,
+        state: &mut SocketState,
+        into: &mut [u8],
+    ) -> Result<Received, HostError> {
+        let fd = socket.fd();
         loop {
             let next = state.errors.next(fd, &self.shortfalls);
             socket.note_kept_entries(state);
-            let entry = match next {
-                Ok(entry) => entry,
-                Err(HostError::WouldBlock) => break,
-                Err(error) => return Err(error),
-            };
+            let entry = next?;
             let received = state.errors.received(
                 &self.shortfalls,
                 &entry,
@@ -400,6 +445,16 @@ impl IcmpSockets for HostIcmpSockets {
                 return Ok(received);
             }
         }
+    }
+
+    /// The next echo reply, written whole from its IP header.
+    fn receive_packet(
+        &self,
+        socket: &HostIcmpSocket,
+        state: &mut SocketState,
+        into: &mut [u8],
+    ) -> Result<Received, HostError> {
+        let fd = socket.fd();
         let mut control = ControlBuffer::new();
         // Linux cuts a ping socket's packet to the buffers given and tells only what it copied.
         let mut tail = [MaybeUninit::<u8>::uninit(); LARGEST_MESSAGE];
@@ -445,22 +500,6 @@ impl IcmpSockets for HostIcmpSockets {
         }
         self.fields_not_given.add();
         Ok(Received::Packet(fields))
-    }
-
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
-        unsent_bytes(socket.fd())
-    }
-
-    async fn wait_for_events(
-        &self,
-        socket: &Self::Socket,
-        interest: PollEvents,
-    ) -> Result<PollEvents, HostError> {
-        socket.watched.wait_for_events(interest).await
-    }
-
-    fn close(&self, socket: Self::Socket) {
-        drop(socket);
     }
 }
 

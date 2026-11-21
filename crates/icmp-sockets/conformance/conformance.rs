@@ -592,14 +592,24 @@ pub fn headers_are_as_on_the_wire(packet: &[u8], on_the_wire: &[u8]) {
 }
 
 /// An echo request to a local address gets its reply, written whole from its IP header as it was on the wire, with the identifier bound.
-fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
+fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr, options: &Ipv4Options) {
     let version = version_of(to);
     let socket = opened(&sockets, version);
     sockets
         .bind_identifier(&socket, IDENTIFIER, IdentifierSharing::Exclusive)
         .expect("the identifier binds");
     let wire = Capture::on(SELF_LINK);
-    ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+    let request = echo(version, PAYLOAD);
+    let header = match to {
+        IpAddr::V4(address) => IpHeaderFields::V4(v4_header(Ipv4RouteSelectors {
+            options,
+            ..v4_route(address, &request)
+        })),
+        IpAddr::V6(_) => header_to(to, &request),
+    };
+    sockets
+        .send_to(&socket, header, plain_fields(), &request)
+        .expect("the request is sent");
     let mut into = buffer();
     let fields = receive_packet(&sockets, &socket, &mut into);
     let packet = &into[..fields.length];
@@ -618,6 +628,9 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
     });
     assert_eq!(packet.len(), on_the_wire.len());
     headers_are_as_on_the_wire(packet, &on_the_wire);
+    if version == IpVersion::V4 {
+        assert_eq!(ipv4(packet).options().len(), options.len());
+    }
     let message = seen.payload;
     assert_eq!((message[0], message[1]), (reply, u8::MIN));
     assert_eq!(identifier_of(message), IDENTIFIER.0.get());
@@ -647,12 +660,24 @@ fn reply_arrives_whole<S: IcmpSockets>(sockets: S, to: IpAddr) {
 
 /// An IPv4 echo request to loopback gets its reply, whole from its IPv4 header.
 pub fn echo_reply_arrives_whole_over_ipv4<S: IcmpSockets>(sockets: S) {
-    reply_arrives_whole(sockets, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    reply_arrives_whole(sockets, IpAddr::V4(Ipv4Addr::LOCALHOST), &NO_OPTIONS);
+}
+
+/// A record route option with room for two addresses, then the end of the options.
+const RECORD_ROUTE: [u8; 12] = [7, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+/// An IPv4 echo request with a record route option gets its reply with the option Linux echoes, as on the wire.
+pub fn an_echo_reply_arrives_with_its_ipv4_options<S: IcmpSockets>(sockets: S) {
+    reply_arrives_whole(
+        sockets,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        &Ipv4Options::from(RECORD_ROUTE),
+    );
 }
 
 /// An IPv6 echo request to loopback gets its reply, whole from its IPv6 header.
 pub fn echo_reply_arrives_whole_over_ipv6<S: IcmpSockets>(sockets: S) {
-    reply_arrives_whole(sockets, IpAddr::V6(Ipv6Addr::LOCALHOST));
+    reply_arrives_whole(sockets, IpAddr::V6(Ipv6Addr::LOCALHOST), &NO_OPTIONS);
 }
 
 /// The request that leaves carries the bound identifier and the message's sequence number and payload.
@@ -1853,6 +1878,163 @@ pub fn a_small_receive_buffer_counts_its_drops<S: IcmpSockets>(sockets: S) {
     assert_eq!(received + dropped, REQUESTS);
 }
 
+/// The namespace's multicast source filters, IPv4's and IPv6's, as Linux lists them by link, group and source.
+pub const SOURCE_FILTERS: [&str; 2] = [
+    "/proc/thread-self/net/mcfilter",
+    "/proc/thread-self/net/mcfilter6",
+];
+
+/// How many of the namespace's sockets include and exclude the source for the group, if any names it.
+pub fn source_filter_counts(group: IpAddr, source: IpAddr) -> Option<(u64, u64)> {
+    let (list, group, source) = match (group, source) {
+        (IpAddr::V4(group), IpAddr::V4(source)) => (
+            SOURCE_FILTERS[0],
+            format!("{:#010x}", u32::from(group)),
+            format!("{:#010x}", u32::from(source)),
+        ),
+        (IpAddr::V6(group), IpAddr::V6(source)) => (
+            SOURCE_FILTERS[1],
+            format!("{:032x}", u128::from(group)),
+            format!("{:032x}", u128::from(source)),
+        ),
+        _ => panic!("a group and a source of one version"),
+    };
+    std::fs::read_to_string(list)
+        .expect("the source filter list")
+        .lines()
+        .find_map(
+            |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                [_, _, listed_group, listed_source, included, excluded]
+                    if listed_group == group && listed_source == source =>
+                {
+                    Some((included.parse().ok()?, excluded.parse().ok()?))
+                }
+                _ => None,
+            },
+        )
+}
+
+/// The setting that joins the group on the dummy link, including or excluding the sources.
+pub fn filtered_membership(group: IpAddr, include: bool, sources: &[IpAddr]) -> FilteredMembership {
+    FilteredMembership {
+        group,
+        include,
+        sources: sources.to_vec(),
+    }
+}
+
+/// A group to join with a source filter, which `setting` gives as the contract's setting.
+pub struct FilteredMembership {
+    group: IpAddr,
+    include: bool,
+    sources: Vec<IpAddr>,
+}
+
+impl FilteredMembership {
+    pub fn with_setting<R>(&self, then: impl FnOnce(IpSocketSetting<'_>) -> R) -> R {
+        let interface = Some(index(DUMMY));
+        let include = self.include;
+        fn joined<A>(include: bool, sources: &[A]) -> MulticastMembership<'_, A> {
+            MulticastMembership::Joined(if include {
+                SourceFilter::Include(sources)
+            } else {
+                SourceFilter::Exclude(sources)
+            })
+        }
+        match self.group {
+            IpAddr::V4(group) => {
+                let sources: Vec<Ipv4Addr> = self
+                    .sources
+                    .iter()
+                    .map(|source| match source {
+                        IpAddr::V4(source) => *source,
+                        IpAddr::V6(_) => panic!("an IPv4 source"),
+                    })
+                    .collect();
+                then(IpSocketSetting::MulticastV4(MulticastGroup {
+                    group,
+                    interface,
+                    membership: joined(include, &sources[..]),
+                }))
+            }
+            IpAddr::V6(group) => {
+                let sources: Vec<Ipv6Addr> = self
+                    .sources
+                    .iter()
+                    .map(|source| match source {
+                        IpAddr::V6(source) => *source,
+                        IpAddr::V4(_) => panic!("an IPv6 source"),
+                    })
+                    .collect();
+                then(IpSocketSetting::MulticastV6(MulticastGroup {
+                    group,
+                    interface,
+                    membership: joined(include, &sources[..]),
+                }))
+            }
+        }
+    }
+}
+
+/// Joins the group on the dummy link through `configure` with each kind of source filter, checking that the host
+/// holds each as written, and leaves it.
+pub fn source_filters_are_written(
+    group: IpAddr,
+    sources: [IpAddr; 2],
+    configure: impl Fn(IpSocketSetting<'_>),
+) {
+    const INCLUDED: Option<(u64, u64)> = Some((1, 0));
+    const EXCLUDED: Option<(u64, u64)> = Some((0, 1));
+    let [first, second] = sources;
+    for (include, given, expected) in [
+        (true, &[first][..], [INCLUDED, None]),
+        (true, &[first, second][..], [INCLUDED, INCLUDED]),
+        (false, &[second][..], [None, EXCLUDED]),
+        (false, &[][..], [None, None]),
+    ] {
+        filtered_membership(group, include, given).with_setting(&configure);
+        assert_eq!(
+            [
+                source_filter_counts(group, first),
+                source_filter_counts(group, second)
+            ],
+            expected,
+            "{group} include {include} {given:?}"
+        );
+    }
+    let left = match group {
+        IpAddr::V4(group) => IpSocketSetting::MulticastV4(MulticastGroup {
+            group,
+            interface: Some(index(DUMMY)),
+            membership: MulticastMembership::Left,
+        }),
+        IpAddr::V6(group) => IpSocketSetting::MulticastV6(MulticastGroup {
+            group,
+            interface: Some(index(DUMMY)),
+            membership: MulticastMembership::Left,
+        }),
+    };
+    configure(left);
+}
+
+/// A group's source filter, of either kind and any sources, is the host's as written.
+pub fn multicast_source_filters_are_written<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    for (group, sources) in [
+        (
+            IpAddr::V4(Ipv4Addr::new(239, 1, 2, 5)),
+            [IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)],
+        ),
+        (
+            IpAddr::V6(Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x124)),
+            [IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)],
+        ),
+    ] {
+        let socket = opened(&sockets, version_of(group));
+        source_filters_are_written(group, sources, |setting| set(&sockets, &socket, setting));
+    }
+}
+
 /// Joined groups and anycast addresses are the host's while joined, and multicast loopback brings a reply.
 pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
     ip(NETWORK);
@@ -1864,6 +2046,31 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
     let socket = opened(&sockets, IpVersion::V4);
     let joined = |group: IpAddr| {
         output(IP, &[&SHOW_GROUPS[..], &[DUMMY]].concat()).contains(&group.to_string())
+    };
+    // An echo request to the group from the dummy link, which the namespace answers only if it takes the request.
+    let replies_looped = |socket: &S::Socket, group: IpAddr| {
+        for (looped, replied) in [(false, false), (true, true)] {
+            set(&sockets, socket, IpSocketSetting::MulticastLoopback(looped));
+            let message = echo(version_of(group), PAYLOAD);
+            let header = match group {
+                IpAddr::V4(group) => IpHeaderFields::V4(v4_header(Ipv4RouteSelectors {
+                    interface: link,
+                    ..v4_route(group, &message)
+                })),
+                IpAddr::V6(group) => IpHeaderFields::V6(v6_header(Ipv6RouteSelectors {
+                    interface: link,
+                    ..v6_route(group, &message)
+                })),
+            };
+            sockets
+                .send_to(socket, header, plain_fields(), &message)
+                .expect("the multicast request is sent");
+            assert_eq!(
+                !nothing_arrives(&sockets, socket),
+                replied,
+                "{group} loopback {looped}"
+            );
+        }
     };
     let group = |membership| MulticastGroup {
         group: GROUP,
@@ -1878,31 +2085,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
         )))),
     );
     assert!(joined(IpAddr::V4(GROUP)));
-    for (looped, replied) in [(false, false), (true, true)] {
-        set(
-            &sockets,
-            &socket,
-            IpSocketSetting::MulticastLoopback(looped),
-        );
-        let message = echo(IpVersion::V4, PAYLOAD);
-        let route = Ipv4RouteSelectors {
-            interface: link,
-            ..v4_route(GROUP, &message)
-        };
-        sockets
-            .send_to(
-                &socket,
-                IpHeaderFields::V4(v4_header(route)),
-                plain_fields(),
-                &message,
-            )
-            .expect("the multicast request is sent");
-        assert_eq!(
-            !nothing_arrives(&sockets, &socket),
-            replied,
-            "loopback {looped}"
-        );
-    }
+    replies_looped(&socket, IpAddr::V4(GROUP));
     set(
         &sockets,
         &socket,
@@ -1933,6 +2116,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
         ))),
     );
     assert!(joined(IpAddr::V6(GROUP_V6)));
+    replies_looped(&socket, IpAddr::V6(GROUP_V6));
     set(
         &sockets,
         &socket,
@@ -2285,16 +2469,51 @@ fn provoke_icmp_error<S: IcmpSockets>(
     let capture = Capture::on(DUMMY);
     ping(sockets, socket, to, PAYLOAD).expect("the request is sent");
     let request = capture.echo_request();
-    let version = version_of(to);
+    send_icmp_error_about(&request, quote);
+    request
+}
+
+/// Sends the ICMP error that a request's destination is unreachable to its source, quoting it.
+fn send_icmp_error_about(request: &[u8], quote: Quote) {
+    let version = version_of(seen(request).source);
     let quoted_length = match (version, quote) {
-        (IpVersion::V4, Quote::Least) => ipv4(&request).slice().len() + ICMP_HEADER,
+        (IpVersion::V4, Quote::Least) => ipv4(request).slice().len() + ICMP_HEADER,
         _ => request.len(),
     };
     let mut message = unreachable(version).to_vec();
     message.resize(ICMP_HEADER, u8::MIN);
     message.extend_from_slice(&request[..quoted_length]);
-    send_raw_icmp(version, seen(&request).source, &mut message);
-    request
+    send_raw_icmp(version, seen(request).source, &mut message);
+}
+
+/// How many ICMP errors a check has arrive before it receives any.
+pub const QUEUED_ERRORS: usize = 3;
+
+/// ICMP errors that all arrive before a receive are each received, and then nothing more.
+pub fn icmp_errors_queued_together_each_arrive<S: IcmpSockets>(sockets: S) {
+    ip(NETWORK);
+    for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
+        let version = version_of(to);
+        let socket = opened(&sockets, version);
+        let capture = Capture::on(DUMMY);
+        // Every request leaves first: Linux fails a ping socket's send with the error an ICMP error left.
+        let requests: Vec<Vec<u8>> = (0..QUEUED_ERRORS)
+            .map(|_| {
+                ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
+                capture.echo_request()
+            })
+            .collect();
+        for request in &requests {
+            send_icmp_error_about(request, Quote::Least);
+        }
+        std::thread::sleep(QUIET);
+        for _ in 0..QUEUED_ERRORS {
+            let mut into = buffer();
+            let fields = receive_packet(&sockets, &socket, &mut into);
+            assert!(is_unreachable(version, &into[..fields.length]), "{to}");
+        }
+        assert!(nothing_arrives(&sockets, &socket), "{to}");
+    }
 }
 
 /// An ICMP error about a request ends a wait for data with the error condition, which poll always reports.
@@ -2408,6 +2627,7 @@ macro_rules! tests {
             $value;
             echo_reply_arrives_whole_over_ipv4,
             echo_reply_arrives_whole_over_ipv6,
+            an_echo_reply_arrives_with_its_ipv4_options,
             the_request_carries_the_bound_identifier,
             identifiers_are_shared_only_when_both_ask,
             close_frees_the_identifier,
@@ -2435,10 +2655,12 @@ macro_rules! tests {
             an_icmp_error_arrives_whole_over_ipv4,
             an_icmp_error_arrives_whole_over_ipv6,
             a_short_buffer_keeps_the_start_of_an_icmp_error,
+            icmp_errors_queued_together_each_arrive,
             pacing_holds_messages_in_the_send_buffer,
             a_full_send_buffer_would_block,
             a_small_receive_buffer_counts_its_drops,
             memberships_are_taken,
+            multicast_source_filters_are_written,
             a_wait_for_data_finishes_when_the_reply_arrives,
             a_wait_for_writing_finishes_at_once,
             a_dropped_wait_is_withdrawn,

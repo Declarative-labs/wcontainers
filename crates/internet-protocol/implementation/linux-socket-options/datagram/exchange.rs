@@ -11,8 +11,8 @@ use linux_raw_sys::net as uapi;
 use socket2::{MsgHdr, SockAddr};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
-    ByteCount, InterfaceIndex, MaximumTransmissionUnit, Received, SendError, TransmitEvent,
-    TransmitReport, TransmitReportKey, TransmitTimeError,
+    ByteCount, InterfaceIndex, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent,
+    TransmitReport, TransmitReportKey, TransmitReportRequest, TransmitTimeError,
 };
 
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
@@ -81,6 +81,8 @@ impl ErrorEntry {
 pub struct ErrorQueue {
     kept: VecDeque<ErrorEntry>,
     transmit_times: VecDeque<TransmitTimeSend>,
+    /// Whether receives read the host's queue first, for reports a send asked for.
+    first: bool,
 }
 
 /// A send that asked for transmit time errors: the time it gave, in nanoseconds of its clock, and its key.
@@ -99,6 +101,11 @@ impl ErrorQueue {
     /// Whether entries a send read wait here for receives.
     pub fn holds_entries(&self) -> bool {
         !self.kept.is_empty()
+    }
+
+    /// Has receives read the host's queue first, for the reports a send asked for, until the host holds no send.
+    pub fn read_first(&mut self) {
+        self.first = true;
     }
 
     /// Notes a send that asked for transmit time errors, so that a rejection of its time gives its key.
@@ -220,6 +227,49 @@ impl ErrorQueue {
             Some(entry) => Ok(entry),
             None => ErrorEntry::read(fd, shortfalls),
         }
+    }
+}
+
+/// Whether a send asks for any transmit report, each of which Linux queues on the error queue.
+pub fn reports_requested(reports: &TransmitReportRequest) -> bool {
+    [
+        reports.scheduled,
+        reports.software,
+        reports.hardware,
+        reports.acknowledgement,
+        reports.completion,
+    ]
+    .contains(&Report::Requested)
+}
+
+/// Receives in the order Linux keeps for a socket with `IP_RECVERR` or `IPV6_RECVERR`: the error queue first while
+/// reports a send asked for may wait there or entries a send took off the host are kept, else the packet queue, and
+/// the error queue when a receive is answered with the socket error that Linux sets for every ICMP error it queues
+/// (and sets again when an entry read off the queue is followed by another ICMP error).
+pub fn receive_in_order<S, T>(
+    fd: BorrowedFd<'_>,
+    state: &mut S,
+    shortfalls: &Shortfalls,
+    into: &mut [u8],
+    errors: impl Fn(&mut S) -> &mut ErrorQueue,
+    mut take_error_entry: impl FnMut(&mut S, &mut [u8]) -> Result<T, HostError>,
+    mut receive_packet: impl FnMut(&mut S, &mut [u8]) -> Result<T, HostError>,
+) -> Result<T, HostError> {
+    let queue = errors(state);
+    if queue.first || queue.holds_entries() {
+        let settled = !queue.first || queue.settle(fd, shortfalls)?;
+        match take_error_entry(state, into) {
+            Err(HostError::WouldBlock) => errors(state).first = !settled,
+            taken => return taken,
+        }
+    }
+    match receive_packet(state, into) {
+        Err(HostError::WouldBlock) => Err(HostError::WouldBlock),
+        Err(error) => match take_error_entry(state, into) {
+            Err(HostError::WouldBlock) => Err(error),
+            taken => taken,
+        },
+        received => received,
     }
 }
 

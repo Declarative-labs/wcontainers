@@ -19,11 +19,12 @@ use etherparse::{
 };
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets_conformance::{
-    BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FLOW_LABEL, HOP_LIMIT, LOCAL, LOCAL_V6, MARK,
-    MARK_PROHIBITED, NETWORK, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED,
-    PATIENCE, PAYLOAD, QUIET, READABLE, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE,
-    TWO_SEGMENTS, WAITED_SOCKETS, WAITS_ON_ONE, WRITABLE, Wakes, buffer, finished, finished_soon,
-    index, ip, ip6, ipv4, ipv6, no_reports, only_asked_for, output, plain_fields, poll_with, seen,
+    BROADCAST, Capture, DUMMY, FAIR_QUEUE, FAR, FLOW_LABEL, GATEWAY, GATEWAY_V6, HOP_LIMIT, LOCAL,
+    LOCAL_V6, MARK, MARK_PROHIBITED, NETWORK, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER,
+    OWNER_PROHIBITED, PATIENCE, PAYLOAD, QUEUED_ERRORS, QUIET, READABLE, REPORT_KEY, ROOT,
+    SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, TWO_SEGMENTS, WAITED_SOCKETS, WAITS_ON_ONE, WRITABLE,
+    Wakes, buffer, filtered_membership, finished, finished_soon, index, ip, ip6, ipv4, ipv6,
+    no_reports, only_asked_for, output, plain_fields, poll_with, seen, source_filters_are_written,
     tc, version_of, write_setting,
 };
 use wcontainers_internet_protocol::{
@@ -1029,28 +1030,53 @@ pub fn an_ipv6_router_alert_takes_forwarded_packets<S: RawSockets>(sockets: S) {
         PAYLOAD,
     );
     let sender = opened(&sockets, IpVersion::V6, RAW_PROTOCOL);
-    send(
-        &sockets,
-        &sender,
-        header_included_v6(
-            v6_route(BEYOND_V6, under(IpNumber::IPV6_HEADER_HOP_BY_HOP)),
-            &packet,
-        ),
-    )
-    .expect("the packet is sent");
-    let mut into = buffer();
-    let fields = receive_packet(&sockets, &own, &mut into);
-    let alerted = seen(&into[..fields.length]);
-    assert_eq!(
-        (alerted.source, alerted.destination),
-        (IpAddr::V6(ELSEWHERE_V6), IpAddr::V6(BEYOND_V6))
-    );
-    assert_eq!(alerted.payload, PAYLOAD);
+    let forward = || {
+        send(
+            &sockets,
+            &sender,
+            header_included_v6(
+                v6_route(BEYOND_V6, under(IpNumber::IPV6_HEADER_HOP_BY_HOP)),
+                &packet,
+            ),
+        )
+        .expect("the packet is sent")
+    };
+    let alerted_whole = |socket: &S::Socket| {
+        let mut into = buffer();
+        let fields = receive_packet(&sockets, socket, &mut into);
+        let alerted = seen(&into[..fields.length]);
+        assert_eq!(
+            (alerted.source, alerted.destination),
+            (IpAddr::V6(ELSEWHERE_V6), IpAddr::V6(BEYOND_V6))
+        );
+        assert_eq!(alerted.payload, PAYLOAD);
+    };
+    forward();
+    alerted_whole(&own);
     for (socket, takes) in [
         (&everywhere, true),
         (&other_value, false),
         (&isolated, false),
     ] {
+        assert_eq!(!nothing_arrives(&sockets, socket), takes);
+    }
+    // Off takes a socket off the alert's chain, and a new value takes the place of the one a socket had.
+    set(
+        &sockets,
+        &own,
+        RawSocketSetting::RouterAlert(RouterAlert::Off),
+    );
+    set(
+        &sockets,
+        &other_value,
+        RawSocketSetting::RouterAlert(alert(
+            ROUTER_ALERT_VALUE,
+            RouterAlertIsolation::OwnNamespace,
+        )),
+    );
+    forward();
+    alerted_whole(&other_value);
+    for (socket, takes) in [(&own, false), (&everywhere, true), (&isolated, false)] {
         assert_eq!(!nothing_arrives(&sockets, socket), takes);
     }
 }
@@ -1650,8 +1676,53 @@ pub fn a_transmit_time_holds_the_send<S: RawSockets>(sockets: S) {
 /// timestamps.
 pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
     ip(NETWORK);
-    tc(FAIR_QUEUE);
     let to = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let long = vec![u8::MAX; HELD_PAYLOAD];
+    let receiver = opened(&sockets, IpVersion::V4, OTHER_EXPERIMENT);
+    let sender = opened(&sockets, IpVersion::V4, OTHER_EXPERIMENT);
+    let requests = FLOODING_SENDS;
+    let mut into = buffer();
+    // Two floods, so that the second's count holds only the drops since the packet that told the first's.
+    for flood in 0..2 {
+        set(
+            &sockets,
+            &receiver,
+            RawSocketSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(usize::MIN))),
+        );
+        for _ in 0..requests {
+            send(&sockets, &sender, payload_to(to, OTHER_EXPERIMENT, &long)).unwrap();
+        }
+        std::thread::sleep(QUIET);
+        let mut received = 0;
+        let mut dropped = 0;
+        let end = loop {
+            match sockets.receive(&receiver, &mut into) {
+                Ok(Received::Packet(fields)) => {
+                    received += 1;
+                    dropped += fields.drops_since_previous.0 as usize;
+                }
+                end => break end,
+            }
+        };
+        assert_eq!(end, Err(HostError::WouldBlock), "flood {flood}");
+        // Both raw sockets of the protocol take each packet; the receiver's drops are told with its next packet.
+        set(
+            &sockets,
+            &receiver,
+            RawSocketSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(usize::from(
+                u16::MAX,
+            )))),
+        );
+        send(&sockets, &sender, payload_to(to, OTHER_EXPERIMENT, PAYLOAD)).unwrap();
+        let last = receive_packet(&sockets, &receiver, &mut into);
+        dropped += last.drops_since_previous.0 as usize;
+        assert!(received < requests, "flood {flood}");
+        assert_eq!(received + dropped, requests, "flood {flood}");
+        // The sender takes each packet too: emptied, it has room for the next flood, so that some socket takes each
+        // packet and Linux sends itself no protocol unreachable error.
+        while let Ok(Received::Packet(_)) = sockets.receive(&sender, &mut into) {}
+    }
+    tc(FAIR_QUEUE);
     let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
     send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD)).unwrap();
     let fields = receive_packet(&sockets, &socket, &mut buffer());
@@ -1672,7 +1743,6 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
     send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD)).unwrap();
     let fields = receive_packet(&sockets, &socket, &mut buffer());
     assert!(fields.timestamps.software.is_some());
-    let long = vec![u8::MAX; HELD_PAYLOAD];
     set(
         &sockets,
         &socket,
@@ -1697,38 +1767,6 @@ pub fn ip_settings_are_taken<S: RawSockets>(sockets: S) {
     }
     assert!(blocked);
     assert!(sockets.count_unsent_bytes(&socket).unwrap().0 >= long.len());
-    let receiver = opened(&sockets, IpVersion::V4, OTHER_EXPERIMENT);
-    set(
-        &sockets,
-        &receiver,
-        RawSocketSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(usize::MIN))),
-    );
-    let sender = opened(&sockets, IpVersion::V4, OTHER_EXPERIMENT);
-    let requests = FLOODING_SENDS;
-    for _ in 0..requests {
-        send(&sockets, &sender, payload_to(to, OTHER_EXPERIMENT, &long)).unwrap();
-    }
-    std::thread::sleep(QUIET);
-    let mut received = 0;
-    let mut dropped = 0;
-    let mut into = buffer();
-    while let Ok(Received::Packet(fields)) = sockets.receive(&receiver, &mut into) {
-        received += 1;
-        dropped += fields.drops_since_previous.0 as usize;
-    }
-    // Both raw sockets of the protocol take each packet; the receiver's drops are told with its next packet.
-    set(
-        &sockets,
-        &receiver,
-        RawSocketSetting::Ip(IpSocketSetting::ReceiveBuffer(ByteCount(usize::from(
-            u16::MAX,
-        )))),
-    );
-    send(&sockets, &sender, payload_to(to, OTHER_EXPERIMENT, PAYLOAD)).unwrap();
-    let last = receive_packet(&sockets, &receiver, &mut into);
-    dropped += last.drops_since_previous.0 as usize;
-    assert!(received < requests);
-    assert_eq!(received + dropped, requests);
 }
 
 /// Joining a group, or leaving it, on the dummy link.
@@ -1830,6 +1868,89 @@ pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
         }
         set(&sockets, &member, membership(group, false));
         assert!(!joined(group), "{group}");
+    }
+}
+
+/// A group's source filter is the host's as written, and an IPv4 raw socket takes the group's packets only from the
+/// sources its filter lets in. (An IPv6 raw socket bound to no address takes every multicast packet of its protocol.)
+pub fn multicast_source_filters_choose_the_senders<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 6);
+    for (group, sources) in [
+        (
+            IpAddr::V4(GROUP),
+            [IpAddr::V4(ON_LINK), IpAddr::V4(GATEWAY)],
+        ),
+        (
+            IpAddr::V6(Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x126)),
+            [IpAddr::V6(ON_LINK_V6), IpAddr::V6(GATEWAY_V6)],
+        ),
+    ] {
+        let socket = opened(&sockets, version_of(group), EXPERIMENT);
+        source_filters_are_written(group, sources, |setting| {
+            set(&sockets, &socket, RawSocketSetting::Ip(setting))
+        });
+    }
+    let sender = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    set(&sockets, &sender, membership(IpAddr::V4(GROUP), true));
+    set(
+        &sockets,
+        &sender,
+        RawSocketSetting::Ip(IpSocketSetting::MulticastLoopback(true)),
+    );
+    let filtered = opened(&sockets, IpVersion::V4, EXPERIMENT);
+    // The sender's packets come from the dummy link's address.
+    for (include, source, takes) in [
+        (true, LOCAL, true),
+        (true, GATEWAY, false),
+        (false, LOCAL, false),
+        (false, GATEWAY, true),
+    ] {
+        filtered_membership(IpAddr::V4(GROUP), include, &[IpAddr::V4(source)])
+            .with_setting(|setting| set(&sockets, &filtered, RawSocketSetting::Ip(setting)));
+        let header = IpHeaderFields::V4(v4_header(Ipv4RouteSelectors {
+            interface: Some(index(DUMMY)),
+            ..v4_route(GROUP, under(EXPERIMENT))
+        }));
+        send(
+            &sockets,
+            &sender,
+            RawPacket::Payload {
+                header,
+                payload: PAYLOAD,
+            },
+        )
+        .expect("the multicast payload is sent");
+        assert!(!nothing_arrives(&sockets, &sender));
+        assert_eq!(
+            !nothing_arrives(&sockets, &filtered),
+            takes,
+            "include {include} {source}"
+        );
+    }
+}
+
+/// ICMP errors that all arrive before a receive are each received, and then nothing more.
+pub fn icmp_errors_queued_together_each_arrive<S: RawSockets>(sockets: S) {
+    ip(NETWORK);
+    let capture = Capture::on(DUMMY);
+    for (to, icmp) in [
+        (IpAddr::V4(ON_LINK), IpNumber::ICMP),
+        (IpAddr::V6(ON_LINK_V6), IpNumber::IPV6_ICMP),
+    ] {
+        let socket = opened(&sockets, version_of(to), EXPERIMENT);
+        for _ in 0..QUEUED_ERRORS {
+            send(&sockets, &socket, payload_to(to, EXPERIMENT, PAYLOAD))
+                .expect("the payload is sent");
+            send_icmp_error_about(&capture.next(|packet| seen(packet).protocol == EXPERIMENT));
+        }
+        std::thread::sleep(QUIET);
+        for _ in 0..QUEUED_ERRORS {
+            let mut into = buffer();
+            let fields = receive_packet(&sockets, &socket, &mut into);
+            assert_eq!(seen(&into[..fields.length]).protocol, icmp, "{to}");
+        }
+        assert!(nothing_arrives(&sockets, &socket), "{to}");
     }
 }
 
@@ -1968,7 +2089,7 @@ pub fn an_icmp_error_ends_a_wait_for_data<S: RawSockets>(sockets: S) {
         let sent = capture
             .next(|packet| seen(packet).protocol == EXPERIMENT && seen(packet).destination == to);
         let error = send_icmp_error_about(&sent);
-        assert!(wakes.reach(1), "woken by the ICMP error");
+        assert!(wakes.reach(1), "{to}: woken by the ICMP error");
         let events = finished(poll_with(wait.as_mut(), &wakes));
         assert!(events.error_condition, "{events:?}");
         let mut into = buffer();
@@ -2095,10 +2216,12 @@ macro_rules! tests {
             a_mobility_header_is_sent_by_its_type,
             path_mtu_modes_and_too_long_payloads,
             icmp_errors_arrive_whole,
+            icmp_errors_queued_together_each_arrive,
             send_fields_are_taken,
             a_transmit_time_holds_the_send,
             ip_settings_are_taken,
             multicast_settings_are_taken,
+            multicast_source_filters_choose_the_senders,
             anycast_is_taken,
             a_wait_for_data_finishes_when_a_packet_arrives,
             a_wait_for_writing_finishes_at_once,
