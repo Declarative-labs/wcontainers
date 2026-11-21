@@ -423,9 +423,9 @@ fn clamp_window(socket: &SocketRef) {
 /// while the buffer is not set), and an unset buffer grows to give a window that large, with
 /// the window clamp at the mark (`tcp_space_from_win` at the starting scaling ratio of one
 /// half). Readers that now have enough hear of it.
-pub(super) fn set_receive_low_water(
+pub(super) fn set_receive_low_water<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     value: i32,
 ) {
@@ -492,7 +492,7 @@ fn established(socket: &SocketRef) -> bool {
 const LOOPBACK_RTO_MICROSECONDS: u32 = 201_000;
 
 /// Sends what a connection holds back now, and stops its probe timer.
-fn push_held(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn push_held<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket: &SocketRef) {
     if let Some(probe) = inet(socket).probe.take() {
         crate::syscall::timer::stop(kernel, probe);
     }
@@ -515,7 +515,11 @@ fn hold(kernel: &mut Kernel, socket: &SocketRef, packet: Packet) {
 }
 
 /// A connection's probe timer fired: what it holds back goes (`tcp_write_wakeup`).
-pub(super) fn held_bytes_due(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+pub(super) fn held_bytes_due<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     inet(socket).probe = None;
     push_held(kernel, cx, socket);
 }
@@ -530,7 +534,11 @@ fn corked_by_option(socket: &SocketRef) -> bool {
 }
 
 /// `tcp_get_info` for a TCP socket, from the model in [`Traffic`].
-fn tcp_info(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) -> Vec<u8> {
+fn tcp_info<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) -> Vec<u8> {
     let own = socket.borrow();
     let inet = own.inet.as_deref().unwrap();
     let traffic = inet.traffic;
@@ -781,9 +789,9 @@ fn flag(socket: &Socket, level: u32, name: u32) -> bool {
 }
 
 /// `inet_create` and `inet6_create`: the protocol a kind names, or what Linux answers.
-pub(super) fn create(
+pub(super) fn create<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     family: u32,
     kind: u32,
     protocol: u32,
@@ -791,7 +799,7 @@ pub(super) fn create(
     if protocol >= IPPROTO_MAX as u32 {
         return Err(Errno::EINVAL);
     }
-    let refuse = |kernel: &mut Kernel, cx: &mut Context<'_>, answer: Errno| {
+    let refuse = |kernel: &mut Kernel, cx: &mut Context<'_, S>, answer: Errno| {
         let detail = (u64::from(family) << 32) | (u64::from(kind) << 16) | u64::from(protocol);
         Err(kernel
             .counters
@@ -1023,9 +1031,9 @@ fn conflicts(
 /// Takes a port for `socket` at its local address: the one asked for, or a free one from the
 /// ephemeral range starting at a random place (`inet_csk_find_open_port` tries odd ports first,
 /// `__inet_hash_connect` even ones).
-fn take_port(
+fn take_port<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     port: u16,
@@ -1079,9 +1087,9 @@ fn take_port(
 }
 
 /// Gives a socket that has none a port of its own (`inet_autobind`).
-fn autobind(
+fn autobind<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     connecting: bool,
@@ -1104,9 +1112,9 @@ fn autobind(
     Ok(())
 }
 
-pub(super) fn bind(
+pub(super) fn bind<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     bytes: &[u8],
@@ -1160,9 +1168,9 @@ pub(super) fn bind(
     }
 }
 
-pub(super) fn listen(
+pub(super) fn listen<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     backlog: i32,
@@ -1237,9 +1245,9 @@ fn reachable(address: &[u8; 16]) -> bool {
     v4_of(address).is_some() || is_own(address)
 }
 
-pub(super) fn connect(
+pub(super) fn connect<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     socket: &SocketRef,
@@ -1300,7 +1308,11 @@ fn disconnect_udp(kernel: &mut Kernel, socket: &SocketRef) {
 }
 
 /// `tcp_disconnect`: a connection is reset, a listener stops listening.
-fn disconnect_tcp(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn disconnect_tcp<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     let state = socket.borrow().state;
     match state {
         State::Listening => {
@@ -1352,7 +1364,7 @@ fn disconnect_tcp(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef)
 
 /// Sends a reset to a connection's other end (`tcp_send_active_reset`): it sees ECONNRESET, or
 /// EPIPE if its own FIN had come, and is closed (`tcp_reset`, `tcp_done`).
-fn reset_peer(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn reset_peer<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket: &SocketRef) {
     let Some(peer) = socket.borrow().peer.clone() else {
         return;
     };
@@ -1368,7 +1380,7 @@ fn reset_peer(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
 
 /// `tcp_reset`: an RST came. A connection held back by TCP_DEFER_ACCEPT is only a request,
 /// which goes (`tcp_check_req`'s reset path), never to be accepted.
-fn reset(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn reset<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket: &SocketRef) {
     let deferral = inet(socket).deferral.take();
     if let Some((listener, ..)) = deferral {
         if let Some(listener) = listener.upgrade() {
@@ -1395,9 +1407,9 @@ fn reset(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_ERR);
 }
 
-fn tcp_connect(
+fn tcp_connect<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     socket: &SocketRef,
@@ -1493,9 +1505,9 @@ fn tcp_connect(
 }
 
 /// A connect to the outside: the host's connection starts, and its answer finishes it.
-fn connect_outside(
+fn connect_outside<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     to: Endpoint,
@@ -1570,12 +1582,17 @@ fn finish_connect(socket: &SocketRef) -> Result<u64, Errno> {
 
 /// A connect was refused: the socket is closed with ECONNREFUSED to report, and lets go of the
 /// port it was given (`tcp_set_state(TCP_CLOSE)`).
-fn refused(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn refused<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket: &SocketRef) {
     failed(kernel, cx, socket, Errno::ECONNREFUSED);
 }
 
 /// A connect failed with `error`, as [`refused`].
-pub(super) fn failed(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, error: Errno) {
+pub(super) fn failed<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    error: Errno,
+) {
     let port = {
         let mut own = socket.borrow_mut();
         own.state = State::Closed;
@@ -1639,7 +1656,12 @@ fn find_listener(kernel: &Kernel, to: &Endpoint) -> Option<SocketRef> {
 
 /// Joins a connecting socket to a new socket in the listener's backlog, the listener's end of
 /// the connection, which takes the listener's options (`tcp_create_openreq_child`).
-fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener: &SocketRef) {
+fn join<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    listener: &SocketRef,
+) {
     let (local, remote) = {
         let own = inet_ref(socket);
         (own.local, own.remote.expect("a destination"))
@@ -1679,7 +1701,7 @@ fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener:
 
 /// A socket connected to itself (`tcp_rcv_synsent_state_process`'s simultaneous open): what it
 /// sends it reads.
-fn join_self(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn join_self<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket: &SocketRef) {
     {
         let mut own = socket.borrow_mut();
         own.state = State::Connected;
@@ -1725,7 +1747,7 @@ fn deferral_rounded(seconds: i32) -> i32 {
 /// the accept queue (`tcp_check_req` creating the child). If that queue is full Linux drops the
 /// segment and the request stays until the next try: the client's retransmit of its data or FIN
 /// (after TCP_RTO_MIN, 200 ms, on loopback), or the next SYN-ACK timer.
-fn arrived(kernel: &mut Kernel, cx: &mut Context<'_>, embryo: &SocketRef) {
+fn arrived<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, embryo: &SocketRef) {
     let listener = inet_ref(embryo)
         .deferral
         .as_ref()
@@ -1762,7 +1784,11 @@ fn arrived(kernel: &mut Kernel, cx: &mut Context<'_>, embryo: &SocketRef) {
 /// first (the SYN-ACK retransmitted at its end is answered at once on loopback). On a client
 /// whose held request went with its listener, the retransmit of its dropped data or FIN draws
 /// a reset.
-pub(super) fn deferrals_due(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+pub(super) fn deferrals_due<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    listener: &SocketRef,
+) {
     if listener.borrow().state != State::Listening {
         let gone = listener
             .borrow()
@@ -1870,7 +1896,11 @@ pub(super) fn backlog_full(listener: &Socket) -> bool {
 
 /// After an accept made room in a listener's backlog: the first connect waiting for it joins,
 /// then connections waiting outside.
-pub(super) fn accepted(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+pub(super) fn accepted<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    listener: &SocketRef,
+) {
     loop {
         if backlog_full(&listener.borrow()) {
             return;
@@ -1890,7 +1920,11 @@ pub(super) fn accepted(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &Soc
 }
 
 /// The connects still waiting on a listener that stops listening are refused.
-fn refuse_waiting(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+fn refuse_waiting<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    listener: &SocketRef,
+) {
     let waiting = core::mem::take(&mut inet(listener).waiting);
     for socket in waiting.iter().filter_map(Weak::upgrade) {
         if inet_ref(&socket).connecting.is_some() {
@@ -1899,9 +1933,9 @@ fn refuse_waiting(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRe
     }
 }
 
-fn udp_connect(
+fn udp_connect<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     endpoint: Endpoint,
@@ -1949,9 +1983,9 @@ pub(super) fn peer_bytes(socket: &SocketRef) -> Vec<u8> {
 }
 
 /// `inet_shutdown` with `tcp_shutdown`: a TCP send shut sends a FIN.
-pub(super) fn shutdown(
+pub(super) fn shutdown<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     mode: u8,
 ) -> Result<u64, Errno> {
@@ -1998,7 +2032,7 @@ pub(super) fn shutdown(
 /// A FIN to the other end of a connection: it reads the end after what was sent. Once both ends
 /// have sent theirs the connection is closed, and the end that sent first holds its ports for
 /// TIME_WAIT.
-fn send_fin(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn send_fin<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket: &SocketRef) {
     let Some(peer) = socket.borrow().peer.clone() else {
         return;
     };
@@ -2156,7 +2190,11 @@ pub(super) fn space_to_tell(own: &Socket) -> bool {
 /// The last descriptor went: a connection is reset if bytes were left unread (or SO_LINGER asks
 /// for no wait), else the other end gets a FIN; a listener's waiting connections are reset; the
 /// ports are let go.
-pub(super) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+pub(super) fn released<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     super::outside::released(kernel, socket);
     let (state, protocol) = {
         let own = socket.borrow();
@@ -2238,9 +2276,9 @@ pub(super) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &Socke
 }
 
 /// `tcp_sendmsg` and `udp_sendmsg`.
-pub(super) fn send(
+pub(super) fn send<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     message: &Outgoing,
@@ -2299,9 +2337,9 @@ pub(super) fn send(
     }
 }
 
-fn tcp_send(
+fn tcp_send<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     message: &Outgoing,
@@ -2472,9 +2510,9 @@ fn empty_packet(kernel: &Kernel, tid: Tid, socket: &SocketRef, owner: u32) -> Pa
 
 /// Bytes going from one end of a connection to the other's queue (with an urgent byte after them
 /// when `urgent`), told to the receiver; nothing goes when there is nothing.
-fn deliver(
+fn deliver<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     peer: &SocketRef,
     packet: Packet,
@@ -2516,9 +2554,9 @@ fn deliver(
 /// `tcp_check_urg` and `tcp_urg`: a new urgent byte at the end of the receiver's queue. An
 /// earlier one becomes an ordinary byte, unless it is the next to read and not inline, when it is
 /// passed over. The receiver's owner hears of it (SIGURG), and its readers of data.
-fn urgent_arrives(
+fn urgent_arrives<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     peer: &SocketRef,
@@ -2574,9 +2612,9 @@ fn urgent_arrives(
 
 /// `tcp_recv_urg`: the urgent byte, out of band, once (a peek leaves it); EINVAL with none, with
 /// SO_OOBINLINE or once it was read. Its read leaves it in the queue emptied, the mark.
-fn receive_urgent(
+fn receive_urgent<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,
@@ -2669,9 +2707,9 @@ fn tos_priority(tos: u8) -> u32 {
 /// datagram over IPv4 (`v4`) and `ip6_datagram_send_ctl` over IPv6. Descriptors and credentials
 /// are passed over, what Linux does not know is EINVAL, and what it knows that is not built here
 /// (send timestamps, IPv4 options, IPv6 extension headers) is refused and counted.
-fn sent_control(
+fn sent_control<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     bytes: &[u8],
@@ -2913,9 +2951,9 @@ fn sent_control(
     Ok(out)
 }
 
-fn udp_send(
+fn udp_send<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     message: &Outgoing,
@@ -3214,9 +3252,9 @@ pub(super) fn interface_in_group(kernel: &Kernel, group: [u8; 4], interface: u32
 /// the group there or takes every group (IP_MULTICAST_ALL). Its copy to the network outside is
 /// not sent: the host carries no multicast or broadcast.
 #[allow(clippy::too_many_arguments, reason = "a datagram's parts")]
-fn deliver_many(
+fn deliver_many<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     to: Endpoint,
@@ -3364,7 +3402,12 @@ fn route(to: &Endpoint, sent: &SentControl) -> Result<Route, Errno> {
 /// `__skb_tstamp_tx` for a UDP datagram that left: a SCHED entry and then a SND entry on the
 /// error queue as the send asks, each only the time (OPT_TSONLY), keyed by OPT_ID's count of
 /// such sends unless the send names its key.
-fn send_stamps(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, sent: &SentControl) {
+fn send_stamps<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    sent: &SentControl,
+) {
     // A hardware request takes a key too (`SKBTX_ANY_TSTAMP`), though none comes here.
     let record = SOF_TIMESTAMPING_TX_SOFTWARE as u32
         | SOF_TIMESTAMPING_TX_SCHED as u32
@@ -3449,9 +3492,9 @@ pub(crate) struct Corked {
 /// `udp_sendmsg`'s `do_append_data` with frames corked: the bytes join them, whatever destination
 /// was named (a datagram may not outgrow UDP's largest, and a fault drops every corked byte), and
 /// go as one datagram unless still corked.
-fn udp_append(
+fn udp_append<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     message: &Outgoing,
@@ -3488,9 +3531,9 @@ fn udp_append(
 }
 
 /// `udp_push_pending_frames`: corked bytes go as one datagram.
-pub(super) fn uncork(
+pub(super) fn uncork<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
 ) -> Result<(), Errno> {
@@ -3511,9 +3554,9 @@ pub(super) fn uncork(
 /// A datagram from `from` to `to`: to the outside, to the container's name server, to the socket
 /// that takes it, or answered as a port nothing holds.
 #[allow(clippy::too_many_arguments, reason = "a datagram's parts")]
-fn udp_deliver(
+fn udp_deliver<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     to: Endpoint,
@@ -3623,9 +3666,9 @@ fn udp_deliver(
 /// `__udp4_lib_err` and `__udp6_lib_err` for a datagram to `to` no socket took: with the error
 /// option of the way it went its sender queues the error (`ip_icmp_error`, if its receive buffer
 /// has room) and hears of it; without, only a sender connected to `to` hears of it.
-fn port_unreachable(
+fn port_unreachable<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     to: Endpoint,
     from: Endpoint,
@@ -3692,9 +3735,9 @@ fn port_unreachable(
 /// `ip_recv_error` and `ipv6_recv_error`: the first queued error, taken even by a peek, named by
 /// its datagram's destination, with the error message's own control messages and then the
 /// error's; the socket's error becomes the next one's, or none (`sock_dequeue_err_skb`).
-fn read_error(
+fn read_error<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,
@@ -3831,9 +3874,9 @@ fn find_receiver(kernel: &Kernel, to: &Endpoint, from: &Endpoint) -> Option<Sock
 }
 
 /// `tcp_recvmsg` and `udp_recvmsg`.
-pub(super) fn receive(
+pub(super) fn receive<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,
@@ -3896,9 +3939,9 @@ pub(super) fn receive(
     clippy::too_many_arguments,
     reason = "a read names where its bytes go and how"
 )]
-fn udp_receive(
+fn udp_receive<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,
@@ -4109,9 +4152,9 @@ pub(super) fn prepared(receiver: &SocketRef, arrival: Arrival) -> Arrival {
 /// datagram, in Linux's order: an IPv6 socket's own (`ip6_datagram_recv_common_ctl`, and for an
 /// IPv6 datagram `ip6_datagram_recv_specific_ctl`), then the IPv4 ones for an IPv4 datagram
 /// (`ip_cmsg_recv_offset`). Each is (level, type, data).
-pub(super) fn arrival_messages(
+pub(super) fn arrival_messages<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     arrival: &Arrival,
 ) -> Vec<(u32, u32, Vec<u8>)> {
@@ -4195,9 +4238,9 @@ fn int_value(bytes: &[u8], level: u32) -> Result<i32, Errno> {
 
 /// setsockopt for an internet socket's own levels, and the SOL_SOCKET options whose meaning is
 /// its own. Returns `None` for an option the common code answers.
-pub(super) fn set_option(
+pub(super) fn set_option<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     level: u32,
@@ -4206,7 +4249,7 @@ pub(super) fn set_option(
 ) -> Option<Result<u64, Errno>> {
     let family = socket.borrow().family;
     let protocol = inet_ref(socket).protocol;
-    let not_built = |kernel: &mut Kernel, cx: &mut Context<'_>| {
+    let not_built = |kernel: &mut Kernel, cx: &mut Context<'_, S>| {
         Some(Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,
@@ -4659,9 +4702,9 @@ pub(super) fn level_known(socket: &SocketRef, level: u32) -> Result<(), Errno> {
     }
 }
 
-pub(super) fn get_option(
+pub(super) fn get_option<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     level: u32,
     name: u32,
@@ -4679,7 +4722,7 @@ pub(super) fn get_option(
             .cloned()
             .unwrap_or_else(|| default.to_le_bytes().to_vec())))
     };
-    let not_built = |kernel: &mut Kernel, cx: &mut Context<'_>| {
+    let not_built = |kernel: &mut Kernel, cx: &mut Context<'_, S>| {
         Some(Err(kernel.counters.refuse(
             cx.host,
             crate::reason::OPTION_NOT_BUILT,

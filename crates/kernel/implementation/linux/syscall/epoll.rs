@@ -298,9 +298,9 @@ fn unlink(instance: &mut Epoll, key: Key) {
     }
 }
 
-pub(super) fn epoll_create1(
+pub(super) fn epoll_create1<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -323,9 +323,9 @@ pub(super) fn epoll_create1(
     Ok(fd as u64)
 }
 
-pub(super) fn epoll_ctl(
+pub(super) fn epoll_ctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [epfd, op, fd, event, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -505,9 +505,9 @@ fn loops(kernel: &Kernel, outer: &EpollRef, inner: &EpollRef) -> bool {
     depth > MAX_NESTS || depth + 1 + up(kernel, outer, 0) > MAX_NESTS
 }
 
-pub(super) fn epoll_pwait(
+pub(super) fn epoll_pwait<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [epfd, events, maxevents, timeout, mask, mask_size]: Args,
 ) -> super::Outcome {
@@ -525,9 +525,9 @@ pub(super) fn epoll_pwait(
     finish(kernel, tid, result)
 }
 
-pub(super) fn epoll_pwait2(
+pub(super) fn epoll_pwait2<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [epfd, events, maxevents, timeout, mask, mask_size]: Args,
 ) -> super::Outcome {
@@ -560,9 +560,9 @@ fn finish(kernel: &mut Kernel, tid: Tid, result: Option<Result<u64, Errno>>) -> 
 
 /// One run of `do_epoll_wait`: the ready items reported, or none when the time is up, EINTR for a
 /// signal, or parked until an item has an event.
-fn wait(
+fn wait<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     epfd: u64,
     events: u64,
@@ -610,9 +610,9 @@ fn wait(
 /// dropped if one-shot (it waits for nothing until changed), kept listed at the end if
 /// level-triggered, and left off until its next event if edge-triggered. Items not reached stay
 /// first in line.
-fn send_events(
+fn send_events<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     epoll: &EpollRef,
     events: u64,
@@ -691,9 +691,9 @@ fn send_events(
 
 /// `ep_eventpoll_ioctl`: busy polling's parameters, checked, kept and given back; every other
 /// request is EINVAL (measured).
-pub(super) fn ioctl(
+pub(super) fn ioctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     epoll: &EpollRef,
     request: u32,

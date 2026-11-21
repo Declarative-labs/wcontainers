@@ -20,9 +20,9 @@ use crate::{Context, Errno, Kernel};
 /// requests.
 type Answer = Option<Result<u64, Errno>>;
 
-pub(super) fn ioctl(
+pub(super) fn ioctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, request, argument, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -39,9 +39,9 @@ pub(super) fn ioctl(
 }
 
 /// Linux's `do_vfs_ioctl`, and `file_ioctl` for regular files.
-fn every_file(
+fn every_file<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     fd: i32,
     file: &FileRef,
@@ -303,9 +303,9 @@ fn remap_checks(input: &FileRef, output: &FileRef) -> Result<(), Errno> {
 
 /// Linux's `ioctl_file_dedupe_range` and `vfs_dedupe_file_range` up to the file system's own
 /// `remap_file_range`, which none here has.
-fn dedupe_range(
+fn dedupe_range<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     argument: u64,
@@ -335,9 +335,9 @@ fn dedupe_range(
 
 /// Linux's `ioctl_preallocate`: a `struct space_resv` names a range from an origin, which is
 /// allocated or punched with the size kept, as `fallocate`.
-fn preallocate(
+fn preallocate<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     fd: i32,
     file: &FileRef,
@@ -368,9 +368,9 @@ fn preallocate(
 /// `do_procmap_query`: the mapping at (or, asked, after) an address of the memory the maps file
 /// was opened on, with the permissions asked for, as `/proc/<pid>/maps` shows it, its name and
 /// build id copied where asked. A build id is not read (counted), so none is given.
-fn procmap_query(
+fn procmap_query<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     argument: u64,
@@ -511,9 +511,9 @@ fn procmap_query(
     Ok(0)
 }
 
-fn own(
+fn own<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     request: u32,
@@ -605,9 +605,9 @@ fn own(
 /// `random_ioctl`. The pool is always ready, so it holds its full 256 bits; what may add to it or
 /// clear it needs CAP_SYS_ADMIN, and what it is given cannot change what the host's generator
 /// gives.
-fn random(
+fn random<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     request: u32,
     argument: u64,
@@ -717,9 +717,9 @@ enum Attributes {
 
 /// Linux's `vfs_fileattr_set` with tmpfs's `shmem_fileattr_set`; `None` for a file that keeps no
 /// flags.
-fn set_attributes(
+fn set_attributes<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     wanted: Attributes,
@@ -788,9 +788,9 @@ fn set_attributes(
 /// owns every namespace here and has no owner the caller may reach), its parent (the pid and user
 /// namespaces' are out of reach, the others have none), and the user namespace's owner (root);
 /// the requests of single types are not built.
-fn namespace_ioctl(
+fn namespace_ioctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     namespace: crate::fs::proc::Namespace,
     request: u32,

@@ -103,7 +103,7 @@ impl Ends {
     }
 
     /// Sends bytes out of an end, within its credit.
-    pub fn send(&mut self, cx: &mut Context<'_>, end: End, bytes: &[u8]) {
+    pub fn send<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: End, bytes: &[u8]) {
         let held = self.held.get_mut(&end).expect("an end held");
         let count = bytes.len() as u64;
         debug_assert!(count <= held.credit && !held.closed);
@@ -143,7 +143,12 @@ fn side(file: &FileRef) -> Side {
 impl Kernel {
     /// Gives a named end the kernel's side of it; if the embedder has closed the end already, the
     /// file is let go of at once, as a close.
-    pub(crate) fn attach_end(&mut self, cx: &mut Context<'_>, end: End, file: FileRef) {
+    pub(crate) fn attach_end<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        end: End,
+        file: FileRef,
+    ) {
         let Some(held) = self.ends.held.get_mut(&end) else {
             self.released.push(file);
             self.files_released(cx);
@@ -158,7 +163,7 @@ impl Kernel {
     }
 
     /// Lets go of an end's file, as a close of it.
-    fn let_go_of_end(&mut self, cx: &mut Context<'_>, file: FileRef) {
+    fn let_go_of_end<S: crate::System>(&mut self, cx: &mut Context<'_, S>, file: FileRef) {
         let watched = &mut self.ends.watched;
         let mine = channel(&file);
         if let Some(at) = watched.iter().position(|seen| *seen == mine) {
@@ -171,7 +176,12 @@ impl Kernel {
     /// `Event::StreamData`: bytes from the embedder, within the credit given; what is past it is
     /// dropped and counted. Bytes after the kernel closed the end are dropped, as a write to a pipe
     /// with no reader fails.
-    pub(crate) fn stream_data(&mut self, cx: &mut Context<'_>, end: End, bytes: &[u8]) {
+    pub(crate) fn stream_data<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        end: End,
+        bytes: &[u8],
+    ) {
         self.ends.moved = true;
         let Some(held) = self.ends.held.get(&end) else {
             self.counters
@@ -194,7 +204,12 @@ impl Kernel {
 
     /// `Event::StreamCredit`: the kernel may send this many more bytes. Credit on an end the kernel
     /// never sends on is counted as an event nothing waits for.
-    pub(crate) fn credit_stream(&mut self, cx: &mut Context<'_>, end: End, bytes: u64) {
+    pub(crate) fn credit_stream<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        end: End,
+        bytes: u64,
+    ) {
         self.ends.moved = true;
         match self.ends.held.get_mut(&end).filter(|held| held.sends) {
             Some(held) => held.credit = held.credit.saturating_add(bytes),
@@ -205,7 +220,7 @@ impl Kernel {
     }
 
     /// `Event::StreamClosed`: the embedder has let go; so does the kernel, as a close of its file.
-    pub(crate) fn stream_closed(&mut self, cx: &mut Context<'_>, end: End) {
+    pub(crate) fn stream_closed<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: End) {
         self.ends.moved = true;
         let Some(held) = self.ends.held.remove(&end) else {
             self.counters
@@ -230,9 +245,9 @@ impl Kernel {
     }
 
     /// `Event::TerminalResized`: a terminal end's new size.
-    pub(crate) fn terminal_resized(
+    pub(crate) fn terminal_resized<S: crate::System>(
         &mut self,
-        cx: &mut Context<'_>,
+        cx: &mut Context<'_, S>,
         end: End,
         columns: u16,
         rows: u16,
@@ -254,7 +269,7 @@ impl Kernel {
     /// Moves what can move between the ends and the embedder, once something may have moved:
     /// output within credit, new credit for space made, and closes for ends that are finished.
     /// Returns whether anything moved.
-    pub(crate) fn serve_ends(&mut self, cx: &mut Context<'_>) -> bool {
+    pub(crate) fn serve_ends<S: crate::System>(&mut self, cx: &mut Context<'_, S>) -> bool {
         if !core::mem::take(&mut self.ends.moved) {
             return false;
         }
@@ -314,7 +329,11 @@ impl Kernel {
     }
 
     /// The ends named at a start that failed: the kernel closes those the embedder has not.
-    pub(crate) fn close_unmade(&mut self, cx: &mut Context<'_>, standard: &Standard) {
+    pub(crate) fn close_unmade<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        standard: &Standard,
+    ) {
         for (end, _) in standard.ends() {
             if let Some(held) = self.ends.held.get_mut(&end) {
                 held.closed = true;

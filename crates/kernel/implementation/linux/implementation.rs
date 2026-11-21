@@ -81,9 +81,9 @@ use fs::{FileSystem, Node, Numbers, Time};
 use process::{Pid, Thread, Tid};
 
 /// What a call into the kernel may use besides the kernel's own state.
-pub(crate) struct Context<'a> {
+pub(crate) struct Context<'a, S> {
     pub cpu: &'a mut dyn Cpu,
-    pub host: &'a dyn System,
+    pub host: &'a S,
     /// What is added to the host's monotonic clock to give the kernel's (see
     /// [`Kernel::restore`]).
     monotonic_offset: u64,
@@ -91,7 +91,7 @@ pub(crate) struct Context<'a> {
     refused: u32,
 }
 
-impl Context<'_> {
+impl<S: System> Context<'_, S> {
     /// What a refused request to make a memory, thread or shared block means to the guest; a host
     /// that cannot do it at all is counted.
     pub fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
@@ -479,7 +479,7 @@ impl Kernel {
     }
 
     /// The thread from the last [`Next::Run`] has come back.
-    pub fn exit(&mut self, cpu: &mut dyn Cpu, host: &dyn System, exit: Exit) {
+    pub fn exit<S: System>(&mut self, cpu: &mut dyn Cpu, host: &S, exit: Exit) {
         let tid = self
             .running
             .take()
@@ -517,7 +517,7 @@ impl Kernel {
     }
 
     /// Something happened outside.
-    pub fn event(&mut self, cpu: &mut dyn Cpu, host: &dyn System, event: Event<'_>) {
+    pub fn event<S: System>(&mut self, cpu: &mut dyn Cpu, host: &S, event: Event<'_>) {
         let mut cx = Context {
             cpu,
             host,
@@ -593,10 +593,10 @@ impl Kernel {
     /// Sends a signal to the container's first process from outside the container, as `docker
     /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
     /// other signals with no handler from that process.
-    pub fn kill(
+    pub fn kill<S: System>(
         &mut self,
         cpu: &mut dyn Cpu,
-        host: &dyn System,
+        host: &S,
         signal: wcontainers_kernel::signal::Signal,
     ) {
         let signal = signal as u32;
@@ -624,7 +624,7 @@ impl Kernel {
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
     /// again from its saved registers, and every parked call runs again, its deadline on the clock
     /// it had.
-    pub fn restore(&mut self, cpu: &mut dyn Cpu, host: &dyn System) {
+    pub fn restore<S: System>(&mut self, cpu: &mut dyn Cpu, host: &S) {
         assert!(self.running.is_none(), "restored while a thread runs");
         self.monotonic_offset = self.last_now.wrapping_sub(host.monotonic_nanoseconds());
         let mut cx = Context {
@@ -714,7 +714,7 @@ impl Kernel {
     /// A free process and thread number from the embedder's task ids, skipping any still carried
     /// as Linux's `alloc_pid` does (counted); EAGAIN for a number out of range, or once every
     /// number has been tried.
-    fn allocate_id(&mut self, cx: &mut Context<'_>) -> Result<i32, Errno> {
+    fn allocate_id<S: crate::System>(&mut self, cx: &mut Context<'_, S>) -> Result<i32, Errno> {
         for _ in RESERVED_PIDS..PID_MAX {
             let id = crate::system::pid_of(
                 cx.host
@@ -748,7 +748,7 @@ impl Kernel {
     }
 
     /// Gives back to the embedder the numbers let go of that nothing carries any more.
-    pub(crate) fn release_ids(&mut self, cx: &mut Context<'_>) {
+    pub(crate) fn release_ids<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
         let mut ids = core::mem::take(&mut self.ids_let_go);
         ids.sort_unstable();
         ids.dedup();
@@ -905,7 +905,7 @@ impl Kernel {
     }
 
     /// The time now on the wall clock.
-    pub(crate) fn now(&self, cx: &mut Context<'_>) -> Time {
+    pub(crate) fn now<S: crate::System>(&self, cx: &mut Context<'_, S>) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }
 }

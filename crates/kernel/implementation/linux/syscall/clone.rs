@@ -12,9 +12,9 @@ use crate::process::{Channel, Pid, Report, Tid};
 use crate::{Context, Errno, Kernel, errno};
 
 /// `clone(flags, stack, parent_tid, tls, child_tid)`, arm64's argument order.
-pub(super) fn clone(
+pub(super) fn clone<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [flags, stack, parent_tid, tls, child_tid, _]: Args,
 ) -> Outcome {
@@ -111,9 +111,9 @@ fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
 /// Linux's `copy_process` for a child process: its checks in order, then a copy of the caller's
 /// process and thread, which starts in line to run.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn make_child(
+fn make_child<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     flags: u32,
     exit_signal: u32,
@@ -354,9 +354,9 @@ fn share_or_copy(thread: &mut crate::process::Thread, flags: u32, child: Tid) {
 /// `copy_process` for a thread of the caller's process: it shares everything the process holds and
 /// starts on the same memory from the caller's registers, with its own stack and thread pointer if
 /// given.
-fn make_thread(
+fn make_thread<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     flags: u32,
     stack: u64,
@@ -593,9 +593,9 @@ fn child_usage(kernel: &Kernel, child: Pid) -> rusage {
     usage
 }
 
-pub(super) fn wait4(
+pub(super) fn wait4<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, status_out, options, usage_out, ..]: Args,
 ) -> Outcome {
@@ -640,9 +640,9 @@ pub(super) fn wait4(
     }
 }
 
-pub(super) fn waitid(
+pub(super) fn waitid<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [kind, id, info_out, options, usage_out, _]: Args,
 ) -> Outcome {

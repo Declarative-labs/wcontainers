@@ -35,9 +35,9 @@ enum Target {
 }
 
 /// The inode a call names.
-fn target(
+fn target<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     target: Target,
 ) -> Result<Node, Errno> {
@@ -184,9 +184,9 @@ fn set_backend_acl(
 }
 
 /// An attribute name, as Linux's `import_xattr_name` copies it.
-fn import_name(
+fn import_name<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
 ) -> Result<Vec<u8>, Errno> {
@@ -403,9 +403,9 @@ fn check_acl(value: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
-fn set(
+fn set<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     at: Target,
     [_, name, value, size, flags, _]: Args,
@@ -472,9 +472,9 @@ fn set(
     Ok(0)
 }
 
-fn get(
+fn get<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     at: Target,
     [_, name, value, size, ..]: Args,
@@ -537,9 +537,9 @@ fn get(
     Ok(found.len() as u64)
 }
 
-fn list(
+fn list<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     at: Target,
     [_, list, size, ..]: Args,
@@ -585,9 +585,9 @@ fn list(
     Ok(names.len() as u64)
 }
 
-fn remove(
+fn remove<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     at: Target,
     [_, name, ..]: Args,
@@ -653,108 +653,108 @@ fn by_path(args: Args, follow: bool) -> Target {
     }
 }
 
-pub(super) fn setxattr(
+pub(super) fn setxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     set(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn lsetxattr(
+pub(super) fn lsetxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     set(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn fsetxattr(
+pub(super) fn fsetxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     set(kernel, cx, tid, Target::File(args[0]), args)
 }
 
-pub(super) fn getxattr(
+pub(super) fn getxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     get(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn lgetxattr(
+pub(super) fn lgetxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     get(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn fgetxattr(
+pub(super) fn fgetxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     get(kernel, cx, tid, Target::File(args[0]), args)
 }
 
-pub(super) fn listxattr(
+pub(super) fn listxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     list(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn llistxattr(
+pub(super) fn llistxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     list(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn flistxattr(
+pub(super) fn flistxattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     list(kernel, cx, tid, Target::File(args[0]), args)
 }
 
-pub(super) fn removexattr(
+pub(super) fn removexattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     remove(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn lremovexattr(
+pub(super) fn lremovexattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     remove(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn fremovexattr(
+pub(super) fn fremovexattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {

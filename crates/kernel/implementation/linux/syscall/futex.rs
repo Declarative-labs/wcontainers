@@ -220,18 +220,18 @@ fn key_in(
     }
 }
 
-fn read_word(
+fn read_word<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
 ) -> Result<u32, Errno> {
     guest(kernel, cx, tid).read_value::<u32>(address)
 }
 
-fn write_word(
+fn write_word<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     value: u32,
@@ -271,9 +271,9 @@ enum Timeout {
     },
 }
 
-fn read_timespec(
+fn read_timespec<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
 ) -> Result<u64, Errno> {
@@ -305,7 +305,11 @@ fn namespace_to_machine(kernel: &Kernel, at: u64, realtime: bool) -> u64 {
 }
 
 /// The call's deadline on the kernel's monotonic clock, set at its first run.
-fn deadline(cx: &mut Context<'_>, timeout: Timeout, slack: u64) -> Option<u64> {
+fn deadline<S: crate::System>(
+    cx: &mut Context<'_, S>,
+    timeout: Timeout,
+    slack: u64,
+) -> Option<u64> {
     let now = cx.monotonic();
     let at = match timeout {
         Timeout::None => return None,
@@ -319,9 +323,9 @@ fn deadline(cx: &mut Context<'_>, timeout: Timeout, slack: u64) -> Option<u64> {
 }
 
 /// `futex(uaddr, op, val, timeout or val2, uaddr2, val3)`.
-pub(super) fn futex(
+pub(super) fn futex<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [address, op, value, timeout, address2, value3]: Args,
 ) -> Outcome {
@@ -466,9 +470,9 @@ pub(super) fn futex(
 /// `futex_wait`: queues the caller if the futex still holds `value`, until a wake whose bits meet
 /// `bitset`, the deadline or a signal.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn wait(
+fn wait<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     shared: bool,
@@ -520,7 +524,7 @@ fn wait(
 }
 
 /// A queued wait's next look: woken if it is off its queue, else its deadline, a signal, or park.
-fn wait_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
+fn wait_again<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, tid: Tid) -> Outcome {
     if kernel.threads[&tid].futex.woken != 0 {
         finish(kernel, tid);
         return Outcome::Return(0);
@@ -544,9 +548,9 @@ fn wait_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
 
 /// `restart_syscall` for a futex wait a signal interrupted (`futex_wait_restart`): it waits again,
 /// reading the futex anew, until the same deadline.
-pub(super) fn restart(
+pub(super) fn restart<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     restart: Restart,
 ) -> Outcome {
@@ -652,9 +656,9 @@ fn wake_key(kernel: &mut Kernel, key: Key, count: i32, bitset: u32) -> Result<u6
 /// to the second, if the first still holds `compare` when one is given. Returns how many it woke
 /// and moved.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn requeue(
+fn requeue<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     address2: u64,
@@ -724,9 +728,9 @@ fn requeue_plain(
 }
 
 /// `futex_atomic_op_inuser`: changes the word at `address` as `op` says and compares what it held.
-fn atomic_op(
+fn atomic_op<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     encoded: u32,
@@ -770,9 +774,9 @@ fn atomic_op(
 /// `futex_wake_op`: changes the second futex, wakes up to `wake` waiters of the first, and if the
 /// comparison held up to `wake2` of the second.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn wake_op(
+fn wake_op<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     address2: u64,
@@ -793,9 +797,9 @@ fn wake_op(
 
 /// `futex_lock_pi_atomic`: takes the lock if it is free (1), or marks it as having waiters and
 /// finds its owner (0); EDEADLK if the caller holds it.
-fn lock_pi_atomic(
+fn lock_pi_atomic<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     key: Key,
@@ -881,9 +885,9 @@ fn closes_chain(kernel: &Kernel, key: Key, tid: Tid) -> bool {
 
 /// `futex_lock_pi`: takes the lock, or waits for its owner to hand it over. Here every thread has
 /// the same priority, so the owner's priority is never raised.
-fn lock_pi(
+fn lock_pi<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     shared: bool,
@@ -933,7 +937,11 @@ fn lock_pi(
 
 /// A queued lock's next look: handed the lock if it is off its queue, else its deadline, a signal
 /// (the call starts again, `ERESTARTNOINTR`), or park.
-fn lock_pi_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
+fn lock_pi_again<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    tid: Tid,
+) -> Outcome {
     if kernel.threads[&tid].futex.woken != 0 {
         finish(kernel, tid);
         return Outcome::Return(0);
@@ -956,7 +964,12 @@ fn lock_pi_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome
 
 /// Hands a priority inheriting lock to its first waiter (`wake_futex_pi`): the word names it, with
 /// the waiters bit always kept and an owner's death kept if `keep` holds it.
-fn hand_over(kernel: &mut Kernel, cx: &mut Context<'_>, key: Key, keep: u32) -> Result<(), Errno> {
+fn hand_over<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    key: Key,
+    keep: u32,
+) -> Result<(), Errno> {
     let Some(next) = top(kernel, key) else {
         return Ok(());
     };
@@ -972,9 +985,9 @@ fn hand_over(kernel: &mut Kernel, cx: &mut Context<'_>, key: Key, keep: u32) -> 
 
 /// `futex_unlock_pi`: only the owner may unlock; the first waiter is handed the lock, or the word is
 /// cleared.
-fn unlock_pi(
+fn unlock_pi<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     shared: bool,
@@ -998,9 +1011,9 @@ fn unlock_pi(
 /// `futex_wait_requeue_pi`: waits on a condition until it is requeued onto the lock at `address2`
 /// and handed it.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn wait_requeue_pi(
+fn wait_requeue_pi<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     address2: u64,
@@ -1049,9 +1062,9 @@ fn wait_requeue_pi(
 /// A condition waiter's next look: on the condition still, it may time out or be signalled
 /// (`ERESTARTNOINTR`); requeued onto the lock it waits as a lock's waiter; handed the lock, it has
 /// it.
-fn wait_requeue_pi_again(
+fn wait_requeue_pi_again<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address2: u64,
     shared: bool,
@@ -1083,9 +1096,9 @@ fn wait_requeue_pi_again(
 
 /// `futex_requeue` with priority inheritance: the first waiter takes the lock if it is free, the
 /// rest move to the lock's queue as its waiters.
-fn requeue_pi(
+fn requeue_pi<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     key: Key,
     key2: Key,
@@ -1188,19 +1201,19 @@ impl TaskEnd {
         })
     }
 
-    fn memory<'a>(
+    fn memory<'a, S: crate::System>(
         &self,
         kernel: &'a mut Kernel,
-        cx: &'a mut Context<'_>,
+        cx: &'a mut Context<'_, S>,
     ) -> crate::user::Guest<'a> {
         super::process_guest(kernel, cx, self.pid, self.tid, self.may_lock_any)
     }
 }
 
 /// A thread's end as `futex_exit_release` and `mm_release` see it, as [`task_end`] does it.
-pub(crate) fn thread_end(
+pub(crate) fn thread_end<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     others_use_memory: bool,
 ) {
@@ -1220,9 +1233,9 @@ pub(crate) fn thread_end(
 /// marked as their owner's death and a waiter woken, the priority inheriting locks it holds handed
 /// on marked the same, and its thread id address cleared and woken while others still use the
 /// memory.
-pub(crate) fn task_end(
+pub(crate) fn task_end<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     end: &TaskEnd,
     others_use_memory: bool,
 ) {
@@ -1252,9 +1265,9 @@ pub(crate) const ROBUST_LIST_LIMIT: usize = 2048;
 
 /// `exit_robust_list`: each lock on the list (and the one being taken or let go) that the task
 /// holds is marked as its owner's death, and a plain one with waiters wakes one.
-fn robust_list(kernel: &mut Kernel, cx: &mut Context<'_>, end: &TaskEnd) {
+fn robust_list<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, end: &TaskEnd) {
     let head = end.robust_list;
-    let read = |kernel: &mut Kernel, cx: &mut Context<'_>, at: u64| {
+    let read = |kernel: &mut Kernel, cx: &mut Context<'_, S>, at: u64| {
         end.memory(kernel, cx).read_value::<u64>(at).ok()
     };
     let Some(first) = read(kernel, cx, head) else {
@@ -1304,9 +1317,9 @@ fn robust_list(kernel: &mut Kernel, cx: &mut Context<'_>, end: &TaskEnd) {
 }
 
 /// `handle_futex_death`; false when the walk must stop.
-fn owner_died(
+fn owner_died<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     end: &TaskEnd,
     address: u64,
     pi: bool,
@@ -1338,9 +1351,9 @@ fn owner_died(
 
 /// The futex2 flags (`futex2_to_flags` and `futex_flags_valid`): only 32 bit futexes; the NUMA
 /// forms are not built. Returns whether the futex is shared.
-fn futex2_flags(
+fn futex2_flags<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     number: u32,
     flags: u32,
 ) -> Result<bool, Errno> {
@@ -1361,9 +1374,9 @@ fn futex2_flags(
 }
 
 /// `futex2_setup_timeout`: an absolute time on the wall or the monotonic clock.
-fn futex2_timeout(
+fn futex2_timeout<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     timeout: u64,
     clock: u64,
@@ -1384,9 +1397,9 @@ fn futex2_timeout(
 }
 
 /// `futex_wake(uaddr, mask, nr, flags)`.
-pub(super) fn futex_wake(
+pub(super) fn futex_wake<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [address, mask, count, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1406,9 +1419,9 @@ pub(super) fn futex_wake(
 }
 
 /// `futex_wait(uaddr, val, mask, flags, timeout, clockid)`.
-pub(super) fn futex_wait(
+pub(super) fn futex_wait<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [address, value, mask, flags, timeout, clock]: Args,
 ) -> Outcome {
@@ -1441,9 +1454,9 @@ pub(super) fn futex_wait(
 }
 
 /// One entry of a futex2 vector (`futex_parse_waitv`): its address, value and whether it is shared.
-fn parse_waitv(
+fn parse_waitv<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     number: u32,
     at: u64,
@@ -1463,9 +1476,9 @@ fn parse_waitv(
 
 /// `futex_waitv(waiters, nr_futexes, flags, timeout, clockid)`: waits on several futexes at once
 /// and answers the index of one that was woken.
-pub(super) fn futex_waitv(
+pub(super) fn futex_waitv<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [vector, count, flags, timeout, clock, _]: Args,
 ) -> Outcome {
@@ -1522,7 +1535,11 @@ pub(super) fn futex_waitv(
 }
 
 /// A vector wait's next look: the last of its futexes found woken, its deadline, a signal, or park.
-fn waitv_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
+fn waitv_again<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    tid: Tid,
+) -> Outcome {
     if kernel.threads[&tid].futex.woken != 0 {
         let index = finish(kernel, tid).unwrap_or(0);
         return Outcome::Return(index as u64);
@@ -1544,9 +1561,9 @@ fn waitv_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
 }
 
 /// `futex_requeue(waiters, flags, nr_wake, nr_requeue)`: the two futexes from a vector of two.
-pub(super) fn futex_requeue(
+pub(super) fn futex_requeue<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [vector, flags, wake, requeue_count, ..]: Args,
 ) -> Result<u64, Errno> {

@@ -2050,7 +2050,7 @@ pub(crate) fn removexattr(node: &Node, name: &[u8]) -> Result<(), Errno> {
 
 impl crate::Kernel {
     /// Hands the backend the messages made since the last time, counting each by its opcode.
-    pub(crate) fn send_to_backend(&mut self, cx: &mut crate::Context<'_>) {
+    pub(crate) fn send_to_backend<S: crate::System>(&mut self, cx: &mut crate::Context<'_, S>) {
         let Some(client) = self.files.backend.clone() else {
             return;
         };
@@ -2088,9 +2088,9 @@ impl crate::Kernel {
     }
 
     /// The backend answered: the call waiting for it runs again.
-    pub(crate) fn backend_answered(
+    pub(crate) fn backend_answered<S: crate::System>(
         &mut self,
-        cx: &mut crate::Context<'_>,
+        cx: &mut crate::Context<'_, S>,
         unique: u64,
         reply: &[u8],
     ) {
@@ -2154,7 +2154,11 @@ impl crate::Kernel {
 
     /// A notice the backend sent unasked (`fuse_notify`). Nothing is cached, so most change only
     /// what the kernel holds of an inode, or the pages of a mapped file.
-    pub(crate) fn backend_notice(&mut self, cx: &mut crate::Context<'_>, notice: &[u8]) {
+    pub(crate) fn backend_notice<S: crate::System>(
+        &mut self,
+        cx: &mut crate::Context<'_, S>,
+        notice: &[u8],
+    ) {
         let Some(client) = self.files.backend.clone() else {
             return;
         };

@@ -252,9 +252,9 @@ pub(crate) fn program_of(
     clippy::too_many_arguments,
     reason = "the parts of one exec, each distinct"
 )]
-pub(crate) fn load(
+pub(crate) fn load<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     path: &[u8],
     program: Program,
@@ -498,9 +498,9 @@ struct Placed {
     clippy::too_many_arguments,
     reason = "one call site, each value distinct"
 )]
-fn place(
+fn place<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     memory: MemoryId,
     program: Program,
@@ -782,7 +782,11 @@ const VDSO_LENGTH: u64 = (crate::vdso::VVAR_PAGES + crate::vdso::CODE_PAGES) * P
 
 /// Maps `[vvar]` and the vDSO where `mmap` would put them, and writes the vDSO's code
 /// (`arch_setup_additional_pages`). The data pages hold nothing a program reads here.
-fn place_vdso(cx: &mut Context<'_>, memory: MemoryId, map: &mut AddressMap) -> Result<u64, Errno> {
+fn place_vdso<S: crate::System>(
+    cx: &mut Context<'_, S>,
+    memory: MemoryId,
+    map: &mut AddressMap,
+) -> Result<u64, Errno> {
     use crate::vdso::{CODE_PAGES, VVAR_PAGES};
     let start = map.find_free(VDSO_LENGTH).ok_or(Errno::ENOMEM)?;
     let code = start + VVAR_PAGES * PAGE_SIZE;
@@ -930,8 +934,8 @@ fn fits_below_ceiling(
 
 /// Places one ELF file's loadable segments, with the tails [`segment_tails`] read. With no bias
 /// given, the file goes wherever free space is, as `mmap` would put it.
-fn place_elf(
-    cx: &mut Context<'_>,
+fn place_elf<S: crate::System>(
+    cx: &mut Context<'_, S>,
     memory: MemoryId,
     map: &mut AddressMap,
     (program, header, segments): (&Program, &Header, &[Segment]),
@@ -1098,14 +1102,14 @@ fn segment_permissions(flags: u32) -> Permissions {
 /// platform name, 16 random bytes, then, 16 byte aligned, `argc`, the argument pointers, the environment
 /// pointers and the auxiliary vector.
 /// A word of the host's randomness.
-fn random_word(cx: &Context<'_>) -> u64 {
+fn random_word<S: crate::System>(cx: &Context<'_, S>) -> u64 {
     let mut bytes = [0; size_of::<u64>()];
     cx.host.random(&mut bytes);
     u64::from_le_bytes(bytes)
 }
 
-fn build_stack(
-    cx: &mut Context<'_>,
+fn build_stack<S: crate::System>(
+    cx: &mut Context<'_, S>,
     memory: MemoryId,
     (top, below_strings): (u64, u64),
     file_name: &[u8],

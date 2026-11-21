@@ -249,7 +249,7 @@ pub(crate) struct Counters {
 
 impl Counters {
     /// Counts one occurrence and warns the host.
-    pub fn count(&mut self, host: &dyn Host, reason: &'static str, detail: u64) {
+    pub fn count<H: Host>(&mut self, host: &H, reason: &'static str, detail: u64) {
         let count = self.counts.entry((reason, detail)).or_insert(0);
         *count += 1;
         host.warn(Warning {
@@ -262,9 +262,9 @@ impl Counters {
     /// The one path for something Linux has that is not built here: counts it under one of
     /// [`reason::NOT_BUILT`], warns, and gives back the error Linux answers when it lacks the
     /// feature.
-    pub fn refuse(
+    pub fn refuse<H: Host>(
         &mut self,
-        host: &dyn Host,
+        host: &H,
         reason: &'static str,
         detail: u64,
         answer: crate::Errno,
@@ -275,9 +275,9 @@ impl Counters {
     }
 
     /// A flag or form of call `number` that is not built, as [`Counters::refuse`] counts it.
-    pub fn refuse_flag(
+    pub fn refuse_flag<H: Host>(
         &mut self,
-        host: &dyn Host,
+        host: &H,
         number: u32,
         flags: u64,
         answer: crate::Errno,
@@ -299,7 +299,7 @@ impl Counters {
     }
 
     /// Counts and warns of every noted occurrence.
-    pub fn flush(&mut self, host: &dyn Host) {
+    pub fn flush<H: Host>(&mut self, host: &H) {
         for (reason, detail) in core::mem::take(self.noted.get_mut()) {
             self.count(host, reason, detail);
         }

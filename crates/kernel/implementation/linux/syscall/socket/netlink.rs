@@ -43,9 +43,9 @@ pub(crate) struct Netlink {
 }
 
 /// `netlink_create`: NETLINK_ROUTE only.
-pub(super) fn create(
+pub(super) fn create<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     kind: u32,
     protocol: u32,
 ) -> Result<Socket, Errno> {
@@ -143,9 +143,9 @@ pub(super) fn bind(
     Ok(0)
 }
 
-pub(super) fn connect(
+pub(super) fn connect<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     bytes: &[u8],
@@ -201,9 +201,9 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
 
 /// `netlink_sendmsg` to the kernel: every request in the bytes is answered into the socket's own
 /// queue, as `netlink_rcv_skb` and `rtnetlink_rcv_msg` answer.
-pub(super) fn send(
+pub(super) fn send<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,
@@ -274,7 +274,13 @@ pub(super) fn send(
 }
 
 /// `netlink_sendskb`: a message for the socket's reader, who hears of it.
-fn queue(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, socket: &SocketRef, reply: Vec<u8>) {
+fn queue<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    tid: Tid,
+    socket: &SocketRef,
+    reply: Vec<u8>,
+) {
     let packet = Packet {
         truesize: super::truesize(reply.len() as u64, 0),
         data: reply,
@@ -294,9 +300,9 @@ fn queue(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, socket: &SocketRef
 
 /// `netlink_sendskb` of a message the kernel made for no request (a message queue's
 /// SIGEV_THREAD cookie): from port 0 with empty credentials.
-pub(crate) fn send_from_kernel(
+pub(crate) fn send_from_kernel<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     data: Vec<u8>,
 ) {
@@ -397,9 +403,9 @@ impl Message {
 
 /// `rtnetlink_rcv_msg`: GET requests are answered; anything that would change the network needs
 /// CAP_NET_ADMIN, which Docker does not give.
-fn answer(
+fn answer<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     request: &[u8],
     portid: u32,
     flags: u32,
@@ -735,9 +741,9 @@ fn addresses(family: u32, index: Option<u32>, request: &[u8], portid: u32) -> Ve
 
 /// The neighbour table's dump (`neigh_dump_info`): IPv4's entries, then IPv6's. A request for
 /// proxies (NTF_PROXY) has none; under strict checking an interface named filters.
-fn neighbours(
+fn neighbours<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     family: u32,
     strict: bool,
     body: &[u8],
@@ -1264,9 +1270,9 @@ fn route_message(route: &Route, request: &[u8], portid: u32, flags: u16) -> Vec<
 }
 
 /// `netlink_recvmsg`: one message buffer, the kernel as its sender.
-pub(super) fn receive(
+pub(super) fn receive<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,

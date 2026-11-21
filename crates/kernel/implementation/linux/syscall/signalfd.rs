@@ -23,9 +23,9 @@ pub(super) fn mask_of(file: &OpenFile) -> Option<u64> {
     }
 }
 
-pub(super) fn signalfd4(
+pub(super) fn signalfd4<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, mask_address, size, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -81,9 +81,9 @@ pub(super) fn poll(kernel: &Kernel, tid: Tid, mask: u64) -> u16 {
 
 /// `signalfd_read_iter`: as many whole records as fit, the first waited for unless nonblocking, the
 /// rest only if already pending. A record that cannot be stored is lost, as on Linux.
-pub(super) fn read(
+pub(super) fn read<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -122,9 +122,9 @@ pub(super) fn read(
 }
 
 /// Stores bytes at `offset` into a reader's buffers, across them as `copy_to_iter` does.
-pub(super) fn store(
+pub(super) fn store<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     parts: &[(u64, u64)],
     offset: u64,

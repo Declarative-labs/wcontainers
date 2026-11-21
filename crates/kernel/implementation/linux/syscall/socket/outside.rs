@@ -54,7 +54,11 @@ fn host_address(endpoint: &Endpoint) -> Vec<u8> {
 
 /// A host's refusal as the error the guest sees: a host that cannot reach outside is a network
 /// without a route, which is counted.
-fn refusal(kernel: &mut Kernel, cx: &mut Context<'_>, error: HostError) -> Errno {
+fn refusal<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    error: HostError,
+) -> Errno {
     match error {
         HostError::Errno(number) => Errno(number as u32),
         HostError::Closed => Errno::ECONNREFUSED,
@@ -75,9 +79,9 @@ fn next_id(outside: &mut Outside) -> u32 {
 }
 
 /// Starts a host connection for `socket` to `to`; its number.
-pub(super) fn open(
+pub(super) fn open<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     to: Endpoint,
     stream: bool,
@@ -117,7 +121,11 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
 
 /// Asks the host to accept connections from outside for a listener on its port. A host that
 /// cannot (or whose port is taken) leaves it listening inside the container alone, counted.
-pub(super) fn listen(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+pub(super) fn listen<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     let id = next_id(&mut kernel.sockets.inet.outside);
     if ask_listen(kernel, cx, socket, id) {
         let outside = &mut kernel.sockets.inet.outside;
@@ -126,7 +134,12 @@ pub(super) fn listen(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketR
 }
 
 /// The host's `listen` for a listener's port; whether it took it.
-fn ask_listen(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, id: u32) -> bool {
+fn ask_listen<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    id: u32,
+) -> bool {
     let port = socket
         .borrow()
         .inet
@@ -163,7 +176,11 @@ pub(super) fn stop_listening(kernel: &mut Kernel, socket: &SocketRef) {
 /// Takes the connections waiting at the host for a listener into its backlog while it has room.
 /// Each is the listener's end of a connection from the gateway (as Docker's published ports show
 /// it), at eth0's address.
-pub(super) fn take(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+pub(super) fn take<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    listener: &SocketRef,
+) {
     let Some(listener_id) = kernel
         .sockets
         .inet
@@ -229,7 +246,7 @@ pub(super) fn take(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketR
 
 impl Outside {
     /// Hands the host the connections released since the last call.
-    pub(crate) fn flush(&mut self, host: &dyn wcontainers_abi::Host) {
+    pub(crate) fn flush<H: wcontainers_abi::Host>(&mut self, host: &H) {
         for id in core::mem::take(&mut self.closing) {
             host.close(ConnectionId(id));
         }
@@ -238,7 +255,12 @@ impl Outside {
 
 /// Pulls what the host has for a connection into its socket's queue, up to its receive buffer:
 /// bytes or datagrams, the end of a stream, or a reset.
-pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, id: u32) {
+pub(super) fn pull<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    id: u32,
+) {
     let Some(&(_, flow)) = kernel.sockets.inet.outside.connections.get(&id) else {
         return;
     };
@@ -362,9 +384,9 @@ fn forget_flow(kernel: &mut Kernel, socket: &SocketRef, id: u32) {
 /// Whether a socket that asked for queued errors (IP_RECVERR or IPV6_RECVERR for the way the
 /// datagram went) hears of an outside destination's refusal; the host does not say what the
 /// refused datagram held, so nothing is queued, which is counted.
-fn unqueued_error(
+fn unqueued_error<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     flow: Option<Endpoint>,
 ) -> bool {
@@ -388,7 +410,12 @@ fn unqueued_error(
 }
 
 /// A TCP connection to the outside was reset or failed: closed, with the error to report.
-fn reset(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, error: Errno) {
+fn reset<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    error: Errno,
+) {
     {
         let mut own = socket.borrow_mut();
         let close_wait = own.shutdown & RCV_SHUTDOWN != 0 && own.state == State::Connected;
@@ -409,9 +436,9 @@ fn reset(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, error: E
 }
 
 /// Sends bytes of a TCP connection to the outside, as much as the host takes now.
-pub(super) fn send(
+pub(super) fn send<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     id: u32,
     bytes: &[u8],
@@ -440,9 +467,9 @@ pub(super) fn send(
 }
 
 /// Sends one datagram to an outside destination through the socket's host connection for it.
-pub(super) fn send_datagram(
+pub(super) fn send_datagram<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     to: Endpoint,
     data: &[u8],
@@ -474,15 +501,15 @@ pub(super) fn send_datagram(
 }
 
 /// Finishes sending on a TCP connection to the outside.
-pub(super) fn finish(cx: &mut Context<'_>, id: u32) {
+pub(super) fn finish<S: crate::System>(cx: &mut Context<'_, S>, id: u32) {
     cx.host.finish(ConnectionId(id));
 }
 
 /// Hands an event about a connection or a lookup to its socket. Returns false for one nothing
 /// waits for.
-pub(crate) fn event(
+pub(crate) fn event<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     event: &wcontainers_abi::Event<'_>,
 ) -> bool {
     use wcontainers_abi::Event;
@@ -583,9 +610,9 @@ fn inet_protocol(socket: &SocketRef) -> Option<Protocol> {
 }
 
 /// A datagram from `from` into a UDP socket's queue, if its buffer has room.
-pub(super) fn deliver(
+pub(super) fn deliver<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     from: Endpoint,
     data: Vec<u8>,
@@ -631,9 +658,9 @@ pub(super) fn deliver(
 
 /// A name query sent to the container's name server: answered at once when it asks for nothing
 /// the host can look up, else once the host's lookup comes back.
-pub(super) fn query(
+pub(super) fn query<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     server: Endpoint,
     data: &[u8],
@@ -674,7 +701,7 @@ pub(super) fn query(
 
 /// After a restore on a new host: connections to the outside are reported closed (plan section
 /// 12), listeners listen again, and lookups under way are asked again.
-pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
+pub(crate) fn restored<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
     let listeners = core::mem::take(&mut kernel.sockets.inet.outside.listeners);
     for (id, socket) in listeners {
         if let Some(socket) = socket.upgrade().filter(|socket| !socket.borrow().dead)

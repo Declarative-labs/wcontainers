@@ -114,9 +114,9 @@ fn generation(kernel: &Kernel, ino: u64) -> u32 {
     hasher.finish() as u32
 }
 
-pub(super) fn name_to_handle_at(
+pub(super) fn name_to_handle_at<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [dirfd, path, handle, mount, flags, ..]: Args,
 ) -> Result<u64, Errno> {

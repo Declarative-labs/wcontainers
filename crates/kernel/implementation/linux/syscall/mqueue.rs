@@ -259,9 +259,9 @@ fn queue_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
 
 /// Reads an absolute timeout on the real time clock (`prepare_timeout`) and makes it a deadline on
 /// the monotonic clock.
-fn deadline(
+fn deadline<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
 ) -> Result<Option<u64>, Errno> {
@@ -287,9 +287,9 @@ fn with_queue<R>(node: &Node, act: impl FnOnce(&mut MessageQueue) -> R) -> R {
     act(queue)
 }
 
-pub(super) fn mq_open(
+pub(super) fn mq_open<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [name, flags, mode, attributes, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -367,9 +367,9 @@ pub(super) fn mq_open(
     Ok(fd as u64)
 }
 
-pub(super) fn mq_unlink(
+pub(super) fn mq_unlink<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [name, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -387,9 +387,9 @@ pub(super) fn mq_unlink(
     Ok(0)
 }
 
-pub(super) fn mq_timedsend(
+pub(super) fn mq_timedsend<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, length, priority, timeout, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -465,7 +465,13 @@ pub(super) fn mq_timedsend(
 
 /// Sends the signal a request asked for, if it did and its process has not run another program,
 /// or a SIGEV_THREAD request's cookie marked woken.
-fn tell(kernel: &mut Kernel, cx: &mut Context<'_>, notify: Notify, pid: Pid, uid: u32) {
+fn tell<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    notify: Notify,
+    pid: Pid,
+    uid: u32,
+) {
     if let Some((socket, mut cookie)) = notify.thread {
         cookie[NOTIFY_COOKIE_LEN as usize - 1] = NOTIFY_WOKENUP;
         super::socket::netlink::send_from_kernel(kernel, cx, &socket, cookie);
@@ -512,9 +518,9 @@ fn park(kernel: &mut Kernel, tid: Tid, node: &Node, deadline: Option<u64>) -> Re
 
 /// A waiting send or receive run again (`wq_sleep`): what it was handed, or a signal (restarted),
 /// its time up, or it waits on.
-fn waited(
+fn waited<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     receive: Option<(u64, u64)>,
 ) -> Result<u64, Errno> {
@@ -562,9 +568,9 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
 }
 
 /// The message's priority and text, stored for the receiver; EFAULT loses the message.
-fn store(
+fn store<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     buffer: u64,
     priority_at: u64,
@@ -581,9 +587,9 @@ fn store(
     Ok(text.len() as u64)
 }
 
-pub(super) fn mq_timedreceive(
+pub(super) fn mq_timedreceive<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, length, priority_at, timeout, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -637,9 +643,9 @@ pub(super) fn mq_timedreceive(
     store(kernel, cx, tid, buffer, priority_at, priority, &text)
 }
 
-pub(super) fn mq_notify(
+pub(super) fn mq_notify<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, request, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -714,9 +720,9 @@ pub(super) fn mq_notify(
     Ok(0)
 }
 
-pub(super) fn mq_getsetattr(
+pub(super) fn mq_getsetattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, new, old, ..]: Args,
 ) -> Result<u64, Errno> {

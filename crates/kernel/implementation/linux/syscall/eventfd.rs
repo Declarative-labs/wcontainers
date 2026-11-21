@@ -36,9 +36,9 @@ pub(super) fn channel(counter: &Rc<RefCell<Counter>>) -> Channel {
     Channel::Object(crate::process::ObjectId::Numbered(counter.borrow().object))
 }
 
-pub(super) fn eventfd2(
+pub(super) fn eventfd2<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [count, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -100,9 +100,9 @@ pub(super) fn poll(counter: &Counter) -> u16 {
 
 /// `eventfd_read`: the count (or one, as a semaphore) once it is above zero, waited for unless
 /// nonblocking.
-pub(super) fn read(
+pub(super) fn read<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -133,9 +133,9 @@ pub(super) fn read(
 
 /// `eventfd_write`: adds the value once it fits below the largest count, waited for unless
 /// nonblocking.
-pub(super) fn write(
+pub(super) fn write<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],

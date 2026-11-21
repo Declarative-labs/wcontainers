@@ -972,10 +972,10 @@ impl Kernel {
     /// process. With the root on the backend this waits for the backend's answers like any call,
     /// so it may still be going on when this returns; a start that fails ends the container, and
     /// [`Kernel::start_failure`] says why.
-    pub fn start(
+    pub fn start<S: crate::System>(
         &mut self,
         cpu: &mut dyn Cpu,
-        host: &dyn crate::System,
+        host: &S,
         start: &Start<'_>,
     ) -> Result<(), crate::Unsupported> {
         assert!(self.init.is_none(), "the container has already started");
@@ -1125,9 +1125,9 @@ impl Kernel {
 
     /// Gives the first process the values runc sets before its program runs, each as the
     /// process's own call would.
-    fn apply_start_options(
+    fn apply_start_options<S: crate::System>(
         &mut self,
-        cx: &mut Context<'_>,
+        cx: &mut Context<'_, S>,
         pid: Pid,
         options: &StartOptions<'_>,
     ) -> Result<(), Errno> {
@@ -1191,7 +1191,7 @@ impl Kernel {
 
     /// Runs the container's start, the first time or again once the backend has answered: each
     /// part asks the backend as a call does, and a part done is not done again.
-    pub(crate) fn run_start(&mut self, cx: &mut Context<'_>) {
+    pub(crate) fn run_start<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
         let Some(mut starting) = self.starting.take() else {
             return;
         };
@@ -1270,7 +1270,11 @@ impl Kernel {
 
     /// Starts the first process: its working directory, its program loaded, then its standard
     /// descriptors on the ends named at start, as runc sets them up.
-    fn start_first(&mut self, cx: &mut Context<'_>, starting: &Starting) -> Result<(), Errno> {
+    fn start_first<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        starting: &Starting,
+    ) -> Result<(), Errno> {
         let pid = starting.pid;
         let cwd = self.directories(pid, &starting.working_directory)?;
         if !cwd.borrow().is_directory() {
@@ -1340,9 +1344,9 @@ impl Kernel {
 
     /// Descriptors 0 to 2 of the first process on the ends named at start: pipes (with `/dev/null`
     /// as 0 when there is no input end) or a terminal's slave, the kernel holding the other sides.
-    fn standard_descriptors(
+    fn standard_descriptors<S: crate::System>(
         &mut self,
-        cx: &mut Context<'_>,
+        cx: &mut Context<'_, S>,
         pid: Pid,
         standard: Standard,
         null: Option<Node>,
@@ -1394,7 +1398,12 @@ impl Kernel {
 
     /// A pipe for one standard descriptor: the side the guest gets (opened with `flags`), the end
     /// holding the other.
-    fn end_pipe(&mut self, cx: &mut Context<'_>, end: End, flags: u32) -> crate::file::FileRef {
+    fn end_pipe<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        end: End,
+        flags: u32,
+    ) -> crate::file::FileRef {
         let now = self.now(cx);
         let ino = self.files.numbers.ino();
         let pipe = fs::new_inode(
@@ -1426,7 +1435,13 @@ impl Kernel {
     }
 
     /// Replaces a process's program with a loaded image, as the last part of `execve` does.
-    pub(crate) fn install_image(&mut self, cx: &mut Context<'_>, pid: Pid, tid: Tid, image: Image) {
+    pub(crate) fn install_image<S: crate::System>(
+        &mut self,
+        cx: &mut Context<'_, S>,
+        pid: Pid,
+        tid: Tid,
+        image: Image,
+    ) {
         let thread = self.threads.get_mut(&tid).expect("thread");
         let process = self.processes.get_mut(&pid).expect("process");
         // The container's first program replaces no memory: its process has none yet.

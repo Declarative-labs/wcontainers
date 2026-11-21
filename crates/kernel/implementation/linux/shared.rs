@@ -18,9 +18,9 @@ use crate::{Context, Errno, Kernel, errno};
 /// The file's block, made or grown so it holds at least the first `length` bytes; `None` for a file
 /// that is neither regular nor on the backend. A backend file's block was made big enough by
 /// [`backend_block`] first, since its bytes come from the backend.
-pub(crate) fn block_for(
+pub(crate) fn block_for<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &Node,
     length: u64,
 ) -> Result<Option<Block>, Errno> {
@@ -43,9 +43,9 @@ pub(crate) fn block_for(
 /// Makes a backend file's block cover at least its first `length` bytes, its pages read only when
 /// touched ([`fill`]), through `handle` or the open file it was mapped through. A shared mapping
 /// that may write (`writer`) has its file write the pages back.
-pub(crate) fn backend_block(
+pub(crate) fn backend_block<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &Node,
     handle: Option<&Rc<Handle>>,
     length: u64,
@@ -73,9 +73,9 @@ pub(crate) fn backend_block(
 }
 
 /// Gives a backend file a block of `length` bytes holding the pages its old one held.
-fn backend_grow(
+fn backend_grow<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &Node,
     old: Option<Block>,
     through: &Rc<Handle>,
@@ -186,8 +186,8 @@ pub(crate) fn fill(node: &Node, pages: Range<u64>) -> Result<(), Errno> {
 /// The backend answered for file pages `pages` asked when the file had had `changes` changes:
 /// the pages its block still lacks take the bytes (zeros past what came), unless the file changed
 /// since; a failed read marks them so their next touch faults.
-pub(crate) fn pages_came(
-    cx: &mut Context<'_>,
+pub(crate) fn pages_came<S: crate::System>(
+    cx: &mut Context<'_, S>,
     node: &Node,
     pages: Range<u64>,
     changes: u64,
@@ -263,7 +263,12 @@ fn held_runs(node: &Node, from: u64, to: u64) -> Option<Vec<(u64, u64, bool)>> {
 }
 
 /// The bytes `[from, to)` of a block.
-fn block_bytes(cx: &mut Context<'_>, block: Block, from: u64, to: u64) -> Vec<u8> {
+fn block_bytes<S: crate::System>(
+    cx: &mut Context<'_, S>,
+    block: Block,
+    from: u64,
+    to: u64,
+) -> Vec<u8> {
     let mut bytes = vec![0; (to - from) as usize];
     cx.cpu
         .shared_read(block.id, from, &mut bytes)
@@ -275,8 +280,8 @@ fn block_bytes(cx: &mut Context<'_>, block: Block, from: u64, to: u64) -> Vec<u8
 /// from Linux's page cache, with the size asked again first (`fuse_cache_read_iter` with
 /// FUSE_AUTO_INVAL_DATA), and the rest from the backend; from the backend alone when the backend
 /// opened the file for direct reads.
-pub(crate) fn backend_read(
-    cx: &mut Context<'_>,
+pub(crate) fn backend_read<S: crate::System>(
+    cx: &mut Context<'_, S>,
     node: &Node,
     handle: &Handle,
     offset: u64,
@@ -312,7 +317,12 @@ pub(crate) fn backend_read(
 
 /// Puts bytes written to a backend file into the pages its block holds; the others are read
 /// afresh when touched.
-pub(crate) fn backend_written(cx: &mut Context<'_>, node: &Node, offset: u64, bytes: &[u8]) {
+pub(crate) fn backend_written<S: crate::System>(
+    cx: &mut Context<'_, S>,
+    node: &Node,
+    offset: u64,
+    bytes: &[u8],
+) {
     let end = offset + bytes.len() as u64;
     let Some(runs) = held_runs(node, offset, end) else {
         return;
@@ -334,7 +344,12 @@ pub(crate) fn backend_written(cx: &mut Context<'_>, node: &Node, offset: u64, by
 
 /// Bytes the backend gave to keep (`fuse_notify_store`): they go into the file's block, and the
 /// pages they cover whole, or up to the file's end, are held from then on.
-pub(crate) fn backend_stored(cx: &mut Context<'_>, node: &Node, offset: u64, bytes: &[u8]) {
+pub(crate) fn backend_stored<S: crate::System>(
+    cx: &mut Context<'_, S>,
+    node: &Node,
+    offset: u64,
+    bytes: &[u8],
+) {
     let mut inode = node.borrow_mut();
     let Content::Backend(remote) = &mut inode.content else {
         return;
@@ -359,8 +374,8 @@ pub(crate) fn backend_stored(cx: &mut Context<'_>, node: &Node, offset: u64, byt
 
 /// The bytes a mapped backend file's block holds from `offset`, up to `count` and the file's end,
 /// stopping at the first page it lacks (`fuse_retrieve`); `None` while nothing maps the file.
-pub(crate) fn backend_held(
-    cx: &mut Context<'_>,
+pub(crate) fn backend_held<S: crate::System>(
+    cx: &mut Context<'_, S>,
     node: &Node,
     offset: u64,
     count: u64,
@@ -407,9 +422,9 @@ pub(crate) fn backend_drop(node: &Node, pages: Range<u64>) {
 
 /// After [`backend_drop`]: every mapping of the file faults on the pages dropped, and code run from
 /// it is stale; counted when the pages were kept.
-pub(crate) fn backend_dropped(
+pub(crate) fn backend_dropped<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &Node,
 ) -> Result<(), Errno> {
     let kept = match &node.borrow().content {
@@ -453,7 +468,12 @@ pub(crate) fn backend_writable(node: &Node) {
 
 /// Zeroes `[from, to)` of a backend file's block, for bytes the backend dropped (a truncation or a
 /// punched hole), as Linux's `truncate_pagecache_range`.
-pub(crate) fn backend_cut(cx: &mut Context<'_>, node: &Node, from: u64, to: u64) {
+pub(crate) fn backend_cut<S: crate::System>(
+    cx: &mut Context<'_, S>,
+    node: &Node,
+    from: u64,
+    to: u64,
+) {
     if let Some(block) = node.borrow().content.block()
         && from < block.length
     {
@@ -469,9 +489,9 @@ pub(crate) fn backend_cut(cx: &mut Context<'_>, node: &Node, from: u64, to: u64)
 /// shared mapping has been able to write them: waiting for the answers, or with nothing to wait
 /// sending them on their own. Every page held goes, changed or not, since which were written is not
 /// known.
-pub(crate) fn backend_write_back(
+pub(crate) fn backend_write_back<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &Node,
     from: u64,
     to: u64,
@@ -504,9 +524,9 @@ pub(crate) fn backend_write_back(
 }
 
 /// Makes a file mapping show its file's block, except at a private mapping's own copies.
-pub(crate) fn show(
+pub(crate) fn show<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     memory: MemoryId,
     mapping: &Mapping,
 ) -> Result<(), Errno> {
@@ -521,9 +541,9 @@ pub(crate) fn show(
 
 /// Makes every file mapping of a memory not yet in any process show its file: every block is made
 /// big enough first, so none grows while another mapping already shows it.
-pub(crate) fn show_all(
+pub(crate) fn show_all<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     memory: MemoryId,
     map: &crate::memory::AddressMap,
 ) -> Result<(), Errno> {
@@ -539,8 +559,8 @@ pub(crate) fn show_all(
 }
 
 /// Maps the block over the parts of `mapping` that show its file.
-fn map_shown(
-    cx: &mut Context<'_>,
+fn map_shown<S: crate::System>(
+    cx: &mut Context<'_, S>,
     block: Block,
     memory: MemoryId,
     mapping: &Mapping,
@@ -564,9 +584,9 @@ fn map_shown(
 
 /// Gives the file a block of `length` bytes holding what it held, and moves every mapping that showed
 /// the old block over to it.
-fn grow(
+fn grow<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &Node,
     old: Option<Block>,
     length: u64,
@@ -593,9 +613,9 @@ fn grow(
 
 /// Moves every mapping that showed the file's old block over to its new one and drops the old; a
 /// file's first block puts it on the list of mapped files.
-fn moved(
+fn moved<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &Node,
     old: Option<Block>,
     new: Block,
@@ -652,7 +672,11 @@ fn mapped_offset(backing: &Backing, node: &Node) -> Option<u64> {
 
 /// After a file's bytes or size changed: the pages of its mappings wholly past its end fault with
 /// `SIGBUS`, those before it are reachable again, and code run from it is stale.
-pub(crate) fn changed(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<(), Errno> {
+pub(crate) fn changed<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    node: &Node,
+) -> Result<(), Errno> {
     let size = match &node.borrow().content {
         Content::Regular(regular) if regular.block.is_some() => regular.size(),
         Content::Backend(remote) if remote.pages.is_some() => remote.size.get(),
@@ -680,7 +704,7 @@ pub(crate) fn changed(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) ->
 
 /// Ends the blocks of files no mapping shows any more, here or in a context away, moving their bytes back to the files: a
 /// backend file's are written back, with nothing waiting, if a shared mapping may have written them.
-pub(crate) fn release(kernel: &mut Kernel, cx: &mut Context<'_>) {
+pub(crate) fn release<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
     let processes = &kernel.processes;
     let away = kernel.live_maps_away();
     let mut unmapped = Vec::new();

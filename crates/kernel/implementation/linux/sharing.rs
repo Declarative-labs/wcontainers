@@ -158,7 +158,7 @@ impl Kernel {
     /// by piece, as the starts it was told less the ends, so an end names the whole or a part of
     /// one start, and a process a hook takes off the kernel carries exactly that, and is told the
     /// rest when it is back.
-    pub(crate) fn announce_sharing(&mut self, cx: &mut Context<'_>) {
+    pub(crate) fn announce_sharing<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
         self.map_notes.sharing_changed.set(false);
         let mapped = self.shared_mapped();
         if mapped.is_empty() && self.shared_announced.is_empty() {
@@ -220,7 +220,7 @@ impl Kernel {
 
     /// A process about to go: what it maps of shared memory is announced ended while it is
     /// whole, and it is left out from then on.
-    pub(crate) fn withdraw_sharing(&mut self, cx: &mut Context<'_>, pid: Pid) {
+    pub(crate) fn withdraw_sharing<S: crate::System>(&mut self, cx: &mut Context<'_, S>, pid: Pid) {
         if self
             .shared_announced
             .keys()
@@ -232,11 +232,11 @@ impl Kernel {
     }
 
     /// Announces one hook of the shared memory a process maps.
-    fn announce_shared(
+    fn announce_shared<S: crate::System>(
         &mut self,
-        cx: &mut Context<'_>,
+        cx: &mut Context<'_, S>,
         pid: Pid,
-        hook: impl FnOnce(&dyn crate::System, Process<'_>),
+        hook: impl FnOnce(&S, Process<'_>),
     ) {
         let process = Process {
             kernel: self,

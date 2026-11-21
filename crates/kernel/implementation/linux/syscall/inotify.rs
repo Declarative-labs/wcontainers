@@ -128,9 +128,9 @@ pub(super) fn channel(instance: &Rc<RefCell<Instance>>) -> Channel {
     Channel::Object(crate::process::ObjectId::Numbered(instance.borrow().object))
 }
 
-pub(super) fn inotify_init1(
+pub(super) fn inotify_init1<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -177,9 +177,9 @@ fn instance(kernel: &Kernel, tid: Tid, fd: u64) -> Result<Rc<RefCell<Instance>>,
     of(&file.borrow()).ok_or(Errno::EINVAL)
 }
 
-pub(super) fn inotify_add_watch(
+pub(super) fn inotify_add_watch<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, path, mask, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -262,9 +262,9 @@ pub(super) fn inotify_add_watch(
     Ok(wd as u64)
 }
 
-pub(super) fn inotify_rm_watch(
+pub(super) fn inotify_rm_watch<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [fd, wd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -592,9 +592,9 @@ pub(super) fn waiting(instance: &Instance) -> usize {
 
 /// `inotify_read`: as many whole events as fit, waiting for one unless nonblocking; EINVAL when
 /// the first does not fit.
-pub(super) fn read(
+pub(super) fn read<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -639,9 +639,9 @@ pub(super) fn read(
 }
 
 /// FIONREAD on an instance.
-pub(super) fn ioctl(
+pub(super) fn ioctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     instance: &Rc<RefCell<Instance>>,
     request: u32,

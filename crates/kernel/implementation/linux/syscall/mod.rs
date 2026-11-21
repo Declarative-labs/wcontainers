@@ -76,23 +76,28 @@ impl From<Result<u64, Errno>> for Outcome {
 }
 
 /// A call that ends with a value or an error.
-type Simple = fn(&mut Kernel, &mut Context<'_>, Tid, Args) -> Result<u64, Errno>;
+type Simple<S> = fn(&mut Kernel, &mut Context<'_, S>, Tid, Args) -> Result<u64, Errno>;
 /// A call that may also end its thread, park it or replace its registers.
-type Full = fn(&mut Kernel, &mut Context<'_>, Tid, Args) -> Outcome;
+type Full<S> = fn(&mut Kernel, &mut Context<'_, S>, Tid, Args) -> Outcome;
 
-#[derive(Clone, Copy)]
-enum Handler {
-    Simple(Simple),
-    Full(Full),
-    NotImplemented,
-    Unknown,
+enum Handler<S> {
+    Simple(Simple<S>),
+    Full(Full<S>),
 }
+
+impl<S> Clone for Handler<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for Handler<S> {}
 
 #[derive(Clone, Copy)]
 struct Entry {
     /// Linux's name for the call; empty where Linux has no call with this number.
     name: &'static str,
-    handler: Handler,
+    implemented: bool,
 }
 
 /// One more than the highest call number Linux has.
@@ -108,25 +113,50 @@ const LENGTH: usize = {
     highest as usize + 1
 };
 
-static TABLE: [Entry; LENGTH] = {
-    use crate::linux::general::*;
-    use Handler::{Full as F, Simple as S};
+/// The handler of every built call, by number, for a kernel on system `S`.
+struct Handlers<S>(core::marker::PhantomData<S>);
 
-    let mut table = [Entry {
-        name: "",
-        handler: Handler::Unknown,
-    }; LENGTH];
-    let mut index = 0;
-    while index < list::LIST.len() {
-        let (number, name) = list::LIST[index];
-        table[number as usize] = Entry {
-            name,
-            handler: Handler::NotImplemented,
+/// Makes, from the one list of built calls, the table of their names and the handlers' table.
+macro_rules! built_calls {
+    ($(($number:ident, $kind:ident($handler:path) $(,)?)),* $(,)?) => {
+        static TABLE: [Entry; LENGTH] = {
+            use crate::linux::general::*;
+
+            let mut table = [Entry {
+                name: "",
+                implemented: false,
+            }; LENGTH];
+            let mut index = 0;
+            while index < list::LIST.len() {
+                let (number, name) = list::LIST[index];
+                table[number as usize].name = name;
+                index += 1;
+            }
+            let built: &[u32] = &[$($number),*];
+            let mut index = 0;
+            while index < built.len() {
+                assert!(!table[built[index] as usize].name.is_empty());
+                table[built[index] as usize].implemented = true;
+                index += 1;
+            }
+            table
         };
-        index += 1;
-    }
 
-    let implemented: &[(u32, Handler)] = &[
+        impl<Sys: crate::System> Handlers<Sys> {
+            const TABLE: [Option<Handler<Sys>>; LENGTH] = {
+                use crate::linux::general::*;
+
+                let mut table = [None; LENGTH];
+                $(table[$number as usize] = Some(built_calls!(@ $kind $handler));)*
+                table
+            };
+        }
+    };
+    (@ S $handler:path) => { Handler::Simple($handler) };
+    (@ F $handler:path) => { Handler::Full($handler) };
+}
+
+built_calls! {
         // Files and descriptors.
         (__NR_read, S(io::read)),
         (__NR_write, S(io::write)),
@@ -395,41 +425,31 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_mq_timedreceive, S(mqueue::mq_timedreceive)),
         (__NR_mq_notify, S(mqueue::mq_notify)),
         (__NR_mq_getsetattr, S(mqueue::mq_getsetattr)),
-    ];
-    let mut index = 0;
-    while index < implemented.len() {
-        let (number, handler) = implemented[index];
-        assert!(!table[number as usize].name.is_empty());
-        table[number as usize].handler = handler;
-        index += 1;
-    }
-    table
-};
+}
 
 /// Runs a system call. `again` is a call a parked thread runs again after a wake: the filters
 /// already let it through.
-pub(crate) fn dispatch(
+pub(crate) fn dispatch<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     call: SystemCallRequest,
     again: bool,
 ) -> Outcome {
     // ARM64 Linux takes the call number from the low 32 bits of x8 only.
     let number = call.number.0 as u32;
-    let handler = TABLE
-        .get(number as usize)
-        .map_or(Handler::Unknown, |entry| entry.handler);
+    let handlers: &[Option<Handler<S>>; LENGTH] = &Handlers::<S>::TABLE;
+    let handler = handlers.get(number as usize).copied().flatten();
     if again {
         return match handler {
-            Handler::Simple(handler) => handler(kernel, cx, tid, call.arguments).into(),
-            Handler::Full(handler) => handler(kernel, cx, tid, call.arguments),
-            Handler::NotImplemented | Handler::Unknown => {
-                unreachable!("only a built call parks")
-            }
+            Some(Handler::Simple(handler)) => handler(kernel, cx, tid, call.arguments).into(),
+            Some(Handler::Full(handler)) => handler(kernel, cx, tid, call.arguments),
+            None => unreachable!("only a built call parks"),
         };
     }
-    let known = !matches!(handler, Handler::Unknown);
+    let known = TABLE
+        .get(number as usize)
+        .is_some_and(|entry| !entry.name.is_empty());
     // Docker's profile and the thread's own filters answer first; what they answer is exact, but a
     // number Linux does not have (which the profile always stops) is still counted.
     if !known {
@@ -449,9 +469,9 @@ pub(crate) fn dispatch(
         return Err(errno).into();
     }
     match handler {
-        Handler::Simple(handler) => handler(kernel, cx, tid, call.arguments).into(),
-        Handler::Full(handler) => handler(kernel, cx, tid, call.arguments),
-        Handler::NotImplemented => Err(kernel.counters.refuse(
+        Some(Handler::Simple(handler)) => handler(kernel, cx, tid, call.arguments).into(),
+        Some(Handler::Full(handler)) => handler(kernel, cx, tid, call.arguments),
+        None if known => Err(kernel.counters.refuse(
             cx.host,
             reason::NOT_IMPLEMENTED,
             number.into(),
@@ -459,12 +479,16 @@ pub(crate) fn dispatch(
         ))
         .into(),
         // Counted above.
-        Handler::Unknown => Err(Errno::ENOSYS).into(),
+        None => Err(Errno::ENOSYS).into(),
     }
 }
 
 /// The calling thread's process memory, for copying to and from it.
-pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Tid) -> Guest<'a> {
+pub(crate) fn guest<'a, S: crate::System>(
+    kernel: &'a mut Kernel,
+    cx: &'a mut Context<'_, S>,
+    tid: Tid,
+) -> Guest<'a> {
     let thread = &kernel.threads[&tid];
     let may_lock_any = thread.credentials.has(crate::linux::general::CAP_IPC_LOCK);
     let pid = thread.process;
@@ -472,9 +496,9 @@ pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Ti
 }
 
 /// Process `pid`'s memory, for copies made for its task `tid`, which need not be on the kernel.
-pub(crate) fn process_guest<'a>(
+pub(crate) fn process_guest<'a, S: crate::System>(
     kernel: &'a mut Kernel,
-    cx: &'a mut Context<'_>,
+    cx: &'a mut Context<'_, S>,
     pid: crate::process::Pid,
     tid: Tid,
     may_lock_any: bool,
@@ -494,9 +518,9 @@ pub(crate) fn process_guest<'a>(
 
 /// A path argument, copied once per call (`getname`): a call that waits takes the same bytes in
 /// its later runs, whatever memory holds by then. Empty is ENOENT unless `may_be_empty`.
-pub(crate) fn path_argument(
+pub(crate) fn path_argument<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     may_be_empty: bool,
@@ -534,7 +558,7 @@ pub(crate) fn all() -> impl Iterator<Item = crate::SystemCall> {
         .map(|(number, entry)| crate::SystemCall {
             number: number as u64,
             name: entry.name,
-            implemented: matches!(entry.handler, Handler::Simple(_) | Handler::Full(_)),
+            implemented: entry.implemented,
         })
 }
 
@@ -547,7 +571,7 @@ pub(crate) fn name(number: u64) -> Option<&'static str> {
 
 /// The one anonymous inode signal descriptors and their like share: owned by root, readable and
 /// writable by it, with no file type (measured).
-fn anon_node(kernel: &mut Kernel, cx: &mut Context<'_>) -> crate::fs::Node {
+fn anon_node<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) -> crate::fs::Node {
     if let Some(node) = &kernel.files.anon {
         return node.clone();
     }

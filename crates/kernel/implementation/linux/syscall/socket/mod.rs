@@ -288,9 +288,9 @@ pub(super) enum Wake {
 
 /// `sk_wake_async`: the I/O signal of a socket's file with `FASYNC` set, for `reason`. Data is
 /// not told while a reader waits for it, and room only after a send found none.
-pub(super) fn wake_async(
+pub(super) fn wake_async<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     how: Wake,
     reason: u32,
@@ -310,13 +310,22 @@ pub(super) fn wake_async(
 }
 
 /// `sock_def_readable`: a socket's waiters and its I/O signal hear of data.
-pub(super) fn data_ready(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, key: u32) {
+pub(super) fn data_ready<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    key: u32,
+) {
     kernel.wake_poll(channel(socket), key);
     wake_async(kernel, cx, socket, Wake::Data, POLL_IN);
 }
 
 /// `sock_def_error_report`: an error came, which its waiters and its I/O signal hear of.
-pub(super) fn error_report(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+pub(super) fn error_report<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     kernel.wake_poll(channel(socket), EPOLLERR);
     wake_async(kernel, cx, socket, Wake::Io, POLL_ERR);
 }
@@ -324,7 +333,11 @@ pub(super) fn error_report(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &S
 /// `unix_write_space` and `sk_stream_write_space`: room came back to a sender, which its waiters
 /// and, once it is writable and a send found none, its I/O signal hear of (a stream's only while
 /// it may still send).
-pub(super) fn write_space(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+pub(super) fn write_space<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
     let tell = {
         let own = socket.borrow();
@@ -355,23 +368,23 @@ pub(crate) struct Names {
 }
 
 /// Closes the host connections let go since the last flush.
-pub(crate) fn flush_outside(kernel: &mut Kernel, cx: &mut Context<'_>) {
+pub(crate) fn flush_outside<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
     kernel.sockets.inet.outside.flush(cx.host);
 }
 
 /// Hands a network event to the socket or lookup it is for; false if none waits for it.
-pub(crate) fn outside_event(
+pub(crate) fn outside_event<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     event: &wcontainers_abi::Event<'_>,
 ) -> bool {
     outside::event(kernel, cx, event)
 }
 
 /// The bytes of a file of `/proc/net`.
-pub(crate) fn proc_net(
+pub(crate) fn proc_net<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     file: crate::fs::proc::NetFile,
 ) -> Vec<u8> {
     procnet::contents(kernel, cx, file)
@@ -405,17 +418,25 @@ pub(crate) fn fdinfo(socket: &SocketRef) -> Option<u64> {
 }
 
 /// A listener's deferral timer fired ([`inet::deferrals_due`]).
-pub(crate) fn deferrals_due(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+pub(crate) fn deferrals_due<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    listener: &SocketRef,
+) {
     inet::deferrals_due(kernel, cx, listener);
 }
 
 /// A connection's probe timer fired ([`inet::held_bytes_due`]).
-pub(crate) fn held_bytes_due(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+pub(crate) fn held_bytes_due<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     inet::held_bytes_due(kernel, cx, socket);
 }
 
 /// After a restore: connections to the outside read as closed.
-pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
+pub(crate) fn restored<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
     outside::restored(kernel, cx);
 }
 
@@ -470,9 +491,9 @@ fn socket_of(kernel: &Kernel, tid: Tid, fd: u64) -> Result<(FileRef, SocketRef),
 
 /// A new socket's inode and file (`sock_alloc`, `sock_alloc_file`): owned by the caller's
 /// effective ids, mode 0777, on sockfs.
-fn make_file(
+fn make_file<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: SocketRef,
     flags: u32,
@@ -560,7 +581,7 @@ const ARPREQ_SIZE: u64 = size_of::<crate::linux::if_arp::arpreq>() as u64;
 /// AF_ALG, which is not built: the reference's host (Docker Desktop's virtual machine, measured
 /// even in a privileged container) refuses to make such sockets with EPERM, at `socket`'s entry and
 /// where any socket is made, so the same is answered (counted).
-fn refuse_alg(kernel: &mut Kernel, cx: &mut Context<'_>) -> Errno {
+fn refuse_alg<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) -> Errno {
     kernel.counters.refuse(
         cx.host,
         crate::reason::FAMILY_NOT_BUILT,
@@ -570,9 +591,9 @@ fn refuse_alg(kernel: &mut Kernel, cx: &mut Context<'_>) -> Errno {
 }
 
 /// `__sock_create`: a socket of a family and kind, or what Linux answers.
-fn create(
+fn create<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     family: u64,
     kind: u32,
     protocol: u64,
@@ -607,9 +628,9 @@ fn create(
     }
 }
 
-pub(super) fn socket(
+pub(super) fn socket<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [family, kind, protocol, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -623,9 +644,9 @@ pub(super) fn socket(
     install(kernel, tid, file, flags & O_CLOEXEC != 0)
 }
 
-pub(super) fn socketpair(
+pub(super) fn socketpair<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [family, kind, protocol, pair, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -727,9 +748,9 @@ enum Name {
     Automatic,
 }
 
-fn read_name(
+fn read_name<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     length: u64,
@@ -764,9 +785,9 @@ fn parse_name(bytes: &[u8]) -> Result<Name, Errno> {
     })
 }
 
-pub(super) fn bind(
+pub(super) fn bind<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -842,9 +863,9 @@ pub(super) fn bind(
 }
 
 /// `move_addr_to_kernel`: an address of at most a `sockaddr_storage`.
-fn address_argument(
+fn address_argument<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     length: u64,
@@ -875,7 +896,11 @@ pub(super) fn receive_low_water(own: &Socket) -> u64 {
 
 /// `unix_autobind`: an abstract name of five hex digits not in use, counting on from one drawn at
 /// random.
-fn autobind(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) -> Result<u64, Errno> {
+fn autobind<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) -> Result<u64, Errno> {
     if socket.borrow().name.is_some() {
         return Ok(0);
     }
@@ -910,9 +935,9 @@ fn autobind(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) -> Re
 
 /// The socket bound to a name (`unix_find_other`): a path must be a socket node the caller may
 /// write, of the same kind as `kind`.
-fn find(
+fn find<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     name: &Name,
     kind: u32,
@@ -954,9 +979,9 @@ fn find(
     Ok(found)
 }
 
-pub(super) fn listen(
+pub(super) fn listen<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, backlog, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -991,9 +1016,9 @@ pub(super) fn listen(
     Ok(0)
 }
 
-pub(super) fn connect(
+pub(super) fn connect<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1082,9 +1107,9 @@ pub(super) fn connect(
 }
 
 /// A datagram socket's connect: its default destination, or none with AF_UNSPEC.
-fn dgram_connect(
+fn dgram_connect<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     name: Name,
@@ -1105,9 +1130,9 @@ fn dgram_connect(
 
 /// `unix_dgram_disconnected`: a datagram socket no longer connected to `other` loses what it
 /// held, and if `other` lives and was connected back, `other` is told ECONNRESET.
-fn dgram_disconnected(
+fn dgram_disconnected<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     other: &SocketRef,
 ) {
@@ -1130,18 +1155,18 @@ fn dgram_disconnected(
     }
 }
 
-pub(super) fn accept(
+pub(super) fn accept<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     accept4(kernel, cx, tid, [fd, address, length, 0, 0, 0])
 }
 
-pub(super) fn accept4(
+pub(super) fn accept4<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, address, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1212,9 +1237,9 @@ fn address_bytes(name: Option<&[u8]>) -> Vec<u8> {
 }
 
 /// `move_addr_to_user`: as much of an address as the caller's length holds, then its full length.
-fn put_address(
+fn put_address<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     length: u64,
@@ -1231,9 +1256,9 @@ fn put_address(
     guest(kernel, cx, tid).write_value(length, &(bytes.len() as i32))
 }
 
-pub(super) fn getsockname(
+pub(super) fn getsockname<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1249,9 +1274,9 @@ pub(super) fn getsockname(
     Ok(0)
 }
 
-pub(super) fn getpeername(
+pub(super) fn getpeername<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1271,9 +1296,9 @@ pub(super) fn getpeername(
     Ok(0)
 }
 
-pub(super) fn shutdown(
+pub(super) fn shutdown<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, how, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1384,12 +1409,21 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
 /// The last descriptor of a socket went (`unix_release_sock`): its name is free, the other end of
 /// a connection sees it shut down (and reset if it left bytes unread), waiting connections are
 /// refused, and what its queue held is let go.
-pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+pub(crate) fn released<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+) {
     release(kernel, cx, socket, false);
 }
 
 /// As [`released`], for a socket or an embryo a listener held (whose other end is reset).
-fn release(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, embryo: bool) {
+fn release<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    socket: &SocketRef,
+    embryo: bool,
+) {
     if socket.borrow().inet.is_some() {
         return inet::released(kernel, cx, socket);
     }
@@ -1463,7 +1497,7 @@ fn release(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, embryo
 }
 
 /// A buffer leaves a queue: its sender's room comes back and its descriptors are let go.
-fn drop_packet(kernel: &mut Kernel, cx: &mut Context<'_>, packet: Packet) {
+fn drop_packet<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, packet: Packet) {
     if let Some(sender) = packet.sender.upgrade() {
         let mut own = sender.borrow_mut();
         own.written = own.written.saturating_sub(packet.truesize);
@@ -1538,9 +1572,9 @@ struct Outgoing<'a> {
 
 /// `____sys_sendmsg` and the families' `sendmsg`: the bytes sent, waiting for room unless
 /// nonblocking.
-fn send(
+fn send<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     socket: &SocketRef,
@@ -1650,9 +1684,9 @@ fn timed_out(kernel: &mut Kernel, tid: Tid, timeout: u64) -> bool {
     }
 }
 
-fn send_stream(
+fn send_stream<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     message: &Outgoing,
@@ -1817,7 +1851,7 @@ fn wait_send_room(
 
 /// `sk_send_sigurg`: the owner of the receiver's file hears of an urgent byte, and with a chosen
 /// I/O signal and `FASYNC` it is told too (`SOCK_WAKE_URG`).
-fn send_urgent(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+fn send_urgent<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, socket: &SocketRef) {
     let Some(file) = socket.borrow().file.upgrade() else {
         return;
     };
@@ -1829,9 +1863,9 @@ fn send_urgent(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
 }
 
 /// The bytes of `data` from `offset`, `length` of them.
-fn gather(
+fn gather<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     data: Data<'_>,
     offset: u64,
@@ -1865,9 +1899,9 @@ fn gather(
 }
 
 /// `unix_dgram_sendmsg` (and sequenced packets, whose `sendmsg` it is once connected).
-fn send_packet(
+fn send_packet<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     message: &Outgoing,
@@ -2069,7 +2103,7 @@ fn too_many_in_flight(kernel: &mut Kernel, tid: Tid) -> Result<(), Errno> {
 /// `unix_gc`: local sockets whose files only the queues of such sockets hold, which no
 /// descriptor and no other queue reaches, are let go with everything their queues carry.
 /// Returns whether any were.
-pub(crate) fn collect(kernel: &mut Kernel, cx: &mut Context<'_>) -> bool {
+pub(crate) fn collect<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) -> bool {
     let carriers = queued_with_files(kernel);
     if carriers.is_empty() {
         return false;
@@ -2176,9 +2210,9 @@ struct Received {
 
 /// `unix_stream_read_generic` and `__unix_dgram_recvmsg`: bytes into `parts`, waiting for some
 /// unless nonblocking.
-fn receive(
+fn receive<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     socket: &SocketRef,
@@ -2329,9 +2363,9 @@ fn receive(
     clippy::too_many_arguments,
     reason = "a read names where its bytes go and how"
 )]
-fn receive_stream(
+fn receive_stream<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: Data<'_>,
@@ -2524,9 +2558,9 @@ fn receive_stream(
 /// `manage_oob`: before a local stream read takes the buffer at `index`, an emptied one (an urgent
 /// byte read out of band) is passed or let go, and at the urgent byte the read stops if it has
 /// bytes, or else passes it (letting it go unless SO_OOBINLINE). The buffer to read, or None.
-fn manage_urgent(
+fn manage_urgent<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     mut index: usize,
     peek: bool,
@@ -2582,9 +2616,9 @@ fn manage_urgent(
 /// `tcp_recvmsg` at TCP's urgent byte (read out of band or not): a read with bytes stops there;
 /// one without reads it as an ordinary byte with SO_OOBINLINE, else passes over it, letting it
 /// go unless peeking (the urgent data ends). The buffer to read, or None.
-fn pass_tcp_urgent(
+fn pass_tcp_urgent<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     socket: &SocketRef,
     mut index: usize,
     peek: bool,
@@ -2619,9 +2653,9 @@ fn pass_tcp_urgent(
 
 /// `unix_stream_recv_urg`: the urgent byte the mark is at, out of band. Taken, it stays in the
 /// queue emptied, and an emptied buffer just before it goes.
-fn receive_urgent(
+fn receive_urgent<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     parts: Data<'_>,
@@ -2660,9 +2694,9 @@ fn receive_urgent(
     Ok((1, received))
 }
 
-fn scatter(
+fn scatter<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     parts: Data<'_>,
     bytes: &[u8],
@@ -2671,9 +2705,9 @@ fn scatter(
 }
 
 /// Stores bytes at `offset` into a reader's buffers, across them.
-fn scatter_at(
+fn scatter_at<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     parts: Data<'_>,
     offset: u64,
@@ -2694,9 +2728,9 @@ fn scatter_at(
 }
 
 /// read and readv on a socket: a receive with no flags.
-pub(super) fn read(
+pub(super) fn read<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -2725,9 +2759,9 @@ fn dont_wait(kernel: &Kernel, tid: Tid) -> u32 {
 
 /// Sends bytes the kernel holds on a socket with `flags` and no address, as a splice or
 /// sendfile into it does (`splice_to_socket`).
-pub(crate) fn send_bytes(
+pub(crate) fn send_bytes<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     bytes: &RefCell<Vec<u8>>,
@@ -2747,9 +2781,9 @@ pub(crate) fn send_bytes(
 
 /// Receives up to `size` bytes from a socket into the kernel, as a splice from it does
 /// (`sock_splice_read`); descriptors that came with them are let go.
-pub(crate) fn receive_bytes(
+pub(crate) fn receive_bytes<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     size: u64,
@@ -2766,9 +2800,9 @@ pub(crate) fn receive_bytes(
 
 /// write and writev on a socket: a send with no flags, or MSG_DONTWAIT for one that may not wait
 /// (`sock_write_iter`).
-pub(super) fn write(
+pub(super) fn write<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -2785,9 +2819,9 @@ pub(super) fn write(
     send(kernel, cx, tid, file, &socket, message)
 }
 
-pub(super) fn sendto(
+pub(super) fn sendto<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, length, flags, address, address_length]: Args,
 ) -> Result<u64, Errno> {
@@ -2814,9 +2848,9 @@ pub(super) fn sendto(
     send(kernel, cx, tid, &file, &socket, message)
 }
 
-pub(super) fn recvfrom(
+pub(super) fn recvfrom<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, length, flags, address, address_length]: Args,
 ) -> Result<u64, Errno> {
@@ -2866,9 +2900,9 @@ struct Header {
 
 /// `copy_msghdr_from_user`: the header, a send's destination (its length cut to 128), then the
 /// vectors.
-fn read_header(
+fn read_header<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     sending: bool,
@@ -2977,9 +3011,9 @@ fn check_cred(kernel: &Kernel, tid: Tid, asked: Cred) -> Result<(), Errno> {
     }
 }
 
-pub(super) fn sendmsg(
+pub(super) fn sendmsg<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, header, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -3032,9 +3066,9 @@ pub(super) fn sendmsg(
     send(kernel, cx, tid, &file, &socket, message)
 }
 
-pub(super) fn recvmsg(
+pub(super) fn recvmsg<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, address, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -3365,7 +3399,11 @@ const STAMP_NEW: u8 = 4;
 
 /// The time a packet comes, if its receiver asked for timestamps (Linux stamps buffers as they
 /// arrive while some socket wants them).
-fn stamp(kernel: &Kernel, cx: &mut Context<'_>, receiver: &SocketRef) -> Option<crate::fs::Time> {
+fn stamp<S: crate::System>(
+    kernel: &Kernel,
+    cx: &mut Context<'_, S>,
+    receiver: &SocketRef,
+) -> Option<crate::fs::Time> {
     use crate::linux::net::SOF_TIMESTAMPING_RX_SOFTWARE;
     let own = receiver.borrow();
     // Internet packets are stamped as they come for receive timestamping too; local ones only
@@ -3411,9 +3449,9 @@ fn put_control(
     control.resize(padded, 0);
 }
 
-pub(super) fn setsockopt(
+pub(super) fn setsockopt<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, level, name, value, length, _]: Args,
 ) -> Result<u64, Errno> {
@@ -3784,9 +3822,9 @@ pub(super) fn setsockopt(
 
 /// SO_PEERPIDFD: a new process descriptor (close on exec) for the process the other end was made
 /// by, which may have been reaped since (`PIDFD_STALE`), its number cut to the room given.
-fn peer_pidfd(
+fn peer_pidfd<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     socket: &SocketRef,
     value: u64,
@@ -3846,9 +3884,9 @@ fn bound_device(own: &Socket) -> i32 {
         })
 }
 
-pub(super) fn getsockopt(
+pub(super) fn getsockopt<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, level, name, value, length, _]: Args,
 ) -> Result<u64, Errno> {
@@ -4125,9 +4163,9 @@ pub(super) fn getsockopt(
 
 /// `sock_ioctl` and the families' `ioctl`: the bytes waiting and unsent, the owner, and the
 /// questions about interfaces (`dev_ioctl`, `devinet_ioctl`).
-pub(super) fn ioctl(
+pub(super) fn ioctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     socket: &SocketRef,
@@ -4135,7 +4173,7 @@ pub(super) fn ioctl(
     argument: u64,
 ) -> Result<u64, Errno> {
     use crate::linux::ioctl::*;
-    let put_int = |kernel: &mut Kernel, cx: &mut Context<'_>, value: i32| {
+    let put_int = |kernel: &mut Kernel, cx: &mut Context<'_, S>, value: i32| {
         guest(kernel, cx, tid)
             .write_value(argument, &value)
             .map(|()| 0)
@@ -4299,9 +4337,9 @@ pub(super) fn ioctl(
 }
 
 /// Copies in a request's structure of `size` bytes, as Linux's handlers do before they look at it.
-fn copy_request(
+fn copy_request<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     argument: u64,
     size: u64,
@@ -4323,9 +4361,9 @@ fn admin(kernel: &Kernel, tid: Tid) -> Result<(), Errno> {
 
 /// A request that changes the network: refused without the power, and not built with it
 /// (counted).
-fn network_change(
+fn network_change<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     request: u32,
 ) -> Result<u64, Errno> {
@@ -4350,9 +4388,9 @@ fn named_interface(request: &[u8]) -> Option<&'static netlink::Interface> {
 }
 
 /// `dev_ioctl`'s questions about one interface, answered in the caller's `ifreq`.
-fn interface_question(
+fn interface_question<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     request: u32,
     argument: u64,
@@ -4403,9 +4441,9 @@ fn put_v4(ifreq: &mut [u8], address: [u8; 4]) {
 }
 
 /// `devinet_ioctl`'s questions about an interface's IPv4 address.
-fn interface_address(
+fn interface_address<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     request: u32,
     argument: u64,
@@ -4431,9 +4469,9 @@ fn interface_address(
 
 /// `dev_ifconf`: an `ifreq` for each interface's IPv4 address, as many whole ones as fit, or with
 /// no buffer the room they need.
-fn interface_list(
+fn interface_list<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     argument: u64,
 ) -> Result<u64, Errno> {
@@ -4465,9 +4503,9 @@ const MSG_LEN: u64 = core::mem::offset_of!(mmsghdr, msg_len) as u64;
 
 /// `__sys_sendmmsg`: each message sent as sendmsg sends it (waiting as it waits), its length
 /// stored after it. An error after the first ends the call with those sent.
-pub(super) fn sendmmsg(
+pub(super) fn sendmmsg<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -4500,9 +4538,9 @@ fn next_message(kernel: &mut Kernel, tid: Tid, done: u64) {
 /// `do_recvmmsg`: messages received as recvmsg receives them (each waiting as it waits), their
 /// lengths stored after them. With MSG_WAITFORONE only the first waits. A timeout is checked
 /// only after each message, as Linux checks it, and what is left of it is stored.
-pub(super) fn recvmmsg(
+pub(super) fn recvmmsg<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, flags, timeout, _]: Args,
 ) -> Result<u64, Errno> {

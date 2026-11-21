@@ -23,9 +23,9 @@ fn field(text: &[u8]) -> [u8; 65] {
     out
 }
 
-pub(super) fn uname(
+pub(super) fn uname<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -57,9 +57,9 @@ pub(super) fn uname(
     Ok(0)
 }
 
-pub(super) fn sethostname(
+pub(super) fn sethostname<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [name, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -67,9 +67,9 @@ pub(super) fn sethostname(
     Ok(0)
 }
 
-pub(super) fn setdomainname(
+pub(super) fn setdomainname<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [name, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -79,9 +79,9 @@ pub(super) fn setdomainname(
 
 /// The new name for `sethostname` or `setdomainname`, checked in Linux's order: the power first (a
 /// default container lacks it), then the length, then the bytes.
-fn new_system_name(
+fn new_system_name<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     name: u64,
     length: u64,
@@ -99,9 +99,9 @@ fn new_system_name(
     guest(kernel, cx, tid).read(name, length as u64)
 }
 
-pub(super) fn sysinfo(
+pub(super) fn sysinfo<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -131,9 +131,9 @@ pub(super) fn sysinfo(
     Ok(0)
 }
 
-pub(super) fn getrandom(
+pub(super) fn getrandom<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [buffer, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -151,9 +151,9 @@ pub(super) fn getrandom(
     super::io::random_bytes(kernel, cx, tid, &[(buffer, length)])
 }
 
-pub(super) fn sched_yield(
+pub(super) fn sched_yield<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
@@ -162,9 +162,9 @@ pub(super) fn sched_yield(
 }
 
 /// The guest is told it has one CPU.
-pub(super) fn sched_getaffinity(
+pub(super) fn sched_getaffinity<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -177,9 +177,9 @@ pub(super) fn sched_getaffinity(
     Ok(8)
 }
 
-pub(super) fn sched_setaffinity(
+pub(super) fn sched_setaffinity<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -196,9 +196,9 @@ pub(super) fn sched_setaffinity(
     Ok(0)
 }
 
-pub(super) fn getcpu(
+pub(super) fn getcpu<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [cpu, node, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -230,9 +230,9 @@ fn scheduled(kernel: &Kernel, tid: Tid, pid: u64) -> Result<Task, Errno> {
     }
 }
 
-pub(super) fn sched_getscheduler(
+pub(super) fn sched_getscheduler<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [pid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -246,9 +246,9 @@ pub(super) fn sched_getscheduler(
     Ok(u64::from(schedule.policy | reset))
 }
 
-pub(super) fn sched_getparam(
+pub(super) fn sched_getparam<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -261,9 +261,9 @@ pub(super) fn sched_getparam(
     Ok(0)
 }
 
-pub(super) fn sched_setscheduler(
+pub(super) fn sched_setscheduler<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, policy, param, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -273,9 +273,9 @@ pub(super) fn sched_setscheduler(
     set_schedule(kernel, cx, tid, pid, Some(policy as u32), param)
 }
 
-pub(super) fn sched_setparam(
+pub(super) fn sched_setparam<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, param, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -284,9 +284,9 @@ pub(super) fn sched_setparam(
 
 /// Linux's `do_sched_setscheduler`: the parameter, the thread, then `__sched_setscheduler` with the
 /// thread's own nice value and time slice.
-fn set_schedule(
+fn set_schedule<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     pid: u64,
     policy: Option<u32>,
@@ -502,9 +502,9 @@ fn slice(schedule: &crate::process::Schedule) -> u64 {
     }
 }
 
-pub(super) fn sched_setattr(
+pub(super) fn sched_setattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, address, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -585,9 +585,9 @@ fn request_of(kernel: &Kernel, target: Task, attributes: &sched_attr) -> Request
     request
 }
 
-pub(super) fn sched_getattr(
+pub(super) fn sched_getattr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, address, size, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -616,9 +616,9 @@ pub(super) fn sched_getattr(
     Ok(0)
 }
 
-pub(super) fn sched_rr_get_interval(
+pub(super) fn sched_rr_get_interval<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -638,9 +638,9 @@ pub(super) fn sched_rr_get_interval(
     Ok(0)
 }
 
-pub(super) fn sched_get_priority_max(
+pub(super) fn sched_get_priority_max<S: crate::System>(
     _: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     _: Tid,
     [policy, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -652,9 +652,9 @@ pub(super) fn sched_get_priority_max(
     }
 }
 
-pub(super) fn sched_get_priority_min(
+pub(super) fn sched_get_priority_min<S: crate::System>(
     _: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     _: Tid,
     [policy, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -761,9 +761,9 @@ fn task_schedule_mut(kernel: &mut Kernel, task: Task) -> &mut crate::process::Sc
     }
 }
 
-pub(super) fn getpriority(
+pub(super) fn getpriority<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -775,9 +775,9 @@ pub(super) fn getpriority(
         .ok_or(Errno::ESRCH)
 }
 
-pub(super) fn setpriority(
+pub(super) fn setpriority<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [which, who, nice, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -820,9 +820,9 @@ fn io_which(which: u64) -> Result<u32, Errno> {
     Ok(which as u32 - 1)
 }
 
-pub(super) fn ioprio_get(
+pub(super) fn ioprio_get<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -857,9 +857,9 @@ pub(super) fn ioprio_get(
 }
 
 /// Sets thread `tid`'s own I/O priority, as its `ioprio_set` would.
-pub(crate) fn set_io_priority(
+pub(crate) fn set_io_priority<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     priority: u32,
 ) -> Result<(), Errno> {
@@ -875,9 +875,9 @@ pub(crate) fn set_io_priority(
     ioprio_set(kernel, cx, tid, arguments).map(drop)
 }
 
-pub(super) fn ioprio_set(
+pub(super) fn ioprio_set<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [which, who, priority, ..]: Args,
 ) -> Result<u64, Errno> {

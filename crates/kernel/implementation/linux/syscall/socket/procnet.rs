@@ -33,7 +33,11 @@ const SS_CONNECTED: u32 = 3;
 const SS_DISCONNECTING: u32 = 4;
 
 /// The bytes of one file of `/proc/net`.
-pub(crate) fn contents(kernel: &mut Kernel, cx: &mut Context<'_>, file: NetFile) -> Vec<u8> {
+pub(crate) fn contents<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    file: NetFile,
+) -> Vec<u8> {
     let text = match file {
         NetFile::Dev => dev(kernel, cx),
         NetFile::IfInet6 => String::from("00000000000000000000000000000001 01 80 10 80       lo\n"),
@@ -54,7 +58,7 @@ fn pad(out: &mut String, start: usize, width: usize) {
     out.push('\n');
 }
 
-fn dev(kernel: &mut Kernel, cx: &mut Context<'_>) -> String {
+fn dev<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) -> String {
     kernel
         .counters
         .count(cx.host, crate::reason::INTERFACE_COUNTERS_NOT_KEPT, 0);

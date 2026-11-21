@@ -28,9 +28,9 @@ pub(crate) fn is_pipe(file: &FileRef) -> bool {
     matches!(file.borrow().node.borrow().content, Content::Pipe(_))
 }
 
-pub(super) fn pipe2(
+pub(super) fn pipe2<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fds, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -218,7 +218,12 @@ pub(super) fn open_named_again(kernel: &mut Kernel, tid: Tid) -> Result<FileRef,
 }
 
 /// `kill_fasync` on a pipe's readers (`POLL_IN`) or writers (`POLL_OUT`).
-pub(super) fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node, readers: bool) {
+pub(super) fn signal_ends<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    node: &Node,
+    readers: bool,
+) {
     let ends = match &node.borrow().content {
         Content::Pipe(pipe) => pipe.async_ends(readers),
         _ => return,
@@ -235,7 +240,11 @@ pub(super) fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node
 /// kinds of end their I/O signals. Releases run last given
 /// up first, as `fput`'s task works do on the way back to the program, and the file is gone from the
 /// pipe's ends first, as `__fput` takes it off before the release.
-pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<FileRef>) {
+pub(crate) fn released<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    files: Vec<FileRef>,
+) {
     for file in files.into_iter().rev() {
         let node = file.borrow().node.clone();
         let last = alloc::rc::Rc::strong_count(&file) == 1;
@@ -287,9 +296,9 @@ pub(crate) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R 
 }
 
 /// `pipe_read` into the given segments: what is there, or a wait for a writer.
-pub(super) fn read(
+pub(super) fn read<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -356,9 +365,9 @@ pub(super) fn read(
 
 /// `pipe_write` from the given segments: as much as fits, then a wait for the reader, keeping what is
 /// written in the call's slot. With no reader, SIGPIPE and EPIPE.
-pub(super) fn write(
+pub(super) fn write<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -376,7 +385,7 @@ pub(super) fn write(
     let packet = file.borrow().flags & O_DIRECT != 0;
     // Up to `most` bytes from `done` on, across segments, as far as the buffer can be read; and
     // whether a fault stopped it short.
-    let next = |kernel: &mut Kernel, cx: &mut Context<'_>, done: u64, most: u64| {
+    let next = |kernel: &mut Kernel, cx: &mut Context<'_, S>, done: u64, most: u64| {
         let mut out = Vec::new();
         let mut skipped = 0;
         let mut guest = guest(kernel, cx, tid);
@@ -521,8 +530,8 @@ pub(super) fn write(
 /// Puts kernel bytes into a pipe without waiting, as splicing into a pipe does: a slot for each
 /// page the bytes came from (the first starting `in_page` bytes into its page), as many as fit, none
 /// of which a write adds to. Readers with `FASYNC` hear of them.
-pub(super) fn put(
-    cx: &mut Context<'_>,
+pub(super) fn put<S: crate::System>(
+    cx: &mut Context<'_, S>,
     kernel: &mut Kernel,
     file: &FileRef,
     bytes: &[u8],
@@ -551,9 +560,9 @@ pub(super) fn put(
 /// The embedder's bytes into a pipe whose writer its end holds, within its credit: put in as far as
 /// there is space and the readers woken, the rest kept until there is; with no reader left they are
 /// dropped, as a write with none fails. Returns how many were past the credit, which are dropped.
-pub(crate) fn receive_from_end(
+pub(crate) fn receive_from_end<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     file: &FileRef,
     bytes: &[u8],
 ) -> usize {
@@ -582,7 +591,11 @@ pub(crate) fn receive_from_end(
 
 /// Moves the embedder's kept bytes into a pipe whose writer its end holds, as far as there is space
 /// (all are dropped once no reader is left). Returns whether any went in or were dropped.
-pub(crate) fn from_inbox(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileRef) -> bool {
+pub(crate) fn from_inbox<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    file: &FileRef,
+) -> bool {
     let node = file.borrow().node.clone();
     let (delivered, dropped) = with_pipe(file, |pipe| match pipe.readers() {
         0 => (0, core::mem::take(&mut pipe.inbox).len()),
@@ -594,7 +607,7 @@ pub(crate) fn from_inbox(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileR
     delivered + dropped > 0
 }
 
-fn woken_by_end(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
+fn woken_by_end<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, node: &Node) {
     kernel.wake_poll(channel(node), EPOLLIN | EPOLLRDNORM);
     signal_ends(kernel, cx, node, true);
 }
@@ -626,9 +639,9 @@ pub(crate) fn inbox_empty(file: &FileRef) -> bool {
 
 /// Up to `most` bytes of a pipe whose reader an end holds, taken as a read takes them, writers
 /// woken; nothing while another call holds the pipe's lock.
-pub(crate) fn send_to_end(
+pub(crate) fn send_to_end<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     file: &FileRef,
     most: u64,
 ) -> Vec<u8> {

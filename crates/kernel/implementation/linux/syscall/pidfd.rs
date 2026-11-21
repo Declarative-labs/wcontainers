@@ -90,9 +90,9 @@ pub(super) fn poll(kernel: &Kernel, file: &OpenFile) -> u16 {
 /// A new open file naming `pid`, a process or thread, or one reaped since a socket's message or
 /// connection was made by it: one inode per number, as pidfs keeps one per `struct pid`, owned by
 /// root with no file type (measured).
-pub(super) fn make(
+pub(super) fn make<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     pid: Pid,
     flags: u32,
@@ -141,9 +141,9 @@ pub(super) fn make(
     ))
 }
 
-pub(super) fn pidfd_open(
+pub(super) fn pidfd_open<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -186,9 +186,9 @@ enum Scope {
     Group,
 }
 
-pub(super) fn pidfd_send_signal(
+pub(super) fn pidfd_send_signal<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, signal, info_address, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -278,9 +278,9 @@ pub(super) fn pidfd_send_signal(
 /// `process_mrelease`: frees a dying process's memory early. An ended process has none (ESRCH), a
 /// running one is not dying (EINVAL), and a dying one's memory is not given back to the host (plan
 /// section 15) and never runs again.
-pub(super) fn process_mrelease(
+pub(super) fn process_mrelease<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [fd, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -306,9 +306,9 @@ pub(super) fn next_descriptor(kernel: &Kernel, tid: Tid) -> Result<i32, Errno> {
 }
 
 /// Gives a parent its descriptor for a child or thread it just made (CLONE_PIDFD), close on exec.
-pub(super) fn give_child_descriptor(
+pub(super) fn give_child_descriptor<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     child: Pid,
     flags: u32,
@@ -324,9 +324,9 @@ const CGROUP_ID: u64 = 1;
 
 /// `pidfd_ioctl`: the inode's generation, the process's information, and its namespaces, which have
 /// no files here.
-pub(super) fn ioctl(
+pub(super) fn ioctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     request: u32,
@@ -375,9 +375,9 @@ pub(super) fn ioctl(
 /// credentials from 28, the wait status at 60, the core dump bits at 64, the supported mask at 72),
 /// the process's numbers, credentials and cgroup, its wait status once reaped and
 /// whether it may dump core, in as much of `struct pidfd_info` as the request's size holds.
-fn pidfd_info(
+fn pidfd_info<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     request: u32,

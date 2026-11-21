@@ -392,11 +392,11 @@ impl Kernel {
     }
 
     /// Announces a hook about process `pid` to the embedder, after what the kernel wrote before.
-    pub(crate) fn announce(
+    pub(crate) fn announce<S: crate::System>(
         &mut self,
-        cx: &mut crate::Context<'_>,
+        cx: &mut crate::Context<'_, S>,
         pid: Pid,
-        hook: impl FnOnce(&dyn System, Process<'_>),
+        hook: impl FnOnce(&S, Process<'_>),
     ) {
         if self.map_notes.sharing_changed.get() {
             self.announce_sharing(cx);
@@ -415,11 +415,11 @@ impl Kernel {
     }
 
     /// As [`Self::announce`] for a process's start: the shared memory it maps is announced after.
-    pub(crate) fn announce_start(
+    pub(crate) fn announce_start<S: crate::System>(
         &mut self,
-        cx: &mut crate::Context<'_>,
+        cx: &mut crate::Context<'_, S>,
         pid: Pid,
-        hook: impl FnOnce(&dyn System, Process<'_>),
+        hook: impl FnOnce(&S, Process<'_>),
     ) {
         self.announce_kernel_writes(cx);
         if !self.processes.contains_key(&pid) {
@@ -439,7 +439,10 @@ impl Kernel {
     /// Tells the embedder what the kernel wrote into processes' memory, each to the process whose
     /// memory it is: the one it was written for, or, once that one has left the memory (an
     /// exec), another process still using it.
-    pub(crate) fn announce_kernel_writes(&mut self, cx: &mut crate::Context<'_>) {
+    pub(crate) fn announce_kernel_writes<S: crate::System>(
+        &mut self,
+        cx: &mut crate::Context<'_, S>,
+    ) {
         if self.kernel_writes.get_mut().is_empty() {
             return;
         }
@@ -473,10 +476,10 @@ impl Kernel {
     /// Runs a walk over what a thread is about to touch until it meets no watch: from its start
     /// again whenever a hook raised a watch during it, since that page may lie behind it; false
     /// if the thread must wait.
-    pub(crate) fn walk_watched(
+    pub(crate) fn walk_watched<S: crate::System>(
         &mut self,
-        cx: &mut crate::Context<'_>,
-        mut walk: impl FnMut(&mut Self, &mut crate::Context<'_>) -> bool,
+        cx: &mut crate::Context<'_, S>,
+        mut walk: impl FnMut(&mut Self, &mut crate::Context<'_, S>) -> bool,
     ) -> bool {
         loop {
             let before = self.watches_raised;
@@ -491,9 +494,9 @@ impl Kernel {
 
     /// Tells the embedder that thread `tid` is about to touch a watched address of process `pid`
     /// (its own, or one whose memory it reads); whether the watch is gone when the hook returns.
-    pub(crate) fn watch_touched(
+    pub(crate) fn watch_touched<S: crate::System>(
         &mut self,
-        cx: &mut crate::Context<'_>,
+        cx: &mut crate::Context<'_, S>,
         tid: crate::process::Tid,
         pid: Pid,
         address: u64,
@@ -533,18 +536,18 @@ impl Kernel {
 }
 
 /// A call's memory as the walk over what it touches sees it.
-pub(crate) struct CallMemory<'k, 'c, 'x> {
+pub(crate) struct CallMemory<'k, 'c, 'x, S> {
     pub kernel: &'k mut Kernel,
-    pub cx: &'c mut crate::Context<'x>,
+    pub cx: &'c mut crate::Context<'x, S>,
     pub tid: crate::process::Tid,
     /// The memory whose watch the walk stopped at, which the thread waits on.
     pub unmet: Option<MemoryId>,
 }
 
-impl<'k, 'c, 'x> CallMemory<'k, 'c, 'x> {
+impl<'k, 'c, 'x, S: crate::System> CallMemory<'k, 'c, 'x, S> {
     pub(crate) fn new(
         kernel: &'k mut Kernel,
-        cx: &'c mut crate::Context<'x>,
+        cx: &'c mut crate::Context<'x, S>,
         tid: crate::process::Tid,
     ) -> Self {
         Self {
@@ -556,7 +559,7 @@ impl<'k, 'c, 'x> CallMemory<'k, 'c, 'x> {
     }
 }
 
-impl crate::syscall::touch::Memory for CallMemory<'_, '_, '_> {
+impl<S: crate::System> crate::syscall::touch::Memory for CallMemory<'_, '_, '_, S> {
     fn touch(&mut self, address: u64, length: u64, access: AccessKind) -> bool {
         let pid = self.kernel.threads[&self.tid].process;
         self.touch_process(pid, address, length, access)

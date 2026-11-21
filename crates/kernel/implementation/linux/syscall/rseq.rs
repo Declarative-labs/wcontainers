@@ -18,9 +18,9 @@ fn registered_fields() -> [u8; RSEQ_WRITTEN_SIZE as usize] {
 
 /// Linux's `sys_rseq`, as the reference's 7.0 kernel checks it (measured: an area of other than the
 /// first size must be 64 byte aligned).
-pub(super) fn rseq(
+pub(super) fn rseq<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [area, length, flags, signature, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -98,9 +98,9 @@ const COMMANDS: u32 = MEMBARRIER_CMD_GLOBAL as u32
 
 /// Linux's `sys_membarrier`. The barriers themselves need nothing done (see above); the checks and
 /// registrations are Linux's.
-pub(super) fn membarrier(
+pub(super) fn membarrier<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [command, flags, ..]: Args,
 ) -> Result<u64, Errno> {

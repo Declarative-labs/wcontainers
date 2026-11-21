@@ -17,9 +17,9 @@ use crate::signal::UNBLOCKABLE;
 use crate::{Context, Errno, Kernel};
 
 /// `exit(status)`: ends the calling thread, and its process when it is the last thread.
-pub(super) fn exit(
+pub(super) fn exit<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     arguments: Args,
 ) -> Outcome {
@@ -37,9 +37,9 @@ pub(super) fn exit(
 }
 
 /// `exit_group(status)`: ends every thread of the calling process.
-pub(super) fn exit_group(
+pub(super) fn exit_group<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     arguments: Args,
 ) -> Outcome {
@@ -96,9 +96,9 @@ fn read_strings(
     Ok(out)
 }
 
-pub(super) fn execve(
+pub(super) fn execve<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     arguments: Args,
 ) -> Outcome {
@@ -111,9 +111,9 @@ pub(super) fn execve(
     }
 }
 
-pub(super) fn execveat(
+pub(super) fn execveat<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     arguments: Args,
 ) -> Outcome {
@@ -128,9 +128,9 @@ pub(super) fn execveat(
 
 /// A new program in place: the thread starts it, under the process's number if it took it, and
 /// there the embedder is asked for the call's answer.
-fn started(
+fn started<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     now: Tid,
     (number, arguments): (u32, Args),
@@ -158,9 +158,9 @@ enum Exec {
 
 /// Linux's `do_execveat_common`.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn exec(
+fn exec<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     dirfd: u64,
     path: u64,
@@ -285,25 +285,30 @@ fn exec(
     Ok(Exec::Started(tid))
 }
 
-pub(super) fn getpid(
+pub(super) fn getpid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
     Ok(kernel.threads[&tid].process as u64)
 }
 
-pub(super) fn getppid(
+pub(super) fn getppid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
     Ok(kernel.process_of(tid).parent as u64)
 }
 
-pub(super) fn gettid(_: &mut Kernel, _: &mut Context<'_>, tid: Tid, _: Args) -> Result<u64, Errno> {
+pub(super) fn gettid<S: crate::System>(
+    _: &mut Kernel,
+    _: &mut Context<'_, S>,
+    tid: Tid,
+    _: Args,
+) -> Result<u64, Errno> {
     Ok(tid as u64)
 }
 
@@ -320,9 +325,9 @@ fn own_pid(kernel: &Kernel, tid: Tid, pid: u64) -> Result<(), Errno> {
     }
 }
 
-pub(super) fn getpgid(
+pub(super) fn getpgid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [pid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -337,9 +342,9 @@ pub(super) fn getpgid(
     Ok(kernel.processes[&pid].group as u64)
 }
 
-pub(super) fn getsid(
+pub(super) fn getsid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [pid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -356,9 +361,9 @@ pub(super) fn getsid(
 
 /// Linux's `setpgid`: the caller or a child of it that has not started a program, in the
 /// caller's session, into a group of that session.
-pub(super) fn setpgid(
+pub(super) fn setpgid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [pid, group, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -401,9 +406,9 @@ pub(super) fn setpgid(
     Ok(0)
 }
 
-pub(super) fn setsid(
+pub(super) fn setsid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
@@ -426,45 +431,45 @@ pub(super) fn setsid(
     Ok(pid as u64)
 }
 
-pub(super) fn getuid(
+pub(super) fn getuid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
     Ok(kernel.credentials(tid).uid.into())
 }
 
-pub(super) fn geteuid(
+pub(super) fn geteuid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
     Ok(kernel.credentials(tid).euid.into())
 }
 
-pub(super) fn getgid(
+pub(super) fn getgid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
     Ok(kernel.credentials(tid).gid.into())
 }
 
-pub(super) fn getegid(
+pub(super) fn getegid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
     Ok(kernel.credentials(tid).egid.into())
 }
 
-pub(super) fn getresuid(
+pub(super) fn getresuid<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [ruid, euid, suid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -476,9 +481,9 @@ pub(super) fn getresuid(
     Ok(0)
 }
 
-pub(super) fn getresgid(
+pub(super) fn getresgid<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [rgid, egid, sgid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -492,9 +497,9 @@ pub(super) fn getresgid(
 
 /// `setresuid`, with Linux's rule: without `CAP_SETUID` each new id must be one of the three current
 /// ones. `u32::MAX` leaves an id as it is.
-pub(super) fn setresuid(
+pub(super) fn setresuid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [ruid, euid, suid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -527,9 +532,9 @@ pub(super) fn setresuid(
     })
 }
 
-pub(super) fn setresgid(
+pub(super) fn setresgid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [rgid, egid, sgid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -560,9 +565,9 @@ pub(super) fn setresgid(
     })
 }
 
-pub(super) fn setuid(
+pub(super) fn setuid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [uid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -586,9 +591,9 @@ pub(super) fn setuid(
     })
 }
 
-pub(super) fn setgid(
+pub(super) fn setgid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [gid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -611,9 +616,9 @@ pub(super) fn setgid(
     })
 }
 
-pub(super) fn setreuid(
+pub(super) fn setreuid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [ruid, euid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -646,9 +651,9 @@ pub(super) fn setreuid(
     })
 }
 
-pub(super) fn setregid(
+pub(super) fn setregid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [rgid, egid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -681,9 +686,9 @@ pub(super) fn setregid(
     })
 }
 
-pub(super) fn setfsuid(
+pub(super) fn setfsuid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [uid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -706,9 +711,9 @@ pub(super) fn setfsuid(
     })
 }
 
-pub(super) fn setfsgid(
+pub(super) fn setfsgid<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [gid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -782,9 +787,9 @@ fn changing(
 /// Linux's limit on supplementary groups (`NGROUPS_MAX`).
 const MAX_GROUPS: u64 = 65536;
 
-pub(super) fn getgroups(
+pub(super) fn getgroups<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [size, list, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -807,9 +812,9 @@ pub(super) fn getgroups(
     Ok(groups.len() as u64)
 }
 
-pub(super) fn setgroups(
+pub(super) fn setgroups<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [size, list, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -838,9 +843,9 @@ pub(super) fn setgroups(
     })
 }
 
-pub(super) fn set_tid_address(
+pub(super) fn set_tid_address<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [address, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -851,9 +856,9 @@ pub(super) fn set_tid_address(
 /// The size of Linux's `robust_list_head`.
 const ROBUST_LIST_HEAD_SIZE: u64 = 24;
 
-pub(super) fn set_robust_list(
+pub(super) fn set_robust_list<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [head, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -864,9 +869,9 @@ pub(super) fn set_robust_list(
     Ok(0)
 }
 
-pub(super) fn get_robust_list(
+pub(super) fn get_robust_list<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, head, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -893,9 +898,9 @@ fn signal_set_size(size: u64) -> Result<(), Errno> {
     }
 }
 
-pub(super) fn rt_sigaction(
+pub(super) fn rt_sigaction<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [signal, action, old, size, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -943,9 +948,9 @@ pub(super) fn rt_sigaction(
     Ok(0)
 }
 
-pub(super) fn rt_sigprocmask(
+pub(super) fn rt_sigprocmask<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [how, set, old, size, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -972,9 +977,9 @@ pub(super) fn rt_sigprocmask(
     Ok(0)
 }
 
-pub(super) fn rt_sigpending(
+pub(super) fn rt_sigpending<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [set, size, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -989,9 +994,9 @@ pub(super) fn rt_sigpending(
 
 use crate::signal::MIN_SIGNAL_STACK;
 
-pub(super) fn sigaltstack(
+pub(super) fn sigaltstack<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [new, old, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1070,9 +1075,9 @@ pub(super) fn sigaltstack(
     Ok(0)
 }
 
-pub(super) fn prlimit64(
+pub(super) fn prlimit64<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [pid, resource, new, old, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1140,9 +1145,9 @@ pub(super) fn prlimit64(
     Ok(0)
 }
 
-pub(super) fn getrlimit(
+pub(super) fn getrlimit<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [resource, old, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1158,9 +1163,9 @@ pub(super) fn getrlimit(
     Ok(0)
 }
 
-pub(super) fn setrlimit(
+pub(super) fn setrlimit<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [resource, new, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1170,9 +1175,9 @@ pub(super) fn setrlimit(
     prlimit64(kernel, cx, tid, [0, resource, new, 0, 0, 0])
 }
 
-pub(super) fn prctl(
+pub(super) fn prctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [option, second, third, fourth, fifth, _]: Args,
 ) -> Result<u64, Errno> {
@@ -1444,9 +1449,9 @@ const SAVED_AUXV: usize = 54 * 8;
 /// data size `brk` checks against, the arguments and environment `/proc/<pid>/cmdline` and
 /// `environ` show, and the auxiliary vector `auxv` shows. The code and stack fields are kept by
 /// nothing here (`/proc/<pid>/stat` shows them as 0).
-fn set_mm_map(
+fn set_mm_map<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
     size: u64,
@@ -1558,9 +1563,9 @@ const OTHER_ARCHITECTURES: [u32; 17] = [
 
 /// Linux's `cap_validate_magic`: the header, and how many 32 bit words of each set its version moves.
 /// An unknown version is replaced by the one Linux prefers, and is EINVAL.
-fn capability_version(
+fn capability_version<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     header: u64,
 ) -> Result<(__user_cap_header_struct, usize), Errno> {
@@ -1577,9 +1582,9 @@ fn capability_version(
     }
 }
 
-pub(super) fn capget(
+pub(super) fn capget<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [header, data, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1616,9 +1621,9 @@ pub(super) fn capget(
     Ok(0)
 }
 
-pub(super) fn capset(
+pub(super) fn capset<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [header, data, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1657,18 +1662,18 @@ pub(super) fn capset(
 }
 
 /// Sets thread `tid`'s own personality, as its `personality` would.
-pub(crate) fn set_personality(
+pub(crate) fn set_personality<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     persona: u32,
 ) -> Result<(), Errno> {
     personality(kernel, cx, tid, [persona.into(), 0, 0, 0, 0, 0]).map(drop)
 }
 
-pub(super) fn personality(
+pub(super) fn personality<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [persona, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1685,9 +1690,9 @@ pub(super) fn personality(
     Ok(old.into())
 }
 
-pub(super) fn getrusage(
+pub(super) fn getrusage<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [who, usage, ..]: Args,
 ) -> Result<u64, Errno> {

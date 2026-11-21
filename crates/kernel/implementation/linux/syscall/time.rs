@@ -14,7 +14,7 @@ use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 /// The CPU time the caller's process has used: the time its threads have run, as charged when each
 /// came back, and that of its threads that have ended.
-pub(super) fn cpu_time(kernel: &Kernel, _: &mut Context<'_>, tid: Tid) -> u64 {
+pub(super) fn cpu_time<S: crate::System>(kernel: &Kernel, _: &mut Context<'_, S>, tid: Tid) -> u64 {
     process_cpu_time(kernel, kernel.threads[&tid].process)
 }
 
@@ -77,7 +77,12 @@ fn is_clock_device(id: i32) -> bool {
 }
 
 /// The value of a clock in nanoseconds.
-fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<u64, Errno> {
+fn clock<S: crate::System>(
+    kernel: &Kernel,
+    cx: &mut Context<'_, S>,
+    tid: Tid,
+    clock: u64,
+) -> Result<u64, Errno> {
     let id = clock as i32;
     if id < 0 {
         if is_clock_device(id) {
@@ -117,9 +122,9 @@ fn timespec_bytes(nanoseconds: u64) -> __kernel_timespec {
     }
 }
 
-pub(super) fn clock_gettime(
+pub(super) fn clock_gettime<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [id, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -128,9 +133,9 @@ pub(super) fn clock_gettime(
     Ok(0)
 }
 
-pub(super) fn clock_getres(
+pub(super) fn clock_getres<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [id, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -160,9 +165,9 @@ pub(super) fn clock_getres(
     Ok(0)
 }
 
-pub(super) fn gettimeofday(
+pub(super) fn gettimeofday<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [out, zone, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -186,9 +191,9 @@ pub(super) fn gettimeofday(
 }
 
 /// Reads a sleep's duration, checked as Linux's `timespec64_valid` does.
-fn read_duration(
+fn read_duration<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     address: u64,
 ) -> Result<__kernel_timespec, Errno> {
@@ -209,9 +214,9 @@ fn nanoseconds(value: &__kernel_timespec) -> u64 {
 /// late as the thread's slack after it, and with nothing else to wake the machine it does. A signal
 /// interrupts it: a relative sleep writes what is left to `left` (when given) and continues from
 /// `restart_syscall` if no handler runs; an absolute one simply runs again.
-fn sleep_until(
+fn sleep_until<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     until: u64,
     left: Option<u64>,
@@ -267,9 +272,9 @@ fn cpu_sleep_clock(kernel: &Kernel, tid: Tid, id: i32) -> Option<super::timer::C
 /// wakes the thread, so only time used by other threads ends it. A signal interrupts it: when `left`
 /// is given (a relative sleep or its restart) what is left is written there (an address of 0 takes
 /// nothing) and the sleep continues from `restart_syscall`; an absolute one simply runs again.
-fn cpu_sleep(
+fn cpu_sleep<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     clock: i32,
     until: u64,
@@ -319,9 +324,9 @@ fn cpu_sleep(
 }
 
 /// `restart_syscall`: continues the sleep a handler-less signal interrupted.
-pub(super) fn restart_syscall(
+pub(super) fn restart_syscall<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     _: Args,
 ) -> Outcome {
@@ -346,9 +351,9 @@ pub(super) fn restart_syscall(
     }
 }
 
-pub(super) fn nanosleep(
+pub(super) fn nanosleep<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [request, left, ..]: Args,
 ) -> Outcome {
@@ -365,9 +370,9 @@ pub(super) fn nanosleep(
     }
 }
 
-pub(super) fn clock_nanosleep(
+pub(super) fn clock_nanosleep<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [id, flags, request, left, ..]: Args,
 ) -> Outcome {
@@ -477,9 +482,9 @@ pub(super) fn clock_nanosleep(
     )
 }
 
-pub(super) fn times(
+pub(super) fn times<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -502,9 +507,9 @@ pub(super) fn times(
 /// `do_adjtimex` on this machine's clock, which nothing in the container can adjust: setting
 /// anything needs CAP_SYS_TIME, which no container process can hold, and reading gives a clock
 /// never synchronised (the reference's own state, measured). Answers the clock's state.
-fn adjust(
+fn adjust<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     timex: &mut kernel_timex,
 ) -> Result<u64, Errno> {
@@ -565,9 +570,9 @@ fn adjust(
     Ok(TIME_ERROR)
 }
 
-pub(super) fn adjtimex(
+pub(super) fn adjtimex<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [address, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -578,9 +583,9 @@ pub(super) fn adjtimex(
     result
 }
 
-pub(super) fn clock_adjtime(
+pub(super) fn clock_adjtime<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [id, address, ..]: Args,
 ) -> Result<u64, Errno> {

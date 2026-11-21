@@ -41,7 +41,7 @@ impl Lease {
 
 /// `time_out_leases`: leases whose holders let the break time pass are removed or brought down;
 /// leases of files that are gone go too. Waiting openers look again.
-fn time_out(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
+fn time_out<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, node: &Node) {
     if node.borrow().leases.is_empty() {
         return;
     }
@@ -156,9 +156,9 @@ fn conflicting_open(kernel: &Kernel, node: &Node, file: &FileRef, kind: u32) -> 
 }
 
 /// F_SETLEASE (`fcntl_setlease`, `vfs_setlease`, `generic_setlease`).
-pub(super) fn set(
+pub(super) fn set<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     fd: i32,
     file: &FileRef,
@@ -234,7 +234,11 @@ pub(super) fn set(
 }
 
 /// F_GETLEASE (`fcntl_getlease`).
-pub(super) fn get(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileRef) -> u64 {
+pub(super) fn get<S: crate::System>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S>,
+    file: &FileRef,
+) -> u64 {
     let node = file.borrow().node.clone();
     time_out(kernel, cx, &node);
     let inode = node.borrow();
@@ -244,9 +248,9 @@ pub(super) fn get(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileRef) -> 
 
 /// `__break_lease`: an open of `node` with `flags` (or a truncation, as O_WRONLY) that conflicts
 /// with leases tells their holders and waits for them, or is EWOULDBLOCK with O_NONBLOCK.
-pub(crate) fn break_leases(
+pub(crate) fn break_leases<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     node: &Node,
     flags: u32,

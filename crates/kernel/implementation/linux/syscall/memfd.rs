@@ -18,9 +18,9 @@ const ALL_FLAGS: u32 = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXE
 const ALL_SEALS: u32 =
     F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE | F_SEAL_EXEC;
 
-pub(super) fn memfd_create(
+pub(super) fn memfd_create<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [name, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -107,9 +107,9 @@ pub(super) fn memfd_create(
 }
 
 /// `memfd_secret`: an unnamed file of memory only its shared mappings reach (Linux's `secretmem`).
-pub(super) fn memfd_secret(
+pub(super) fn memfd_secret<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {

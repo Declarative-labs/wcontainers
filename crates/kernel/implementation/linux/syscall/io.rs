@@ -49,9 +49,9 @@ pub(super) fn nonblocking(kernel: &Kernel, tid: Tid, file: &FileRef) -> bool {
     file.borrow().flags & O_NONBLOCK != 0 || kernel.threads[&tid].call.nowait
 }
 
-pub(super) fn read(
+pub(super) fn read<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -78,9 +78,9 @@ pub(super) fn read(
     )
 }
 
-pub(super) fn write(
+pub(super) fn write<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -109,9 +109,9 @@ pub(super) fn write(
     )
 }
 
-pub(super) fn pread64(
+pub(super) fn pread64<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -139,9 +139,9 @@ pub(super) fn pread64(
     )
 }
 
-pub(super) fn pwrite64(
+pub(super) fn pwrite64<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -173,9 +173,9 @@ pub(super) fn pwrite64(
 
 /// `preadv2` and `pwritev2`: an offset of -1 is the file's own position, and the flags are checked as
 /// Linux's `kiocb_set_rw_flags` does, only once there is something to move.
-pub(super) fn preadv2(
+pub(super) fn preadv2<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, offset, _, flags]: Args,
 ) -> Result<u64, Errno> {
@@ -189,9 +189,9 @@ pub(super) fn preadv2(
     )
 }
 
-pub(super) fn pwritev2(
+pub(super) fn pwritev2<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, offset, _, flags]: Args,
 ) -> Result<u64, Errno> {
@@ -213,9 +213,9 @@ pub(super) enum Bytes {
 }
 
 /// A read or write with `RWF_*` flags, at the offset or, for -1, at the file's position.
-pub(super) fn vectored2(
+pub(super) fn vectored2<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, offset, flags]: [u64; 3],
     bytes: Bytes,
@@ -334,9 +334,9 @@ pub(super) fn rw_flags_allowed(file: &FileRef, flags: u32) -> Result<(), Errno> 
     Ok(())
 }
 
-pub(super) fn copy_file_range(
+pub(super) fn copy_file_range<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [in_fd, in_offset, out_fd, out_offset, length, flags]: Args,
 ) -> Result<u64, Errno> {
@@ -423,9 +423,9 @@ pub(super) fn copy_file_range(
 
 /// `fadvise64`: tmpfs and the devices have no backing device, so every known piece of advice is taken
 /// and ignored, as Linux's `generic_fadvise` does for them.
-pub(super) fn fadvise64(
+pub(super) fn fadvise64<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [fd, _, length, advice, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -442,9 +442,9 @@ pub(super) fn fadvise64(
     Ok(0)
 }
 
-pub(super) fn readahead(
+pub(super) fn readahead<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [fd, _, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -465,9 +465,9 @@ pub(super) fn readahead(
     Ok(0)
 }
 
-pub(super) fn sync_file_range(
+pub(super) fn sync_file_range<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [fd, offset, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -540,9 +540,9 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
 
 /// Linux's `generic_write_checks_count` for a write of `count` bytes at `offset` into `file`: nothing
 /// to write passes, otherwise `generic_write_check_limits`.
-pub(super) fn write_limit(
+pub(super) fn write_limit<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     offset: u64,
@@ -557,9 +557,9 @@ pub(super) fn write_limit(
 /// Linux's `generic_write_check_limits`: past the file size limit is `SIGXFSZ` and EFBIG, as is a
 /// position at or past the largest file (`s_maxbytes`, or `MAX_NON_LFS` for a file opened without
 /// O_LARGEFILE); the count is cut to both.
-pub(super) fn write_check_limits(
+pub(super) fn write_check_limits<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     offset: u64,
@@ -591,9 +591,9 @@ pub(super) fn write_check_limits(
 
 /// Linux's `inode_newsize_ok` for a regular file growing from `size` to `new_size`: past the file
 /// size limit is `SIGXFSZ` and `EFBIG`.
-pub(super) fn new_size_ok(
+pub(super) fn new_size_ok<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     size: u64,
     new_size: u64,
@@ -661,9 +661,9 @@ pub(super) fn segments(
     Ok(out)
 }
 
-pub(super) fn readv(
+pub(super) fn readv<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -677,9 +677,9 @@ pub(super) fn readv(
     vectored(kernel, cx, tid, &file, &parts, None, None)
 }
 
-pub(super) fn writev(
+pub(super) fn writev<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -693,9 +693,9 @@ pub(super) fn writev(
     vectored(kernel, cx, tid, &file, &parts, None, Some(appends(&file)))
 }
 
-pub(super) fn preadv(
+pub(super) fn preadv<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -712,9 +712,9 @@ pub(super) fn preadv(
     vectored(kernel, cx, tid, &file, &parts, Some(offset), None)
 }
 
-pub(super) fn pwritev(
+pub(super) fn pwritev<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, vector, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -751,9 +751,9 @@ fn appends(file: &FileRef) -> bool {
     reason = "one call shape for every vectored read and write"
 )]
 /// As [`vectored_unwatched`], telling the file's inotify watches.
-fn vectored(
+fn vectored<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -777,9 +777,9 @@ fn vectored(
     result
 }
 
-fn vectored_unwatched(
+fn vectored_unwatched<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -897,8 +897,8 @@ fn vectored_unwatched(
 }
 
 /// The bytes a read of up to `count` bytes at `offset` gives, without moving the file's position.
-pub(super) fn file_bytes(
-    cx: &mut Context<'_>,
+pub(super) fn file_bytes<S: crate::System>(
+    cx: &mut Context<'_, S>,
     file: &FileRef,
     count: u64,
     offset: u64,
@@ -979,9 +979,9 @@ fn is_sysctl(file: &FileRef) -> bool {
 
 /// A sysctl's read (`proc_sys_call_handler`): made into a kernel buffer the size of the whole request,
 /// then copied out whole across the segments, or EFAULT with the position left where it was.
-fn read_sysctl(
+fn read_sysctl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -1010,9 +1010,9 @@ fn read_sysctl(
 /// `get_random_bytes_user`: the whole request filled from the host's generator in 64-byte blocks,
 /// each copied with arm64's copy routine, until a copy falls short. The reference's block lies 8
 /// bytes past 16-byte alignment (measured).
-pub(super) fn random_bytes(
+pub(super) fn random_bytes<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
@@ -1071,9 +1071,9 @@ pub(super) fn copy_to_segments(
 
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
 /// As [`read_at_unwatched`], telling the file's inotify watches of a read.
-pub(super) fn read_at(
+pub(super) fn read_at<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     buffer: u64,
@@ -1089,9 +1089,9 @@ pub(super) fn read_at(
     result
 }
 
-fn read_at_unwatched(
+fn read_at_unwatched<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     buffer: u64,
@@ -1233,9 +1233,9 @@ fn on_backend_regular(file: &FileRef) -> bool {
 /// Reads a backend file into the segments in one go at the file's position, or at `at` without
 /// moving it, as Linux's FUSE takes the whole iterator: a run of the call after a wait asks the
 /// same questions again.
-fn read_parts(
+fn read_parts<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -1300,9 +1300,9 @@ fn read_parts(
 /// Writes the segments to a regular file in one go at the file's position, or at `at` without
 /// moving it, or at the file's end if `append`: as much as can be read, up to the file size limit.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
-fn write_parts(
+fn write_parts<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -1402,9 +1402,9 @@ pub(super) fn lock_position(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Re
 /// at the file's end if `append`.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
 /// As [`write_at_unwatched`], telling the file's inotify watches of a write.
-pub(super) fn write_at(
+pub(super) fn write_at<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     buffer: u64,
@@ -1425,9 +1425,9 @@ pub(super) fn write_at(
     clippy::too_many_arguments,
     reason = "a write names its bytes, where they go and how"
 )]
-fn write_at_unwatched(
+fn write_at_unwatched<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     buffer: u64,
@@ -1490,9 +1490,9 @@ fn write_at_unwatched(
 /// `proc_pid_attr_write`: only through a file its writer's process opened, by the thread whose
 /// file it is, with its own credentials, from the start; no security module takes the bytes.
 #[allow(clippy::too_many_arguments, reason = "a write's own arguments")]
-fn write_attr(
+fn write_attr<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     task: crate::fs::proc::Task,
@@ -1518,9 +1518,9 @@ fn write_attr(
 }
 
 /// A write to a file of `/proc`, which takes no position and moves none.
-fn write_proc(
+fn write_proc<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     entry: crate::fs::proc::Entry,
     buffer: u64,
@@ -1648,9 +1648,9 @@ fn write_proc(
 /// asked for: fewer when the caller's buffer stopped being readable. Devices that take anything
 /// report nothing written here; the caller counts what it offered.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
-pub(super) fn write_bytes(
+pub(super) fn write_bytes<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     bytes: &[u8],
@@ -1664,9 +1664,9 @@ pub(super) fn write_bytes(
 /// As [`write_bytes`], for a call that goes on after what a backend took of its write in its
 /// earlier runs: `bytes` comes after the `resumed` bytes, and what it returns counts those too.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
-fn write_bytes_after(
+fn write_bytes_after<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     bytes: &[u8],
@@ -1799,9 +1799,9 @@ fn write_bytes_after(
     Ok(bytes.len() as u64)
 }
 
-pub(super) fn sendfile(
+pub(super) fn sendfile<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [out_fd, in_fd, offset_address, count, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1819,9 +1819,9 @@ pub(super) fn sendfile(
 }
 
 /// Linux's `do_sendfile`, in its order: the input, its offset, the output, then the transfer.
-fn send(
+fn send<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     out_fd: u64,
     in_fd: u64,
@@ -2075,9 +2075,9 @@ fn send(
     Ok(moved)
 }
 
-pub(super) fn lseek(
+pub(super) fn lseek<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, offset, whence, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2259,7 +2259,12 @@ pub(super) fn lseek(
 /// path), for tmpfs's files, directories and links, the only ones here that keep access times: none with `O_NOATIME`, the
 /// no-access-time inode flag or a read-only mount; on a `relatime` mount only when the access time
 /// is not after the last change or is a day old; else whenever it is not already now.
-pub(super) fn accessed(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, flags: u32) {
+pub(super) fn accessed<S: crate::System>(
+    kernel: &Kernel,
+    cx: &mut Context<'_, S>,
+    node: &crate::fs::Node,
+    flags: u32,
+) {
     // Devices' own reads leave the time alone.
     let kept = matches!(
         node.borrow().content,
@@ -2271,9 +2276,9 @@ pub(super) fn accessed(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::
 }
 
 /// Linux's `touch_atime` itself, which a splice also makes for a device it read.
-pub(super) fn touch_atime(
+pub(super) fn touch_atime<S: crate::System>(
     kernel: &Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     node: &crate::fs::Node,
     flags: u32,
 ) {
@@ -2300,9 +2305,9 @@ pub(super) fn touch_atime(
 /// Makes a `/proc` file's bytes again where Linux would before a read at `offset`: at each read for
 /// a file read from memory or a sysctl, and for a `seq_file` at a read from the start or from
 /// anywhere but where the last read stopped.
-pub(super) fn refresh_proc(
+pub(super) fn refresh_proc<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &FileRef,
     offset: u64,
@@ -2330,9 +2335,9 @@ pub(super) fn refresh_proc(
     Ok(())
 }
 
-pub(super) fn getdents64(
+pub(super) fn getdents64<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2585,9 +2590,9 @@ fn store_entries(
     (complete, at + length)
 }
 
-pub(super) fn close(
+pub(super) fn close<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2614,9 +2619,9 @@ fn nofile_limit(kernel: &Kernel, tid: Tid) -> u64 {
     kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current
 }
 
-pub(super) fn close_range(
+pub(super) fn close_range<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [first, last, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2651,9 +2656,9 @@ pub(super) fn close_range(
     Ok(0)
 }
 
-pub(super) fn dup(
+pub(super) fn dup<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2663,9 +2668,9 @@ pub(super) fn dup(
     Ok(files.add(file, false, 0, limit)? as u64)
 }
 
-pub(super) fn dup3(
+pub(super) fn dup3<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [old, new, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2701,9 +2706,9 @@ pub(super) fn dup3(
 /// The status flags `F_SETFL` may change.
 const SETTABLE_FLAGS: u32 = O_APPEND | O_NONBLOCK | O_NDELAY | O_DIRECT | O_NOATIME;
 
-pub(super) fn fcntl(
+pub(super) fn fcntl<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     arguments: Args,
 ) -> super::Outcome {
@@ -2722,9 +2727,9 @@ pub(super) fn fcntl(
 }
 
 /// `fcntl`: Some(value) when it is done, None when a lock must wait for its holder to let go.
-fn fcntl_typed(
+fn fcntl_typed<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, command, argument, ..]: Args,
 ) -> Result<Option<u64>, Errno> {
@@ -2745,9 +2750,9 @@ fn fcntl_typed(
 
 /// fcntl's record locks, as Linux's `fcntl_getlk` and `fcntl_setlk`: the request is read, checked,
 /// tested or applied, and for a test written back.
-fn record_lock(
+fn record_lock<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     file: &crate::file::FileRef,
     command: u32,
@@ -2929,9 +2934,9 @@ fn posix_locks_deadlock(kernel: &Kernel, asking: u64, mut holder: Option<u64>) -
 }
 
 /// Every other `fcntl` command.
-fn fcntl_other(
+fn fcntl_other<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     fd: i32,
     command: u32,
@@ -3202,18 +3207,18 @@ pub(super) fn set_owner_of(kernel: &Kernel, tid: Tid, file: &FileRef, pid: i32, 
 
 /// `fsync` and `fdatasync`: everything is in memory, so there is nothing to wait for. Files with no
 /// way to be synced refuse.
-pub(super) fn fsync(
+pub(super) fn fsync<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     sync_file(kernel, cx, tid, fd, false)
 }
 
-pub(super) fn fdatasync(
+pub(super) fn fdatasync<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -3222,9 +3227,9 @@ pub(super) fn fdatasync(
 
 /// `vfs_fsync`: a file on the backend is synced there, its mapped pages written back first
 /// (`fuse_fsync`); tmpfs has nothing to write.
-fn sync_file(
+fn sync_file<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     fd: u64,
     data_only: bool,
@@ -3259,9 +3264,9 @@ fn sync_file(
 }
 
 /// `syncfs`: any open file names a file system, and there is nothing to wait for.
-pub(super) fn syncfs(
+pub(super) fn syncfs<S: crate::System>(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    _: &mut Context<'_, S>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -3271,7 +3276,12 @@ pub(super) fn syncfs(
     Ok(0)
 }
 
-pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Result<u64, Errno> {
+pub(super) fn sync<S: crate::System>(
+    _: &mut Kernel,
+    _: &mut Context<'_, S>,
+    _: Tid,
+    _: Args,
+) -> Result<u64, Errno> {
     Ok(0)
 }
 
@@ -3321,9 +3331,9 @@ pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
 }
 
 /// A wait's timeout as `poll_select_set_timeout` checks it: its length.
-pub(super) fn read_timeout(
+pub(super) fn read_timeout<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     timeout: u64,
 ) -> Result<Option<u64>, Errno> {
@@ -3344,9 +3354,9 @@ pub(super) fn read_timeout(
 /// The first run of `ppoll` or `pselect6`: when the wait ends (kept in the call's slot as the time
 /// asked for, and with `select_estimate_accuracy`'s slack as when the thread is woken), then the
 /// temporary signal mask (`set_user_sigmask`).
-pub(super) fn start_wait(
+pub(super) fn start_wait<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     duration: Option<u64>,
     mask: u64,
@@ -3386,9 +3396,9 @@ pub(super) fn start_wait(
 /// After a run of `ppoll` or `pselect6` found nothing ready: it ends with none when its time is up,
 /// is interrupted by a signal, or parks until a file's readiness changes. A call watching no file
 /// (musl's `pause`) parks until its time or a signal only, as no wait queue holds it in Linux.
-fn nothing_ready(
+fn nothing_ready<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     watching: bool,
 ) -> Option<Result<u64, Errno>> {
@@ -3414,9 +3424,9 @@ fn nothing_ready(
 /// As Linux's `poll_select_finish`: the time left goes back into a non-zero timeout, whatever the
 /// result (so a restarted call waits only what is left), a failure to write it is ignored, and the
 /// signal mask goes back unless a handler is to run first.
-fn finish_wait(
+fn finish_wait<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     timeout: u64,
     result: Option<Result<u64, Errno>>,
@@ -3441,9 +3451,9 @@ fn finish_wait(
     result.into()
 }
 
-pub(super) fn ppoll(
+pub(super) fn ppoll<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fds, count, timeout, mask, mask_size, _]: Args,
 ) -> super::Outcome {
@@ -3465,9 +3475,9 @@ pub(super) fn ppoll(
     finish_wait(kernel, cx, tid, timeout, result)
 }
 
-pub(super) fn pselect6(
+pub(super) fn pselect6<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [count, read, write, except, timeout, mask_pack]: Args,
 ) -> super::Outcome {
@@ -3510,9 +3520,9 @@ pub(super) fn pselect6(
 /// One look at `pselect6`'s sets, as Linux's `core_sys_select`: Some(count) and the sets written
 /// back when something is ready, None when nothing is (the sets are then written back empty only
 /// when the call returns); and whether any descriptor is asked about.
-fn select_typed(
+fn select_typed<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     count: u64,
     sets: [u64; 3],
@@ -3584,9 +3594,9 @@ fn select_typed(
 
 /// One look at `ppoll`'s descriptors: how many are ready, each one's events written back; and
 /// whether any descriptor is watched (a negative one is not).
-fn ppoll_typed(
+fn ppoll_typed<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     fds: u64,
     count: u64,
@@ -3633,9 +3643,9 @@ fn ppoll_typed(
 /// `cachestat`: how many of a file's pages are in memory. Only tmpfs files hold pages here (as in
 /// Linux, where devices, `/proc` and directories keep none); none is ever dirty, under writeback or
 /// evicted, as tmpfs without swap (measured).
-pub(super) fn cachestat(
+pub(super) fn cachestat<S: crate::System>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
+    cx: &mut Context<'_, S>,
     tid: Tid,
     [fd, range, out, flags, ..]: Args,
 ) -> Result<u64, Errno> {
