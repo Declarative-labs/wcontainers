@@ -22,7 +22,6 @@ code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cas
 code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
 code	crates/executor/implementation/hardware-virtualization-inside/bin/floor-cases/cases.rs	str	macro_rules! snippets	"snippet_"
 code	crates/executor/implementation/hardware-virtualization-inside/floor/entry.rs	str	(file)	r#"\n.section .text.entry, "ax"\n.global _start\n_start:\n    bl floor_main\n0:  b 0b\n\n.section .text.vectors, "ax"\n.balign {vectors_bytes}\n.global floor_ve… #d67f09bc5e7a1c6f
-code	crates/executor/implementation/hardware-virtualization-inside/floor/mod.rs	str	doorbell	"hvc #0"
 code	crates/executor/implementation/hardware-virtualization-inside/floor/mod.rs	str	make_code_visible	"dc cvau, {0}"
 code	crates/executor/implementation/hardware-virtualization-inside/floor/mod.rs	str	make_code_visible	"ic ivau, {0}"
 code	crates/executor/implementation/unicorn/backend.rs	float	Backend::next	0.5
