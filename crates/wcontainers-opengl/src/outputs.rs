@@ -2,6 +2,8 @@
 //! to hold every component of its target's format, of the target's kind, where OpenGL leaves the
 //! components a program does not write, and the values of an output of another kind, undefined.
 
+use crate::state::refused;
+
 use naga::{
     Arena, Block, Expression, Handle, Literal, Module, Scalar, ScalarKind, Span, Statement,
     StructMember, Type, TypeInner, VectorSize,
@@ -274,4 +276,123 @@ fn rewrite_returns(block: Block, exprs: &mut Arena<Expression>, make: &Remake<'_
         out.push(statement, span);
     }
     out
+}
+
+/// The blend's second source: the colour a fragment program gives beside its first at location 0.
+const SECOND_SOURCE: u32 = 1;
+
+/// Adds to the first entry point a second source for blending at location 0 holding `alpha` (f32
+/// bits) in every channel, for a blend block reading the blend constant's colour and its alpha on
+/// a back end with only the first as a factor (`BlendInShader`): the alpha is read as the second
+/// source's. Refused where the program writes any target but the first, which the second source
+/// excludes.
+pub fn second_source(module: &mut Module, alpha: u32) -> Result<(), String> {
+    let Some(result) = module
+        .entry_points
+        .first()
+        .and_then(|e| e.function.result.as_ref())
+    else {
+        return refused(format_args!(
+            "a second source for a program without outputs"
+        ));
+    };
+    let result_ty = result.ty;
+    let (mut members, single) = match &module.types[result_ty].inner {
+        TypeInner::Struct { members, .. } => (members.clone(), false),
+        _ => (
+            vec![StructMember {
+                name: None,
+                ty: result_ty,
+                binding: result.binding.clone(),
+                offset: 0,
+            }],
+            true,
+        ),
+    };
+    let mut first = false;
+    for m in &mut members {
+        if let Some(naga::Binding::Location {
+            location,
+            blend_src,
+            ..
+        }) = &mut m.binding
+        {
+            if *location != 0 {
+                return refused(format_args!(
+                    "a second source for a program writing a target past the first"
+                ));
+            }
+            *blend_src = Some(0);
+            first = true;
+        }
+    }
+    if !first {
+        return refused(format_args!(
+            "a second source for a program writing no colour"
+        ));
+    }
+    let ty = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Vector {
+                size: VectorSize::Quad,
+                scalar: Scalar::F32,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    members.push(StructMember {
+        name: None,
+        ty,
+        binding: Some(naga::Binding::Location {
+            location: 0,
+            interpolation: None,
+            sampling: None,
+            blend_src: Some(SECOND_SOURCE),
+            per_primitive: false,
+        }),
+        offset: 0,
+    });
+    let count = members.len() as u32;
+    let new_ty = restruct(module, result_ty, members);
+    let function = &mut module.entry_points[0].function;
+    if let Some(result) = function.result.as_mut() {
+        result.ty = new_ty;
+        result.binding = None;
+    }
+    let body = std::mem::take(&mut function.body);
+    let make = |value: Handle<Expression>, exprs: &mut Arena<Expression>| {
+        let literal = exprs.append(
+            Expression::Literal(Literal::F32(f32::from_bits(alpha))),
+            Span::UNDEFINED,
+        );
+        let start = exprs.len();
+        let mut components: Vec<Handle<Expression>> = if single {
+            vec![value]
+        } else {
+            (0..count - 1)
+                .map(|index| {
+                    exprs.append(
+                        Expression::AccessIndex { base: value, index },
+                        Span::UNDEFINED,
+                    )
+                })
+                .collect()
+        };
+        components.push(exprs.append(
+            Expression::Splat {
+                size: VectorSize::Quad,
+                value: literal,
+            },
+            Span::UNDEFINED,
+        ));
+        let compose = Expression::Compose {
+            ty: new_ty,
+            components,
+        };
+        let new = exprs.append(compose, Span::UNDEFINED);
+        (exprs.range_from(start), new)
+    };
+    function.body = rewrite_returns(body, &mut function.expressions, &make);
+    Ok(())
 }

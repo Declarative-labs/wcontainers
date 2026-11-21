@@ -64,6 +64,8 @@ struct Variant {
     targets: outputs::Targets,
     /// The samplers of the integer textures bound where it samples.
     nearest: Vec<NearestSampler>,
+    /// The blend constant's alpha given as the blend's second source (fragment programs).
+    second_source: Option<u32>,
 }
 
 /// A value passed between stages at one location, and how it is interpolated.
@@ -286,6 +288,9 @@ fn convert<B: Backend>(
         if !variant.targets.is_empty() {
             outputs::fit(&mut module, &variant.targets);
         }
+        if let Some(alpha) = variant.second_source {
+            outputs::second_source(&mut module, alpha)?;
+        }
         let info = wcontainers_nir::spirv::validate(&module).map_err(|e| e.to_string())?;
         let entry_point = module
             .entry_points
@@ -444,6 +449,46 @@ fn constant_of_alpha(factor: BlendFactor) -> BlendFactor {
     }
 }
 
+/// The second source's factor reading what `factor` reads where the second source holds the
+/// constant's alpha in every channel.
+fn second_source_of_alpha(factor: BlendFactor) -> BlendFactor {
+    match factor {
+        BlendFactor::ConstantAlpha => BlendFactor::Src1Alpha,
+        BlendFactor::OneMinusConstantAlpha => BlendFactor::OneMinusSrc1Alpha,
+        other => other,
+    }
+}
+
+/// The blend constant's alpha the fragment program gives as the blend's second source: where the
+/// block's colour factors read the constant's colour and its alpha, for a constant whose colour is
+/// not its alpha, on a back end with no constant alpha factors but a second source, drawing into
+/// one target (`BlendInShader`).
+fn second_source_alpha<B: Backend>(
+    backend: &B,
+    desc: &BlendDesc,
+    framebuffer: &pipe_framebuffer_state,
+    constant: [u32; state::COLOR_CHANNELS],
+) -> Option<u32> {
+    let caps = backend.caps();
+    let [.., alpha] = constant;
+    let colour: Vec<BlendFactor> = desc
+        .targets
+        .iter()
+        .filter_map(|t| t.blend)
+        .flat_map(|(c, _)| [c.src, c.dst])
+        .collect();
+    let reads = |wanted: [BlendFactor; 2]| colour.iter().any(|f| wanted.contains(f));
+    let needed = !caps.has(Features::BLEND_CONSTANT_ALPHA)
+        && reads([
+            BlendFactor::ConstantAlpha,
+            BlendFactor::OneMinusConstantAlpha,
+        ])
+        && reads([BlendFactor::Constant, BlendFactor::OneMinusConstant])
+        && constant != [alpha; state::COLOR_CHANNELS];
+    let one_target = framebuffer.nr_cbufs == 1;
+    (needed && one_target && caps.has(Features::DUAL_SOURCE_BLEND)).then_some(alpha)
+}
+
 /// The blend block of `desc` for the framebuffer's formats (no blending on targets that cannot
 /// blend: integer targets, as OpenGL defines), and whether the draw's blend constant is its alpha
 /// in every channel. On a back end without constant alpha factors, an alpha factor reading the
@@ -456,6 +501,7 @@ fn blend_for<B: Backend>(
     desc: &BlendDesc,
     framebuffer: &pipe_framebuffer_state,
     constant: [u32; state::COLOR_CHANNELS],
+    second_source: bool,
 ) -> (B::Blend, bool) {
     let mut desc = *desc;
     let caps = backend.caps().clone();
@@ -471,7 +517,11 @@ fn blend_for<B: Backend>(
             BlendFactor::OneMinusConstantAlpha,
         ]);
         let reads_colour = reads([BlendFactor::Constant, BlendFactor::OneMinusConstant]);
-        if reads_alpha {
+        if reads_alpha && second_source {
+            for f in colour {
+                *f = second_source_of_alpha(*f);
+            }
+        } else if reads_alpha {
             let [.., a] = constant;
             if reads_colour && constant != [a; state::COLOR_CHANNELS] {
                 refuse(
@@ -832,8 +882,17 @@ fn draw<B: Backend>(
         swizzles: swizzles(context.stages.get(Stage::Fragment)),
         targets: target_kinds(&context.framebuffer.state),
         nearest: nearest_samplers(context.stages.get(Stage::Fragment)),
+        second_source: second_source_alpha(
+            backend,
+            &blend.desc,
+            &context.framebuffer.state,
+            bound.blend_color,
+        ),
         ..Variant::default()
     };
+    if fragment.second_source.is_some() {
+        backend.slow_paths().hit(SlowPath::BlendInShader);
+    }
     let programs = &mut context.programs;
     // The fragment program first: the vertex program's outputs are interpolated as its inputs.
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
@@ -856,6 +915,7 @@ fn draw<B: Backend>(
             .collect(),
         streamed: false,
         targets: Vec::new(),
+        second_source: None,
     };
     // SAFETY: as above.
     programs.built_for(backend, unsafe { &*vs }, &vertex)?;
@@ -891,6 +951,7 @@ fn draw<B: Backend>(
             api: raster.provoking,
             host: raster.host_provoking,
         });
+    let fragment_second_source = fragment.second_source.is_some();
     let program_key = (vs as ShaderId, vertex, fs as ShaderId, fragment);
     if let Entry::Vacant(slot) = programs.programs.entry(program_key.clone()) {
         slot.insert(
@@ -920,6 +981,7 @@ fn draw<B: Backend>(
         &blend.desc,
         &context.framebuffer.state,
         bound.blend_color,
+        fragment_second_source,
     );
     let bound = &context.bound;
     let [.., alpha] = bound.blend_color;
