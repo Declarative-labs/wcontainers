@@ -841,16 +841,6 @@ impl Kernel {
         attributes: Attributes,
         file: NewFile<'_>,
     ) -> Result<(), wcontainers_kernel::errno::Errno> {
-        self.add_root_file(path, attributes, file)
-            .map_err(Errno::to_known)
-    }
-
-    fn add_root_file(
-        &mut self,
-        path: &[u8],
-        attributes: Attributes,
-        file: NewFile<'_>,
-    ) -> Result<(), Errno> {
         assert!(
             self.init.is_none(),
             "files are added before the container starts"
@@ -881,7 +871,7 @@ impl Kernel {
                 .and_then(|directory| directory.get(part))
                 .ok_or(Errno::ENOENT)?;
             if !next.borrow().is_directory() {
-                return Err(Errno::ENOTDIR);
+                return Err(Errno::ENOTDIR.into());
             }
             parent = next;
         }
@@ -898,7 +888,7 @@ impl Kernel {
                 inode.ctime = time;
                 return Ok(());
             }
-            return Err(Errno::EEXIST);
+            return Err(Errno::EEXIST.into());
         }
         let (mode, rdev, content) = match file {
             NewFile::Directory => (S_IFDIR, 0, Content::Directory(Directory::new())),
@@ -911,7 +901,7 @@ impl Kernel {
             NewFile::HardLink(target) => {
                 let node = self.with_root_walk(|walk, root| walk.resolve(root, target, false))?;
                 if node.borrow().is_directory() {
-                    return Err(Errno::EPERM);
+                    return Err(Errno::EPERM.into());
                 }
                 node.borrow_mut().nlink += 1;
                 link(&parent, name, node);

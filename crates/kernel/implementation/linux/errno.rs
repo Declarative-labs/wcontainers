@@ -200,6 +200,12 @@ impl Errno {
     }
 }
 
+impl From<Errno> for Linux {
+    fn from(errno: Errno) -> Self {
+        errno.to_known()
+    }
+}
+
 /// What a failed request to the CPU side means to the guest.
 pub(crate) fn from_cpu(error: CpuError) -> Errno {
     match error {
