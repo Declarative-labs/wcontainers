@@ -1063,6 +1063,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b68712c02bff2348323c1441ab2e8528e32af4f8f9edf29356356290328c8e6"
+dependencies = [
+ "domain-macros",
+ "jiff",
+ "octseq",
+]
+
+[[package]]
+name = "domain-macros"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fba8fbc4580c745dfeab102232dcb729f030ac3e2c9ff5374a9dfd6dc9ddf8e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "dynasm"
 version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1120,7 +1142,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1128,6 +1150,15 @@ name = "escape8259"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f0d310082fd5de539d4f41601182241147498444a7695c520288a0cdbead6"
+
+[[package]]
+name = "etherparse"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17304d06addb3283cdc4bd528e42dd95e73c8ee2d6492ffce415e93660885449"
+dependencies = [
+ "arrayvec",
+]
 
 [[package]]
 name = "exr"
@@ -1692,6 +1723,39 @@ name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
+
+[[package]]
+name = "jiff"
+version = "0.2.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175dc66334db3b9ab9985bf8b61cfed50dc16d20964bb47f9e479adcae984a7f"
+dependencies = [
+ "jiff-core",
+ "jiff-static",
+ "portable-atomic",
+ "portable-atomic-util",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e599b80292e597019b8b3e392de3f4bea2959ddfb8c7dff60e035e9e311a2c1b"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7b1af7547d47354bc438d797e3854601bde8f8d185780c5ba4ab27afa54f1ba"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "jni-sys"
@@ -2376,6 +2440,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "octseq"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "182eab3e1cd9cdc0ecf1ce3342d9844f3dc7d098f0694569bfdf327b612d69fd"
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2966,7 +3036,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3303,7 +3373,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3867,6 +3937,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-clock"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-clock-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-clock",
+]
+
+[[package]]
+name = "wcontainers-configurable"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+]
+
+[[package]]
+name = "wcontainers-configurable-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-configurable",
+]
+
+[[package]]
 name = "wcontainers-direct3d-11"
 version = "0.1.0"
 dependencies = [
@@ -3933,6 +4028,20 @@ dependencies = [
 [[package]]
 name = "wcontainers-docker"
 version = "0.1.0"
+
+[[package]]
+name = "wcontainers-executor"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+]
+
+[[package]]
+name = "wcontainers-executor-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-executor",
+]
 
 [[package]]
 name = "wcontainers-gpu"
@@ -4084,11 +4193,31 @@ dependencies = [
  "wcontainers-kernel",
  "wcontainers-kernel-test",
  "wcontainers-kernel-test-policy",
- "wcontainers-runtime",
+ "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
  "wcontainers-translator-test",
  "wcontainers-wasmtime",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-icmp-sockets"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+]
+
+[[package]]
+name = "wcontainers-icmp-sockets-conformance"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "wcontainers-icmp-sockets",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
 ]
 
 [[package]]
@@ -4112,8 +4241,16 @@ dependencies = [
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
  "wcontainers-kernel-test-policy",
- "wcontainers-runtime",
+ "wcontainers-runtime-single-kernel",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-internet-protocol"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "wcontainers-abi",
 ]
 
 [[package]]
@@ -4129,6 +4266,22 @@ dependencies = [
  "smallvec",
  "wcontainers-abi",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-kernel-interface"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "wcontainers-abi",
+ "wcontainers-executor",
+]
+
+[[package]]
+name = "wcontainers-kernel-interface-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-kernel-interface",
 ]
 
 [[package]]
@@ -4151,7 +4304,7 @@ dependencies = [
  "wcontainers-docker",
  "wcontainers-kernel",
  "wcontainers-kernel-test-policy",
- "wcontainers-runtime",
+ "wcontainers-runtime-single-kernel",
  "wcontainers-wasmtime",
  "zerocopy",
 ]
@@ -4164,7 +4317,7 @@ dependencies = [
  "spin 0.10.1",
  "wcontainers-abi",
  "wcontainers-kernel",
- "wcontainers-runtime",
+ "wcontainers-runtime-single-kernel",
 ]
 
 [[package]]
@@ -4177,6 +4330,20 @@ dependencies = [
  "rayon",
  "syn 2.0.119",
  "toml",
+]
+
+[[package]]
+name = "wcontainers-negative-route-advice"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+]
+
+[[package]]
+name = "wcontainers-negative-route-advice-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-negative-route-advice",
 ]
 
 [[package]]
@@ -4219,7 +4386,78 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-random-source"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-random-source-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-random-source",
+]
+
+[[package]]
+name = "wcontainers-raw-sockets"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+]
+
+[[package]]
+name = "wcontainers-raw-sockets-conformance"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+ "wcontainers-raw-sockets",
+]
+
+[[package]]
+name = "wcontainers-route-resolver"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+]
+
+[[package]]
+name = "wcontainers-route-resolver-conformance"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+ "wcontainers-route-resolver",
+]
+
+[[package]]
 name = "wcontainers-runtime"
+version = "0.1.0"
+dependencies = [
+ "oci-spec",
+ "wcontainers-executor",
+ "wcontainers-kernel-interface",
+ "wcontainers-system",
+]
+
+[[package]]
+name = "wcontainers-runtime-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-executor",
+ "wcontainers-kernel-interface",
+ "wcontainers-runtime",
+ "wcontainers-system",
+]
+
+[[package]]
+name = "wcontainers-runtime-single-kernel"
 version = "0.1.0"
 dependencies = [
  "flate2",
@@ -4259,6 +4497,52 @@ dependencies = [
  "wcontainers-graphics-test",
  "wgpu",
  "windows",
+]
+
+[[package]]
+name = "wcontainers-system"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "wcontainers-abi",
+ "wcontainers-clock",
+ "wcontainers-executor",
+ "wcontainers-icmp-sockets",
+ "wcontainers-kernel-interface",
+ "wcontainers-random-source",
+ "wcontainers-raw-sockets",
+ "wcontainers-route-resolver",
+ "wcontainers-tcp-sockets",
+ "wcontainers-udp-sockets",
+]
+
+[[package]]
+name = "wcontainers-system-conformance"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "wcontainers-kernel-interface",
+ "wcontainers-system",
+]
+
+[[package]]
+name = "wcontainers-tcp-sockets"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+ "wcontainers-negative-route-advice",
+]
+
+[[package]]
+name = "wcontainers-tcp-sockets-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+ "wcontainers-tcp-sockets",
 ]
 
 [[package]]
@@ -4305,6 +4589,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-udp-sockets"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-configurable",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+ "wcontainers-negative-route-advice",
+]
+
+[[package]]
+name = "wcontainers-udp-sockets-conformance"
+version = "0.1.0"
+dependencies = [
+ "etherparse",
+ "wcontainers-internet-protocol",
+ "wcontainers-kernel-interface",
+ "wcontainers-udp-sockets",
+]
+
+[[package]]
 name = "wcontainers-wasmtime"
 version = "0.1.0"
 dependencies = [
@@ -4328,7 +4633,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-docker",
  "wcontainers-guest-cpu",
- "wcontainers-runtime",
+ "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
  "zerocopy",
 ]
@@ -4550,7 +4855,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

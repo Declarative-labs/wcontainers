@@ -1,0 +1,11 @@
+[package]
+name = "wcontainers-internet-protocol"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+etherparse.workspace = true

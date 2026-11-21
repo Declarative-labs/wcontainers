@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-raw-sockets"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-internet-protocol = { path = "../internet-protocol" }
+wcontainers-kernel-interface = { path = "../kernel-interface" }
+etherparse.workspace = true
+wcontainers-configurable = { path = "../configurable" }

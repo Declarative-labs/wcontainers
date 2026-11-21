@@ -1,0 +1,12 @@
+[package]
+name = "wcontainers-kernel-interface"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+bitflags.workspace = true
+wcontainers-abi.workspace = true
+wcontainers-executor = { path = "../executor" }

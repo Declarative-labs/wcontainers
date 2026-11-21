@@ -1,0 +1,13 @@
+[package]
+name = "wcontainers-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+oci-spec = { version = "0.10.0", default-features = false, features = ["runtime"] }
+wcontainers-executor = { path = "../executor" }
+wcontainers-kernel-interface = { path = "../kernel-interface" }
+wcontainers-system = { path = "../system" }

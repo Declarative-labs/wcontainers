@@ -1,0 +1,4 @@
+{
+  "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"],
+  "rust-analyzer.vfs.extraIncludes": ["${workspaceFolder}"]
+}

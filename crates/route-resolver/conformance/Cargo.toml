@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-route-resolver-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-route-resolver = { path = ".." }
+wcontainers-internet-protocol = { path = "../../internet-protocol" }
+wcontainers-kernel-interface = { path = "../../kernel-interface" }
+etherparse.workspace = true

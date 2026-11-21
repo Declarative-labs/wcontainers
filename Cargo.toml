@@ -1,7 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "crates/executor/conformance", "crates/kernel-interface/conformance", "crates/system/conformance", "crates/runtime/conformance", "crates/clock/conformance", "crates/random-source/conformance", "crates/tcp-sockets/conformance", "crates/udp-sockets/conformance", "crates/icmp-sockets/conformance", "crates/raw-sockets/conformance", "crates/route-resolver/conformance", "crates/configurable/conformance", "crates/negative-route-advice/conformance"]
 exclude = ["third_party"]
+
+[workspace.metadata.reviewable]
+prefix = "wcontainers"
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +18,7 @@ wcontainers-abi = { path = "crates/wcontainers-abi" }
 bitflags = { version = "2", default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 naga = { version = "30.0.2", default-features = false }
+etherparse = { version = "0.21.0", default-features = false }
 
 # naga 30.0.2 as published, plus our changes (listed in docs/status-graphics-shaders.md), until upstream has them.
 [patch.crates-io]

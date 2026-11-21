@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-runtime"
+name = "wcontainers-runtime-single-kernel"
 description = "Runs a Linux container: drives the wcontainers kernel, an executor that runs the guest's instructions, and the system the embedder supplies."
 version.workspace = true
 edition.workspace = true
