@@ -97,6 +97,11 @@ readings, repair, authentication, multipath state, the privileged settings, ICMP
   ICMP entries refused fails both icmp_error checks, quoted addresses swapped fails the IPv4 one, report packet
   dropped fails transmit_report_carries_the_packet_when_asked, statistics dropped fails
   transmit_statistics_come_with_the_report_when_asked.
+- Run 2's independent check, from a clean clone of main at 91ea8f27 with the checkout's working Cargo.lock
+  (main's still does not parse, see above), job host-tcp-sockets-verify, load 1.1 to 3.3: clean build, clippy
+  and suite 13 s, 48 passed; the eight broken copies each failed as above; `cargo tree` of tcp-sockets,
+  internet-protocol, configurable, negative-route-advice, kernel, abi and the suite shows no implementation
+  crate; `git diff 4308b9f7 HEAD` of every interface.rs and data file this track uses is empty.
 - mutants.sh shared one build folder between copies and so once ran a copy with the previous copy's broken
   shared crate; it now touches every file any copy breaks, in each copy.
 
