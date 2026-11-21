@@ -527,24 +527,31 @@ pub enum TexelBufferRoute {
     Texture,
 }
 
+/// The codes of one half of a blend in [`TargetCombineValue`]: source factor, destination factor,
+/// operation.
+pub const BLEND_HALF_CODES: usize = 3;
+
+/// The components of a blend constant: red, green, blue, alpha.
+pub const BLEND_CONSTANT_COMPONENTS: usize = 4;
+
 /// The value of [`HelperValue::TargetCombine`]: each half's source factor, destination factor and
 /// operation, the write mask and the logic operation as their discriminants, then the blend constant.
 /// Blending off is `One`, `Zero`, `Add` on both halves; no logic operation is [`LogicOp::Copy`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TargetCombineValue {
-    pub color: [u32; 3],
-    pub alpha: [u32; 3],
+    pub color: [u32; BLEND_HALF_CODES],
+    pub alpha: [u32; BLEND_HALF_CODES],
     pub writes: u32,
     pub logic_op: u32,
-    pub constant: [f32; 4],
+    pub constant: [f32; BLEND_CONSTANT_COMPONENTS],
 }
 
 impl TargetCombineValue {
     pub fn new(
         target: &crate::RenderTargetBlend,
         logic_op: Option<crate::LogicOp>,
-        constant: [f32; 4],
+        constant: [f32; BLEND_CONSTANT_COMPONENTS],
     ) -> TargetCombineValue {
         use crate::{BlendComponent, BlendFactor, BlendOp};
         let off = BlendComponent {
