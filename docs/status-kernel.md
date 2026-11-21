@@ -69,6 +69,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
   know (the WebAssembly ceiling is the wasmtime crate's, from the translator's contract). A ruling
   or a shared constant in wcontainers-abi for that tier would settle it (Departures).
 
+- KF, second run: the literal fix list's step 2 wants `NANOSECONDS_PER_MICROSECOND` in the abi;
+  named, the literal check finds wcontainers-arm64's test literal `1000` (tests/exact.rs:95,
+  `square_roots_round_as_asked`, a square root, not a time) restating it, in a crate this track
+  may not edit. Left unnamed until the translator track or the literals track settles that line.
+
 ## Waiting for the owner
 
 LTP tests that differ from the reference for a cause outside plan section 15's list, each with its
@@ -103,9 +108,11 @@ test host keeps everything it gives the kernel, a fresh kernel and CPU side run 
 alone with another seed and no backend, and every guest memory is compared as each is dropped and
 at the end), for the shell and busybox tests and layer 1's sequences; and the first batch of the
 runtime's start values (`StartOptions`: user and group, umask, limits, no_new_privs,
-`oom_score_adj`, the domain name), with reference tests. The literal baseline is 8309 lines (8324
-before). Not done: the other start values, the literal fix list from its step 2, and the lowest
-tier under the WebAssembly ceiling (a ruling). KF is not complete. See "KF, second run".
+`oom_score_adj`, the domain name), with reference tests; and the literal fix list's step 2 for
+nanoseconds per second (`wcontainers_abi::NANOSECONDS_PER_SECOND`, every use in the kernel). The
+literal baseline is 8252 lines (8324 before). Not done: the other start values, the rest of the
+literal fix list (step 2's other units on), and the lowest tier under the WebAssembly ceiling (a
+ruling). KF is not complete. See "KF, second run".
 
 KF (what other tracks ask of the kernel), first run: the K6c check's four findings are answered
 (a fatal signal now ends its target when the target next runs; uevent02 is counted apart with
@@ -337,9 +344,19 @@ oom_score_adj, a new file's mode and owner, a refused lowering of the score) and
 UTC, load 1). Docker has no umask option, so the reference's shell sets the mask first
 (Departures).
 
-The literal baseline: 8324 to 8309 lines (kf2/lit3.txt); the check passes. Fixed on the way:
-layer 1's shrink time is derived from a Duration, the image's user and group files' layout is
-named once, the domain name "(none)" is named once.
+The literal baseline: 8324 to 8309 lines (kf2/lit3.txt), then 8252 (kf2/lit4.txt); the check
+passes. Fixed on the way: layer 1's shrink time is derived from a Duration, the image's user and
+group files' layout is named once, the domain name "(none)" is named once.
+
+The literal fix list, step 2 (c1ab0d84): `wcontainers_abi::NANOSECONDS_PER_SECOND`, derived from
+`core::time::Duration`, replaces all 56 `1_000_000_000` of the kernel (timespec checks and
+conversions, timers, uptime, leases, TCP's timers, AIO, file times). Nanoseconds per microsecond
+is not named yet: as `Duration::from_micros(1)` the check finds it restated by a test of
+wcontainers-arm64 (tests/exact.rs:95, `1000` in `square_roots_round_as_asked`, the translator
+track's) and by this crate's `PICOSECONDS_PER_NANOSECOND`, so by the fix list's rule 8 it waits
+until the translator track's test is settled (For the orchestrator). The `/ 1000` of
+microseconds stay on the baseline until then; the tick (`10_000_000`, USER_HZ) and milliseconds
+are the step's next lines.
 
 Verdicts changed on purpose in this run: none of the old tests; new tests are startoptions' three
 and layer1 `sequences_replay_from_their_record`, and every busybox and shell comparison now also
@@ -5260,7 +5277,8 @@ KF, after its second run (the bar as below):
    options and the read-only paths as public constants (container.rs's default mounts), and the
    per-process values (`ioPriority`, `scheduler`, `execCPUAffinity`, `personality`,
    `timeOffsets`). Add each as a field of `StartOptions` with Docker's default.
-2. The literal fix list from step 2 (time units), in the audit's order.
+2. The literal fix list: step 2's other units (microseconds, once the arm64 test's `1000` is
+   settled; milliseconds; the tick), then step 3 on, in the audit's order.
 3. The lowest placement tier under the WebAssembly ceiling (For the orchestrator).
 4. Then the whole suite on the ARM64 machine and the Mac's part (scratch kf2/mac.sh with fresh
    layer 1 seeds from 9191132).
