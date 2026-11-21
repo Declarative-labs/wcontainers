@@ -45,7 +45,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static COUNTING: Counting = Counting;
 
-const DEFAULT_COUNT: u64 = 500;
+const DEFAULT_COUNT: u64 = 700;
 const DEFAULT_ROUNDS: usize = 5;
 
 fn knob<T: std::str::FromStr>(name: &str, default: T) -> T {
